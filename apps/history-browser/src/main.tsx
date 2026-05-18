@@ -425,24 +425,11 @@ function App() {
         const sorted = [...eventsResponse.events].sort((left, right) =>
           left.timestamp.localeCompare(right.timestamp)
         );
-        const detailed = await Promise.all(
-          sorted.map(async (event) => {
-            try {
-              const detail = await requestJson<{ event: GraphEvent }>(
-                `/v1/memory/graph/events/${event.id}?includeRaw=true&includeInvalidated=${includeInvalidated}`,
-                apiToken
-              );
-              return detail.event;
-            } catch {
-              return event;
-            }
-          })
-        );
-        setThreadEvents(detailed);
+        setThreadEvents(sorted);
         setSelectedEventId((current) =>
-          current && detailed.some((event) => event.id === current)
+          current && sorted.some((event) => event.id === current)
             ? current
-            : (detailed[0]?.id ?? null)
+            : (sorted[0]?.id ?? null)
         );
       } catch {
         const localEvents = events
@@ -456,8 +443,39 @@ function App() {
         }
       }
     },
-    [apiToken, events]
+    [apiToken, events, includeInvalidated]
   );
+
+  useEffect(() => {
+    if (!selectedEvent || selectedEvent.rawContent) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadSelectedEventDetail = async () => {
+      try {
+        const detail = await requestJson<{ event: GraphEvent }>(
+          `/v1/memory/graph/events/${selectedEvent.id}?includeRaw=true&includeInvalidated=${includeInvalidated}`,
+          apiToken
+        );
+        if (cancelled) {
+          return;
+        }
+        setThreadEvents((current) =>
+          current.map((event) =>
+            event.id === selectedEvent.id ? { ...event, ...detail.event } : event
+          )
+        );
+      } catch {
+        // The preview remains usable if raw detail is unavailable or rate limited.
+      }
+    };
+
+    void loadSelectedEventDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiToken, includeInvalidated, selectedEvent]);
 
   const refreshVisibleData = useCallback(
     async (options?: { silent?: boolean }) => {
