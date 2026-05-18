@@ -70,6 +70,13 @@ const requireRepository = () => {
   return repository;
 };
 
+const stringValue = (value: unknown, fallback = ""): string =>
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean"
+    ? String(value)
+    : fallback;
+
 const isTransientError = (error: unknown): boolean =>
   error instanceof TypeError ||
   (typeof error === "object" &&
@@ -238,16 +245,16 @@ const loadProvider = async (
 
 const handleJob = async (queueName: string, data: Record<string, unknown>) => {
   if (queueName === "provider-health") {
-    const userId = String(data.userId ?? "");
+    const userId = stringValue(data.userId);
     const provider = await loadProvider(userId);
     await provider.embed(["provider health check"]);
     return { ok: true };
   }
 
   if (queueName === "memory-answer") {
-    const userId = String(data.userId ?? "");
-    const query = String(data.query ?? "");
-    const scope = String(data.scope ?? "personal") as MemoryScope;
+    const userId = stringValue(data.userId);
+    const query = stringValue(data.query);
+    const scope = stringValue(data.scope, "personal") as MemoryScope;
     const provider =
       configuredMemoryMode === "server_synthesis"
         ? await loadProvider(
@@ -270,8 +277,8 @@ const handleJob = async (queueName: string, data: Record<string, unknown>) => {
   }
 
   if (queueName === "lcm-compact") {
-    const userId = String(data.userId ?? "");
-    const visibility = String(data.visibility ?? "personal") as Visibility;
+    const userId = stringValue(data.userId);
+    const visibility = stringValue(data.visibility, "personal") as Visibility;
     const compaction = await scheduleCompaction({
       repository: requireRepository(),
       requesterContext: { userId },
@@ -291,11 +298,11 @@ const handleJob = async (queueName: string, data: Record<string, unknown>) => {
   }
 
   if (queueName === "memory-embed" || queueName === "lcm-embed") {
-    const sourceType = String(data.sourceType ?? "") as
+    const sourceType = stringValue(data.sourceType) as
       | "memory_node"
       | "memory_event"
       | "message";
-    const sourceId = String(data.sourceId ?? "");
+    const sourceId = stringValue(data.sourceId);
     if (!["memory_node", "memory_event", "message"].includes(sourceType)) {
       throw new Error("Embedding job sourceType is invalid");
     }

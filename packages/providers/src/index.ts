@@ -147,29 +147,33 @@ export class FakeDeterministicProvider implements MemoryModelProvider {
     this.config = defaultConfig(config);
   }
 
-  async embed(texts: string[]): Promise<Vector[]> {
-    return texts.map((text) =>
-      fakeVector(text, this.config.embeddingDimensions)
+  embed(texts: string[]): Promise<Vector[]> {
+    return Promise.resolve(
+      texts.map((text) => fakeVector(text, this.config.embeddingDimensions))
     );
   }
 
-  async summarize(prompt: SummarizePrompt | string): Promise<string> {
+  summarize(prompt: SummarizePrompt | string): Promise<string> {
     const text = normalizePrompt(prompt).trim();
-    return text.length <= 240 ? text : `${text.slice(0, 237)}...`;
+    return Promise.resolve(
+      text.length <= 240 ? text : `${text.slice(0, 237)}...`
+    );
   }
 
-  async answer(prompt: AnswerPrompt | string): Promise<string> {
-    return evidenceToText(prompt);
+  answer(prompt: AnswerPrompt | string): Promise<string> {
+    return Promise.resolve(evidenceToText(prompt));
   }
 
-  async rerank(
+  rerank(
     _query: string,
     candidates: RerankCandidate[]
   ): Promise<RerankResult[]> {
-    return candidates.map((candidate, index) => ({
-      id: candidate.id,
-      score: candidate.score ?? 1 / (index + 1)
-    }));
+    return Promise.resolve(
+      candidates.map((candidate, index) => ({
+        id: candidate.id,
+        score: candidate.score ?? 1 / (index + 1)
+      }))
+    );
   }
 }
 
@@ -181,21 +185,21 @@ export class DeterministicProvider implements ModelProvider {
     this.config = defaultConfig({ ...config, provider: "deterministic" });
   }
 
-  async embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
-    return {
+  embed(request: EmbeddingRequest): Promise<EmbeddingResult> {
+    return Promise.resolve({
       model: request.model ?? this.config.models.embeddingModel,
       embedding: fakeVector(request.input, this.config.embeddingDimensions)
-    };
+    });
   }
 
-  async chat(request: ChatRequest): Promise<ChatResult> {
+  chat(request: ChatRequest): Promise<ChatResult> {
     const lastUserMessage = [...request.messages]
       .reverse()
       .find((message) => message.role === "user");
-    return {
+    return Promise.resolve({
       model: request.model ?? this.config.models.answerModel,
       text: lastUserMessage?.content ?? ""
-    };
+    });
   }
 }
 

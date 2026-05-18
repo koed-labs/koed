@@ -9,7 +9,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-
 DEFAULT_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 
 
@@ -36,7 +35,11 @@ class BenchmarkResult:
             "median_ms": round(statistics.median(latencies), 2) if latencies else None,
             "max_ms": round(max(latencies), 2) if latencies else None,
             "tokens_per_second": (
-                round((self.measured_tokens or self.target_tokens) / (statistics.median(latencies) / 1000), 2)
+                round(
+                    (self.measured_tokens or self.target_tokens)
+                    / (statistics.median(latencies) / 1000),
+                    2,
+                )
                 if latencies
                 else None
             ),
@@ -109,7 +112,7 @@ def run_http(args: argparse.Namespace) -> list[BenchmarkResult]:
         dimensions: int | None = None
         error: str | None = None
         status = "ok"
-        for run_index in range(args.runs):
+        for _ in range(args.runs):
             try:
                 started = time.perf_counter()
                 response = post_json(args.url, {"texts": [text]}, args.timeout)
@@ -143,7 +146,7 @@ def run_http(args: argparse.Namespace) -> list[BenchmarkResult]:
 
 def run_direct(args: argparse.Namespace) -> list[BenchmarkResult]:
     from huggingface_hub import hf_hub_download
-    from llama_cpp import Llama, LLAMA_POOLING_TYPE_LAST
+    from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
 
     model_path = args.model_path or hf_hub_download(
         repo_id=args.model_repo,
@@ -199,12 +202,18 @@ def run_direct(args: argparse.Namespace) -> list[BenchmarkResult]:
 
 
 def print_markdown(results: list[BenchmarkResult]) -> None:
-    print("| Target tokens | Measured tokens | Chars | Status | Median ms | Tokens/sec | Dimensions | Error |")
+    print(
+        "| Target tokens | Measured tokens | Chars | Status | "
+        "Median ms | Tokens/sec | Dimensions | Error |"
+    )
     print("|---:|---:|---:|---|---:|---:|---:|---|")
     for result in results:
         summary = result.summary()
         print(
-            "| {target_tokens} | {measured_tokens} | {text_chars} | {status} | {median_ms} | {tokens_per_second} | {dimensions} | {error} |".format(
+            (
+                "| {target_tokens} | {measured_tokens} | {text_chars} | {status} | "
+                "{median_ms} | {tokens_per_second} | {dimensions} | {error} |"
+            ).format(
                 **{key: "" if value is None else value for key, value in summary.items()}
             )
         )
@@ -218,13 +227,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=600)
-    parser.add_argument("--model-repo", default=os.getenv("MODEL_REPO", "Qwen/Qwen3-Embedding-0.6B-GGUF"))
-    parser.add_argument("--model-file", default=os.getenv("MODEL_FILE", "Qwen3-Embedding-0.6B-Q8_0.gguf"))
+    parser.add_argument(
+        "--model-repo",
+        default=os.getenv("MODEL_REPO", "Qwen/Qwen3-Embedding-0.6B-GGUF"),
+    )
+    parser.add_argument(
+        "--model-file",
+        default=os.getenv("MODEL_FILE", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+    )
     parser.add_argument("--model-path", default=os.getenv("MODEL_PATH"))
-    parser.add_argument("--model-name", default=os.getenv("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B-GGUF"))
+    parser.add_argument(
+        "--model-name",
+        default=os.getenv("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B-GGUF"),
+    )
     parser.add_argument("--n-ctx", type=int, default=int(os.getenv("BENCHMARK_N_CTX", "32768")))
     parser.add_argument("--n-batch", type=int, default=int(os.getenv("LLAMA_N_BATCH", "512")))
-    parser.add_argument("--n-threads", type=int, default=int(os.getenv("LLAMA_N_THREADS", str(os.cpu_count() or 1))))
+    parser.add_argument(
+        "--n-threads",
+        type=int,
+        default=int(os.getenv("LLAMA_N_THREADS", str(os.cpu_count() or 1))),
+    )
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     return parser.parse_args()
 

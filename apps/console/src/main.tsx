@@ -2,9 +2,15 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
+type ViteEnvironment = {
+  VITE_API_BASE_URL?: string;
+  PROD?: boolean;
+};
+
+const viteEnvironment = import.meta.env as ViteEnvironment;
 const apiBaseUrl = (
-  import.meta.env.VITE_API_BASE_URL ??
-  (import.meta.env.PROD ? window.location.origin : "http://localhost:3000")
+  viteEnvironment.VITE_API_BASE_URL ??
+  (viteEnvironment.PROD ? window.location.origin : "http://localhost:3000")
 ).replace(/\/$/, "");
 
 type SetupStatus = { configured: boolean; authMode: string };
@@ -86,6 +92,23 @@ type SmokeResult = {
   recall: { hits: number; topHit: unknown; retrieval: unknown };
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const errorMessageFromBody = (body: unknown): string | undefined => {
+  if (!isRecord(body)) {
+    return undefined;
+  }
+  return typeof body.error === "string" ? body.error : undefined;
+};
+
+const displayString = (value: unknown, fallback = ""): string =>
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean"
+    ? String(value)
+    : fallback;
+
 const requestJson = async <T,>(
   path: string,
   options: RequestInit = {}
@@ -96,10 +119,10 @@ const requestJson = async <T,>(
     ...options
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error ?? `HTTP ${response.status}`);
+    const body = (await response.json().catch(() => ({}))) as unknown;
+    throw new Error(errorMessageFromBody(body) ?? `HTTP ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return (await response.json()) as T;
 };
 
 const copyText = (value: string) => void navigator.clipboard.writeText(value);
@@ -210,9 +233,9 @@ const App = () => {
     setSetup(setupStatus);
     setStatus(selfHostStatus);
     const configuredPath = selfHostStatus.configuration
-      ? String(
+      ? displayString(
           (selfHostStatus.configuration as Record<string, unknown>)
-            .localRepositoryPath ?? ""
+            .localRepositoryPath
         )
       : "";
     if (!repoPath && configuredPath) {
@@ -676,7 +699,7 @@ timeout = 30`;
                     This account exists only in the self-hosted Postgres
                     database.
                   </p>
-                  <form onSubmit={submitAuth}>
+                  <form onSubmit={(event) => void submitAuth(event)}>
                     <label>
                       Email
                       <input
@@ -703,7 +726,10 @@ timeout = 30`;
                   {tokens.length === 0 ? (
                     <>
                       <p>Create a token for Codex or another local AI client.</p>
-                      <form className="inline-form" onSubmit={createToken}>
+                      <form
+                        className="inline-form"
+                        onSubmit={(event) => void createToken(event)}
+                      >
                         <input
                           value={tokenName}
                           onChange={(event) => setTokenName(event.target.value)}
@@ -738,11 +764,12 @@ timeout = 30`;
                       <div key={name}>
                         <span>{name}</span>
                         <StatusDot
-                          status={String(
+                          status={displayString(
                             component.status ??
                               component.healthy ??
                               component.enabled ??
-                              "configured"
+                              "configured",
+                            "configured"
                           )}
                         />
                       </div>
@@ -1071,7 +1098,10 @@ timeout = 30`;
           <div className="section-grid">
             <section className="surface">
               <h2>API tokens</h2>
-              <form className="inline-form" onSubmit={createToken}>
+              <form
+                className="inline-form"
+                onSubmit={(event) => void createToken(event)}
+              >
                 <input
                   value={tokenName}
                   onChange={(event) => setTokenName(event.target.value)}

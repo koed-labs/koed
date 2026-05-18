@@ -59,6 +59,12 @@ const parseArgs = (args: string[]): { configPath?: string } => {
 const expandHome = (filePath: string): string =>
   filePath.replace(/^~(?=$|\/)/, process.env.HOME ?? "~");
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const asUnknownArray = (value: unknown): unknown[] | null =>
+  Array.isArray(value) ? (value as unknown[]) : null;
+
 const loadConfig = (configPath?: string): CaptureHookConfig => {
   const envConfig = defaultConfig();
 
@@ -79,9 +85,9 @@ const loadConfig = (configPath?: string): CaptureHookConfig => {
 };
 
 const readStdin = async (): Promise<string> => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  const chunks: Buffer<ArrayBufferLike>[] = [];
+  for await (const chunk of process.stdin as AsyncIterable<Buffer | string>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
   }
   return Buffer.concat(chunks).toString("utf8");
 };
@@ -132,12 +138,7 @@ const stringifyContent = (value: unknown): string => {
         if (typeof item === "string") {
           return item;
         }
-        if (
-          item &&
-          typeof item === "object" &&
-          "text" in item &&
-          typeof item.text === "string"
-        ) {
+        if (isRecord(item) && typeof item.text === "string") {
           return item.text;
         }
         return "";
@@ -145,7 +146,7 @@ const stringifyContent = (value: unknown): string => {
       .filter(Boolean)
       .join("\n");
   }
-  if (value && typeof value === "object") {
+  if (isRecord(value)) {
     return JSON.stringify(value);
   }
   return "";
@@ -168,11 +169,11 @@ const extractTranscriptItem = (
     return null;
   }
 
-  const raw = record as Record<string, unknown>;
-  const payload =
-    raw.payload && typeof raw.payload === "object"
-      ? (raw.payload as Record<string, unknown>)
-      : undefined;
+  const raw = isRecord(record) ? record : null;
+  if (!raw) {
+    return null;
+  }
+  const payload = isRecord(raw.payload) ? raw.payload : undefined;
   const item = payload ?? raw;
   if (
     options.preferEventMessages &&
@@ -181,10 +182,7 @@ const extractTranscriptItem = (
   ) {
     return null;
   }
-  const message =
-    item.message && typeof item.message === "object"
-      ? (item.message as Record<string, unknown>)
-      : undefined;
+  const message = isRecord(item.message) ? item.message : undefined;
   const actor =
     roleToActor(item.role) ??
     roleToActor(message?.role) ??
@@ -236,15 +234,14 @@ const parseTranscript = (transcriptPath: string): CaptureItem[] => {
   const records: unknown[] = [];
   try {
     const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      records.push(...parsed);
+    const parsedArray = asUnknownArray(parsed);
+    if (parsedArray) {
+      records.push(...parsedArray);
     } else if (
-      parsed &&
-      typeof parsed === "object" &&
-      "items" in parsed &&
-      Array.isArray(parsed.items)
+      isRecord(parsed) &&
+      asUnknownArray(parsed.items)
     ) {
-      records.push(...parsed.items);
+      records.push(...asUnknownArray(parsed.items)!);
     } else {
       records.push(parsed);
     }
@@ -262,13 +259,10 @@ const parseTranscript = (transcriptPath: string): CaptureItem[] => {
     if (!record || typeof record !== "object") {
       return false;
     }
-    const raw = record as Record<string, unknown>;
-    const payload =
-      raw.payload && typeof raw.payload === "object"
-        ? (raw.payload as Record<string, unknown>)
-        : undefined;
+    const raw = isRecord(record) ? record : null;
+    const payload = raw ? (isRecord(raw.payload) ? raw.payload : undefined) : undefined;
     return (
-      raw.type === "event_msg" &&
+      raw?.type === "event_msg" &&
       (payload?.type === "user_message" ||
         payload?.type === "agent_message" ||
         payload?.type === "assistant_message")

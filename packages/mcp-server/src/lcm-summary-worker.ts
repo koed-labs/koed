@@ -519,7 +519,7 @@ export const runCodexLcmSummary: CodexLcmSummaryRunner = (
           model: `codex:${config.model}:${config.reasoningEffort}`
         });
       } catch (error) {
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       } finally {
         cleanup();
       }

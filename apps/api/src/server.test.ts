@@ -47,13 +47,87 @@ const cookieHeader = (response: {
   headers: Record<string, unknown>;
 }): string => {
   const cookie = response.headers["set-cookie"];
-  const firstCookie = Array.isArray(cookie)
+  const firstCookie = isStringArray(cookie)
     ? cookie[0]
     : typeof cookie === "string"
       ? cookie
       : undefined;
   return firstCookie?.split(";")[0] ?? "";
 };
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+
+const jsonBody = <T,>(response: { body: string }): T =>
+  JSON.parse(response.body) as T;
+
+type TokenResponse = {
+  token: string;
+  apiToken: { tokenPrefix: string };
+};
+
+type TeamResponse = {
+  team: { name: string; inviteCode: string };
+};
+
+type AccessResponse = {
+  ok?: boolean;
+  auth?: string;
+  enabledProviderConfigs?: number;
+  providerConfigRequired?: boolean;
+  memoryMode?: string;
+};
+
+type ProviderConfigResponse = {
+  providerConfigs: Array<{
+    provider: string;
+    config: {
+      apiKey?: unknown;
+      apiKeyConfigured?: boolean;
+      baseUrl?: string;
+      embedding_model?: string;
+    };
+  }>;
+};
+
+type CaptureResponse = {
+  event: {
+    id: string;
+    visibility: string;
+    metadata: Record<string, unknown>;
+  };
+  compaction?: { leafNodeIds: string[] };
+  processing?: { compaction: { inline: boolean } };
+};
+
+type SearchResponse = { hits: unknown[] };
+type AnswerResponse = {
+  mode: string;
+  markdown: string;
+  evidenceBundle: { instructions: string };
+  evidence: Array<{ summaryText?: string }>;
+  citations: unknown[];
+};
+type PolicyResponse = { policy: { captureState: string } };
+type ClusterResponse = { clusters: Array<Record<string, unknown>> };
+type MemoryItemsResponse = { memories: Array<Record<string, unknown>> };
+type GraphOverviewResponse = { overview: Record<string, unknown> };
+type GraphNodesResponse = { nodes: Array<Record<string, unknown>> };
+type GraphNodeResponse = {
+  node: Record<string, unknown> & {
+    sources: Array<Record<string, unknown>>;
+  };
+};
+type GraphEventsResponse = {
+  events: Array<Record<string, unknown>>;
+};
+type GraphEventResponse = {
+  event: Record<string, unknown> & { rawContent?: string };
+};
+type MemoryExportResponse = { nodes: Array<Record<string, unknown>> };
+type SessionResponse = { session: { id: string } };
+type ExpandedResponse = { expanded: { sources: Array<{ content: string }> } };
+type OpenApiResponse = { paths: Record<string, unknown> };
 
 const createFakeRepository = (): MemorySourceRepository => {
   const users = new Map<string, UserRecord>();
@@ -719,6 +793,16 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getEmbeddableSource() {
       return null;
     },
+    async getLcmNodeForSummarization() {
+      return null;
+    },
+    async listLcmNodesNeedingSummaries() {
+      return [];
+    },
+    async getVisibleLcmNodeForSummarization() {
+      return null;
+    },
+    async updateLcmNodeSummary() {},
     async upsertSourceEmbedding() {
       return { id: randomUUID(), inserted: true };
     },
@@ -919,7 +1003,7 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(registered.statusCode).toBe(200);
-    expect(JSON.parse(me.body).currentTeam).toBeNull();
+    expect(jsonBody<{ currentTeam: unknown | null }>(me).currentTeam).toBeNull();
     expect(rejected.statusCode).toBe(404);
   });
 
@@ -939,7 +1023,7 @@ describe("account and access flows", () => {
       headers: { cookie: ownerCookie },
       payload: { name: "Research" }
     });
-    const inviteCode = JSON.parse(created.body).team.inviteCode;
+    const inviteCode = jsonBody<TeamResponse>(created).team.inviteCode;
 
     const member = await app.inject({
       method: "POST",
@@ -956,7 +1040,7 @@ describe("account and access flows", () => {
 
     expect(created.statusCode).toBe(200);
     expect(joined.statusCode).toBe(200);
-    expect(JSON.parse(joined.body).team.name).toBe("Research");
+    expect(jsonBody<TeamResponse>(joined).team.name).toBe("Research");
   });
 
   it("authenticates API requests with bearer tokens", async () => {
@@ -972,7 +1056,7 @@ describe("account and access flows", () => {
       headers: { cookie: cookieHeader(registered) },
       payload: { name: "Codex MCP" }
     });
-    const token = JSON.parse(createdToken.body).token;
+    const token = jsonBody<TokenResponse>(createdToken).token;
     const authed = await app.inject({
       method: "GET",
       url: "/v1/access/check",
@@ -981,11 +1065,11 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(createdToken.statusCode).toBe(200);
-    expect(JSON.parse(createdToken.body).apiToken.tokenPrefix).toBe(
+    expect(jsonBody<TokenResponse>(createdToken).apiToken.tokenPrefix).toBe(
       token.slice(0, 12)
     );
     expect(authed.statusCode).toBe(200);
-    expect(JSON.parse(authed.body).ok).toBe(true);
+    expect(jsonBody<AccessResponse>(authed).ok).toBe(true);
   });
 
   it("configures an OpenAI-compatible provider without returning the API key", async () => {
@@ -1020,7 +1104,12 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(saved.statusCode).toBe(200);
-    const providerConfig = JSON.parse(listed.body).providerConfigs[0];
+    const providerConfig = jsonBody<ProviderConfigResponse>(
+      listed
+    ).providerConfigs[0];
+    if (!providerConfig) {
+      throw new Error("Expected one provider config");
+    }
     expect(providerConfig.provider).toBe("openai-compatible");
     expect(providerConfig.config.apiKey).toBeUndefined();
     expect(providerConfig.config.apiKeyConfigured).toBe(true);
@@ -1045,7 +1134,7 @@ describe("account and access flows", () => {
       payload: { name: "Codex MCP" }
     });
     expect(createdToken.statusCode).toBe(200);
-    const token = JSON.parse(createdToken.body).token;
+    const token = jsonBody<TokenResponse>(createdToken).token;
     const rejectedCookie = await app.inject({
       method: "GET",
       url: "/v1/access/check",
@@ -1060,7 +1149,7 @@ describe("account and access flows", () => {
 
     expect(rejectedCookie.statusCode).toBe(401);
     expect(checked.statusCode).toBe(200);
-    expect(JSON.parse(checked.body).auth).toBe("bearer_api_token");
+    expect(jsonBody<AccessResponse>(checked).auth).toBe("bearer_api_token");
   });
 
   it("captures conversation memory through MCP endpoints", async () => {
@@ -1080,7 +1169,7 @@ describe("account and access flows", () => {
       headers: { cookie },
       payload: { name: "Codex MCP" }
     });
-    const token = JSON.parse(createdToken.body).token;
+    const token = jsonBody<TokenResponse>(createdToken).token;
     const headers = { authorization: `Bearer ${token}` };
 
     const personal = await app.inject({
@@ -1113,13 +1202,15 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(personal.statusCode).toBe(200);
-    expect(JSON.parse(personal.body).event.visibility).toBe("personal");
-    expect(JSON.parse(access.body).enabledProviderConfigs).toBe(0);
-    expect(JSON.parse(access.body).providerConfigRequired).toBe(false);
+    expect(jsonBody<CaptureResponse>(personal).event.visibility).toBe(
+      "personal"
+    );
+    expect(jsonBody<AccessResponse>(access).enabledProviderConfigs).toBe(0);
+    expect(jsonBody<AccessResponse>(access).providerConfigRequired).toBe(false);
     expect(search.statusCode).toBe(200);
-    expect(JSON.parse(search.body).hits).toHaveLength(1);
+    expect(jsonBody<SearchResponse>(search).hits).toHaveLength(1);
     expect(answer.statusCode).toBe(200);
-    const answerBody = JSON.parse(answer.body);
+    const answerBody = jsonBody<AnswerResponse>(answer);
     expect(answerBody.mode).toBe("codex_subscription");
     expect(answerBody.markdown).toContain("Evidence bundle returned");
     expect(answerBody.evidenceBundle.instructions).toContain(
@@ -1146,7 +1237,9 @@ describe("account and access flows", () => {
       headers: { cookie },
       payload: { name: "Codex MCP" }
     });
-    const headers = { authorization: `Bearer ${JSON.parse(tokenResponse.body).token}` };
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
 
     await app.inject({
       method: "PUT",
@@ -1194,10 +1287,16 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(JSON.parse(global.body).policy.captureState).toBe("enabled");
-    expect(JSON.parse(project.body).policy.captureState).toBe("disabled");
-    expect(JSON.parse(thread.body).policy.captureState).toBe("enabled");
-    expect(JSON.parse(skipped.body)).toMatchObject({
+    expect(jsonBody<PolicyResponse>(global).policy.captureState).toBe(
+      "enabled"
+    );
+    expect(jsonBody<PolicyResponse>(project).policy.captureState).toBe(
+      "disabled"
+    );
+    expect(jsonBody<PolicyResponse>(thread).policy.captureState).toBe(
+      "enabled"
+    );
+    expect(jsonBody<Record<string, unknown>>(skipped)).toMatchObject({
       skipped: true,
       reason: "capture_disabled"
     });
@@ -1220,7 +1319,9 @@ describe("account and access flows", () => {
       headers: { cookie },
       payload: { name: "Codex MCP" }
     });
-    const headers = { authorization: `Bearer ${JSON.parse(tokenResponse.body).token}` };
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
     const captured = await app.inject({
       method: "POST",
       url: "/v1/memory/capture-personal-event",
@@ -1238,7 +1339,8 @@ describe("account and access flows", () => {
         }
       }
     });
-    const nodeId = JSON.parse(captured.body).compaction.leafNodeIds[0];
+    const nodeId = jsonBody<CaptureResponse>(captured).compaction
+      ?.leafNodeIds[0];
     await app.inject({
       method: "PATCH",
       url: `/v1/memory/nodes/${nodeId}`,
@@ -1257,16 +1359,19 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(JSON.parse(captured.body).event.metadata.projectName).toBe("Sports Repo");
-    expect(JSON.parse(clusters.body).clusters[0]).toMatchObject({
+    expect(jsonBody<CaptureResponse>(captured).event.metadata.projectName).toBe(
+      "Sports Repo"
+    );
+    expect(jsonBody<ClusterResponse>(clusters).clusters[0]).toMatchObject({
       label: "Sports"
     });
-    expect(JSON.parse(items.body).memories[0]).toMatchObject({
+    const pinnedMemory = jsonBody<MemoryItemsResponse>(items).memories[0];
+    expect(pinnedMemory).toMatchObject({
       text: "Jacobo likes football",
       projectName: "Sports Repo",
-      threadName: "Sports chat",
-      pinnedAt: expect.any(String)
+      threadName: "Sports chat"
     });
+    expect(typeof pinnedMemory?.pinnedAt).toBe("string");
     expect(clusters.headers.deprecation).toBe("true");
   });
 
@@ -1287,7 +1392,9 @@ describe("account and access flows", () => {
       headers: { cookie },
       payload: { name: "Codex MCP" }
     });
-    const headers = { authorization: `Bearer ${JSON.parse(tokenResponse.body).token}` };
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
     const captured = await app.inject({
       method: "POST",
       url: "/v1/memory/capture-personal-event",
@@ -1304,8 +1411,9 @@ describe("account and access flows", () => {
         }
       }
     });
-    const eventId = JSON.parse(captured.body).event.id;
-    const nodeId = JSON.parse(captured.body).compaction.leafNodeIds[0];
+    const capturedBody = jsonBody<CaptureResponse>(captured);
+    const eventId = capturedBody.event.id;
+    const nodeId = capturedBody.compaction?.leafNodeIds[0];
     const overview = await app.inject({
       method: "GET",
       url: "/v1/memory/graph/overview",
@@ -1364,38 +1472,39 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(JSON.parse(overview.body).overview).toMatchObject({
+    expect(jsonBody<GraphOverviewResponse>(overview).overview).toMatchObject({
       capturedEvents: 1,
       leafNodes: 1,
       rollupNodes: 0,
       pendingSummaries: 1
     });
-    expect(JSON.parse(nodes.body).nodes[0]).toMatchObject({
+    expect(jsonBody<GraphNodesResponse>(nodes).nodes[0]).toMatchObject({
       id: nodeId,
       projectName: "Graph Repo",
       threadName: "Graph thread",
       visibility: "personal"
     });
-    expect(JSON.parse(nodeDetail.body).node.sources[0]).toMatchObject({
+    expect(jsonBody<GraphNodeResponse>(nodeDetail).node.sources[0]).toMatchObject({
       id: eventId,
       contentPreview: "Graph browser source record"
     });
-    expect(JSON.parse(corrected.body).node).toMatchObject({
-      summaryText: "Corrected graph browser summary",
-      summaryCorrectedByUserId: expect.any(String)
+    const correctedNode = jsonBody<GraphNodeResponse>(corrected).node;
+    expect(correctedNode).toMatchObject({
+      summaryText: "Corrected graph browser summary"
     });
-    expect(JSON.parse(events.body).events[0]).toMatchObject({
+    expect(typeof correctedNode.summaryCorrectedByUserId).toBe("string");
+    expect(jsonBody<GraphEventsResponse>(events).events[0]).toMatchObject({
       id: eventId,
       linkedNodeIds: [nodeId]
     });
-    expect(JSON.parse(rawEvent.body).event.rawContent).toBe(
+    expect(jsonBody<GraphEventResponse>(rawEvent).event.rawContent).toBe(
       "Graph browser source record"
     );
     expect(deletedEvent.statusCode).toBe(200);
-    expect(JSON.parse(activeEvents.body).events).toHaveLength(0);
+    expect(jsonBody<GraphEventsResponse>(activeEvents).events).toHaveLength(0);
     expect(deletedNode.statusCode).toBe(200);
-    expect(JSON.parse(activeNodes.body).nodes).toHaveLength(0);
-    expect(JSON.parse(exported.body).nodes[0]).toMatchObject({
+    expect(jsonBody<GraphNodesResponse>(activeNodes).nodes).toHaveLength(0);
+    expect(jsonBody<MemoryExportResponse>(exported).nodes[0]).toMatchObject({
       id: nodeId,
       invalidationReason: "user_deleted"
     });
@@ -1423,7 +1532,7 @@ describe("account and access flows", () => {
     });
     expect(createdToken.statusCode).toBe(200);
     const headers = {
-      authorization: `Bearer ${JSON.parse(createdToken.body).token}`
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
     };
     const configured = await app.inject({
       method: "POST",
@@ -1457,7 +1566,7 @@ describe("account and access flows", () => {
 
     expect(configured.statusCode).toBe(200);
     expect(answer.statusCode).toBe(200);
-    const body = JSON.parse(answer.body);
+    const body = jsonBody<AnswerResponse>(answer);
     expect(body.mode).toBe("codex_subscription");
     expect(body.evidence[0]?.summaryText).toContain("No provider answer");
   });
@@ -1490,7 +1599,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/v1/memory/capture-personal-event",
       headers: {
-        authorization: `Bearer ${JSON.parse(createdToken.body).token}`
+        authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
       },
       payload: {
         actor: "user",
@@ -1502,8 +1611,11 @@ describe("account and access flows", () => {
 
     expect(response.statusCode).toBe(200);
     expect(compactionCalls).toBe(0);
-    const body = JSON.parse(response.body);
+    const body = jsonBody<CaptureResponse>(response);
     expect(body.compaction).toBeUndefined();
+    if (!body.processing) {
+      throw new Error("Expected async processing metadata");
+    }
     expect(body.processing.compaction.inline).toBe(false);
   });
 
@@ -1539,13 +1651,13 @@ describe("account and access flows", () => {
       method: "GET",
       url: "/v1/access/check",
       headers: {
-        authorization: `Bearer ${JSON.parse(createdToken.body).token}`
+        authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
       }
     });
     await app.close();
 
     expect(access.statusCode).toBe(200);
-    const body = JSON.parse(access.body);
+    const body = jsonBody<AccessResponse>(access);
     expect(body.memoryMode).toBe("server_synthesis");
     expect(body.providerConfigRequired).toBe(true);
   });
@@ -1569,7 +1681,7 @@ describe("account and access flows", () => {
     });
     expect(createdToken.statusCode).toBe(200);
     const headers = {
-      authorization: `Bearer ${JSON.parse(createdToken.body).token}`
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
     };
     const session = await app.inject({
       method: "POST",
@@ -1582,7 +1694,7 @@ describe("account and access flows", () => {
       }
     });
     expect(session.statusCode).toBe(200);
-    const sessionId = JSON.parse(session.body).session.id;
+    const sessionId = jsonBody<SessionResponse>(session).session.id;
     const event = await app.inject({
       method: "POST",
       url: `/v1/sessions/${sessionId}/events`,
@@ -1593,7 +1705,7 @@ describe("account and access flows", () => {
         content: "Session event memory marker"
       }
     });
-    const nodeId = JSON.parse(event.body).compaction.leafNodeIds[0];
+    const nodeId = jsonBody<CaptureResponse>(event).compaction?.leafNodeIds[0];
     const node = await app.inject({
       method: "GET",
       url: `/v1/memory/nodes/${nodeId}`,
@@ -1610,9 +1722,11 @@ describe("account and access flows", () => {
     expect(session.statusCode).toBe(200);
     expect(event.statusCode).toBe(200);
     expect(node.statusCode).toBe(200);
-    expect(JSON.parse(expanded.body).expanded.sources[0].content).toBe(
+    expect(jsonBody<ExpandedResponse>(expanded).expanded.sources[0]?.content).toBe(
       "Session event memory marker"
     );
-    expect(JSON.parse(openapi.body).paths["/v1/memory/answer"]).toBeDefined();
+    expect(
+      jsonBody<OpenApiResponse>(openapi).paths["/v1/memory/answer"]
+    ).toBeDefined();
   });
 });

@@ -230,6 +230,12 @@ const sourceKey = (item: unknown): string => {
     return JSON.stringify(item);
   }
   const record = item as Record<string, unknown>;
+  const stringPart = (value: unknown): string =>
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+      ? String(value)
+      : "";
   return [
     record.sourceType,
     record.sourceId,
@@ -237,7 +243,7 @@ const sourceKey = (item: unknown): string => {
     record.visibility,
     record.summaryText
   ]
-    .map((value) => String(value ?? ""))
+    .map(stringPart)
     .join(":");
 };
 
@@ -624,7 +630,7 @@ export const runCodexMemoryAnswer: CodexAnswerRunner = (
           model: `codex:${config.model}:${config.reasoningEffort}`
         });
       } catch (error) {
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       } finally {
         cleanup();
       }

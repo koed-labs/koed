@@ -54,6 +54,7 @@ describe("memory answer worker", () => {
       {
         query: "Have we discussed Aston Villa?",
         retrievalScope: "personal",
+        searchDomain: "global",
         limit: 10,
         evidence: [
           {

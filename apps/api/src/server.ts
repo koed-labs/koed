@@ -106,7 +106,7 @@ const withTimeout = async <T>(
       })
       .catch((error: unknown) => {
         clearTimeout(timer);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       });
   });
 
@@ -887,7 +887,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       .send({ status: ready ? "ok" : "error", checks });
   });
 
-  app.get("/openapi.json", async () => openApiDocument);
+  app.get("/openapi.json", () => openApiDocument);
 
   app.get("/health/details", async () => {
     const checks = [createHealth("api")];

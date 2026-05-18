@@ -7,6 +7,9 @@ import {
   isTransientProviderError
 } from "./index.js";
 
+const jsonBody = <T,>(value: BodyInit | null | undefined): T =>
+  JSON.parse(String(value)) as T;
+
 describe("model providers", () => {
   it("uses the fake deterministic provider in tests", async () => {
     const provider = new FakeDeterministicProvider({ embeddingDimensions: 4 });
@@ -24,9 +27,9 @@ describe("model providers", () => {
   });
 
   it("calls OpenAI-compatible embedding and chat endpoints", async () => {
-    const fetchImpl: typeof fetch = vi.fn(
+    const fetchImpl = vi.fn(
       async (url: URL | RequestInfo, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body));
+        const body = jsonBody<{ model: string; input?: string[] }>(init?.body);
         const urlText = String(url);
         if (urlText.endsWith("/embeddings")) {
           expect(body.model).toBe("embed-model");
@@ -55,12 +58,13 @@ describe("model providers", () => {
 
     await expect(provider.embed(["hello"])).resolves.toEqual([[0.1, 0.2]]);
     await expect(provider.answer("Use evidence")).resolves.toBe("answer text");
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "https://models.example.test/v1/embeddings",
-      expect.objectContaining({
-        headers: expect.objectContaining({ authorization: "Bearer secret" })
-      })
-    );
+    const firstCall = fetchImpl.mock.calls[0];
+    if (!firstCall) {
+      throw new Error("Expected embedding request");
+    }
+    const [url, init] = firstCall;
+    expect(url).toBe("https://models.example.test/v1/embeddings");
+    expect(init?.headers).toMatchObject({ authorization: "Bearer secret" });
   });
 
   it("reports useful transient provider errors", async () => {

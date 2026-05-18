@@ -132,6 +132,7 @@ describe("LCM summary background service", () => {
       serviceConfig: {
         enabled: true,
         initialDelayMs: 60_000,
+        pushDelayMs: 10_000,
         intervalMs: 60_000,
         batchLimit: 2
       }
@@ -213,9 +214,9 @@ describe("LCM summary background service", () => {
     expect(result.submittedCount).toBe(1);
     expect(result.results[0]).toMatchObject({
       submitted: true,
-      promptCallCount: expect.any(Number),
       summaryModel: "codex:test"
     });
+    expect(typeof result.results[0]?.promptCallCount).toBe("number");
     expect(result.results[0]?.promptCallCount).toBeGreaterThan(1);
     expect(result.results[0]?.maxPromptTokenEstimate).toBeLessThanOrEqual(
       config.maxPromptTokens

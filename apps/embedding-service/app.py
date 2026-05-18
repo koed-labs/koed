@@ -1,17 +1,16 @@
-import os
 import math
-from threading import Lock
+import os
 from contextlib import asynccontextmanager, contextmanager
+from threading import Lock
 from typing import Any
 
 os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
 from huggingface_hub import hf_hub_download
-from llama_cpp import Llama, LLAMA_POOLING_TYPE_LAST
+from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
+from pydantic import BaseModel, Field, field_validator
 from qwen3_embed import TextCrossEncoder
-
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Qwen/Qwen3-Embedding-0.6B-GGUF")
 MODEL_FILE = os.getenv("MODEL_FILE", "Qwen3-Embedding-0.6B-Q8_0.gguf")

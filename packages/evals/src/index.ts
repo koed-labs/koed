@@ -83,20 +83,22 @@ const scoreText = (query: string, text: string): number => {
 };
 
 class DeterministicAnswerProvider implements AnswerProvider {
-  async answer(input: {
+  answer(input: {
     question: string;
     evidence: MemorySearchResult[];
   }): Promise<string> {
     if (input.evidence.length === 0) {
-      return "not found in memory";
+      return Promise.resolve("not found in memory");
     }
 
-    return input.evidence
-      .map((result, index) => {
-        const label = result.citation.visibility;
-        return `${index + 1}. [${label}] ${result.summaryText}`;
-      })
-      .join("\n");
+    return Promise.resolve(
+      input.evidence
+        .map((result, index) => {
+          const label = result.citation.visibility;
+          return `${index + 1}. [${label}] ${result.summaryText}`;
+        })
+        .join("\n")
+    );
   }
 }
 
@@ -109,7 +111,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
     this.teams.set(team.id, team);
   }
 
-  async createMemoryEvent(
+  createMemoryEvent(
     actor: RequesterContext,
     input: {
       workspaceId: string;
@@ -143,10 +145,10 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       createdAt: new Date(1_800_000_000_000 + this.events.length).toISOString()
     };
     this.events.push(event);
-    return event;
+    return Promise.resolve(event);
   }
 
-  async searchMemoryNodes(
+  searchMemoryNodes(
     actor: RequesterContext,
     input: { scope: MemoryScope; query: string; limit?: number }
   ) {
@@ -179,7 +181,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
           }
         })
       );
-    return {
+    return Promise.resolve({
       results,
       metadata: {
         retrievalMode: "semantic_vector" as const,
@@ -188,10 +190,10 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
         embeddingModel: null,
         embeddingDimensions: null
       }
-    };
+    });
   }
 
-  async createLcmNodes(
+  createLcmNodes(
     actor: RequesterContext,
     input: { visibility: Visibility; teamId?: string }
   ): Promise<CompactionResult> {
@@ -253,10 +255,10 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
           )
         : null;
 
-    return { leafNodeIds, rollupNodeId };
+    return Promise.resolve({ leafNodeIds, rollupNodeId });
   }
 
-  async expandMemoryNode(
+  expandMemoryNode(
     nodeId: string,
     actor: RequesterContext
   ): Promise<ExpandedMemoryNode> {
@@ -269,7 +271,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
     }
 
     const sourceIds = new Set(node.sourceEventIds);
-    return {
+    return Promise.resolve({
       nodeId,
       visibility: node.visibility,
       sourceItems: node.sourceEventIds.map((eventId, position) => ({
@@ -279,7 +281,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
         position
       })),
       sources: this.events.filter((event) => sourceIds.has(event.id))
-    };
+    });
   }
 
   private createRollup(

@@ -206,7 +206,7 @@ export class MemoryApiClient {
     input: Record<string, unknown> = {}
   ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams();
-    if (input.limit !== undefined) {
+    if (typeof input.limit === "string" || typeof input.limit === "number") {
       params.set("limit", String(input.limit));
     }
     const query = params.toString();
