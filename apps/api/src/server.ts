@@ -1376,7 +1376,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     { preHandler: memoryRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
+      const user = await authenticateApiToken(request);
       const query = effectivePolicyQuerySchema.parse(request.query);
       return {
         policy: await repo.getEffectiveCapturePolicy({ userId: user.id }, query)
@@ -1445,7 +1445,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     { preHandler: memoryRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
+      const user = await authenticate(request);
       const params = sessionIdParamsSchema.parse(request.params);
       const input = mcpSessionEventSchema.parse(request.body);
       const requesterContext = { userId: user.id };
@@ -1797,7 +1797,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     { preHandler: memoryRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
+      const user = await authenticate(request);
       const input = searchMemorySchema.parse(request.body);
       const mode = configuredMemoryMode;
       const runtimeConfig =

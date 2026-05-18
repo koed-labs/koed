@@ -1199,6 +1199,12 @@ describe("account and access flows", () => {
       headers,
       payload: { query: "concise changelog", retrieval_scope: "personal+team" }
     });
+    const cookieAnswer = await app.inject({
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers: { cookie },
+      payload: { query: "concise changelog", retrieval_scope: "personal" }
+    });
     await app.close();
 
     expect(personal.statusCode).toBe(200);
@@ -1218,6 +1224,10 @@ describe("account and access flows", () => {
     );
     expect(answerBody.evidence[0]?.summaryText).toContain("concise changelog");
     expect(answerBody.citations).toHaveLength(1);
+    expect(cookieAnswer.statusCode).toBe(200);
+    expect(jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText).toContain(
+      "concise changelog"
+    );
   });
 
   it("resolves capture policy inheritance and skips disabled capture", async () => {
