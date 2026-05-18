@@ -111,7 +111,10 @@ const withTimeout = async <T>(
   });
 
 const allowedCorsOrigins = (): Set<string> => {
-  const configured = parseCsv(process.env.CORS_ORIGINS);
+  const configured = [
+    ...parseCsv(process.env.CORS_ORIGINS),
+    ...parseCsv(process.env.API_CORS_ORIGINS)
+  ];
   const derived = [process.env.PUBLIC_APP_URL, process.env.API_BASE_URL].filter(
     (value): value is string => Boolean(value)
   );
@@ -529,7 +532,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         callback(null, true);
         return;
       }
-      callback(new Error("CORS origin is not allowed"), false);
+      callback(null, false);
     },
     credentials: true
   });
