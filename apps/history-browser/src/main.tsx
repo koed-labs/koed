@@ -556,7 +556,7 @@ function App() {
           tone: "error",
           message: error instanceof Error ? error.message : String(error)
         });
-        retryTimeout = window.setTimeout(connect, 2000);
+        retryTimeout = window.setTimeout(() => void connect(), 2000);
       }
     };
 
@@ -792,7 +792,7 @@ function App() {
               memoryQuestion={memoryQuestion}
               memoryRetrievalScope={memoryRetrievalScope}
               memorySearchDomain={memorySearchDomain}
-              onAsk={askMemory}
+              onAsk={(event) => void askMemory(event)}
               selectedThread={selectedThread}
               setMemoryQuestion={setMemoryQuestion}
               setMemoryRetrievalScope={setMemoryRetrievalScope}

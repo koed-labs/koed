@@ -1033,7 +1033,10 @@ timeout = 30`;
                 </div>
               </div>
 
-              <form className="memory-ask surface" onSubmit={askMemory}>
+              <form
+                className="memory-ask surface"
+                onSubmit={(event) => void askMemory(event)}
+              >
                 <label>
                   API token for memory query
                   <input
