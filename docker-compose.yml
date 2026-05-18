@@ -64,6 +64,8 @@ services:
       MEMORY_MODE: codex_subscription
       DATABASE_URL: postgres://codex_memory:codex_memory@postgres:5432/codex_memory
       REDIS_URL: redis://redis:6379
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-koed-local-dev-provider-key}
+      API_TOKEN_PEPPER: ${API_TOKEN_PEPPER:-koed-local-dev-token-pepper}
       EMBEDDING_SERVICE_URL: http://embedding-service:8000
       EMBEDDING_MODEL: Qwen/Qwen3-Embedding-0.6B-GGUF
       EMBEDDING_DIMENSIONS: 1024
@@ -71,7 +73,7 @@ services:
       RERANKING_ENABLED: "${RERANKING_ENABLED:-false}"
       MEMORY_VECTOR_CANDIDATE_LIMIT: 20
       COOKIE_SECURE: "false"
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${WEB_HOST_PORT:-5173},http://127.0.0.1:${WEB_HOST_PORT:-5173}}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${WEB_HOST_PORT:-5173},http://127.0.0.1:${WEB_HOST_PORT:-5173},http://localhost:${HISTORY_WEB_HOST_PORT:-5174},http://127.0.0.1:${HISTORY_WEB_HOST_PORT:-5174}}
       KOED_HOST_CHECKOUT_PATH: ${KOED_HOST_CHECKOUT_PATH:-${PWD}}
     command: >
       sh -c "cd packages/db &&
@@ -95,6 +97,7 @@ services:
       MEMORY_MODE: codex_subscription
       DATABASE_URL: postgres://codex_memory:codex_memory@postgres:5432/codex_memory
       REDIS_URL: redis://redis:6379
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-koed-local-dev-provider-key}
       EMBEDDING_SERVICE_URL: http://embedding-service:8000
       EMBEDDING_MODEL: Qwen/Qwen3-Embedding-0.6B-GGUF
       EMBEDDING_DIMENSIONS: 1024
@@ -118,6 +121,21 @@ services:
       WEB_PORT: 5173
     ports:
       - "${WEB_HOST_PORT:-5173}:5173"
+    depends_on:
+      api:
+        condition: service_started
+
+  history-browser:
+    build:
+      context: .
+      dockerfile: apps/history-browser/Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:${API_HOST_PORT:-3000}
+    environment:
+      NODE_ENV: production
+      HISTORY_WEB_PORT: 5174
+    ports:
+      - "${HISTORY_WEB_HOST_PORT:-5174}:5174"
     depends_on:
       api:
         condition: service_started

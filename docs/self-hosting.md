@@ -1,10 +1,11 @@
 # Self-Hosting
 
-Koed Self-Hosted runs as four runtime services: API, worker, embedding service, and console. Postgres with pgvector stores accounts, tokens, memory events, graph nodes, embeddings, policies, and provider configuration. Redis backs BullMQ queues.
+Koed Self-Hosted runs API, worker, embedding service, console, and an optional history-browser frontend. Postgres with pgvector stores accounts, tokens, memory events, graph nodes, embeddings, policies, and provider configuration. Redis backs BullMQ queues.
 
 ## Local Run
 
 ```bash
+pnpm setup:env
 pnpm install
 pnpm build
 docker compose up --build
@@ -13,10 +14,10 @@ docker compose up --build
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 WEB_HOST_PORT=5573 docker compose up --build
+API_HOST_PORT=3300 WEB_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 docker compose up --build
 ```
 
-Open `http://localhost:5173`, or the host port you selected. The console guides setup:
+Open `http://localhost:5173`, or the host port you selected. The T3-style history browser is available at `http://localhost:5174`. The console guides setup:
 
 1. Create the first local admin.
 2. Create an API token.

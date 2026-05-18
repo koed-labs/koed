@@ -3,6 +3,7 @@
   "references": [
     { "path": "./apps/api" },
     { "path": "./apps/console" },
+    { "path": "./apps/history-browser" },
     { "path": "./apps/worker" },
     { "path": "./packages/core" },
     { "path": "./packages/db" },

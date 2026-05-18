@@ -2,6 +2,15 @@
 
 Use `.env.example` as the starting point.
 
+For a local deployment, run:
+
+```bash
+pnpm setup:env
+```
+
+This creates `.env` and generates `DATA_ENCRYPTION_KEY` and
+`API_TOKEN_PEPPER`. If `.env` already exists, the command leaves it unchanged.
+
 Required production values:
 
 - `DATABASE_URL`
