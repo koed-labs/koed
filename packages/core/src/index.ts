@@ -243,7 +243,7 @@ export const memorySourceInputSchema = z.object({
   scope: memoryScopeSchema.default("personal"),
   project: z.string().optional(),
   thread: z.string().optional(),
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type MemorySourceInput = z.infer<typeof memorySourceInputSchema>;
 

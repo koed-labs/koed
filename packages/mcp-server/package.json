@@ -27,7 +27,7 @@
     "@codex-memory/core": "workspace:*",
     "@codex-memory/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.25.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "esbuild": "^0.28.0"

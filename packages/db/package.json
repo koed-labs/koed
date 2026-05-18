@@ -23,9 +23,9 @@
     "@codex-memory/core": "workspace:*",
     "@codex-memory/shared": "workspace:*",
     "node-pg-migrate": "^8.0.4",
-    "pg": "^8.13.1"
+    "pg": "^8.20.0"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.11"
+    "@types/pg": "^8.20.0"
   }
 }

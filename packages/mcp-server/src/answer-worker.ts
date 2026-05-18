@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { countTokensForModel, type TokenCountResult } from "@codex-memory/core";
+import { countTokensForModel } from "@codex-memory/core";
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
@@ -409,11 +409,7 @@ const runPlannedMemoryAnswer = async (
     errors: []
   };
   const runner = options.runner;
-  let model = `codex:${options.config.model}:${options.config.reasoningEffort}`;
   let totalPromptTokens = 0;
-  let tokenizerEncoding: TokenCountResult["encoding"] | undefined;
-  let tokenizerModelMatched = false;
-  let tokenizerName: TokenCountResult["tokenizer"] = "heuristic";
   const maxSteps =
     options.config.maxSearches + options.config.maxExpansions + 1;
 
@@ -423,11 +419,7 @@ const runPlannedMemoryAnswer = async (
       model: options.config.model
     });
     totalPromptTokens += promptTokens.tokens;
-    tokenizerEncoding = promptTokens.encoding;
-    tokenizerModelMatched = promptTokens.exactModelMatch;
-    tokenizerName = promptTokens.tokenizer;
     const result = await runCodexWithRetries(prompt, options.config, runner);
-    model = result.model;
     let action: ParsedPlannerAction;
     try {
       action = parsePlannerAction(result.text);
@@ -442,13 +434,13 @@ const runPlannedMemoryAnswer = async (
       return {
         markdown:
           action.markdown?.trim() || "No matching memory evidence found.",
-        model,
+        model: result.model,
         promptTokens: {
           tokens: totalPromptTokens,
-          encoding: tokenizerEncoding ?? promptTokens.encoding,
-          exactModelMatch: tokenizerModelMatched,
+          encoding: promptTokens.encoding,
+          exactModelMatch: promptTokens.exactModelMatch,
           model: options.config.model,
-          tokenizer: tokenizerName
+          tokenizer: promptTokens.tokenizer
         },
         searchCount: state.searches.length,
         expandCount: state.expansions.length,

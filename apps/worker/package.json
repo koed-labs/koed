@@ -18,10 +18,10 @@
     "@codex-memory/db": "workspace:*",
     "@codex-memory/providers": "workspace:*",
     "@codex-memory/shared": "workspace:*",
-    "bullmq": "^5.34.2",
-    "ioredis": "^5.4.2"
+    "bullmq": "^5.76.9",
+    "ioredis": "^5.10.1"
   },
   "devDependencies": {
-    "tsx": "^4.19.2"
+    "tsx": "^4.22.1"
   }
 }

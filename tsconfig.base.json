@@ -7,11 +7,13 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "types": ["node"],
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@codex-memory/core": ["packages/core/src/index.ts"],
       "@codex-memory/db": ["packages/db/src/index.ts"],

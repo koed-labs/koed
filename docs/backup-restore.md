@@ -14,4 +14,4 @@ Example restore into a stopped/fresh stack:
 docker compose exec -T postgres psql -U codex_memory codex_memory < koed-backup.sql
 ```
 
-Keep the `DATA_ENCRYPTION_KEY` with the backup. Provider API keys cannot be decrypted without the original key.
+Keep the `API_DATA_ENCRYPTION_KEY` with the backup. Provider API keys cannot be decrypted without the original key.

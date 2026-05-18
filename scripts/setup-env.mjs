@@ -18,7 +18,7 @@ if (!existsSync(examplePath)) {
 
 const replacements = new Map([
   [
-    "DATA_ENCRYPTION_KEY",
+    "API_DATA_ENCRYPTION_KEY",
     randomBytes(32).toString("base64")
   ],
   [
@@ -40,4 +40,4 @@ const rendered = readFileSync(examplePath, "utf8")
   .join("\n");
 
 writeFileSync(envPath, rendered, { mode: 0o600 });
-console.log("Created .env with generated DATA_ENCRYPTION_KEY and API_TOKEN_PEPPER.");
+console.log("Created .env with generated API_DATA_ENCRYPTION_KEY and API_TOKEN_PEPPER.");

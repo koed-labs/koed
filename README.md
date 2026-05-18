@@ -20,6 +20,8 @@ Postgres uses pgvector. Redis backs BullMQ. The default model mode is `codex_sub
 
 ## Quickstart
 
+Create the local environment file, then install and start the service:
+
 ```bash
 pnpm setup:env
 pnpm install
@@ -31,7 +33,7 @@ docker compose up --build
 If the default ports are already in use, choose host ports before starting:
 
 ```bash
-API_HOST_PORT=3300 WEB_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 docker compose up --build
+API_HOST_PORT=3300 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:3300 docker compose up --build
 ```
 
 Then open the local console:
@@ -46,7 +48,7 @@ The T3-style history browser runs beside it:
 http://localhost:5174
 ```
 
-If you changed `WEB_HOST_PORT` or `HISTORY_WEB_HOST_PORT`, open those ports instead.
+If you changed `CONSOLE_HOST_PORT` or `HISTORY_WEB_HOST_PORT`, open those ports instead.
 
 Use the console setup flow:
 
@@ -61,13 +63,12 @@ The console can verify Koed and generate exact setup values, but it cannot write
 
 Start from `.env.example`. Important values:
 
-- `DATABASE_URL`: Postgres connection string.
-- `REDIS_URL`: Redis connection string.
-- `DATA_ENCRYPTION_KEY`: 32-byte base64 key used for stored provider API keys.
+- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Postgres container settings.
+- `API_DATA_ENCRYPTION_KEY`: 32-byte base64 key used for stored provider API keys.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `MEMORY_MODE=codex_subscription`: recommended default.
-- `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_SERVICE_URL`: local embedding settings.
-- `CORS_ORIGINS`: include the local console origin.
+- `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
+- `API_CORS_ORIGINS`: include the local console and history-browser origins.
 
 Do not commit `.env`, `.env.production`, provider keys, API tokens, peppers, encryption keys, or private deployment details.
 

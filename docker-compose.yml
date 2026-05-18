@@ -2,15 +2,15 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: codex_memory
-      POSTGRES_USER: codex_memory
-      POSTGRES_PASSWORD: codex_memory
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "${POSTGRES_HOST_PORT:-15432}:5432"
+      - "${POSTGRES_HOST_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U codex_memory -d codex_memory"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -30,16 +30,16 @@ services:
     build:
       context: ./apps/embedding-service
     environment:
-      MODEL_REPO: Qwen/Qwen3-Embedding-0.6B-GGUF
-      MODEL_FILE: Qwen3-Embedding-0.6B-Q8_0.gguf
-      MODEL_NAME: Qwen/Qwen3-Embedding-0.6B-GGUF
-      EMBEDDING_DIMENSIONS: 1024
-      EMBEDDING_BATCH_LIMIT: 16
-      EMBEDDING_MAX_TOKENS: 32768
-      RERANKER_ENABLED: "${RERANKER_ENABLED:-false}"
-      RERANKER_MODEL: n24q02m/Qwen3-Reranker-0.6B-ONNX
-      RERANKER_BATCH_LIMIT: 100
-      LLAMA_N_CTX: 32768
+      MODEL_REPO: ${EMBEDDING_MODEL_REPO}
+      MODEL_FILE: ${EMBEDDING_MODEL_FILE}
+      MODEL_NAME: ${EMBEDDING_MODEL_NAME}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS}
+      EMBEDDING_BATCH_LIMIT: ${EMBEDDING_BATCH_LIMIT}
+      EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS}
+      RERANKER_ENABLED: "${EMBEDDING_RERANKER_ENABLED}"
+      RERANKER_MODEL: ${EMBEDDING_RERANKER_MODEL}
+      RERANKER_BATCH_LIMIT: ${EMBEDDING_RERANKER_BATCH_LIMIT}
+      LLAMA_N_CTX: ${EMBEDDING_LLAMA_N_CTX}
     volumes:
       - embedding-model-cache:/root/.cache/huggingface
     healthcheck:
@@ -58,30 +58,39 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     environment:
-      NODE_ENV: production
-      API_HOST: 0.0.0.0
-      API_PORT: 3000
-      MEMORY_MODE: codex_subscription
-      DATABASE_URL: postgres://codex_memory:codex_memory@postgres:5432/codex_memory
+      NODE_ENV: ${API_NODE_ENV}
+      API_HOST: ${API_HOST}
+      API_PORT: ${API_PORT}
+      LOG_LEVEL: ${API_LOG_LEVEL}
+      MEMORY_MODE: ${MEMORY_MODE}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
-      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-koed-local-dev-provider-key}
-      API_TOKEN_PEPPER: ${API_TOKEN_PEPPER:-koed-local-dev-token-pepper}
+      DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}
+      API_TOKEN_PEPPER: ${API_TOKEN_PEPPER}
       EMBEDDING_SERVICE_URL: http://embedding-service:8000
-      EMBEDDING_MODEL: Qwen/Qwen3-Embedding-0.6B-GGUF
-      EMBEDDING_DIMENSIONS: 1024
-      EMBEDDING_VERSION: local-qwen3-embedding-0.6b-gguf-v1
-      RERANKING_ENABLED: "${RERANKING_ENABLED:-false}"
-      MEMORY_VECTOR_CANDIDATE_LIMIT: 20
-      COOKIE_SECURE: "false"
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${WEB_HOST_PORT:-5173},http://127.0.0.1:${WEB_HOST_PORT:-5173},http://localhost:${HISTORY_WEB_HOST_PORT:-5174},http://127.0.0.1:${HISTORY_WEB_HOST_PORT:-5174}}
-      KOED_HOST_CHECKOUT_PATH: ${KOED_HOST_CHECKOUT_PATH:-${PWD}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL_NAME}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS}
+      EMBEDDING_VERSION: ${EMBEDDING_VERSION}
+      RERANKING_ENABLED: "${MEMORY_RERANKING_ENABLED}"
+      MEMORY_VECTOR_CANDIDATE_LIMIT: ${MEMORY_VECTOR_CANDIDATE_LIMIT}
+      MEMORY_LCM_LEAF_EVENT_THRESHOLD: ${MEMORY_LCM_LEAF_EVENT_THRESHOLD}
+      MEMORY_LCM_LEAF_TOKEN_THRESHOLD: ${MEMORY_LCM_LEAF_TOKEN_THRESHOLD}
+      MEMORY_LCM_FRESH_EVENT_TAIL: ${MEMORY_LCM_FRESH_EVENT_TAIL}
+      MEMORY_LCM_DEPTH1_FANOUT: ${MEMORY_LCM_DEPTH1_FANOUT}
+      REQUEST_BODY_LIMIT_BYTES: ${API_REQUEST_BODY_LIMIT_BYTES}
+      AUTH_RATE_LIMIT_WINDOW_MS: ${API_AUTH_RATE_LIMIT_WINDOW_MS}
+      AUTH_RATE_LIMIT_MAX: ${API_AUTH_RATE_LIMIT_MAX}
+      MEMORY_RATE_LIMIT_WINDOW_MS: ${API_MEMORY_RATE_LIMIT_WINDOW_MS}
+      MEMORY_RATE_LIMIT_MAX: ${API_MEMORY_RATE_LIMIT_MAX}
+      COOKIE_SECURE: "${API_COOKIE_SECURE}"
+      CORS_ORIGINS: ${API_CORS_ORIGINS}
     command: >
       sh -c "cd packages/db &&
       node node_modules/node-pg-migrate/bin/node-pg-migrate.js up --migrations-dir src/migrations --migrations-table schema_migrations &&
       cd /app &&
       node apps/api/dist/index.js"
     ports:
-      - "${API_HOST_PORT:-3000}:3000"
+      - "${API_HOST_PORT}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -93,17 +102,17 @@ services:
       context: .
       dockerfile: apps/worker/Dockerfile
     environment:
-      NODE_ENV: production
-      MEMORY_MODE: codex_subscription
-      DATABASE_URL: postgres://codex_memory:codex_memory@postgres:5432/codex_memory
+      NODE_ENV: ${WORKER_NODE_ENV}
+      MEMORY_MODE: ${MEMORY_MODE}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
-      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-koed-local-dev-provider-key}
+      DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}
       EMBEDDING_SERVICE_URL: http://embedding-service:8000
-      EMBEDDING_MODEL: Qwen/Qwen3-Embedding-0.6B-GGUF
-      EMBEDDING_DIMENSIONS: 1024
-      EMBEDDING_VERSION: local-qwen3-embedding-0.6b-gguf-v1
-      RERANKING_ENABLED: "${RERANKING_ENABLED:-false}"
-      MEMORY_VECTOR_CANDIDATE_LIMIT: 20
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL_NAME}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS}
+      EMBEDDING_VERSION: ${EMBEDDING_VERSION}
+      RERANKING_ENABLED: "${MEMORY_RERANKING_ENABLED}"
+      MEMORY_VECTOR_CANDIDATE_LIMIT: ${MEMORY_VECTOR_CANDIDATE_LIMIT}
     depends_on:
       postgres:
         condition: service_healthy
@@ -115,12 +124,12 @@ services:
       context: .
       dockerfile: apps/console/Dockerfile
       args:
-        VITE_API_BASE_URL: http://localhost:${API_HOST_PORT:-3000}
+        VITE_API_BASE_URL: ${CONSOLE_API_BASE_URL}
     environment:
-      NODE_ENV: production
-      WEB_PORT: 5173
+      NODE_ENV: ${CONSOLE_NODE_ENV}
+      WEB_PORT: ${CONSOLE_PORT}
     ports:
-      - "${WEB_HOST_PORT:-5173}:5173"
+      - "${CONSOLE_HOST_PORT}:5173"
     depends_on:
       api:
         condition: service_started
@@ -130,12 +139,12 @@ services:
       context: .
       dockerfile: apps/history-browser/Dockerfile
       args:
-        VITE_API_BASE_URL: http://localhost:${API_HOST_PORT:-3000}
+        VITE_API_BASE_URL: ${CONSOLE_API_BASE_URL}
     environment:
-      NODE_ENV: production
+      NODE_ENV: ${CONSOLE_NODE_ENV}
       HISTORY_WEB_PORT: 5174
     ports:
-      - "${HISTORY_WEB_HOST_PORT:-5174}:5174"
+      - "${HISTORY_WEB_HOST_PORT}:5174"
     depends_on:
       api:
         condition: service_started
