@@ -52,7 +52,7 @@ describe("MemoryApiClient", () => {
           currentTeam: null,
           canWritePersonal: true,
           canWriteTeam: false,
-          enabledProviderConfigs: 1
+          providerConfigSupported: false
         })
       );
     });
@@ -84,7 +84,7 @@ describe("MemoryApiClient", () => {
           },
           canWritePersonal: true,
           canWriteTeam: true,
-          enabledProviderConfigs: 1
+          providerConfigSupported: false
         })
       );
     });

@@ -209,7 +209,7 @@ server.registerTool(
   {
     title: "Memory access check",
     description:
-      "Validate MEMORY_API_URL and MEMORY_API_TOKEN against /v1/access/check. Provider config is optional in codex_subscription mode. Reports local semantic embedding retrieval status and that automatic full-discussion capture must use Codex hooks/transcript ingestion where available; MCP alone is for explicit tools and retrieval.",
+      "Validate MEMORY_API_URL and MEMORY_API_TOKEN against /v1/access/check. Backend LLM provider configuration is unsupported in this build. Reports local semantic embedding retrieval status and that automatic full-discussion capture must use Codex hooks/transcript ingestion where available; MCP alone is for explicit tools and retrieval.",
     inputSchema: {
       include_notes: z
         .boolean()
@@ -226,7 +226,7 @@ server.registerTool(
   {
     title: "Answer from memory",
     description:
-      "Retrieve cited evidence from /v1/memory/answer using local semantic embeddings, then synthesize the final answer through the local MCP memory-answer worker when enabled. In codex_subscription mode the backend does not call OpenAI or another model provider; local synthesis uses the user's Codex CLI subscription and must cite whether each source is personal or team.",
+      "Retrieve cited evidence from /v1/memory/answer using local semantic embeddings, then synthesize the final answer through the local MCP memory-answer worker when enabled. The backend does not call OpenAI or another model provider; local synthesis uses the user's Codex CLI subscription and must cite whether each source is personal or team.",
     inputSchema: {
       query: z.string().min(1).describe("Question to answer from memory."),
       retrieval_scope: retrievalScopeSchema.optional(),

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
   createMemoryEngine,
-  type AnswerProvider,
   type CompactionResult,
   type ExpandedMemoryNode,
   type MemoryActor,
@@ -40,7 +39,6 @@ interface EvalNode {
 
 interface EvalWorld {
   repository: DeterministicMemoryRepository;
-  provider: DeterministicAnswerProvider;
   users: {
     alice: EvalUser;
     bob: EvalUser;
@@ -81,26 +79,6 @@ const scoreText = (query: string, text: string): number => {
     tokenize(query).filter((token) => normalizedText.includes(token)).length
   );
 };
-
-class DeterministicAnswerProvider implements AnswerProvider {
-  answer(input: {
-    question: string;
-    evidence: MemorySearchResult[];
-  }): Promise<string> {
-    if (input.evidence.length === 0) {
-      return Promise.resolve("not found in memory");
-    }
-
-    return Promise.resolve(
-      input.evidence
-        .map((result, index) => {
-          const label = result.citation.visibility;
-          return `${index + 1}. [${label}] ${result.summaryText}`;
-        })
-        .join("\n")
-    );
-  }
-}
 
 class DeterministicMemoryRepository implements MemoryEngineRepository {
   private readonly teams = new Map<string, EvalTeam>();
@@ -336,7 +314,6 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
 
 const createWorld = (): EvalWorld => {
   const repository = new DeterministicMemoryRepository();
-  const provider = new DeterministicAnswerProvider();
   const users = {
     alice: {
       id: "00000000-0000-4000-8000-000000000001",
@@ -357,7 +334,7 @@ const createWorld = (): EvalWorld => {
     members: new Set([users.alice.id, users.bob.id])
   };
   repository.addTeam(team);
-  return { repository, provider, users, team, workspaceId: "eval-workspace" };
+  return { repository, users, team, workspaceId: "eval-workspace" };
 };
 
 const ingestCodexStopHook = async (
@@ -369,7 +346,7 @@ const ingestCodexStopHook = async (
     lastAssistantMessage?: string;
   }
 ) => {
-  const engine = createMemoryEngine(world.repository, world.provider);
+  const engine = createMemoryEngine(world.repository);
   const items =
     payload.transcript && payload.transcript.length > 0
       ? payload.transcript.map((item, index) => ({
@@ -428,7 +405,7 @@ const ingestCodexStopHook = async (
 };
 
 const seedEvalDataset = async (world: EvalWorld) => {
-  const engine = createMemoryEngine(world.repository, world.provider);
+  const engine = createMemoryEngine(world.repository);
   const alice = { userId: world.users.alice.id };
 
   await ingestCodexStopHook(world, alice, {
@@ -545,7 +522,7 @@ const runCase = async (
 };
 
 const evalCases = (world: EvalWorld) => {
-  const engine = createMemoryEngine(world.repository, world.provider);
+  const engine = createMemoryEngine(world.repository);
   const alice = { userId: world.users.alice.id };
   const bob = { userId: world.users.bob.id };
   const solo = { userId: world.users.solo.id };
@@ -577,9 +554,9 @@ const evalCases = (world: EvalWorld) => {
         limit: 2
       });
       return assert(
-        answer.answer.includes("[personal]") &&
+        answer.answer.includes("(personal)") &&
           answer.answer.includes("violet-saturn"),
-        "expected personal answer with personal visibility label"
+        "expected personal evidence with personal visibility label"
       );
     }),
     runCase("team memory recall", async () => {
@@ -589,9 +566,9 @@ const evalCases = (world: EvalWorld) => {
         scope: "team"
       });
       return assert(
-        answer.answer.includes("[team]") &&
+        answer.answer.includes("(team)") &&
           answer.answer.includes("shared release captain is Morgan"),
-        "expected teammate team answer with team visibility label"
+        "expected teammate team evidence with team visibility label"
       );
     }),
     runCase("personal memory not visible to teammate", async () => {
@@ -658,8 +635,7 @@ const evalCases = (world: EvalWorld) => {
         scope: "personal_and_team"
       });
       return assert(
-        answer.answer === "No matching memory found." ||
-          answer.answer === "not found in memory",
+        answer.answer === "No matching memory found.",
         "expected not found answer"
       );
     }),
@@ -751,7 +727,7 @@ const main = async () => {
   console.log(`Report: ${reportPath}`);
   console.log(`Passed: ${results.length - failed.length}/${results.length}`);
   console.log(
-    "Latency/cost placeholders: latencyMs measured locally, costUsd fixed at 0.00 for deterministic fake provider"
+    "Latency/cost placeholders: latencyMs measured locally, costUsd fixed at 0.00 because answer synthesis stays with the AI Client"
   );
   console.table(
     results.map((result) => ({

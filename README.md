@@ -13,7 +13,7 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `packages/db`: Postgres repository and migrations.
 - `packages/core`: memory capture, retrieval, answer, and compaction logic.
 - `packages/mcp-server`: Koed MCP Server and TypeScript Codex Capture Hook.
-- `packages/providers`, `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
+- `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
 
 Postgres uses pgvector. Redis backs BullMQ. Koed Self-Hosted relies on the connected AI client for LLM synthesis; the backend stores memory, retrieves evidence, manages embeddings and ranking, and does not make server-side LLM calls in this build.
 
@@ -65,12 +65,12 @@ The console can verify Koed and generate exact setup values, but it cannot write
 Start from `.env.example`. Important values:
 
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Postgres container settings.
-- `API_DATA_ENCRYPTION_KEY`: 32-byte base64 key used for stored provider API keys.
+- `API_DATA_ENCRYPTION_KEY`: 32-byte base64 key used for encrypted server-side data.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
 - `API_CORS_ORIGINS`: include the local console origin.
 
-Do not commit `.env`, `.env.production`, provider keys, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis is out of scope for this self-hosted build; any remaining `server_synthesis` configuration is legacy/internal and should not be documented as supported operator setup.
+Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis and backend LLM provider configuration are unsupported in this self-hosted build.
 
 ## Codex Setup
 
@@ -106,7 +106,7 @@ The console is an operator UI, not a marketing site. It includes:
 
 - first-run local admin setup and login;
 - API, Postgres, Redis/BullMQ, embedding service, and worker queue status;
-- embedding/model/provider settings;
+- embedding/model settings;
 - AI-client setup field generation;
 - API token creation, listing, and revocation;
 - capture policy controls;

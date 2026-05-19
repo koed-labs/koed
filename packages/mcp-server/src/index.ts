@@ -25,9 +25,7 @@ export interface AccessCheckResult {
   } | null;
   canWritePersonal: boolean;
   canWriteTeam: boolean;
-  enabledProviderConfigs: number;
-  memoryMode?: "codex_subscription" | "server_synthesis";
-  providerConfigRequired?: boolean;
+  providerConfigSupported?: boolean;
   embeddingRetrieval?: {
     enabled: boolean;
     healthy: boolean;
@@ -329,7 +327,7 @@ export const memoryAccessCheck = async (
           "Set MEMORY_DEFAULT_RETRIEVAL_SCOPE=personal+team to make this MCP read personal plus team memory when the authenticated user belongs to a team. The default is personal.",
           "retrieval_scope controls visibility (personal or personal+team). search_domain controls the search boundary (session, project, or global). Keep these choices independent.",
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval planning to the local memory-answer worker.",
-          "Provider config is optional in codex_subscription mode. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
+          "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
           "LCM summarisation is local-only: backend workers create pending LCM nodes, while the MCP background LCM summary service and memory_lcm_summarize_pending run Codex on the user's machine and submit summaries back for embedding.",
           "When answering from memory, cite whether each source is personal or team."
         ]

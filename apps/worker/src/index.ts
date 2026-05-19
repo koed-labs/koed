@@ -8,11 +8,21 @@ import {
 import {
   createDbPool,
   createMemorySourceRepository,
-  type EmbeddableSourceRecord,
-  type RuntimeProviderConfigRecord
+  type EmbeddableSourceRecord
 } from "@koed/db";
-import { createProvider, type ProviderConfig } from "@koed/providers";
-import { resolveMemoryMode } from "@koed/shared";
+import { requireEnv } from "@koed/shared";
+
+if (process.env.NODE_ENV === "production") {
+  requireEnv([
+    "DATABASE_URL",
+    "REDIS_URL",
+    "DATA_ENCRYPTION_KEY",
+    "EMBEDDING_SERVICE_URL",
+    "EMBEDDING_MODEL",
+    "EMBEDDING_DIMENSIONS",
+    "EMBEDDING_VERSION"
+  ]);
+}
 
 const connection = {
   url: process.env.REDIS_URL ?? "redis://localhost:6379",
@@ -23,45 +33,12 @@ const queueNames = [
   "memory-embed",
   "lcm-compact",
   "lcm-embed",
-  "memory-answer",
-  "provider-health"
+  "memory-answer"
 ];
 
 const pool = process.env.DATABASE_URL ? createDbPool() : null;
 const repository = pool ? createMemorySourceRepository(pool) : null;
-const configuredMemoryMode = resolveMemoryMode();
 const lcmEmbedQueue = new Queue("lcm-embed", { connection });
-
-const toProviderConfig = (
-  record: RuntimeProviderConfigRecord
-): ProviderConfig => ({
-  provider: record.provider,
-  apiKey: record.apiKey ?? undefined,
-  baseUrl:
-    typeof record.config.baseUrl === "string"
-      ? record.config.baseUrl
-      : undefined,
-  embeddingDimensions:
-    typeof record.config.embedding_dimensions === "number"
-      ? record.config.embedding_dimensions
-      : 1536,
-  enabled:
-    typeof record.config.enabled === "boolean" ? record.config.enabled : true,
-  models: {
-    embeddingModel:
-      typeof record.config.embedding_model === "string"
-        ? record.config.embedding_model
-        : "text-embedding-3-small",
-    summaryModel:
-      typeof record.config.summary_model === "string"
-        ? record.config.summary_model
-        : "gpt-5.5",
-    answerModel:
-      typeof record.config.answer_model === "string"
-        ? record.config.answer_model
-        : "gpt-5.5"
-  }
-});
 
 const requireRepository = () => {
   if (!repository) {
@@ -225,50 +202,13 @@ const enqueueLcmNodeEmbeddings = async (nodeIds: string[]) =>
     )
   );
 
-const loadProvider = async (
-  userId: string,
-  visibility?: Visibility,
-  teamId?: string
-) => {
-  const repo = requireRepository();
-  const config = await repo.getRuntimeProviderConfig(
-    { userId },
-    { visibility, teamId }
-  );
-  if (!config) {
-    throw Object.assign(new Error("Provider not configured or disabled"), {
-      transient: false
-    });
-  }
-  return createProvider(toProviderConfig(config));
-};
-
 const handleJob = async (queueName: string, data: Record<string, unknown>) => {
-  if (queueName === "provider-health") {
-    const userId = stringValue(data.userId);
-    const provider = await loadProvider(userId);
-    await provider.embed(["provider health check"]);
-    return { ok: true };
-  }
-
   if (queueName === "memory-answer") {
     const userId = stringValue(data.userId);
     const query = stringValue(data.query);
     const scope = stringValue(data.scope, "personal") as MemoryScope;
-    const provider =
-      configuredMemoryMode === "server_synthesis"
-        ? await loadProvider(
-            userId,
-            scope === "personal_and_team" ? undefined : scope
-          )
-        : undefined;
     return answerMemory({
       repository: requireRepository(),
-      mode:
-        configuredMemoryMode === "server_synthesis"
-          ? "server_synthesis"
-          : "codex_subscription",
-      provider,
       requesterContext: { userId },
       query,
       scope,

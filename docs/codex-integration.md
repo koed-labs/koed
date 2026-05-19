@@ -26,8 +26,28 @@ Working directory: /path/to/koed-self-hosted
 
 The console `AI Clients` tab generates these values for your checkout. If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
 
+## Capture Hook
+
+The TypeScript Capture Hook is the supported automatic capture path for Codex. It uses the same `MEMORY_API_URL` and `MEMORY_API_TOKEN` values as the MCP Server.
+
+For a self-hosted checkout, build `@koed/mcp-server` and point Codex at:
+
+```text
+/path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js
+```
+
+Capture Hook settings:
+
+```text
+MEMORY_HOOK_STRICT=false
+MEMORY_HOOK_MAX_ITEMS=10
+MEMORY_HOOK_TRIGGER_LCM_SUMMARY=true
+MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
+MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
+```
+
 ## Verify
 
 Use the console smoke test first. Then start a fresh Codex session and ask it to check memory access through the `koed-selfhost` MCP server.
 
-The MCP server uses the Koed API token for recall, LCM summary submission, and memory answer evidence. Koed Self-Hosted relies on Codex for LLM synthesis; the backend does not make server-side LLM calls in this build. Full automatic conversation capture depends on client-specific hooks or transcript integration and is not performed by MCP alone.
+The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed Self-Hosted relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone.

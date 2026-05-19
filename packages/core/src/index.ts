@@ -337,13 +337,6 @@ export interface SearchMemoryInput {
 
 export type AnswerMemoryInput = SearchMemoryInput;
 
-export interface AnswerProvider {
-  answer(prompt: {
-    question: string;
-    evidence: MemorySearchResult[];
-  }): Promise<string>;
-}
-
 export interface ScheduleCompactionInput {
   requesterContext: RequesterContext;
   visibility: Visibility;
@@ -387,7 +380,6 @@ export interface MemorySearchResult {
 }
 
 export interface AnswerEvidenceBundle {
-  mode: "codex_subscription" | "server_synthesis";
   query: string;
   instructions: string;
   evidence: MemorySearchResult[];
@@ -498,18 +490,13 @@ export const searchMemory = async (
 };
 
 export const answerMemory = async (
-  input: AnswerMemoryInput & {
-    repository: MemoryEngineRepository;
-    mode?: AnswerEvidenceBundle["mode"];
-    provider?: AnswerProvider;
-  }
+  input: AnswerMemoryInput & { repository: MemoryEngineRepository }
 ): Promise<{
   answer: string;
   citations: MemorySearchResult["citation"][];
   evidenceBundle: AnswerEvidenceBundle;
 }> => {
-  const { mode = "codex_subscription", provider, ...answerInput } = input;
-  const [repository, answer] = withRepository(answerInput);
+  const [repository, answer] = withRepository(input);
   const search = await repository.searchMemoryNodes(
     answer.requesterContext,
     answer
@@ -518,28 +505,25 @@ export const answerMemory = async (
   const instructions =
     "Codex should synthesize the final answer using only the cited evidence in this bundle. Cite each claim with the provided personal/team visibility and source id. If evidence has lcmNodeSummaryStatus=pending, say that the relevant LCM summary is still pending and rely on the exact source text cautiously instead of pretending the rollup is complete. If the evidence is insufficient, say what is missing instead of guessing.";
   const answerText =
-    provider && results.length > 0
-      ? await provider.answer({ question: answer.query, evidence: results })
-      : results.length === 0
-        ? "No matching memory found."
-        : [
-            "Evidence bundle returned for Codex synthesis.",
-            instructions,
-            "",
-            ...results.map((result, index) => {
-              const pending =
-                result.lcmNodeSummaryStatus === "pending"
-                  ? " pending_lcm_summary"
-                  : "";
-              return `[${index + 1}] (${result.visibility}${pending}) ${result.summaryText}`;
-            })
-          ].join("\n");
+    results.length === 0
+      ? "No matching memory found."
+      : [
+          "Evidence bundle returned for Codex synthesis.",
+          instructions,
+          "",
+          ...results.map((result, index) => {
+            const pending =
+              result.lcmNodeSummaryStatus === "pending"
+                ? " pending_lcm_summary"
+                : "";
+            return `[${index + 1}] (${result.visibility}${pending}) ${result.summaryText}`;
+          })
+        ].join("\n");
 
   return {
     answer: answerText,
     citations: results.map((result) => result.citation),
     evidenceBundle: {
-      mode,
       query: answer.query,
       instructions,
       evidence: results,
@@ -563,16 +547,13 @@ export const scheduleCompaction = async (
   return repository.createLcmNodes(compaction.requesterContext, compaction);
 };
 
-export const createMemoryEngine = (
-  repository: MemoryEngineRepository,
-  provider?: AnswerProvider
-) => ({
+export const createMemoryEngine = (repository: MemoryEngineRepository) => ({
   capturePersonalEvent: (input: PersonalEventInput) =>
     capturePersonalEvent({ ...input, repository }),
   searchMemory: (input: SearchMemoryInput) =>
     searchMemory({ ...input, repository }),
   answerMemory: (input: AnswerMemoryInput) =>
-    answerMemory({ ...input, repository, provider }),
+    answerMemory({ ...input, repository }),
   expandMemoryNode: (nodeId: string, requesterContext: RequesterContext) =>
     expandMemoryNode(nodeId, { ...requesterContext, repository }),
   scheduleCompaction: (input: ScheduleCompactionInput) =>

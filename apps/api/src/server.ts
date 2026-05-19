@@ -17,11 +17,9 @@ import {
 import {
   createDbPool,
   createMemorySourceRepository,
-  type MemorySourceRepository,
-  type RuntimeProviderConfigRecord
+  type MemorySourceRepository
 } from "@koed/db";
-import { createProvider, type ProviderConfig } from "@koed/providers";
-import { createHealth, resolveMemoryMode } from "@koed/shared";
+import { createHealth } from "@koed/shared";
 
 const sessionCookieName = "cm_session";
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
@@ -151,20 +149,6 @@ const createApiTokenSchema = z.object({
   name: z.string().min(1).max(120),
   teamId: z.string().uuid().optional(),
   scopes: z.array(z.string().min(1)).default([])
-});
-
-const providerConfigSchema = z.object({
-  visibility: z.enum(["personal", "team"]),
-  provider: z.string().min(1).max(80).default("openai-compatible"),
-  teamId: z.string().uuid().optional(),
-  apiKey: z.string().min(1).optional(),
-  baseUrl: z.string().url().optional(),
-  embeddingModel: z.string().min(1).optional(),
-  summaryModel: z.string().min(1).optional(),
-  answerModel: z.string().min(1).optional(),
-  embeddingDimensions: z.coerce.number().int().positive().optional(),
-  enabled: z.coerce.boolean().default(true),
-  config: z.record(z.string(), z.unknown()).default({})
 });
 
 const metadataSchema = z.record(z.string(), z.unknown()).default({});
@@ -319,37 +303,6 @@ const submitLcmSummarySchema = z.object({
 const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
 const sessionIdParamsSchema = z.object({ sessionId: z.string().uuid() });
 
-const providerConfigToRuntime = (
-  record: RuntimeProviderConfigRecord
-): ProviderConfig => ({
-  provider: record.provider,
-  apiKey: record.apiKey ?? undefined,
-  baseUrl:
-    typeof record.config.baseUrl === "string"
-      ? record.config.baseUrl
-      : undefined,
-  embeddingDimensions:
-    typeof record.config.embedding_dimensions === "number"
-      ? record.config.embedding_dimensions
-      : Number(record.config.embedding_dimensions ?? 1536),
-  enabled:
-    typeof record.config.enabled === "boolean" ? record.config.enabled : true,
-  models: {
-    embeddingModel:
-      typeof record.config.embedding_model === "string"
-        ? record.config.embedding_model
-        : "text-embedding-3-small",
-    summaryModel:
-      typeof record.config.summary_model === "string"
-        ? record.config.summary_model
-        : "gpt-5.5",
-    answerModel:
-      typeof record.config.answer_model === "string"
-        ? record.config.answer_model
-        : "gpt-5.5"
-  }
-});
-
 const openApiEndpoints: Array<[string, string]> = [
   ["GET", "/v1/access/check"],
   ["GET", "/v1/capture-policy/effective"],
@@ -404,7 +357,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     rateLimitBuckets.clear();
   }
 
-  const configuredMemoryMode = resolveMemoryMode();
   const app = Fastify({
     logger:
       process.env.NODE_ENV === "test"
@@ -851,8 +803,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/self-host/status", async () => {
     const repo = requireRepository();
-    const [ready, embedding, embeddingJobs, compactionJobs] =
-      await Promise.all([
+    const [ready, embedding, embeddingJobs, compactionJobs] = await Promise.all(
+      [
         repo.health().catch(() => false),
         repo.getLocalEmbeddingStatus().catch((error) => ({
           enabled: true,
@@ -861,11 +813,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           dimensions: null,
           error: String(error)
         })),
-        embeddingQueue?.getJobCounts("waiting", "active", "delayed", "failed")
+        embeddingQueue
+          ?.getJobCounts("waiting", "active", "delayed", "failed")
           .catch((error) => ({ error: String(error) })),
-        compactionQueue?.getJobCounts("waiting", "active", "delayed", "failed")
+        compactionQueue
+          ?.getJobCounts("waiting", "active", "delayed", "failed")
           .catch((error) => ({ error: String(error) }))
-      ]);
+      ]
+    );
 
     return {
       status: ready ? "ok" : "error",
@@ -882,7 +837,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         }
       },
       configuration: {
-        memoryMode: configuredMemoryMode,
         supportedClients: ["codex"],
         plannedClients: ["claude", "gemini", "cursor", "pi"],
         localRepositoryPath: process.env.KOED_HOST_CHECKOUT_PATH ?? null,
@@ -898,21 +852,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   app.get("/self-host/diagnostics", async (request) => {
     const repo = requireRepository();
     const user = await authenticate(request);
-    const [overview, embeddingStatus, policies, providerConfigs, tokens] =
-      await Promise.all([
-        repo.getLcmGraphOverview({ userId: user.id }),
-        repo.getLocalEmbeddingStatus(),
-        repo.listCapturePolicies({ userId: user.id }),
-        repo.listProviderConfigs({ userId: user.id }),
-        repo.listApiTokens(user.id)
-      ]);
+    const [overview, embeddingStatus, policies, tokens] = await Promise.all([
+      repo.getLcmGraphOverview({ userId: user.id }),
+      repo.getLocalEmbeddingStatus(),
+      repo.listCapturePolicies({ userId: user.id }),
+      repo.listApiTokens(user.id)
+    ]);
 
     return {
       generatedAt: new Date().toISOString(),
       redacted: true,
       runtime: {
         nodeEnv: process.env.NODE_ENV ?? null,
-        memoryMode: configuredMemoryMode,
         apiPort: process.env.API_PORT ?? null,
         databaseConfigured: Boolean(process.env.DATABASE_URL),
         redisConfigured: Boolean(process.env.REDIS_URL),
@@ -926,14 +877,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       embeddingStatus,
       overview,
       capturePolicies: policies,
-      providerConfigs: providerConfigs.map((config) => ({
-        ...config,
-        apiKey: undefined,
-        config: {
-          ...config.config,
-          apiKey: undefined
-        }
-      })),
       apiTokens: tokens.map((token) => ({
         id: token.id,
         name: token.name,
@@ -1018,7 +961,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     async (request, reply) => {
       const repo = requireRepository();
       if ((await repo.countUsers()) > 0) {
-        return reply.status(409).send({ error: "Initial admin already exists" });
+        return reply
+          .status(409)
+          .send({ error: "Initial admin already exists" });
       }
       const input = registerSchema.parse(request.body);
       const passwordHash = await argon2.hash(input.password, {
@@ -1204,61 +1149,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     return reply.status(deleted ? 200 : 404).send({ ok: deleted });
   });
 
-  app.post("/provider-configs", async (request) => {
-    const repo = requireRepository();
-    const user = await authenticate(request);
-    const input = providerConfigSchema.parse(request.body);
-    const providerConfig = await repo.createProviderConfig(
-      { userId: user.id },
-      {
-        visibility: input.visibility,
-        provider: input.provider,
-        teamId: input.teamId,
-        apiKey: input.apiKey,
-        config: {
-          ...input.config,
-          baseUrl: input.baseUrl,
-          embedding_model:
-            input.embeddingModel ??
-            input.config.embedding_model ??
-            "text-embedding-3-small",
-          summary_model:
-            input.summaryModel ?? input.config.summary_model ?? "gpt-5.5",
-          answer_model:
-            input.answerModel ?? input.config.answer_model ?? "gpt-5.5",
-          embedding_dimensions:
-            input.embeddingDimensions ??
-            input.config.embedding_dimensions ??
-            1536,
-          enabled: input.enabled
-        }
-      }
-    );
-
-    return { providerConfig };
-  });
-
-  app.get("/provider-configs", async (request) => {
-    const repo = requireRepository();
-    const user = await authenticate(request);
-
-    return {
-      providerConfigs: await repo.listProviderConfigs({ userId: user.id })
-    };
-  });
-
-  app.delete("/provider-configs/:id", async (request, reply) => {
-    const repo = requireRepository();
-    const user = await authenticate(request);
-    const params = z.object({ id: z.string().uuid() }).parse(request.params);
-    const deleted = await repo.deleteProviderConfig(
-      { userId: user.id },
-      params.id
-    );
-
-    return reply.status(deleted ? 200 : 404).send({ ok: deleted });
-  });
-
   app.get(
     "/v1/access/check",
     { preHandler: memoryRateLimit },
@@ -1266,9 +1156,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const currentTeam = await repo.getCurrentTeam(user.id);
-      const providerConfigs = await repo.listProviderConfigs({
-        userId: user.id
-      });
 
       return {
         ok: true,
@@ -1277,12 +1164,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         currentTeam,
         canWritePersonal: true,
         canWriteTeam: false,
-        memoryMode: configuredMemoryMode,
-        providerConfigRequired: configuredMemoryMode === "server_synthesis",
-        embeddingRetrieval: await repo.getLocalEmbeddingStatus(),
-        enabledProviderConfigs: providerConfigs.filter(
-          (config) => config.config.enabled !== false
-        ).length
+        providerConfigSupported: false,
+        embeddingRetrieval: await repo.getLocalEmbeddingStatus()
       };
     }
   );
@@ -1482,7 +1365,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const user = await authenticate(request);
       const params = clusterIdParamsSchema.parse(request.params);
       const query = z
-        .object({ limit: z.coerce.number().int().positive().max(100).default(100) })
+        .object({
+          limit: z.coerce.number().int().positive().max(100).default(100)
+        })
         .parse(request.query);
       reply.header("deprecation", "true");
       reply.header("x-koed-deprecated", "Use /v1/memory/graph/nodes");
@@ -1542,12 +1427,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const user = await authenticate(request);
       const params = nodeIdParamsSchema.parse(request.params);
       const query = graphEventDetailQuerySchema.parse(request.query);
-      const node = await repo.getLcmGraphNode({ userId: user.id }, params.nodeId, {
-        includeInvalidated: query.includeInvalidated
-      });
+      const node = await repo.getLcmGraphNode(
+        { userId: user.id },
+        params.nodeId,
+        {
+          includeInvalidated: query.includeInvalidated
+        }
+      );
       return node
         ? { node }
-        : reply.status(404).send({ error: "LCM node not found or not visible" });
+        : reply
+            .status(404)
+            .send({ error: "LCM node not found or not visible" });
     }
   );
 
@@ -1579,7 +1470,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       );
       return event
         ? { event }
-        : reply.status(404).send({ error: "Captured event not found or not visible" });
+        : reply
+            .status(404)
+            .send({ error: "Captured event not found or not visible" });
     }
   );
 
@@ -1598,7 +1491,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       );
       return event
         ? { event }
-        : reply.status(404).send({ error: "Captured event not found or not visible" });
+        : reply
+            .status(404)
+            .send({ error: "Captured event not found or not visible" });
     }
   );
 
@@ -1675,21 +1570,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const input = searchMemorySchema.parse(request.body);
-      const mode = configuredMemoryMode;
-      const runtimeConfig =
-        mode === "server_synthesis"
-          ? await repo.getRuntimeProviderConfig({
-              userId: user.id
-            })
-          : null;
-      const provider =
-        mode === "server_synthesis" && runtimeConfig
-          ? createProvider(providerConfigToRuntime(runtimeConfig))
-          : undefined;
       const result = await answerMemory({
         repository: repo,
-        mode,
-        provider,
         requesterContext: { userId: user.id },
         query: input.query,
         scope: input.retrieval_scope,
@@ -1714,7 +1596,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
       return {
         markdown: result.answer,
-        mode,
         instructions: result.evidenceBundle.instructions,
         evidenceBundle: result.evidenceBundle,
         evidence: result.evidenceBundle.evidence,
@@ -1851,7 +1732,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const result = node ?? memory;
       return result
         ? { node: node ?? undefined, memory: memory ?? undefined }
-        : reply.status(404).send({ error: "Memory node not found or not visible" });
+        : reply
+            .status(404)
+            .send({ error: "Memory node not found or not visible" });
     }
   );
 
