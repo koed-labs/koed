@@ -11,12 +11,12 @@ Required production values:
 - `API_TOKEN_PEPPER`
 - `API_CORS_ORIGINS`
 
-Recommended default:
+LLM synthesis:
 
 ```text
 MEMORY_MODE=codex_subscription
 ```
 
-In this mode, backend recall returns evidence and local Codex performs synthesis. Server-side model provider configuration is optional and should only be enabled intentionally.
+Koed Self-Hosted relies on the connected AI client for synthesis. Backend recall returns evidence; the backend does not make server-side LLM calls in this build.
 
-Provider API keys are encrypted at rest with `API_DATA_ENCRYPTION_KEY`. They are never returned by API list endpoints or diagnostics.
+Provider API keys are encrypted at rest with `API_DATA_ENCRYPTION_KEY` where legacy/internal provider configuration still exists. They are never returned by API list endpoints or diagnostics.

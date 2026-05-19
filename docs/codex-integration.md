@@ -30,4 +30,4 @@ The console `AI Clients` tab generates these values for your checkout. If your A
 
 Use the console smoke test first. Then start a fresh Codex session and ask it to check memory access through the `koed-selfhost` MCP server.
 
-The MCP server uses the Koed API token for recall, LCM summary submission, and memory answer evidence. Full automatic conversation capture depends on client-specific hooks or transcript integration and is not performed by MCP alone.
+The MCP server uses the Koed API token for recall, LCM summary submission, and memory answer evidence. Koed Self-Hosted relies on Codex for LLM synthesis; the backend does not make server-side LLM calls in this build. Full automatic conversation capture depends on client-specific hooks or transcript integration and is not performed by MCP alone.

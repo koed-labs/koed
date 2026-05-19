@@ -15,7 +15,7 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `packages/mcp-server`: Codex MCP server and capture hook.
 - `packages/providers`, `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
 
-Postgres uses pgvector. Redis backs BullMQ. The default model mode is `codex_subscription`, where local Codex performs synthesis and the backend stores/retrieves evidence.
+Postgres uses pgvector. Redis backs BullMQ. Koed Self-Hosted relies on the connected AI client for LLM synthesis; the backend stores memory, retrieves evidence, manages embeddings and ranking, and does not make server-side LLM calls in this build.
 
 ## Quickstart
 
@@ -67,11 +67,10 @@ Start from `.env.example`. Important values:
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Postgres container settings.
 - `API_DATA_ENCRYPTION_KEY`: 32-byte base64 key used for stored provider API keys.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
-- `MEMORY_MODE=codex_subscription`: recommended default.
 - `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
 - `API_CORS_ORIGINS`: include the local console origin.
 
-Do not commit `.env`, `.env.production`, provider keys, API tokens, peppers, encryption keys, or private deployment details.
+Do not commit `.env`, `.env.production`, provider keys, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis is out of scope for this self-hosted build; any remaining `server_synthesis` configuration is legacy/internal and should not be documented as supported operator setup.
 
 ## Codex Setup
 
