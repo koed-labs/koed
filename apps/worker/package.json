@@ -16,7 +16,6 @@
   "dependencies": {
     "@koed/core": "workspace:*",
     "@koed/db": "workspace:*",
-    "@koed/providers": "workspace:*",
     "@koed/shared": "workspace:*",
     "bullmq": "^5.76.9",
     "ioredis": "^5.10.1"

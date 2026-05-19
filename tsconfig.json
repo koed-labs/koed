@@ -7,7 +7,6 @@
     { "path": "./packages/core" },
     { "path": "./packages/db" },
     { "path": "./packages/evals" },
-    { "path": "./packages/providers" },
     { "path": "./packages/mcp-server" },
     { "path": "./packages/shared" }
   ]

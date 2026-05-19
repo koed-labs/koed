@@ -56,9 +56,6 @@ importers:
       '@koed/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@koed/providers':
-        specifier: workspace:*
-        version: link:../../packages/providers
       '@koed/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -112,9 +109,6 @@ importers:
       '@koed/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@koed/providers':
-        specifier: workspace:*
-        version: link:../../packages/providers
       '@koed/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -181,12 +175,6 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
-
-  packages/providers:
-    dependencies:
-      '@koed/core':
-        specifier: workspace:*
-        version: link:../core
 
   packages/shared: {}
 

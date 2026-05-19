@@ -15,7 +15,6 @@
   "dependencies": {
     "@koed/core": "workspace:*",
     "@koed/db": "workspace:*",
-    "@koed/providers": "workspace:*",
     "@koed/shared": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",

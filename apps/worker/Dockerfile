@@ -8,7 +8,6 @@ FROM base AS build
 RUN find apps packages -name "*.tsbuildinfo" -delete && rm -rf apps/*/dist packages/*/dist
 RUN pnpm --filter @koed/shared build \
   && pnpm --filter @koed/core build \
-  && pnpm --filter @koed/providers build \
   && pnpm --filter @koed/db build \
   && pnpm --filter @koed/worker build
 

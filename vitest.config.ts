@@ -8,7 +8,6 @@ export default defineConfig({
     alias: {
       "@koed/core": `${root}packages/core/src/index.ts`,
       "@koed/db": `${root}packages/db/src/index.ts`,
-      "@koed/providers": `${root}packages/providers/src/index.ts`,
       "@koed/mcp-server": `${root}packages/mcp-server/src/index.ts`,
       "@koed/shared": `${root}packages/shared/src/index.ts`
     }
