@@ -143,7 +143,7 @@ const App = () => {
   const [smokeResult, setSmokeResult] = useState<SmokeResult | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [tokenName, setTokenName] = useState("Codex MCP");
+  const [tokenName, setTokenName] = useState("Client Integration");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [repoPath, setCheckoutPath] = useState(
     localStorage.getItem("koed.repoPath") ?? ""
@@ -599,11 +599,11 @@ const App = () => {
                 <FieldCopy label="Command" value={nodeCommand} />
                 <FieldCopy label="Argument" value={mcpArg} />
                 <FieldCopy
-                  label="CODEX_MEMORY_BASE_URL"
+                  label="MEMORY_API_URL"
                   value={apiBaseUrl}
                 />
                 <FieldCopy
-                  label="CODEX_MEMORY_API_TOKEN"
+                  label="MEMORY_API_TOKEN"
                   value={tokenForSetup}
                   masked={newToken === null}
                 />

@@ -6,11 +6,11 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
-      "@codex-memory/core": `${root}packages/core/src/index.ts`,
-      "@codex-memory/db": `${root}packages/db/src/index.ts`,
-      "@codex-memory/providers": `${root}packages/providers/src/index.ts`,
-      "@codex-memory/mcp-server": `${root}packages/mcp-server/src/index.ts`,
-      "@codex-memory/shared": `${root}packages/shared/src/index.ts`
+      "@koed/core": `${root}packages/core/src/index.ts`,
+      "@koed/db": `${root}packages/db/src/index.ts`,
+      "@koed/providers": `${root}packages/providers/src/index.ts`,
+      "@koed/mcp-server": `${root}packages/mcp-server/src/index.ts`,
+      "@koed/shared": `${root}packages/shared/src/index.ts`
     }
   },
   test: {

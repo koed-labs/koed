@@ -2,7 +2,7 @@ import type {
   EmbeddingRequest,
   EmbeddingResult,
   MemorySearchResult
-} from "@codex-memory/core";
+} from "@koed/core";
 
 export type Vector = number[];
 

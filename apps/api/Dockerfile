@@ -6,11 +6,11 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 RUN find apps packages -name "*.tsbuildinfo" -delete && rm -rf apps/*/dist packages/*/dist
-RUN pnpm --filter @codex-memory/shared build \
-  && pnpm --filter @codex-memory/core build \
-  && pnpm --filter @codex-memory/providers build \
-  && pnpm --filter @codex-memory/db build \
-  && pnpm --filter @codex-memory/api build
+RUN pnpm --filter @koed/shared build \
+  && pnpm --filter @koed/core build \
+  && pnpm --filter @koed/providers build \
+  && pnpm --filter @koed/db build \
+  && pnpm --filter @koed/api build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app

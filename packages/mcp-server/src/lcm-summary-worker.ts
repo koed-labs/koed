@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chunkTextForModel, countTokensForModel } from "@codex-memory/core";
+import { chunkTextForModel, countTokensForModel } from "@koed/core";
 import type { MemoryApiClient } from "./index.js";
 
 const CODEX_SUMMARY_PROVIDER = "codex";
@@ -160,7 +160,7 @@ const sleep = (ms: number): Promise<void> =>
 
 const lcmSummaryLockPath = (env: NodeJS.ProcessEnv): string =>
   resolveEnvValue(env, "MEMORY_LCM_SUMMARY_LOCK_PATH") ??
-  path.join(os.homedir(), ".codex-memory", "lcm-summary.lock");
+  path.join(os.homedir(), ".koed", "lcm-summary.lock");
 
 const acquireLocalSummaryLock = (
   env: NodeJS.ProcessEnv,
@@ -440,7 +440,7 @@ export const runCodexLcmSummary: CodexLcmSummaryRunner = (
 ) =>
   new Promise((resolve, reject) => {
     const tempDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "codex-memory-lcm-summary-")
+      path.join(os.tmpdir(), "koed-lcm-summary-")
     );
     const outputFile = path.join(tempDirectory, "summary.txt");
     const args = [

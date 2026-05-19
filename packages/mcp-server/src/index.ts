@@ -119,12 +119,8 @@ export const normalizeApiUrl = (apiUrl: string): string =>
   apiUrl.replace(/\/+$/, "");
 
 export const defaultConfig = (): McpServerConfig => ({
-  apiUrl:
-    process.env.MEMORY_API_URL ??
-    process.env.CODEX_MEMORY_BASE_URL ??
-    process.env.CODEX_MEMORY_API_URL ??
-    "http://localhost:3000",
-  apiToken: process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN
+  apiUrl: process.env.MEMORY_API_URL ?? "http://localhost:3000",
+  apiToken: process.env.MEMORY_API_TOKEN
 });
 
 export class MemoryApiError extends Error {
@@ -296,7 +292,7 @@ export const memoryAccessCheck = async (
   const toolExposure = resolveToolExposureConfig();
   return {
     ...access,
-    server: "@codex-memory/mcp-server",
+    server: "@koed/mcp-server",
     configuredApiUrl: client.config.apiUrl,
     hasApiToken: Boolean(client.config.apiToken),
     defaultAutomaticCaptureScope: "personal",

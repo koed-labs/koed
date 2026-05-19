@@ -5,7 +5,7 @@ import type {
   MemoryActor,
   MemoryEventRecord,
   MemorySearchResult
-} from "@codex-memory/core";
+} from "@koed/core";
 import type {
   ActorContext,
   ApiTokenRecord,
@@ -21,7 +21,7 @@ import type {
   TeamRecord,
   UserRecord,
   Visibility
-} from "@codex-memory/db";
+} from "@koed/db";
 import { buildServer } from "./server.js";
 
 const originalMemoryMode = process.env.MEMORY_MODE;
@@ -1054,7 +1054,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie: cookieHeader(registered) },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
     const authed = await app.inject({
@@ -1131,7 +1131,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     expect(createdToken.statusCode).toBe(200);
     const token = jsonBody<TokenResponse>(createdToken).token;
@@ -1167,7 +1167,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
     const headers = { authorization: `Bearer ${token}` };
@@ -1235,7 +1235,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
@@ -1317,7 +1317,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
@@ -1390,7 +1390,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
@@ -1528,7 +1528,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     expect(createdToken.statusCode).toBe(200);
     const headers = {
@@ -1593,7 +1593,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const response = await app.inject({
       method: "POST",
@@ -1645,7 +1645,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie: cookieHeader(registered) },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const access = await app.inject({
       method: "GET",
@@ -1677,7 +1677,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     expect(createdToken.statusCode).toBe(200);
     const headers = {

@@ -12,7 +12,7 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `apps/console`: local operator console for setup, status, tokens, policy, memory overview, Codex setup, and redacted diagnostics.
 - `packages/db`: Postgres repository and migrations.
 - `packages/core`: memory capture, retrieval, answer, and compaction logic.
-- `packages/mcp-server`: Codex MCP server and capture hook.
+- `packages/mcp-server`: Koed MCP Server and TypeScript Codex Capture Hook.
 - `packages/providers`, `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
 
 Postgres uses pgvector. Redis backs BullMQ. Koed Self-Hosted relies on the connected AI client for LLM synthesis; the backend stores memory, retrieves evidence, manages embeddings and ranking, and does not make server-side LLM calls in this build.
@@ -76,12 +76,12 @@ Do not commit `.env`, `.env.production`, provider keys, API tokens, peppers, enc
 
 Codex is currently the only supported AI client. Other clients will need their own setup guides as they are added.
 
-1. Open the console and create an API token named `Codex MCP`.
+1. Open the console and create an API token named `Client Integration`.
 2. Run the console smoke test.
 3. Build the MCP server:
 
 ```bash
-pnpm --filter @codex-memory/mcp-server build
+pnpm --filter @koed/mcp-server build
 ```
 
 4. In Codex Desktop, add a custom MCP server with the values shown in the console `AI Clients` tab. Typical values are:
@@ -91,12 +91,12 @@ Name: koed-selfhost
 Transport: STDIO
 Command: node
 Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
-CODEX_MEMORY_BASE_URL: http://localhost:3000
-CODEX_MEMORY_API_TOKEN: <token from console>
+MEMORY_API_URL: http://localhost:3000
+MEMORY_API_TOKEN: <token from console>
 Working directory: /path/to/koed-self-hosted
 ```
 
-If you changed `API_HOST_PORT`, use that port in `CODEX_MEMORY_BASE_URL`.
+If you changed `API_HOST_PORT`, use that port in `MEMORY_API_URL`.
 
 See [docs/codex-integration.md](docs/codex-integration.md) for MCP details.
 
@@ -117,14 +117,14 @@ The console is an operator UI, not a marketing site. It includes:
 
 ## Security Model
 
-Self-hosted Koed assumes the operator controls the deployment. The API supports first-run local admin creation, cookie login for the console, and bearer API tokens for Codex/MCP. Postgres and Redis should stay on private Docker/internal networks in production deployments. See [docs/security.md](docs/security.md).
+Self-hosted Koed assumes the operator controls the deployment. The API supports first-run local admin creation, cookie login for the console, and bearer API tokens for AI-client integrations. Postgres and Redis should stay on private Docker/internal networks in production deployments. See [docs/security.md](docs/security.md).
 
 ## Backups, Upgrades, Migrations
 
 Use normal Postgres backups and restore into the same Koed version before upgrading. Run migrations during API startup or manually with:
 
 ```bash
-pnpm --filter @codex-memory/db migrate:up
+pnpm --filter @koed/db migrate:up
 ```
 
 See [docs/backup-restore.md](docs/backup-restore.md) and [docs/upgrades.md](docs/upgrades.md).

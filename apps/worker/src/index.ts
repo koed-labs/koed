@@ -4,15 +4,15 @@ import {
   scheduleCompaction,
   type MemoryScope,
   type Visibility
-} from "@codex-memory/core";
+} from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
   type EmbeddableSourceRecord,
   type RuntimeProviderConfigRecord
-} from "@codex-memory/db";
-import { createProvider, type ProviderConfig } from "@codex-memory/providers";
-import { resolveMemoryMode } from "@codex-memory/shared";
+} from "@koed/db";
+import { createProvider, type ProviderConfig } from "@koed/providers";
+import { resolveMemoryMode } from "@koed/shared";
 
 const connection = {
   url: process.env.REDIS_URL ?? "redis://localhost:6379",

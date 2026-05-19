@@ -1,5 +1,5 @@
 import { Queue } from "bullmq";
-import { createDbPool, createMemorySourceRepository } from "@codex-memory/db";
+import { createDbPool, createMemorySourceRepository } from "@koed/db";
 
 const batchSize = Number.parseInt(process.env.EMBEDDING_BACKFILL_BATCH ?? "500", 10);
 const queue = new Queue("memory-embed", {

@@ -1,5 +1,5 @@
 {
-  "name": "@codex-memory/db",
+  "name": "@koed/db",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -20,8 +20,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codex-memory/core": "workspace:*",
-    "@codex-memory/shared": "workspace:*",
+    "@koed/core": "workspace:*",
+    "@koed/shared": "workspace:*",
     "node-pg-migrate": "^8.0.4",
     "pg": "^8.20.0"
   },
