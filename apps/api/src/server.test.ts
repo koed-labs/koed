@@ -1259,11 +1259,6 @@ describe("account and access flows", () => {
         content: "Alice prefers concise changelog summaries"
       }
     });
-    const access = await app.inject({
-      method: "GET",
-      url: "/v1/access/check",
-      headers
-    });
     const search = await app.inject({
       method: "POST",
       url: "/v1/memory/search",
