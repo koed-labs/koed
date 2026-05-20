@@ -249,10 +249,7 @@ const App = () => {
     try {
       const created = await requestJson<{ token: string }>("/api-tokens", {
         method: "POST",
-        body: JSON.stringify({
-          name: tokenName,
-          scopes: ["memory:read", "memory:write"]
-        })
+        body: JSON.stringify({ name: tokenName })
       });
       setNewToken(created.token);
       await refreshPrivate();
@@ -336,6 +333,9 @@ const App = () => {
   const mcpArg = repoPath
     ? `${repoPath.replace(/\/$/, "")}/packages/mcp-server/dist/cli.js`
     : "/path/to/koed-self-hosted/packages/mcp-server/dist/cli.js";
+  const captureHookArg = repoPath
+    ? `${repoPath.replace(/\/$/, "")}/packages/mcp-server/dist/capture-hook.js`
+    : "/path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js";
   const setupComplete =
     Boolean(user) &&
     tokens.length > 0 &&
@@ -551,7 +551,7 @@ const App = () => {
                   {tokens.length === 0 ? (
                     <>
                       <p>
-                        Create a token for Codex or another local AI client.
+                        Create a token for Codex recall and automatic capture.
                       </p>
                       <form
                         className="inline-form"
@@ -567,13 +567,63 @@ const App = () => {
                   ) : (
                     <>
                       <p>
-                        Token setup is complete. Use the T3 Code view for
-                        AI-client connection details and memory querying.
+                        Token setup is complete. Use the same token for the MCP
+                        Server and Capture Hook below.
                       </p>
                     </>
                   )}
                 </>
               )}
+            </section>
+
+            <section className="surface">
+              <h2>MCP Server</h2>
+              <p>
+                Recall path for Codex. MCP alone does not capture full
+                conversations automatically.
+              </p>
+              <div className="field-grid">
+                <FieldCopy label="Name" value="koed-selfhost" />
+                <FieldCopy label="Transport" value="STDIO" />
+                <FieldCopy label="Command" value={nodeCommand} />
+                <FieldCopy label="Argument" value={mcpArg} />
+                <FieldCopy label="MEMORY_API_URL" value={apiBaseUrl} />
+                <FieldCopy
+                  label="MEMORY_API_TOKEN"
+                  value={tokenForSetup}
+                  masked={newToken === null}
+                />
+                <FieldCopy
+                  label="Working directory"
+                  value={repoPath || "/path/to/koed-self-hosted"}
+                />
+              </div>
+            </section>
+
+            <section className="surface">
+              <h2>Capture Hook</h2>
+              <p>
+                Supported automatic capture path for Codex. Configure this
+                alongside MCP using the same token.
+              </p>
+              <p>
+                Codex may ask you to review or trust changed hooks after
+                editing config.toml; approve only entries pointing at this
+                checkout or the installed Koed package.
+              </p>
+              <div className="field-grid">
+                <FieldCopy label="Hook command" value={nodeCommand} />
+                <FieldCopy label="Hook argument" value={captureHookArg} />
+                <FieldCopy label="MEMORY_API_URL" value={apiBaseUrl} />
+                <FieldCopy
+                  label="MEMORY_API_TOKEN"
+                  value={tokenForSetup}
+                  masked={newToken === null}
+                />
+                <FieldCopy label="MEMORY_HOOK_STRICT" value="false" />
+                <FieldCopy label="MEMORY_HOOK_MAX_ITEMS" value="10" />
+                <FieldCopy label="MEMORY_HOOK_TRIGGER_LCM_SUMMARY" value="true" />
+              </div>
             </section>
 
             <section className="surface">
@@ -751,7 +801,8 @@ const App = () => {
               <p>
                 Hooks check this policy before storing conversation events.
                 Disable or pause capture here to stop automatic ingestion without
-                editing Codex config.
+                editing Codex config. Ask currently blocks automatic capture
+                until an AI-client approval flow exists.
               </p>
               <div className="segmented">
                 {["enabled", "ask", "disabled"].map((state) => (
@@ -765,7 +816,7 @@ const App = () => {
                     }
                     onClick={() => void saveGlobalPolicy(state)}
                   >
-                    {state}
+                    {state === "ask" ? "ask (blocks)" : state}
                   </button>
                 ))}
               </div>

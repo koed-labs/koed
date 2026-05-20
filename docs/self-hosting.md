@@ -22,9 +22,9 @@ Open `http://localhost:5173`, or the host port you selected. The T3-style histor
 1. Create the first local admin.
 2. Create an API token.
 3. Run the smoke test.
-4. Copy the generated AI-client fields into your local client.
+4. Copy the generated MCP Server and Capture Hook fields into your local Codex setup.
 
-The browser console cannot write local AI-client configuration files. This is deliberate: self-hosted users keep control of local client setup, and each AI client will have different MCP/configuration conventions.
+The browser console cannot write local AI-client configuration files. This is deliberate: self-hosted users keep control of local client setup. Codex is the only supported AI client in the current build; other clients will need their own setup guides.
 
 ## Production Notes
 

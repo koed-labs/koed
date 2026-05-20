@@ -69,7 +69,7 @@ describe("MemoryApiClient", () => {
     expect(result.notes).toEqual([]);
   });
 
-  it("defaults memory_answer scope to personal unless personal+team is configured", async () => {
+  it("keeps memory_answer scope personal even when a team exists", async () => {
     const apiUrl = await createApi((_request, response) => {
       response.setHeader("content-type", "application/json");
       response.end(
@@ -83,7 +83,7 @@ describe("MemoryApiClient", () => {
             inviteCode: null
           },
           canWritePersonal: true,
-          canWriteTeam: true,
+          canWriteTeam: false,
           providerConfigSupported: false
         })
       );
@@ -101,7 +101,7 @@ describe("MemoryApiClient", () => {
       new MemoryApiClient({ apiUrl, apiToken: "cmt_test" }),
       false
     );
-    expect(configured.defaultAnswerScope).toBe("personal+team");
+    expect(configured.defaultAnswerScope).toBe("personal");
   });
 });
 

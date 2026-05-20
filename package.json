@@ -14,6 +14,7 @@
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
     "eval": "pnpm --filter @koed/evals eval",
     "codex:configure": "node scripts/configure-codex.mjs",
+    "codex:verify-capture": "node scripts/verify-codex-capture-hook.mjs",
     "setup:env": "node scripts/setup-env.mjs",
     "smoke:lcm": "node scripts/lcm-smoke-test.mjs",
     "test": "pnpm -r --workspace-concurrency=1 test",

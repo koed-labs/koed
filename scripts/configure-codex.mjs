@@ -3,28 +3,31 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-const token = process.env.CODEX_MEMORY_API_TOKEN;
+const token = process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN;
 if (!token) {
-  console.error("Set CODEX_MEMORY_API_TOKEN to a console-created Koed API token.");
+  console.error("Set MEMORY_API_TOKEN to a console-created Koed API token.");
   process.exit(1);
 }
 
 const repoRoot = process.cwd();
-const apiUrl = process.env.CODEX_MEMORY_BASE_URL ?? "http://localhost:3000";
-const nodeCommand = process.env.CODEX_MEMORY_NODE_COMMAND ?? "node";
-const mcpName = process.env.CODEX_MEMORY_MCP_NAME ?? "koed";
+const apiUrl =
+  process.env.MEMORY_API_URL ??
+  process.env.CODEX_MEMORY_BASE_URL ??
+  "http://localhost:3000";
+const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
+const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
 );
 const hookConfigPath = resolve(
-  process.env.CODEX_MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed-memory/config.json`
+  process.env.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
 );
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
 const captureHookPath = resolve(repoRoot, "packages/mcp-server/dist/capture-hook.js");
 
 for (const filePath of [mcpCliPath, captureHookPath]) {
   if (!existsSync(filePath)) {
-    console.error(`${filePath} does not exist. Run pnpm --filter @codex-memory/mcp-server build first.`);
+    console.error(`${filePath} does not exist. Run pnpm --filter @koed/mcp-server build first.`);
     process.exit(1);
   }
 }
@@ -46,8 +49,8 @@ args = ["${mcpCliPath}"]
 enabled = true
 
 [mcp_servers.${mcpName}.env]
-CODEX_MEMORY_BASE_URL = "${apiUrl}"
-CODEX_MEMORY_API_TOKEN = "${token}"
+MEMORY_API_URL = "${apiUrl}"
+MEMORY_API_TOKEN = "${token}"
 
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]
@@ -84,3 +87,4 @@ writeFileSync(
 console.log(`Updated ${codexConfigPath}`);
 console.log(`Wrote ${hookConfigPath}`);
 console.log("Restart Codex to load the MCP server and hooks.");
+console.log("Codex may ask you to review/trust changed hooks after config.toml changes.");

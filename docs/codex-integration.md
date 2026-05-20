@@ -8,6 +8,9 @@ Open the console, create a token named `Client Integration`, and copy it immedia
 
 ## MCP Server
 
+The MCP Server is the supported recall path. It lets Codex ask Koed for cited
+memory evidence. It does not automatically capture whole conversations.
+
 ```bash
 pnpm --filter @koed/mcp-server build
 ```
@@ -24,13 +27,19 @@ Environment:
 Working directory: /path/to/koed-self-hosted
 ```
 
-The console `AI Clients` tab generates these values for your checkout. If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
+The console setup page generates these MCP values for your checkout. If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
 
 ## Capture Hook
 
 The TypeScript Capture Hook is the supported automatic capture path for Codex. It uses the same `MEMORY_API_URL` and `MEMORY_API_TOKEN` values as the MCP Server.
 
-For a self-hosted checkout, build `@koed/mcp-server` and point Codex at:
+If you install the package binary, use:
+
+```text
+koed-capture-hook
+```
+
+For a direct self-hosted checkout, build `@koed/mcp-server` and point Codex at:
 
 ```text
 /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js
@@ -46,8 +55,28 @@ MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
 MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
 ```
 
+Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
+Codex asks you to review or trust changed hooks after editing `config.toml`,
+accept the Koed hook entries only after confirming the paths point to your
+checkout or installed package binary.
+
+For Linux and WSL, use absolute Linux paths for the hook command and working
+directory, and keep the API URL reachable from that environment. For Docker
+Desktop on Windows, this usually means using the host/port that WSL can reach,
+not a macOS-style or Windows-only path.
+
 ## Verify
 
-Use the console smoke test first. Then start a fresh Codex session and ask it to check memory access through the `koed-selfhost` MCP server.
+Use the console smoke test first. Then verify the local Capture Hook from the
+checkout:
 
-The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed Self-Hosted relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone.
+```bash
+MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
+```
+
+This command enables personal capture, invokes the same TypeScript Capture Hook
+with a fresh session marker, and searches Koed for the captured marker. After
+that, start a fresh Codex session and ask it to check memory access through the
+`koed-selfhost` MCP server.
+
+The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed Self-Hosted relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone. Recall-only or MCP-only integrations are experimental because they do not provide supported automatic capture.

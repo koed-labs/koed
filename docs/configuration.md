@@ -62,8 +62,11 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_API_TOKEN`: API Token created in the Operator Console for the User.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
 - `MEMORY_HOOK_MAX_ITEMS`: maximum transcript items processed by the Capture Hook per run.
-- `MEMORY_HOOK_TRIGGER_LCM_SUMMARY`: when `true`, the Capture Hook asks the MCP Server to process pending LCM summaries after capture.
+- `MEMORY_HOOK_TRIGGER_LCM_SUMMARY`: when `true`, the Capture Hook starts local LCM summary processing after capture.
 - `MEMORY_HOOK_LCM_SUMMARY_DELAY_MS`: delay before Capture Hook-triggered LCM summary processing.
 - `MEMORY_HOOK_LCM_SUMMARY_LIMIT`: maximum pending LCM summaries processed from a Capture Hook trigger.
 
 Koed Self-Hosted relies on the connected AI Client for Synthesis; backend LLM provider configuration and server-side synthesis are unsupported in this build.
+
+Capture Policy state `ask` currently blocks automatic capture. It is reserved
+for a future AI-client approval flow and is not an implemented backend prompt.

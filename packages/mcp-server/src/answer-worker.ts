@@ -189,7 +189,6 @@ interface MemoryAnswerPlanningState {
 interface ParsedPlannerAction {
   action: "search" | "expand" | "answer";
   query?: string;
-  retrieval_scope?: "personal" | "personal+team";
   search_domain?: "global" | "project" | "session";
   session_id?: string;
   workspace_id?: string;
@@ -304,7 +303,7 @@ export const buildPlannedMemoryAnswerPrompt = (
     "Your job is to decide whether memory contains relevant evidence, gather more evidence when useful, and return a concise answer for the main agent.",
     "",
     "Available actions:",
-    '- search: {"action":"search","query":"...","retrieval_scope":"personal|personal+team","search_domain":"project|session|global","workspace_id":"...","session_id":"...","limit":10}',
+    '- search: {"action":"search","query":"...","search_domain":"project|session|global","workspace_id":"...","session_id":"...","limit":10}',
     '- expand: {"action":"expand","nodeId":"..."}',
     '- answer: {"action":"answer","memoryStatus":"found|not_found|insufficient|pending_summary","markdown":"..."}',
     "",
@@ -329,7 +328,7 @@ export const buildPlannedMemoryAnswerPrompt = (
       : "- Choose search or expand only if it is likely to materially improve the answer.",
     "",
     "Example no-evidence first step:",
-    '{"action":"search","query":"the user question rewritten for memory retrieval","retrieval_scope":"personal","search_domain":"project","limit":10}',
+    '{"action":"search","query":"the user question rewritten for memory retrieval","search_domain":"project","limit":10}',
     "",
     "Example final not-found answer:",
     '{"action":"answer","memoryStatus":"not_found","markdown":"No matching memory evidence found."}',
@@ -464,11 +463,11 @@ const runPlannedMemoryAnswer = async (
         continue;
       }
       const searchQuery = action.query?.trim() || state.query;
-      const retrievalScope = action.retrieval_scope ?? options.retrievalScope;
       const searchDomain = action.search_domain ?? options.searchDomain;
       const sessionId = action.session_id ?? options.sessionId;
       const workspaceId = action.workspace_id ?? options.workspaceId;
       const limit = clampLimit(action.limit, options.limit);
+      const retrievalScope = options.retrievalScope;
       const searchResult = await options.client.search({
         query: searchQuery,
         retrieval_scope: retrievalScope,

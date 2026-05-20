@@ -48,7 +48,7 @@ const jsonBody = <T>(response: { body: string }): T =>
 
 type TokenResponse = {
   token: string;
-  apiToken: { tokenPrefix: string };
+  apiToken: { tokenPrefix: string; scopes: string[]; teamId: string | null };
 };
 
 type TeamResponse = {
@@ -1229,6 +1229,41 @@ describe("account and access flows", () => {
     expect(jsonBody<AccessResponse>(checked).auth).toBe("bearer_api_token");
   });
 
+  it("keeps API tokens personal-only and ignores token scopes", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "personal-token@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const team = await app.inject({
+      method: "POST",
+      url: "/teams",
+      headers: { cookie },
+      payload: { name: "Research" }
+    });
+    const teamId = jsonBody<{ teamId: string }>(team).teamId;
+    const teamToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Team Token", teamId }
+    });
+    const scopedToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Scoped Token", scopes: ["memory:read", "memory:write"] }
+    });
+    await app.close();
+
+    expect(teamToken.statusCode).toBe(400);
+    expect(scopedToken.statusCode).toBe(200);
+    expect(jsonBody<TokenResponse>(scopedToken).apiToken.teamId).toBeNull();
+    expect(jsonBody<TokenResponse>(scopedToken).apiToken.scopes).toEqual([]);
+  });
+
   it("captures conversation memory through MCP endpoints", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),
@@ -1269,6 +1304,12 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/v1/memory/answer",
       headers,
+      payload: { query: "concise changelog" }
+    });
+    const rejectedTeamAnswer = await app.inject({
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers,
       payload: { query: "concise changelog", retrieval_scope: "personal+team" }
     });
     const cookieAnswer = await app.inject({
@@ -1293,10 +1334,47 @@ describe("account and access flows", () => {
     );
     expect(answerBody.evidence[0]?.summaryText).toContain("concise changelog");
     expect(answerBody.citations).toHaveLength(1);
+    expect(rejectedTeamAnswer.statusCode).toBe(400);
     expect(cookieAnswer.statusCode).toBe(200);
     expect(jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText).toContain(
       "concise changelog"
     );
+  });
+
+  it("rejects team capture policies for API-token setup", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "team-capture@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+
+    const teamPolicy = await app.inject({
+      method: "PUT",
+      url: "/v1/capture-policies",
+      headers,
+      payload: {
+        targetType: "global",
+        captureState: "enabled",
+        visibility: "team"
+      }
+    });
+    await app.close();
+
+    expect(teamPolicy.statusCode).toBe(400);
   });
 
   it("resolves capture policy inheritance and skips disabled capture", async () => {

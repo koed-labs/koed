@@ -60,7 +60,7 @@ Use the console setup flow:
 1. Create the first local admin user. This account is local to your self-hosted Postgres database.
 2. Create an API token for your AI client.
 3. Run the console smoke test to verify capture, compaction, embedding enqueue, and recall.
-4. Copy the generated AI-client setup fields into your local client.
+4. Copy the generated MCP Server and Capture Hook setup fields into your local client.
 
 The console can verify Koed and generate exact setup values, but it cannot write into local AI-client configuration files from the browser.
 
@@ -86,13 +86,13 @@ Codex is currently the only supported AI client. Other clients will need their o
 
 1. Open the console and create an API token named `Client Integration`.
 2. Run the console smoke test.
-3. Build the MCP server:
+3. Build the MCP server and Capture Hook:
 
 ```bash
 pnpm --filter @koed/mcp-server build
 ```
 
-4. In Codex Desktop, add a custom MCP server with the values shown in the console `AI Clients` tab. Typical values are:
+4. In Codex Desktop, add a custom MCP server with the values shown on the console setup page. Typical MCP values are:
 
 ```text
 Name: koed-selfhost
@@ -106,7 +106,15 @@ Working directory: /path/to/koed-self-hosted
 
 If you changed `API_HOST_PORT`, use that port in `MEMORY_API_URL`.
 
-See [docs/codex-integration.md](docs/codex-integration.md) for MCP details.
+5. Configure the Capture Hook shown on the console setup page with the same `MEMORY_API_URL` and `MEMORY_API_TOKEN`. This is the supported automatic capture path; MCP by itself is recall-only and does not automatically record full conversations.
+
+6. Verify the Capture Hook:
+
+```bash
+MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token from console> pnpm codex:verify-capture
+```
+
+See [docs/codex-integration.md](docs/codex-integration.md) for MCP and Capture Hook details.
 
 ## Local Console
 

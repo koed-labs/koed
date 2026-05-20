@@ -125,7 +125,6 @@ describe("memory answer worker", () => {
           text: JSON.stringify({
             action: "search",
             query: "memory cost decision local Codex Gemini embeddings",
-            retrieval_scope: "personal",
             limit: 5
           }),
           model: `codex:${config.model}:${config.reasoningEffort}`
