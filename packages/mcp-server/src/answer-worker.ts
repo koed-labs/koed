@@ -50,6 +50,16 @@ export interface MemoryAnswerPayload {
   [key: string]: unknown;
 }
 
+export interface CompactMemoryAnswerPayload {
+  markdown?: string;
+  citations?: unknown[];
+  localMemoryWorker?: MemoryAnswerWorkerStatus;
+  retrieval: {
+    evidenceCount: number;
+    retrievalMode?: unknown;
+  };
+}
+
 export type CodexAnswerRunner = (
   prompt: string,
   config: MemoryAnswerWorkerConfig,
@@ -801,3 +811,21 @@ export const answerWithMemoryWorker = async (
     }
   };
 };
+
+export const compactMemoryAnswerPayload = (
+  answer: MemoryAnswerPayload & { localMemoryWorker?: MemoryAnswerWorkerStatus }
+): CompactMemoryAnswerPayload => ({
+  markdown: answer.markdown,
+  citations: answer.citations,
+  localMemoryWorker: answer.localMemoryWorker,
+  retrieval: {
+    evidenceCount: evidenceItems(answer).length,
+    retrievalMode:
+      answer.evidenceBundle?.retrieval &&
+      typeof answer.evidenceBundle.retrieval === "object" &&
+      "retrievalMode" in answer.evidenceBundle.retrieval
+        ? (answer.evidenceBundle.retrieval as Record<string, unknown>)
+            .retrievalMode
+        : undefined
+  }
+});

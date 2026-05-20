@@ -628,6 +628,13 @@ const createFakeRepository = (): MemorySourceRepository => {
       const visibleEvents = await this.listLcmGraphEvents(actor, {
         includeInvalidated: true
       });
+      const pendingNodes = visibleNodes.filter(
+        (node) => node.summaryStatus === "pending" && !node.invalidatedAt
+      );
+      const oldestPendingCreatedAt =
+        pendingNodes
+          .map((node) => node.createdAt)
+          .sort((left, right) => left.localeCompare(right))[0] ?? null;
       return {
         capturedEvents: visibleEvents.filter((event) => !event.invalidatedAt)
           .length,
@@ -637,9 +644,15 @@ const createFakeRepository = (): MemorySourceRepository => {
         rollupNodes: visibleNodes.filter(
           (node) => node.kind === "rollup" && !node.invalidatedAt
         ).length,
-        pendingSummaries: visibleNodes.filter(
-          (node) => node.summaryStatus === "pending" && !node.invalidatedAt
-        ).length,
+        pendingSummaries: pendingNodes.length,
+        pendingLcmDiagnostics: {
+          pendingCount: pendingNodes.length,
+          oldestPendingCreatedAt,
+          staleThresholdMinutes: 15,
+          stale:
+            oldestPendingCreatedAt !== null &&
+            Date.now() - Date.parse(oldestPendingCreatedAt) > 15 * 60_000
+        },
         invalidatedRecords:
           visibleNodes.filter((node) => node.invalidatedAt).length +
           visibleEvents.filter((event) => event.invalidatedAt).length,
@@ -1646,7 +1659,12 @@ describe("account and access flows", () => {
       capturedEvents: 1,
       leafNodes: 1,
       rollupNodes: 0,
-      pendingSummaries: 1
+      pendingSummaries: 1,
+      pendingLcmDiagnostics: {
+        pendingCount: 1,
+        staleThresholdMinutes: 15,
+        stale: false
+      }
     });
     expect(jsonBody<GraphNodesResponse>(nodes).nodes[0]).toMatchObject({
       id: nodeId,

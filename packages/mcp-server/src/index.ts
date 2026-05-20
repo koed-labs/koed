@@ -1,6 +1,10 @@
 import { resolveMemoryAnswerWorkerConfig } from "./answer-worker.js";
+import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
-import { resolveLcmSummaryWorkerConfig } from "./lcm-summary-worker.js";
+import {
+  lcmSummaryLockState,
+  resolveLcmSummaryWorkerConfig
+} from "./lcm-summary-worker.js";
 
 export type RetrievalScope = "personal";
 
@@ -65,11 +69,18 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     codexBinary: string;
   };
   localLcmSummaryService: {
-    enabled: boolean;
     initialDelayMs: number;
     pushDelayMs: number;
     intervalMs: number;
     batchLimit: number;
+  };
+  localLcmSummaryDiagnostics: {
+    running: boolean;
+    locked: boolean;
+    pendingCount: number | null;
+    lastRunAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
   };
   notes: string[];
 }
@@ -210,6 +221,10 @@ export class MemoryApiClient {
     );
   }
 
+  async graphOverview(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/v1/memory/graph/overview");
+  }
+
   private async request<T>(
     method: "GET" | "POST",
     path: string,
@@ -271,13 +286,29 @@ export const defaultAnswerScope = (
 
 export const memoryAccessCheck = async (
   client = new MemoryApiClient(),
-  includeNotes = true
+  includeNotes = true,
+  options: { lcmSummaryService?: LcmSummaryServiceHandle | null } = {}
 ): Promise<MemoryAccessCheckResult> => {
   const access = await client.accessCheck();
   const answerWorker = resolveMemoryAnswerWorkerConfig();
   const lcmSummaryWorker = resolveLcmSummaryWorkerConfig();
   const lcmSummaryService = resolveLcmSummaryServiceConfig();
   const toolExposure = resolveToolExposureConfig();
+  const lcmSnapshot = options.lcmSummaryService?.snapshot();
+  const lock = lcmSummaryLockState(
+    lcmSummaryWorker.env,
+    Math.max(lcmSummaryWorker.timeoutMs * lcmSummaryWorker.maxAttempts, 60_000)
+  );
+  const pendingCount = await client
+    .graphOverview()
+    .then((overview) => {
+      const diagnostics = (
+        overview.overview as Record<string, unknown> | undefined
+      )?.pendingLcmDiagnostics as Record<string, unknown> | undefined;
+      const count = diagnostics?.pendingCount;
+      return typeof count === "number" ? count : null;
+    })
+    .catch(() => null);
   return {
     ...access,
     server: "@koed/mcp-server",
@@ -309,6 +340,14 @@ export const memoryAccessCheck = async (
       codexBinary: lcmSummaryWorker.codexBinary
     },
     localLcmSummaryService: lcmSummaryService,
+    localLcmSummaryDiagnostics: {
+      running: lcmSnapshot?.running ?? false,
+      locked: lock.locked || (lcmSnapshot?.running ?? false),
+      pendingCount,
+      lastRunAt: lcmSnapshot?.lastRunAt ?? null,
+      lastSuccessAt: lcmSnapshot?.lastSuccessAt ?? null,
+      lastError: lcmSnapshot?.lastError ?? null
+    },
     notes: includeNotes
       ? [
           "Store normal Codex/Codex CLI conversation context as personal memory through Codex hooks/transcript ingestion. The backend does not decide that a fact is important and create a separate extracted memory.",

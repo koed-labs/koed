@@ -4,7 +4,10 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answerWithMemoryWorker } from "./answer-worker.js";
+import {
+  answerWithMemoryWorker,
+  compactMemoryAnswerPayload
+} from "./answer-worker.js";
 import {
   MemoryApiClient,
   type McpServerConfig,
@@ -216,7 +219,11 @@ server.registerTool(
     }
   },
   async ({ include_notes = true }) =>
-    jsonResponse(await memoryAccessCheck(client, include_notes))
+    jsonResponse(
+      await memoryAccessCheck(client, include_notes, {
+        lcmSummaryService: backgroundLcmSummaryService
+      })
+    )
 );
 
 server.registerTool(
@@ -242,7 +249,13 @@ server.registerTool(
       session_id: uuidSchema
         .optional()
         .describe("Backend session UUID for session search."),
-      limit: z.number().int().positive().max(50).default(10)
+      limit: z.number().int().positive().max(50).default(10),
+      include_evidence: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Return the full evidence bundle for debugging. Defaults to false for compact agent context."
+        )
     }
   },
   async (input) => {
@@ -256,16 +269,18 @@ server.registerTool(
       retrieval_scope,
       workspace_id
     });
-    return jsonResponse(
-      await answerWithMemoryWorker(evidence, {
+    const answer = await answerWithMemoryWorker(evidence, {
         client,
         retrievalScope: retrieval_scope,
         searchDomain: input.search_domain,
         workspaceId: workspace_id,
         sessionId: input.session_id,
         limit: input.limit
-      })
-    );
+      });
+    if (input.include_evidence) {
+      return jsonResponse(answer);
+    }
+    return jsonResponse(compactMemoryAnswerPayload(answer));
   }
 );
 

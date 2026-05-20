@@ -215,6 +215,12 @@ export interface LcmGraphOverview {
   leafNodes: number;
   rollupNodes: number;
   pendingSummaries: number;
+  pendingLcmDiagnostics: {
+    pendingCount: number;
+    oldestPendingCreatedAt: string | null;
+    staleThresholdMinutes: 15;
+    stale: boolean;
+  };
   invalidatedRecords: number;
   embeddings: {
     enabled: boolean;
@@ -2731,6 +2737,7 @@ export const createMemorySourceRepository = (
         leaf_nodes: string;
         rollup_nodes: string;
         pending_summaries: string;
+        oldest_pending_summary_created_at: Date | null;
         invalidated_records: string;
       }>(
         `
@@ -2771,6 +2778,7 @@ export const createMemorySourceRepository = (
             (select count(*) from visible_nodes where kind = 'leaf' and invalidated_at is null)::text as leaf_nodes,
             (select count(*) from visible_nodes where kind = 'rollup' and invalidated_at is null)::text as rollup_nodes,
             (select count(*) from visible_nodes where kind in ('leaf', 'rollup') and summary_model is null and invalidated_at is null)::text as pending_summaries,
+            (select min(created_at) from visible_nodes where kind in ('leaf', 'rollup') and summary_model is null and invalidated_at is null) as oldest_pending_summary_created_at,
             (
               (select count(*) from visible_events where invalidated_at is not null)
               + (select count(*) from visible_nodes where invalidated_at is not null)
@@ -2839,11 +2847,25 @@ export const createMemorySourceRepository = (
     ]);
     const row = counts.rows[0]!;
     const embeddingRow = embeddings.rows[0]!;
+    const pendingCount = Number(row.pending_summaries);
+    const oldestPendingCreatedAt =
+      row.oldest_pending_summary_created_at?.toISOString() ?? null;
+    const staleThresholdMinutes = 15;
+    const stale =
+      oldestPendingCreatedAt !== null &&
+      Date.now() - Date.parse(oldestPendingCreatedAt) >
+        staleThresholdMinutes * 60_000;
     return {
       capturedEvents: Number(row.captured_events),
       leafNodes: Number(row.leaf_nodes),
       rollupNodes: Number(row.rollup_nodes),
-      pendingSummaries: Number(row.pending_summaries),
+      pendingSummaries: pendingCount,
+      pendingLcmDiagnostics: {
+        pendingCount,
+        oldestPendingCreatedAt,
+        staleThresholdMinutes,
+        stale
+      },
       invalidatedRecords: Number(row.invalidated_records),
       embeddings: {
         enabled: embeddingStatus.enabled,
