@@ -102,7 +102,6 @@ const jsonResponse = (payload: unknown) => ({
 
 const searchDomainSchema = z.enum(["global", "project", "session"]);
 const uuidSchema = z.string().uuid();
-const reasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
 const defaultWorkspaceId = (): string => process.cwd();
 const normalizeToolWorkspaceId = (workspaceId?: string): string =>
   workspaceId && path.isAbsolute(workspaceId)
