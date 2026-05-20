@@ -14,6 +14,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/coverage/**",
       "**/target/**",
+      "apps/history-browser/t3code-history-browser/**",
       "node_modules/**"
     ]
   },

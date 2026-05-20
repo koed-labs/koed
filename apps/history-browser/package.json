@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 pnpm -C t3code-history-browser --config.package-manager-strict=false install --ignore-scripts --frozen-lockfile=false && COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 VITE_KOED_HISTORY_BROWSER=1 VITE_KOED_API_BASE_URL=${VITE_KOED_API_BASE_URL:-${VITE_API_BASE_URL:-http://localhost:3000}} pnpm -C t3code-history-browser --config.package-manager-strict=false --filter @t3tools/web build",
-    "dev": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 pnpm -C t3code-history-browser --config.package-manager-strict=false install --ignore-scripts --frozen-lockfile=false && COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 VITE_KOED_HISTORY_BROWSER=1 VITE_KOED_API_BASE_URL=${VITE_KOED_API_BASE_URL:-${VITE_API_BASE_URL:-http://localhost:3000}} pnpm -C t3code-history-browser --config.package-manager-strict=false --filter @t3tools/web dev -- --host 0.0.0.0",
-    "preview": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 pnpm -C t3code-history-browser --filter @t3tools/web preview -- --host 0.0.0.0",
-    "test": "vitest run --passWithNoTests",
-    "typecheck": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 pnpm -C t3code-history-browser --config.package-manager-strict=false install --ignore-scripts --frozen-lockfile=false && COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 pnpm -C t3code-history-browser --config.package-manager-strict=false --filter @t3tools/web typecheck"
+    "build": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 corepack pnpm@10.30.3 -C t3code-history-browser --config.package-manager-strict=false install --ignore-scripts --frozen-lockfile=false && COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 VITE_KOED_HISTORY_BROWSER=1 VITE_KOED_API_BASE_URL=${VITE_KOED_API_BASE_URL:-${VITE_API_BASE_URL:-http://localhost:3000}} corepack pnpm@10.30.3 -C t3code-history-browser --config.package-manager-strict=false --filter @t3tools/web build",
+    "dev": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 corepack pnpm@10.30.3 -C t3code-history-browser --config.package-manager-strict=false install --ignore-scripts --frozen-lockfile=false && COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 VITE_KOED_HISTORY_BROWSER=1 VITE_KOED_API_BASE_URL=${VITE_KOED_API_BASE_URL:-${VITE_API_BASE_URL:-http://localhost:3000}} corepack pnpm@10.30.3 -C t3code-history-browser --config.package-manager-strict=false --filter @t3tools/web dev -- --host 0.0.0.0",
+    "preview": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 corepack pnpm@10.30.3 -C t3code-history-browser --filter @t3tools/web preview -- --host 0.0.0.0",
+    "test": "vitest run --passWithNoTests --exclude 't3code-history-browser/**'",
+    "typecheck": "COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 corepack pnpm@10.30.3 -C t3code-history-browser --config.package-manager-strict=false install --ignore-scripts --frozen-lockfile=false && COREPACK_ENABLE_PROJECT_SPEC=0 COREPACK_ENABLE_STRICT=0 corepack pnpm@10.30.3 -C t3code-history-browser --config.package-manager-strict=false --filter @t3tools/web typecheck"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",
