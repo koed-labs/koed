@@ -60,6 +60,11 @@ const displayString = (value: unknown, fallback = ""): string =>
     ? String(value)
     : fallback;
 
+const displayRuntimeValue = (value: unknown): string =>
+  Array.isArray(value)
+    ? value.map((item) => displayString(item, "unknown")).join(", ")
+    : displayString(value, "unknown");
+
 const requestJson = async <T,>(
   path: string,
   options: RequestInit = {}
@@ -585,13 +590,7 @@ const App = () => {
                 {runtimeItems.map(([key, value]) => (
                   <div key={key}>
                     <span>{key}</span>
-                    <strong>
-                      {Array.isArray(value)
-                        ? value.join(", ")
-                        : value === undefined || value === null
-                          ? "unknown"
-                          : String(value)}
-                    </strong>
+                    <strong>{displayRuntimeValue(value)}</strong>
                   </div>
                 ))}
               </div>
