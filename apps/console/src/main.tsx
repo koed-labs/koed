@@ -60,6 +60,11 @@ const displayString = (value: unknown, fallback = ""): string =>
     ? String(value)
     : fallback;
 
+const displayRuntimeValue = (value: unknown): string =>
+  Array.isArray(value)
+    ? value.map((item) => displayString(item, "unknown")).join(", ")
+    : displayString(value, "unknown");
+
 const requestJson = async <T,>(
   path: string,
   options: RequestInit = {}
@@ -100,10 +105,18 @@ const StatusDot = ({ status }: { status: string }) => {
   const normalized = status.toLowerCase();
   const tone =
     normalized.includes("ok") ||
+    normalized.includes("ready") ||
+    normalized.includes("good") ||
+    normalized.includes("enabled") ||
+    normalized.includes("verified") ||
+    normalized.includes("configured") ||
     normalized.includes("true") ||
     normalized.includes("healthy")
       ? "ok"
-      : normalized.includes("error") || normalized.includes("false")
+      : normalized.includes("error") ||
+          normalized.includes("false") ||
+          normalized.includes("failed") ||
+          normalized.includes("disabled")
         ? "error"
         : "warn";
   return <span className={`status-dot ${tone}`}>{status}</span>;
@@ -312,8 +325,9 @@ const App = () => {
 
   const graphCounts = {
     events: Number(overview?.capturedEvents ?? 0),
-    nodes:
-      Number(overview?.leafNodes ?? 0) + Number(overview?.rollupNodes ?? 0),
+    nodes: Number(overview?.leafNodes ?? 0) + Number(overview?.rollupNodes ?? 0),
+    leafNodes: Number(overview?.leafNodes ?? 0),
+    rollups: Number(overview?.rollupNodes ?? 0),
     pending: Number(overview?.pendingSummaries ?? 0),
     deleted: Number(overview?.invalidatedRecords ?? 0)
   };
@@ -329,12 +343,68 @@ const App = () => {
     Boolean(smokeResult?.ok || graphCounts.events > 0);
 
   const sections = [
-    ["setup", "Setup"],
-    ["status", "Status"],
-    ["clients", "AI Clients"],
+    ["setup", "Setup & Status"],
     ["memory", "Memory"],
     ["security", "Security"]
   ] as const;
+
+  const pageCopy = {
+    setup: {
+      title: setupComplete ? "Koed is ready" : "Finish local setup",
+      body: "Configure the local backend, check runtime health, and verify capture from one place."
+    },
+    memory: {
+      title: "Memory usage",
+      body: "Track local ingestion volume, summarisation health, and capture controls."
+    },
+    security: {
+      title: "Security",
+      body: "Manage local API tokens and generate redacted diagnostics."
+    }
+  }[activeSection as "setup" | "memory" | "security"] ?? {
+    title: "Koed",
+    body: "Local operator console."
+  };
+
+  const runtimeItems = [
+    ["Embedding model", configuration?.embeddingModel],
+    ["Embedding dimensions", configuration?.embeddingDimensions],
+    ["Reranking enabled", configuration?.rerankingEnabled]
+  ] as const;
+
+  const globalCapturePolicy = policies.find(
+    (policy) => policy.targetType === "global"
+  );
+  const captureStatus = globalCapturePolicy?.captureState ?? "enabled";
+
+  const quickStartItems = [
+    {
+      label: "Local admin",
+      detail: user ? `Signed in as ${user.email}` : "Create the first local account.",
+      done: Boolean(user)
+    },
+    {
+      label: "API token",
+      detail: tokens.length
+        ? `${tokens.length} active token${tokens.length === 1 ? "" : "s"}`
+        : "Create one token for your AI client.",
+      done: tokens.length > 0
+    },
+    {
+      label: "Runtime ready",
+      detail: configuration?.embeddingModel
+        ? "Embedding runtime is configured."
+        : "Waiting for local runtime configuration.",
+      done: Boolean(configuration?.embeddingModel)
+    },
+    {
+      label: "Memory verified",
+      detail: smokeResult?.ok || graphCounts.events > 0
+        ? "Koed has captured local memory."
+        : "Verify capture once the token exists.",
+      done: Boolean(smokeResult?.ok || graphCounts.events > 0)
+    }
+  ];
 
   return (
     <main>
@@ -374,11 +444,8 @@ const App = () => {
         <header className="page-header">
           <div>
             <p className="eyebrow">Local operator console</p>
-            <h1>{setupComplete ? "Koed is ready" : "Finish local setup"}</h1>
-            <p>
-              Configure the local backend, generate AI-client fields, and verify
-              capture without leaving this console.
-            </p>
+            <h1>{pageCopy.title}</h1>
+            <p>{pageCopy.body}</p>
           </div>
           <div className="header-stats">
             <div>
@@ -419,62 +486,30 @@ const App = () => {
 
         {activeSection === "setup" ? (
           <div className="section-grid">
-            <section className="surface setup-flow">
-              <h2>Setup checklist</h2>
+            <section className="surface quick-start">
+              <div className="section-title-row">
+                <div>
+                  <h2>Quick start</h2>
+                  <p>Core checks for a working local Koed install.</p>
+                </div>
+                <StatusDot status={setupComplete ? "good to go" : "in progress"} />
+              </div>
               <ol>
-                <li className={user ? "done" : "current"}>
-                  <span>1</span>
-                  <div>
-                    <strong>Local admin</strong>
-                    <p>
-                      {user
-                        ? `Signed in as ${user.email}`
-                        : "Create the first account inside this local database."}
-                    </p>
-                  </div>
-                </li>
-                <li
-                  className={tokens.length > 0 ? "done" : user ? "current" : ""}
-                >
-                  <span>2</span>
-                  <div>
-                    <strong>API token</strong>
-                    <p>
-                      {tokens.length > 0
-                        ? `${tokens.length} active token${tokens.length === 1 ? "" : "s"}`
-                        : "Create one token for your AI client."}
-                    </p>
-                  </div>
-                </li>
-                <li
-                  className={
-                    smokeResult?.ok
-                      ? "done"
-                      : tokens.length > 0
-                        ? "current"
-                        : ""
-                  }
-                >
-                  <span>3</span>
-                  <div>
-                    <strong>Smoke test</strong>
-                    <p>
-                      {smokeResult?.ok
-                        ? "Capture and recall verified."
-                        : "Let Koed create and recall a local test memory."}
-                    </p>
-                  </div>
-                </li>
-                <li className={tokens.length > 0 ? "current" : ""}>
-                  <span>4</span>
-                  <div>
-                    <strong>AI client</strong>
-                    <p>
-                      Copy generated fields into your selected local client.
-                    </p>
-                  </div>
-                </li>
+                {quickStartItems.map((item, index) => (
+                  <li key={item.label} className={item.done ? "done" : "current"}>
+                    <span>{item.done ? "OK" : index + 1}</span>
+                    <div>
+                      <strong>{item.label}</strong>
+                      <p>{item.detail}</p>
+                    </div>
+                  </li>
+                ))}
               </ol>
+              {tokens.length > 0 && !smokeResult?.ok && graphCounts.events === 0 ? (
+                <button type="button" onClick={() => void runSmokeTest()}>
+                  Verify local memory
+                </button>
+              ) : null}
             </section>
 
             <section className="surface action-panel">
@@ -512,7 +547,7 @@ const App = () => {
                 </>
               ) : (
                 <>
-                  <h2>Next action</h2>
+                  <h2>Token setup</h2>
                   {tokens.length === 0 ? (
                     <>
                       <p>
@@ -532,22 +567,15 @@ const App = () => {
                   ) : (
                     <>
                       <p>
-                        Run the smoke test to verify capture, compaction, and
-                        recall from the console.
+                        Token setup is complete. Use the T3 Code view for
+                        AI-client connection details and memory querying.
                       </p>
-                      <button type="button" onClick={() => void runSmokeTest()}>
-                        Run smoke test
-                      </button>
                     </>
                   )}
                 </>
               )}
             </section>
-          </div>
-        ) : null}
 
-        {activeSection === "status" ? (
-          <div className="section-grid">
             <section className="surface">
               <h2>Service status</h2>
               <div className="status-list">
@@ -572,20 +600,12 @@ const App = () => {
             <section className="surface">
               <h2>Runtime</h2>
               <div className="status-list">
-                {configuration
-                  ? Object.entries(configuration)
-                      .filter(([key]) => key !== "localRepositoryPath")
-                      .map(([key, value]) => (
-                        <div key={key}>
-                          <span>{key}</span>
-                          <strong>
-                            {Array.isArray(value)
-                              ? value.join(", ")
-                              : String(value)}
-                          </strong>
-                        </div>
-                      ))
-                  : null}
+                {runtimeItems.map(([key, value]) => (
+                  <div key={key}>
+                    <span>{key}</span>
+                    <strong>{displayRuntimeValue(value)}</strong>
+                  </div>
+                ))}
               </div>
             </section>
           </div>
@@ -655,20 +675,63 @@ const App = () => {
 
         {activeSection === "memory" ? (
           <div className="section-grid">
-            <section className="surface">
-              <h2>Memory graph</h2>
-              <div className="metric-row">
+            <section className="surface wide memory-overview">
+              <div className="section-title-row">
+                <div>
+                  <h2>Usage overview</h2>
+                  <p>
+                    A high-level view of local ingestion, summarisation, and
+                    retained memory.
+                  </p>
+                </div>
+                <StatusDot status={captureStatus} />
+              </div>
+              <div className="metric-row expanded">
                 <div>
                   <span>Captured events</span>
                   <strong>{graphCounts.events}</strong>
                 </div>
                 <div>
-                  <span>Nodes</span>
+                  <span>Memory nodes</span>
                   <strong>{graphCounts.nodes}</strong>
+                </div>
+                <div>
+                  <span>Leaf memories</span>
+                  <strong>{graphCounts.leafNodes}</strong>
+                </div>
+                <div>
+                  <span>Rollups</span>
+                  <strong>{graphCounts.rollups}</strong>
+                </div>
+                <div>
+                  <span>Pending summaries</span>
+                  <strong>{graphCounts.pending}</strong>
                 </div>
                 <div>
                   <span>Deleted</span>
                   <strong>{graphCounts.deleted}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section className="surface">
+              <h2>Ingestion health</h2>
+              <div className="status-list">
+                <div>
+                  <span>Capture policy</span>
+                  <StatusDot status={captureStatus} />
+                </div>
+                <div>
+                  <span>API tokens</span>
+                  <strong>{tokens.length}</strong>
+                </div>
+                <div>
+                  <span>Capture policies</span>
+                  <strong>{policies.length}</strong>
+                </div>
+                <div>
+                  <span>Verification</span>
+                  <StatusDot status={smokeResult?.ok || graphCounts.events > 0 ? "verified" : "pending"} />
                 </div>
               </div>
               {smokeResult ? (
@@ -684,7 +747,12 @@ const App = () => {
               )}
             </section>
             <section className="surface">
-              <h2>Capture policy</h2>
+              <h2>Capture control</h2>
+              <p>
+                Hooks check this policy before storing conversation events.
+                Disable or pause capture here to stop automatic ingestion without
+                editing Codex config.
+              </p>
               <div className="segmented">
                 {["enabled", "ask", "disabled"].map((state) => (
                   <button
@@ -711,7 +779,11 @@ const App = () => {
               </ul>
             </section>
             <section className="surface wide">
-              <h2>Governance</h2>
+              <h2>Recent memory records</h2>
+              <p>
+                Load recent records only when you need to audit or invalidate
+                captured data.
+              </p>
               <button type="button" onClick={() => void loadGovernance()}>
                 Load export and recent records
               </button>

@@ -22,6 +22,10 @@
 - `docs/adr/0001-ai-client-synthesis-only.md` is accepted direction: Koed Self-Hosted relies on the connected AI Client for LLM synthesis.
 - `docs/adr/0002-bind-api-token-team-access-at-creation-time.md` is deferred until team-scoped token behavior returns to scope.
 
+## Pull Requests
+
+- Use the repository pull request template at `.github/pull_request_template.md` when drafting PR descriptions.
+
 ## Current Product Boundaries
 
 - Codex is currently the only supported AI Client, but generic Koed naming is preferred for package names, binaries, env vars, and token names unless describing actual source provenance.
