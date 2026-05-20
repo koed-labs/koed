@@ -15,11 +15,11 @@
     "baseUrl": ".",
     "ignoreDeprecations": "6.0",
     "paths": {
-      "@codex-memory/core": ["packages/core/src/index.ts"],
-      "@codex-memory/db": ["packages/db/src/index.ts"],
-      "@codex-memory/providers": ["packages/providers/src/index.ts"],
-      "@codex-memory/mcp-server": ["packages/mcp-server/src/index.ts"],
-      "@codex-memory/shared": ["packages/shared/src/index.ts"]
+      "@koed/core": ["packages/core/src/index.ts"],
+      "@koed/db": ["packages/db/src/index.ts"],
+      "@koed/providers": ["packages/providers/src/index.ts"],
+      "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@koed/shared": ["packages/shared/src/index.ts"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

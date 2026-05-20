@@ -189,7 +189,7 @@ describe("LCM summary background service", () => {
     } as unknown as MemoryApiClient;
     const config = resolveLcmSummaryWorkerConfig(
       {
-        MEMORY_LCM_SUMMARY_LOCK_PATH: `/tmp/codex-memory-lcm-test-${randomUUID()}.lock`
+        MEMORY_LCM_SUMMARY_LOCK_PATH: `/tmp/koed-lcm-test-${randomUUID()}.lock`
       },
       {
         model: "gpt-5.4-mini",

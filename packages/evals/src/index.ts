@@ -15,7 +15,7 @@ import {
   type MemorySearchResult,
   type RequesterContext,
   type Visibility
-} from "@codex-memory/core";
+} from "@koed/core";
 
 interface EvalUser {
   id: string;

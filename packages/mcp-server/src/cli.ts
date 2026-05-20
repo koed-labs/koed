@@ -196,7 +196,7 @@ if (command) {
 }
 
 const server = new McpServer({
-  name: "codex-memory-mcp",
+  name: "koed-mcp",
   version: "0.1.0"
 });
 const backgroundLcmSummaryService = startLcmSummaryService(client, {

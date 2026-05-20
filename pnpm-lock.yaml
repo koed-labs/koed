@@ -44,24 +44,24 @@ importers:
 
   apps/api:
     dependencies:
-      '@codex-memory/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@codex-memory/db':
-        specifier: workspace:*
-        version: link:../../packages/db
-      '@codex-memory/providers':
-        specifier: workspace:*
-        version: link:../../packages/providers
-      '@codex-memory/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
       '@fastify/cors':
         specifier: ^11.2.0
         version: 11.2.0
+      '@koed/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@koed/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@koed/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
+      '@koed/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       argon2:
         specifier: ^0.44.0
         version: 0.44.0
@@ -106,16 +106,16 @@ importers:
 
   apps/worker:
     dependencies:
-      '@codex-memory/core':
+      '@koed/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@codex-memory/db':
+      '@koed/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@codex-memory/providers':
+      '@koed/providers':
         specifier: workspace:*
         version: link:../../packages/providers
-      '@codex-memory/shared':
+      '@koed/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       bullmq:
@@ -140,10 +140,10 @@ importers:
 
   packages/db:
     dependencies:
-      '@codex-memory/core':
+      '@koed/core':
         specifier: workspace:*
         version: link:../core
-      '@codex-memory/shared':
+      '@koed/shared':
         specifier: workspace:*
         version: link:../shared
       node-pg-migrate:
@@ -159,16 +159,16 @@ importers:
 
   packages/evals:
     dependencies:
-      '@codex-memory/core':
+      '@koed/core':
         specifier: workspace:*
         version: link:../core
 
   packages/mcp-server:
     dependencies:
-      '@codex-memory/core':
+      '@koed/core':
         specifier: workspace:*
         version: link:../core
-      '@codex-memory/shared':
+      '@koed/shared':
         specifier: workspace:*
         version: link:../shared
       '@modelcontextprotocol/sdk':
@@ -184,7 +184,7 @@ importers:
 
   packages/providers:
     dependencies:
-      '@codex-memory/core':
+      '@koed/core':
         specifier: workspace:*
         version: link:../core
 

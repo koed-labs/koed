@@ -1,5 +1,5 @@
 {
-  "name": "@codex-memory/providers",
+  "name": "@koed/providers",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -18,6 +18,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codex-memory/core": "workspace:*"
+    "@koed/core": "workspace:*"
   }
 }

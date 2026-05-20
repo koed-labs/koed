@@ -7,7 +7,7 @@ RUN pnpm install --frozen-lockfile
 FROM base AS build
 ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
-RUN pnpm --filter @codex-memory/console build
+RUN pnpm --filter @koed/console build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app/apps/console

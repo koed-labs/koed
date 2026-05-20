@@ -1,11 +1,11 @@
 {
-  "name": "@codex-memory/mcp-server",
+  "name": "@koed/mcp-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "codex-memory-mcp": "dist/cli.js",
-    "codex-memory-capture-hook": "dist/capture-hook.js"
+    "koed-mcp": "dist/cli.js",
+    "koed-capture-hook": "dist/capture-hook.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,8 +24,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codex-memory/core": "workspace:*",
-    "@codex-memory/shared": "workspace:*",
+    "@koed/core": "workspace:*",
+    "@koed/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
   },

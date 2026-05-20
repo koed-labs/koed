@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { countTokensForModel } from "@codex-memory/core";
+import { countTokensForModel } from "@koed/core";
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
@@ -551,7 +551,7 @@ export const runCodexMemoryAnswer: CodexAnswerRunner = (
 ) =>
   new Promise((resolve, reject) => {
     const tempDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "codex-memory-answer-")
+      path.join(os.tmpdir(), "koed-answer-")
     );
     const outputFile = path.join(tempDirectory, "answer.md");
     const args = [

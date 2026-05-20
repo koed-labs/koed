@@ -13,15 +13,15 @@ import {
   searchMemory,
   type MemoryScope,
   type Visibility
-} from "@codex-memory/core";
+} from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
   type MemorySourceRepository,
   type RuntimeProviderConfigRecord
-} from "@codex-memory/db";
-import { createProvider, type ProviderConfig } from "@codex-memory/providers";
-import { createHealth, resolveMemoryMode } from "@codex-memory/shared";
+} from "@koed/db";
+import { createProvider, type ProviderConfig } from "@koed/providers";
+import { createHealth, resolveMemoryMode } from "@koed/shared";
 
 const sessionCookieName = "cm_session";
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
@@ -381,7 +381,7 @@ const openApiEndpoints: Array<[string, string]> = [
 
 const openApiDocument = {
   openapi: "3.1.0",
-  info: { title: "Codex Memory MCP API", version: "0.1.0" },
+  info: { title: "Koed Self-Hosted API", version: "0.1.0" },
   components: {
     securitySchemes: { bearerApiToken: { type: "http", scheme: "bearer" } }
   },

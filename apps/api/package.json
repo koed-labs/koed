@@ -1,5 +1,5 @@
 {
-  "name": "@codex-memory/api",
+  "name": "@koed/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,10 +13,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codex-memory/core": "workspace:*",
-    "@codex-memory/db": "workspace:*",
-    "@codex-memory/providers": "workspace:*",
-    "@codex-memory/shared": "workspace:*",
+    "@koed/core": "workspace:*",
+    "@koed/db": "workspace:*",
+    "@koed/providers": "workspace:*",
+    "@koed/shared": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "argon2": "^0.44.0",

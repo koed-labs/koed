@@ -1,5 +1,5 @@
 {
-  "name": "@codex-memory/worker",
+  "name": "@koed/worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,10 +14,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@codex-memory/core": "workspace:*",
-    "@codex-memory/db": "workspace:*",
-    "@codex-memory/providers": "workspace:*",
-    "@codex-memory/shared": "workspace:*",
+    "@koed/core": "workspace:*",
+    "@koed/db": "workspace:*",
+    "@koed/providers": "workspace:*",
+    "@koed/shared": "workspace:*",
     "bullmq": "^5.76.9",
     "ioredis": "^5.10.1"
   },

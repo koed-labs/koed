@@ -22,7 +22,7 @@ const apiUrl = (
 const composeProject =
   args.get("compose-project") ??
   process.env.COMPOSE_PROJECT_NAME ??
-  "codex-memory";
+  "koed";
 const eventCount = Number.parseInt(
   args.get("events") ?? process.env.LCM_SMOKE_EVENTS ?? "12",
   10
@@ -90,9 +90,9 @@ const psqlJson = (sql) => {
       "postgres",
       "psql",
       "-U",
-      "codex_memory",
+      "koed",
       "-d",
-      "codex_memory",
+      "koed",
       "-v",
       "ON_ERROR_STOP=1",
       "-t",
@@ -408,7 +408,7 @@ const main = async () => {
   );
 
   const configDirectory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "codex-memory-lcm-smoke-")
+    path.join(os.tmpdir(), "koed-lcm-smoke-")
   );
   const configPath = path.join(configDirectory, "config.json");
   fs.writeFileSync(
@@ -419,7 +419,7 @@ const main = async () => {
   runCommand("corepack", [
     "pnpm",
     "--filter",
-    "@codex-memory/mcp-server",
+    "@koed/mcp-server",
     "build"
   ]);
   const summaryOutput = runCommand("node", [

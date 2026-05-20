@@ -5,7 +5,7 @@ import {
   randomBytes
 } from "node:crypto";
 import pg from "pg";
-import { estimateTokens, type LcmSourceItem } from "@codex-memory/core";
+import { estimateTokens, type LcmSourceItem } from "@koed/core";
 import type {
   CompactionResult,
   ExpandedMemoryNode,
@@ -15,8 +15,8 @@ import type {
   MemoryEventType,
   MemorySearchResult,
   RetrievalMetadata
-} from "@codex-memory/core";
-import { env } from "@codex-memory/shared";
+} from "@koed/core";
+import { env } from "@koed/shared";
 
 const { Pool } = pg;
 
@@ -1443,7 +1443,7 @@ const providerEncryptionKey = (): Buffer => {
     throw new Error("DATA_ENCRYPTION_KEY is required in production");
   }
   return createHash("sha256")
-    .update(keyMaterial ?? "codex-memory-dev-provider-key")
+    .update(keyMaterial ?? "koed-dev-provider-key")
     .digest();
 };
 
