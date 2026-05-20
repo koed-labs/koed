@@ -18,3 +18,4 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 packages/evals/reports/*.json
+apps/history-browser/t3code-history-browser/

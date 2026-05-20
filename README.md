@@ -30,6 +30,11 @@ pnpm test
 docker compose up --build
 ```
 
+The T3-style history browser is pulled from the private
+`koed-labs/koed-history-browser` repository during local builds. Set
+`GITHUB_TOKEN` in `.env` to a GitHub token that can read that repository before
+running `docker compose up --build`.
+
 If the default ports are already in use, choose host ports before starting:
 
 ```bash
@@ -68,6 +73,10 @@ Start from `.env.example`. Important values:
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
 - `API_CORS_ORIGINS`: include the local console and history-browser origins.
+- `GITHUB_TOKEN`: GitHub token used by Docker to fetch the private
+  `koed-labs/koed-history-browser` frontend repository.
+- `HISTORY_BROWSER_REPO`, `HISTORY_BROWSER_REF`: optional override for the
+  history-browser repository and branch/tag/SHA.
 
 Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis and backend LLM provider configuration are unsupported in this self-hosted build.
 
@@ -117,10 +126,13 @@ The console is an operator UI, not a marketing site. It includes:
 ## History Browser
 
 The history browser is a second frontend for gap analysis against the operator
-console. It focuses on the T3 Code-style chat timeline, project/session
-sidebar, LCM inspector, and scoped memory questions. Run it locally with:
+console. It lives in the private `koed-labs/koed-history-browser` repository and
+is fetched into `apps/history-browser/t3code-history-browser` when needed. It
+focuses on the T3 Code-style chat timeline, project/session sidebar, LCM
+inspector, and scoped memory questions. Run it locally with:
 
 ```bash
+GITHUB_TOKEN=<token with access to koed-labs/koed-history-browser>
 pnpm history:dev
 ```
 
