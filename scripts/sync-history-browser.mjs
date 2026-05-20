@@ -10,8 +10,8 @@ const repo =
   process.env.HISTORY_BROWSER_REPO ??
   "https://github.com/koed-labs/koed-history-browser.git";
 const ref = process.env.HISTORY_BROWSER_REF ?? "main";
-const token =
-  process.env.HISTORY_BROWSER_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
+const token = process.env.HISTORY_BROWSER_GITHUB_TOKEN ?? "";
+
 const skipSync = process.env.HISTORY_BROWSER_SKIP_SYNC === "1";
 
 const gitAuthArgs = token
