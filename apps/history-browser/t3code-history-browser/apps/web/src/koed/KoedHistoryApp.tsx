@@ -488,6 +488,8 @@ export function KoedHistoryApp() {
   const [loading, setLoading] = useState(false);
   const [threadLoading, setThreadLoading] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set());
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const refreshInFlight = useRef(false);
 
   useEffect(() => {
@@ -536,6 +538,40 @@ export function KoedHistoryApp() {
       global: visible.filter((question) => question.searchDomain === "global"),
     } satisfies Record<SearchDomain, MemoryQuestionRecord[]>;
   }, [memoryQuestions, query]);
+
+  useEffect(() => {
+    if (!selectedThreadId) {
+      return;
+    }
+    const selectedProject = groups.find((group) =>
+      group.threads.some((thread) => thread.id === selectedThreadId),
+    );
+    if (!selectedProject) {
+      return;
+    }
+    setExpandedProjectIds((current) => {
+      if (current.has(selectedProject.id)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(selectedProject.id);
+      return next;
+    });
+  }, [groups, selectedThreadId]);
+
+  useEffect(() => {
+    if (sidebarMode !== "chats") {
+      return;
+    }
+    const scrollContainer = threadScrollRef.current;
+    if (!scrollContainer) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedThreadId, sidebarMode, threadEvents.length, threadEvents.at(-1)?.id]);
 
   const loadGraph = useCallback(async (options?: { silent?: boolean }) => {
     if (!apiToken.trim()) {
@@ -867,6 +903,18 @@ export function KoedHistoryApp() {
     });
   };
 
+  const toggleProject = (projectId: string) => {
+    setExpandedProjectIds((current) => {
+      const next = new Set(current);
+      if (next.has(projectId)) {
+        next.delete(projectId);
+      } else {
+        next.add(projectId);
+      }
+      return next;
+    });
+  };
+
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen>
       <Sidebar
@@ -940,39 +988,53 @@ export function KoedHistoryApp() {
 
         <SidebarContent>
           {sidebarMode === "chats" ? (
-            filteredGroups.map((group) => (
-              <SidebarGroup key={group.id}>
-                <SidebarGroupLabel className="gap-1.5">
-                  <FolderIcon className="size-3.5" />
-                  <span className="truncate">{group.name}</span>
-                  <span className="ml-auto text-muted-foreground/70">{group.eventCount}</span>
-                </SidebarGroupLabel>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {group.threads.map((thread) => (
-                      <SidebarMenuItem key={`${group.id}:${thread.id}`}>
-                        <SidebarMenuButton
-                          className="h-auto items-start py-2"
-                          isActive={thread.id === selectedThreadId}
-                          onClick={() => setSelectedThreadId(thread.id)}
-                        >
-                          <GitBranchIcon className="mt-0.5 size-4" />
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm">{thread.name}</span>
-                            <span className="block truncate text-muted-foreground text-xs">
-                              {formatDate(thread.latestAt)} - {thread.eventCount} events
-                            </span>
-                            <span className="block truncate text-muted-foreground/75 text-xs">
-                              {firstLine(thread.sample)}
-                            </span>
-                          </span>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </SidebarGroup>
-            ))
+            filteredGroups.map((group) => {
+              const isExpanded = query.trim() ? true : expandedProjectIds.has(group.id);
+              return (
+                <SidebarGroup key={group.id}>
+                  <button
+                    className="flex h-8 w-full items-center gap-1.5 rounded-md px-2 text-left text-muted-foreground text-xs hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                    onClick={() => toggleProject(group.id)}
+                    type="button"
+                  >
+                    {isExpanded ? (
+                      <ChevronDownIcon className="size-3.5 shrink-0" />
+                    ) : (
+                      <ChevronRightIcon className="size-3.5 shrink-0" />
+                    )}
+                    <FolderIcon className="size-3.5 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                    <span className="shrink-0 text-muted-foreground/70">{group.eventCount}</span>
+                  </button>
+                  {isExpanded ? (
+                    <SidebarGroupContent>
+                      <SidebarMenu>
+                        {group.threads.map((thread) => (
+                          <SidebarMenuItem key={`${group.id}:${thread.id}`}>
+                            <SidebarMenuButton
+                              className="h-auto items-start py-2"
+                              isActive={thread.id === selectedThreadId}
+                              onClick={() => setSelectedThreadId(thread.id)}
+                            >
+                              <GitBranchIcon className="mt-0.5 size-4" />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm">{thread.name}</span>
+                                <span className="block truncate text-muted-foreground text-xs">
+                                  {formatDate(thread.latestAt)} - {thread.eventCount} events
+                                </span>
+                                <span className="block truncate text-muted-foreground/75 text-xs">
+                                  {firstLine(thread.sample)}
+                                </span>
+                              </span>
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        ))}
+                      </SidebarMenu>
+                    </SidebarGroupContent>
+                  ) : null}
+                </SidebarGroup>
+              );
+            })
           ) : (
             <MemoryQuestionSidebar
               groupedQuestions={filteredMemoryQuestions}
@@ -1058,7 +1120,7 @@ export function KoedHistoryApp() {
 
           <div className="flex min-h-0 min-w-0 flex-1">
             <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-              <div className="min-h-0 flex-1 overflow-auto px-3 py-4 pb-40 sm:px-5">
+              <div ref={threadScrollRef} className="min-h-0 flex-1 overflow-auto px-3 py-4 pb-40 sm:px-5">
                 <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
                   {sidebarMode === "questions" ? (
                     selectedQuestion ? (
