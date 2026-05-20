@@ -26,31 +26,25 @@ export const env = (name: string, fallback?: string): string => {
   return value;
 };
 
-export type MemoryMode = "codex_subscription" | "server_synthesis";
+export const requireEnv = (
+  names: string[],
+  environment: NodeJS.ProcessEnv = process.env
+): void => {
+  const missing = names.filter((name) => {
+    const value = environment[name];
+    return value === undefined || value.trim() === "";
+  });
 
-export const unsafeServerSynthesisFlag = "MEMORY_SERVER_SYNTHESIS_UNSAFE_ALLOW";
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variable${
+        missing.length === 1 ? "" : "s"
+      }: ${missing.join(", ")}`
+    );
+  }
+};
 
 const truthyConfigValues = new Set(["1", "true", "yes", "on"]);
 
 export const configFlagEnabled = (value: string | undefined): boolean =>
   value ? truthyConfigValues.has(value.trim().toLowerCase()) : false;
-
-export const resolveMemoryMode = (
-  environment: NodeJS.ProcessEnv = process.env
-): MemoryMode => {
-  if (environment.MEMORY_MODE !== "server_synthesis") {
-    return "codex_subscription";
-  }
-
-  if (configFlagEnabled(environment[unsafeServerSynthesisFlag])) {
-    return "server_synthesis";
-  }
-
-  throw new Error(
-    [
-      "MEMORY_MODE=server_synthesis is disabled by default because it can make",
-      "backend-paid LLM calls. Use MEMORY_MODE=codex_subscription, or set",
-      `${unsafeServerSynthesisFlag}=1 only for an explicitly approved dev/test deployment.`
-    ].join(" ")
-  );
-};

@@ -420,7 +420,6 @@ describe("provider-neutral memory engine", () => {
     });
 
     expect(answer.answer).toContain("Evidence bundle returned");
-    expect(answer.evidenceBundle.mode).toBe("codex_subscription");
     expect(answer.evidenceBundle.instructions).toContain(
       "Codex should synthesize"
     );

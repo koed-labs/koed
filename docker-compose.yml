@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
       timeout: 3s
       retries: 10
@@ -62,7 +62,6 @@ services:
       API_HOST: ${API_HOST}
       API_PORT: ${API_PORT}
       LOG_LEVEL: ${API_LOG_LEVEL}
-      MEMORY_MODE: ${MEMORY_MODE}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}
@@ -103,7 +102,6 @@ services:
       dockerfile: apps/worker/Dockerfile
     environment:
       NODE_ENV: ${WORKER_NODE_ENV}
-      MEMORY_MODE: ${MEMORY_MODE}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
       DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}

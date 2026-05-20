@@ -5,7 +5,7 @@ import type {
   MemoryActor,
   MemoryEventRecord,
   MemorySearchResult
-} from "@codex-memory/core";
+} from "@koed/core";
 import type {
   ActorContext,
   ApiTokenRecord,
@@ -21,25 +21,10 @@ import type {
   TeamRecord,
   UserRecord,
   Visibility
-} from "@codex-memory/db";
+} from "@koed/db";
 import { buildServer } from "./server.js";
 
-const originalMemoryMode = process.env.MEMORY_MODE;
-const originalServerSynthesisUnsafeAllow =
-  process.env.MEMORY_SERVER_SYNTHESIS_UNSAFE_ALLOW;
-
 afterEach(() => {
-  if (originalMemoryMode === undefined) {
-    delete process.env.MEMORY_MODE;
-  } else {
-    process.env.MEMORY_MODE = originalMemoryMode;
-  }
-  if (originalServerSynthesisUnsafeAllow === undefined) {
-    delete process.env.MEMORY_SERVER_SYNTHESIS_UNSAFE_ALLOW;
-  } else {
-    process.env.MEMORY_SERVER_SYNTHESIS_UNSAFE_ALLOW =
-      originalServerSynthesisUnsafeAllow;
-  }
   delete process.env.KOED_ALLOW_PUBLIC_REGISTRATION;
 });
 
@@ -58,7 +43,7 @@ const cookieHeader = (response: {
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string");
 
-const jsonBody = <T,>(response: { body: string }): T =>
+const jsonBody = <T>(response: { body: string }): T =>
   JSON.parse(response.body) as T;
 
 type TokenResponse = {
@@ -73,21 +58,7 @@ type TeamResponse = {
 type AccessResponse = {
   ok?: boolean;
   auth?: string;
-  enabledProviderConfigs?: number;
-  providerConfigRequired?: boolean;
-  memoryMode?: string;
-};
-
-type ProviderConfigResponse = {
-  providerConfigs: Array<{
-    provider: string;
-    config: {
-      apiKey?: unknown;
-      apiKeyConfigured?: boolean;
-      baseUrl?: string;
-      embedding_model?: string;
-    };
-  }>;
+  providerConfigSupported?: boolean;
 };
 
 type CaptureResponse = {
@@ -102,7 +73,6 @@ type CaptureResponse = {
 
 type SearchResponse = { hits: unknown[] };
 type AnswerResponse = {
-  mode: string;
   markdown: string;
   evidenceBundle: { instructions: string };
   evidence: Array<{ summaryText?: string }>;
@@ -422,7 +392,11 @@ const createFakeRepository = (): MemorySourceRepository => {
         ? capturedSessions.get(input.sessionId)
         : null;
       const projectId = input.projectId ?? session?.workspaceId ?? undefined;
-      const threadIds = [input.threadId, input.sessionId, session?.externalSessionId].filter(Boolean);
+      const threadIds = [
+        input.threadId,
+        input.sessionId,
+        session?.externalSessionId
+      ].filter(Boolean);
       const matching = policies
         .filter((policy) => policy.ownerUserId === actor.userId)
         .filter(
@@ -440,7 +414,9 @@ const createFakeRepository = (): MemorySourceRepository => {
       const effective = matching[0] ?? null;
       const global = matching.find((policy) => policy.targetType === "global");
       const pauseUntil = effective?.pauseUntil ?? global?.pauseUntil ?? null;
-      const paused = pauseUntil ? new Date(pauseUntil).getTime() > Date.now() : false;
+      const paused = pauseUntil
+        ? new Date(pauseUntil).getTime() > Date.now()
+        : false;
       return {
         captureState: paused
           ? "disabled"
@@ -482,7 +458,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         pauseUntil:
           input.pauseUntil instanceof Date
             ? input.pauseUntil.toISOString()
-            : input.pauseUntil ?? null,
+            : (input.pauseUntil ?? null),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       };
@@ -495,7 +471,8 @@ const createFakeRepository = (): MemorySourceRepository => {
     },
     async deleteCapturePolicy(actor, policyId) {
       const index = policies.findIndex(
-        (policy) => policy.id === policyId && policy.ownerUserId === actor.userId
+        (policy) =>
+          policy.id === policyId && policy.ownerUserId === actor.userId
       );
       if (index === -1) return false;
       policies.splice(index, 1);
@@ -543,18 +520,40 @@ const createFakeRepository = (): MemorySourceRepository => {
     async listMemoryBrowserItems(actor, input = {}) {
       return memories
         .filter((memory) => {
-          if (input.visibility && memory.visibility !== input.visibility) return false;
+          if (input.visibility && memory.visibility !== input.visibility)
+            return false;
           if (invalidatedNodes.has(memory.id)) return false;
-          if (input.pinned !== undefined && Boolean(memory.pinnedAt) !== input.pinned) return false;
-          if (input.query && !memory.summaryText.toLowerCase().includes(input.query.toLowerCase())) return false;
-          if (memory.visibility === "personal") return memory.ownerUserId === actor.userId;
-          return Boolean(memory.teamId && getMembership(actor.userId, memory.teamId));
+          if (
+            input.pinned !== undefined &&
+            Boolean(memory.pinnedAt) !== input.pinned
+          )
+            return false;
+          if (
+            input.query &&
+            !memory.summaryText
+              .toLowerCase()
+              .includes(input.query.toLowerCase())
+          )
+            return false;
+          if (memory.visibility === "personal")
+            return memory.ownerUserId === actor.userId;
+          return Boolean(
+            memory.teamId && getMembership(actor.userId, memory.teamId)
+          );
         })
         .slice(0, input.limit ?? 100)
         .map((memory) => ({
           id: memory.id,
-          clusterId: memory.summaryText.toLowerCase().includes("football") || memory.summaryText.toLowerCase().includes("tennis") ? "sports" : "general",
-          clusterLabel: memory.summaryText.toLowerCase().includes("football") || memory.summaryText.toLowerCase().includes("tennis") ? "Sports" : "General",
+          clusterId:
+            memory.summaryText.toLowerCase().includes("football") ||
+            memory.summaryText.toLowerCase().includes("tennis")
+              ? "sports"
+              : "general",
+          clusterLabel:
+            memory.summaryText.toLowerCase().includes("football") ||
+            memory.summaryText.toLowerCase().includes("tennis")
+              ? "Sports"
+              : "General",
           text: memory.summaryText,
           title: memory.title,
           visibility: memory.visibility,
@@ -570,7 +569,17 @@ const createFakeRepository = (): MemorySourceRepository => {
     },
     async listMemoryClusters(actor, input = {}) {
       const items = await this.listMemoryBrowserItems(actor, input);
-      const groups = new Map<string, { id: string; label: string; count: number; latestUpdatedAt: string; pinnedCount: number; items: typeof items }>();
+      const groups = new Map<
+        string,
+        {
+          id: string;
+          label: string;
+          count: number;
+          latestUpdatedAt: string;
+          pinnedCount: number;
+          items: typeof items;
+        }
+      >();
       for (const item of items) {
         const group = groups.get(item.clusterId);
         if (group) {
@@ -597,9 +606,14 @@ const createFakeRepository = (): MemorySourceRepository => {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return null;
       if (input.summaryText) memory.summaryText = input.summaryText;
-      if (input.pinned !== undefined) memory.pinnedAt = input.pinned ? new Date().toISOString() : null;
+      if (input.pinned !== undefined)
+        memory.pinnedAt = input.pinned ? new Date().toISOString() : null;
       if (input.visibility) memory.visibility = input.visibility;
-      return (await this.listMemoryBrowserItems(actor)).find((item) => item.id === nodeId) ?? null;
+      return (
+        (await this.listMemoryBrowserItems(actor)).find(
+          (item) => item.id === nodeId
+        ) ?? null
+      );
     },
     async deleteMemory(actor, nodeId) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
@@ -615,10 +629,17 @@ const createFakeRepository = (): MemorySourceRepository => {
         includeInvalidated: true
       });
       return {
-        capturedEvents: visibleEvents.filter((event) => !event.invalidatedAt).length,
-        leafNodes: visibleNodes.filter((node) => node.kind === "leaf" && !node.invalidatedAt).length,
-        rollupNodes: visibleNodes.filter((node) => node.kind === "rollup" && !node.invalidatedAt).length,
-        pendingSummaries: visibleNodes.filter((node) => node.summaryStatus === "pending" && !node.invalidatedAt).length,
+        capturedEvents: visibleEvents.filter((event) => !event.invalidatedAt)
+          .length,
+        leafNodes: visibleNodes.filter(
+          (node) => node.kind === "leaf" && !node.invalidatedAt
+        ).length,
+        rollupNodes: visibleNodes.filter(
+          (node) => node.kind === "rollup" && !node.invalidatedAt
+        ).length,
+        pendingSummaries: visibleNodes.filter(
+          (node) => node.summaryStatus === "pending" && !node.invalidatedAt
+        ).length,
         invalidatedRecords:
           visibleNodes.filter((node) => node.invalidatedAt).length +
           visibleEvents.filter((event) => event.invalidatedAt).length,
@@ -637,11 +658,23 @@ const createFakeRepository = (): MemorySourceRepository => {
     async listLcmGraphNodes(actor, input = {}) {
       return memories
         .filter((memory) => {
-          if (!input.includeInvalidated && invalidatedNodes.has(memory.id)) return false;
-          if (input.visibility && memory.visibility !== input.visibility) return false;
-          if (input.query && memory.id !== input.query && !memory.summaryText.toLowerCase().includes(input.query.toLowerCase())) return false;
-          if (memory.visibility === "personal") return memory.ownerUserId === actor.userId;
-          return Boolean(memory.teamId && getMembership(actor.userId, memory.teamId));
+          if (!input.includeInvalidated && invalidatedNodes.has(memory.id))
+            return false;
+          if (input.visibility && memory.visibility !== input.visibility)
+            return false;
+          if (
+            input.query &&
+            memory.id !== input.query &&
+            !memory.summaryText
+              .toLowerCase()
+              .includes(input.query.toLowerCase())
+          )
+            return false;
+          if (memory.visibility === "personal")
+            return memory.ownerUserId === actor.userId;
+          return Boolean(
+            memory.teamId && getMembership(actor.userId, memory.teamId)
+          );
         })
         .slice(0, input.limit ?? 100)
         .map((memory) => ({
@@ -649,7 +682,9 @@ const createFakeRepository = (): MemorySourceRepository => {
           kind: "leaf" as const,
           depth: 0,
           summaryText: memory.summaryText,
-          summaryStatus: summaryCorrections.has(memory.id) ? "summarized" as const : "pending" as const,
+          summaryStatus: summaryCorrections.has(memory.id)
+            ? ("summarized" as const)
+            : ("pending" as const),
           visibility: memory.visibility,
           ownerUserId: memory.ownerUserId,
           teamId: memory.teamId,
@@ -661,8 +696,12 @@ const createFakeRepository = (): MemorySourceRepository => {
           threadName: memory.threadName ?? null,
           createdAt: memory.createdAt ?? new Date().toISOString(),
           updatedAt: memory.updatedAt ?? new Date().toISOString(),
-          invalidatedAt: invalidatedNodes.has(memory.id) ? new Date().toISOString() : null,
-          invalidationReason: invalidatedNodes.has(memory.id) ? "user_deleted" : null,
+          invalidatedAt: invalidatedNodes.has(memory.id)
+            ? new Date().toISOString()
+            : null,
+          invalidationReason: invalidatedNodes.has(memory.id)
+            ? "user_deleted"
+            : null,
           sourceEventCount: nodeSources.get(memory.id)?.length ?? 0,
           sourceTokenEstimate: null,
           summaryTokenEstimate: null,
@@ -670,22 +709,30 @@ const createFakeRepository = (): MemorySourceRepository => {
           summaryPromptVersion: null,
           lcmAlgorithmVersion: "test-lcm",
           embeddingCount: 0,
-          summaryCorrectedAt: summaryCorrections.has(memory.id) ? new Date().toISOString() : null,
-          summaryCorrectedByUserId: summaryCorrections.has(memory.id) ? actor.userId : null
+          summaryCorrectedAt: summaryCorrections.has(memory.id)
+            ? new Date().toISOString()
+            : null,
+          summaryCorrectedByUserId: summaryCorrections.has(memory.id)
+            ? actor.userId
+            : null
         }));
     },
     async getLcmGraphNode(actor, nodeId, input = {}) {
-      const node = (await this.listLcmGraphNodes(actor, {
-        includeInvalidated: input.includeInvalidated,
-        query: nodeId,
-        limit: 1
-      })).find((candidate) => candidate.id === nodeId);
+      const node = (
+        await this.listLcmGraphNodes(actor, {
+          includeInvalidated: input.includeInvalidated,
+          query: nodeId,
+          limit: 1
+        })
+      ).find((candidate) => candidate.id === nodeId);
       if (!node) return null;
       const sourceIds = nodeSources.get(nodeId) ?? [];
-      const sources = (await this.listLcmGraphEvents(actor, {
-        includeInvalidated: true,
-        limit: 500
-      })).filter((event) => sourceIds.includes(event.id));
+      const sources = (
+        await this.listLcmGraphEvents(actor, {
+          includeInvalidated: true,
+          limit: 500
+        })
+      ).filter((event) => sourceIds.includes(event.id));
       return {
         ...node,
         sourceItems: sourceIds.map((eventId, position) => ({
@@ -716,11 +763,21 @@ const createFakeRepository = (): MemorySourceRepository => {
     async listLcmGraphEvents(actor, input = {}) {
       return events
         .filter((event) => {
-          if (!input.includeInvalidated && invalidatedEvents.has(event.id)) return false;
-          if (input.visibility && event.visibility !== input.visibility) return false;
-          if (input.query && event.id !== input.query && !event.content.toLowerCase().includes(input.query.toLowerCase())) return false;
-          if (event.visibility === "personal") return event.ownerUserId === actor.userId;
-          return Boolean(event.teamId && getMembership(actor.userId, event.teamId));
+          if (!input.includeInvalidated && invalidatedEvents.has(event.id))
+            return false;
+          if (input.visibility && event.visibility !== input.visibility)
+            return false;
+          if (
+            input.query &&
+            event.id !== input.query &&
+            !event.content.toLowerCase().includes(input.query.toLowerCase())
+          )
+            return false;
+          if (event.visibility === "personal")
+            return event.ownerUserId === actor.userId;
+          return Boolean(
+            event.teamId && getMembership(actor.userId, event.teamId)
+          );
         })
         .slice(0, input.limit ?? 100)
         .map((event) => ({
@@ -732,30 +789,55 @@ const createFakeRepository = (): MemorySourceRepository => {
           model: null,
           workspaceId: event.workspaceId,
           projectId: event.workspaceId,
-          projectName: typeof event.metadata.projectName === "string" ? event.metadata.projectName : null,
-          projectPath: typeof event.metadata.projectPath === "string" ? event.metadata.projectPath : null,
+          projectName:
+            typeof event.metadata.projectName === "string"
+              ? event.metadata.projectName
+              : null,
+          projectPath:
+            typeof event.metadata.projectPath === "string"
+              ? event.metadata.projectPath
+              : null,
           sessionId: event.sessionId,
-          threadId: typeof event.metadata.externalSessionId === "string" ? event.metadata.externalSessionId : event.sessionId,
-          threadName: typeof event.metadata.threadName === "string" ? event.metadata.threadName : null,
+          threadId:
+            typeof event.metadata.externalSessionId === "string"
+              ? event.metadata.externalSessionId
+              : event.sessionId,
+          threadName:
+            typeof event.metadata.threadName === "string"
+              ? event.metadata.threadName
+              : null,
           timestamp: event.createdAt,
           visibility: event.visibility,
-          invalidatedAt: invalidatedEvents.has(event.id) ? new Date().toISOString() : null,
-          invalidationReason: invalidatedEvents.has(event.id) ? "user_deleted" : null,
+          invalidatedAt: invalidatedEvents.has(event.id)
+            ? new Date().toISOString()
+            : null,
+          invalidationReason: invalidatedEvents.has(event.id)
+            ? "user_deleted"
+            : null,
           contentPreview: event.content,
           rawContent: input.query === event.id ? event.content : undefined,
           metadata: event.metadata,
-          linkedNodeIds: [...nodeSources.entries()].filter(([, ids]) => ids.includes(event.id)).map(([nodeId]) => nodeId)
+          linkedNodeIds: [...nodeSources.entries()]
+            .filter(([, ids]) => ids.includes(event.id))
+            .map(([nodeId]) => nodeId)
         }));
     },
     async getLcmGraphEvent(actor, eventId, input = {}) {
-      const event = (await this.listLcmGraphEvents(actor, {
-        includeInvalidated: input.includeInvalidated,
-        query: eventId,
-        limit: 1
-      })).find((candidate) => candidate.id === eventId);
+      const event = (
+        await this.listLcmGraphEvents(actor, {
+          includeInvalidated: input.includeInvalidated,
+          query: eventId,
+          limit: 1
+        })
+      ).find((candidate) => candidate.id === eventId);
       return event && input.includeRaw
-        ? { ...event, rawContent: events.find((candidate) => candidate.id === eventId)?.content ?? "" }
-        : event ?? null;
+        ? {
+            ...event,
+            rawContent:
+              events.find((candidate) => candidate.id === eventId)?.content ??
+              ""
+          }
+        : (event ?? null);
     },
     async updateLcmGraphEvent(actor, eventId, input) {
       const event = await this.getLcmGraphEvent(actor, eventId);
@@ -776,15 +858,20 @@ const createFakeRepository = (): MemorySourceRepository => {
     async exportMemoryRecords(actor) {
       const overview = await this.getLcmGraphOverview(actor);
       const nodes = await Promise.all(
-        (await this.listLcmGraphNodes(actor, { includeInvalidated: true })).map((node) =>
-          this.getLcmGraphNode(actor, node.id, { includeInvalidated: true })
+        (await this.listLcmGraphNodes(actor, { includeInvalidated: true })).map(
+          (node) =>
+            this.getLcmGraphNode(actor, node.id, { includeInvalidated: true })
         )
       );
       return {
         exportedAt: new Date().toISOString(),
         overview,
-        nodes: nodes.filter((node): node is NonNullable<typeof node> => Boolean(node)),
-        events: await this.listLcmGraphEvents(actor, { includeInvalidated: true })
+        nodes: nodes.filter((node): node is NonNullable<typeof node> =>
+          Boolean(node)
+        ),
+        events: await this.listLcmGraphEvents(actor, {
+          includeInvalidated: true
+        })
       };
     },
     async listSourcesNeedingEmbeddings() {
@@ -1003,7 +1090,9 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(registered.statusCode).toBe(200);
-    expect(jsonBody<{ currentTeam: unknown | null }>(me).currentTeam).toBeNull();
+    expect(
+      jsonBody<{ currentTeam: unknown | null }>(me).currentTeam
+    ).toBeNull();
     expect(rejected.statusCode).toBe(404);
   });
 
@@ -1054,7 +1143,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie: cookieHeader(registered) },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
     const authed = await app.inject({
@@ -1072,7 +1161,7 @@ describe("account and access flows", () => {
     expect(jsonBody<AccessResponse>(authed).ok).toBe(true);
   });
 
-  it("configures an OpenAI-compatible provider without returning the API key", async () => {
+  it("does not expose provider configuration routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -1103,20 +1192,8 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(saved.statusCode).toBe(200);
-    const providerConfig = jsonBody<ProviderConfigResponse>(
-      listed
-    ).providerConfigs[0];
-    if (!providerConfig) {
-      throw new Error("Expected one provider config");
-    }
-    expect(providerConfig.provider).toBe("openai-compatible");
-    expect(providerConfig.config.apiKey).toBeUndefined();
-    expect(providerConfig.config.apiKeyConfigured).toBe(true);
-    expect(providerConfig.config.baseUrl).toBe(
-      "https://models.example.test/v1"
-    );
-    expect(providerConfig.config.embedding_model).toBe("embed-model");
+    expect(saved.statusCode).toBe(404);
+    expect(listed.statusCode).toBe(404);
   });
 
   it("supports MCP bearer access checks and rejects cookie auth on v1 endpoints", async () => {
@@ -1131,7 +1208,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     expect(createdToken.statusCode).toBe(200);
     const token = jsonBody<TokenResponse>(createdToken).token;
@@ -1167,7 +1244,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
     const headers = { authorization: `Bearer ${token}` };
@@ -1181,11 +1258,6 @@ describe("account and access flows", () => {
         eventType: "user_prompt",
         content: "Alice prefers concise changelog summaries"
       }
-    });
-    const access = await app.inject({
-      method: "GET",
-      url: "/v1/access/check",
-      headers
     });
     const search = await app.inject({
       method: "POST",
@@ -1211,13 +1283,10 @@ describe("account and access flows", () => {
     expect(jsonBody<CaptureResponse>(personal).event.visibility).toBe(
       "personal"
     );
-    expect(jsonBody<AccessResponse>(access).enabledProviderConfigs).toBe(0);
-    expect(jsonBody<AccessResponse>(access).providerConfigRequired).toBe(false);
     expect(search.statusCode).toBe(200);
     expect(jsonBody<SearchResponse>(search).hits).toHaveLength(1);
     expect(answer.statusCode).toBe(200);
     const answerBody = jsonBody<AnswerResponse>(answer);
-    expect(answerBody.mode).toBe("codex_subscription");
     expect(answerBody.markdown).toContain("Evidence bundle returned");
     expect(answerBody.evidenceBundle.instructions).toContain(
       "Codex should synthesize"
@@ -1245,7 +1314,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
@@ -1255,7 +1324,11 @@ describe("account and access flows", () => {
       method: "PUT",
       url: "/v1/capture-policies",
       headers,
-      payload: { targetType: "global", captureState: "enabled", visibility: "personal" }
+      payload: {
+        targetType: "global",
+        captureState: "enabled",
+        visibility: "personal"
+      }
     });
     const global = await app.inject({
       method: "GET",
@@ -1266,7 +1339,11 @@ describe("account and access flows", () => {
       method: "PUT",
       url: "/v1/capture-policies",
       headers,
-      payload: { targetType: "project", projectId: "repo-a", captureState: "disabled" }
+      payload: {
+        targetType: "project",
+        projectId: "repo-a",
+        captureState: "disabled"
+      }
     });
     const project = await app.inject({
       method: "GET",
@@ -1277,7 +1354,12 @@ describe("account and access flows", () => {
       method: "PUT",
       url: "/v1/capture-policies",
       headers,
-      payload: { targetType: "thread", projectId: "repo-a", threadId: "thread-a", captureState: "enabled" }
+      payload: {
+        targetType: "thread",
+        projectId: "repo-a",
+        threadId: "thread-a",
+        captureState: "enabled"
+      }
     });
     const thread = await app.inject({
       method: "GET",
@@ -1327,7 +1409,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
@@ -1349,8 +1431,8 @@ describe("account and access flows", () => {
         }
       }
     });
-    const nodeId = jsonBody<CaptureResponse>(captured).compaction
-      ?.leafNodeIds[0];
+    const nodeId =
+      jsonBody<CaptureResponse>(captured).compaction?.leafNodeIds[0];
     await app.inject({
       method: "PATCH",
       url: `/v1/memory/nodes/${nodeId}`,
@@ -1400,7 +1482,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
@@ -1494,7 +1576,9 @@ describe("account and access flows", () => {
       threadName: "Graph thread",
       visibility: "personal"
     });
-    expect(jsonBody<GraphNodeResponse>(nodeDetail).node.sources[0]).toMatchObject({
+    expect(
+      jsonBody<GraphNodeResponse>(nodeDetail).node.sources[0]
+    ).toMatchObject({
       id: eventId,
       contentPreview: "Graph browser source record"
     });
@@ -1520,7 +1604,7 @@ describe("account and access flows", () => {
     });
   });
 
-  it("ignores provider configs for memory_answer in default Codex subscription mode", async () => {
+  it("returns evidence for memory_answer without backend provider configuration", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),
       runMemoryJobsInlineForTests: true
@@ -1538,24 +1622,12 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     expect(createdToken.statusCode).toBe(200);
     const headers = {
       authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
     };
-    const configured = await app.inject({
-      method: "POST",
-      url: "/provider-configs",
-      headers: { cookie },
-      payload: {
-        provider: "openai-compatible",
-        visibility: "personal",
-        apiKey: "sk-should-not-be-used",
-        baseUrl: "https://models.invalid.test/v1",
-        answerModel: "should-not-be-used"
-      }
-    });
     await app.inject({
       method: "POST",
       url: "/v1/memory/capture-personal-event",
@@ -1574,10 +1646,8 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(configured.statusCode).toBe(200);
     expect(answer.statusCode).toBe(200);
     const body = jsonBody<AnswerResponse>(answer);
-    expect(body.mode).toBe("codex_subscription");
     expect(body.evidence[0]?.summaryText).toContain("No provider answer");
   });
 
@@ -1603,7 +1673,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const response = await app.inject({
       method: "POST",
@@ -1629,19 +1699,7 @@ describe("account and access flows", () => {
     expect(body.processing.compaction.inline).toBe(false);
   });
 
-  it("rejects server synthesis unless the unsafe backend LLM flag is set", async () => {
-    process.env.MEMORY_MODE = "server_synthesis";
-    delete process.env.MEMORY_SERVER_SYNTHESIS_UNSAFE_ALLOW;
-
-    await expect(
-      buildServer({ repository: createFakeRepository() })
-    ).rejects.toThrow("backend-paid LLM calls");
-  });
-
-  it("reports server synthesis only with explicit unsafe opt-in", async () => {
-    process.env.MEMORY_MODE = "server_synthesis";
-    process.env.MEMORY_SERVER_SYNTHESIS_UNSAFE_ALLOW = "1";
-
+  it("reports provider configuration as unsupported for API-token access checks", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -1655,7 +1713,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie: cookieHeader(registered) },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     const access = await app.inject({
       method: "GET",
@@ -1668,8 +1726,7 @@ describe("account and access flows", () => {
 
     expect(access.statusCode).toBe(200);
     const body = jsonBody<AccessResponse>(access);
-    expect(body.memoryMode).toBe("server_synthesis");
-    expect(body.providerConfigRequired).toBe(true);
+    expect(body.providerConfigSupported).toBe(false);
   });
 
   it("creates MCP sessions, captures session events, exposes nodes, and serves OpenAPI JSON", async () => {
@@ -1687,7 +1744,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/api-tokens",
       headers: { cookie },
-      payload: { name: "Codex MCP" }
+      payload: { name: "Client Integration" }
     });
     expect(createdToken.statusCode).toBe(200);
     const headers = {
@@ -1732,9 +1789,9 @@ describe("account and access flows", () => {
     expect(session.statusCode).toBe(200);
     expect(event.statusCode).toBe(200);
     expect(node.statusCode).toBe(200);
-    expect(jsonBody<ExpandedResponse>(expanded).expanded.sources[0]?.content).toBe(
-      "Session event memory marker"
-    );
+    expect(
+      jsonBody<ExpandedResponse>(expanded).expanded.sources[0]?.content
+    ).toBe("Session event memory marker");
     expect(
       jsonBody<OpenApiResponse>(openapi).paths["/v1/memory/answer"]
     ).toBeDefined();

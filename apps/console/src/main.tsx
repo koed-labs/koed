@@ -1,4 +1,4 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -28,7 +28,6 @@ type CapturePolicy = {
   targetType: "global" | "project" | "thread";
   captureState: "enabled" | "disabled" | "ask" | null;
   visibility: "personal" | "team" | null;
-  pauseUntil: string | null;
 };
 type GraphRecord = {
   id: string;
@@ -36,54 +35,6 @@ type GraphRecord = {
   contentPreview?: string;
   visibility: string;
   invalidatedAt: string | null;
-};
-type GraphEvent = GraphRecord & {
-  actor: string | null;
-  eventType: string;
-  sourceRuntime: string | null;
-  captureMethod: string;
-  model: string | null;
-  workspaceId: string | null;
-  projectId: string | null;
-  projectName: string | null;
-  projectPath: string | null;
-  sessionId: string | null;
-  threadId: string | null;
-  threadName: string | null;
-  timestamp: string;
-  rawContent?: string;
-  metadata: Record<string, unknown>;
-  linkedNodeIds: string[];
-};
-type GraphNode = GraphRecord & {
-  kind: "leaf" | "rollup";
-  depth: number;
-  summaryStatus: "pending" | "summarized";
-  projectId: string | null;
-  projectName: string | null;
-  sessionId: string | null;
-  threadId: string | null;
-  threadName: string | null;
-  createdAt: string;
-  updatedAt: string;
-  sourceEventCount: number;
-  embeddingCount: number;
-};
-type ThreadGroup = {
-  id: string;
-  name: string;
-  projectName: string;
-  projectId: string | null;
-  latestAt: string;
-  eventCount: number;
-  sample: string;
-};
-type MemoryAnswer = {
-  markdown?: string;
-  mode?: string;
-  evidence?: Array<{ summaryText?: string; visibility?: string; nodeId?: string }>;
-  retrieval?: Record<string, unknown>;
-  localMemoryWorker?: Record<string, unknown>;
 };
 type SmokeResult = {
   ok: boolean;
@@ -108,6 +59,11 @@ const displayString = (value: unknown, fallback = ""): string =>
   typeof value === "boolean"
     ? String(value)
     : fallback;
+
+const displayRuntimeValue = (value: unknown): string =>
+  Array.isArray(value)
+    ? value.map((item) => displayString(item, "unknown")).join(", ")
+    : displayString(value, "unknown");
 
 const requestJson = async <T,>(
   path: string,
@@ -149,10 +105,18 @@ const StatusDot = ({ status }: { status: string }) => {
   const normalized = status.toLowerCase();
   const tone =
     normalized.includes("ok") ||
+    normalized.includes("ready") ||
+    normalized.includes("good") ||
+    normalized.includes("enabled") ||
+    normalized.includes("verified") ||
+    normalized.includes("configured") ||
     normalized.includes("true") ||
     normalized.includes("healthy")
       ? "ok"
-      : normalized.includes("error") || normalized.includes("false")
+      : normalized.includes("error") ||
+          normalized.includes("false") ||
+          normalized.includes("failed") ||
+          normalized.includes("disabled")
         ? "error"
         : "warn";
   return <span className={`status-dot ${tone}`}>{status}</span>;
@@ -160,12 +124,16 @@ const StatusDot = ({ status }: { status: string }) => {
 
 const JsonBlock = ({ value }: { value: unknown }) => (
   <div className="code-box">
-    <pre>{typeof value === "string" ? value : JSON.stringify(value, null, 2)}</pre>
+    <pre>
+      {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+    </pre>
     <button
       type="button"
       className="secondary"
       onClick={() =>
-        copyText(typeof value === "string" ? value : JSON.stringify(value, null, 2))
+        copyText(
+          typeof value === "string" ? value : JSON.stringify(value, null, 2)
+        )
       }
     >
       Copy
@@ -173,41 +141,29 @@ const JsonBlock = ({ value }: { value: unknown }) => (
   </div>
 );
 
-const eventThreadId = (event: GraphEvent) =>
-  event.threadId ?? event.sessionId ?? event.projectId ?? "unthreaded";
-
-const nodeThreadId = (node: GraphNode) =>
-  node.threadId ?? node.sessionId ?? node.projectId ?? "unthreaded";
-
 const App = () => {
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
-  const [overview, setOverview] = useState<Record<string, unknown> | null>(null);
+  const [overview, setOverview] = useState<Record<string, unknown> | null>(
+    null
+  );
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [policies, setPolicies] = useState<CapturePolicy[]>([]);
-  const [providers, setProviders] = useState<Array<Record<string, unknown>>>([]);
   const [nodes, setNodes] = useState<GraphRecord[]>([]);
   const [events, setEvents] = useState<GraphRecord[]>([]);
-  const [historyEvents, setHistoryEvents] = useState<GraphEvent[]>([]);
-  const [historyNodes, setHistoryNodes] = useState<GraphNode[]>([]);
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyQuery, setHistoryQuery] = useState("");
-  const [historyAnswer, setHistoryAnswer] = useState<MemoryAnswer | null>(null);
-  const [historyToken, setHistoryToken] = useState(
-    localStorage.getItem("koed.historyToken") ?? ""
-  );
-  const [diagnostics, setDiagnostics] = useState<Record<string, unknown> | null>(
-    null
-  );
-  const [memoryExport, setMemoryExport] = useState<Record<string, unknown> | null>(
-    null
-  );
+  const [diagnostics, setDiagnostics] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
+  const [memoryExport, setMemoryExport] = useState<Record<
+    string,
+    unknown
+  > | null>(null);
   const [smokeResult, setSmokeResult] = useState<SmokeResult | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [tokenName, setTokenName] = useState("Codex MCP");
+  const [tokenName, setTokenName] = useState("Client Integration");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [repoPath, setCheckoutPath] = useState(
     localStorage.getItem("koed.repoPath") ?? ""
@@ -244,23 +200,18 @@ const App = () => {
   };
 
   const refreshPrivate = async () => {
-    const [me, graph, apiTokens, capturePolicies, providerConfigs] =
-      await Promise.all([
-        requestJson<{ user: User }>("/me"),
-        requestJson<{ overview: Record<string, unknown> }>(
-          "/v1/memory/graph/overview"
-        ),
-        requestJson<{ apiTokens: ApiToken[] }>("/api-tokens"),
-        requestJson<{ policies: CapturePolicy[] }>("/v1/capture-policies"),
-        requestJson<{ providerConfigs: Array<Record<string, unknown>> }>(
-          "/provider-configs"
-        )
-      ]);
+    const [me, graph, apiTokens, capturePolicies] = await Promise.all([
+      requestJson<{ user: User }>("/me"),
+      requestJson<{ overview: Record<string, unknown> }>(
+        "/v1/memory/graph/overview"
+      ),
+      requestJson<{ apiTokens: ApiToken[] }>("/api-tokens"),
+      requestJson<{ policies: CapturePolicy[] }>("/v1/capture-policies")
+    ]);
     setUser(me.user);
     setOverview(graph.overview);
     setTokens(apiTokens.apiTokens);
     setPolicies(capturePolicies.policies);
-    setProviders(providerConfigs.providerConfigs);
   };
 
   useEffect(() => {
@@ -276,10 +227,6 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem("koed.nodeCommand", nodeCommand);
   }, [nodeCommand]);
-
-  useEffect(() => {
-    localStorage.setItem("koed.historyToken", historyToken);
-  }, [historyToken]);
 
   const submitAuth = async (event: FormEvent) => {
     event.preventDefault();
@@ -337,14 +284,13 @@ const App = () => {
     }
   };
 
-  const saveGlobalPolicy = async (captureState: string, pauseUntil: string | null = null) => {
+  const saveGlobalPolicy = async (captureState: string) => {
     await requestJson("/v1/capture-policies", {
       method: "PUT",
       body: JSON.stringify({
         targetType: "global",
         captureState,
-        visibility: "personal",
-        pauseUntil
+        visibility: "personal"
       })
     });
     await refreshPrivate();
@@ -365,24 +311,6 @@ const App = () => {
     setMemoryExport(exportResult);
   };
 
-  const loadHistory = async () => {
-    setHistoryLoading(true);
-    try {
-      const [eventResult, nodeResult] = await Promise.all([
-        requestJson<{ events: GraphEvent[] }>(
-          "/v1/memory/graph/events?limit=500&includeInvalidated=false"
-        ),
-        requestJson<{ nodes: GraphNode[] }>(
-          "/v1/memory/graph/nodes?limit=500&includeInvalidated=false"
-        )
-      ]);
-      setHistoryEvents(eventResult.events);
-      setHistoryNodes(nodeResult.nodes);
-    } finally {
-      setHistoryLoading(false);
-    }
-  };
-
   const invalidateRecord = async (kind: "nodes" | "events", id: string) => {
     await requestJson(`/v1/memory/graph/${kind}/${id}`, { method: "DELETE" });
     await loadGovernance();
@@ -395,91 +323,19 @@ const App = () => {
     );
   };
 
-  useEffect(() => {
-    if (!user || activeSection !== "history") {
-      return;
-    }
-    void loadHistory();
-  }, [user, activeSection]);
-
-  useEffect(() => {
-    if (!user) {
-      return;
-    }
-    const stream = new EventSource(`${apiBaseUrl}/v1/memory/graph/stream`, {
-      withCredentials: true
-    });
-    stream.addEventListener("graph_update", () => {
-      if (activeSection === "history") {
-        void loadHistory();
-      }
-      void refreshPrivate();
-    });
-    stream.onerror = () => stream.close();
-    return () => stream.close();
-  }, [user, activeSection]);
-
   const graphCounts = {
     events: Number(overview?.capturedEvents ?? 0),
     nodes: Number(overview?.leafNodes ?? 0) + Number(overview?.rollupNodes ?? 0),
+    leafNodes: Number(overview?.leafNodes ?? 0),
+    rollups: Number(overview?.rollupNodes ?? 0),
     pending: Number(overview?.pendingSummaries ?? 0),
     deleted: Number(overview?.invalidatedRecords ?? 0)
   };
-  const globalCapturePolicy = policies.find(
-    (policy) => policy.targetType === "global"
-  );
-  const capturePaused =
-    globalCapturePolicy?.pauseUntil &&
-    new Date(globalCapturePolicy.pauseUntil).getTime() > Date.now();
-  const captureStatus = capturePaused
-    ? "paused"
-    : (globalCapturePolicy?.captureState ?? "enabled");
 
   const tokenForSetup = newToken ?? "<create a token first>";
   const mcpArg = repoPath
     ? `${repoPath.replace(/\/$/, "")}/packages/mcp-server/dist/cli.js`
     : "/path/to/koed-self-hosted/packages/mcp-server/dist/cli.js";
-  const hookArg = repoPath
-    ? `${repoPath.replace(/\/$/, "")}/packages/mcp-server/dist/capture-hook.js`
-    : "/path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js";
-  const hookConfigPath = "~/.koed-memory/config.json";
-  const hookCommand = `${nodeCommand} ${hookArg} --config ${hookConfigPath}`;
-  const hookConfigJson = JSON.stringify(
-    {
-      apiUrl: apiBaseUrl,
-      apiToken: tokenForSetup,
-      captureEnabled: true
-    },
-    null,
-    2
-  );
-  const codexConfigToml = `[mcp_servers.koed]
-command = "${nodeCommand}"
-args = ["${mcpArg}"]
-enabled = true
-
-[mcp_servers.koed.env]
-CODEX_MEMORY_BASE_URL = "${apiBaseUrl}"
-CODEX_MEMORY_API_TOKEN = "${tokenForSetup}"
-
-[[hooks.UserPromptSubmit]]
-[[hooks.UserPromptSubmit.hooks]]
-type = "command"
-command = "${hookCommand}"
-timeout = 10
-
-[[hooks.PostToolUse]]
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "${hookCommand}"
-timeout = 10
-
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
-type = "command"
-command = "${hookCommand}"
-timeout = 30`;
-  const codexConfigureCommand = `CODEX_MEMORY_API_TOKEN="${tokenForSetup}" pnpm codex:configure`;
   const setupComplete =
     Boolean(user) &&
     tokens.length > 0 &&
@@ -487,80 +343,68 @@ timeout = 30`;
     Boolean(smokeResult?.ok || graphCounts.events > 0);
 
   const sections = [
-    ["setup", "Setup"],
-    ["status", "Status"],
-    ["clients", "AI Clients"],
+    ["setup", "Setup & Status"],
     ["memory", "Memory"],
-    ["history", "History"],
     ["security", "Security"]
   ] as const;
 
-  const threadGroups = useMemo(() => {
-    const groups = new Map<string, ThreadGroup>();
-    for (const event of historyEvents) {
-      const id = eventThreadId(event);
-      const existing = groups.get(id);
-      const projectName = event.projectName ?? event.projectPath ?? "Local workspace";
-      if (!existing) {
-        groups.set(id, {
-          id,
-          name: event.threadName ?? event.sessionId ?? "Untitled session",
-          projectId: event.projectId,
-          projectName,
-          latestAt: event.timestamp,
-          eventCount: 1,
-          sample: event.contentPreview ?? ""
-        });
-        continue;
-      }
-      existing.eventCount += 1;
-      if (event.timestamp > existing.latestAt) {
-        existing.latestAt = event.timestamp;
-        existing.sample = event.contentPreview ?? existing.sample;
-      }
+  const pageCopy = {
+    setup: {
+      title: setupComplete ? "Koed is ready" : "Finish local setup",
+      body: "Configure the local backend, check runtime health, and verify capture from one place."
+    },
+    memory: {
+      title: "Memory usage",
+      body: "Track local ingestion volume, summarisation health, and capture controls."
+    },
+    security: {
+      title: "Security",
+      body: "Manage local API tokens and generate redacted diagnostics."
     }
-    return [...groups.values()].sort((a, b) => b.latestAt.localeCompare(a.latestAt));
-  }, [historyEvents]);
-
-  const selectedThread = selectedThreadId
-    ? threadGroups.find((thread) => thread.id === selectedThreadId) ?? null
-    : (threadGroups[0] ?? null);
-  const selectedEvents = selectedThread
-    ? historyEvents
-        .filter((event) => eventThreadId(event) === selectedThread.id)
-        .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-    : [];
-  const selectedNodes = selectedThread
-    ? historyNodes.filter((node) => nodeThreadId(node) === selectedThread.id)
-    : [];
-
-  const askMemory = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!historyQuery.trim()) {
-      return;
-    }
-    if (!historyToken.trim()) {
-      setError("Paste a Koed API token before querying memory.");
-      return;
-    }
-    setError(null);
-    try {
-      const answer = await requestJson<MemoryAnswer>("/v1/memory/answer", {
-        method: "POST",
-        headers: { authorization: `Bearer ${historyToken.trim()}` },
-        body: JSON.stringify({
-          query: historyQuery.trim(),
-          retrieval_scope: "personal",
-          search_domain: selectedThread?.projectId ? "project" : "global",
-          workspace_id: selectedThread?.projectId,
-          limit: 10
-        })
-      });
-      setHistoryAnswer(answer);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
+  }[activeSection as "setup" | "memory" | "security"] ?? {
+    title: "Koed",
+    body: "Local operator console."
   };
+
+  const runtimeItems = [
+    ["Embedding model", configuration?.embeddingModel],
+    ["Embedding dimensions", configuration?.embeddingDimensions],
+    ["Reranking enabled", configuration?.rerankingEnabled]
+  ] as const;
+
+  const globalCapturePolicy = policies.find(
+    (policy) => policy.targetType === "global"
+  );
+  const captureStatus = globalCapturePolicy?.captureState ?? "enabled";
+
+  const quickStartItems = [
+    {
+      label: "Local admin",
+      detail: user ? `Signed in as ${user.email}` : "Create the first local account.",
+      done: Boolean(user)
+    },
+    {
+      label: "API token",
+      detail: tokens.length
+        ? `${tokens.length} active token${tokens.length === 1 ? "" : "s"}`
+        : "Create one token for your AI client.",
+      done: tokens.length > 0
+    },
+    {
+      label: "Runtime ready",
+      detail: configuration?.embeddingModel
+        ? "Embedding runtime is configured."
+        : "Waiting for local runtime configuration.",
+      done: Boolean(configuration?.embeddingModel)
+    },
+    {
+      label: "Memory verified",
+      detail: smokeResult?.ok || graphCounts.events > 0
+        ? "Koed has captured local memory."
+        : "Verify capture once the token exists.",
+      done: Boolean(smokeResult?.ok || graphCounts.events > 0)
+    }
+  ];
 
   return (
     <main>
@@ -600,11 +444,8 @@ timeout = 30`;
         <header className="page-header">
           <div>
             <p className="eyebrow">Local operator console</p>
-            <h1>{setupComplete ? "Koed is ready" : "Finish local setup"}</h1>
-            <p>
-              Configure the local backend, generate AI-client fields, and verify
-              capture without leaving this console.
-            </p>
+            <h1>{pageCopy.title}</h1>
+            <p>{pageCopy.body}</p>
           </div>
           <div className="header-stats">
             <div>
@@ -645,56 +486,38 @@ timeout = 30`;
 
         {activeSection === "setup" ? (
           <div className="section-grid">
-            <section className="surface setup-flow">
-              <h2>Setup checklist</h2>
+            <section className="surface quick-start">
+              <div className="section-title-row">
+                <div>
+                  <h2>Quick start</h2>
+                  <p>Core checks for a working local Koed install.</p>
+                </div>
+                <StatusDot status={setupComplete ? "good to go" : "in progress"} />
+              </div>
               <ol>
-                <li className={user ? "done" : "current"}>
-                  <span>1</span>
-                  <div>
-                    <strong>Local admin</strong>
-                    <p>
-                      {user
-                        ? `Signed in as ${user.email}`
-                        : "Create the first account inside this local database."}
-                    </p>
-                  </div>
-                </li>
-                <li className={tokens.length > 0 ? "done" : user ? "current" : ""}>
-                  <span>2</span>
-                  <div>
-                    <strong>API token</strong>
-                    <p>
-                      {tokens.length > 0
-                        ? `${tokens.length} active token${tokens.length === 1 ? "" : "s"}`
-                        : "Create one token for your AI client."}
-                    </p>
-                  </div>
-                </li>
-                <li className={smokeResult?.ok ? "done" : tokens.length > 0 ? "current" : ""}>
-                  <span>3</span>
-                  <div>
-                    <strong>Smoke test</strong>
-                    <p>
-                      {smokeResult?.ok
-                        ? "Capture and recall verified."
-                        : "Let Koed create and recall a local test memory."}
-                    </p>
-                  </div>
-                </li>
-                <li className={tokens.length > 0 ? "current" : ""}>
-                  <span>4</span>
-                  <div>
-                    <strong>AI client</strong>
-                    <p>Copy generated fields into your selected local client.</p>
-                  </div>
-                </li>
+                {quickStartItems.map((item, index) => (
+                  <li key={item.label} className={item.done ? "done" : "current"}>
+                    <span>{item.done ? "OK" : index + 1}</span>
+                    <div>
+                      <strong>{item.label}</strong>
+                      <p>{item.detail}</p>
+                    </div>
+                  </li>
+                ))}
               </ol>
+              {tokens.length > 0 && !smokeResult?.ok && graphCounts.events === 0 ? (
+                <button type="button" onClick={() => void runSmokeTest()}>
+                  Verify local memory
+                </button>
+              ) : null}
             </section>
 
             <section className="surface action-panel">
               {!user ? (
                 <>
-                  <h2>{setup?.configured ? "Sign in" : "Create local admin"}</h2>
+                  <h2>
+                    {setup?.configured ? "Sign in" : "Create local admin"}
+                  </h2>
                   <p>
                     This account exists only in the self-hosted Postgres
                     database.
@@ -717,15 +540,19 @@ timeout = 30`;
                         placeholder="Minimum 8 characters"
                       />
                     </label>
-                    <button>{setup?.configured ? "Sign in" : "Create admin"}</button>
+                    <button>
+                      {setup?.configured ? "Sign in" : "Create admin"}
+                    </button>
                   </form>
                 </>
               ) : (
                 <>
-                  <h2>Next action</h2>
+                  <h2>Token setup</h2>
                   {tokens.length === 0 ? (
                     <>
-                      <p>Create a token for Codex or another local AI client.</p>
+                      <p>
+                        Create a token for Codex or another local AI client.
+                      </p>
                       <form
                         className="inline-form"
                         onSubmit={(event) => void createToken(event)}
@@ -740,22 +567,15 @@ timeout = 30`;
                   ) : (
                     <>
                       <p>
-                        Run the smoke test to verify capture, compaction, and
-                        recall from the console.
+                        Token setup is complete. Use the T3 Code view for
+                        AI-client connection details and memory querying.
                       </p>
-                      <button type="button" onClick={() => void runSmokeTest()}>
-                        Run smoke test
-                      </button>
                     </>
                   )}
                 </>
               )}
             </section>
-          </div>
-        ) : null}
 
-        {activeSection === "status" ? (
-          <div className="section-grid">
             <section className="surface">
               <h2>Service status</h2>
               <div className="status-list">
@@ -780,18 +600,12 @@ timeout = 30`;
             <section className="surface">
               <h2>Runtime</h2>
               <div className="status-list">
-                {configuration
-                  ? Object.entries(configuration)
-                      .filter(([key]) => key !== "localRepositoryPath")
-                      .map(([key, value]) => (
-                        <div key={key}>
-                          <span>{key}</span>
-                          <strong>
-                            {Array.isArray(value) ? value.join(", ") : String(value)}
-                          </strong>
-                        </div>
-                      ))
-                  : null}
+                {runtimeItems.map(([key, value]) => (
+                  <div key={key}>
+                    <span>{key}</span>
+                    <strong>{displayRuntimeValue(value)}</strong>
+                  </div>
+                ))}
               </div>
             </section>
           </div>
@@ -827,12 +641,9 @@ timeout = 30`;
                 <FieldCopy label="Transport" value="STDIO" />
                 <FieldCopy label="Command" value={nodeCommand} />
                 <FieldCopy label="Argument" value={mcpArg} />
+                <FieldCopy label="MEMORY_API_URL" value={apiBaseUrl} />
                 <FieldCopy
-                  label="CODEX_MEMORY_BASE_URL"
-                  value={apiBaseUrl}
-                />
-                <FieldCopy
-                  label="CODEX_MEMORY_API_TOKEN"
+                  label="MEMORY_API_TOKEN"
                   value={tokenForSetup}
                   masked={newToken === null}
                 />
@@ -842,29 +653,13 @@ timeout = 30`;
                 />
               </div>
             </section>
-            <section className="surface wide">
-              <h2>Automatic capture hooks</h2>
-              <p>
-                MCP enables memory answers. Codex hooks capture prompts,
-                assistant messages, and tool results into Koed automatically.
-                Run the setup command from this repo, or add the generated TOML
-                block manually, then restart Codex.
-              </p>
-              <FieldCopy label="Setup command" value={codexConfigureCommand} />
-              <JsonBlock value={codexConfigToml} />
-              <h3>Hook config file</h3>
-              <p>
-                Save this JSON at `~/.koed-memory/config.json` with file mode
-                `0600`. The hook reads it outside the MCP process.
-              </p>
-              <JsonBlock value={hookConfigJson} />
-            </section>
             <section className="surface">
               <h2>Other clients</h2>
               <p>
                 Claude, Gemini, Cursor, Pi, and other clients will need their
                 own setup surfaces. This console should keep each guide explicit
-                instead of pretending every client can be automated the same way.
+                instead of pretending every client can be automated the same
+                way.
               </p>
               <div className="client-list">
                 {["Claude", "Gemini", "Cursor", "Pi"].map((client) => (
@@ -880,20 +675,63 @@ timeout = 30`;
 
         {activeSection === "memory" ? (
           <div className="section-grid">
-            <section className="surface">
-              <h2>Memory graph</h2>
-              <div className="metric-row">
+            <section className="surface wide memory-overview">
+              <div className="section-title-row">
+                <div>
+                  <h2>Usage overview</h2>
+                  <p>
+                    A high-level view of local ingestion, summarisation, and
+                    retained memory.
+                  </p>
+                </div>
+                <StatusDot status={captureStatus} />
+              </div>
+              <div className="metric-row expanded">
                 <div>
                   <span>Captured events</span>
                   <strong>{graphCounts.events}</strong>
                 </div>
                 <div>
-                  <span>Nodes</span>
+                  <span>Memory nodes</span>
                   <strong>{graphCounts.nodes}</strong>
+                </div>
+                <div>
+                  <span>Leaf memories</span>
+                  <strong>{graphCounts.leafNodes}</strong>
+                </div>
+                <div>
+                  <span>Rollups</span>
+                  <strong>{graphCounts.rollups}</strong>
+                </div>
+                <div>
+                  <span>Pending summaries</span>
+                  <strong>{graphCounts.pending}</strong>
                 </div>
                 <div>
                   <span>Deleted</span>
                   <strong>{graphCounts.deleted}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section className="surface">
+              <h2>Ingestion health</h2>
+              <div className="status-list">
+                <div>
+                  <span>Capture policy</span>
+                  <StatusDot status={captureStatus} />
+                </div>
+                <div>
+                  <span>API tokens</span>
+                  <strong>{tokens.length}</strong>
+                </div>
+                <div>
+                  <span>Capture policies</span>
+                  <strong>{policies.length}</strong>
+                </div>
+                <div>
+                  <span>Verification</span>
+                  <StatusDot status={smokeResult?.ok || graphCounts.events > 0 ? "verified" : "pending"} />
                 </div>
               </div>
               {smokeResult ? (
@@ -903,53 +741,49 @@ timeout = 30`;
                   <small>{smokeResult.marker}</small>
                 </div>
               ) : (
-                <p className="empty">Run the smoke test to create the first memory.</p>
+                <p className="empty">
+                  Run the smoke test to create the first memory.
+                </p>
               )}
             </section>
             <section className="surface">
-              <h2>Capture policy</h2>
+              <h2>Capture control</h2>
               <p>
                 Hooks check this policy before storing conversation events.
                 Disable or pause capture here to stop automatic ingestion without
                 editing Codex config.
               </p>
               <div className="segmented">
-                <button
-                  type="button"
-                  className={captureStatus === "enabled" ? "" : "secondary"}
-                  onClick={() => void saveGlobalPolicy("enabled")}
-                >
-                  enabled
-                </button>
-                <button
-                  type="button"
-                  className={captureStatus === "paused" ? "" : "secondary"}
-                  onClick={() =>
-                    void saveGlobalPolicy(
-                      "enabled",
-                      new Date(Date.now() + 60 * 60 * 1000).toISOString()
-                    )
-                  }
-                >
-                  pause 1h
-                </button>
-                <button
-                  type="button"
-                  className={captureStatus === "disabled" ? "" : "secondary"}
-                  onClick={() => void saveGlobalPolicy("disabled")}
-                >
-                  disabled
-                </button>
+                {["enabled", "ask", "disabled"].map((state) => (
+                  <button
+                    key={state}
+                    type="button"
+                    className={
+                      policies.some((policy) => policy.captureState === state)
+                        ? ""
+                        : "secondary"
+                    }
+                    onClick={() => void saveGlobalPolicy(state)}
+                  >
+                    {state}
+                  </button>
+                ))}
               </div>
               <ul className="plain-list">
-                <li>global: {captureStatus}</li>
-                {globalCapturePolicy?.pauseUntil ? (
-                  <li>pause until: {new Date(globalCapturePolicy.pauseUntil).toLocaleString()}</li>
-                ) : null}
+                {policies.map((policy) => (
+                  <li key={policy.id}>
+                    {policy.targetType}: {policy.captureState ?? "inherit"} /{" "}
+                    {policy.visibility ?? "inherit"}
+                  </li>
+                ))}
               </ul>
             </section>
             <section className="surface wide">
-              <h2>Governance</h2>
+              <h2>Recent memory records</h2>
+              <p>
+                Load recent records only when you need to audit or invalidate
+                captured data.
+              </p>
               <button type="button" onClick={() => void loadGovernance()}>
                 Load export and recent records
               </button>
@@ -968,131 +802,6 @@ timeout = 30`;
                 />
               </div>
               {memoryExport ? <JsonBlock value={memoryExport} /> : null}
-            </section>
-          </div>
-        ) : null}
-
-        {activeSection === "history" ? (
-          <div className="history-shell">
-            <section className="history-sidebar surface">
-              <div className="section-title-row">
-                <div>
-                  <h2>Captured sessions</h2>
-                  <p>{threadGroups.length} threads from recent graph events.</p>
-                </div>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => void loadHistory()}
-                >
-                  {historyLoading ? "Loading" : "Reload"}
-                </button>
-              </div>
-              <div className="thread-list">
-                {threadGroups.length === 0 ? (
-                  <p className="empty">No captured sessions yet.</p>
-                ) : (
-                  threadGroups.map((thread) => (
-                    <button
-                      key={thread.id}
-                      type="button"
-                      className={selectedThread?.id === thread.id ? "active" : ""}
-                      onClick={() => setSelectedThreadId(thread.id)}
-                    >
-                      <strong>{thread.name}</strong>
-                      <span>{thread.projectName}</span>
-                      <small>
-                        {thread.eventCount} events ·{" "}
-                        {new Date(thread.latestAt).toLocaleString()}
-                      </small>
-                    </button>
-                  ))
-                )}
-              </div>
-            </section>
-
-            <section className="history-main">
-              <div className="history-toolbar surface">
-                <div>
-                  <p className="eyebrow">History browser</p>
-                  <h2>{selectedThread?.name ?? "No session selected"}</h2>
-                  <p>
-                    Browse captured conversation events, inspect linked memory,
-                    and query recall against the local API.
-                  </p>
-                </div>
-                <div className="history-kpis">
-                  <div>
-                    <span>Events</span>
-                    <strong>{selectedEvents.length}</strong>
-                  </div>
-                  <div>
-                    <span>Nodes</span>
-                    <strong>{selectedNodes.length}</strong>
-                  </div>
-                </div>
-              </div>
-
-              <form
-                className="memory-ask surface"
-                onSubmit={(event) => void askMemory(event)}
-              >
-                <label>
-                  API token for memory query
-                  <input
-                    value={historyToken}
-                    onChange={(event) => setHistoryToken(event.target.value)}
-                    placeholder="Paste a console-created token"
-                  />
-                </label>
-                <label>
-                  Ask local memory
-                  <input
-                    value={historyQuery}
-                    onChange={(event) => setHistoryQuery(event.target.value)}
-                    placeholder="What should Koed remember about this project?"
-                  />
-                </label>
-                <button>Ask</button>
-              </form>
-
-              {historyAnswer ? (
-                <section className="surface answer-panel">
-                  <h2>Answer</h2>
-                  <p>{historyAnswer.markdown ?? "No answer returned."}</p>
-                  {historyAnswer.evidence?.length ? (
-                    <div className="evidence-list">
-                      {historyAnswer.evidence.slice(0, 4).map((item, index) => (
-                        <div key={`${item.nodeId ?? index}`}>
-                          <strong>{item.visibility ?? "personal"}</strong>
-                          <span>{item.summaryText ?? item.nodeId}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </section>
-              ) : null}
-
-              <section className="surface event-timeline">
-                <h2>Timeline</h2>
-                {selectedEvents.length === 0 ? (
-                  <p className="empty">Select a thread with captured events.</p>
-                ) : (
-                  selectedEvents.map((event) => (
-                    <article key={event.id}>
-                      <div>
-                        <strong>{event.actor ?? "event"}</strong>
-                        <span>{event.eventType}</span>
-                      </div>
-                      <p>{event.contentPreview}</p>
-                      <small>
-                        {event.sourceRuntime ?? "unknown"} · {event.captureMethod} ·{" "}
-                        {new Date(event.timestamp).toLocaleString()}
-                      </small>
-                    </article>
-                  ))
-                )}
-              </section>
             </section>
           </div>
         ) : null}
@@ -1128,14 +837,6 @@ timeout = 30`;
                   </div>
                 ))}
               </div>
-            </section>
-            <section className="surface">
-              <h2>Provider keys</h2>
-              <p>
-                {providers.length
-                  ? `${providers.length} server-side provider configuration(s) saved.`
-                  : "No server-side model provider configured. This is expected in codex_subscription mode."}
-              </p>
             </section>
             <section className="surface wide">
               <h2>Diagnostics</h2>

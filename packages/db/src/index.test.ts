@@ -12,7 +12,7 @@ import {
   vi
 } from "vitest";
 import type pg from "pg";
-import { createMemoryEngine } from "@codex-memory/core";
+import { createMemoryEngine } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,

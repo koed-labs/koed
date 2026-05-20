@@ -101,18 +101,18 @@ const positiveIntEnv = (name: string, fallback: number): number => {
 };
 
 const hookMaxItems = (): number =>
-  positiveIntEnv("CODEX_MEMORY_HOOK_MAX_ITEMS", 10);
+  positiveIntEnv("MEMORY_HOOK_MAX_ITEMS", 10);
 
 const hookTriggersLcmSummary = (): boolean =>
-  (process.env.CODEX_MEMORY_HOOK_TRIGGER_LCM_SUMMARY ?? "true")
+  (process.env.MEMORY_HOOK_TRIGGER_LCM_SUMMARY ?? "true")
     .trim()
     .toLowerCase() !== "false";
 
 const hookLcmSummaryDelayMs = (): number =>
-  positiveIntEnv("CODEX_MEMORY_HOOK_LCM_SUMMARY_DELAY_MS", 10_000);
+  positiveIntEnv("MEMORY_HOOK_LCM_SUMMARY_DELAY_MS", 10_000);
 
 const hookLcmSummaryLimit = (): number =>
-  positiveIntEnv("CODEX_MEMORY_HOOK_LCM_SUMMARY_LIMIT", 2);
+  positiveIntEnv("MEMORY_HOOK_LCM_SUMMARY_LIMIT", 2);
 
 const pausedUntilActive = (value?: string | null): boolean => {
   if (!value) {
@@ -325,7 +325,7 @@ const fallbackItems = (payload: HookPayload): CaptureItem[] => {
 };
 
 const statePath = (): string =>
-  path.join(os.homedir(), ".codex-memory", "capture-state.json");
+  path.join(os.homedir(), ".koed", "capture-state.json");
 
 const loadState = (): CaptureState => {
   try {
@@ -385,13 +385,13 @@ const main = async () => {
   const payload = JSON.parse(stdin || "{}") as HookPayload;
   const config = loadConfig(configPath);
   if (config.captureEnabled === false) {
-    console.error("codex-memory capture hook skipped because capture is paused");
+    console.error("koed capture hook skipped because capture is paused");
     return;
   }
   if (
     pausedUntilActive(config.capturePausedUntil)
   ) {
-    console.error("codex-memory capture hook skipped because local pause is active");
+    console.error("koed capture hook skipped because local pause is active");
     return;
   }
 
@@ -411,7 +411,7 @@ const main = async () => {
   const policy = policyResponse.policy;
   if (policy?.captureState !== "enabled") {
     console.error(
-      `codex-memory capture hook skipped by ${policy?.source ?? "default"} policy`
+      `koed capture hook skipped by ${policy?.source ?? "default"} policy`
     );
     return;
   }
@@ -439,7 +439,7 @@ const main = async () => {
         })
       : null;
   if (session?.skipped || (session && !session.session)) {
-    console.error("codex-memory capture hook skipped because session policy disabled capture");
+    console.error("koed capture hook skipped because session policy disabled capture");
     return;
   }
 
@@ -479,7 +479,7 @@ const main = async () => {
       captured += 1;
     } catch (error) {
       console.error(
-        `codex-memory capture hook stopped after ${captured} event(s): ${
+        `koed capture hook stopped after ${captured} event(s): ${
           error instanceof Error ? error.message : String(error)
         }`
       );
@@ -492,11 +492,11 @@ const main = async () => {
     triggerDetachedLcmSummary(configPath);
   }
   console.error(
-    `codex-memory capture hook stored ${captured} personal event(s)`
+    `koed capture hook stored ${captured} personal event(s)`
   );
 };
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(process.env.CODEX_MEMORY_HOOK_STRICT === "true" ? 1 : 0);
+  process.exit(process.env.MEMORY_HOOK_STRICT === "true" ? 1 : 0);
 });

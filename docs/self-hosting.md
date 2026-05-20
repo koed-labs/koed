@@ -1,6 +1,6 @@
 # Self-Hosting
 
-Koed Self-Hosted runs API, worker, embedding service, console, and an optional history-browser frontend. Postgres with pgvector stores accounts, tokens, memory events, graph nodes, embeddings, policies, and provider configuration. Redis backs BullMQ queues.
+Koed Self-Hosted runs API, worker, embedding service, console, and an optional history-browser frontend. Postgres with pgvector stores Users, API Tokens, Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis backs BullMQ queues.
 
 ## Local Run
 
