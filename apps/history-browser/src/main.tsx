@@ -213,6 +213,9 @@ const memoryRetrieval = (response?: MemoryAnswer) =>
 const nodeThreadId = (node: GraphNode) =>
   node.threadId ?? node.sessionId ?? node.projectId ?? "unthreaded";
 
+const threadSelectionKey = (thread: Pick<ThreadGroup, "projectId" | "id">) =>
+  `${encodeURIComponent(thread.projectId)}:${encodeURIComponent(thread.id)}`;
+
 const plainMarkdown = (value: string) =>
   value
     .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, ""))
@@ -264,7 +267,11 @@ function App() {
     () =>
       groups
         .flatMap((group) => group.threads)
-        .find((thread) => thread.id === selectedThreadId),
+        .find(
+          (thread) =>
+            threadSelectionKey(thread) === selectedThreadId ||
+            thread.id === selectedThreadId
+        ),
     [groups, selectedThreadId]
   );
   const selectedEvent = useMemo(
@@ -382,8 +389,8 @@ function App() {
   );
 
   const loadThread = useCallback(
-    async (threadId: string, options?: { silent?: boolean }) => {
-      if (!threadId) {
+    async (thread: ThreadGroup | undefined, options?: { silent?: boolean }) => {
+      if (!thread) {
         setThreadEvents([]);
         return;
       }
@@ -392,7 +399,7 @@ function App() {
       }
       try {
         const eventsResponse = await requestJson<{ events: GraphEvent[] }>(
-          `/v1/memory/graph/events?threadId=${encodeURIComponent(threadId)}&limit=250&includeInvalidated=${includeInvalidated}`,
+          `/v1/memory/graph/events?projectId=${encodeURIComponent(thread.projectId)}&threadId=${encodeURIComponent(thread.id)}&limit=250&includeInvalidated=${includeInvalidated}`,
           apiToken
         );
         const sorted = [...eventsResponse.events].sort((left, right) =>
@@ -457,14 +464,14 @@ function App() {
       refreshInFlight.current = true;
       try {
         await loadGraph(options);
-        if (selectedThreadId) {
-          await loadThread(selectedThreadId, options);
+        if (selectedThread) {
+          await loadThread(selectedThread, options);
         }
       } finally {
         refreshInFlight.current = false;
       }
     },
-    [loadGraph, loadThread, selectedThreadId]
+    [loadGraph, loadThread, selectedThread]
   );
 
   useEffect(() => {
@@ -477,14 +484,14 @@ function App() {
 
   useEffect(() => {
     if (!selectedThreadId && groups[0]?.threads[0]) {
-      setSelectedThreadId(groups[0].threads[0].id);
+      setSelectedThreadId(threadSelectionKey(groups[0].threads[0]));
     }
   }, [groups, selectedThreadId]);
 
   useEffect(() => {
     localStorage.setItem(selectedThreadStorageKey, selectedThreadId);
-    void loadThread(selectedThreadId);
-  }, [loadThread, selectedThreadId]);
+    void loadThread(selectedThread);
+  }, [loadThread, selectedThread, selectedThreadId]);
 
   useEffect(() => {
     if (
@@ -706,8 +713,10 @@ function App() {
                     <button
                       key={`${group.id}:${thread.id}`}
                       type="button"
-                      className={`thread-button ${thread.id === selectedThreadId ? "active" : ""}`}
-                      onClick={() => setSelectedThreadId(thread.id)}
+                      className={`thread-button ${thread === selectedThread ? "active" : ""}`}
+                      onClick={() =>
+                        setSelectedThreadId(threadSelectionKey(thread))
+                      }
                     >
                       <strong>{thread.name}</strong>
                       <span>

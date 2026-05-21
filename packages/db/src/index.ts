@@ -3228,16 +3228,16 @@ export const createMemorySourceRepository = (
         ranked_threads as (
           select
             project_id,
-            project_name,
-            project_path,
+            (array_agg(project_name order by captured_at desc, id desc))[1] as project_name,
+            (array_agg(project_path order by captured_at desc, id desc))[1] as project_path,
             thread_id,
-            thread_name,
+            (array_agg(thread_name order by captured_at desc, id desc))[1] as thread_name,
             count(*)::text as event_count,
             count(*) filter (where invalidated_at is not null)::text as invalidated_count,
             max(captured_at) as latest_at,
             (array_agg(content order by captured_at desc, id desc))[1] as sample
           from visible_events
-          group by project_id, project_name, project_path, thread_id, thread_name
+          group by project_id, thread_id
           order by max(captured_at) desc, thread_id desc
           limit $7
         )

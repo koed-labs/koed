@@ -931,6 +931,12 @@ const createFakeRepository = (): MemorySourceRepository => {
           thread.invalidatedCount += 1;
         }
         if (event.timestamp > thread.latestAt) {
+          thread.name =
+            event.threadName ??
+            event.threadId ??
+            event.sessionId ??
+            "Untitled conversation";
+          thread.projectName = projectName;
           thread.latestAt = event.timestamp;
           thread.sample = event.contentPreview;
         }
@@ -1065,7 +1071,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         visibility: input.visibility,
         ownerUserId: input.visibility === "personal" ? actor.userId : null,
         teamId: input.visibility === "team" ? input.teamId! : null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date(Date.now() + events.length).toISOString()
       };
       events.push(event);
       return event;
@@ -1796,12 +1802,12 @@ describe("account and access flows", () => {
         workspaceId: "repo-index-a",
         actor: "assistant",
         eventType: "assistant_response",
-        content: "Second conversation event preview",
+        content: "Renamed conversation event preview",
         metadata: {
-          projectName: "Index Repo A",
-          projectPath: "/work/repo-index-a",
+          projectName: "Renamed Index Repo A",
+          projectPath: "/work/renamed-repo-index-a",
           externalSessionId: "thread-index-a",
-          threadName: "Index conversation A"
+          threadName: "Renamed index conversation A"
         }
       }
     });
@@ -1859,11 +1865,20 @@ describe("account and access flows", () => {
       .flatMap((project) => project.threads)
       .find((thread) => thread.id === "thread-index-a");
     expect(indexA).toMatchObject({
-      name: "Index conversation A",
+      name: "Renamed index conversation A",
       projectId: "repo-index-a",
-      projectName: "Index Repo A",
+      projectName: "Renamed Index Repo A",
       eventCount: 2,
-      invalidatedCount: 0
+      invalidatedCount: 0,
+      sample: "Renamed conversation event preview"
+    });
+    const projectA = active.projects.find(
+      (project) => project.id === "repo-index-a"
+    );
+    expect(projectA).toMatchObject({
+      name: "Renamed Index Repo A",
+      path: "/work/renamed-repo-index-a",
+      eventCount: 2
     });
     expect(indexA).not.toHaveProperty("rawContent");
     expect(indexA).not.toHaveProperty("contentPreview");
