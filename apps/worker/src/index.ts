@@ -265,7 +265,7 @@ const workers = queueNames.map(
         } catch (error) {
           if (isTransientError(error)) {
             console.warn(
-              `Transient provider failure in ${queueName} job ${job.id ?? "unknown"}; BullMQ will retry.`
+              `Transient processing failure in ${queueName} job ${job.id ?? "unknown"}; BullMQ will retry.`
             );
           }
           throw error;

@@ -11,12 +11,10 @@ import type {
   ApiTokenRecord,
   CapturedSessionRecord,
   CreateMemoryNodeInput,
-  CreateProviderConfigInput,
   CreateTeamInput,
   CreateUserInput,
   MemoryNodeRecord,
   MemorySourceRepository,
-  ProviderConfigRecord,
   TeamMemberRecord,
   TeamRecord,
   UserRecord,
@@ -125,7 +123,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     TeamRecord & { members: Map<string, "owner" | "admin" | "member"> }
   >();
   const tokens = new Map<string, ApiTokenRecord & { tokenHash: string }>();
-  const providerConfigs = new Map<string, ProviderConfigRecord>();
   const memories: MemoryNodeRecord[] = [];
   const policies: Array<{
     id: string;
@@ -295,77 +292,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getApiTokenUser(tokenHash: string) {
       const token = tokens.get(tokenHash);
       return token ? (users.get(token.ownerUserId) ?? null) : null;
-    },
-    async createProviderConfig(
-      actor: ActorContext,
-      input: CreateProviderConfigInput
-    ) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
-        }
-        if (!getMembership(actor.userId, input.teamId)) {
-          throw new Error("User is not an active member of the requested team");
-        }
-      }
-      const id = randomUUID();
-      const record: ProviderConfigRecord = {
-        id,
-        ownerUserId: input.visibility === "personal" ? actor.userId : null,
-        teamId: input.visibility === "team" ? input.teamId! : null,
-        visibility: input.visibility,
-        provider: input.provider,
-        config: {
-          ...(input.config ?? {}),
-          apiKeyConfigured: Boolean(input.apiKey)
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      providerConfigs.set(id, record);
-      return record;
-    },
-    async listProviderConfigs(actor: ActorContext) {
-      return [...providerConfigs.values()].filter(
-        (config) =>
-          (config.visibility === "personal" &&
-            config.ownerUserId === actor.userId) ||
-          (config.visibility === "team" &&
-            Boolean(
-              config.teamId && getMembership(actor.userId, config.teamId)
-            ))
-      );
-    },
-    async getRuntimeProviderConfig(actor: ActorContext, input = {}) {
-      const config =
-        [...providerConfigs.values()].find(
-          (candidate) =>
-            (!input.visibility || candidate.visibility === input.visibility) &&
-            (!input.teamId || candidate.teamId === input.teamId) &&
-            (!input.provider || candidate.provider === input.provider) &&
-            ((candidate.visibility === "personal" &&
-              candidate.ownerUserId === actor.userId) ||
-              (candidate.visibility === "team" &&
-                Boolean(
-                  candidate.teamId &&
-                  getMembership(actor.userId, candidate.teamId)
-                )))
-        ) ?? null;
-      return config ? { ...config, apiKey: "fake-secret" } : null;
-    },
-    async deleteProviderConfig(actor: ActorContext, providerConfigId: string) {
-      const config = providerConfigs.get(providerConfigId);
-      if (
-        !config ||
-        (config.visibility === "personal" &&
-          config.ownerUserId !== actor.userId) ||
-        (config.visibility === "team" &&
-          (!config.teamId || !getMembership(actor.userId, config.teamId)))
-      ) {
-        return false;
-      }
-      providerConfigs.delete(providerConfigId);
-      return true;
     },
     async createCapturedSession(actor: ActorContext, input) {
       const id = randomUUID();

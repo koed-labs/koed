@@ -158,7 +158,6 @@ describeDb("memory repository visibility", () => {
       `
         truncate table
           audit_events,
-          provider_configs,
           api_tokens,
           memory_embeddings_3072,
           memory_embeddings_1536,
@@ -306,48 +305,6 @@ describeDb("memory repository visibility", () => {
     expect(bobMemories).toHaveLength(1);
     expect(bobMemories[0]?.summaryText).toBe("Shared team memory");
     expect(outsiderMemories).toHaveLength(0);
-  });
-
-  it("stores provider API keys encrypted and returns only redacted configs publicly", async () => {
-    const alice = await repo.createUser({
-      email: `alice-${randomUUID()}@example.com`
-    });
-    const saved = await repo.createProviderConfig(
-      { userId: alice.id },
-      {
-        visibility: "personal",
-        provider: "openai-compatible",
-        apiKey: "sk-secret-test",
-        config: {
-          baseUrl: "https://models.example.test/v1",
-          embedding_model: "embed-model",
-          summary_model: "summary-model",
-          answer_model: "answer-model",
-          embedding_dimensions: 1536,
-          enabled: true
-        }
-      }
-    );
-
-    const raw = await pool.query<{
-      encrypted_api_key: Buffer;
-      config: Record<string, unknown>;
-    }>("select encrypted_api_key, config from provider_configs where id = $1", [
-      saved.id
-    ]);
-    const listed = await repo.listProviderConfigs({ userId: alice.id });
-    const runtime = await repo.getRuntimeProviderConfig(
-      { userId: alice.id },
-      { provider: "openai-compatible" }
-    );
-
-    expect(raw.rows[0]?.encrypted_api_key.toString("utf8")).not.toContain(
-      "sk-secret-test"
-    );
-    expect(raw.rows[0]?.config.apiKey).toBeUndefined();
-    expect(listed[0]?.config.apiKey).toBeUndefined();
-    expect(listed[0]?.config.apiKeyConfigured).toBe(true);
-    expect(runtime?.apiKey).toBe("sk-secret-test");
   });
 
   it("captures personal facts, compacts, searches, answers, and expands a cited node", async () => {
