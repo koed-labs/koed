@@ -91,6 +91,24 @@ type GraphNodeResponse = {
 type GraphEventsResponse = {
   events: Array<Record<string, unknown>>;
 };
+type GraphThreadIndexResponse = {
+  projects: Array<{
+    id: string;
+    name: string;
+    path: string | null;
+    eventCount: number;
+    threads: Array<{
+      id: string;
+      name: string;
+      projectId: string;
+      projectName: string;
+      eventCount: number;
+      invalidatedCount: number;
+      latestAt: string;
+      sample: string;
+    }>;
+  }>;
+};
 type GraphEventResponse = {
   event: Record<string, unknown> & { rawContent?: string };
 };
@@ -773,12 +791,20 @@ const createFakeRepository = (): MemorySourceRepository => {
             !event.content.toLowerCase().includes(input.query.toLowerCase())
           )
             return false;
+          const projectId = event.workspaceId ?? null;
+          const threadId =
+            typeof event.metadata.externalSessionId === "string"
+              ? event.metadata.externalSessionId
+              : event.sessionId;
+          if (input.projectId && projectId !== input.projectId) return false;
+          if (input.threadId && threadId !== input.threadId) return false;
           if (event.visibility === "personal")
             return event.ownerUserId === actor.userId;
           return Boolean(
             event.teamId && getMembership(actor.userId, event.teamId)
           );
         })
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
         .slice(0, input.limit ?? 100)
         .map((event) => ({
           id: event.id,
@@ -821,6 +847,125 @@ const createFakeRepository = (): MemorySourceRepository => {
             .filter(([, ids]) => ids.includes(event.id))
             .map(([nodeId]) => nodeId)
         }));
+    },
+    async listLcmGraphThreads(actor, input = {}) {
+      const visibleEvents = await this.listLcmGraphEvents(actor, {
+        ...input,
+        limit: 500
+      });
+      const projectMap = new Map<
+        string,
+        {
+          id: string;
+          name: string;
+          path: string | null;
+          eventCount: number;
+          threads: Array<{
+            id: string;
+            name: string;
+            projectId: string;
+            projectName: string;
+            eventCount: number;
+            invalidatedCount: number;
+            latestAt: string;
+            sample: string;
+          }>;
+        }
+      >();
+      const threadMap = new Map<
+        string,
+        {
+          id: string;
+          name: string;
+          projectId: string;
+          projectName: string;
+          eventCount: number;
+          invalidatedCount: number;
+          latestAt: string;
+          sample: string;
+        }
+      >();
+
+      for (const event of visibleEvents) {
+        const projectId =
+          event.projectId ??
+          event.projectPath ??
+          event.workspaceId ??
+          "unknown-project";
+        const projectName =
+          event.projectName ??
+          event.projectPath ??
+          event.workspaceId ??
+          "Unknown project";
+        const project = projectMap.get(projectId) ?? {
+          id: projectId,
+          name: projectName,
+          path: event.projectPath,
+          eventCount: 0,
+          threads: []
+        };
+        const threadId = event.threadId ?? event.sessionId ?? event.id;
+        const threadMapKey = `${projectId}:${threadId}`;
+        let thread = threadMap.get(threadMapKey);
+        if (!thread) {
+          thread = {
+            id: threadId,
+            name:
+              event.threadName ??
+              event.threadId ??
+              event.sessionId ??
+              "Untitled conversation",
+            projectId,
+            projectName,
+            eventCount: 0,
+            invalidatedCount: 0,
+            latestAt: event.timestamp,
+            sample: event.contentPreview
+          };
+          threadMap.set(threadMapKey, thread);
+          project.threads.push(thread);
+        }
+        project.eventCount += 1;
+        thread.eventCount += 1;
+        if (event.invalidatedAt) {
+          thread.invalidatedCount += 1;
+        }
+        if (event.timestamp > thread.latestAt) {
+          thread.latestAt = event.timestamp;
+          thread.sample = event.contentPreview;
+        }
+        projectMap.set(projectId, project);
+      }
+
+      const limitedThreads = [...threadMap.values()]
+        .sort((left, right) => right.latestAt.localeCompare(left.latestAt))
+        .slice(0, input.limit ?? 100);
+      const limitedThreadIds = new Set(
+        limitedThreads.map((thread) => `${thread.projectId}:${thread.id}`)
+      );
+
+      return [...projectMap.values()]
+        .map((project) => {
+          const threads = project.threads
+            .filter((thread) =>
+              limitedThreadIds.has(`${thread.projectId}:${thread.id}`)
+            )
+            .sort((left, right) => right.latestAt.localeCompare(left.latestAt));
+          return {
+            ...project,
+            eventCount: threads.reduce(
+              (total, thread) => total + thread.eventCount,
+              0
+            ),
+            threads
+          };
+        })
+        .filter((project) => project.threads.length > 0)
+        .sort((left, right) => {
+          const leftLatest = left.threads[0]?.latestAt ?? "";
+          const rightLatest = right.threads[0]?.latestAt ?? "";
+          return rightLatest.localeCompare(leftLatest);
+        });
     },
     async getLcmGraphEvent(actor, eventId, input = {}) {
       const event = (
@@ -1294,9 +1439,9 @@ describe("account and access flows", () => {
     expect(answerBody.evidence[0]?.summaryText).toContain("concise changelog");
     expect(answerBody.citations).toHaveLength(1);
     expect(cookieAnswer.statusCode).toBe(200);
-    expect(jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText).toContain(
-      "concise changelog"
-    );
+    expect(
+      jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText
+    ).toContain("concise changelog");
   });
 
   it("resolves capture policy inheritance and skips disabled capture", async () => {
@@ -1602,6 +1747,148 @@ describe("account and access flows", () => {
       id: nodeId,
       invalidationReason: "user_deleted"
     });
+  });
+
+  it("serves a lightweight graph thread index without raw event rows", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "thread-index@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+
+    const firstThreadEvent = await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-index-a",
+        actor: "user",
+        eventType: "user_prompt",
+        content:
+          "First conversation event with details that should stay out of raw rows",
+        metadata: {
+          projectName: "Index Repo A",
+          projectPath: "/work/repo-index-a",
+          externalSessionId: "thread-index-a",
+          threadName: "Index conversation A"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-index-a",
+        actor: "assistant",
+        eventType: "assistant_response",
+        content: "Second conversation event preview",
+        metadata: {
+          projectName: "Index Repo A",
+          projectPath: "/work/repo-index-a",
+          externalSessionId: "thread-index-a",
+          threadName: "Index conversation A"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-index-b",
+        actor: "user",
+        eventType: "user_prompt",
+        content: "Another project conversation preview",
+        metadata: {
+          projectName: "Index Repo B",
+          externalSessionId: "thread-index-b",
+          threadName: "Index conversation B"
+        }
+      }
+    });
+
+    const activeIndex = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?limit=100&includeInvalidated=false",
+      headers: { cookie }
+    });
+    const limitedIndex = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?limit=1&includeInvalidated=false",
+      headers: { cookie }
+    });
+    await app.inject({
+      method: "DELETE",
+      url: `/v1/memory/graph/events/${jsonBody<CaptureResponse>(firstThreadEvent).event.id}`,
+      headers: { cookie }
+    });
+    const activeAfterDelete = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=false",
+      headers: { cookie }
+    });
+    const includingInvalidated = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=true",
+      headers: { cookie }
+    });
+    const selectedThreadEvents = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/events?threadId=thread-index-a&limit=250&includeInvalidated=false",
+      headers: { cookie }
+    });
+    await app.close();
+
+    const active = jsonBody<GraphThreadIndexResponse>(activeIndex);
+    const indexA = active.projects
+      .flatMap((project) => project.threads)
+      .find((thread) => thread.id === "thread-index-a");
+    expect(indexA).toMatchObject({
+      name: "Index conversation A",
+      projectId: "repo-index-a",
+      projectName: "Index Repo A",
+      eventCount: 2,
+      invalidatedCount: 0
+    });
+    expect(indexA).not.toHaveProperty("rawContent");
+    expect(indexA).not.toHaveProperty("contentPreview");
+    expect(indexA).not.toHaveProperty("metadata");
+    expect(
+      jsonBody<GraphThreadIndexResponse>(limitedIndex).projects
+    ).toHaveLength(1);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(limitedIndex).projects.flatMap(
+        (project) => project.threads
+      )
+    ).toHaveLength(1);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(activeAfterDelete)
+        .projects.flatMap((project) => project.threads)
+        .find((thread) => thread.id === "thread-index-a")
+    ).toMatchObject({ eventCount: 1, invalidatedCount: 0 });
+    expect(
+      jsonBody<GraphThreadIndexResponse>(includingInvalidated)
+        .projects.flatMap((project) => project.threads)
+        .find((thread) => thread.id === "thread-index-a")
+    ).toMatchObject({ eventCount: 2, invalidatedCount: 1 });
+    expect(
+      jsonBody<GraphEventsResponse>(selectedThreadEvents).events
+    ).toHaveLength(1);
   });
 
   it("returns evidence for memory_answer without backend provider configuration", async () => {

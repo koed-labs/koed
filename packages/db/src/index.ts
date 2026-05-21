@@ -282,6 +282,25 @@ export interface LcmGraphEvent {
   linkedNodeIds: string[];
 }
 
+export interface LcmGraphThread {
+  id: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+  eventCount: number;
+  invalidatedCount: number;
+  latestAt: string;
+  sample: string;
+}
+
+export interface LcmGraphProjectThreads {
+  id: string;
+  name: string;
+  path: string | null;
+  eventCount: number;
+  threads: LcmGraphThread[];
+}
+
 export interface LcmGraphNodeDetail extends LcmGraphNode {
   sourceItems: LcmSourceItem[];
   sources: LcmGraphEvent[];
@@ -513,6 +532,17 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       limit?: number;
     }
   ): Promise<LcmGraphEvent[]>;
+  listLcmGraphThreads(
+    actor: ActorContext,
+    input?: {
+      query?: string;
+      visibility?: Visibility;
+      projectId?: string;
+      threadId?: string;
+      includeInvalidated?: boolean;
+      limit?: number;
+    }
+  ): Promise<LcmGraphProjectThreads[]>;
   getLcmGraphEvent(
     actor: ActorContext,
     eventId: string,
@@ -523,7 +553,10 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     eventId: string,
     input: { visibility?: Visibility; invalidated?: boolean }
   ): Promise<LcmGraphEvent | null>;
-  invalidateLcmGraphEvent(actor: ActorContext, eventId: string): Promise<boolean>;
+  invalidateLcmGraphEvent(
+    actor: ActorContext,
+    eventId: string
+  ): Promise<boolean>;
   exportMemoryRecords(actor: ActorContext): Promise<{
     exportedAt: string;
     overview: LcmGraphOverview;
@@ -931,10 +964,9 @@ const mapMemoryBrowserItem = (row: {
   thread_name: string | null;
 }): MemoryBrowserItem => {
   const text = presentMemoryText(row.summary_text, row);
-  const label =
-    isGenericDevelopmentActivity(text, row)
-      ? "Development Activity"
-      : clusterLabelForMemoryText(`${row.title ?? ""} ${text}`);
+  const label = isGenericDevelopmentActivity(text, row)
+    ? "Development Activity"
+    : clusterLabelForMemoryText(`${row.title ?? ""} ${text}`);
   return {
     id: row.id,
     clusterId: clusterIdForLabel(label),
@@ -1058,6 +1090,28 @@ const mapLcmGraphEvent = (row: {
     linkedNodeIds: row.linked_node_ids ?? []
   };
 };
+
+const mapLcmGraphThreadRow = (row: {
+  project_id: string;
+  project_name: string;
+  project_path: string | null;
+  thread_id: string;
+  thread_name: string;
+  event_count: string | number;
+  invalidated_count: string | number;
+  latest_at: Date;
+  sample: string | null;
+}): LcmGraphThread & { projectPath: string | null } => ({
+  id: row.thread_id,
+  name: row.thread_name,
+  projectId: row.project_id,
+  projectName: row.project_name,
+  projectPath: row.project_path,
+  eventCount: Number(row.event_count),
+  invalidatedCount: Number(row.invalidated_count),
+  latestAt: row.latest_at.toISOString(),
+  sample: truncateDisplayText(row.sample ?? "", 220)
+});
 
 const mapCapturedSession = (row: {
   id: string;
@@ -2349,7 +2403,9 @@ export const createMemorySourceRepository = (
     const global = policies.find((policy) => policy.targetType === "global");
     const effective = policies[0] ?? null;
     const pauseUntil = effective?.pauseUntil ?? global?.pauseUntil ?? null;
-    const paused = pauseUntil ? new Date(pauseUntil).getTime() > Date.now() : false;
+    const paused = pauseUntil
+      ? new Date(pauseUntil).getTime() > Date.now()
+      : false;
     return {
       captureState: paused
         ? "disabled"
@@ -2619,7 +2675,9 @@ export const createMemorySourceRepository = (
       }
     }
     return [...groups.values()]
-      .sort((left, right) => right.latestUpdatedAt.localeCompare(left.latestUpdatedAt))
+      .sort((left, right) =>
+        right.latestUpdatedAt.localeCompare(left.latestUpdatedAt)
+      )
       .slice(0, input.limit ?? 50);
   },
 
@@ -2689,7 +2747,7 @@ export const createMemorySourceRepository = (
         input.pinned ?? null,
         input.visibility ?? null,
         input.visibility === "team"
-          ? (await this.getCurrentTeam(actor.userId))?.id ?? null
+          ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
           : null
       ]
     );
@@ -2969,7 +3027,9 @@ export const createMemorySourceRepository = (
       includeInvalidated: true,
       limit: 500
     });
-    const visibleNodeById = new Map(visibleNodes.map((item) => [item.id, item]));
+    const visibleNodeById = new Map(
+      visibleNodes.map((item) => [item.id, item])
+    );
     const [sources] = await Promise.all([
       Promise.all(
         sourceRows.rows.map((row) =>
@@ -2991,8 +3051,8 @@ export const createMemorySourceRepository = (
       sourceItems: fullNode.rows[0]?.source_items_json ?? [],
       childNodes,
       parentNodes,
-      sources: sources.filter(
-        (candidate): candidate is LcmGraphEvent => Boolean(candidate)
+      sources: sources.filter((candidate): candidate is LcmGraphEvent =>
+        Boolean(candidate)
       )
     };
   },
@@ -3013,7 +3073,7 @@ export const createMemorySourceRepository = (
     }
     const teamId =
       input.visibility === "team"
-        ? (await this.getCurrentTeam(actor.userId))?.id ?? null
+        ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
         : null;
     await pool.query(
       `
@@ -3124,6 +3184,104 @@ export const createMemorySourceRepository = (
     return result.rows.map((row) => mapLcmGraphEvent(row));
   },
 
+  async listLcmGraphThreads(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const result = await pool.query<Parameters<typeof mapLcmGraphThreadRow>[0]>(
+      `
+        with visible_events as (
+          select
+            me.id,
+            coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') as project_id,
+            coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') as project_name,
+            coalesce(me.payload #>> '{metadata,projectPath}', s.cwd, me.payload ->> 'workspaceId') as project_path,
+            coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
+            coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            me.captured_at,
+            me.invalidated_at,
+            me.payload ->> 'content' as content
+          from memory_events me
+          left join sessions s on s.id = me.session_id
+          where ($2::boolean = true or me.invalidated_at is null)
+            and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
+            and ($4::text is null or coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') = $4)
+            and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
+            and (
+              $6::text is null
+              or me.payload ->> 'content' ilike '%' || $6 || '%'
+              or me.id::text = $6
+              or coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
+              or coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
+            )
+            and (
+              (me.visibility = 'personal' and me.owner_user_id = $1)
+              or (
+                me.visibility = 'team'
+                and exists (
+                  select 1 from team_members tm
+                  where tm.team_id = me.team_id
+                    and tm.user_id = $1
+                    and tm.removed_at is null
+                )
+              )
+            )
+        ),
+        ranked_threads as (
+          select
+            project_id,
+            project_name,
+            project_path,
+            thread_id,
+            thread_name,
+            count(*)::text as event_count,
+            count(*) filter (where invalidated_at is not null)::text as invalidated_count,
+            max(captured_at) as latest_at,
+            (array_agg(content order by captured_at desc, id desc))[1] as sample
+          from visible_events
+          group by project_id, project_name, project_path, thread_id, thread_name
+          order by max(captured_at) desc, thread_id desc
+          limit $7
+        )
+        select *
+        from ranked_threads
+        order by latest_at desc, thread_id desc
+      `,
+      [
+        actor.userId,
+        input.includeInvalidated ?? false,
+        input.visibility ?? null,
+        input.projectId ?? null,
+        input.threadId ?? null,
+        input.query?.trim() || null,
+        limit
+      ]
+    );
+
+    const projects = new Map<string, LcmGraphProjectThreads>();
+    for (const thread of result.rows.map(mapLcmGraphThreadRow)) {
+      const project = projects.get(thread.projectId) ?? {
+        id: thread.projectId,
+        name: thread.projectName,
+        path: thread.projectPath,
+        eventCount: 0,
+        threads: []
+      };
+      project.eventCount += thread.eventCount;
+      project.threads.push({
+        id: thread.id,
+        name: thread.name,
+        projectId: thread.projectId,
+        projectName: thread.projectName,
+        eventCount: thread.eventCount,
+        invalidatedCount: thread.invalidatedCount,
+        latestAt: thread.latestAt,
+        sample: thread.sample
+      });
+      projects.set(project.id, project);
+    }
+
+    return [...projects.values()];
+  },
+
   async getLcmGraphEvent(actor, eventId, input = {}) {
     const events = await this.listLcmGraphEvents(actor, {
       includeInvalidated: input.includeInvalidated,
@@ -3132,7 +3290,22 @@ export const createMemorySourceRepository = (
     });
     const event = events.find((candidate) => candidate.id === eventId);
     return event
-      ? { ...event, ...(input.includeRaw ? { rawContent: event.rawContent ?? (await pool.query<{ content: string | null }>("select payload ->> 'content' as content from memory_events where id = $1", [eventId])).rows[0]?.content ?? "" } : {}) }
+      ? {
+          ...event,
+          ...(input.includeRaw
+            ? {
+                rawContent:
+                  event.rawContent ??
+                  (
+                    await pool.query<{ content: string | null }>(
+                      "select payload ->> 'content' as content from memory_events where id = $1",
+                      [eventId]
+                    )
+                  ).rows[0]?.content ??
+                  ""
+              }
+            : {})
+        }
       : null;
   },
 
@@ -3152,7 +3325,7 @@ export const createMemorySourceRepository = (
     }
     const teamId =
       input.visibility === "team"
-        ? (await this.getCurrentTeam(actor.userId))?.id ?? null
+        ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
         : null;
     await pool.query(
       `
