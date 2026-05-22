@@ -27,6 +27,8 @@ const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
 interface BuildServerOptions {
   repository?: MemorySourceRepository;
   runMemoryJobsInlineForTests?: boolean;
+  rateLimitStore?: RateLimitStore;
+  cacheProvider?: CacheProvider;
 }
 
 type RateLimitName = "auth" | "memoryRead" | "memoryWrite" | "memoryRecall";
@@ -66,6 +68,21 @@ interface GraphListenClient {
   ): void;
   on(event: "error", callback: (error: unknown) => void): void;
   release(): void;
+}
+
+interface RateLimitStore {
+  increment(
+    key: string,
+    windowMs: number
+  ): Promise<{ count: number; resetAt: number }>;
+  close?(): Promise<void>;
+}
+
+interface CacheProvider {
+  getJson<T>(key: string): Promise<T | null>;
+  setJson<T>(key: string, value: T, ttlSeconds: number): Promise<void>;
+  deleteByPrefix(prefix: string): Promise<void>;
+  close?(): Promise<void>;
 }
 
 const hashSecret = (secret: string): string =>
@@ -132,6 +149,96 @@ const allowedCorsOrigins = (): Set<string> => {
 };
 
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+
+class MemoryRateLimitStore implements RateLimitStore {
+  increment(key: string, windowMs: number) {
+    const now = Date.now();
+    const current = rateLimitBuckets.get(key);
+    const bucket =
+      !current || current.resetAt <= now
+        ? { count: 0, resetAt: now + windowMs }
+        : current;
+    bucket.count += 1;
+    rateLimitBuckets.set(key, bucket);
+    return Promise.resolve(bucket);
+  }
+}
+
+class RedisRateLimitStore implements RateLimitStore {
+  constructor(private readonly redis: Redis) {}
+
+  async increment(key: string, windowMs: number) {
+    const redisKey = `koed:rate-limit:${key}`;
+    const count = await this.redis.incr(redisKey);
+    if (count === 1) {
+      await this.redis.pexpire(redisKey, windowMs);
+    }
+    const ttl = await this.redis.pttl(redisKey);
+    return {
+      count,
+      resetAt: Date.now() + (ttl > 0 ? ttl : windowMs)
+    };
+  }
+
+  close() {
+    this.redis.disconnect();
+    return Promise.resolve();
+  }
+}
+
+class NoopCacheProvider implements CacheProvider {
+  getJson<T>(key: string): Promise<T | null> {
+    void key;
+    return Promise.resolve(null);
+  }
+
+  setJson<T>(key: string, value: T, ttlSeconds: number) {
+    void key;
+    void value;
+    void ttlSeconds;
+    return Promise.resolve();
+  }
+
+  deleteByPrefix(prefix: string) {
+    void prefix;
+    return Promise.resolve();
+  }
+}
+
+class RedisCacheProvider implements CacheProvider {
+  constructor(private readonly redis: Redis) {}
+
+  async getJson<T>(key: string): Promise<T | null> {
+    const value = await this.redis.get(key);
+    return value ? (JSON.parse(value) as T) : null;
+  }
+
+  async setJson<T>(key: string, value: T, ttlSeconds: number) {
+    await this.redis.set(key, JSON.stringify(value), "EX", ttlSeconds);
+  }
+
+  async deleteByPrefix(prefix: string) {
+    let cursor = "0";
+    do {
+      const [nextCursor, keys] = await this.redis.scan(
+        cursor,
+        "MATCH",
+        `${prefix}*`,
+        "COUNT",
+        100
+      );
+      cursor = nextCursor;
+      if (keys.length > 0) {
+        await this.redis.del(...keys);
+      }
+    } while (cursor !== "0");
+  }
+
+  close() {
+    this.redis.disconnect();
+    return Promise.resolve();
+  }
+}
 
 const publicUser = (user: {
   id: string;
@@ -474,6 +581,33 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       : null;
   const embeddingQueue = createQueue("memory-embed");
   const compactionQueue = createQueue("lcm-compact");
+  const rateLimitRedis =
+    !options.rateLimitStore &&
+    process.env.RATE_LIMIT_STORE === "redis" &&
+    (process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_URL)
+      ? new Redis(process.env.RATE_LIMIT_REDIS_URL ?? process.env.REDIS_URL!, {
+          lazyConnect: true,
+          maxRetriesPerRequest: null
+        })
+      : null;
+  const cacheRedis =
+    !options.cacheProvider &&
+    process.env.CACHE_STORE === "redis" &&
+    (process.env.CACHE_REDIS_URL || process.env.REDIS_URL)
+      ? new Redis(process.env.CACHE_REDIS_URL ?? process.env.REDIS_URL!, {
+          lazyConnect: true,
+          maxRetriesPerRequest: null
+        })
+      : null;
+  const rateLimitStore: RateLimitStore =
+    options.rateLimitStore ??
+    (rateLimitRedis
+      ? new RedisRateLimitStore(rateLimitRedis)
+      : new MemoryRateLimitStore());
+  const cacheProvider: CacheProvider =
+    options.cacheProvider ??
+    (cacheRedis ? new RedisCacheProvider(cacheRedis) : new NoopCacheProvider());
+  const graphCacheTtlSeconds = parsePositiveInt("GRAPH_CACHE_TTL_SECONDS", 5);
   const graphStreamClients = new Set<GraphStreamClient>();
   let graphListenClient: GraphListenClient | null = null;
   const memoryRateLimitWindowMs = parsePositiveInt(
@@ -540,9 +674,16 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           return;
         }
         try {
-          broadcastGraphUpdate(
-            JSON.parse(message.payload) as GraphUpdatePayload
-          );
+          const payload = JSON.parse(message.payload) as GraphUpdatePayload;
+          void cacheProvider
+            .deleteByPrefix("koed:graph:")
+            .catch((error: unknown) => {
+              app.log.warn(
+                { error: String(error) },
+                "could not invalidate graph cache"
+              );
+            });
+          broadcastGraphUpdate(payload);
         } catch (error) {
           app.log.warn(
             { error: String(error), payload: message.payload },
@@ -569,7 +710,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     }
     graphStreamClients.clear();
     graphListenClient?.release();
-    await Promise.all([embeddingQueue?.close(), compactionQueue?.close()]);
+    await Promise.all([
+      embeddingQueue?.close(),
+      compactionQueue?.close(),
+      rateLimitStore.close?.(),
+      cacheProvider.close?.()
+    ]);
     await pool?.end();
   });
 
@@ -806,15 +952,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         ? hashSecret(authorization)
         : request.ip;
       const key = `${name}:${keyMaterial}`;
-      const now = Date.now();
-      const current = rateLimitBuckets.get(key);
-      const bucket =
-        !current || current.resetAt <= now
-          ? { count: 0, resetAt: now + policy.windowMs }
-          : current;
-
-      bucket.count += 1;
-      rateLimitBuckets.set(key, bucket);
+      const bucket = await rateLimitStore.increment(key, policy.windowMs);
       reply.header("x-ratelimit-limit", String(policy.max));
       reply.header(
         "x-ratelimit-remaining",
@@ -1606,7 +1744,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
-      return { overview: await repo.getLcmGraphOverview({ userId: user.id }) };
+      const cacheKey = `koed:graph:overview:${user.id}`;
+      const cached = await cacheProvider.getJson<{ overview: unknown }>(
+        cacheKey
+      );
+      if (cached) {
+        return cached;
+      }
+      const response = {
+        overview: await repo.getLcmGraphOverview({ userId: user.id })
+      };
+      await cacheProvider.setJson(cacheKey, response, graphCacheTtlSeconds);
+      return response;
     }
   );
 
@@ -1672,9 +1821,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const repo = requireRepository();
       const user = await authenticate(request);
       const query = graphQuerySchema.parse(request.query);
-      return {
+      const cacheKey = `koed:graph:threads:${user.id}:${hashSecret(
+        JSON.stringify(query)
+      )}`;
+      const cached = await cacheProvider.getJson<{ projects: unknown }>(
+        cacheKey
+      );
+      if (cached) {
+        return cached;
+      }
+      const response = {
         projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
       };
+      await cacheProvider.setJson(cacheKey, response, graphCacheTtlSeconds);
+      return response;
     }
   );
 

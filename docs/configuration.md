@@ -37,6 +37,11 @@ values and adds any missing keys from `.env.example`.
 - `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The default is 300 requests per 60-second window.
 - `API_MEMORY_RECALL_RATE_LIMIT_WINDOW_MS`: recall-oriented memory endpoint rate-limit window.
 - `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The default is 300 requests per 60-second window.
+- `API_RATE_LIMIT_STORE`: `memory` by default; set `redis` to share API rate-limit counters across API replicas.
+- `API_RATE_LIMIT_REDIS_URL`: optional Redis URL for API rate-limit counters; falls back to `REDIS_URL`.
+- `API_CACHE_STORE`: `memory` by default; set `redis` to enable short-lived graph response caching.
+- `API_CACHE_REDIS_URL`: optional Redis URL for API cache entries; falls back to `REDIS_URL`.
+- `API_GRAPH_CACHE_TTL_SECONDS`: graph overview/thread cache TTL when Redis caching is enabled.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `CONSOLE_NODE_ENV`: runtime environment for the Operator Console service.
 - `CONSOLE_PORT`: Operator Console port inside the container.

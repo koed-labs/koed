@@ -32,7 +32,12 @@ afterEach(() => {
     "MEMORY_WRITE_RATE_LIMIT_WINDOW_MS",
     "MEMORY_WRITE_RATE_LIMIT_MAX",
     "MEMORY_RECALL_RATE_LIMIT_WINDOW_MS",
-    "MEMORY_RECALL_RATE_LIMIT_MAX"
+    "MEMORY_RECALL_RATE_LIMIT_MAX",
+    "RATE_LIMIT_STORE",
+    "RATE_LIMIT_REDIS_URL",
+    "CACHE_STORE",
+    "CACHE_REDIS_URL",
+    "GRAPH_CACHE_TTL_SECONDS"
   ]) {
     delete process.env[name];
   }
@@ -1385,6 +1390,61 @@ describe("api health", () => {
     expect(firstRecall.statusCode).not.toBe(429);
     expect(firstRecall.headers["x-ratelimit-limit"]).toBe("1");
     expect(secondRecall.statusCode).toBe(429);
+  });
+
+  it("uses injected rate-limit and cache providers", async () => {
+    const cacheReads: string[] = [];
+    const cacheWrites: string[] = [];
+    const rateLimitKeys: string[] = [];
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      rateLimitStore: {
+        increment(key, windowMs) {
+          rateLimitKeys.push(key);
+          return Promise.resolve({
+            count: 1,
+            resetAt: Date.now() + windowMs
+          });
+        }
+      },
+      cacheProvider: {
+        getJson<T>(key: string) {
+          cacheReads.push(key);
+          return Promise.resolve(null as T | null);
+        },
+        setJson<T>(key: string, value: T) {
+          void value;
+          cacheWrites.push(key);
+          return Promise.resolve();
+        },
+        deleteByPrefix() {
+          return Promise.resolve();
+        }
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "cache@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const overview = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/overview",
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(overview.statusCode).toBe(200);
+    expect(rateLimitKeys.some((key) => key.startsWith("memoryRead:"))).toBe(
+      true
+    );
+    expect(
+      cacheReads.some((key) => key.startsWith("koed:graph:overview:"))
+    ).toBe(true);
+    expect(
+      cacheWrites.some((key) => key.startsWith("koed:graph:overview:"))
+    ).toBe(true);
   });
 });
 
