@@ -5,7 +5,9 @@ import { dirname, resolve } from "node:path";
 
 const token = process.env.CODEX_MEMORY_API_TOKEN;
 if (!token) {
-  console.error("Set CODEX_MEMORY_API_TOKEN to a console-created Koed API token.");
+  console.error(
+    "Set CODEX_MEMORY_API_TOKEN to a console-created Koed API token."
+  );
   process.exit(1);
 }
 
@@ -17,14 +19,20 @@ const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
 );
 const hookConfigPath = resolve(
-  process.env.CODEX_MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed-memory/config.json`
+  process.env.CODEX_MEMORY_HOOK_CONFIG ??
+    `${homedir()}/.koed-memory/config.json`
 );
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
-const captureHookPath = resolve(repoRoot, "packages/mcp-server/dist/capture-hook.js");
+const captureHookPath = resolve(
+  repoRoot,
+  "packages/mcp-server/dist/capture-hook.js"
+);
 
 for (const filePath of [mcpCliPath, captureHookPath]) {
   if (!existsSync(filePath)) {
-    console.error(`${filePath} does not exist. Run pnpm --filter @codex-memory/mcp-server build first.`);
+    console.error(
+      `${filePath} does not exist. Run pnpm --filter @codex-memory/mcp-server build first.`
+    );
     process.exit(1);
   }
 }
@@ -32,13 +40,31 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
 mkdirSync(dirname(hookConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(
   hookConfigPath,
-  JSON.stringify({ apiUrl, apiToken: token, captureEnabled: true }, null, 2) + "\n",
+  JSON.stringify({ apiUrl, apiToken: token, captureEnabled: true }, null, 2) +
+    "\n",
   { mode: 0o600 }
 );
 
 const markerStart = "# >>> koed-self-hosted";
 const markerEnd = "# <<< koed-self-hosted";
 const hookCommand = `${nodeCommand} ${captureHookPath} --config ${hookConfigPath}`;
+const hookEvents = [
+  ["SessionStart", 10],
+  ["UserPromptSubmit", 10],
+  ["PostToolUse", 10],
+  ["Stop", 30],
+  ["SubagentStart", 10],
+  ["SubagentStop", 30]
+];
+const hookBlocks = hookEvents
+  .map(
+    ([eventName, timeout]) => `[[hooks.${eventName}]]
+[[hooks.${eventName}.hooks]]
+type = "command"
+command = "${hookCommand}"
+timeout = ${timeout}`
+  )
+  .join("\n\n");
 const koedBlock = `${markerStart}
 [mcp_servers.${mcpName}]
 command = "${nodeCommand}"
@@ -49,23 +75,7 @@ enabled = true
 CODEX_MEMORY_BASE_URL = "${apiUrl}"
 CODEX_MEMORY_API_TOKEN = "${token}"
 
-[[hooks.UserPromptSubmit]]
-[[hooks.UserPromptSubmit.hooks]]
-type = "command"
-command = "${hookCommand}"
-timeout = 10
-
-[[hooks.PostToolUse]]
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "${hookCommand}"
-timeout = 10
-
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
-type = "command"
-command = "${hookCommand}"
-timeout = 30
+${hookBlocks}
 ${markerEnd}
 `;
 
@@ -76,10 +86,7 @@ const withoutPrevious = existing.replace(
   new RegExp(`\\n?${markerStart}[\\s\\S]*?${markerEnd}\\n?`, "g"),
   "\n"
 );
-writeFileSync(
-  codexConfigPath,
-  `${withoutPrevious.trimEnd()}\n\n${koedBlock}`
-);
+writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 
 console.log(`Updated ${codexConfigPath}`);
 console.log(`Wrote ${hookConfigPath}`);
