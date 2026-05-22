@@ -189,6 +189,14 @@ const queryBooleanSchema = z.preprocess((value) => {
 
 const captureStateSchema = z.enum(["enabled", "disabled", "ask"]);
 const visibilitySchema = z.enum(["personal", "team"]);
+const memoryActorSchema = z.enum([
+  "user",
+  "assistant",
+  "agent",
+  "subagent",
+  "tool",
+  "system"
+]);
 
 const createMcpSessionSchema = z.object({
   workspaceId: z.string().uuid().optional(),
@@ -199,13 +207,14 @@ const createMcpSessionSchema = z.object({
   cwd: z.string().min(1).optional(),
   codexTranscriptPath: z.string().min(1).optional(),
   idempotencyKey: z.string().min(1).optional(),
-  sourceHash: z.string().min(1).optional()
+  sourceHash: z.string().min(1).optional(),
+  metadata: metadataSchema
 });
 
 const mcpSessionEventSchema = z.object({
   workspaceId: z.string().min(1).default("default"),
   turnId: z.string().uuid().optional(),
-  actor: z.enum(["user", "assistant", "tool", "system"]),
+  actor: memoryActorSchema,
   eventType: z.string().min(1).default("session_event"),
   content: z.string().min(1),
   metadata: metadataSchema
@@ -215,7 +224,7 @@ const capturePersonalEventSchema = z.object({
   workspaceId: z.string().min(1).default("default"),
   sessionId: z.string().uuid().optional(),
   turnId: z.string().uuid().optional(),
-  actor: z.enum(["user", "assistant", "tool", "system"]),
+  actor: memoryActorSchema,
   eventType: z.string().min(1),
   content: z.string().min(1),
   metadata: metadataSchema,
@@ -277,7 +286,9 @@ const graphQuerySchema = z.object({
 const graphEventsQuerySchema = graphQuerySchema
   .extend({
     cursorTimestamp: z.string().datetime({ offset: true }).optional(),
-    cursorId: z.string().uuid().optional()
+    cursorId: z.string().uuid().optional(),
+    includeContent: queryBooleanSchema.default(false),
+    includeRaw: queryBooleanSchema.default(false)
   })
   .superRefine((input, context) => {
     if (Boolean(input.cursorTimestamp) !== Boolean(input.cursorId)) {

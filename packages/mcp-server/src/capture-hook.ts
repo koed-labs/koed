@@ -11,7 +11,7 @@ import {
   defaultConfig
 } from "./index.js";
 
-interface HookPayload {
+export interface HookPayload {
   session_id?: string;
   turn_id?: string;
   transcript_path?: string;
@@ -25,8 +25,8 @@ interface HookPayload {
   tool_response?: unknown;
 }
 
-interface CaptureItem {
-  actor: "user" | "assistant" | "tool" | "system";
+export interface CaptureItem {
+  actor: "user" | "assistant" | "agent" | "subagent" | "tool" | "system";
   eventType: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -100,8 +100,7 @@ const positiveIntEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const hookMaxItems = (): number =>
-  positiveIntEnv("MEMORY_HOOK_MAX_ITEMS", 10);
+const hookMaxItems = (): number => positiveIntEnv("MEMORY_HOOK_MAX_ITEMS", 10);
 
 const hookTriggersLcmSummary = (): boolean =>
   (process.env.MEMORY_HOOK_TRIGGER_LCM_SUMMARY ?? "true")
@@ -152,18 +151,318 @@ const stringifyContent = (value: unknown): string => {
   return "";
 };
 
+const asString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim() ? value : undefined;
+
 const roleToActor = (role: unknown): CaptureItem["actor"] | null =>
   role === "user" ||
   role === "assistant" ||
+  role === "agent" ||
+  role === "subagent" ||
   role === "tool" ||
   role === "system"
     ? role
     : null;
 
+export interface TranscriptContext {
+  threadKind: "conversation" | "subagent";
+  parentThreadId?: string;
+  parentSessionId?: string;
+  parentExternalSessionId?: string;
+  transcriptSessionId?: string;
+  transcriptMetadata: Record<string, unknown>;
+}
+
+const containersForRecord = (record: Record<string, unknown>) => {
+  const payload = isRecord(record.payload) ? record.payload : undefined;
+  const message =
+    payload && isRecord(payload.message) ? payload.message : undefined;
+  return [
+    record,
+    isRecord(record.metadata) ? record.metadata : undefined,
+    payload,
+    payload && isRecord(payload.metadata) ? payload.metadata : undefined,
+    payload && isRecord(payload.session) ? payload.session : undefined,
+    message,
+    message && isRecord(message.metadata) ? message.metadata : undefined
+  ].filter((container): container is Record<string, unknown> =>
+    Boolean(container)
+  );
+};
+
+const firstMetadataString = (
+  records: Record<string, unknown>[],
+  keys: string[]
+): string | undefined => {
+  for (const record of records) {
+    for (const container of containersForRecord(record)) {
+      for (const key of keys) {
+        const value = asString(container[key]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+  }
+  return undefined;
+};
+
+const stringAtPath = (
+  value: Record<string, unknown> | undefined,
+  pathKeys: string[]
+): string | undefined => {
+  let current: unknown = value;
+  for (const key of pathKeys) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return asString(current);
+};
+
+const firstMetadataPathString = (
+  records: Record<string, unknown>[],
+  paths: string[][]
+): string | undefined => {
+  for (const record of records) {
+    for (const container of containersForRecord(record)) {
+      for (const pathKeys of paths) {
+        const value = stringAtPath(container, pathKeys);
+        if (value) {
+          return value;
+        }
+      }
+    }
+  }
+  return undefined;
+};
+
+export const extractTranscriptSessionMetadata = (
+  records: unknown[]
+): TranscriptContext => {
+  const recordObjects = records.filter(isRecord);
+  const sessionMeta = recordObjects
+    .map((record) => (isRecord(record.payload) ? record.payload : record))
+    .find((item) => item.type === "session_meta");
+  const parentSessionId =
+    firstMetadataString(recordObjects, [
+      "parentSessionId",
+      "parent_session_id",
+      "parentId",
+      "parent_id"
+    ]) ??
+    firstMetadataPathString(recordObjects, [
+      ["source", "subagent", "thread_spawn", "parent_session_id"],
+      ["source", "subagent", "thread_spawn", "parentSessionId"]
+    ]);
+  const parentExternalSessionId = firstMetadataString(recordObjects, [
+    "parentExternalSessionId",
+    "parent_external_session_id",
+    "parentExternalId",
+    "parent_external_id"
+  ]);
+  const parentThreadId =
+    firstMetadataString(recordObjects, [
+      "parentThreadId",
+      "parent_thread_id",
+      "parentConversationId",
+      "parent_conversation_id"
+    ]) ??
+    firstMetadataPathString(recordObjects, [
+      ["source", "subagent", "thread_spawn", "parent_thread_id"],
+      ["source", "subagent", "thread_spawn", "parentThreadId"],
+      ["source", "subagent", "parent_thread_id"],
+      ["source", "subagent", "parentThreadId"]
+    ]) ??
+    parentExternalSessionId ??
+    parentSessionId;
+  const transcriptSessionId =
+    asString(sessionMeta?.id) ??
+    firstMetadataString(recordObjects, [
+      "sessionId",
+      "session_id",
+      "conversationId",
+      "conversation_id"
+    ]);
+  const explicitThreadKind = firstMetadataString(recordObjects, [
+    "threadKind",
+    "thread_kind",
+    "sessionKind",
+    "session_kind",
+    "threadSource",
+    "thread_source"
+  ]);
+  const threadKind =
+    explicitThreadKind === "subagent" || parentThreadId
+      ? "subagent"
+      : "conversation";
+  const transcriptMetadata: Record<string, unknown> = {};
+
+  if (sessionMeta) {
+    for (const key of [
+      "id",
+      "session_id",
+      "conversation_id",
+      "timestamp",
+      "cwd",
+      "model",
+      "source",
+      "originator",
+      "cli_version",
+      "thread_source",
+      "agent_nickname",
+      "agent_role",
+      "parentSessionId",
+      "parent_session_id",
+      "parentThreadId",
+      "parent_thread_id",
+      "parentExternalSessionId",
+      "parent_external_session_id"
+    ]) {
+      if (sessionMeta[key] !== undefined) {
+        transcriptMetadata[key] = sessionMeta[key];
+      }
+    }
+  }
+
+  return {
+    threadKind,
+    ...(parentThreadId ? { parentThreadId } : {}),
+    ...(parentSessionId ? { parentSessionId } : {}),
+    ...(parentExternalSessionId ? { parentExternalSessionId } : {}),
+    ...(transcriptSessionId ? { transcriptSessionId } : {}),
+    transcriptMetadata
+  };
+};
+
+const compactDisplay = (value: unknown, maxLength = 240): string => {
+  const content = stringifyContent(value).replace(/\s+/g, " ").trim();
+  if (content.length <= maxLength) {
+    return content;
+  }
+  return `${content.slice(0, maxLength - 1)}...`;
+};
+
+const toolMetadata = (
+  item: Record<string, unknown>,
+  raw: Record<string, unknown>,
+  index: number,
+  context: TranscriptContext,
+  kind: "call" | "output"
+): Record<string, unknown> => {
+  const toolName = asString(item.name) ?? asString(item.title);
+  const toolTitle = asString(item.title) ?? toolName;
+  const callId =
+    asString(item.call_id) ?? asString(item.callId) ?? asString(item.id);
+  const input = item.arguments ?? item.input;
+  const output = item.output ?? item.content ?? item.result;
+  const status = asString(item.status);
+  const error = item.error ?? item.failure;
+  const summary =
+    kind === "call"
+      ? `Tool call: ${toolTitle ?? callId ?? "tool"}`
+      : `Tool output: ${toolTitle ?? callId ?? "tool"}`;
+
+  return {
+    ...contextMetadata(context),
+    transcriptIndex: index,
+    transcriptType: item.type,
+    transcriptParentType: raw.type,
+    transcriptId: item.id,
+    toolEventKind: item.type,
+    toolSummary: summary,
+    ...(toolName ? { toolName } : {}),
+    ...(toolTitle ? { toolTitle } : {}),
+    ...(callId ? { callId, toolCallId: callId } : {}),
+    ...(status ? { status } : {}),
+    ...(error !== undefined ? { error } : {}),
+    toolCall: {
+      kind,
+      type: item.type,
+      ...(toolName ? { name: toolName } : {}),
+      ...(toolTitle ? { title: toolTitle } : {}),
+      ...(callId ? { id: callId } : {}),
+      ...(input !== undefined ? { input } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(status ? { status } : {}),
+      ...(error !== undefined ? { error } : {})
+    },
+    rawTranscriptPayload: item
+  };
+};
+
+const toolCallContent = (metadata: Record<string, unknown>): string => {
+  const toolCall = isRecord(metadata.toolCall) ? metadata.toolCall : {};
+  const input = toolCall.input;
+  const status = asString(toolCall.status);
+  return [
+    metadata.toolSummary,
+    status ? `Status: ${status}` : "",
+    input !== undefined ? `Input:\n${compactDisplay(input, 800)}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+};
+
+const toolOutputContent = (metadata: Record<string, unknown>): string => {
+  const toolCall = isRecord(metadata.toolCall) ? metadata.toolCall : {};
+  const output = toolCall.output;
+  const status = asString(toolCall.status);
+  const error = toolCall.error;
+  return [
+    metadata.toolSummary,
+    status ? `Status: ${status}` : "",
+    output !== undefined ? compactDisplay(output, 1200) : "",
+    error !== undefined ? `Error:\n${compactDisplay(error, 800)}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+};
+
+const contextMetadata = (
+  context: TranscriptContext
+): Record<string, unknown> => ({
+  threadKind: context.threadKind,
+  ...(context.parentThreadId ? { parentThreadId: context.parentThreadId } : {}),
+  ...(context.parentSessionId
+    ? { parentSessionId: context.parentSessionId }
+    : {}),
+  ...(context.parentExternalSessionId
+    ? { parentExternalSessionId: context.parentExternalSessionId }
+    : {}),
+  ...(context.transcriptSessionId
+    ? { transcriptSessionId: context.transcriptSessionId }
+    : {}),
+  ...(Object.keys(context.transcriptMetadata).length > 0
+    ? { transcriptMetadata: context.transcriptMetadata }
+    : {})
+});
+
+const codexMessageActor = (
+  item: Record<string, unknown>,
+  role: unknown,
+  context: TranscriptContext
+): CaptureItem["actor"] | null => {
+  if (item.type === "user_message") {
+    return context.threadKind === "subagent" ? "agent" : "user";
+  }
+  if (item.type === "assistant_message" || item.type === "agent_message") {
+    return context.threadKind === "subagent" ? "subagent" : "agent";
+  }
+  if (role === "assistant") {
+    return context.threadKind === "subagent" ? "subagent" : "agent";
+  }
+  if (role === "user") {
+    return context.threadKind === "subagent" ? "agent" : "user";
+  }
+  return roleToActor(role);
+};
+
 const extractTranscriptItem = (
   record: unknown,
   index: number,
-  options: { preferEventMessages: boolean }
+  options: { preferEventMessages: boolean; context: TranscriptContext }
 ): CaptureItem | null => {
   if (!record || typeof record !== "object") {
     return null;
@@ -183,14 +482,39 @@ const extractTranscriptItem = (
     return null;
   }
   const message = isRecord(item.message) ? item.message : undefined;
+  if (item.type === "function_call" || item.type === "custom_tool_call") {
+    const metadata = toolMetadata(item, raw, index, options.context, "call");
+    return {
+      actor: "tool",
+      eventType: "codex_transcript_tool_call",
+      content: toolCallContent(metadata),
+      metadata
+    };
+  }
+  if (
+    item.type === "function_call_output" ||
+    item.type === "custom_tool_call_output"
+  ) {
+    const metadata = toolMetadata(item, raw, index, options.context, "output");
+    return {
+      actor: "tool",
+      eventType: "codex_transcript_tool_output",
+      content: toolOutputContent(metadata),
+      metadata
+    };
+  }
   const actor =
-    roleToActor(item.role) ??
-    roleToActor(message?.role) ??
+    codexMessageActor(item, item.role, options.context) ??
+    codexMessageActor(item, message?.role, options.context) ??
     roleToActor(item.actor) ??
     (item.type === "user_message"
-      ? "user"
+      ? options.context.threadKind === "subagent"
+        ? "agent"
+        : "user"
       : item.type === "assistant_message" || item.type === "agent_message"
-        ? "assistant"
+        ? options.context.threadKind === "subagent"
+          ? "subagent"
+          : "agent"
         : null);
   if (!actor) {
     return null;
@@ -212,6 +536,7 @@ const extractTranscriptItem = (
     eventType: `codex_transcript_${actor}`,
     content,
     metadata: {
+      ...contextMetadata(options.context),
       transcriptIndex: index,
       transcriptType: item.type,
       transcriptParentType: raw.type,
@@ -220,12 +545,7 @@ const extractTranscriptItem = (
   };
 };
 
-const parseTranscript = (transcriptPath: string): CaptureItem[] => {
-  if (!fs.existsSync(transcriptPath)) {
-    return [];
-  }
-
-  const text = fs.readFileSync(transcriptPath, "utf8");
+const parseTranscriptRecordsText = (text: string): unknown[] => {
   const trimmed = text.trim();
   if (!trimmed) {
     return [];
@@ -237,10 +557,7 @@ const parseTranscript = (transcriptPath: string): CaptureItem[] => {
     const parsedArray = asUnknownArray(parsed);
     if (parsedArray) {
       records.push(...parsedArray);
-    } else if (
-      isRecord(parsed) &&
-      asUnknownArray(parsed.items)
-    ) {
+    } else if (isRecord(parsed) && asUnknownArray(parsed.items)) {
       records.push(...asUnknownArray(parsed.items)!);
     } else {
       records.push(parsed);
@@ -254,13 +571,25 @@ const parseTranscript = (transcriptPath: string): CaptureItem[] => {
       }
     }
   }
+  return records;
+};
+
+export const parseTranscriptText = (text: string): CaptureItem[] => {
+  const records = parseTranscriptRecordsText(text);
+  if (records.length === 0) {
+    return [];
+  }
 
   const preferEventMessages = records.some((record) => {
     if (!record || typeof record !== "object") {
       return false;
     }
     const raw = isRecord(record) ? record : null;
-    const payload = raw ? (isRecord(raw.payload) ? raw.payload : undefined) : undefined;
+    const payload = raw
+      ? isRecord(raw.payload)
+        ? raw.payload
+        : undefined
+      : undefined;
     return (
       raw?.type === "event_msg" &&
       (payload?.type === "user_message" ||
@@ -269,14 +598,38 @@ const parseTranscript = (transcriptPath: string): CaptureItem[] => {
     );
   });
 
+  const context = extractTranscriptSessionMetadata(records);
+
   return records
     .map((record, index) =>
-      extractTranscriptItem(record, index, { preferEventMessages })
+      extractTranscriptItem(record, index, { preferEventMessages, context })
     )
     .filter((item): item is CaptureItem => Boolean(item));
 };
 
-const fallbackItems = (payload: HookPayload): CaptureItem[] => {
+const parseTranscript = (transcriptPath: string): CaptureItem[] => {
+  if (!fs.existsSync(transcriptPath)) {
+    return [];
+  }
+
+  return parseTranscriptText(fs.readFileSync(transcriptPath, "utf8"));
+};
+
+const extractTranscriptSessionMetadataFromPath = (
+  transcriptPath?: string
+): TranscriptContext => {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return {
+      threadKind: "conversation",
+      transcriptMetadata: {}
+    };
+  }
+  return extractTranscriptSessionMetadata(
+    parseTranscriptRecordsText(fs.readFileSync(transcriptPath, "utf8"))
+  );
+};
+
+export const fallbackItems = (payload: HookPayload): CaptureItem[] => {
   const metadata = {
     hookEventName: payload.hook_event_name,
     externalSessionId: payload.session_id,
@@ -299,8 +652,8 @@ const fallbackItems = (payload: HookPayload): CaptureItem[] => {
   if (payload.last_assistant_message) {
     return [
       {
-        actor: "assistant",
-        eventType: "codex_assistant_message",
+        actor: "agent",
+        eventType: "codex_agent_message",
         content: payload.last_assistant_message,
         metadata
       }
@@ -308,20 +661,57 @@ const fallbackItems = (payload: HookPayload): CaptureItem[] => {
   }
 
   if (payload.tool_name) {
+    const toolCall = {
+      kind: "hook",
+      name: payload.tool_name,
+      ...(payload.tool_input !== undefined
+        ? { input: payload.tool_input }
+        : {}),
+      ...(payload.tool_response !== undefined
+        ? { output: payload.tool_response }
+        : {})
+    };
+    const summary = `Tool result: ${payload.tool_name}`;
     return [
       {
         actor: "tool",
         eventType: "codex_tool_result",
-        content: stringifyContent({
-          toolInput: payload.tool_input,
-          toolResponse: payload.tool_response
-        }),
-        metadata: { ...metadata, toolName: payload.tool_name }
+        content: [
+          summary,
+          payload.tool_input !== undefined
+            ? `Input:\n${compactDisplay(payload.tool_input, 800)}`
+            : "",
+          payload.tool_response !== undefined
+            ? `Output:\n${compactDisplay(payload.tool_response, 1200)}`
+            : ""
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        metadata: {
+          ...metadata,
+          toolName: payload.tool_name,
+          toolSummary: summary,
+          toolCall
+        }
       }
     ];
   }
 
   return [];
+};
+
+export const selectCaptureItems = (
+  transcriptItems: CaptureItem[],
+  payload: HookPayload
+): CaptureItem[] => {
+  const fallback = fallbackItems(payload);
+  if (transcriptItems.length === 0) {
+    return fallback;
+  }
+  return [
+    ...transcriptItems,
+    ...fallback.filter((item) => item.actor === "tool")
+  ];
 };
 
 const statePath = (): string =>
@@ -388,9 +778,7 @@ const main = async () => {
     console.error("koed capture hook skipped because capture is paused");
     return;
   }
-  if (
-    pausedUntilActive(config.capturePausedUntil)
-  ) {
+  if (pausedUntilActive(config.capturePausedUntil)) {
     console.error("koed capture hook skipped because local pause is active");
     return;
   }
@@ -418,8 +806,10 @@ const main = async () => {
   const transcriptItems = payload.transcript_path
     ? parseTranscript(payload.transcript_path)
     : [];
-  const items =
-    transcriptItems.length > 0 ? transcriptItems : fallbackItems(payload);
+  const transcriptSessionMetadata = extractTranscriptSessionMetadataFromPath(
+    payload.transcript_path
+  );
+  const items = selectCaptureItems(transcriptItems, payload);
   const captureItems = items.slice(-hookMaxItems());
   const state = loadState();
   const session =
@@ -431,6 +821,13 @@ const main = async () => {
           model: payload.model,
           cwd: payload.cwd,
           codexTranscriptPath: payload.transcript_path,
+          metadata: {
+            ...contextMetadata(transcriptSessionMetadata),
+            hookEventName: payload.hook_event_name,
+            externalSessionId: payload.session_id,
+            model: payload.model,
+            cwd: payload.cwd
+          },
           idempotencyKey: hash({
             externalSessionId: payload.session_id,
             transcriptPath: payload.transcript_path,
@@ -439,7 +836,9 @@ const main = async () => {
         })
       : null;
   if (session?.skipped || (session && !session.session)) {
-    console.error("koed capture hook skipped because session policy disabled capture");
+    console.error(
+      "koed capture hook skipped because session policy disabled capture"
+    );
     return;
   }
 
@@ -491,12 +890,15 @@ const main = async () => {
   if (captured > 0) {
     triggerDetachedLcmSummary(configPath);
   }
-  console.error(
-    `koed capture hook stored ${captured} personal event(s)`
-  );
+  console.error(`koed capture hook stored ${captured} personal event(s)`);
 };
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(process.env.MEMORY_HOOK_STRICT === "true" ? 1 : 0);
-});
+if (
+  process.argv[1] &&
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(process.env.MEMORY_HOOK_STRICT === "true" ? 1 : 0);
+  });
+}

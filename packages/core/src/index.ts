@@ -296,7 +296,13 @@ export interface LcmNode {
 }
 
 export type Visibility = "personal" | "team";
-export type MemoryActor = "user" | "assistant" | "tool" | "system";
+export type MemoryActor =
+  | "user"
+  | "assistant"
+  | "agent"
+  | "subagent"
+  | "tool"
+  | "system";
 export type MemoryEventType =
   | "captured"
   | "invalidated"

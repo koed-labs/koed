@@ -104,6 +104,9 @@ type GraphThreadIndexResponse = {
       invalidatedCount: number;
       latestAt: string;
       sample: string;
+      threadKind: string;
+      parentThreadId: string | null;
+      parentSessionId: string | null;
     }>;
   }>;
 };
@@ -306,6 +309,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         captureMethod: input.captureMethod ?? "mcp",
         model: input.model ?? null,
         cwd: input.cwd ?? null,
+        metadata: input.metadata ?? {},
         createdAt: new Date().toISOString()
       };
       capturedSessions.set(id, record);
@@ -745,47 +749,69 @@ const createFakeRepository = (): MemorySourceRepository => {
           );
         })
         .slice(0, input.limit ?? 100)
-        .map((event) => ({
-          id: event.id,
-          actor: event.actor,
-          eventType: event.eventType,
-          sourceRuntime: "codex-cli" as const,
-          captureMethod: "hook" as const,
-          model: null,
-          workspaceId: event.workspaceId,
-          projectId: event.workspaceId,
-          projectName:
-            typeof event.metadata.projectName === "string"
-              ? event.metadata.projectName
+        .map((event) => {
+          const session = event.sessionId
+            ? capturedSessions.get(event.sessionId)
+            : undefined;
+          const threadKind =
+            event.metadata.threadKind ?? session?.metadata.threadKind;
+          const graphActor =
+            threadKind === "subagent" && event.actor === "user"
+              ? "agent"
+              : threadKind === "subagent" &&
+                  (event.actor === "assistant" || event.actor === "agent")
+                ? "subagent"
+                : event.metadata.transcriptType === "agent_message"
+                  ? "agent"
+                  : event.actor;
+          return {
+            id: event.id,
+            actor: graphActor,
+            eventType: event.eventType,
+            sourceRuntime: "codex-cli" as const,
+            captureMethod: "hook" as const,
+            model: null,
+            workspaceId: event.workspaceId,
+            projectId: event.workspaceId,
+            projectName:
+              typeof event.metadata.projectName === "string"
+                ? event.metadata.projectName
+                : null,
+            projectPath:
+              typeof event.metadata.projectPath === "string"
+                ? event.metadata.projectPath
+                : null,
+            sessionId: event.sessionId,
+            threadId:
+              typeof event.metadata.externalSessionId === "string"
+                ? event.metadata.externalSessionId
+                : event.sessionId,
+            threadName:
+              typeof event.metadata.threadName === "string"
+                ? event.metadata.threadName
+                : null,
+            timestamp: event.createdAt,
+            visibility: event.visibility,
+            invalidatedAt: invalidatedEvents.has(event.id)
+              ? new Date().toISOString()
               : null,
-          projectPath:
-            typeof event.metadata.projectPath === "string"
-              ? event.metadata.projectPath
+            invalidationReason: invalidatedEvents.has(event.id)
+              ? "user_deleted"
               : null,
-          sessionId: event.sessionId,
-          threadId:
-            typeof event.metadata.externalSessionId === "string"
-              ? event.metadata.externalSessionId
-              : event.sessionId,
-          threadName:
-            typeof event.metadata.threadName === "string"
-              ? event.metadata.threadName
-              : null,
-          timestamp: event.createdAt,
-          visibility: event.visibility,
-          invalidatedAt: invalidatedEvents.has(event.id)
-            ? new Date().toISOString()
-            : null,
-          invalidationReason: invalidatedEvents.has(event.id)
-            ? "user_deleted"
-            : null,
-          contentPreview: event.content,
-          rawContent: input.query === event.id ? event.content : undefined,
-          metadata: event.metadata,
-          linkedNodeIds: [...nodeSources.entries()]
-            .filter(([, ids]) => ids.includes(event.id))
-            .map(([nodeId]) => nodeId)
-        }));
+            contentPreview:
+              event.content.length > 220
+                ? `${event.content.slice(0, 217)}...`
+                : event.content,
+            ...(input.includeContent ? { content: event.content } : {}),
+            ...(input.includeRaw || input.query === event.id
+              ? { rawContent: event.content }
+              : {}),
+            metadata: event.metadata,
+            linkedNodeIds: [...nodeSources.entries()]
+              .filter(([, ids]) => ids.includes(event.id))
+              .map(([nodeId]) => nodeId)
+          };
+        });
     },
     async listLcmGraphThreads(actor, input = {}) {
       const visibleEvents = await this.listLcmGraphEvents(actor, {
@@ -808,6 +834,9 @@ const createFakeRepository = (): MemorySourceRepository => {
             invalidatedCount: number;
             latestAt: string;
             sample: string;
+            threadKind: "conversation" | "subagent";
+            parentThreadId: string | null;
+            parentSessionId: string | null;
           }>;
         }
       >();
@@ -822,6 +851,9 @@ const createFakeRepository = (): MemorySourceRepository => {
           invalidatedCount: number;
           latestAt: string;
           sample: string;
+          threadKind: "conversation" | "subagent";
+          parentThreadId: string | null;
+          parentSessionId: string | null;
         }
       >();
 
@@ -859,7 +891,19 @@ const createFakeRepository = (): MemorySourceRepository => {
             eventCount: 0,
             invalidatedCount: 0,
             latestAt: event.timestamp,
-            sample: event.contentPreview
+            sample: event.contentPreview as string,
+            threadKind:
+              event.metadata.threadKind === "subagent"
+                ? "subagent"
+                : "conversation",
+            parentThreadId:
+              typeof event.metadata.parentThreadId === "string"
+                ? event.metadata.parentThreadId
+                : null,
+            parentSessionId:
+              typeof event.metadata.parentSessionId === "string"
+                ? event.metadata.parentSessionId
+                : null
           };
           threadMap.set(threadMapKey, thread);
           project.threads.push(thread);
@@ -877,7 +921,94 @@ const createFakeRepository = (): MemorySourceRepository => {
             "Untitled conversation";
           thread.projectName = projectName;
           thread.latestAt = event.timestamp;
-          thread.sample = event.contentPreview;
+          thread.sample = event.contentPreview as string;
+        }
+        projectMap.set(projectId, project);
+      }
+
+      for (const session of capturedSessions.values()) {
+        if (input.visibility && session.visibility !== input.visibility)
+          continue;
+        if (
+          session.visibility === "personal" &&
+          session.ownerUserId !== actor.userId
+        )
+          continue;
+        if (
+          session.visibility === "team" &&
+          (!session.teamId || !getMembership(actor.userId, session.teamId))
+        )
+          continue;
+        const projectId =
+          (typeof session.metadata.workspaceId === "string"
+            ? session.metadata.workspaceId
+            : null) ??
+          session.workspaceId ??
+          session.cwd ??
+          "unknown-project";
+        const projectName =
+          (typeof session.metadata.projectName === "string"
+            ? session.metadata.projectName
+            : null) ??
+          session.workspaceId ??
+          session.cwd ??
+          "Unknown project";
+        const threadId =
+          (typeof session.metadata.externalSessionId === "string"
+            ? session.metadata.externalSessionId
+            : null) ??
+          session.externalSessionId ??
+          session.id;
+        if (input.projectId && projectId !== input.projectId) continue;
+        if (input.threadId && threadId !== input.threadId) continue;
+        if (
+          input.query &&
+          session.id !== input.query &&
+          !threadId.toLowerCase().includes(input.query.toLowerCase()) &&
+          !projectName.toLowerCase().includes(input.query.toLowerCase())
+        )
+          continue;
+        const project = projectMap.get(projectId) ?? {
+          id: projectId,
+          name: projectName,
+          path:
+            typeof session.metadata.projectPath === "string"
+              ? session.metadata.projectPath
+              : session.cwd,
+          eventCount: 0,
+          threads: []
+        };
+        const threadMapKey = `${projectId}:${threadId}`;
+        if (!threadMap.has(threadMapKey)) {
+          const thread = {
+            id: threadId,
+            name:
+              (typeof session.metadata.threadName === "string"
+                ? session.metadata.threadName
+                : null) ??
+              session.externalSessionId ??
+              "Untitled conversation",
+            projectId,
+            projectName,
+            eventCount: 0,
+            invalidatedCount: 0,
+            latestAt: session.createdAt,
+            sample: "",
+            threadKind:
+              session.metadata.threadKind === "subagent"
+                ? ("subagent" as const)
+                : ("conversation" as const),
+            parentThreadId:
+              typeof session.metadata.parentThreadId === "string"
+                ? session.metadata.parentThreadId
+                : null,
+            parentSessionId:
+              typeof session.metadata.parentSessionId === "string"
+                ? session.metadata.parentSessionId
+                : null
+          };
+          threadMap.set(threadMapKey, thread);
+          project.threads.push(thread);
         }
         projectMap.set(projectId, project);
       }
@@ -1871,6 +2002,155 @@ describe("account and access flows", () => {
     expect(
       jsonBody<GraphEventsResponse>(selectedThreadEvents).events
     ).toHaveLength(1);
+  });
+
+  it("keeps captured session shells for child threads and exposes parent linkage", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "child-thread-shell@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers,
+      payload: {
+        externalSessionId: "parent-thread",
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        cwd: "/work/koed",
+        idempotencyKey: "parent-thread-key",
+        metadata: {
+          externalSessionId: "parent-thread",
+          threadName: "Parent conversation",
+          projectName: "Koed",
+          projectPath: "/work/koed",
+          threadKind: "conversation"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers,
+      payload: {
+        externalSessionId: "child-thread",
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        cwd: "/work/koed",
+        idempotencyKey: "child-thread-key",
+        metadata: {
+          externalSessionId: "child-thread",
+          threadName: "Capture reviewer",
+          projectName: "Koed",
+          projectPath: "/work/koed",
+          threadKind: "subagent",
+          parentThreadId: "parent-thread",
+          parentSessionId: "parent-session"
+        }
+      }
+    });
+
+    const threadIndex = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=false",
+      headers: { cookie }
+    });
+    await app.close();
+
+    const threads = jsonBody<GraphThreadIndexResponse>(
+      threadIndex
+    ).projects.flatMap((project) => project.threads);
+    expect(
+      threads.find((thread) => thread.id === "child-thread")
+    ).toMatchObject({
+      name: "Capture reviewer",
+      eventCount: 0,
+      threadKind: "subagent",
+      parentThreadId: "parent-thread",
+      parentSessionId: "parent-session"
+    });
+    expect(
+      threads.find((thread) => thread.id === "parent-thread")
+    ).toMatchObject({
+      name: "Parent conversation",
+      threadKind: "conversation"
+    });
+  });
+
+  it("returns full event content from the list endpoint without raw content", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "graph-include-content@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const fullContent = `${"Expanded content. ".repeat(20)}Tail marker.`;
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-content",
+        actor: "agent",
+        eventType: "codex_transcript_agent",
+        content: fullContent,
+        metadata: {
+          externalSessionId: "thread-content",
+          transcriptType: "agent_message"
+        }
+      }
+    });
+
+    const events = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/events?threadId=thread-content&includeContent=true&includeRaw=false",
+      headers: { cookie }
+    });
+    await app.close();
+
+    const event = jsonBody<GraphEventsResponse>(events).events[0];
+    expect(event).toMatchObject({
+      actor: "agent",
+      content: fullContent
+    });
+    expect(event?.contentPreview).not.toBe(fullContent);
+    expect(event).not.toHaveProperty("rawContent");
   });
 
   it("returns evidence for memory_answer without backend provider configuration", async () => {
