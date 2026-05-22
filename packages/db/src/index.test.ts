@@ -751,6 +751,33 @@ describeDb("memory repository visibility", () => {
     expect(events.map((event) => event.id)).toEqual([first.id]);
   });
 
+  it("fetches an exact LCM graph node when newer summaries mention the node id", async () => {
+    const alice = await repo.createUser({
+      email: `alice-exact-lcm-node-${randomUUID()}@example.com`
+    });
+    const target = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Target LCM node summary",
+        summaryModel: "codex:test"
+      }
+    );
+    await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: `Newer rollup summary mentions node ${target.id}`,
+        summaryModel: "codex:test"
+      }
+    );
+
+    const fetched = await repo.getLcmGraphNode({ userId: alice.id }, target.id);
+
+    expect(fetched?.id).toBe(target.id);
+    expect(fetched?.summaryText).toBe("Target LCM node summary");
+  });
+
   it("prefers idempotency key matches over source hash matches", async () => {
     const alice = await repo.createUser({
       email: `alice-duplicate-priority-${randomUUID()}@example.com`

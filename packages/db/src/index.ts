@@ -467,6 +467,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   listLcmGraphNodes(
     actor: ActorContext,
     input?: {
+      nodeId?: string;
       query?: string;
       visibility?: Visibility;
       projectId?: string;
@@ -2670,6 +2671,7 @@ export const createMemorySourceRepository = (
           and ($4::text is null or coalesce(ev.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
+          and ($8::uuid is null or mn.id = $8)
           and (
             (mn.visibility = 'personal' and mn.owner_user_id = $1)
             or (
@@ -2693,7 +2695,8 @@ export const createMemorySourceRepository = (
         input.projectId ?? null,
         input.threadId ?? null,
         input.query?.trim() || null,
-        limit
+        limit,
+        input.nodeId ?? null
       ]
     );
     return result.rows.map(mapLcmGraphNode);
@@ -2702,7 +2705,7 @@ export const createMemorySourceRepository = (
   async getLcmGraphNode(actor, nodeId, input = {}) {
     const nodes = await this.listLcmGraphNodes(actor, {
       includeInvalidated: input.includeInvalidated,
-      query: nodeId,
+      nodeId,
       limit: 1
     });
     const node = nodes.find((candidate) => candidate.id === nodeId);
