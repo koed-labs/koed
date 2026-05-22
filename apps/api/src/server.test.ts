@@ -2178,7 +2178,7 @@ describe("account and access flows", () => {
     expect(jsonBody<AccessResponse>(checked).auth).toBe("bearer_api_token");
   });
 
-  it("captures conversation memory through MCP endpoints", async () => {
+  it("captures Pi conversation memory through v1 endpoints and reports Pi support", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),
       runMemoryJobsInlineForTests: true
@@ -2186,7 +2186,7 @@ describe("account and access flows", () => {
     const registered = await app.inject({
       method: "POST",
       url: "/auth/register",
-      payload: { email: "mcp-memory@example.com", password: "password123" }
+      payload: { email: "pi-memory@example.com", password: "password123" }
     });
     const cookie = cookieHeader(registered);
     const createdToken = await app.inject({
@@ -2204,8 +2204,10 @@ describe("account and access flows", () => {
       headers,
       payload: {
         actor: "user",
-        eventType: "user_prompt",
-        content: "Alice prefers concise changelog summaries"
+        eventType: "pi_user_message",
+        content: "Alice prefers concise changelog summaries",
+        sourceRuntime: "pi",
+        captureMethod: "api"
       }
     });
     const search = await app.inject({
@@ -3451,9 +3453,11 @@ describe("account and access flows", () => {
       url: "/v1/sessions",
       headers,
       payload: {
-        externalSessionId: "codex-session-1",
+        externalSessionId: "pi-session-1",
         model: "gpt-5.5",
-        cwd: "/tmp/project"
+        cwd: "/tmp/project",
+        sourceRuntime: "pi",
+        captureMethod: "api"
       }
     });
     expect(session.statusCode).toBe(200);

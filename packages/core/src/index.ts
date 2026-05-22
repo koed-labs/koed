@@ -324,7 +324,7 @@ export interface PersonalEventInput {
   metadata?: Record<string, unknown>;
   visibility?: Visibility;
   teamId?: string;
-  sourceRuntime?: "codex" | "codex-cli";
+  sourceRuntime?: "codex" | "codex-cli" | "pi";
   captureMethod?: "hook" | "mcp" | "web" | "api";
   codexTranscriptPath?: string;
   idempotencyKey?: string;
@@ -432,7 +432,7 @@ export interface MemoryEngineRepository {
       metadata?: Record<string, unknown>;
       visibility: Visibility;
       teamId?: string;
-      sourceRuntime?: "codex" | "codex-cli";
+      sourceRuntime?: "codex" | "codex-cli" | "pi";
       captureMethod?: "hook" | "mcp" | "web" | "api";
       codexTranscriptPath?: string;
       idempotencyKey?: string;

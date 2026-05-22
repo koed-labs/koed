@@ -1,6 +1,6 @@
 # Codex Integration
 
-Codex is currently the only supported AI client for Koed Self-Hosted.
+Codex is one supported AI client for Koed Self-Hosted. Pi has a separate direct-extension path; see `docs/pi-integration.md`.
 
 ## API Token
 

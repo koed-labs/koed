@@ -173,13 +173,13 @@ const allowedCorsOrigins = (): Set<string> => {
   const development =
     process.env.NODE_ENV === "production"
       ? []
-        : [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:5174",
-            "http://127.0.0.1:5174",
-            "http://localhost:3000"
-          ];
+      : [
+          "http://localhost:5173",
+          "http://127.0.0.1:5173",
+          "http://localhost:5174",
+          "http://127.0.0.1:5174",
+          "http://localhost:4170"
+        ];
   return new Set(
     [...configured, ...derived, ...development].map((origin) =>
       origin.replace(/\/+$/, "")
@@ -373,7 +373,7 @@ const memoryActorSchema = z.enum([
 const createMcpSessionSchema = z.object({
   workspaceId: z.string().uuid().optional(),
   externalSessionId: z.string().min(1).optional(),
-  sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex"),
+  sourceRuntime: z.enum(["codex", "codex-cli", "pi"]).default("codex"),
   captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("mcp"),
   model: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
@@ -400,7 +400,7 @@ const capturePersonalEventSchema = z.object({
   eventType: z.string().min(1),
   content: z.string().min(1),
   metadata: metadataSchema,
-  sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex-cli"),
+  sourceRuntime: z.enum(["codex", "codex-cli", "pi"]).default("pi"),
   captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("hook"),
   codexTranscriptPath: z.string().min(1).optional(),
   idempotencyKey: z.string().min(1).optional(),
@@ -1493,8 +1493,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         }
       },
       configuration: {
-        supportedClients: ["codex"],
-        plannedClients: ["claude", "gemini", "cursor", "pi"],
+        memoryMode: "codex_subscription",
+        supportedClients: ["codex", "pi"],
+        plannedClients: ["claude", "gemini", "cursor"],
+        localRepositoryPath: process.env.KOED_HOST_CHECKOUT_PATH ?? null,
         embeddingModel: process.env.EMBEDDING_MODEL ?? embedding.model,
         embeddingDimensions:
           Number(process.env.EMBEDDING_DIMENSIONS ?? embedding.dimensions) ||
@@ -1526,7 +1528,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         apiTokenPepperConfigured: Boolean(process.env.API_TOKEN_PEPPER)
       },
       integration: {
-        supportedClients: ["codex"],
+        supportedClients: ["codex", "pi"],
         unsupportedClients: []
       },
       embeddingStatus,

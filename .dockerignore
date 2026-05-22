@@ -13,4 +13,3 @@ coverage
 !.env.example
 *.tsbuildinfo
 **/*.tsbuildinfo
-apps/history-browser/t3code-history-browser

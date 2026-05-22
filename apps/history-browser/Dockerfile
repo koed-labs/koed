@@ -17,8 +17,13 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 
 RUN --mount=type=secret,id=github_token,required=false \
-  HISTORY_BROWSER_GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)" \
-  node scripts/sync-history-browser.mjs
+  if [ -d apps/history-browser/t3code-history-browser ]; then \
+    echo "Using vendored history-browser checkout from build context"; \
+    HISTORY_BROWSER_SKIP_SYNC=1 node scripts/sync-history-browser.mjs; \
+  else \
+    HISTORY_BROWSER_GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)" \
+    node scripts/sync-history-browser.mjs; \
+  fi
 
 RUN CI=true pnpm -C apps/history-browser/t3code-history-browser install --frozen-lockfile
 
@@ -34,6 +39,7 @@ FROM node:24.13.1-alpine AS runtime
 WORKDIR /app/apps/history-browser/t3code-history-browser/apps/web
 
 ENV NODE_ENV=production
+ENV __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=studio
 
 COPY --from=build --chown=node:node /app /app
 

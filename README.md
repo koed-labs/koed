@@ -1,6 +1,6 @@
 # Koed Self-Hosted
 
-Koed Self-Hosted is the source-available backend distribution for running Koed memory capture, recall, and inspection on infrastructure you control. It is focused on Codex today: Codex is the only supported AI client/integration in this public distribution.
+Koed Self-Hosted is the source-available backend distribution for running Koed memory capture, recall, and inspection on infrastructure you control. This public distribution currently supports Codex and Pi integrations.
 
 This repository is not the hosted Koed SaaS product. It does not include Koed Cloud onboarding, billing, hosted account management, desktop companion builds, private deployment scripts, pricing pages, or marketing surfaces.
 
@@ -14,6 +14,7 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `packages/db`: Postgres repository and migrations.
 - `packages/core`: memory capture, retrieval, answer, and compaction logic.
 - `packages/mcp-server`: Koed MCP Server and TypeScript Codex Capture Hook.
+- `packages/pi-extension`: Pi extension for direct Koed API tools and Phase 1 message capture.
 - `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
 
 Postgres uses pgvector. Redis backs BullMQ. Koed Self-Hosted relies on the connected AI client for LLM synthesis; the backend stores memory, retrieves evidence, manages embeddings and ranking, and does not make server-side LLM calls in this build.
@@ -87,7 +88,7 @@ Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, o
 
 ## Codex Setup
 
-Codex is currently the only supported AI client. Other clients will need their own setup guides as they are added.
+Codex remains supported through the MCP server and capture-hook path.
 
 1. Open the console and create an API token named `Client Integration`.
 2. Run the console smoke test.
@@ -121,6 +122,28 @@ MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token from console> pnpm 
 ```
 
 See [docs/codex-integration.md](docs/codex-integration.md) for MCP and Capture Hook details.
+
+## Pi Setup
+
+Pi Phase 1 integration uses a Pi extension that talks to Koed HTTP APIs directly. It registers memory tools and captures finalized Pi user and assistant messages as personal memory.
+
+1. Open the console and create an API token for Pi.
+2. Install the extension from this checkout:
+
+```bash
+pi install ./packages/pi-extension
+```
+
+3. Export env vars before starting Pi:
+
+```bash
+export KOED_API_URL=http://localhost:3000
+export KOED_API_TOKEN=<token from console>
+```
+
+4. Start Pi in this repo and run `memory_access_check` once to verify access.
+
+See [docs/pi-integration.md](docs/pi-integration.md) for details.
 
 ## Local Console
 
@@ -186,4 +209,5 @@ See [LICENSE_PENDING.md](LICENSE_PENDING.md) and [docs/license.md](docs/license.
 - [Backup and restore](docs/backup-restore.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
+- [Pi integration](docs/pi-integration.md)
 - [License guidance](docs/license.md)

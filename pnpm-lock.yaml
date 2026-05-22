@@ -198,6 +198,8 @@ importers:
         specifier: ^0.28.0
         version: 0.28.0
 
+  packages/pi-extension: {}
+
   packages/shared: {}
 
 packages:

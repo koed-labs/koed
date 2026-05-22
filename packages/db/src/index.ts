@@ -31,7 +31,7 @@ export const checkDatabase = async (pool: pg.Pool): Promise<boolean> => {
 
 export type Visibility = "personal" | "team";
 export type CaptureMethod = "hook" | "mcp" | "web" | "api";
-export type SourceRuntime = "codex" | "codex-cli";
+export type SourceRuntime = "codex" | "codex-cli" | "pi";
 export type CaptureState = "enabled" | "disabled" | "ask";
 export type CapturePolicyTarget = "global" | "project" | "thread";
 export type MemoryQuestionStatus = "pending" | "answered" | "error";
