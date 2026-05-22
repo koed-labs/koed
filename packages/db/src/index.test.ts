@@ -36,7 +36,8 @@ describe("memory presentation helpers", () => {
     const text = presentMemoryText(
       JSON.stringify({
         toolInput: {
-          command: "node --input-type=module <<'EOF'\nconsole.log('secret')\nEOF"
+          command:
+            "node --input-type=module <<'EOF'\nconsole.log('secret')\nEOF"
         }
       }),
       provenance
@@ -461,8 +462,7 @@ describeDb("memory repository visibility", () => {
           return new Response(
             JSON.stringify({
               model:
-                process.env.EMBEDDING_MODEL ??
-                "Qwen/Qwen3-Embedding-0.6B-GGUF",
+                process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF",
               dimensions,
               vectors: [queryVector]
             }),
@@ -713,6 +713,167 @@ describeDb("memory repository visibility", () => {
       nodeSessions.rows.every((row) => Number(row.session_count) === 1)
     ).toBe(true);
     expect(new Set(nodeSessions.rows.map((row) => row.sessions)).size).toBe(2);
+  });
+
+  it("returns the original memory event for duplicate capture keys", async () => {
+    const alice = await repo.createUser({
+      email: `alice-duplicate-event-${randomUUID()}@example.com`
+    });
+    const sourceHash = `source-hash-${randomUUID()}`;
+    const idempotencyKey = `idempotency-${randomUUID()}`;
+    const input = {
+      workspaceId: "workspace-duplicate-event",
+      actor: "user" as const,
+      eventType: "captured" as const,
+      rawEventType: "user_prompt",
+      visibility: "personal" as const,
+      content: "Duplicate capture should return the first event",
+      idempotencyKey,
+      sourceHash
+    };
+
+    const first = await repo.createMemoryEvent({ userId: alice.id }, input);
+    const duplicateBySourceHash = await repo.createMemoryEvent(
+      { userId: alice.id },
+      { ...input, idempotencyKey: `other-${randomUUID()}` }
+    );
+    const duplicateByIdempotencyKey = await repo.createMemoryEvent(
+      { userId: alice.id },
+      { ...input, sourceHash: `other-${randomUUID()}` }
+    );
+    const events = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      { query: "Duplicate capture", includeInvalidated: false }
+    );
+
+    expect(duplicateBySourceHash.id).toBe(first.id);
+    expect(duplicateByIdempotencyKey.id).toBe(first.id);
+    expect(events.map((event) => event.id)).toEqual([first.id]);
+  });
+
+  it("prefers idempotency key matches over source hash matches", async () => {
+    const alice = await repo.createUser({
+      email: `alice-duplicate-priority-${randomUUID()}@example.com`
+    });
+    const firstIdempotencyKey = `idempotency-${randomUUID()}`;
+    const firstSourceHash = `source-hash-${randomUUID()}`;
+    const secondIdempotencyKey = `idempotency-${randomUUID()}`;
+    const secondSourceHash = `source-hash-${randomUUID()}`;
+    const first = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: "workspace-duplicate-priority",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "First duplicate priority event",
+        idempotencyKey: firstIdempotencyKey,
+        sourceHash: firstSourceHash
+      }
+    );
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: "workspace-duplicate-priority",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "Second duplicate priority event",
+        idempotencyKey: secondIdempotencyKey,
+        sourceHash: secondSourceHash
+      }
+    );
+
+    const mismatchedRetry = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: "workspace-duplicate-priority",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "Mismatched duplicate priority event",
+        idempotencyKey: firstIdempotencyKey,
+        sourceHash: secondSourceHash
+      }
+    );
+
+    expect(mismatchedRetry.id).toBe(first.id);
+  });
+
+  it("returns a conflict for duplicate keys outside caller visibility", async () => {
+    const alice = await repo.createUser({
+      email: `alice-hidden-duplicate-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-hidden-duplicate-${randomUUID()}@example.com`
+    });
+    const sourceHash = `source-hash-${randomUUID()}`;
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: "workspace-hidden-duplicate",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "Hidden duplicate source",
+        sourceHash
+      }
+    );
+
+    await expect(
+      repo.createMemoryEvent(
+        { userId: bob.id },
+        {
+          workspaceId: "workspace-hidden-duplicate",
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "user_prompt",
+          visibility: "personal",
+          content: "Hidden duplicate retry",
+          sourceHash
+        }
+      )
+    ).rejects.toMatchObject({
+      message:
+        "Duplicate memory event conflicts with memory outside caller visibility",
+      statusCode: 409
+    });
+  });
+
+  it("handles concurrent duplicate capture submissions", async () => {
+    const alice = await repo.createUser({
+      email: `alice-concurrent-duplicate-${randomUUID()}@example.com`
+    });
+    const sourceHash = `source-hash-${randomUUID()}`;
+    const idempotencyKey = `idempotency-${randomUUID()}`;
+    const captures = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        repo.createMemoryEvent(
+          { userId: alice.id },
+          {
+            workspaceId: "workspace-concurrent-duplicate",
+            actor: "user",
+            eventType: "captured",
+            rawEventType: "user_prompt",
+            visibility: "personal",
+            content: "Concurrent duplicate capture",
+            idempotencyKey,
+            sourceHash
+          }
+        )
+      )
+    );
+    const events = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      { query: "Concurrent duplicate capture", includeInvalidated: false }
+    );
+
+    expect(new Set(captures.map((event) => event.id)).size).toBe(1);
+    expect(events.map((event) => event.id)).toEqual([captures[0]!.id]);
   });
 
   it("retrieves team-visible captured conversation for a teammate", async () => {

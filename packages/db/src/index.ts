@@ -3636,7 +3636,7 @@ export const createMemorySourceRepository = (
       workspaceId: input.workspaceId
     };
 
-    const result = await pool.query<{
+    type MemoryEventRow = {
       id: string;
       owner_user_id: string | null;
       team_id: string | null;
@@ -3652,7 +3652,9 @@ export const createMemorySourceRepository = (
         workspaceId?: string;
       };
       created_at: Date;
-    }>(
+    };
+
+    const result = await pool.query<MemoryEventRow>(
       `
         insert into memory_events (
           actor_user_id,
@@ -3670,6 +3672,7 @@ export const createMemorySourceRepository = (
           payload
         )
         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        on conflict do nothing
         returning id, owner_user_id, team_id, visibility, event_type, session_id, turn_id, payload, created_at
       `,
       [
@@ -3689,7 +3692,59 @@ export const createMemorySourceRepository = (
       ]
     );
 
-    return mapMemoryEvent(result.rows[0]!);
+    const insertedRow = result.rows[0];
+    if (insertedRow) {
+      return mapMemoryEvent(insertedRow);
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const duplicate = await pool.query<MemoryEventRow>(
+        `
+          select me.id, me.owner_user_id, me.team_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at
+          from memory_events me
+          where (
+              ($2::text is not null and me.idempotency_key = $2)
+              or ($3::text is not null and me.source_hash = $3)
+            )
+            and (
+              (me.visibility = 'personal' and me.owner_user_id = $1)
+              or (
+                me.visibility = 'team'
+                and exists (
+                  select 1
+                  from team_members tm
+                  where tm.team_id = me.team_id
+                    and tm.user_id = $1
+                    and tm.removed_at is null
+                )
+              )
+            )
+          order by
+            case
+              when $2::text is not null and me.idempotency_key = $2 then 0
+              when $3::text is not null and me.source_hash = $3 then 1
+              else 2
+            end,
+            me.created_at desc
+          limit 1
+        `,
+        [actor.userId, input.idempotencyKey ?? null, input.sourceHash ?? null]
+      );
+      const duplicateRow = duplicate.rows[0];
+      if (duplicateRow) {
+        return mapMemoryEvent(duplicateRow);
+      }
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
+      }
+    }
+
+    throw Object.assign(
+      new Error(
+        "Duplicate memory event conflicts with memory outside caller visibility"
+      ),
+      { statusCode: 409 }
+    );
   },
 
   async searchMemoryNodes(actor, input) {
