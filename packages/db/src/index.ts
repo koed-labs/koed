@@ -2850,12 +2850,13 @@ export const createMemorySourceRepository = (
           me.id,
           case
             when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
-              and me.payload ->> 'actor' in ('assistant', 'agent')
+              and me.payload ->> 'actor' = 'assistant'
               then 'subagent'
             when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
               and me.payload ->> 'actor' = 'user'
               then 'agent'
             when me.payload #>> '{metadata,transcriptType}' = 'agent_message'
+              and me.payload ->> 'actor' = 'assistant'
               then 'agent'
             else me.payload ->> 'actor'
           end as actor,

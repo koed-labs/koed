@@ -66,4 +66,6 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_HOOK_LCM_SUMMARY_DELAY_MS`: delay before Capture Hook-triggered LCM summary processing.
 - `MEMORY_HOOK_LCM_SUMMARY_LIMIT`: maximum pending LCM summaries processed from a Capture Hook trigger.
 
+Configure Codex to run the Supported Capture Hook for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop`. The subagent hooks let Koed preserve child conversation identity and parent linkage for thread-spawned Codex subagents.
+
 Koed Self-Hosted relies on the connected AI Client for Synthesis; backend LLM provider configuration and server-side synthesis are unsupported in this build.

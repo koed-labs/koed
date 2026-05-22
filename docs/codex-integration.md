@@ -36,6 +36,19 @@ For a self-hosted checkout, build `@koed/mcp-server` and point Codex at:
 /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js
 ```
 
+Install the Capture Hook for these Codex hook events:
+
+```text
+SessionStart
+UserPromptSubmit
+PostToolUse
+Stop
+SubagentStart
+SubagentStop
+```
+
+`SubagentStop` captures from Codex's child `agent_transcript_path` when present, so thread-spawned subagent final messages are stored under the child conversation instead of the parent conversation.
+
 Capture Hook settings:
 
 ```text

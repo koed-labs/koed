@@ -13,8 +13,11 @@ import {
 
 export interface HookPayload {
   session_id?: string;
+  agent_id?: string;
+  agent_type?: string;
   turn_id?: string;
   transcript_path?: string;
+  agent_transcript_path?: string;
   cwd?: string;
   hook_event_name?: string;
   model?: string;
@@ -173,6 +176,16 @@ export interface TranscriptContext {
   transcriptMetadata: Record<string, unknown>;
 }
 
+export interface EffectiveCaptureContext {
+  externalSessionId?: string;
+  parentThreadId?: string;
+  transcriptPath?: string;
+  parentTranscriptPath?: string;
+  agentId?: string;
+  agentType?: string;
+  isSubagent: boolean;
+}
+
 const containersForRecord = (record: Record<string, unknown>) => {
   const payload = isRecord(record.payload) ? record.payload : undefined;
   const message =
@@ -243,8 +256,25 @@ export const extractTranscriptSessionMetadata = (
 ): TranscriptContext => {
   const recordObjects = records.filter(isRecord);
   const sessionMeta = recordObjects
-    .map((record) => (isRecord(record.payload) ? record.payload : record))
-    .find((item) => item.type === "session_meta");
+    .map((record) => {
+      if (record.type === "session_meta" && isRecord(record.payload)) {
+        return record.payload;
+      }
+      if (record.type === "session_meta") {
+        return record;
+      }
+      return isRecord(record.payload) && record.payload.type === "session_meta"
+        ? record.payload
+        : undefined;
+    })
+    .filter((record): record is Record<string, unknown> => Boolean(record))
+    .find(
+      (item) =>
+        item.type === "session_meta" ||
+        asString(item.id) ||
+        asString(item.thread_source) ||
+        isRecord(item.source)
+    );
   const parentSessionId =
     firstMetadataString(recordObjects, [
       "parentSessionId",
@@ -439,6 +469,83 @@ const contextMetadata = (
     : {})
 });
 
+export const captureTranscriptPathForPayload = (
+  payload: HookPayload
+): string | undefined => {
+  if (
+    payload.hook_event_name === "SubagentStop" &&
+    payload.agent_transcript_path
+  ) {
+    return payload.agent_transcript_path;
+  }
+  return payload.transcript_path;
+};
+
+const isSubagentPayload = (payload: HookPayload): boolean =>
+  payload.hook_event_name === "SubagentStart" ||
+  payload.hook_event_name === "SubagentStop" ||
+  Boolean(payload.agent_id);
+
+export const effectiveCaptureContext = (
+  payload: HookPayload,
+  transcriptContext: TranscriptContext = {
+    threadKind: "conversation",
+    transcriptMetadata: {}
+  }
+): EffectiveCaptureContext => {
+  const isSubagent =
+    transcriptContext.threadKind === "subagent" || isSubagentPayload(payload);
+  const externalSessionId =
+    transcriptContext.transcriptSessionId ??
+    (isSubagent ? payload.agent_id : undefined) ??
+    payload.session_id;
+  const inferredParentThreadId = isSubagent
+    ? (transcriptContext.parentThreadId ?? payload.session_id)
+    : transcriptContext.parentThreadId;
+  const parentThreadId =
+    inferredParentThreadId && inferredParentThreadId !== externalSessionId
+      ? inferredParentThreadId
+      : isSubagent &&
+          payload.session_id &&
+          payload.session_id !== externalSessionId
+        ? payload.session_id
+        : undefined;
+  const transcriptPath = captureTranscriptPathForPayload(payload);
+  const parentTranscriptPath =
+    payload.hook_event_name === "SubagentStop" &&
+    payload.transcript_path &&
+    payload.transcript_path !== transcriptPath
+      ? payload.transcript_path
+      : undefined;
+
+  return {
+    ...(externalSessionId ? { externalSessionId } : {}),
+    ...(parentThreadId ? { parentThreadId } : {}),
+    ...(transcriptPath ? { transcriptPath } : {}),
+    ...(parentTranscriptPath ? { parentTranscriptPath } : {}),
+    ...(payload.agent_id ? { agentId: payload.agent_id } : {}),
+    ...(payload.agent_type ? { agentType: payload.agent_type } : {}),
+    isSubagent
+  };
+};
+
+const hookPayloadMetadata = (
+  payload: HookPayload,
+  effectiveContext: EffectiveCaptureContext
+): Record<string, unknown> => ({
+  hookEventName: payload.hook_event_name,
+  externalSessionId: effectiveContext.externalSessionId,
+  parentThreadId: effectiveContext.parentThreadId,
+  parentExternalSessionId: effectiveContext.parentThreadId,
+  externalTurnId: payload.turn_id,
+  model: payload.model,
+  cwd: payload.cwd,
+  agentId: payload.agent_id,
+  agentType: payload.agent_type,
+  codexTranscriptPath: effectiveContext.transcriptPath,
+  codexParentTranscriptPath: effectiveContext.parentTranscriptPath
+});
+
 const codexMessageActor = (
   item: Record<string, unknown>,
   role: unknown,
@@ -574,8 +681,7 @@ const parseTranscriptRecordsText = (text: string): unknown[] => {
   return records;
 };
 
-export const parseTranscriptText = (text: string): CaptureItem[] => {
-  const records = parseTranscriptRecordsText(text);
+export const parseTranscriptRecords = (records: unknown[]): CaptureItem[] => {
   if (records.length === 0) {
     return [];
   }
@@ -607,41 +713,27 @@ export const parseTranscriptText = (text: string): CaptureItem[] => {
     .filter((item): item is CaptureItem => Boolean(item));
 };
 
-const parseTranscript = (transcriptPath: string): CaptureItem[] => {
-  if (!fs.existsSync(transcriptPath)) {
+export const parseTranscriptText = (text: string): CaptureItem[] =>
+  parseTranscriptRecords(parseTranscriptRecordsText(text));
+
+const parseTranscriptFileRecords = (transcriptPath?: string): unknown[] => {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     return [];
   }
 
-  return parseTranscriptText(fs.readFileSync(transcriptPath, "utf8"));
+  return parseTranscriptRecordsText(fs.readFileSync(transcriptPath, "utf8"));
 };
 
-const extractTranscriptSessionMetadataFromPath = (
-  transcriptPath?: string
-): TranscriptContext => {
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-    return {
-      threadKind: "conversation",
-      transcriptMetadata: {}
-    };
-  }
-  return extractTranscriptSessionMetadata(
-    parseTranscriptRecordsText(fs.readFileSync(transcriptPath, "utf8"))
-  );
-};
-
-export const fallbackItems = (payload: HookPayload): CaptureItem[] => {
-  const metadata = {
-    hookEventName: payload.hook_event_name,
-    externalSessionId: payload.session_id,
-    externalTurnId: payload.turn_id,
-    model: payload.model,
-    cwd: payload.cwd
-  };
+export const fallbackItems = (
+  payload: HookPayload,
+  effectiveContext = effectiveCaptureContext(payload)
+): CaptureItem[] => {
+  const metadata = hookPayloadMetadata(payload, effectiveContext);
 
   if (payload.prompt) {
     return [
       {
-        actor: "user",
+        actor: effectiveContext.isSubagent ? "agent" : "user",
         eventType: "codex_user_prompt",
         content: payload.prompt,
         metadata
@@ -652,7 +744,7 @@ export const fallbackItems = (payload: HookPayload): CaptureItem[] => {
   if (payload.last_assistant_message) {
     return [
       {
-        actor: "agent",
+        actor: effectiveContext.isSubagent ? "subagent" : "agent",
         eventType: "codex_agent_message",
         content: payload.last_assistant_message,
         metadata
@@ -702,9 +794,10 @@ export const fallbackItems = (payload: HookPayload): CaptureItem[] => {
 
 export const selectCaptureItems = (
   transcriptItems: CaptureItem[],
-  payload: HookPayload
+  payload: HookPayload,
+  effectiveContext = effectiveCaptureContext(payload)
 ): CaptureItem[] => {
-  const fallback = fallbackItems(payload);
+  const fallback = fallbackItems(payload, effectiveContext);
   if (transcriptItems.length === 0) {
     return fallback;
   }
@@ -785,9 +878,17 @@ const main = async () => {
 
   const client = new MemoryApiClient(config);
   const workspaceId = payload.cwd ?? "default";
+  const captureTranscriptPath = captureTranscriptPathForPayload(payload);
+  const transcriptRecords = parseTranscriptFileRecords(captureTranscriptPath);
+  const transcriptSessionMetadata =
+    extractTranscriptSessionMetadata(transcriptRecords);
+  const effectiveContext = effectiveCaptureContext(
+    payload,
+    transcriptSessionMetadata
+  );
   const policyResponse = (await client.effectiveCapturePolicy({
     projectId: workspaceId,
-    threadId: payload.session_id
+    threadId: effectiveContext.externalSessionId
   })) as {
     policy?: {
       captureState?: string;
@@ -803,34 +904,30 @@ const main = async () => {
     );
     return;
   }
-  const transcriptItems = payload.transcript_path
-    ? parseTranscript(payload.transcript_path)
-    : [];
-  const transcriptSessionMetadata = extractTranscriptSessionMetadataFromPath(
-    payload.transcript_path
-  );
-  const items = selectCaptureItems(transcriptItems, payload);
+  const transcriptItems = parseTranscriptRecords(transcriptRecords);
+  const items = selectCaptureItems(transcriptItems, payload, effectiveContext);
   const captureItems = items.slice(-hookMaxItems());
   const state = loadState();
   const session =
-    payload.session_id || payload.transcript_path
+    effectiveContext.externalSessionId || captureTranscriptPath
       ? await client.createSession({
-          externalSessionId: payload.session_id,
+          externalSessionId: effectiveContext.externalSessionId,
           sourceRuntime: "codex-cli",
           captureMethod: "hook",
           model: payload.model,
           cwd: payload.cwd,
-          codexTranscriptPath: payload.transcript_path,
+          codexTranscriptPath: captureTranscriptPath,
           metadata: {
             ...contextMetadata(transcriptSessionMetadata),
+            ...hookPayloadMetadata(payload, effectiveContext),
             hookEventName: payload.hook_event_name,
-            externalSessionId: payload.session_id,
+            externalSessionId: effectiveContext.externalSessionId,
             model: payload.model,
             cwd: payload.cwd
           },
           idempotencyKey: hash({
-            externalSessionId: payload.session_id,
-            transcriptPath: payload.transcript_path,
+            externalSessionId: effectiveContext.externalSessionId,
+            transcriptPath: captureTranscriptPath,
             cwd: payload.cwd
           })
         })
@@ -845,8 +942,8 @@ const main = async () => {
   let captured = 0;
   for (const item of captureItems) {
     const itemHash = hash({
-      session: payload.session_id,
-      transcriptPath: payload.transcript_path,
+      session: effectiveContext.externalSessionId,
+      transcriptPath: captureTranscriptPath,
       item
     });
     if (state.seen[itemHash]) {
@@ -862,15 +959,16 @@ const main = async () => {
         content: item.content,
         metadata: {
           ...item.metadata,
+          ...hookPayloadMetadata(payload, effectiveContext),
           hookEventName: payload.hook_event_name,
-          externalSessionId: payload.session_id,
+          externalSessionId: effectiveContext.externalSessionId,
           externalTurnId: payload.turn_id,
           sourceHash: itemHash,
           automaticCaptureScope: "personal"
         },
         sourceRuntime: "codex-cli",
         captureMethod: "hook",
-        codexTranscriptPath: payload.transcript_path,
+        codexTranscriptPath: captureTranscriptPath,
         idempotencyKey: itemHash,
         sourceHash: itemHash
       });

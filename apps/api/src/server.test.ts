@@ -87,7 +87,14 @@ type GraphNodeResponse = {
   };
 };
 type GraphEventsResponse = {
-  events: Array<Record<string, unknown>>;
+  events: Array<
+    Record<string, unknown> & {
+      id: string;
+      actor: MemoryActor;
+      content?: string;
+      timestamp: string;
+    }
+  >;
 };
 type GraphThreadIndexResponse = {
   projects: Array<{
@@ -758,10 +765,10 @@ const createFakeRepository = (): MemorySourceRepository => {
           const graphActor =
             threadKind === "subagent" && event.actor === "user"
               ? "agent"
-              : threadKind === "subagent" &&
-                  (event.actor === "assistant" || event.actor === "agent")
+              : threadKind === "subagent" && event.actor === "assistant"
                 ? "subagent"
-                : event.metadata.transcriptType === "agent_message"
+                : event.metadata.transcriptType === "agent_message" &&
+                    event.actor === "assistant"
                   ? "agent"
                   : event.actor;
           return {
@@ -2093,6 +2100,91 @@ describe("account and access flows", () => {
     ).toMatchObject({
       name: "Parent conversation",
       threadKind: "conversation"
+    });
+  });
+
+  it("preserves explicit subagent display actors in graph events", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "subagent-display-actors@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const metadata = {
+      externalSessionId: "child-thread",
+      threadKind: "subagent",
+      parentThreadId: "parent-thread",
+      transcriptType: "agent_message"
+    };
+
+    for (const event of [
+      {
+        actor: "agent",
+        content: "Parent agent prompt to child"
+      },
+      {
+        actor: "subagent",
+        content: "Child subagent reply"
+      },
+      {
+        actor: "user",
+        content: "Legacy parent prompt"
+      },
+      {
+        actor: "assistant",
+        content: "Legacy child reply"
+      }
+    ] as const) {
+      await app.inject({
+        method: "POST",
+        url: "/v1/memory/capture-personal-event",
+        headers,
+        payload: {
+          workspaceId: "repo-subagent",
+          actor: event.actor,
+          eventType: "codex_transcript_agent",
+          content: event.content,
+          metadata
+        }
+      });
+    }
+
+    const events = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/events?threadId=child-thread&includeContent=true",
+      headers: { cookie }
+    });
+    await app.close();
+
+    const actorsByContent = jsonBody<GraphEventsResponse>(events).events.reduce<
+      Record<string, MemoryActor>
+    >((result, event) => {
+      if (event.content) {
+        result[event.content] = event.actor;
+      }
+      return result;
+    }, {});
+    expect(actorsByContent).toMatchObject({
+      "Parent agent prompt to child": "agent",
+      "Child subagent reply": "subagent",
+      "Legacy parent prompt": "agent",
+      "Legacy child reply": "subagent"
     });
   });
 

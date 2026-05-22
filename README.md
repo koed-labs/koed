@@ -106,7 +106,7 @@ Working directory: /path/to/koed-self-hosted
 
 If you changed `API_HOST_PORT`, use that port in `MEMORY_API_URL`.
 
-See [docs/codex-integration.md](docs/codex-integration.md) for MCP details.
+Install the Capture Hook for Codex `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop` events. See [docs/codex-integration.md](docs/codex-integration.md) for MCP and Capture Hook details.
 
 ## Local Console
 

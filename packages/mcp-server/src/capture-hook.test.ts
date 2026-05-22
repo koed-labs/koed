@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
+  captureTranscriptPathForPayload,
+  effectiveCaptureContext,
   extractTranscriptSessionMetadata,
   parseTranscriptText,
   selectCaptureItems
@@ -37,7 +42,6 @@ describe("Codex capture hook transcript parsing", () => {
       {
         type: "session_meta",
         payload: {
-          type: "session_meta",
           id: "child-session",
           parentSessionId: "parent-session",
           parentThreadId: "parent-thread"
@@ -90,10 +94,10 @@ describe("Codex capture hook transcript parsing", () => {
       {
         type: "session_meta",
         payload: {
-          type: "session_meta",
           id: "child-session",
           thread_source: "subagent",
           agent_nickname: "Reviewer",
+          agent_role: "code-reviewer",
           source: {
             subagent: {
               thread_spawn: {
@@ -122,8 +126,10 @@ describe("Codex capture hook transcript parsing", () => {
       parentThreadId: "parent-thread",
       transcriptSessionId: "child-session",
       transcriptMetadata: {
+        id: "child-session",
         thread_source: "subagent",
-        agent_nickname: "Reviewer"
+        agent_nickname: "Reviewer",
+        agent_role: "code-reviewer"
       }
     });
     expect(items[0]).toMatchObject({
@@ -132,6 +138,199 @@ describe("Codex capture hook transcript parsing", () => {
         threadKind: "subagent",
         parentThreadId: "parent-thread"
       }
+    });
+  });
+
+  it("uses the child transcript id as the effective subagent external session", () => {
+    const records = [
+      {
+        type: "session_meta",
+        payload: {
+          id: "child-thread",
+          thread_source: "subagent",
+          agent_nickname: "Reviewer",
+          agent_role: "code-reviewer",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "parent-thread"
+              }
+            }
+          }
+        }
+      }
+    ];
+
+    const transcriptContext = extractTranscriptSessionMetadata(records);
+    const effectiveContext = effectiveCaptureContext(
+      {
+        session_id: "parent-thread",
+        agent_id: "agent-thread-from-hook",
+        agent_type: "review",
+        hook_event_name: "SubagentStop",
+        transcript_path: "/tmp/parent.jsonl",
+        agent_transcript_path: "/tmp/child.jsonl"
+      },
+      transcriptContext
+    );
+
+    expect(effectiveContext).toMatchObject({
+      externalSessionId: "child-thread",
+      parentThreadId: "parent-thread",
+      transcriptPath: "/tmp/child.jsonl",
+      parentTranscriptPath: "/tmp/parent.jsonl",
+      agentId: "agent-thread-from-hook",
+      agentType: "review",
+      isSubagent: true
+    });
+
+    expect(
+      selectCaptureItems(
+        [],
+        {
+          session_id: "parent-thread",
+          agent_id: "agent-thread-from-hook",
+          hook_event_name: "UserPromptSubmit",
+          prompt: "Review this change"
+        },
+        effectiveContext
+      )
+    ).toMatchObject([
+      {
+        actor: "agent",
+        metadata: {
+          externalSessionId: "child-thread",
+          parentThreadId: "parent-thread"
+        }
+      }
+    ]);
+  });
+
+  it("falls back to hook agent_id for subagent capture when metadata has no id", () => {
+    const effectiveContext = effectiveCaptureContext(
+      {
+        session_id: "parent-thread",
+        agent_id: "child-thread-from-hook",
+        hook_event_name: "SubagentStart"
+      },
+      {
+        threadKind: "subagent",
+        parentThreadId: "parent-thread",
+        transcriptMetadata: {}
+      }
+    );
+
+    expect(effectiveContext).toMatchObject({
+      externalSessionId: "child-thread-from-hook",
+      parentThreadId: "parent-thread",
+      isSubagent: true
+    });
+  });
+
+  it("does not preserve a self-referential parent link", () => {
+    const effectiveContext = effectiveCaptureContext(
+      {
+        session_id: "parent-thread",
+        agent_id: "child-thread",
+        hook_event_name: "SubagentStop"
+      },
+      {
+        threadKind: "subagent",
+        transcriptSessionId: "child-thread",
+        parentThreadId: "child-thread",
+        transcriptMetadata: {}
+      }
+    );
+
+    expect(effectiveContext).toMatchObject({
+      externalSessionId: "child-thread",
+      parentThreadId: "parent-thread"
+    });
+  });
+
+  it("uses agent_transcript_path for SubagentStop transcript parsing", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-"));
+    const parentTranscriptPath = path.join(dir, "parent.jsonl");
+    const agentTranscriptPath = path.join(dir, "child.jsonl");
+    fs.writeFileSync(
+      parentTranscriptPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message: "Parent answer" }
+      })}\n`
+    );
+    fs.writeFileSync(
+      agentTranscriptPath,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: {
+            id: "child-thread",
+            thread_source: "subagent",
+            source: {
+              subagent: {
+                thread_spawn: {
+                  parent_thread_id: "parent-thread"
+                }
+              }
+            }
+          }
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Child final answer"
+          }
+        })
+      ].join("\n")
+    );
+
+    const payload = {
+      session_id: "parent-thread",
+      agent_id: "child-thread",
+      hook_event_name: "SubagentStop",
+      transcript_path: parentTranscriptPath,
+      agent_transcript_path: agentTranscriptPath
+    };
+    const selectedPath = captureTranscriptPathForPayload(payload);
+    const items = parseTranscriptText(fs.readFileSync(selectedPath!, "utf8"));
+    const transcriptContext = extractTranscriptSessionMetadata([
+      {
+        type: "session_meta",
+        payload: {
+          id: "child-thread",
+          thread_source: "subagent",
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: "parent-thread"
+              }
+            }
+          }
+        }
+      }
+    ]);
+    const effectiveContext = effectiveCaptureContext(
+      payload,
+      transcriptContext
+    );
+
+    expect(selectedPath).toBe(agentTranscriptPath);
+    expect(items).toMatchObject([
+      {
+        actor: "subagent",
+        content: "Child final answer",
+        metadata: {
+          threadKind: "subagent",
+          parentThreadId: "parent-thread",
+          transcriptSessionId: "child-thread"
+        }
+      }
+    ]);
+    expect(effectiveContext).toMatchObject({
+      externalSessionId: "child-thread",
+      parentThreadId: "parent-thread"
     });
   });
 
