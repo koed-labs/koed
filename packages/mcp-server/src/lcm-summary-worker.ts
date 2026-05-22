@@ -162,6 +162,20 @@ const lcmSummaryLockPath = (env: NodeJS.ProcessEnv): string =>
   resolveEnvValue(env, "MEMORY_LCM_SUMMARY_LOCK_PATH") ??
   path.join(os.homedir(), ".koed", "lcm-summary.lock");
 
+export const lcmSummaryLockState = (
+  env: NodeJS.ProcessEnv,
+  staleMs: number
+): { locked: boolean; stale: boolean } => {
+  const lockPath = lcmSummaryLockPath(env);
+  try {
+    const stats = fs.statSync(lockPath);
+    const stale = Date.now() - stats.mtimeMs > staleMs;
+    return { locked: !stale, stale };
+  } catch {
+    return { locked: false, stale: false };
+  }
+};
+
 const acquireLocalSummaryLock = (
   env: NodeJS.ProcessEnv,
   staleMs: number

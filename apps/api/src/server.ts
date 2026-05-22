@@ -173,11 +173,21 @@ const joinTeamSchema = z.object({
   inviteCode: z.string().min(4).max(64)
 });
 
-const createApiTokenSchema = z.object({
-  name: z.string().min(1).max(120),
-  teamId: z.string().uuid().optional(),
-  scopes: z.array(z.string().min(1)).default([])
-});
+const createApiTokenSchema = z
+  .object({
+    name: z.string().min(1).max(120),
+    teamId: z.string().uuid().optional(),
+    scopes: z.array(z.string().min(1)).default([])
+  })
+  .superRefine((input, context) => {
+    if (input.teamId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["teamId"],
+        message: "Team-scoped API tokens are not supported in this build"
+      });
+    }
+  });
 
 const metadataSchema = z.record(z.string(), z.unknown()).default({});
 
@@ -235,17 +245,27 @@ const capturePersonalEventSchema = z.object({
   sourceHash: z.string().min(1).optional()
 });
 
-const capturePolicySchema = z.object({
-  targetType: z.enum(["global", "project", "thread"]),
-  projectId: z.string().min(1).optional(),
-  projectName: z.string().min(1).optional(),
-  projectPath: z.string().min(1).optional(),
-  threadId: z.string().min(1).optional(),
-  threadName: z.string().min(1).optional(),
-  captureState: captureStateSchema.nullable().optional(),
-  visibility: visibilitySchema.nullable().optional(),
-  pauseUntil: z.string().datetime({ offset: true }).nullable().optional()
-});
+const capturePolicySchema = z
+  .object({
+    targetType: z.enum(["global", "project", "thread"]),
+    projectId: z.string().min(1).optional(),
+    projectName: z.string().min(1).optional(),
+    projectPath: z.string().min(1).optional(),
+    threadId: z.string().min(1).optional(),
+    threadName: z.string().min(1).optional(),
+    captureState: captureStateSchema.nullable().optional(),
+    visibility: visibilitySchema.nullable().optional(),
+    pauseUntil: z.string().datetime({ offset: true }).nullable().optional()
+  })
+  .superRefine((input, context) => {
+    if (input.visibility === "team") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["visibility"],
+        message: "Team Memory capture policies are not supported in this build"
+      });
+    }
+  });
 
 const effectivePolicyQuerySchema = z.object({
   projectId: z.string().min(1).optional(),
@@ -314,12 +334,16 @@ const graphEventPatchSchema = z.object({
 
 const retrievalScopeSchema = z
   .enum(["personal", "personal+team"])
-  .transform((scope): MemoryScope => {
+  .superRefine((scope, context) => {
     if (scope === "personal+team") {
-      return "personal_and_team";
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "personal+team retrieval is not supported for API-token integrations in this build"
+      });
     }
-    return scope;
-  });
+  })
+  .transform((): MemoryScope => "personal");
 
 const searchDomainSchema = z.enum(["global", "project", "session"]);
 
@@ -725,6 +749,19 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       threadId: input.threadId,
       sessionId: input.sessionId
     });
+
+  const rejectUnsupportedTeamCapturePolicy = (policy: {
+    visibility: Visibility;
+  }) => {
+    if (policy.visibility === "team") {
+      throw Object.assign(
+        new Error(
+          "Team Memory capture is not supported for API-token integrations in this build"
+        ),
+        { statusCode: 400 }
+      );
+    }
+  };
 
   const rateLimit =
     (name: RateLimitName) =>
@@ -1245,11 +1282,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     const token = createOpaqueSecret("cmt");
     const record = await repo.createApiToken({
       ownerUserId: user.id,
-      teamId: input.teamId,
+      teamId: undefined,
       name: input.name,
       tokenHash: hashSecret(token),
       tokenPrefix: token.slice(0, 12),
-      scopes: input.scopes
+      scopes: []
     });
 
     return { token, apiToken: record };
@@ -1350,6 +1387,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         threadId: input.externalSessionId
       }
     );
+    rejectUnsupportedTeamCapturePolicy(policy);
     if (policy.captureState !== "enabled") {
       return { skipped: true, reason: "capture_disabled", policy };
     }
@@ -1375,6 +1413,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         requesterContext,
         { workspaceId: input.workspaceId, sessionId: params.sessionId }
       );
+      rejectUnsupportedTeamCapturePolicy(policy);
       if (policy.captureState !== "enabled") {
         return { skipped: true, reason: "capture_disabled", policy };
       }
@@ -1399,8 +1438,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         repo,
         requesterContext,
         event.id,
-        policy.visibility,
-        teamId
+        event.visibility,
+        event.teamId ?? undefined
       );
 
       return {
@@ -1429,30 +1468,30 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           threadId:
             typeof input.metadata.externalSessionId === "string"
               ? input.metadata.externalSessionId
-              : undefined
+            : undefined
         }
       );
+      rejectUnsupportedTeamCapturePolicy(policy);
       if (policy.captureState !== "enabled") {
         return { skipped: true, reason: "capture_disabled", policy };
       }
+      const teamId =
+        policy.visibility === "team"
+          ? (await repo.getCurrentTeam(user.id))?.id
+          : undefined;
       const event = await capturePersonalEvent({
         repository: repo,
         requesterContext,
         ...input,
         visibility: policy.visibility,
-        teamId:
-          policy.visibility === "team"
-            ? (await repo.getCurrentTeam(user.id))?.id
-            : undefined
+        teamId
       });
       const processing = await scheduleMemoryEventProcessing(
         repo,
         requesterContext,
         event.id,
-        policy.visibility,
-        policy.visibility === "team"
-          ? (await repo.getCurrentTeam(user.id))?.id
-          : undefined
+        event.visibility,
+        event.teamId ?? undefined
       );
 
       return {

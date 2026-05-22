@@ -199,6 +199,7 @@ describe("Codex capture hook transcript parsing", () => {
       {
         actor: "agent",
         metadata: {
+          threadKind: "subagent",
           externalSessionId: "child-thread",
           parentThreadId: "parent-thread"
         }

@@ -1,10 +1,5 @@
 import { Queue, Worker } from "bullmq";
-import {
-  answerMemory,
-  scheduleCompaction,
-  type MemoryScope,
-  type Visibility
-} from "@koed/core";
+import { scheduleCompaction, type Visibility } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
@@ -29,12 +24,7 @@ const connection = {
   maxRetriesPerRequest: null
 };
 
-const queueNames = [
-  "memory-embed",
-  "lcm-compact",
-  "lcm-embed",
-  "memory-answer"
-];
+const queueNames = ["memory-embed", "lcm-compact", "lcm-embed"];
 
 const pool = process.env.DATABASE_URL ? createDbPool() : null;
 const repository = pool ? createMemorySourceRepository(pool) : null;
@@ -203,19 +193,6 @@ const enqueueLcmNodeEmbeddings = async (nodeIds: string[]) =>
   );
 
 const handleJob = async (queueName: string, data: Record<string, unknown>) => {
-  if (queueName === "memory-answer") {
-    const userId = stringValue(data.userId);
-    const query = stringValue(data.query);
-    const scope = stringValue(data.scope, "personal") as MemoryScope;
-    return answerMemory({
-      repository: requireRepository(),
-      requesterContext: { userId },
-      query,
-      scope,
-      limit: typeof data.limit === "number" ? data.limit : undefined
-    });
-  }
-
   if (queueName === "lcm-compact") {
     const userId = stringValue(data.userId);
     const visibility = stringValue(data.visibility, "personal") as Visibility;

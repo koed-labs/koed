@@ -4,6 +4,7 @@ import {
   answerWithMemoryWorker,
   buildMemoryAnswerPrompt,
   buildPlannedMemoryAnswerPrompt,
+  compactMemoryAnswerPayload,
   resolveMemoryAnswerWorkerConfig,
   type CodexAnswerRunner,
   type MemoryAnswerPayload,
@@ -125,7 +126,6 @@ describe("memory answer worker", () => {
           text: JSON.stringify({
             action: "search",
             query: "memory cost decision local Codex Gemini embeddings",
-            retrieval_scope: "personal",
             limit: 5
           }),
           model: `codex:${config.model}:${config.reasoningEffort}`
@@ -203,6 +203,46 @@ describe("memory answer worker", () => {
       memoryStatus: "found",
       usedFallback: false
     });
+  });
+
+  it("keeps default memory_answer output compact while preserving explicit detail data", async () => {
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text: JSON.stringify({
+        action: "answer",
+        memoryStatus: "found",
+        markdown:
+          "The supported flow is capture hook, local LCM summary, then memory_answer recall. [personal]"
+      }),
+      model: `codex:${config.model}:${config.reasoningEffort}`
+    });
+    const result = await answerWithMemoryWorker(payload, {
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+        }),
+        cwd: "/tmp"
+      },
+      runner,
+      client: {
+        async search() {
+          return { hits: [], retrieval: { retrievalMode: "semantic_vector" } };
+        },
+        async expand() {
+          throw new Error("expand should not be called");
+        }
+      },
+      retrievalScope: "personal",
+      limit: 10
+    });
+
+    const compact = compactMemoryAnswerPayload(result);
+    expect(compact.markdown).toContain("memory_answer recall");
+    expect(compact.retrieval.evidenceCount).toBe(1);
+    expect(compact).not.toHaveProperty("evidence");
+    expect(compact).not.toHaveProperty("evidenceBundle");
+    expect(result.evidenceBundle?.evidence).toHaveLength(1);
   });
 
   it("can report that no matching memory evidence was found", async () => {

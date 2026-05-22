@@ -6,7 +6,6 @@ import {
 } from "./lcm-summary-worker.js";
 
 export interface LcmSummaryServiceConfig {
-  enabled: boolean;
   initialDelayMs: number;
   pushDelayMs: number;
   intervalMs: number;
@@ -38,6 +37,7 @@ export interface LcmSummaryServiceHandle {
     running: boolean;
     stopped: boolean;
     lastRunAt: string | null;
+    lastSuccessAt: string | null;
     lastResult: unknown;
     lastError: string | null;
   };
@@ -46,18 +46,6 @@ export interface LcmSummaryServiceHandle {
 const envValue = (env: NodeJS.ProcessEnv, name: string): string | undefined => {
   const value = env[name]?.trim();
   return value ? value : undefined;
-};
-
-const booleanEnv = (
-  env: NodeJS.ProcessEnv,
-  name: string,
-  fallback: boolean
-): boolean => {
-  const value = envValue(env, name)?.toLowerCase();
-  if (value === undefined) {
-    return fallback;
-  }
-  return ["1", "true", "yes", "on"].includes(value);
 };
 
 const positiveIntEnv = (
@@ -72,7 +60,6 @@ const positiveIntEnv = (
 export const resolveLcmSummaryServiceConfig = (
   env: NodeJS.ProcessEnv = process.env
 ): LcmSummaryServiceConfig => ({
-  enabled: booleanEnv(env, "MEMORY_LCM_BACKGROUND_ENABLED", true),
   initialDelayMs: positiveIntEnv(
     env,
     "MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS",
@@ -100,16 +87,13 @@ export const startLcmSummaryService = (
 ): LcmSummaryServiceHandle | null => {
   const serviceConfig =
     options.serviceConfig ?? resolveLcmSummaryServiceConfig();
-  if (!serviceConfig.enabled) {
-    return null;
-  }
-
   const workerConfig =
     options.workerConfig ?? resolveLcmSummaryWorkerConfig(process.env);
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let stopped = false;
   let lastRunAt: string | null = null;
+  let lastSuccessAt: string | null = null;
   let lastResult: unknown = null;
   let lastError: string | null = null;
 
@@ -171,6 +155,7 @@ export const startLcmSummaryService = (
         config: runOptions.workerConfig ?? workerConfig
       });
       lastError = null;
+      lastSuccessAt = new Date().toISOString();
       return { ran: true, result: lastResult };
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -197,6 +182,7 @@ export const startLcmSummaryService = (
         running,
         stopped,
         lastRunAt,
+        lastSuccessAt,
         lastResult,
         lastError
       };

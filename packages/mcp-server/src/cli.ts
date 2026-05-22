@@ -4,7 +4,10 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answerWithMemoryWorker } from "./answer-worker.js";
+import {
+  answerWithMemoryWorker,
+  compactMemoryAnswerPayload
+} from "./answer-worker.js";
 import {
   MemoryApiClient,
   type McpServerConfig,
@@ -100,10 +103,8 @@ const jsonResponse = (payload: unknown) => ({
   ]
 });
 
-const retrievalScopeSchema = z.enum(["personal", "personal+team"]);
 const searchDomainSchema = z.enum(["global", "project", "session"]);
 const uuidSchema = z.string().uuid();
-const reasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
 const defaultWorkspaceId = (): string => process.cwd();
 const normalizeToolWorkspaceId = (workspaceId?: string): string =>
   workspaceId && path.isAbsolute(workspaceId)
@@ -218,7 +219,11 @@ server.registerTool(
     }
   },
   async ({ include_notes = true }) =>
-    jsonResponse(await memoryAccessCheck(client, include_notes))
+    jsonResponse(
+      await memoryAccessCheck(client, include_notes, {
+        lcmSummaryService: backgroundLcmSummaryService
+      })
+    )
 );
 
 server.registerTool(
@@ -226,10 +231,9 @@ server.registerTool(
   {
     title: "Answer from memory",
     description:
-      "Retrieve cited evidence from /v1/memory/answer using local semantic embeddings, then synthesize the final answer through the local MCP memory-answer worker when enabled. The backend does not call OpenAI or another model provider; local synthesis uses the user's Codex CLI subscription and must cite whether each source is personal or team.",
+      "Retrieve a cited Evidence Bundle from /v1/memory/answer using local semantic embeddings. The backend does not call OpenAI or another model provider; Codex or the local memory-answer worker can synthesize the final answer from that evidence.",
     inputSchema: {
       query: z.string().min(1).describe("Question to answer from memory."),
-      retrieval_scope: retrievalScopeSchema.optional(),
       search_domain: searchDomainSchema
         .default("project")
         .describe(
@@ -245,12 +249,17 @@ server.registerTool(
       session_id: uuidSchema
         .optional()
         .describe("Backend session UUID for session search."),
-      limit: z.number().int().positive().max(50).default(10)
+      limit: z.number().int().positive().max(50).default(10),
+      include_evidence: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Return the full evidence bundle for debugging. Defaults to false for compact agent context."
+        )
     }
   },
   async (input) => {
-    const retrieval_scope =
-      input.retrieval_scope ?? defaultAnswerScope(await client.accessCheck());
+    const retrieval_scope = defaultAnswerScope(await client.accessCheck());
     const workspace_id =
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
@@ -260,16 +269,18 @@ server.registerTool(
       retrieval_scope,
       workspace_id
     });
-    return jsonResponse(
-      await answerWithMemoryWorker(evidence, {
+    const answer = await answerWithMemoryWorker(evidence, {
         client,
         retrievalScope: retrieval_scope,
         searchDomain: input.search_domain,
         workspaceId: workspace_id,
         sessionId: input.session_id,
         limit: input.limit
-      })
-    );
+      });
+    if (input.include_evidence) {
+      return jsonResponse(answer);
+    }
+    return jsonResponse(compactMemoryAnswerPayload(answer));
   }
 );
 
@@ -282,7 +293,6 @@ if (toolExposure.exposeLowLevelMemoryTools) {
         "Debug/diagnostic low-level search through /v1/memory/search using local semantic embeddings. Normal agents should call memory_answer so the local memory-answer worker can plan searches and expansions.",
       inputSchema: {
         query: z.string().min(1),
-        retrieval_scope: retrievalScopeSchema.default("personal"),
         search_domain: searchDomainSchema.default("project"),
         workspace_id: z.string().min(1).optional(),
         session_id: uuidSchema.optional(),
@@ -293,6 +303,7 @@ if (toolExposure.exposeLowLevelMemoryTools) {
       jsonResponse(
         await client.search({
           ...input,
+          retrieval_scope: "personal",
           workspace_id:
             input.search_domain === "project"
               ? normalizeToolWorkspaceId(input.workspace_id)
@@ -314,56 +325,6 @@ if (toolExposure.exposeLowLevelMemoryTools) {
     async ({ nodeId }) => jsonResponse(await client.expand(nodeId))
   );
 }
-
-server.registerTool(
-  "memory_lcm_summarize_pending",
-  {
-    title: "Summarize pending LCM nodes locally",
-    description:
-      "Fetch pending LCM leaf/rollup nodes from the backend, run Codex summarisation locally under the user's subscription, and submit summaries back for embedding. This is intentionally outside the capture hot path and backend workers do not call LLMs for LCM summaries.",
-    inputSchema: {
-      limit: z.number().int().positive().max(50).default(10),
-      model: z
-        .string()
-        .min(1)
-        .default("gpt-5.4-mini")
-        .describe("Local Codex model for LCM summarisation."),
-      reasoning_effort: reasoningEffortSchema
-        .default("medium")
-        .describe("Local Codex reasoning effort for LCM summarisation."),
-      timeout_ms: z.number().int().positive().optional(),
-      max_attempts: z.number().int().positive().max(5).optional(),
-      retry_delay_ms: z.number().int().nonnegative().optional(),
-      concurrency: z.number().int().positive().max(4).default(1)
-    }
-  },
-  async (input) =>
-    jsonResponse(
-      backgroundLcmSummaryService
-        ? await backgroundLcmSummaryService.trigger("memory_tool", {
-            limit: input.limit,
-            workerConfig: resolveLcmSummaryWorkerConfig(process.env, {
-              model: input.model,
-              reasoningEffort: input.reasoning_effort,
-              timeoutMs: input.timeout_ms,
-              maxAttempts: input.max_attempts,
-              retryDelayMs: input.retry_delay_ms,
-              concurrency: input.concurrency
-            })
-          })
-        : await summarizePendingLcmNodes(client, {
-            limit: input.limit,
-            config: resolveLcmSummaryWorkerConfig(process.env, {
-              model: input.model,
-              reasoningEffort: input.reasoning_effort,
-              timeoutMs: input.timeout_ms,
-              maxAttempts: input.max_attempts,
-              retryDelayMs: input.retry_delay_ms,
-              concurrency: input.concurrency
-            })
-          })
-    )
-);
 
 const transport = new StdioServerTransport();
 try {

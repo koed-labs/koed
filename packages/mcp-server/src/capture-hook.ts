@@ -534,6 +534,7 @@ const hookPayloadMetadata = (
   effectiveContext: EffectiveCaptureContext
 ): Record<string, unknown> => ({
   hookEventName: payload.hook_event_name,
+  threadKind: effectiveContext.isSubagent ? "subagent" : "conversation",
   externalSessionId: effectiveContext.externalSessionId,
   parentThreadId: effectiveContext.parentThreadId,
   parentExternalSessionId: effectiveContext.parentThreadId,
@@ -996,7 +997,11 @@ if (
   fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
 ) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(
+      `koed capture hook failed: ${
+        error instanceof Error ? error.message : String(error)
+      }. Automatic capture may be unavailable; this does not mean the MCP recall server is broken.`
+    );
     process.exit(process.env.MEMORY_HOOK_STRICT === "true" ? 1 : 0);
   });
 }

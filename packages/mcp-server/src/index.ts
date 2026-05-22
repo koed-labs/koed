@@ -1,8 +1,12 @@
 import { resolveMemoryAnswerWorkerConfig } from "./answer-worker.js";
+import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
-import { resolveLcmSummaryWorkerConfig } from "./lcm-summary-worker.js";
+import {
+  lcmSummaryLockState,
+  resolveLcmSummaryWorkerConfig
+} from "./lcm-summary-worker.js";
 
-export type RetrievalScope = "personal" | "personal+team";
+export type RetrievalScope = "personal";
 
 export interface McpServerConfig {
   apiUrl: string;
@@ -65,11 +69,18 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     codexBinary: string;
   };
   localLcmSummaryService: {
-    enabled: boolean;
     initialDelayMs: number;
     pushDelayMs: number;
     intervalMs: number;
     batchLimit: number;
+  };
+  localLcmSummaryDiagnostics: {
+    running: boolean;
+    locked: boolean;
+    pendingCount: number | null;
+    lastRunAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
   };
   notes: string[];
 }
@@ -78,18 +89,7 @@ export interface ToolExposureConfig {
   exposeLowLevelMemoryTools: boolean;
 }
 
-const configuredDefaultRetrievalScope = (
-  env: NodeJS.ProcessEnv = process.env
-): RetrievalScope => {
-  const value = env.MEMORY_DEFAULT_RETRIEVAL_SCOPE?.trim().toLowerCase();
-  return value === "personal+team" ? "personal+team" : "personal";
-};
-
-export const defaultTools = [
-  "memory_access_check",
-  "memory_answer",
-  "memory_lcm_summarize_pending"
-] as const;
+export const defaultTools = ["memory_access_check", "memory_answer"] as const;
 
 export const lowLevelMemoryTools = ["memory_search", "memory_expand"] as const;
 
@@ -221,6 +221,10 @@ export class MemoryApiClient {
     );
   }
 
+  async graphOverview(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/v1/memory/graph/overview");
+  }
+
   private async request<T>(
     method: "GET" | "POST",
     path: string,
@@ -228,7 +232,7 @@ export class MemoryApiClient {
   ): Promise<T> {
     if (!this.config.apiToken) {
       throw new MemoryApiError(
-        "Memory API token is not configured. Set MEMORY_API_TOKEN and MEMORY_API_URL before starting the MCP server.",
+        "Memory API token is not configured. Set MEMORY_API_TOKEN and MEMORY_API_URL before starting the MCP server or Capture Hook.",
         { status: 401 }
       );
     }
@@ -274,20 +278,37 @@ export class MemoryApiClient {
 export const defaultAnswerScope = (
   access: AccessCheckResult,
   env: NodeJS.ProcessEnv = process.env
-): RetrievalScope =>
-  configuredDefaultRetrievalScope(env) === "personal+team" && access.currentTeam
-    ? "personal+team"
-    : "personal";
+): RetrievalScope => {
+  void access;
+  void env;
+  return "personal";
+};
 
 export const memoryAccessCheck = async (
   client = new MemoryApiClient(),
-  includeNotes = true
+  includeNotes = true,
+  options: { lcmSummaryService?: LcmSummaryServiceHandle | null } = {}
 ): Promise<MemoryAccessCheckResult> => {
   const access = await client.accessCheck();
   const answerWorker = resolveMemoryAnswerWorkerConfig();
   const lcmSummaryWorker = resolveLcmSummaryWorkerConfig();
   const lcmSummaryService = resolveLcmSummaryServiceConfig();
   const toolExposure = resolveToolExposureConfig();
+  const lcmSnapshot = options.lcmSummaryService?.snapshot();
+  const lock = lcmSummaryLockState(
+    lcmSummaryWorker.env,
+    Math.max(lcmSummaryWorker.timeoutMs * lcmSummaryWorker.maxAttempts, 60_000)
+  );
+  const pendingCount = await client
+    .graphOverview()
+    .then((overview) => {
+      const diagnostics = (
+        overview.overview as Record<string, unknown> | undefined
+      )?.pendingLcmDiagnostics as Record<string, unknown> | undefined;
+      const count = diagnostics?.pendingCount;
+      return typeof count === "number" ? count : null;
+    })
+    .catch(() => null);
   return {
     ...access,
     server: "@koed/mcp-server",
@@ -319,17 +340,24 @@ export const memoryAccessCheck = async (
       codexBinary: lcmSummaryWorker.codexBinary
     },
     localLcmSummaryService: lcmSummaryService,
+    localLcmSummaryDiagnostics: {
+      running: lcmSnapshot?.running ?? false,
+      locked: lock.locked || (lcmSnapshot?.running ?? false),
+      pendingCount,
+      lastRunAt: lcmSnapshot?.lastRunAt ?? null,
+      lastSuccessAt: lcmSnapshot?.lastSuccessAt ?? null,
+      lastError: lcmSnapshot?.lastError ?? null
+    },
     notes: includeNotes
       ? [
           "Store normal Codex/Codex CLI conversation context as personal memory through Codex hooks/transcript ingestion. The backend does not decide that a fact is important and create a separate extracted memory.",
           "MCP alone does not automatically observe the whole conversation; the main-agent MCP surface is for retrieval and local summarisation.",
           "Use memory_answer as the normal retrieval entry point. It defaults to search_domain=project for the current Codex workspace/cwd; use search_domain=session with a backend session_id for one conversation, or search_domain=global only for deliberate cross-project memory checks.",
-          "Set MEMORY_DEFAULT_RETRIEVAL_SCOPE=personal+team to make this MCP read personal plus team memory when the authenticated user belongs to a team. The default is personal.",
-          "retrieval_scope controls visibility (personal or personal+team). search_domain controls the search boundary (session, project, or global). Keep these choices independent.",
+          "MCP recall is personal-only in this build. search_domain controls the search boundary (session, project, or global).",
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval planning to the local memory-answer worker.",
           "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
-          "LCM summarisation is local-only: backend workers create pending LCM nodes, while the MCP background LCM summary service and memory_lcm_summarize_pending run Codex on the user's machine and submit summaries back for embedding.",
-          "When answering from memory, cite whether each source is personal or team."
+          "LCM summarisation is local-only: backend workers create pending LCM nodes, while the MCP background LCM summary service runs Codex on the user's machine and submits summaries back for embedding.",
+          "When answering from memory, cite each source."
         ]
       : []
   };

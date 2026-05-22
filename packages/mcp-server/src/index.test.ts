@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryApiClient, memoryAccessCheck } from "./index.js";
 import {
+  answerWithMemoryWorker,
+  compactMemoryAnswerPayload,
+  resolveMemoryAnswerWorkerConfig,
+  type CodexAnswerRunner
+} from "./answer-worker.js";
+import {
   resolveLcmSummaryServiceConfig,
   startLcmSummaryService
 } from "./lcm-summary-service.js";
@@ -40,10 +46,25 @@ afterEach(async () => {
 describe("MemoryApiClient", () => {
   it("validates bearer token access through /v1/access/check", async () => {
     const apiUrl = await createApi((request, response) => {
-      expect(request.method).toBe("GET");
-      expect(request.url).toBe("/v1/access/check");
       expect(request.headers.authorization).toBe("Bearer cmt_test");
       response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/memory/graph/overview") {
+        response.end(
+          JSON.stringify({
+            overview: {
+              pendingLcmDiagnostics: {
+                pendingCount: 3,
+                oldestPendingCreatedAt: null,
+                staleThresholdMinutes: 15,
+                stale: false
+              }
+            }
+          })
+        );
+        return;
+      }
+      expect(request.method).toBe("GET");
+      expect(request.url).toBe("/v1/access/check");
       response.end(
         JSON.stringify({
           ok: true,
@@ -66,12 +87,17 @@ describe("MemoryApiClient", () => {
     expect(result.configuredApiUrl).toBe(apiUrl);
     expect(result.defaultAutomaticCaptureScope).toBe("personal");
     expect(result.defaultAnswerScope).toBe("personal");
+    expect(result.localLcmSummaryDiagnostics.pendingCount).toBe(3);
     expect(result.notes).toEqual([]);
   });
 
-  it("defaults memory_answer scope to personal unless personal+team is configured", async () => {
-    const apiUrl = await createApi((_request, response) => {
+  it("keeps memory_answer scope personal even when a team exists", async () => {
+    const apiUrl = await createApi((request, response) => {
       response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/memory/graph/overview") {
+        response.end(JSON.stringify({ overview: {} }));
+        return;
+      }
       response.end(
         JSON.stringify({
           ok: true,
@@ -83,7 +109,7 @@ describe("MemoryApiClient", () => {
             inviteCode: null
           },
           canWritePersonal: true,
-          canWriteTeam: true,
+          canWriteTeam: false,
           providerConfigSupported: false
         })
       );
@@ -101,14 +127,13 @@ describe("MemoryApiClient", () => {
       new MemoryApiClient({ apiUrl, apiToken: "cmt_test" }),
       false
     );
-    expect(configured.defaultAnswerScope).toBe("personal+team");
+    expect(configured.defaultAnswerScope).toBe("personal");
   });
 });
 
 describe("LCM summary background service", () => {
-  it("resolves conservative enabled defaults", () => {
+  it("resolves conservative default cadence", () => {
     expect(resolveLcmSummaryServiceConfig({})).toEqual({
-      enabled: true,
       initialDelayMs: 30_000,
       pushDelayMs: 10_000,
       intervalMs: 1_800_000,
@@ -130,7 +155,6 @@ describe("LCM summary background service", () => {
 
     const service = startLcmSummaryService(fakeClient, {
       serviceConfig: {
-        enabled: true,
         initialDelayMs: 60_000,
         pushDelayMs: 10_000,
         intervalMs: 60_000,
@@ -226,5 +250,176 @@ describe("LCM summary background service", () => {
         "Final summary: Aston Villa and Paul McGrath were discussed.",
       summaryModel: "codex:test"
     });
+  });
+
+  it("covers capture hook to local LCM summary to one-tool recall", async () => {
+    const sessionId = randomUUID();
+    const eventId = randomUUID();
+    const nodeId = randomUUID();
+    let captured = false;
+    let submittedSummary: string | null = null;
+    const apiUrl = await createApi((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/memory/capture-personal-event") {
+        captured = true;
+        response.end(
+          JSON.stringify({
+            event: {
+              id: eventId,
+              sessionId,
+              workspaceId: "/repo/koed",
+              visibility: "personal"
+            }
+          })
+        );
+        return;
+      }
+      if (request.url === "/v1/memory/lcm/summaries/pending?limit=1") {
+        response.end(
+          JSON.stringify({
+            nodes: submittedSummary
+              ? []
+              : [
+                  {
+                    id: nodeId,
+                    visibility: "personal",
+                    kind: "leaf",
+                    depth: 0,
+                    summaryText:
+                      "LCM placeholder: capture hook recorded that MVP recall uses memory_answer.",
+                    sourceItems: [
+                      {
+                        kind: "memory_event",
+                        sourceTable: "memory_events",
+                        sourceId: eventId,
+                        actor: "user",
+                        text: "The MVP recall flow should use only memory_answer.",
+                        position: 0
+                      }
+                    ],
+                    sourceTokenEstimate: null
+                  }
+                ],
+            count: submittedSummary ? 0 : 1
+          })
+        );
+        return;
+      }
+      if (request.url === `/v1/memory/lcm/summaries/${nodeId}`) {
+        let body = "";
+        request.on("data", (chunk) => {
+          body += String(chunk);
+        });
+        request.on("end", () => {
+          submittedSummary = (
+            JSON.parse(body) as { summaryText?: string }
+          ).summaryText ?? null;
+          response.end(JSON.stringify({ nodeId }));
+        });
+        return;
+      }
+      if (request.url === "/v1/memory/answer") {
+        response.end(
+          JSON.stringify({
+            markdown: "Evidence bundle returned for Codex synthesis.",
+            evidence: submittedSummary
+              ? [
+                  {
+                    nodeId,
+                    visibility: "personal",
+                    summaryText: submittedSummary,
+                    citation: { nodeId, visibility: "personal" }
+                  }
+                ]
+              : [],
+            citations: submittedSummary
+              ? [{ nodeId, visibility: "personal" }]
+              : [],
+            evidenceBundle: {
+              query: "What is the MVP recall flow?",
+              instructions: "Use only cited memory evidence.",
+              evidence: submittedSummary
+                ? [
+                    {
+                      nodeId,
+                      visibility: "personal",
+                      summaryText: submittedSummary,
+                      citation: { nodeId, visibility: "personal" }
+                    }
+                  ]
+                : [],
+              retrieval: { retrievalMode: "semantic_vector" }
+            }
+          })
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not found" }));
+    });
+    const client = new MemoryApiClient({ apiUrl, apiToken: "cmt_test" });
+
+    await client.capturePersonalEvent({
+      workspaceId: "/repo/koed",
+      sessionId,
+      actor: "user",
+      eventType: "user_prompt",
+      content: "The MVP recall flow should use only memory_answer."
+    });
+    expect(captured).toBe(true);
+
+    const summary = await summarizePendingLcmNodes(client, {
+      limit: 1,
+      config: resolveLcmSummaryWorkerConfig(
+        {
+          MEMORY_LCM_SUMMARY_LOCK_PATH: `/tmp/koed-lcm-e2e-${randomUUID()}.lock`
+        },
+        { timeoutMs: 1_000, maxAttempts: 1 }
+      ),
+      runner: async () => ({
+        text: "The MVP recall flow captures by hook, summarizes locally, and recalls through memory_answer.",
+        model: "codex:test"
+      })
+    });
+    expect(summary.submittedCount).toBe(1);
+
+    const evidence = await client.answer({
+      query: "What is the MVP recall flow?",
+      retrieval_scope: "personal",
+      search_domain: "project",
+      workspace_id: "/repo/koed",
+      limit: 10
+    });
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text: JSON.stringify({
+        action: "answer",
+        memoryStatus: "found",
+        markdown:
+          "The MVP flow captures by hook, summarizes locally, and recalls through memory_answer. [personal]"
+      }),
+      model: `codex:${config.model}:${config.reasoningEffort}`
+    });
+    const answered = await answerWithMemoryWorker(evidence, {
+      runner,
+      client,
+      retrievalScope: "personal",
+      searchDomain: "project",
+      workspaceId: "/repo/koed",
+      limit: 10,
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+          MEMORY_ANSWER_MAX_SEARCHES: "1",
+          MEMORY_ANSWER_MAX_EXPANSIONS: "0"
+        }),
+        cwd: "/tmp"
+      }
+    });
+    const compact = compactMemoryAnswerPayload(answered);
+    expect(compact.markdown).toContain("memory_answer");
+    expect(compact.retrieval.evidenceCount).toBe(1);
+    expect(compact).not.toHaveProperty("evidenceBundle");
   });
 });
