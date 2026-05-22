@@ -29,7 +29,7 @@ interface BuildServerOptions {
   runMemoryJobsInlineForTests?: boolean;
 }
 
-type RateLimitName = "auth" | "memory";
+type RateLimitName = "auth" | "memoryRead" | "memoryWrite" | "memoryRecall";
 type EmbeddingSourceType = "memory_node" | "memory_event" | "message";
 
 interface MemoryJobStatus {
@@ -130,17 +130,6 @@ const allowedCorsOrigins = (): Set<string> => {
     )
   );
 };
-
-const rateLimits = {
-  auth: {
-    windowMs: parsePositiveInt("AUTH_RATE_LIMIT_WINDOW_MS", 60_000),
-    max: parsePositiveInt("AUTH_RATE_LIMIT_MAX", 20)
-  },
-  memory: {
-    windowMs: parsePositiveInt("MEMORY_RATE_LIMIT_WINDOW_MS", 60_000),
-    max: parsePositiveInt("MEMORY_RATE_LIMIT_MAX", 1000)
-  }
-} satisfies Record<RateLimitName, { windowMs: number; max: number }>;
 
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -463,6 +452,38 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const compactionQueue = createQueue("lcm-compact");
   const graphStreamClients = new Set<GraphStreamClient>();
   let graphListenClient: GraphListenClient | null = null;
+  const memoryRateLimitWindowMs = parsePositiveInt(
+    "MEMORY_RATE_LIMIT_WINDOW_MS",
+    60_000
+  );
+  const memoryRateLimitMax = parsePositiveInt("MEMORY_RATE_LIMIT_MAX", 1000);
+  const rateLimits = {
+    auth: {
+      windowMs: parsePositiveInt("AUTH_RATE_LIMIT_WINDOW_MS", 60_000),
+      max: parsePositiveInt("AUTH_RATE_LIMIT_MAX", 20)
+    },
+    memoryRead: {
+      windowMs: parsePositiveInt(
+        "MEMORY_READ_RATE_LIMIT_WINDOW_MS",
+        memoryRateLimitWindowMs
+      ),
+      max: parsePositiveInt("MEMORY_READ_RATE_LIMIT_MAX", memoryRateLimitMax)
+    },
+    memoryWrite: {
+      windowMs: parsePositiveInt(
+        "MEMORY_WRITE_RATE_LIMIT_WINDOW_MS",
+        memoryRateLimitWindowMs
+      ),
+      max: parsePositiveInt("MEMORY_WRITE_RATE_LIMIT_MAX", memoryRateLimitMax)
+    },
+    memoryRecall: {
+      windowMs: parsePositiveInt(
+        "MEMORY_RECALL_RATE_LIMIT_WINDOW_MS",
+        memoryRateLimitWindowMs
+      ),
+      max: parsePositiveInt("MEMORY_RECALL_RATE_LIMIT_MAX", memoryRateLimitMax)
+    }
+  } satisfies Record<RateLimitName, { windowMs: number; max: number }>;
 
   const writeGraphStreamEvent = (
     reply: FastifyReply,
@@ -779,6 +800,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         "x-ratelimit-reset",
         String(Math.ceil(bucket.resetAt / 1000))
       );
+      reply.header(
+        "retry-after",
+        String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000)))
+      );
 
       if (bucket.count > policy.max) {
         throw Object.assign(new Error("Rate limit exceeded"), {
@@ -788,7 +813,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     };
 
   const authRateLimit = rateLimit("auth");
-  const memoryRateLimit = rateLimit("memory");
+  const memoryReadRateLimit = rateLimit("memoryRead");
+  const memoryWriteRateLimit = rateLimit("memoryWrite");
+  const memoryRecallRateLimit = rateLimit("memoryRecall");
 
   app.setErrorHandler((error, request, reply) => {
     const statusCodeCandidate =
@@ -1299,7 +1326,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/access/check",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1320,7 +1347,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/capture-policy/effective",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1333,7 +1360,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/capture-policies",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1353,7 +1380,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.put(
     "/v1/capture-policies",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1364,33 +1391,37 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     }
   );
 
-  app.post("/v1/sessions", { preHandler: memoryRateLimit }, async (request) => {
-    const repo = requireRepository();
-    const user = await authenticateApiToken(request);
-    const input = createMcpSessionSchema.parse(request.body);
-    const policy = await resolveCapturePolicyForRequest(
-      repo,
-      { userId: user.id },
-      {
-        workspaceId: input.cwd ?? input.workspaceId,
-        threadId: input.externalSessionId
+  app.post(
+    "/v1/sessions",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const input = createMcpSessionSchema.parse(request.body);
+      const policy = await resolveCapturePolicyForRequest(
+        repo,
+        { userId: user.id },
+        {
+          workspaceId: input.cwd ?? input.workspaceId,
+          threadId: input.externalSessionId
+        }
+      );
+      rejectUnsupportedTeamCapturePolicy(policy);
+      if (policy.captureState !== "enabled") {
+        return { skipped: true, reason: "capture_disabled", policy };
       }
-    );
-    rejectUnsupportedTeamCapturePolicy(policy);
-    if (policy.captureState !== "enabled") {
-      return { skipped: true, reason: "capture_disabled", policy };
-    }
-    const session = await repo.createCapturedSession(
-      { userId: user.id },
-      input
-    );
+      const session = await repo.createCapturedSession(
+        { userId: user.id },
+        input
+      );
 
-    return { session, policy };
-  });
+      return { session, policy };
+    }
+  );
 
   app.post(
     "/v1/sessions/:sessionId/events",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1442,7 +1473,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post(
     "/v1/memory/capture-personal-event",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1457,7 +1488,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           threadId:
             typeof input.metadata.externalSessionId === "string"
               ? input.metadata.externalSessionId
-            : undefined
+              : undefined
         }
       );
       rejectUnsupportedTeamCapturePolicy(policy);
@@ -1494,7 +1525,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/clusters",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1509,7 +1540,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/clusters/:clusterId/memories",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1533,7 +1564,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/items",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1548,7 +1579,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/graph/overview",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1558,7 +1589,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/graph/nodes",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1571,7 +1602,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/graph/nodes/:nodeId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1594,7 +1625,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/graph/events",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1607,7 +1638,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/graph/threads",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1660,7 +1691,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/graph/events/:eventId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1681,7 +1712,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.patch(
     "/v1/memory/graph/events/:eventId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1702,7 +1733,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.delete(
     "/v1/memory/graph/events/:eventId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1717,7 +1748,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/export",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1727,7 +1758,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post(
     "/v1/memory/search",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryRecallRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1768,7 +1799,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post(
     "/v1/memory/answer",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryRecallRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1830,7 +1861,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/lcm/summaries/pending",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryRecallRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1852,7 +1883,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post(
     "/v1/memory/lcm/summaries/:nodeId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1891,7 +1922,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/nodes/:nodeId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
@@ -1911,7 +1942,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.patch(
     "/v1/memory/nodes/:nodeId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1943,7 +1974,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.delete(
     "/v1/memory/nodes/:nodeId",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
       const user = await authenticate(request);
@@ -1958,7 +1989,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get(
     "/v1/memory/nodes/:nodeId/expand",
-    { preHandler: memoryRateLimit },
+    { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);

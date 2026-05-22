@@ -23,7 +23,19 @@ import type {
 import { buildServer } from "./server.js";
 
 afterEach(() => {
-  delete process.env.KOED_ALLOW_PUBLIC_REGISTRATION;
+  for (const name of [
+    "KOED_ALLOW_PUBLIC_REGISTRATION",
+    "MEMORY_RATE_LIMIT_WINDOW_MS",
+    "MEMORY_RATE_LIMIT_MAX",
+    "MEMORY_READ_RATE_LIMIT_WINDOW_MS",
+    "MEMORY_READ_RATE_LIMIT_MAX",
+    "MEMORY_WRITE_RATE_LIMIT_WINDOW_MS",
+    "MEMORY_WRITE_RATE_LIMIT_MAX",
+    "MEMORY_RECALL_RATE_LIMIT_WINDOW_MS",
+    "MEMORY_RECALL_RATE_LIMIT_MAX"
+  ]) {
+    delete process.env[name];
+  }
 });
 
 const cookieHeader = (response: {
@@ -1184,6 +1196,58 @@ describe("api health", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("OK");
   });
+
+  it("uses separate memory rate-limit buckets with Retry-After headers", async () => {
+    process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";
+    process.env.MEMORY_WRITE_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.MEMORY_WRITE_RATE_LIMIT_MAX = "2";
+    process.env.MEMORY_RECALL_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.MEMORY_RECALL_RATE_LIMIT_MAX = "1";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const headers = { authorization: "Bearer invalid" };
+
+    const firstRead = await app.inject({
+      method: "GET",
+      url: "/v1/access/check",
+      headers
+    });
+    const secondRead = await app.inject({
+      method: "GET",
+      url: "/v1/access/check",
+      headers
+    });
+    const firstWrite = await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {}
+    });
+    const firstRecall = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers,
+      payload: {}
+    });
+    const secondRecall = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers,
+      payload: {}
+    });
+    await app.close();
+
+    expect(firstRead.statusCode).not.toBe(429);
+    expect(firstRead.headers["x-ratelimit-limit"]).toBe("1");
+    expect(firstRead.headers["retry-after"]).toBeDefined();
+    expect(secondRead.statusCode).toBe(429);
+    expect(secondRead.headers["retry-after"]).toBeDefined();
+    expect(firstWrite.statusCode).not.toBe(429);
+    expect(firstWrite.headers["x-ratelimit-limit"]).toBe("2");
+    expect(firstRecall.statusCode).not.toBe(429);
+    expect(firstRecall.headers["x-ratelimit-limit"]).toBe("1");
+    expect(secondRecall.statusCode).toBe(429);
+  });
 });
 
 describe("account and access flows", () => {
@@ -1522,8 +1586,7 @@ describe("account and access flows", () => {
     const repository = createFakeRepository();
     const compactionScopes: Array<{ visibility: Visibility; teamId?: string }> =
       [];
-    const originalCreateLcmNodes =
-      repository.createLcmNodes.bind(repository);
+    const originalCreateLcmNodes = repository.createLcmNodes.bind(repository);
     repository.createLcmNodes = async (actor, input) => {
       compactionScopes.push({
         visibility: input.visibility,
