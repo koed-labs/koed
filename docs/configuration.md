@@ -33,9 +33,9 @@ This creates `.env` and generates `API_DATA_ENCRYPTION_KEY` and
 - `API_MEMORY_READ_RATE_LIMIT_WINDOW_MS`: read-oriented memory endpoint rate-limit window.
 - `API_MEMORY_READ_RATE_LIMIT_MAX`: read-oriented memory requests allowed per window. The default is 1000 requests per 60-second window.
 - `API_MEMORY_WRITE_RATE_LIMIT_WINDOW_MS`: write-oriented memory endpoint rate-limit window.
-- `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window.
+- `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The default is 300 requests per 60-second window.
 - `API_MEMORY_RECALL_RATE_LIMIT_WINDOW_MS`: recall-oriented memory endpoint rate-limit window.
-- `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window.
+- `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The default is 300 requests per 60-second window.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `CONSOLE_NODE_ENV`: runtime environment for the Operator Console service.
 - `CONSOLE_PORT`: Operator Console port inside the container.
