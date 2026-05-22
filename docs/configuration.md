@@ -42,6 +42,7 @@ values and adds any missing keys from `.env.example`.
 - `API_CACHE_STORE`: `memory` by default; set `redis` to enable short-lived graph response caching.
 - `API_CACHE_REDIS_URL`: optional Redis URL for API cache entries; falls back to `REDIS_URL`.
 - `API_GRAPH_CACHE_TTL_SECONDS`: graph overview/thread cache TTL when Redis caching is enabled.
+- `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `CONSOLE_NODE_ENV`: runtime environment for the Operator Console service.
 - `CONSOLE_PORT`: Operator Console port inside the container.

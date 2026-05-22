@@ -53,6 +53,7 @@ interface GraphUpdatePayload {
   teamId?: string | null;
   visibility?: "personal" | "team" | string | null;
   changedAt?: string;
+  coalesced?: boolean;
 }
 
 interface GraphStreamClient {
@@ -609,6 +610,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     (cacheRedis ? new RedisCacheProvider(cacheRedis) : new NoopCacheProvider());
   const graphCacheTtlSeconds = parsePositiveInt("GRAPH_CACHE_TTL_SECONDS", 5);
   const graphStreamClients = new Set<GraphStreamClient>();
+  const graphUpdateDebounceMs = parsePositiveInt(
+    "GRAPH_UPDATE_DEBOUNCE_MS",
+    1_000
+  );
+  const pendingGraphUpdates = new Map<
+    string,
+    { payload: GraphUpdatePayload; timer: ReturnType<typeof setTimeout> }
+  >();
   let graphListenClient: GraphListenClient | null = null;
   const memoryRateLimitWindowMs = parsePositiveInt(
     "MEMORY_RATE_LIMIT_WINDOW_MS",
@@ -665,6 +674,43 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     }
   };
 
+  const graphUpdateKey = (payload: GraphUpdatePayload): string => {
+    if (payload.visibility === "personal" && payload.ownerUserId) {
+      return `personal:${payload.ownerUserId}`;
+    }
+    if (payload.visibility === "team" && payload.teamId) {
+      return `team:${payload.teamId}`;
+    }
+    return "global";
+  };
+
+  const scheduleGraphUpdate = (payload: GraphUpdatePayload) => {
+    void cacheProvider.deleteByPrefix("koed:graph:").catch((error: unknown) => {
+      app.log.warn(
+        { error: String(error) },
+        "could not invalidate graph cache"
+      );
+    });
+    const key = graphUpdateKey(payload);
+    const current = pendingGraphUpdates.get(key);
+    if (current) {
+      pendingGraphUpdates.set(key, { ...current, payload });
+      return;
+    }
+    const timer = setTimeout(() => {
+      const pending = pendingGraphUpdates.get(key);
+      pendingGraphUpdates.delete(key);
+      if (pending) {
+        broadcastGraphUpdate({
+          ...pending.payload,
+          coalesced: true,
+          changedAt: new Date().toISOString()
+        });
+      }
+    }, graphUpdateDebounceMs);
+    pendingGraphUpdates.set(key, { payload, timer });
+  };
+
   if (pool) {
     try {
       graphListenClient = await pool.connect();
@@ -674,16 +720,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           return;
         }
         try {
-          const payload = JSON.parse(message.payload) as GraphUpdatePayload;
-          void cacheProvider
-            .deleteByPrefix("koed:graph:")
-            .catch((error: unknown) => {
-              app.log.warn(
-                { error: String(error) },
-                "could not invalidate graph cache"
-              );
-            });
-          broadcastGraphUpdate(payload);
+          scheduleGraphUpdate(
+            JSON.parse(message.payload) as GraphUpdatePayload
+          );
         } catch (error) {
           app.log.warn(
             { error: String(error), payload: message.payload },
@@ -709,6 +748,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       client.reply.raw.end();
     }
     graphStreamClients.clear();
+    for (const pending of pendingGraphUpdates.values()) {
+      clearTimeout(pending.timer);
+    }
+    pendingGraphUpdates.clear();
     graphListenClient?.release();
     await Promise.all([
       embeddingQueue?.close(),
