@@ -1660,8 +1660,7 @@ describe("account and access flows", () => {
     const repository = createFakeRepository();
     const compactionScopes: Array<{ visibility: Visibility; teamId?: string }> =
       [];
-    const originalCreateLcmNodes =
-      repository.createLcmNodes.bind(repository);
+    const originalCreateLcmNodes = repository.createLcmNodes.bind(repository);
     repository.createLcmNodes = async (actor, input) => {
       compactionScopes.push({
         visibility: input.visibility,
@@ -1960,6 +1959,11 @@ describe("account and access flows", () => {
       url: `/v1/memory/graph/nodes/${nodeId}`,
       headers: { cookie }
     });
+    const nodeBatch = await app.inject({
+      method: "GET",
+      url: `/v1/memory/graph/nodes?ids=${nodeId}`,
+      headers: { cookie }
+    });
     const corrected = await app.inject({
       method: "PATCH",
       url: `/v1/memory/nodes/${nodeId}`,
@@ -2014,6 +2018,10 @@ describe("account and access flows", () => {
       projectName: "Graph Repo",
       threadName: "Graph thread",
       visibility: "personal"
+    });
+    expect(jsonBody<GraphNodesResponse>(nodeBatch).nodes).toHaveLength(1);
+    expect(jsonBody<GraphNodesResponse>(nodeBatch).nodes[0]).toMatchObject({
+      id: nodeId
     });
     expect(
       jsonBody<GraphNodeResponse>(nodeDetail).node.sources[0]

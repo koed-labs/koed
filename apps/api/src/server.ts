@@ -303,6 +303,19 @@ const graphQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).default(100)
 });
 
+const graphNodesQuerySchema = graphQuerySchema.extend({
+  ids: z
+    .string()
+    .optional()
+    .transform((value) =>
+      value
+        ?.split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+    .pipe(z.array(z.string().uuid()).max(100).optional())
+});
+
 const graphEventsQuerySchema = graphQuerySchema
   .extend({
     cursorTimestamp: z.string().datetime({ offset: true }).optional(),
@@ -1468,7 +1481,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           threadId:
             typeof input.metadata.externalSessionId === "string"
               ? input.metadata.externalSessionId
-            : undefined
+              : undefined
         }
       );
       rejectUnsupportedTeamCapturePolicy(policy);
@@ -1573,9 +1586,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
-      const query = graphQuerySchema.parse(request.query);
+      const query = graphNodesQuerySchema.parse(request.query);
       return {
-        nodes: await repo.listLcmGraphNodes({ userId: user.id }, query)
+        nodes: await repo.listLcmGraphNodes(
+          { userId: user.id },
+          {
+            ...query,
+            nodeIds: query.ids
+          }
+        )
       };
     }
   );
