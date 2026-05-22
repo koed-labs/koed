@@ -5,7 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const target = path.join(root, "apps", "history-browser", "t3code-history-browser");
+const target = path.join(
+  root,
+  "apps",
+  "history-browser",
+  "t3code-history-browser"
+);
 const mode = process.argv[2];
 const token =
   process.env.HISTORY_BROWSER_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
@@ -34,7 +39,7 @@ function pnpm(args, env = process.env) {
   run(
     "corepack",
     [
-      "pnpm@10.30.3",
+      "pnpm@11.1.2",
       "-C",
       "apps/history-browser/t3code-history-browser",
       ...args
@@ -50,7 +55,9 @@ function pnpm(args, env = process.env) {
 }
 
 if (!mode || !["build", "dev", "preview", "typecheck"].includes(mode)) {
-  console.error("Usage: node scripts/history-browser.mjs <build|dev|preview|typecheck>");
+  console.error(
+    "Usage: node scripts/history-browser.mjs <build|dev|preview|typecheck>"
+  );
   process.exit(1);
 }
 
@@ -73,20 +80,28 @@ if (mode !== "preview") {
 }
 
 if (mode === "build") {
-  pnpm(["--config.package-manager-strict=false", "--filter", "@t3tools/web", "build"], {
-    ...process.env,
-    VITE_KOED_HISTORY_BROWSER: "1",
-    VITE_KOED_API_BASE_URL:
-      process.env.VITE_KOED_API_BASE_URL ??
-      process.env.VITE_API_BASE_URL ??
-      "http://localhost:3000"
-  });
+  pnpm(
+    [
+      "--config.package-manager-strict=false",
+      "--filter",
+      "@koed-labs/web",
+      "build"
+    ],
+    {
+      ...process.env,
+      VITE_KOED_HISTORY_BROWSER: "1",
+      VITE_KOED_API_BASE_URL:
+        process.env.VITE_KOED_API_BASE_URL ??
+        process.env.VITE_API_BASE_URL ??
+        "http://localhost:3000"
+    }
+  );
 } else if (mode === "dev") {
   pnpm(
     [
       "--config.package-manager-strict=false",
       "--filter",
-      "@t3tools/web",
+      "@koed-labs/web",
       "dev",
       "--",
       "--host",
@@ -102,7 +117,12 @@ if (mode === "build") {
     }
   );
 } else if (mode === "preview") {
-  pnpm(["--filter", "@t3tools/web", "preview", "--", "--host", "0.0.0.0"]);
+  pnpm(["--filter", "@koed-labs/web", "preview", "--", "--host", "0.0.0.0"]);
 } else if (mode === "typecheck") {
-  pnpm(["--config.package-manager-strict=false", "--filter", "@t3tools/web", "typecheck"]);
+  pnpm([
+    "--config.package-manager-strict=false",
+    "--filter",
+    "@koed-labs/web",
+    "typecheck"
+  ]);
 }
