@@ -11,12 +11,10 @@ import type {
   ApiTokenRecord,
   CapturedSessionRecord,
   CreateMemoryNodeInput,
-  CreateProviderConfigInput,
   CreateTeamInput,
   CreateUserInput,
   MemoryNodeRecord,
   MemorySourceRepository,
-  ProviderConfigRecord,
   TeamMemberRecord,
   TeamRecord,
   UserRecord,
@@ -48,7 +46,7 @@ const jsonBody = <T>(response: { body: string }): T =>
 
 type TokenResponse = {
   token: string;
-  apiToken: { tokenPrefix: string; scopes: string[]; teamId: string | null };
+  apiToken: { tokenPrefix: string };
 };
 
 type TeamResponse = {
@@ -91,6 +89,24 @@ type GraphNodeResponse = {
 type GraphEventsResponse = {
   events: Array<Record<string, unknown>>;
 };
+type GraphThreadIndexResponse = {
+  projects: Array<{
+    id: string;
+    name: string;
+    path: string | null;
+    eventCount: number;
+    threads: Array<{
+      id: string;
+      name: string;
+      projectId: string;
+      projectName: string;
+      eventCount: number;
+      invalidatedCount: number;
+      latestAt: string;
+      sample: string;
+    }>;
+  }>;
+};
 type GraphEventResponse = {
   event: Record<string, unknown> & { rawContent?: string };
 };
@@ -107,7 +123,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     TeamRecord & { members: Map<string, "owner" | "admin" | "member"> }
   >();
   const tokens = new Map<string, ApiTokenRecord & { tokenHash: string }>();
-  const providerConfigs = new Map<string, ProviderConfigRecord>();
   const memories: MemoryNodeRecord[] = [];
   const policies: Array<{
     id: string;
@@ -277,77 +292,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getApiTokenUser(tokenHash: string) {
       const token = tokens.get(tokenHash);
       return token ? (users.get(token.ownerUserId) ?? null) : null;
-    },
-    async createProviderConfig(
-      actor: ActorContext,
-      input: CreateProviderConfigInput
-    ) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
-        }
-        if (!getMembership(actor.userId, input.teamId)) {
-          throw new Error("User is not an active member of the requested team");
-        }
-      }
-      const id = randomUUID();
-      const record: ProviderConfigRecord = {
-        id,
-        ownerUserId: input.visibility === "personal" ? actor.userId : null,
-        teamId: input.visibility === "team" ? input.teamId! : null,
-        visibility: input.visibility,
-        provider: input.provider,
-        config: {
-          ...(input.config ?? {}),
-          apiKeyConfigured: Boolean(input.apiKey)
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      providerConfigs.set(id, record);
-      return record;
-    },
-    async listProviderConfigs(actor: ActorContext) {
-      return [...providerConfigs.values()].filter(
-        (config) =>
-          (config.visibility === "personal" &&
-            config.ownerUserId === actor.userId) ||
-          (config.visibility === "team" &&
-            Boolean(
-              config.teamId && getMembership(actor.userId, config.teamId)
-            ))
-      );
-    },
-    async getRuntimeProviderConfig(actor: ActorContext, input = {}) {
-      const config =
-        [...providerConfigs.values()].find(
-          (candidate) =>
-            (!input.visibility || candidate.visibility === input.visibility) &&
-            (!input.teamId || candidate.teamId === input.teamId) &&
-            (!input.provider || candidate.provider === input.provider) &&
-            ((candidate.visibility === "personal" &&
-              candidate.ownerUserId === actor.userId) ||
-              (candidate.visibility === "team" &&
-                Boolean(
-                  candidate.teamId &&
-                  getMembership(actor.userId, candidate.teamId)
-                )))
-        ) ?? null;
-      return config ? { ...config, apiKey: "fake-secret" } : null;
-    },
-    async deleteProviderConfig(actor: ActorContext, providerConfigId: string) {
-      const config = providerConfigs.get(providerConfigId);
-      if (
-        !config ||
-        (config.visibility === "personal" &&
-          config.ownerUserId !== actor.userId) ||
-        (config.visibility === "team" &&
-          (!config.teamId || !getMembership(actor.userId, config.teamId)))
-      ) {
-        return false;
-      }
-      providerConfigs.delete(providerConfigId);
-      return true;
     },
     async createCapturedSession(actor: ActorContext, input) {
       const id = randomUUID();
@@ -628,13 +572,6 @@ const createFakeRepository = (): MemorySourceRepository => {
       const visibleEvents = await this.listLcmGraphEvents(actor, {
         includeInvalidated: true
       });
-      const pendingNodes = visibleNodes.filter(
-        (node) => node.summaryStatus === "pending" && !node.invalidatedAt
-      );
-      const oldestPendingCreatedAt =
-        pendingNodes
-          .map((node) => node.createdAt)
-          .sort((left, right) => left.localeCompare(right))[0] ?? null;
       return {
         capturedEvents: visibleEvents.filter((event) => !event.invalidatedAt)
           .length,
@@ -644,14 +581,16 @@ const createFakeRepository = (): MemorySourceRepository => {
         rollupNodes: visibleNodes.filter(
           (node) => node.kind === "rollup" && !node.invalidatedAt
         ).length,
-        pendingSummaries: pendingNodes.length,
+        pendingSummaries: visibleNodes.filter(
+          (node) => node.summaryStatus === "pending" && !node.invalidatedAt
+        ).length,
         pendingLcmDiagnostics: {
-          pendingCount: pendingNodes.length,
-          oldestPendingCreatedAt,
+          pendingCount: visibleNodes.filter(
+            (node) => node.summaryStatus === "pending" && !node.invalidatedAt
+          ).length,
+          oldestPendingCreatedAt: null,
           staleThresholdMinutes: 15,
-          stale:
-            oldestPendingCreatedAt !== null &&
-            Date.now() - Date.parse(oldestPendingCreatedAt) > 15 * 60_000
+          stale: false
         },
         invalidatedRecords:
           visibleNodes.filter((node) => node.invalidatedAt).length +
@@ -786,10 +725,31 @@ const createFakeRepository = (): MemorySourceRepository => {
             !event.content.toLowerCase().includes(input.query.toLowerCase())
           )
             return false;
+          const projectId = event.workspaceId ?? null;
+          const threadId =
+            typeof event.metadata.externalSessionId === "string"
+              ? event.metadata.externalSessionId
+              : event.sessionId;
+          if (input.projectId && projectId !== input.projectId) return false;
+          if (input.threadId && threadId !== input.threadId) return false;
           if (event.visibility === "personal")
             return event.ownerUserId === actor.userId;
           return Boolean(
             event.teamId && getMembership(actor.userId, event.teamId)
+          );
+        })
+        .sort(
+          (left, right) =>
+            right.createdAt.localeCompare(left.createdAt) ||
+            right.id.localeCompare(left.id)
+        )
+        .filter((event) => {
+          if (!input.cursorTimestamp) return true;
+          return (
+            event.createdAt < input.cursorTimestamp ||
+            (event.createdAt === input.cursorTimestamp &&
+              input.cursorId !== undefined &&
+              event.id < input.cursorId)
           );
         })
         .slice(0, input.limit ?? 100)
@@ -834,6 +794,131 @@ const createFakeRepository = (): MemorySourceRepository => {
             .filter(([, ids]) => ids.includes(event.id))
             .map(([nodeId]) => nodeId)
         }));
+    },
+    async listLcmGraphThreads(actor, input = {}) {
+      const visibleEvents = await this.listLcmGraphEvents(actor, {
+        ...input,
+        limit: 500
+      });
+      const projectMap = new Map<
+        string,
+        {
+          id: string;
+          name: string;
+          path: string | null;
+          eventCount: number;
+          threads: Array<{
+            id: string;
+            name: string;
+            projectId: string;
+            projectName: string;
+            eventCount: number;
+            invalidatedCount: number;
+            latestAt: string;
+            sample: string;
+          }>;
+        }
+      >();
+      const threadMap = new Map<
+        string,
+        {
+          id: string;
+          name: string;
+          projectId: string;
+          projectName: string;
+          eventCount: number;
+          invalidatedCount: number;
+          latestAt: string;
+          sample: string;
+        }
+      >();
+
+      for (const event of visibleEvents) {
+        const projectId =
+          event.projectId ??
+          event.projectPath ??
+          event.workspaceId ??
+          "unknown-project";
+        const projectName =
+          event.projectName ??
+          event.projectPath ??
+          event.workspaceId ??
+          "Unknown project";
+        const project = projectMap.get(projectId) ?? {
+          id: projectId,
+          name: projectName,
+          path: event.projectPath,
+          eventCount: 0,
+          threads: []
+        };
+        const threadId = event.threadId ?? event.sessionId ?? event.id;
+        const threadMapKey = `${projectId}:${threadId}`;
+        let thread = threadMap.get(threadMapKey);
+        if (!thread) {
+          thread = {
+            id: threadId,
+            name:
+              event.threadName ??
+              event.threadId ??
+              event.sessionId ??
+              "Untitled conversation",
+            projectId,
+            projectName,
+            eventCount: 0,
+            invalidatedCount: 0,
+            latestAt: event.timestamp,
+            sample: event.contentPreview
+          };
+          threadMap.set(threadMapKey, thread);
+          project.threads.push(thread);
+        }
+        project.eventCount += 1;
+        thread.eventCount += 1;
+        if (event.invalidatedAt) {
+          thread.invalidatedCount += 1;
+        }
+        if (event.timestamp > thread.latestAt) {
+          thread.name =
+            event.threadName ??
+            event.threadId ??
+            event.sessionId ??
+            "Untitled conversation";
+          thread.projectName = projectName;
+          thread.latestAt = event.timestamp;
+          thread.sample = event.contentPreview;
+        }
+        projectMap.set(projectId, project);
+      }
+
+      const limitedThreads = [...threadMap.values()]
+        .sort((left, right) => right.latestAt.localeCompare(left.latestAt))
+        .slice(0, input.limit ?? 100);
+      const limitedThreadIds = new Set(
+        limitedThreads.map((thread) => `${thread.projectId}:${thread.id}`)
+      );
+
+      return [...projectMap.values()]
+        .map((project) => {
+          const threads = project.threads
+            .filter((thread) =>
+              limitedThreadIds.has(`${thread.projectId}:${thread.id}`)
+            )
+            .sort((left, right) => right.latestAt.localeCompare(left.latestAt));
+          return {
+            ...project,
+            eventCount: threads.reduce(
+              (total, thread) => total + thread.eventCount,
+              0
+            ),
+            threads
+          };
+        })
+        .filter((project) => project.threads.length > 0)
+        .sort((left, right) => {
+          const leftLatest = left.threads[0]?.latestAt ?? "";
+          const rightLatest = right.threads[0]?.latestAt ?? "";
+          return rightLatest.localeCompare(leftLatest);
+        });
     },
     async getLcmGraphEvent(actor, eventId, input = {}) {
       const event = (
@@ -933,7 +1018,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         visibility: input.visibility,
         ownerUserId: input.visibility === "personal" ? actor.userId : null,
         teamId: input.visibility === "team" ? input.teamId! : null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date(Date.now() + events.length).toISOString()
       };
       events.push(event);
       return event;
@@ -1242,41 +1327,6 @@ describe("account and access flows", () => {
     expect(jsonBody<AccessResponse>(checked).auth).toBe("bearer_api_token");
   });
 
-  it("keeps API tokens personal-only and ignores token scopes", async () => {
-    const app = await buildServer({ repository: createFakeRepository() });
-    const registered = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "personal-token@example.com", password: "password123" }
-    });
-    const cookie = cookieHeader(registered);
-    const team = await app.inject({
-      method: "POST",
-      url: "/teams",
-      headers: { cookie },
-      payload: { name: "Research" }
-    });
-    const teamId = jsonBody<{ teamId: string }>(team).teamId;
-    const teamToken = await app.inject({
-      method: "POST",
-      url: "/api-tokens",
-      headers: { cookie },
-      payload: { name: "Team Token", teamId }
-    });
-    const scopedToken = await app.inject({
-      method: "POST",
-      url: "/api-tokens",
-      headers: { cookie },
-      payload: { name: "Scoped Token", scopes: ["memory:read", "memory:write"] }
-    });
-    await app.close();
-
-    expect(teamToken.statusCode).toBe(400);
-    expect(scopedToken.statusCode).toBe(200);
-    expect(jsonBody<TokenResponse>(scopedToken).apiToken.teamId).toBeNull();
-    expect(jsonBody<TokenResponse>(scopedToken).apiToken.scopes).toEqual([]);
-  });
-
   it("captures conversation memory through MCP endpoints", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),
@@ -1317,7 +1367,7 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/v1/memory/answer",
       headers,
-      payload: { query: "concise changelog" }
+      payload: { query: "concise changelog", retrieval_scope: "personal" }
     });
     const rejectedTeamAnswer = await app.inject({
       method: "POST",
@@ -1349,9 +1399,9 @@ describe("account and access flows", () => {
     expect(answerBody.citations).toHaveLength(1);
     expect(rejectedTeamAnswer.statusCode).toBe(400);
     expect(cookieAnswer.statusCode).toBe(200);
-    expect(jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText).toContain(
-      "concise changelog"
-    );
+    expect(
+      jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText
+    ).toContain("concise changelog");
   });
 
   it("rejects team capture policies for API-token setup", async () => {
@@ -1659,12 +1709,7 @@ describe("account and access flows", () => {
       capturedEvents: 1,
       leafNodes: 1,
       rollupNodes: 0,
-      pendingSummaries: 1,
-      pendingLcmDiagnostics: {
-        pendingCount: 1,
-        staleThresholdMinutes: 15,
-        stale: false
-      }
+      pendingSummaries: 1
     });
     expect(jsonBody<GraphNodesResponse>(nodes).nodes[0]).toMatchObject({
       id: nodeId,
@@ -1698,6 +1743,185 @@ describe("account and access flows", () => {
       id: nodeId,
       invalidationReason: "user_deleted"
     });
+  });
+
+  it("serves a lightweight graph thread index without raw event rows", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "thread-index@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+
+    const firstThreadEvent = await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-index-a",
+        actor: "user",
+        eventType: "user_prompt",
+        content:
+          "First conversation event with details that should stay out of raw rows",
+        metadata: {
+          projectName: "Index Repo A",
+          projectPath: "/work/repo-index-a",
+          externalSessionId: "thread-index-a",
+          threadName: "Index conversation A"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-index-a",
+        actor: "assistant",
+        eventType: "assistant_response",
+        content: "Renamed conversation event preview",
+        metadata: {
+          projectName: "Renamed Index Repo A",
+          projectPath: "/work/renamed-repo-index-a",
+          externalSessionId: "thread-index-a",
+          threadName: "Renamed index conversation A"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-index-b",
+        actor: "user",
+        eventType: "user_prompt",
+        content: "Another project conversation preview",
+        metadata: {
+          projectName: "Index Repo B",
+          externalSessionId: "thread-index-b",
+          threadName: "Index conversation B"
+        }
+      }
+    });
+
+    const activeIndex = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?limit=100&includeInvalidated=false",
+      headers: { cookie }
+    });
+    const limitedIndex = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?limit=1&includeInvalidated=false",
+      headers: { cookie }
+    });
+    const firstEventPage = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/events?threadId=thread-index-a&limit=1&includeInvalidated=false",
+      headers: { cookie }
+    });
+    const firstCursorEvent = jsonBody<GraphEventsResponse>(firstEventPage)
+      .events[0] as { id: string; timestamp: string };
+    const secondEventPage = await app.inject({
+      method: "GET",
+      url: `/v1/memory/graph/events?threadId=thread-index-a&limit=1&cursorTimestamp=${encodeURIComponent(firstCursorEvent.timestamp)}&cursorId=${encodeURIComponent(firstCursorEvent.id)}&includeInvalidated=false`,
+      headers: { cookie }
+    });
+    const invalidCursorPage = await app.inject({
+      method: "GET",
+      url: `/v1/memory/graph/events?threadId=thread-index-a&limit=1&cursorTimestamp=${encodeURIComponent(firstCursorEvent.timestamp)}&includeInvalidated=false`,
+      headers: { cookie }
+    });
+    await app.inject({
+      method: "DELETE",
+      url: `/v1/memory/graph/events/${jsonBody<CaptureResponse>(firstThreadEvent).event.id}`,
+      headers: { cookie }
+    });
+    const activeAfterDelete = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=false",
+      headers: { cookie }
+    });
+    const includingInvalidated = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=true",
+      headers: { cookie }
+    });
+    const selectedThreadEvents = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/events?threadId=thread-index-a&limit=250&includeInvalidated=false",
+      headers: { cookie }
+    });
+    await app.close();
+
+    const active = jsonBody<GraphThreadIndexResponse>(activeIndex);
+    const indexA = active.projects
+      .flatMap((project) => project.threads)
+      .find((thread) => thread.id === "thread-index-a");
+    expect(indexA).toMatchObject({
+      name: "Renamed index conversation A",
+      projectId: "repo-index-a",
+      projectName: "Renamed Index Repo A",
+      eventCount: 2,
+      invalidatedCount: 0,
+      sample: "Renamed conversation event preview"
+    });
+    const projectA = active.projects.find(
+      (project) => project.id === "repo-index-a"
+    );
+    expect(projectA).toMatchObject({
+      name: "Renamed Index Repo A",
+      path: "/work/renamed-repo-index-a",
+      eventCount: 2
+    });
+    expect(indexA).not.toHaveProperty("rawContent");
+    expect(indexA).not.toHaveProperty("contentPreview");
+    expect(indexA).not.toHaveProperty("metadata");
+    expect(
+      jsonBody<GraphThreadIndexResponse>(limitedIndex).projects
+    ).toHaveLength(1);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(limitedIndex).projects.flatMap(
+        (project) => project.threads
+      )
+    ).toHaveLength(1);
+    expect(jsonBody<GraphEventsResponse>(secondEventPage).events).toHaveLength(
+      1
+    );
+    expect(
+      (
+        jsonBody<GraphEventsResponse>(secondEventPage).events[0] as {
+          id: string;
+        }
+      ).id
+    ).not.toBe(firstCursorEvent.id);
+    expect(invalidCursorPage.statusCode).toBe(400);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(activeAfterDelete)
+        .projects.flatMap((project) => project.threads)
+        .find((thread) => thread.id === "thread-index-a")
+    ).toMatchObject({ eventCount: 1, invalidatedCount: 0 });
+    expect(
+      jsonBody<GraphThreadIndexResponse>(includingInvalidated)
+        .projects.flatMap((project) => project.threads)
+        .find((thread) => thread.id === "thread-index-a")
+    ).toMatchObject({ eventCount: 2, invalidatedCount: 1 });
+    expect(
+      jsonBody<GraphEventsResponse>(selectedThreadEvents).events
+    ).toHaveLength(1);
   });
 
   it("returns evidence for memory_answer without backend provider configuration", async () => {

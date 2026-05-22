@@ -34,7 +34,7 @@ function pnpm(args, env = process.env) {
   run(
     "corepack",
     [
-      "pnpm@10.30.3",
+      "pnpm@11.1.2",
       "-C",
       "apps/history-browser/t3code-history-browser",
       ...args
@@ -73,7 +73,7 @@ if (mode !== "preview") {
 }
 
 if (mode === "build") {
-  pnpm(["--config.package-manager-strict=false", "--filter", "@t3tools/web", "build"], {
+  pnpm(["--config.package-manager-strict=false", "build"], {
     ...process.env,
     VITE_KOED_HISTORY_BROWSER: "1",
     VITE_KOED_API_BASE_URL:
@@ -85,8 +85,6 @@ if (mode === "build") {
   pnpm(
     [
       "--config.package-manager-strict=false",
-      "--filter",
-      "@t3tools/web",
       "dev",
       "--",
       "--host",
@@ -102,7 +100,7 @@ if (mode === "build") {
     }
   );
 } else if (mode === "preview") {
-  pnpm(["--filter", "@t3tools/web", "preview", "--", "--host", "0.0.0.0"]);
+  pnpm(["start", "--", "--host", "0.0.0.0"]);
 } else if (mode === "typecheck") {
-  pnpm(["--config.package-manager-strict=false", "--filter", "@t3tools/web", "typecheck"]);
+  pnpm(["--config.package-manager-strict=false", "typecheck"]);
 }

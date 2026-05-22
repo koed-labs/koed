@@ -22,9 +22,16 @@
 - `docs/adr/0001-ai-client-synthesis-only.md` is accepted direction: Koed Self-Hosted relies on the connected AI Client for LLM synthesis.
 - `docs/adr/0002-bind-api-token-team-access-at-creation-time.md` is deferred until team-scoped token behavior returns to scope.
 
+## Ticketing
+
+- When a developer asks you to work on a Linear ticket, assign the developer to that ticket before starting work.
+- Move the Linear ticket to In Progress when starting work.
+- If a developer asks you to create a PR for work tied to a Linear ticket, include the appropriate Linear closing keyword in the PR description, such as `Closes KOED-123`, so the ticket state change is captured by Linear.
+
 ## Pull Requests
 
 - Use the repository pull request template at `.github/pull_request_template.md` when drafting PR descriptions.
+- Before creating a PR, validate that the change satisfies all acceptance criteria for the linked ticket. If any acceptance criterion is not met, state that explicitly in the PR description with the reason.
 
 ## Current Product Boundaries
 

@@ -94,6 +94,7 @@ const createFakeRepository = (
     teamId: string | null;
     sourceEventIds: string[];
     summaryText: string;
+    lcmNodeSummaryStatus?: "pending" | "summarized";
   }> = [];
 
   const assertTeamMember = (userId: string, teamId: string) => {
@@ -149,6 +150,7 @@ const createFakeRepository = (
             nodeId: node.id,
             visibility: node.visibility,
             summaryText: node.summaryText,
+            lcmNodeSummaryStatus: node.lcmNodeSummaryStatus,
             score: 1,
             citation: { nodeId: node.id, visibility: node.visibility }
           })
@@ -183,7 +185,8 @@ const createFakeRepository = (
           visibility: input.visibility,
           teamId: input.teamId ?? null,
           sourceEventIds: [event.id],
-          summaryText: event.content
+          summaryText: event.content,
+          lcmNodeSummaryStatus: "pending"
         });
         return id;
       });
@@ -195,7 +198,8 @@ const createFakeRepository = (
           visibility: input.visibility,
           teamId: input.teamId ?? null,
           sourceEventIds: scoped.map((event) => event.id),
-          summaryText: scoped.map((event) => event.content).join("\n")
+          summaryText: scoped.map((event) => event.content).join("\n"),
+          lcmNodeSummaryStatus: "pending"
         });
       }
       return { leafNodeIds, rollupNodeId };
@@ -427,5 +431,33 @@ describe("provider-neutral memory engine", () => {
       "Project Zephyr"
     );
     expect(answer.citations[0]?.visibility).toBe("personal");
+  });
+
+  it("surfaces pending LCM placeholders as degraded evidence for client synthesis", async () => {
+    const engine = createMemoryEngine(createFakeRepository());
+    await captureUserEvent(
+      engine,
+      "alice",
+      "Project Borealis has pending source evidence."
+    );
+    await engine.scheduleCompaction({
+      requesterContext: { userId: "alice" },
+      visibility: "personal"
+    });
+
+    const answer = await engine.answerMemory({
+      requesterContext: { userId: "alice" },
+      query: "Borealis",
+      scope: "personal"
+    });
+
+    expect(answer.evidenceBundle.evidence[0]).toMatchObject({
+      summaryText: "Project Borealis has pending source evidence.",
+      lcmNodeSummaryStatus: "pending"
+    });
+    expect(answer.evidenceBundle.instructions).toContain(
+      "lcmNodeSummaryStatus=pending"
+    );
+    expect(answer.answer).toContain("pending_lcm_summary");
   });
 });

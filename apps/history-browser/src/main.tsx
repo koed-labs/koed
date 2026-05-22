@@ -1,4 +1,11 @@
-import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -100,6 +107,10 @@ interface ProjectGroup {
   threads: ThreadGroup[];
 }
 
+interface GraphThreadIndexResponse {
+  projects: ProjectGroup[];
+}
+
 interface MemoryEvidence {
   nodeId?: string;
   sourceId?: string;
@@ -173,18 +184,6 @@ const requestJson = async <T,>(
   return body as T;
 };
 
-const projectKey = (event: GraphEvent) =>
-  event.projectId ?? event.projectPath ?? event.workspaceId ?? "unknown-project";
-
-const projectLabel = (event: GraphEvent) =>
-  event.projectName ?? event.projectPath ?? event.workspaceId ?? "Unknown project";
-
-const threadKey = (event: Pick<GraphEvent, "threadId" | "sessionId" | "id">) =>
-  event.threadId ?? event.sessionId ?? event.id;
-
-const threadLabel = (event: Pick<GraphEvent, "threadName" | "threadId" | "sessionId">) =>
-  event.threadName ?? event.threadId ?? event.sessionId ?? "Untitled conversation";
-
 const firstLine = (value: string) => value.trim().split(/\n+/)[0] ?? "";
 
 const formatDate = (value: string) => {
@@ -211,69 +210,11 @@ const memoryEvidence = (response?: MemoryAnswer) =>
 const memoryRetrieval = (response?: MemoryAnswer) =>
   response?.evidenceBundle?.retrieval ?? response?.retrieval;
 
-const buildProjectGroups = (events: GraphEvent[]) => {
-  const projectMap = new Map<string, ProjectGroup>();
-  const threadMap = new Map<string, ThreadGroup>();
-
-  for (const event of events) {
-    const pKey = projectKey(event);
-    let project = projectMap.get(pKey);
-    if (!project) {
-      project = {
-        id: pKey,
-        name: projectLabel(event),
-        path: event.projectPath,
-        eventCount: 0,
-        threads: []
-      };
-      projectMap.set(pKey, project);
-    }
-
-    const tKey = threadKey(event);
-    const compoundThreadKey = `${pKey}:${tKey}`;
-    let thread = threadMap.get(compoundThreadKey);
-    if (!thread) {
-      thread = {
-        id: tKey,
-        projectId: pKey,
-        projectName: project.name,
-        name: threadLabel(event),
-        eventCount: 0,
-        invalidatedCount: 0,
-        latestAt: event.timestamp,
-        sample: event.contentPreview
-      };
-      threadMap.set(compoundThreadKey, thread);
-      project.threads.push(thread);
-    }
-
-    project.eventCount += 1;
-    thread.eventCount += 1;
-    if (event.invalidatedAt) {
-      thread.invalidatedCount += 1;
-    }
-    if (event.timestamp > thread.latestAt) {
-      thread.latestAt = event.timestamp;
-      thread.sample = event.contentPreview;
-    }
-  }
-
-  return [...projectMap.values()]
-    .map((project) => ({
-      ...project,
-      threads: [...project.threads].sort((left, right) =>
-        right.latestAt.localeCompare(left.latestAt)
-      )
-    }))
-    .sort((left, right) => {
-      const leftLatest = left.threads[0]?.latestAt ?? "";
-      const rightLatest = right.threads[0]?.latestAt ?? "";
-      return rightLatest.localeCompare(leftLatest);
-    });
-};
-
 const nodeThreadId = (node: GraphNode) =>
   node.threadId ?? node.sessionId ?? node.projectId ?? "unthreaded";
+
+const threadSelectionKey = (thread: Pick<ThreadGroup, "projectId" | "id">) =>
+  `${encodeURIComponent(thread.projectId)}:${encodeURIComponent(thread.id)}`;
 
 const plainMarkdown = (value: string) =>
   value
@@ -284,11 +225,14 @@ const plainMarkdown = (value: string) =>
 
 function App() {
   const [apiToken, setApiToken] = useState(
-    () => localStorage.getItem(tokenStorageKey) ?? import.meta.env.VITE_KOED_API_TOKEN ?? ""
+    () =>
+      localStorage.getItem(tokenStorageKey) ??
+      import.meta.env.VITE_KOED_API_TOKEN ??
+      ""
   );
   const [query, setQuery] = useState("");
   const [overview, setOverview] = useState<GraphOverview | null>(null);
-  const [events, setEvents] = useState<GraphEvent[]>([]);
+  const [groups, setGroups] = useState<ProjectGroup[]>([]);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState(
     () => localStorage.getItem(selectedThreadStorageKey) ?? ""
@@ -297,43 +241,69 @@ function App() {
   const [threadEvents, setThreadEvents] = useState<GraphEvent[]>([]);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("chats");
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(() => new Set());
+  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [memoryQuestion, setMemoryQuestion] = useState("");
-  const [memorySearchDomain, setMemorySearchDomain] = useState<SearchDomain>("project");
+  const [memorySearchDomain, setMemorySearchDomain] =
+    useState<SearchDomain>("project");
   const [memoryRetrievalScope, setMemoryRetrievalScope] =
     useState<RetrievalScope>("personal");
   const [memoryQuestions, setMemoryQuestions] = useState<MemoryQuestion[]>([]);
-  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
+  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(
+    null
+  );
   const [loading, setLoading] = useState(false);
   const [threadLoading, setThreadLoading] = useState(false);
   const [askingMemory, setAskingMemory] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
   const refreshInFlight = useRef(false);
 
-  const groups = useMemo(() => buildProjectGroups(events), [events]);
-  const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const nodesById = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node])),
+    [nodes]
+  );
   const selectedThread = useMemo(
-    () => groups.flatMap((group) => group.threads).find((thread) => thread.id === selectedThreadId),
+    () =>
+      groups
+        .flatMap((group) => group.threads)
+        .find(
+          (thread) =>
+            threadSelectionKey(thread) === selectedThreadId ||
+            thread.id === selectedThreadId
+        ),
     [groups, selectedThreadId]
   );
   const selectedEvent = useMemo(
-    () => threadEvents.find((event) => event.id === selectedEventId) ?? threadEvents[0] ?? null,
+    () =>
+      threadEvents.find((event) => event.id === selectedEventId) ??
+      threadEvents[0] ??
+      null,
     [selectedEventId, threadEvents]
   );
   const linkedNodes = useMemo(() => {
-    const linkedIds = new Set(threadEvents.flatMap((event) => event.linkedNodeIds));
-    const explicitThreadNodes = nodes.filter((node) => selectedThread && nodeThreadId(node) === selectedThread.id);
+    const linkedIds = new Set(
+      threadEvents.flatMap((event) => event.linkedNodeIds)
+    );
+    const explicitThreadNodes = nodes.filter(
+      (node) => selectedThread && nodeThreadId(node) === selectedThread.id
+    );
     return [
       ...[...linkedIds].flatMap((id) => nodesById.get(id) ?? []),
       ...explicitThreadNodes.filter((node) => !linkedIds.has(node.id))
     ];
   }, [nodes, nodesById, selectedThread, threadEvents]);
   const selectedEventLinkedNodes = useMemo(
-    () => (selectedEvent?.linkedNodeIds ?? []).flatMap((id) => nodesById.get(id) ?? []),
+    () =>
+      (selectedEvent?.linkedNodeIds ?? []).flatMap(
+        (id) => nodesById.get(id) ?? []
+      ),
     [nodesById, selectedEvent]
   );
   const selectedQuestion = useMemo(
-    () => memoryQuestions.find((question) => question.id === selectedQuestionId) ?? null,
+    () =>
+      memoryQuestions.find((question) => question.id === selectedQuestionId) ??
+      null,
     [memoryQuestions, selectedQuestionId]
   );
 
@@ -362,13 +332,19 @@ function App() {
       ? memoryQuestions.filter(
           (question) =>
             question.query.toLowerCase().includes(needle) ||
-            (question.response?.markdown ?? "").toLowerCase().includes(needle) ||
+            (question.response?.markdown ?? "")
+              .toLowerCase()
+              .includes(needle) ||
             (question.error ?? "").toLowerCase().includes(needle)
         )
       : memoryQuestions;
     return {
-      project: visible.filter((question) => question.searchDomain === "project"),
-      session: visible.filter((question) => question.searchDomain === "session"),
+      project: visible.filter(
+        (question) => question.searchDomain === "project"
+      ),
+      session: visible.filter(
+        (question) => question.searchDomain === "session"
+      ),
       global: visible.filter((question) => question.searchDomain === "global")
     } satisfies Record<SearchDomain, MemoryQuestion[]>;
   }, [memoryQuestions, query]);
@@ -379,19 +355,23 @@ function App() {
         setLoading(true);
       }
       try {
-        const [overviewResponse, eventsResponse, nodesResponse] = await Promise.all([
-          requestJson<{ overview: GraphOverview }>("/v1/memory/graph/overview", apiToken),
-          requestJson<{ events: GraphEvent[] }>(
-            `/v1/memory/graph/events?limit=500&includeInvalidated=${includeInvalidated}`,
-            apiToken
-          ),
-          requestJson<{ nodes: GraphNode[] }>(
-            `/v1/memory/graph/nodes?limit=500&includeInvalidated=${includeInvalidated}`,
-            apiToken
-          )
-        ]);
+        const [overviewResponse, threadIndexResponse, nodesResponse] =
+          await Promise.all([
+            requestJson<{ overview: GraphOverview }>(
+              "/v1/memory/graph/overview",
+              apiToken
+            ),
+            requestJson<GraphThreadIndexResponse>(
+              `/v1/memory/graph/threads?limit=100&includeInvalidated=${includeInvalidated}`,
+              apiToken
+            ),
+            requestJson<{ nodes: GraphNode[] }>(
+              `/v1/memory/graph/nodes?limit=500&includeInvalidated=${includeInvalidated}`,
+              apiToken
+            )
+          ]);
         setOverview(overviewResponse.overview);
-        setEvents(eventsResponse.events);
+        setGroups(threadIndexResponse.projects);
         setNodes(nodesResponse.nodes);
         setToast(null);
       } catch (error) {
@@ -409,8 +389,8 @@ function App() {
   );
 
   const loadThread = useCallback(
-    async (threadId: string, options?: { silent?: boolean }) => {
-      if (!threadId) {
+    async (thread: ThreadGroup | undefined, options?: { silent?: boolean }) => {
+      if (!thread) {
         setThreadEvents([]);
         return;
       }
@@ -419,7 +399,7 @@ function App() {
       }
       try {
         const eventsResponse = await requestJson<{ events: GraphEvent[] }>(
-          `/v1/memory/graph/events?threadId=${encodeURIComponent(threadId)}&limit=250&includeInvalidated=${includeInvalidated}`,
+          `/v1/memory/graph/events?projectId=${encodeURIComponent(thread.projectId)}&threadId=${encodeURIComponent(thread.id)}&limit=250&includeInvalidated=${includeInvalidated}`,
           apiToken
         );
         const sorted = [...eventsResponse.events].sort((left, right) =>
@@ -432,18 +412,15 @@ function App() {
             : (sorted[0]?.id ?? null)
         );
       } catch {
-        const localEvents = events
-          .filter((event) => threadKey(event) === threadId)
-          .sort((left, right) => left.timestamp.localeCompare(right.timestamp));
-        setThreadEvents(localEvents);
-        setSelectedEventId(localEvents[0]?.id ?? null);
+        setThreadEvents([]);
+        setSelectedEventId(null);
       } finally {
         if (!options?.silent) {
           setThreadLoading(false);
         }
       }
     },
-    [apiToken, events, includeInvalidated]
+    [apiToken, includeInvalidated]
   );
 
   useEffect(() => {
@@ -463,7 +440,9 @@ function App() {
         }
         setThreadEvents((current) =>
           current.map((event) =>
-            event.id === selectedEvent.id ? { ...event, ...detail.event } : event
+            event.id === selectedEvent.id
+              ? { ...event, ...detail.event }
+              : event
           )
         );
       } catch {
@@ -485,14 +464,14 @@ function App() {
       refreshInFlight.current = true;
       try {
         await loadGraph(options);
-        if (selectedThreadId) {
-          await loadThread(selectedThreadId, options);
+        if (selectedThread) {
+          await loadThread(selectedThread, options);
         }
       } finally {
         refreshInFlight.current = false;
       }
     },
-    [loadGraph, loadThread, selectedThreadId]
+    [loadGraph, loadThread, selectedThread]
   );
 
   useEffect(() => {
@@ -505,20 +484,21 @@ function App() {
 
   useEffect(() => {
     if (!selectedThreadId && groups[0]?.threads[0]) {
-      setSelectedThreadId(groups[0].threads[0].id);
+      setSelectedThreadId(threadSelectionKey(groups[0].threads[0]));
     }
   }, [groups, selectedThreadId]);
 
   useEffect(() => {
     localStorage.setItem(selectedThreadStorageKey, selectedThreadId);
-    void loadThread(selectedThreadId);
-  }, [loadThread, selectedThreadId]);
+    void loadThread(selectedThread);
+  }, [loadThread, selectedThread, selectedThreadId]);
 
   useEffect(() => {
     if (
       sidebarMode === "questions" &&
       memoryQuestions.length > 0 &&
-      (!selectedQuestionId || !memoryQuestions.some((question) => question.id === selectedQuestionId))
+      (!selectedQuestionId ||
+        !memoryQuestions.some((question) => question.id === selectedQuestionId))
     ) {
       setSelectedQuestionId(memoryQuestions[0]?.id ?? null);
     }
@@ -560,7 +540,10 @@ function App() {
                 .find((line) => line.startsWith("event:"))
                 ?.slice("event:".length)
                 .trim() ?? "message";
-            if (eventName === "graph_update" && document.visibilityState === "visible") {
+            if (
+              eventName === "graph_update" &&
+              document.visibilityState === "visible"
+            ) {
               void refreshVisibleData({ silent: true });
             }
             boundary = buffer.indexOf("\n\n");
@@ -600,7 +583,9 @@ function App() {
       query: trimmed,
       retrievalScope: memoryRetrievalScope,
       searchDomain: memorySearchDomain,
-      ...(selectedThread?.projectName ? { projectName: selectedThread.projectName } : {}),
+      ...(selectedThread?.projectName
+        ? { projectName: selectedThread.projectName }
+        : {}),
       ...(selectedThread?.name ? { sessionName: selectedThread.name } : {}),
       createdAt: new Date().toISOString(),
       status: "pending"
@@ -613,21 +598,25 @@ function App() {
     setAskingMemory(true);
 
     try {
-      const response = await requestJson<MemoryAnswer>("/v1/memory/answer", apiToken, {
-        method: "POST",
-        body: JSON.stringify({
-          query: trimmed,
-          retrieval_scope: memoryRetrievalScope,
-          search_domain: memorySearchDomain,
-          ...(memorySearchDomain === "project" && selectedThread?.projectId
-            ? { workspace_id: selectedThread.projectId }
-            : {}),
-          ...(memorySearchDomain === "session" && selectedThread?.id
-            ? { session_id: selectedThread.id }
-            : {}),
-          limit: 10
-        })
-      });
+      const response = await requestJson<MemoryAnswer>(
+        "/v1/memory/answer",
+        apiToken,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            query: trimmed,
+            retrieval_scope: memoryRetrievalScope,
+            search_domain: memorySearchDomain,
+            ...(memorySearchDomain === "project" && selectedThread?.projectId
+              ? { workspace_id: selectedThread.projectId }
+              : {}),
+            ...(memorySearchDomain === "session" && selectedThread?.id
+              ? { session_id: selectedThread.id }
+              : {}),
+            limit: 10
+          })
+        }
+      );
       setMemoryQuestions((current) =>
         current.map((question) =>
           question.id === nextQuestion.id
@@ -673,7 +662,11 @@ function App() {
               <strong>Koed History</strong>
               <span>LCM graph browser</span>
             </div>
-            <button type="button" className="icon-button" onClick={() => void loadGraph()}>
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => void loadGraph()}
+            >
               {loading ? "..." : "R"}
             </button>
           </div>
@@ -681,7 +674,11 @@ function App() {
             className="search-input"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={sidebarMode === "chats" ? "Search projects and sessions" : "Search memory questions"}
+            placeholder={
+              sidebarMode === "chats"
+                ? "Search projects and sessions"
+                : "Search memory questions"
+            }
           />
           <div className="segmented">
             <button
@@ -716,11 +713,16 @@ function App() {
                     <button
                       key={`${group.id}:${thread.id}`}
                       type="button"
-                      className={`thread-button ${thread.id === selectedThreadId ? "active" : ""}`}
-                      onClick={() => setSelectedThreadId(thread.id)}
+                      className={`thread-button ${thread === selectedThread ? "active" : ""}`}
+                      onClick={() =>
+                        setSelectedThreadId(threadSelectionKey(thread))
+                      }
                     >
                       <strong>{thread.name}</strong>
-                      <span>{formatDate(thread.latestAt)} - {thread.eventCount} events</span>
+                      <span>
+                        {formatDate(thread.latestAt)} - {thread.eventCount}{" "}
+                        events
+                      </span>
                       <small>{firstLine(thread.sample)}</small>
                     </button>
                   ))}
@@ -742,15 +744,16 @@ function App() {
           <div>
             <h1>
               {sidebarMode === "questions"
-                ? selectedQuestion?.query ?? "Memory questions"
-                : selectedThread?.name ?? "No conversation selected"}
+                ? (selectedQuestion?.query ?? "Memory questions")
+                : (selectedThread?.name ?? "No conversation selected")}
             </h1>
             <p>
               {sidebarMode === "questions"
                 ? selectedQuestion
                   ? `${selectedQuestion.searchDomain} - ${selectedQuestion.retrievalScope}`
                   : "Ask Koed memory from the composer"
-                : selectedThread?.projectName ?? "Connect to Koed to browse captured sessions"}
+                : (selectedThread?.projectName ??
+                  "Connect to Koed to browse captured sessions")}
             </p>
           </div>
           <div className="top-actions">
@@ -763,21 +766,43 @@ function App() {
                 type="password"
               />
             </label>
-            <button type="button" onClick={() => setInspectorOpen((value) => !value)}>
+            <button
+              type="button"
+              onClick={() => setInspectorOpen((value) => !value)}
+            >
               {inspectorOpen ? "Hide LCM" : "Show LCM"}
             </button>
           </div>
         </header>
 
-        {toast ? <div className={`toast ${toast.tone}`}>{toast.message}</div> : null}
+        {toast ? (
+          <div className={`toast ${toast.tone}`}>{toast.message}</div>
+        ) : null}
 
-        <div className={`content-grid ${inspectorOpen ? "with-inspector" : ""}`}>
+        <div
+          className={`content-grid ${inspectorOpen ? "with-inspector" : ""}`}
+        >
           <section className="timeline">
             <div className="kpi-strip">
-              <Metric label="Events" value={overview?.capturedEvents ?? events.length} />
-              <Metric label="Nodes" value={(overview?.leafNodes ?? 0) + (overview?.rollupNodes ?? nodes.length)} />
+              <Metric
+                label="Events"
+                value={
+                  overview?.capturedEvents ??
+                  groups.reduce((total, group) => total + group.eventCount, 0)
+                }
+              />
+              <Metric
+                label="Nodes"
+                value={
+                  (overview?.leafNodes ?? 0) +
+                  (overview?.rollupNodes ?? nodes.length)
+                }
+              />
               <Metric label="Pending" value={overview?.pendingSummaries ?? 0} />
-              <Metric label="Embeddings" value={overview?.embeddings?.total ?? 0} />
+              <Metric
+                label="Embeddings"
+                value={overview?.embeddings?.total ?? 0}
+              />
             </div>
 
             <div className="scroll-panel">
@@ -785,13 +810,21 @@ function App() {
                 selectedQuestion ? (
                   <QuestionDetail question={selectedQuestion} />
                 ) : (
-                  <EmptyState title="No memory questions yet" text="Ask from the composer to inspect a scoped memory answer." />
+                  <EmptyState
+                    title="No memory questions yet"
+                    text="Ask from the composer to inspect a scoped memory answer."
+                  />
                 )
               ) : (
                 <>
-                  {loading || threadLoading ? <div className="notice">Loading Koed graph...</div> : null}
+                  {loading || threadLoading ? (
+                    <div className="notice">Loading Koed graph...</div>
+                  ) : null}
                   {!loading && !threadLoading && threadEvents.length === 0 ? (
-                    <EmptyState title="No captured events visible" text="Start the Koed API, paste a token if needed, then reload the graph." />
+                    <EmptyState
+                      title="No captured events visible"
+                      text="Start the Koed API, paste a token if needed, then reload the graph."
+                    />
                   ) : null}
                   {threadEvents.map((event) => (
                     <EventMessage
@@ -861,7 +894,9 @@ function App() {
               <section>
                 <h2>Conversation LCM</h2>
                 {linkedNodes.length === 0 ? (
-                  <p className="empty">No LCM summaries for this conversation.</p>
+                  <p className="empty">
+                    No LCM summaries for this conversation.
+                  </p>
                 ) : (
                   linkedNodes.map((node) => (
                     <NodeCard
@@ -901,14 +936,21 @@ function EventMessage({
 }) {
   const text = plainMarkdown(event.rawContent ?? event.contentPreview);
   return (
-    <article className={`event-message ${isSelected ? "selected" : ""}`} onClick={onSelect}>
-      <div className={`avatar ${event.actor ?? "event"}`}>{(event.actor ?? event.eventType).slice(0, 1).toUpperCase()}</div>
+    <article
+      className={`event-message ${isSelected ? "selected" : ""}`}
+      onClick={onSelect}
+    >
+      <div className={`avatar ${event.actor ?? "event"}`}>
+        {(event.actor ?? event.eventType).slice(0, 1).toUpperCase()}
+      </div>
       <div className="message-body">
         <div className="message-meta">
           <strong>{event.actor ?? event.eventType}</strong>
           <span>{formatDate(event.timestamp)}</span>
           <span>{event.visibility}</span>
-          {event.linkedNodeIds.length > 0 ? <span>{event.linkedNodeIds.length} LCM links</span> : null}
+          {event.linkedNodeIds.length > 0 ? (
+            <span>{event.linkedNodeIds.length} LCM links</span>
+          ) : null}
         </div>
         <p>{text}</p>
       </div>
@@ -953,15 +995,21 @@ function MemoryComposer({
       />
       <div className="composer-bar">
         <select
-          onChange={(event) => setMemorySearchDomain(event.target.value as SearchDomain)}
+          onChange={(event) =>
+            setMemorySearchDomain(event.target.value as SearchDomain)
+          }
           value={memorySearchDomain}
         >
           <option value="project">Project</option>
-          <option disabled={!selectedThread} value="session">Session</option>
+          <option disabled={!selectedThread} value="session">
+            Session
+          </option>
           <option value="global">Global</option>
         </select>
         <select
-          onChange={(event) => setMemoryRetrievalScope(event.target.value as RetrievalScope)}
+          onChange={(event) =>
+            setMemoryRetrievalScope(event.target.value as RetrievalScope)
+          }
           value={memoryRetrievalScope}
         >
           <option value="personal">Personal</option>
@@ -969,9 +1017,9 @@ function MemoryComposer({
         </select>
         <span>
           {memorySearchDomain === "session"
-            ? selectedThread?.name ?? "No session"
+            ? (selectedThread?.name ?? "No session")
             : memorySearchDomain === "project"
-              ? selectedThread?.projectName ?? "Selected project"
+              ? (selectedThread?.projectName ?? "Selected project")
               : "All visible memory"}
         </span>
         <button disabled={disabled || !memoryQuestion.trim()} type="submit">
@@ -996,7 +1044,10 @@ function QuestionSidebar({
     { domain: "session", label: "Session" },
     { domain: "global", label: "Global" }
   ];
-  const total = buckets.reduce((count, bucket) => count + groupedQuestions[bucket.domain].length, 0);
+  const total = buckets.reduce(
+    (count, bucket) => count + groupedQuestions[bucket.domain].length,
+    0
+  );
 
   if (total === 0) {
     return <p className="empty">No memory questions yet.</p>;
@@ -1019,8 +1070,14 @@ function QuestionSidebar({
                 type="button"
               >
                 <strong>{question.query}</strong>
-                <span>{formatDate(question.createdAt)} - {question.retrievalScope}</span>
-                <small>{question.response?.markdown ?? question.error ?? question.status}</small>
+                <span>
+                  {formatDate(question.createdAt)} - {question.retrievalScope}
+                </span>
+                <small>
+                  {question.response?.markdown ??
+                    question.error ??
+                    question.status}
+                </small>
               </button>
             ))}
           </section>
@@ -1044,18 +1101,28 @@ function QuestionDetail({ question }: { question: MemoryQuestion }) {
           <span>{formatDate(question.createdAt)}</span>
         </div>
         <p className="question-text">{question.query}</p>
-        {question.status === "pending" ? <div className="notice">Searching memory...</div> : null}
-        {question.status === "error" ? <div className="notice error">{question.error}</div> : null}
-        {question.status === "answered" && question.response?.markdown ? (
-          <p className="answer-text">{plainMarkdown(question.response.markdown)}</p>
+        {question.status === "pending" ? (
+          <div className="notice">Searching memory...</div>
         ) : null}
-        {retrieval ? <pre className="json-block">{JSON.stringify(retrieval, null, 2)}</pre> : null}
+        {question.status === "error" ? (
+          <div className="notice error">{question.error}</div>
+        ) : null}
+        {question.status === "answered" && question.response?.markdown ? (
+          <p className="answer-text">
+            {plainMarkdown(question.response.markdown)}
+          </p>
+        ) : null}
+        {retrieval ? (
+          <pre className="json-block">{JSON.stringify(retrieval, null, 2)}</pre>
+        ) : null}
         {evidence.length > 0 ? (
           <details className="evidence">
             <summary>Evidence returned by Koed</summary>
             {evidence.slice(0, 10).map((item, index) => (
               <div key={`${item.nodeId ?? item.sourceId ?? index}`}>
-                <span>#{index + 1} {item.visibility ?? ""}</span>
+                <span>
+                  #{index + 1} {item.visibility ?? ""}
+                </span>
                 <p>{item.summaryText ?? "No summary text"}</p>
               </div>
             ))}
@@ -1079,7 +1146,9 @@ function NodeCard({
     <article className="node-card">
       <button onClick={onToggle} type="button">
         <span>{expanded ? "v" : ">"}</span>
-        <strong>{node.kind} depth {node.depth}</strong>
+        <strong>
+          {node.kind} depth {node.depth}
+        </strong>
         <small>{node.summaryStatus}</small>
       </button>
       <p className={expanded ? "" : "clamped"}>{node.summaryText}</p>

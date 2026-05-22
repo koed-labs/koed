@@ -191,6 +191,12 @@ const createApiTokenSchema = z
 
 const metadataSchema = z.record(z.string(), z.unknown()).default({});
 
+const queryBooleanSchema = z.preprocess((value) => {
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  return value;
+}, z.boolean());
+
 const captureStateSchema = z.enum(["enabled", "disabled", "ask"]);
 const visibilitySchema = z.enum(["personal", "team"]);
 
@@ -263,7 +269,7 @@ const memoryBrowserQuerySchema = z.object({
   visibility: visibilitySchema.optional(),
   projectId: z.string().min(1).optional(),
   threadId: z.string().min(1).optional(),
-  pinned: z.coerce.boolean().optional(),
+  pinned: queryBooleanSchema.optional(),
   limit: z.coerce.number().int().positive().max(100).default(50)
 });
 
@@ -284,15 +290,30 @@ const graphQuerySchema = z.object({
   visibility: visibilitySchema.optional(),
   projectId: z.string().min(1).optional(),
   threadId: z.string().min(1).optional(),
-  includeInvalidated: z.coerce.boolean().default(false),
+  includeInvalidated: queryBooleanSchema.default(false),
   limit: z.coerce.number().int().positive().max(500).default(100)
 });
+
+const graphEventsQuerySchema = graphQuerySchema
+  .extend({
+    cursorTimestamp: z.string().datetime({ offset: true }).optional(),
+    cursorId: z.string().uuid().optional()
+  })
+  .superRefine((input, context) => {
+    if (Boolean(input.cursorTimestamp) !== Boolean(input.cursorId)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["cursorId"],
+        message: "cursorTimestamp and cursorId must be provided together"
+      });
+    }
+  });
 
 const graphEventParamsSchema = z.object({ eventId: z.string().uuid() });
 
 const graphEventDetailQuerySchema = z.object({
-  includeInvalidated: z.coerce.boolean().default(false),
-  includeRaw: z.coerce.boolean().default(false)
+  includeInvalidated: queryBooleanSchema.default(false),
+  includeRaw: queryBooleanSchema.default(false)
 });
 
 const graphEventPatchSchema = z.object({
@@ -369,6 +390,7 @@ const openApiEndpoints: Array<[string, string]> = [
   ["GET", "/v1/memory/graph/overview"],
   ["GET", "/v1/memory/graph/nodes"],
   ["GET", "/v1/memory/graph/nodes/{nodeId}"],
+  ["GET", "/v1/memory/graph/threads"],
   ["GET", "/v1/memory/graph/events"],
   ["GET", "/v1/memory/graph/events/{eventId}"],
   ["PATCH", "/v1/memory/graph/events/{eventId}"],
@@ -473,7 +495,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           return;
         }
         try {
-          broadcastGraphUpdate(JSON.parse(message.payload) as GraphUpdatePayload);
+          broadcastGraphUpdate(
+            JSON.parse(message.payload) as GraphUpdatePayload
+          );
         } catch (error) {
           app.log.warn(
             { error: String(error), payload: message.payload },
@@ -487,7 +511,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     } catch (error) {
       graphListenClient?.release();
       graphListenClient = null;
-      app.log.warn({ error: String(error) }, "could not start graph update listener");
+      app.log.warn(
+        { error: String(error) },
+        "could not start graph update listener"
+      );
     }
   }
 
@@ -712,7 +739,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       sessionId: input.sessionId
     });
 
-  const rejectUnsupportedTeamCapturePolicy = (policy: { visibility: Visibility }) => {
+  const rejectUnsupportedTeamCapturePolicy = (policy: {
+    visibility: Visibility;
+  }) => {
     if (policy.visibility === "team") {
       throw Object.assign(
         new Error(
@@ -1377,6 +1406,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       if (policy.captureState !== "enabled") {
         return { skipped: true, reason: "capture_disabled", policy };
       }
+      const teamId =
+        policy.visibility === "team"
+          ? (await repo.getCurrentTeam(user.id))?.id
+          : undefined;
       const event = await capturePersonalEvent({
         repository: repo,
         requesterContext,
@@ -1387,13 +1420,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         eventType: input.eventType,
         content: input.content,
         metadata: input.metadata,
-        visibility: "personal"
+        visibility: policy.visibility,
+        teamId
       });
       const processing = await scheduleMemoryEventProcessing(
         repo,
         requesterContext,
         event.id,
-        "personal"
+        policy.visibility,
+        teamId
       );
 
       return {
@@ -1422,8 +1457,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           threadId:
             typeof input.metadata.externalSessionId === "string"
               ? input.metadata.externalSessionId
-              : undefined
-          }
+            : undefined
+        }
       );
       rejectUnsupportedTeamCapturePolicy(policy);
       if (policy.captureState !== "enabled") {
@@ -1433,13 +1468,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         repository: repo,
         requesterContext,
         ...input,
-        visibility: "personal"
+        visibility: policy.visibility,
+        teamId:
+          policy.visibility === "team"
+            ? (await repo.getCurrentTeam(user.id))?.id
+            : undefined
       });
       const processing = await scheduleMemoryEventProcessing(
         repo,
         requesterContext,
         event.id,
-        "personal"
+        policy.visibility,
+        policy.visibility === "team"
+          ? (await repo.getCurrentTeam(user.id))?.id
+          : undefined
       );
 
       return {
@@ -1557,9 +1599,22 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
-      const query = graphQuerySchema.parse(request.query);
+      const query = graphEventsQuerySchema.parse(request.query);
       return {
         events: await repo.listLcmGraphEvents({ userId: user.id }, query)
+      };
+    }
+  );
+
+  app.get(
+    "/v1/memory/graph/threads",
+    { preHandler: memoryRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const query = graphQuerySchema.parse(request.query);
+      return {
+        projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
       };
     }
   );

@@ -1,9 +1,4 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  createHash,
-  randomBytes
-} from "node:crypto";
+import { createHash } from "node:crypto";
 import pg from "pg";
 import { estimateTokens, type LcmSourceItem } from "@koed/core";
 import type {
@@ -89,29 +84,6 @@ export interface ApiTokenRecord {
   lastUsedAt: string | null;
   expiresAt: string | null;
   revokedAt: string | null;
-}
-
-export interface ProviderConfigRecord {
-  id: string;
-  ownerUserId: string | null;
-  teamId: string | null;
-  visibility: Visibility;
-  provider: string;
-  config: Record<string, unknown>;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateProviderConfigInput {
-  visibility: Visibility;
-  provider: string;
-  config?: Record<string, unknown>;
-  apiKey?: string;
-  teamId?: string;
-}
-
-export interface RuntimeProviderConfigRecord extends ProviderConfigRecord {
-  apiKey: string | null;
 }
 
 export interface CreateMemoryNodeInput {
@@ -288,6 +260,25 @@ export interface LcmGraphEvent {
   linkedNodeIds: string[];
 }
 
+export interface LcmGraphThread {
+  id: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+  eventCount: number;
+  invalidatedCount: number;
+  latestAt: string;
+  sample: string;
+}
+
+export interface LcmGraphProjectThreads {
+  id: string;
+  name: string;
+  path: string | null;
+  eventCount: number;
+  threads: LcmGraphThread[];
+}
+
 export interface LcmGraphNodeDetail extends LcmGraphNode {
   sourceItems: LcmSourceItem[];
   sources: LcmGraphEvent[];
@@ -400,19 +391,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   listApiTokens(userId: string): Promise<ApiTokenRecord[]>;
   revokeApiToken(userId: string, tokenId: string): Promise<boolean>;
   getApiTokenUser(tokenHash: string): Promise<UserRecord | null>;
-  createProviderConfig(
-    actor: ActorContext,
-    input: CreateProviderConfigInput
-  ): Promise<ProviderConfigRecord>;
-  listProviderConfigs(actor: ActorContext): Promise<ProviderConfigRecord[]>;
-  getRuntimeProviderConfig(
-    actor: ActorContext,
-    input?: { visibility?: Visibility; teamId?: string; provider?: string }
-  ): Promise<RuntimeProviderConfigRecord | null>;
-  deleteProviderConfig(
-    actor: ActorContext,
-    providerConfigId: string
-  ): Promise<boolean>;
   createCapturedSession(
     actor: ActorContext,
     input: {
@@ -515,10 +493,23 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       visibility?: Visibility;
       projectId?: string;
       threadId?: string;
+      cursorTimestamp?: string;
+      cursorId?: string;
       includeInvalidated?: boolean;
       limit?: number;
     }
   ): Promise<LcmGraphEvent[]>;
+  listLcmGraphThreads(
+    actor: ActorContext,
+    input?: {
+      query?: string;
+      visibility?: Visibility;
+      projectId?: string;
+      threadId?: string;
+      includeInvalidated?: boolean;
+      limit?: number;
+    }
+  ): Promise<LcmGraphProjectThreads[]>;
   getLcmGraphEvent(
     actor: ActorContext,
     eventId: string,
@@ -529,7 +520,10 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     eventId: string,
     input: { visibility?: Visibility; invalidated?: boolean }
   ): Promise<LcmGraphEvent | null>;
-  invalidateLcmGraphEvent(actor: ActorContext, eventId: string): Promise<boolean>;
+  invalidateLcmGraphEvent(
+    actor: ActorContext,
+    eventId: string
+  ): Promise<boolean>;
   exportMemoryRecords(actor: ActorContext): Promise<{
     exportedAt: string;
     overview: LcmGraphOverview;
@@ -937,10 +931,9 @@ const mapMemoryBrowserItem = (row: {
   thread_name: string | null;
 }): MemoryBrowserItem => {
   const text = presentMemoryText(row.summary_text, row);
-  const label =
-    isGenericDevelopmentActivity(text, row)
-      ? "Development Activity"
-      : clusterLabelForMemoryText(`${row.title ?? ""} ${text}`);
+  const label = isGenericDevelopmentActivity(text, row)
+    ? "Development Activity"
+    : clusterLabelForMemoryText(`${row.title ?? ""} ${text}`);
   return {
     id: row.id,
     clusterId: clusterIdForLabel(label),
@@ -1064,6 +1057,28 @@ const mapLcmGraphEvent = (row: {
     linkedNodeIds: row.linked_node_ids ?? []
   };
 };
+
+const mapLcmGraphThreadRow = (row: {
+  project_id: string;
+  project_name: string;
+  project_path: string | null;
+  thread_id: string;
+  thread_name: string;
+  event_count: string | number;
+  invalidated_count: string | number;
+  latest_at: Date;
+  sample: string | null;
+}): LcmGraphThread & { projectPath: string | null } => ({
+  id: row.thread_id,
+  name: row.thread_name,
+  projectId: row.project_id,
+  projectName: row.project_name,
+  projectPath: row.project_path,
+  eventCount: Number(row.event_count),
+  invalidatedCount: Number(row.invalidated_count),
+  latestAt: row.latest_at.toISOString(),
+  sample: truncateDisplayText(row.sample ?? "", 220)
+});
 
 const mapCapturedSession = (row: {
   id: string;
@@ -1419,75 +1434,6 @@ const rerankTexts = async (
   return {
     model: payload.model,
     scores
-  };
-};
-
-const mapProviderConfig = (row: {
-  id: string;
-  owner_user_id: string | null;
-  team_id: string | null;
-  visibility: Visibility;
-  provider: string;
-  config: Record<string, unknown>;
-  created_at: Date;
-  updated_at: Date;
-}): ProviderConfigRecord => ({
-  id: row.id,
-  ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
-  visibility: row.visibility,
-  provider: row.provider,
-  config: row.config,
-  createdAt: row.created_at.toISOString(),
-  updatedAt: row.updated_at.toISOString()
-});
-
-const providerEncryptionKey = (): Buffer => {
-  const keyMaterial =
-    process.env.DATA_ENCRYPTION_KEY ?? process.env.ENCRYPTION_KEY;
-  if (!keyMaterial && process.env.NODE_ENV === "production") {
-    throw new Error("DATA_ENCRYPTION_KEY is required in production");
-  }
-  return createHash("sha256")
-    .update(keyMaterial ?? "koed-dev-provider-key")
-    .digest();
-};
-
-const encryptProviderApiKey = (apiKey: string): Buffer => {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", providerEncryptionKey(), iv);
-  const ciphertext = Buffer.concat([
-    cipher.update(apiKey, "utf8"),
-    cipher.final()
-  ]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, ciphertext]);
-};
-
-const decryptProviderApiKey = (encrypted: Buffer | null): string | null => {
-  if (!encrypted) {
-    return null;
-  }
-  const iv = encrypted.subarray(0, 12);
-  const tag = encrypted.subarray(12, 28);
-  const ciphertext = encrypted.subarray(28);
-  const decipher = createDecipheriv("aes-256-gcm", providerEncryptionKey(), iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final()
-  ]).toString("utf8");
-};
-
-const publicProviderConfig = (
-  config: Record<string, unknown>,
-  hasApiKey: boolean
-): Record<string, unknown> => {
-  const safeConfig = { ...config };
-  delete safeConfig.apiKey;
-  return {
-    ...safeConfig,
-    apiKeyConfigured: hasApiKey
   };
 };
 
@@ -1975,201 +1921,6 @@ export const createMemorySourceRepository = (
     return userResult.rows[0] ? mapUser(userResult.rows[0]) : null;
   },
 
-  async createProviderConfig(actor, input) {
-    const ownerUserId = input.visibility === "personal" ? actor.userId : null;
-    const teamId = input.visibility === "team" ? input.teamId : null;
-
-    if (input.visibility === "team") {
-      if (!teamId) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, teamId);
-    }
-
-    const safeConfig = publicProviderConfig(
-      input.config ?? {},
-      Boolean(input.apiKey)
-    );
-    const encryptedApiKey = input.apiKey
-      ? encryptProviderApiKey(input.apiKey)
-      : null;
-
-    const result = await pool.query<{
-      id: string;
-      owner_user_id: string | null;
-      team_id: string | null;
-      visibility: Visibility;
-      provider: string;
-      config: Record<string, unknown>;
-      encrypted_api_key: Buffer | null;
-      created_at: Date;
-      updated_at: Date;
-    }>(
-      `
-        insert into provider_configs (owner_user_id, team_id, visibility, provider, config, encrypted_api_key)
-        values ($1, $2, $3, $4, $5, $6)
-        on conflict (
-          visibility,
-          coalesce(owner_user_id, '00000000-0000-0000-0000-000000000000'::uuid),
-          coalesce(team_id, '00000000-0000-0000-0000-000000000000'::uuid),
-          provider
-        )
-        where disabled_at is null
-        do update set
-          config = excluded.config,
-          encrypted_api_key = coalesce(excluded.encrypted_api_key, provider_configs.encrypted_api_key),
-          updated_at = now()
-        returning id, owner_user_id, team_id, visibility, provider, config, encrypted_api_key, created_at, updated_at
-      `,
-      [
-        ownerUserId,
-        teamId,
-        input.visibility,
-        input.provider,
-        safeConfig,
-        encryptedApiKey
-      ]
-    );
-
-    const row = result.rows[0]!;
-    return mapProviderConfig({
-      ...row,
-      config: publicProviderConfig(row.config, Boolean(row.encrypted_api_key))
-    });
-  },
-
-  async listProviderConfigs(actor) {
-    const result = await pool.query<{
-      id: string;
-      owner_user_id: string | null;
-      team_id: string | null;
-      visibility: Visibility;
-      provider: string;
-      config: Record<string, unknown>;
-      encrypted_api_key: Buffer | null;
-      created_at: Date;
-      updated_at: Date;
-    }>(
-      `
-        select pc.id, pc.owner_user_id, pc.team_id, pc.visibility, pc.provider, pc.config, pc.encrypted_api_key, pc.created_at, pc.updated_at
-        from provider_configs pc
-        where pc.disabled_at is null
-          and (
-            (pc.visibility = 'personal' and pc.owner_user_id = $1)
-            or
-            (
-              pc.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = pc.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
-        order by pc.created_at desc
-      `,
-      [actor.userId]
-    );
-
-    return result.rows.map((row) =>
-      mapProviderConfig({
-        ...row,
-        config: publicProviderConfig(row.config, Boolean(row.encrypted_api_key))
-      })
-    );
-  },
-
-  async getRuntimeProviderConfig(actor, input = {}) {
-    const result = await pool.query<{
-      id: string;
-      owner_user_id: string | null;
-      team_id: string | null;
-      visibility: Visibility;
-      provider: string;
-      config: Record<string, unknown>;
-      encrypted_api_key: Buffer | null;
-      created_at: Date;
-      updated_at: Date;
-    }>(
-      `
-        select pc.id, pc.owner_user_id, pc.team_id, pc.visibility, pc.provider, pc.config, pc.encrypted_api_key, pc.created_at, pc.updated_at
-        from provider_configs pc
-        where pc.disabled_at is null
-          and ($2::visibility_scope is null or pc.visibility = $2::visibility_scope)
-          and ($3::uuid is null or pc.team_id = $3::uuid)
-          and ($4::text is null or pc.provider = $4::text)
-          and coalesce((pc.config->>'enabled')::boolean, true) = true
-          and (
-            (pc.visibility = 'personal' and pc.owner_user_id = $1)
-            or
-            (
-              pc.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = pc.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
-        order by
-          case when pc.visibility = 'personal' then 0 else 1 end,
-          pc.updated_at desc
-        limit 1
-      `,
-      [
-        actor.userId,
-        input.visibility ?? null,
-        input.teamId ?? null,
-        input.provider ?? null
-      ]
-    );
-
-    const row = result.rows[0];
-    if (!row) {
-      return null;
-    }
-
-    return {
-      ...mapProviderConfig({
-        ...row,
-        config: publicProviderConfig(row.config, Boolean(row.encrypted_api_key))
-      }),
-      apiKey: decryptProviderApiKey(row.encrypted_api_key)
-    };
-  },
-
-  async deleteProviderConfig(actor, providerConfigId) {
-    const result = await pool.query(
-      `
-        update provider_configs pc
-        set disabled_at = now()
-        where pc.id = $2
-          and pc.disabled_at is null
-          and (
-            (pc.visibility = 'personal' and pc.owner_user_id = $1)
-            or
-            (
-              pc.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = pc.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
-      `,
-      [actor.userId, providerConfigId]
-    );
-
-    return (result.rowCount ?? 0) > 0;
-  },
-
   async createCapturedSession(actor, input) {
     const result = await pool.query<{
       id: string;
@@ -2355,7 +2106,9 @@ export const createMemorySourceRepository = (
     const global = policies.find((policy) => policy.targetType === "global");
     const effective = policies[0] ?? null;
     const pauseUntil = effective?.pauseUntil ?? global?.pauseUntil ?? null;
-    const paused = pauseUntil ? new Date(pauseUntil).getTime() > Date.now() : false;
+    const paused = pauseUntil
+      ? new Date(pauseUntil).getTime() > Date.now()
+      : false;
     return {
       captureState: paused
         ? "disabled"
@@ -2625,7 +2378,9 @@ export const createMemorySourceRepository = (
       }
     }
     return [...groups.values()]
-      .sort((left, right) => right.latestUpdatedAt.localeCompare(left.latestUpdatedAt))
+      .sort((left, right) =>
+        right.latestUpdatedAt.localeCompare(left.latestUpdatedAt)
+      )
       .slice(0, input.limit ?? 50);
   },
 
@@ -2695,7 +2450,7 @@ export const createMemorySourceRepository = (
         input.pinned ?? null,
         input.visibility ?? null,
         input.visibility === "team"
-          ? (await this.getCurrentTeam(actor.userId))?.id ?? null
+          ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
           : null
       ]
     );
@@ -2991,7 +2746,9 @@ export const createMemorySourceRepository = (
       includeInvalidated: true,
       limit: 500
     });
-    const visibleNodeById = new Map(visibleNodes.map((item) => [item.id, item]));
+    const visibleNodeById = new Map(
+      visibleNodes.map((item) => [item.id, item])
+    );
     const [sources] = await Promise.all([
       Promise.all(
         sourceRows.rows.map((row) =>
@@ -3013,8 +2770,8 @@ export const createMemorySourceRepository = (
       sourceItems: fullNode.rows[0]?.source_items_json ?? [],
       childNodes,
       parentNodes,
-      sources: sources.filter(
-        (candidate): candidate is LcmGraphEvent => Boolean(candidate)
+      sources: sources.filter((candidate): candidate is LcmGraphEvent =>
+        Boolean(candidate)
       )
     };
   },
@@ -3035,7 +2792,7 @@ export const createMemorySourceRepository = (
     }
     const teamId =
       input.visibility === "team"
-        ? (await this.getCurrentTeam(actor.userId))?.id ?? null
+        ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
         : null;
     await pool.query(
       `
@@ -3118,6 +2875,15 @@ export const createMemorySourceRepository = (
           and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or me.payload ->> 'content' ilike '%' || $6 || '%' or me.id::text = $6)
           and (
+            $7::timestamptz is null
+            or me.captured_at < $7::timestamptz
+            or (
+              $8::uuid is not null
+              and me.captured_at = $7::timestamptz
+              and me.id < $8::uuid
+            )
+          )
+          and (
             (me.visibility = 'personal' and me.owner_user_id = $1)
             or (
               me.visibility = 'team'
@@ -3131,7 +2897,83 @@ export const createMemorySourceRepository = (
           )
         group by me.id, s.id
         order by me.captured_at desc, me.id desc
-        limit $7
+        limit $9
+      `,
+      [
+        actor.userId,
+        input.includeInvalidated ?? false,
+        input.visibility ?? null,
+        input.projectId ?? null,
+        input.threadId ?? null,
+        input.query?.trim() || null,
+        input.cursorTimestamp ?? null,
+        input.cursorId ?? null,
+        limit
+      ]
+    );
+    return result.rows.map((row) => mapLcmGraphEvent(row));
+  },
+
+  async listLcmGraphThreads(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const result = await pool.query<Parameters<typeof mapLcmGraphThreadRow>[0]>(
+      `
+        with visible_events as (
+          select
+            me.id,
+            coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') as project_id,
+            coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') as project_name,
+            coalesce(me.payload #>> '{metadata,projectPath}', s.cwd, me.payload ->> 'workspaceId') as project_path,
+            coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
+            coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            me.captured_at,
+            me.invalidated_at,
+            me.payload ->> 'content' as content
+          from memory_events me
+          left join sessions s on s.id = me.session_id
+          where ($2::boolean = true or me.invalidated_at is null)
+            and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
+            and ($4::text is null or coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') = $4)
+            and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
+            and (
+              $6::text is null
+              or me.payload ->> 'content' ilike '%' || $6 || '%'
+              or me.id::text = $6
+              or coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
+              or coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
+            )
+            and (
+              (me.visibility = 'personal' and me.owner_user_id = $1)
+              or (
+                me.visibility = 'team'
+                and exists (
+                  select 1 from team_members tm
+                  where tm.team_id = me.team_id
+                    and tm.user_id = $1
+                    and tm.removed_at is null
+                )
+              )
+            )
+        ),
+        ranked_threads as (
+          select
+            project_id,
+            (array_agg(project_name order by captured_at desc, id desc))[1] as project_name,
+            (array_agg(project_path order by captured_at desc, id desc))[1] as project_path,
+            thread_id,
+            (array_agg(thread_name order by captured_at desc, id desc))[1] as thread_name,
+            count(*)::text as event_count,
+            count(*) filter (where invalidated_at is not null)::text as invalidated_count,
+            max(captured_at) as latest_at,
+            (array_agg(content order by captured_at desc, id desc))[1] as sample
+          from visible_events
+          group by project_id, thread_id
+          order by max(captured_at) desc, thread_id desc
+          limit $7
+        )
+        select *
+        from ranked_threads
+        order by latest_at desc, thread_id desc
       `,
       [
         actor.userId,
@@ -3143,7 +2985,31 @@ export const createMemorySourceRepository = (
         limit
       ]
     );
-    return result.rows.map((row) => mapLcmGraphEvent(row));
+
+    const projects = new Map<string, LcmGraphProjectThreads>();
+    for (const thread of result.rows.map(mapLcmGraphThreadRow)) {
+      const project = projects.get(thread.projectId) ?? {
+        id: thread.projectId,
+        name: thread.projectName,
+        path: thread.projectPath,
+        eventCount: 0,
+        threads: []
+      };
+      project.eventCount += thread.eventCount;
+      project.threads.push({
+        id: thread.id,
+        name: thread.name,
+        projectId: thread.projectId,
+        projectName: thread.projectName,
+        eventCount: thread.eventCount,
+        invalidatedCount: thread.invalidatedCount,
+        latestAt: thread.latestAt,
+        sample: thread.sample
+      });
+      projects.set(project.id, project);
+    }
+
+    return [...projects.values()];
   },
 
   async getLcmGraphEvent(actor, eventId, input = {}) {
@@ -3154,7 +3020,22 @@ export const createMemorySourceRepository = (
     });
     const event = events.find((candidate) => candidate.id === eventId);
     return event
-      ? { ...event, ...(input.includeRaw ? { rawContent: event.rawContent ?? (await pool.query<{ content: string | null }>("select payload ->> 'content' as content from memory_events where id = $1", [eventId])).rows[0]?.content ?? "" } : {}) }
+      ? {
+          ...event,
+          ...(input.includeRaw
+            ? {
+                rawContent:
+                  event.rawContent ??
+                  (
+                    await pool.query<{ content: string | null }>(
+                      "select payload ->> 'content' as content from memory_events where id = $1",
+                      [eventId]
+                    )
+                  ).rows[0]?.content ??
+                  ""
+              }
+            : {})
+        }
       : null;
   },
 
@@ -3174,7 +3055,7 @@ export const createMemorySourceRepository = (
     }
     const teamId =
       input.visibility === "team"
-        ? (await this.getCurrentTeam(actor.userId))?.id ?? null
+        ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
         : null;
     await pool.query(
       `

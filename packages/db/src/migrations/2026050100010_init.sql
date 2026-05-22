@@ -388,29 +388,6 @@ create table if not exists api_tokens (
   check (length(token_hash) >= 32)
 );
 
-create table if not exists provider_configs (
-  id uuid primary key default gen_random_uuid(),
-  owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
-  visibility visibility_scope not null,
-  provider text not null,
-  config jsonb not null default '{}'::jsonb,
-  encrypted_api_key bytea,
-  encryption_key_id text not null default 'DATA_ENCRYPTION_KEY',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  disabled_at timestamptz,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
-);
-
-create unique index if not exists provider_configs_active_unique
-  on provider_configs(visibility, coalesce(owner_user_id, '00000000-0000-0000-0000-000000000000'::uuid), coalesce(team_id, '00000000-0000-0000-0000-000000000000'::uuid), provider)
-  where disabled_at is null;
-
 create table if not exists audit_events (
   id uuid primary key default gen_random_uuid(),
   actor_user_id uuid references users(id) on delete set null,
