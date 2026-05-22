@@ -28,8 +28,8 @@ This creates `.env` and generates `API_DATA_ENCRYPTION_KEY` and
 - `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size.
 - `API_AUTH_RATE_LIMIT_WINDOW_MS`: auth rate-limit window.
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
-- `API_MEMORY_RATE_LIMIT_WINDOW_MS`: API-token memory rate-limit window.
-- `API_MEMORY_RATE_LIMIT_MAX`: API-token memory requests allowed per window.
+- `API_MEMORY_RATE_LIMIT_WINDOW_MS`: API-token memory rate-limit window. The default window is 60 seconds.
+- `API_MEMORY_RATE_LIMIT_MAX`: API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local History Browser and MCP Server bursts in a self-hosted deployment without changing the stricter auth rate limit.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `CONSOLE_NODE_ENV`: runtime environment for the Operator Console service.
 - `CONSOLE_PORT`: Operator Console port inside the container.

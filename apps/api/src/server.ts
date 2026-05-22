@@ -138,7 +138,7 @@ const rateLimits = {
   },
   memory: {
     windowMs: parsePositiveInt("MEMORY_RATE_LIMIT_WINDOW_MS", 60_000),
-    max: parsePositiveInt("MEMORY_RATE_LIMIT_MAX", 120)
+    max: parsePositiveInt("MEMORY_RATE_LIMIT_MAX", 1000)
   }
 } satisfies Record<RateLimitName, { windowMs: number; max: number }>;
 
