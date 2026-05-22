@@ -1467,6 +1467,88 @@ describe("account and access flows", () => {
     expect(jsonBody<GraphEventsResponse>(graph).events).toHaveLength(1);
   });
 
+  it("compacts duplicate captures using the returned event visibility", async () => {
+    const repository = createFakeRepository();
+    const compactionScopes: Array<{ visibility: Visibility; teamId?: string }> =
+      [];
+    const originalCreateLcmNodes =
+      repository.createLcmNodes.bind(repository);
+    repository.createLcmNodes = async (actor, input) => {
+      compactionScopes.push({
+        visibility: input.visibility,
+        teamId: input.teamId
+      });
+      return originalCreateLcmNodes(actor, input);
+    };
+    const app = await buildServer({
+      repository,
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "duplicate-capture-scope@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    const payload = {
+      actor: "user",
+      eventType: "user_prompt",
+      content: "Duplicate capture scope should follow returned event",
+      sourceHash: "duplicate-source-hash-scope-test"
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload
+    });
+    const createdTeam = await app.inject({
+      method: "POST",
+      url: "/teams",
+      headers: { cookie },
+      payload: { name: "Capture Team" }
+    });
+    await app.inject({
+      method: "PUT",
+      url: "/v1/capture-policies",
+      headers,
+      payload: {
+        targetType: "global",
+        captureState: "enabled",
+        visibility: "team"
+      }
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload
+    });
+    await app.close();
+
+    expect(first.statusCode).toBe(200);
+    expect(createdTeam.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(jsonBody<CaptureResponse>(second).event.visibility).toBe("personal");
+    expect(compactionScopes.at(-1)).toEqual({
+      visibility: "personal",
+      teamId: undefined
+    });
+  });
+
   it("resolves capture policy inheritance and skips disabled capture", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),

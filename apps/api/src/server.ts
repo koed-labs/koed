@@ -1388,8 +1388,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         repo,
         requesterContext,
         event.id,
-        policy.visibility,
-        teamId
+        event.visibility,
+        event.teamId ?? undefined
       );
 
       return {
@@ -1424,24 +1424,23 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       if (policy.captureState !== "enabled") {
         return { skipped: true, reason: "capture_disabled", policy };
       }
+      const teamId =
+        policy.visibility === "team"
+          ? (await repo.getCurrentTeam(user.id))?.id
+          : undefined;
       const event = await capturePersonalEvent({
         repository: repo,
         requesterContext,
         ...input,
         visibility: policy.visibility,
-        teamId:
-          policy.visibility === "team"
-            ? (await repo.getCurrentTeam(user.id))?.id
-            : undefined
+        teamId
       });
       const processing = await scheduleMemoryEventProcessing(
         repo,
         requesterContext,
         event.id,
-        policy.visibility,
-        policy.visibility === "team"
-          ? (await repo.getCurrentTeam(user.id))?.id
-          : undefined
+        event.visibility,
+        event.teamId ?? undefined
       );
 
       return {
