@@ -116,6 +116,89 @@ describe("memory answer worker", () => {
     expect(result.localMemoryWorker.promptTokenEstimate).toBeGreaterThan(0);
   });
 
+  it("returns compact answer-only output by default", async () => {
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]",
+      model: `codex:${config.model}:${config.reasoningEffort}`
+    });
+
+    const result = await answerWithMemoryWorker(payload, {
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+        }),
+        cwd: "/tmp"
+      },
+      runner
+    });
+
+    expect(result.markdown).toContain("local Codex");
+    expect(result.localMemoryWorker.usedFallback).toBe(false);
+    expect(result).not.toHaveProperty("evidence");
+    expect(result).not.toHaveProperty("evidenceBundle");
+    expect(result).not.toHaveProperty("citations");
+  });
+
+  it("can return citations without the full evidence bundle", async () => {
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]",
+      model: `codex:${config.model}:${config.reasoningEffort}`
+    });
+
+    const result = await answerWithMemoryWorker(
+      {
+        ...payload,
+        rawHitsCount: 1,
+        lcmHitsCount: 1,
+        expandedNodeIds: ["node-1"],
+        visibilityLabels: ["personal"]
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        responseDetail: "with_citations"
+      }
+    );
+
+    expect(result.citations).toEqual(payload.citations);
+    expect(result.rawHitsCount).toBe(1);
+    expect(result.visibilityLabels).toEqual(["personal"]);
+    expect(result).not.toHaveProperty("evidence");
+    expect(result).not.toHaveProperty("evidenceBundle");
+  });
+
+  it("can return the full evidence bundle when requested", async () => {
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]",
+      model: `codex:${config.model}:${config.reasoningEffort}`
+    });
+
+    const result = await answerWithMemoryWorker(payload, {
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+        }),
+        cwd: "/tmp"
+      },
+      runner,
+      responseDetail: "with_evidence"
+    });
+
+    expect(result.evidenceBundle).toBe(payload.evidenceBundle);
+    expect(result.citations).toEqual(payload.citations);
+  });
+
   it("lets the local worker plan follow-up searches before answering", async () => {
     const prompts: string[] = [];
     const searches: Record<string, unknown>[] = [];
@@ -181,7 +264,8 @@ describe("memory answer worker", () => {
       runner,
       client,
       retrievalScope: "personal",
-      limit: 10
+      limit: 10,
+      responseDetail: "with_evidence"
     });
 
     expect(searches).toEqual([
@@ -196,6 +280,10 @@ describe("memory answer worker", () => {
     ]);
     expect(result.markdown).toContain("local Codex subscription");
     expect(result.evidence).toHaveLength(2);
+    expect(result.citations).toEqual([
+      { nodeId: "node-1", visibility: "personal" },
+      { nodeId: "node-2", visibility: "personal" }
+    ]);
     expect(result.localMemoryWorker).toMatchObject({
       planningMode: "planned",
       searchCount: 1,
@@ -205,7 +293,7 @@ describe("memory answer worker", () => {
     });
   });
 
-  it("keeps default memory_answer output compact while preserving explicit detail data", async () => {
+  it("can compact explicit detail data without losing the source response", async () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
       text: JSON.stringify({
         action: "answer",
@@ -234,7 +322,8 @@ describe("memory answer worker", () => {
         }
       },
       retrievalScope: "personal",
-      limit: 10
+      limit: 10,
+      responseDetail: "with_evidence"
     });
 
     const compact = compactMemoryAnswerPayload(result);
@@ -299,11 +388,12 @@ describe("memory answer worker", () => {
     });
   });
 
-  it("can be disabled to return the backend evidence bundle unchanged", async () => {
+  it("can be disabled to return the backend evidence bundle unchanged when requested", async () => {
     const result = await answerWithMemoryWorker(payload, {
       config: resolveMemoryAnswerWorkerConfig({
         MEMORY_ANSWER_PROVIDER: "evidence"
-      })
+      }),
+      responseDetail: "with_evidence"
     });
 
     expect(result.markdown).toBe(payload.markdown);

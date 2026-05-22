@@ -88,6 +88,9 @@ describe("MemoryApiClient", () => {
     expect(result.defaultAutomaticCaptureScope).toBe("personal");
     expect(result.defaultAnswerScope).toBe("personal");
     expect(result.localLcmSummaryDiagnostics.pendingCount).toBe(3);
+    expect(result.localMemoryAnswerWorker.defaultResponseDetail).toBe(
+      "answer_only"
+    );
     expect(result.notes).toEqual([]);
   });
 
@@ -311,9 +314,8 @@ describe("LCM summary background service", () => {
           body += String(chunk);
         });
         request.on("end", () => {
-          submittedSummary = (
-            JSON.parse(body) as { summaryText?: string }
-          ).summaryText ?? null;
+          submittedSummary =
+            (JSON.parse(body) as { summaryText?: string }).summaryText ?? null;
           response.end(JSON.stringify({ nodeId }));
         });
         return;

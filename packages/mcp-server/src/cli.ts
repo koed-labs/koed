@@ -4,10 +4,7 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import {
-  answerWithMemoryWorker,
-  compactMemoryAnswerPayload
-} from "./answer-worker.js";
+import { answerWithMemoryWorker } from "./answer-worker.js";
 import {
   MemoryApiClient,
   type McpServerConfig,
@@ -104,6 +101,11 @@ const jsonResponse = (payload: unknown) => ({
 });
 
 const searchDomainSchema = z.enum(["global", "project", "session"]);
+const memoryAnswerResponseDetailSchema = z.enum([
+  "answer_only",
+  "with_citations",
+  "with_evidence"
+]);
 const uuidSchema = z.string().uuid();
 const defaultWorkspaceId = (): string => process.cwd();
 const normalizeToolWorkspaceId = (workspaceId?: string): string =>
@@ -231,9 +233,14 @@ server.registerTool(
   {
     title: "Answer from memory",
     description:
-      "Retrieve a cited Evidence Bundle from /v1/memory/answer using local semantic embeddings. The backend does not call OpenAI or another model provider; Codex or the local memory-answer worker can synthesize the final answer from that evidence.",
+      "Retrieve memory through local semantic embeddings, then synthesize the final answer through the local MCP memory-answer worker when enabled. Defaults to response_detail=answer_only so normal agent recall receives compact markdown plus localMemoryWorker status metadata. Use response_detail=with_citations when citation/source metadata is needed, and response_detail=with_evidence only for debugging, UI inspection, or retrieval-quality investigation. The backend does not call OpenAI or another model provider; local synthesis uses the user's Codex CLI subscription.",
     inputSchema: {
       query: z.string().min(1).describe("Question to answer from memory."),
+      response_detail: memoryAnswerResponseDetailSchema
+        .default("answer_only")
+        .describe(
+          "Response detail level. answer_only returns compact markdown and localMemoryWorker status metadata. with_citations adds citation/source metadata without evidence. with_evidence returns the full evidence bundle for debugging or UI inspection."
+        ),
       search_domain: searchDomainSchema
         .default("project")
         .describe(
@@ -259,28 +266,28 @@ server.registerTool(
     }
   },
   async (input) => {
+    const { include_evidence, response_detail, ...answerInput } = input;
     const retrieval_scope = defaultAnswerScope(await client.accessCheck());
     const workspace_id =
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
     const evidence = await client.answer({
-      ...input,
+      ...answerInput,
       retrieval_scope,
       workspace_id
     });
-    const answer = await answerWithMemoryWorker(evidence, {
+    return jsonResponse(
+      await answerWithMemoryWorker(evidence, {
         client,
         retrievalScope: retrieval_scope,
         searchDomain: input.search_domain,
         workspaceId: workspace_id,
         sessionId: input.session_id,
-        limit: input.limit
-      });
-    if (input.include_evidence) {
-      return jsonResponse(answer);
-    }
-    return jsonResponse(compactMemoryAnswerPayload(answer));
+        limit: input.limit,
+        responseDetail: include_evidence ? "with_evidence" : response_detail
+      })
+    );
   }
 );
 

@@ -37,6 +37,11 @@ export interface MemoryAnswerWorkerStatus {
   skippedReason?: string;
 }
 
+export type MemoryAnswerResponseDetail =
+  | "answer_only"
+  | "with_citations"
+  | "with_evidence";
+
 export interface MemoryAnswerPayload {
   markdown?: string;
   evidence?: unknown[];
@@ -50,15 +55,68 @@ export interface MemoryAnswerPayload {
   [key: string]: unknown;
 }
 
-export interface CompactMemoryAnswerPayload {
+const CITATION_METADATA_KEYS = [
+  "citations",
+  "rawHitsCount",
+  "lcmHitsCount",
+  "expandedNodeIds",
+  "visibilityLabels"
+] as const;
+
+export type MemoryAnswerWorkerResponse = Partial<MemoryAnswerPayload> & {
   markdown?: string;
-  citations?: unknown[];
-  localMemoryWorker?: MemoryAnswerWorkerStatus;
+  localMemoryWorker: MemoryAnswerWorkerStatus;
   retrieval: {
     evidenceCount: number;
     retrievalMode?: unknown;
   };
-}
+};
+
+export const compactMemoryAnswerPayload = (
+  payload: MemoryAnswerPayload & {
+    localMemoryWorker: MemoryAnswerWorkerStatus;
+  },
+  responseDetail: MemoryAnswerResponseDetail = "answer_only"
+): MemoryAnswerWorkerResponse => {
+  const retrievalSummary =
+    payload.retrieval &&
+    typeof payload.retrieval === "object" &&
+    "evidenceCount" in payload.retrieval
+      ? (payload.retrieval as MemoryAnswerWorkerResponse["retrieval"])
+      : {
+          evidenceCount: evidenceItems(payload).length,
+          retrievalMode:
+            payload.evidenceBundle?.retrieval &&
+            typeof payload.evidenceBundle.retrieval === "object" &&
+            "retrievalMode" in payload.evidenceBundle.retrieval
+              ? (payload.evidenceBundle.retrieval as Record<string, unknown>)
+                  .retrievalMode
+              : undefined
+        };
+
+  if (responseDetail === "with_evidence") {
+    return { ...payload, retrieval: retrievalSummary };
+  }
+
+  const compact: Record<string, unknown> & {
+    markdown?: string;
+    localMemoryWorker: MemoryAnswerWorkerStatus;
+  } = {
+    markdown: payload.markdown,
+    localMemoryWorker: payload.localMemoryWorker,
+    retrieval: retrievalSummary
+  };
+
+  if (responseDetail === "with_citations") {
+    for (const key of CITATION_METADATA_KEYS) {
+      if (payload[key] !== undefined) {
+        compact[key] = payload[key];
+      }
+    }
+  }
+
+  return compact as MemoryAnswerWorkerResponse;
+};
 
 export type CodexAnswerRunner = (
   prompt: string,
@@ -233,6 +291,16 @@ const citationsFromPayload = (payload: MemoryAnswerPayload): unknown[] =>
 
 const hitsFromSearch = (result: Record<string, unknown>): unknown[] =>
   Array.isArray(result.hits) ? result.hits : [];
+
+const citationsFromHits = (hits: unknown[]): unknown[] =>
+  hits.flatMap((hit) =>
+    hit &&
+    typeof hit === "object" &&
+    "citation" in hit &&
+    (hit as Record<string, unknown>).citation
+      ? [(hit as Record<string, unknown>).citation]
+      : []
+  );
 
 const sourceKey = (item: unknown): string => {
   if (!item || typeof item !== "object") {
@@ -473,11 +541,11 @@ const runPlannedMemoryAnswer = async (
         continue;
       }
       const searchQuery = action.query?.trim() || state.query;
+      const retrievalScope = options.retrievalScope;
       const searchDomain = action.search_domain ?? options.searchDomain;
       const sessionId = action.session_id ?? options.sessionId;
       const workspaceId = action.workspace_id ?? options.workspaceId;
       const limit = clampLimit(action.limit, options.limit);
-      const retrievalScope = options.retrievalScope;
       const searchResult = await options.client.search({
         query: searchQuery,
         retrieval_scope: retrievalScope,
@@ -488,6 +556,10 @@ const runPlannedMemoryAnswer = async (
       });
       const hits = hitsFromSearch(searchResult);
       state.evidence = appendEvidence(state.evidence, hits);
+      state.citations = appendEvidence(
+        state.citations,
+        citationsFromHits(hits)
+      );
       state.retrievals.push(searchResult.retrieval ?? searchResult);
       state.searches.push({
         query: searchQuery,
@@ -659,44 +731,50 @@ export const answerWithMemoryWorker = async (
     sessionId?: string;
     workspaceId?: string;
     limit?: number;
+    responseDetail?: MemoryAnswerResponseDetail;
   } = {}
-): Promise<
-  MemoryAnswerPayload & { localMemoryWorker: MemoryAnswerWorkerStatus }
-> => {
+): Promise<MemoryAnswerWorkerResponse> => {
   const config = options.config ?? resolveMemoryAnswerWorkerConfig();
   const promptVersion = MEMORY_ANSWER_PROMPT_VERSION;
+  const responseDetail = options.responseDetail ?? "answer_only";
   const fallbackMarkdown =
     typeof payload.markdown === "string" ? payload.markdown : "";
 
   if (config.provider !== CODEX_ANSWER_PROVIDER) {
-    return {
-      ...payload,
-      localMemoryWorker: {
-        provider: config.provider,
-        promptVersion,
-        model: null,
-        planningMode: config.planningMode,
-        usedFallback: true,
-        skippedReason: "disabled"
-      }
-    };
+    return compactMemoryAnswerPayload(
+      {
+        ...payload,
+        localMemoryWorker: {
+          provider: config.provider,
+          promptVersion,
+          model: null,
+          planningMode: config.planningMode,
+          usedFallback: true,
+          skippedReason: "disabled"
+        }
+      },
+      responseDetail
+    );
   }
 
   if (
     config.planningMode !== "planned" &&
     evidenceItems(payload).length === 0
   ) {
-    return {
-      ...payload,
-      localMemoryWorker: {
-        provider: config.provider,
-        promptVersion,
-        model: null,
-        planningMode: "single_pass",
-        usedFallback: true,
-        skippedReason: "no_evidence"
-      }
-    };
+    return compactMemoryAnswerPayload(
+      {
+        ...payload,
+        localMemoryWorker: {
+          provider: config.provider,
+          promptVersion,
+          model: null,
+          planningMode: "single_pass",
+          usedFallback: true,
+          skippedReason: "no_evidence"
+        }
+      },
+      responseDetail
+    );
   }
 
   const runner = options.runner ?? runCodexMemoryAnswer;
@@ -714,56 +792,62 @@ export const answerWithMemoryWorker = async (
         workspaceId: options.workspaceId,
         limit: options.limit ?? 10
       });
-      return {
-        ...payload,
-        markdown: planned.markdown,
-        evidence: planned.evidence,
-        citations: planned.citations,
-        evidenceBundle: {
-          ...payload.evidenceBundle,
-          query: queryFromPayload(payload),
+      return compactMemoryAnswerPayload(
+        {
+          ...payload,
+          markdown: planned.markdown,
           evidence: planned.evidence,
-          retrieval: {
-            mode: "planned_local_memory",
-            retrievals: planned.retrievals,
-            expansions: planned.expansions
+          citations: planned.citations,
+          evidenceBundle: {
+            ...payload.evidenceBundle,
+            query: queryFromPayload(payload),
+            evidence: planned.evidence,
+            retrieval: {
+              mode: "planned_local_memory",
+              retrievals: planned.retrievals,
+              expansions: planned.expansions
+            }
+          },
+          localMemoryWorker: {
+            provider: config.provider,
+            promptVersion,
+            model: planned.model,
+            planningMode: "planned",
+            promptTokenEstimate: planned.promptTokens.tokens,
+            tokenizerEncoding: planned.promptTokens.encoding,
+            tokenizerModelMatched: planned.promptTokens.exactModelMatch,
+            searchCount: planned.searchCount,
+            expandCount: planned.expandCount,
+            memoryStatus: planned.memoryStatus,
+            usedFallback: false
           }
         },
-        localMemoryWorker: {
-          provider: config.provider,
-          promptVersion,
-          model: planned.model,
-          planningMode: "planned",
-          promptTokenEstimate: planned.promptTokens.tokens,
-          tokenizerEncoding: planned.promptTokens.encoding,
-          tokenizerModelMatched: planned.promptTokens.exactModelMatch,
-          searchCount: planned.searchCount,
-          expandCount: planned.expandCount,
-          memoryStatus: planned.memoryStatus,
-          usedFallback: false
-        }
-      };
+        responseDetail
+      );
     } catch {
       const prompt = buildMemoryAnswerPrompt(payload);
       const promptTokens = countTokensForModel(prompt, { model: config.model });
-      return {
-        ...payload,
-        markdown:
-          fallbackMarkdown && evidenceItems(payload).length > 0
-            ? fallbackMarkdown
-            : "Memory answer worker failed before judging retrieved evidence.",
-        localMemoryWorker: {
-          provider: config.provider,
-          promptVersion,
-          model: null,
-          planningMode: "planned",
-          promptTokenEstimate: promptTokens.tokens,
-          tokenizerEncoding: promptTokens.encoding,
-          tokenizerModelMatched: promptTokens.exactModelMatch,
-          usedFallback: true,
-          skippedReason: "codex_failed"
-        }
-      };
+      return compactMemoryAnswerPayload(
+        {
+          ...payload,
+          markdown:
+            fallbackMarkdown && evidenceItems(payload).length > 0
+              ? fallbackMarkdown
+              : "Memory answer worker failed before judging retrieved evidence.",
+          localMemoryWorker: {
+            provider: config.provider,
+            promptVersion,
+            model: null,
+            planningMode: "planned",
+            promptTokenEstimate: promptTokens.tokens,
+            tokenizerEncoding: promptTokens.encoding,
+            tokenizerModelMatched: promptTokens.exactModelMatch,
+            usedFallback: true,
+            skippedReason: "codex_failed"
+          }
+        },
+        responseDetail
+      );
     }
   }
 
@@ -776,56 +860,44 @@ export const answerWithMemoryWorker = async (
       if (markdown.length === 0) {
         throw new Error("Codex memory answer produced empty output");
       }
-      return {
-        ...payload,
-        markdown,
-        localMemoryWorker: {
-          provider: config.provider,
-          promptVersion,
-          model: result.model,
-          planningMode: "single_pass",
-          promptTokenEstimate: promptTokens.tokens,
-          tokenizerEncoding: promptTokens.encoding,
-          tokenizerModelMatched: promptTokens.exactModelMatch,
-          usedFallback: false
-        }
-      };
+      return compactMemoryAnswerPayload(
+        {
+          ...payload,
+          markdown,
+          localMemoryWorker: {
+            provider: config.provider,
+            promptVersion,
+            model: result.model,
+            planningMode: "single_pass",
+            promptTokenEstimate: promptTokens.tokens,
+            tokenizerEncoding: promptTokens.encoding,
+            tokenizerModelMatched: promptTokens.exactModelMatch,
+            usedFallback: false
+          }
+        },
+        responseDetail
+      );
     } catch {
       // Retry with a longer timeout, then preserve the evidence fallback.
     }
   }
 
-  return {
-    ...payload,
-    markdown: fallbackMarkdown,
-    localMemoryWorker: {
-      provider: config.provider,
-      promptVersion,
-      model: null,
-      planningMode: "single_pass",
-      promptTokenEstimate: promptTokens.tokens,
-      tokenizerEncoding: promptTokens.encoding,
-      tokenizerModelMatched: promptTokens.exactModelMatch,
-      usedFallback: true,
-      skippedReason: "codex_failed"
-    }
-  };
+  return compactMemoryAnswerPayload(
+    {
+      ...payload,
+      markdown: fallbackMarkdown,
+      localMemoryWorker: {
+        provider: config.provider,
+        promptVersion,
+        model: null,
+        planningMode: "single_pass",
+        promptTokenEstimate: promptTokens.tokens,
+        tokenizerEncoding: promptTokens.encoding,
+        tokenizerModelMatched: promptTokens.exactModelMatch,
+        usedFallback: true,
+        skippedReason: "codex_failed"
+      }
+    },
+    responseDetail
+  );
 };
-
-export const compactMemoryAnswerPayload = (
-  answer: MemoryAnswerPayload & { localMemoryWorker?: MemoryAnswerWorkerStatus }
-): CompactMemoryAnswerPayload => ({
-  markdown: answer.markdown,
-  citations: answer.citations,
-  localMemoryWorker: answer.localMemoryWorker,
-  retrieval: {
-    evidenceCount: evidenceItems(answer).length,
-    retrievalMode:
-      answer.evidenceBundle?.retrieval &&
-      typeof answer.evidenceBundle.retrieval === "object" &&
-      "retrievalMode" in answer.evidenceBundle.retrieval
-        ? (answer.evidenceBundle.retrieval as Record<string, unknown>)
-            .retrievalMode
-        : undefined
-  }
-});
