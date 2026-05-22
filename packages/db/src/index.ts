@@ -1215,16 +1215,16 @@ const nonNegativeIntEnv = (name: string, fallback: number): number => {
 };
 
 const lcmLeafEventThreshold = (): number =>
-  positiveIntEnv("MEMORY_LCM_LEAF_EVENT_THRESHOLD", 5);
+  positiveIntEnv("MEMORY_LCM_LEAF_EVENT_THRESHOLD", 100);
 
 const lcmLeafTokenThreshold = (): number =>
-  positiveIntEnv("MEMORY_LCM_LEAF_TOKEN_THRESHOLD", 6_000);
+  positiveIntEnv("MEMORY_LCM_LEAF_TOKEN_THRESHOLD", 32_000);
 
 const lcmFreshEventTail = (): number =>
-  nonNegativeIntEnv("MEMORY_LCM_FRESH_EVENT_TAIL", 1);
+  nonNegativeIntEnv("MEMORY_LCM_FRESH_EVENT_TAIL", 10);
 
 const lcmDepthOneFanout = (): number =>
-  positiveIntEnv("MEMORY_LCM_DEPTH1_FANOUT", 2);
+  positiveIntEnv("MEMORY_LCM_DEPTH1_FANOUT", 20);
 
 const lcmSummaryModel = (): string =>
   process.env.MEMORY_LCM_SUMMARY_MODEL ?? "gpt-5.4-mini";

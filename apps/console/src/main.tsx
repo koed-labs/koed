@@ -594,6 +594,10 @@ const App = () => {
                   masked={newToken === null}
                 />
                 <FieldCopy
+                  label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
+                  value="48000"
+                />
+                <FieldCopy
                   label="Working directory"
                   value={repoPath || "/path/to/koed-self-hosted"}
                 />
@@ -623,6 +627,10 @@ const App = () => {
                 <FieldCopy label="MEMORY_HOOK_STRICT" value="false" />
                 <FieldCopy label="MEMORY_HOOK_MAX_ITEMS" value="10" />
                 <FieldCopy label="MEMORY_HOOK_TRIGGER_LCM_SUMMARY" value="true" />
+                <FieldCopy
+                  label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
+                  value="48000"
+                />
               </div>
             </section>
 
@@ -696,6 +704,10 @@ const App = () => {
                   label="MEMORY_API_TOKEN"
                   value={tokenForSetup}
                   masked={newToken === null}
+                />
+                <FieldCopy
+                  label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
+                  value="48000"
                 />
                 <FieldCopy
                   label="Working directory"

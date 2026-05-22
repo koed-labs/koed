@@ -22,7 +22,10 @@ import {
 
 const databaseUrl = process.env.DATABASE_URL;
 const runDbTests = Boolean(databaseUrl);
+const originalLeafEventThreshold = process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
+const originalLeafTokenThreshold = process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD;
 const originalFreshEventTail = process.env.MEMORY_LCM_FRESH_EVENT_TAIL;
+const originalDepthOneFanout = process.env.MEMORY_LCM_DEPTH1_FANOUT;
 
 const describeDb = runDbTests ? describe : describe.skip;
 
@@ -135,7 +138,10 @@ describeDb("memory repository visibility", () => {
   };
 
   beforeAll(async () => {
+    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
+    process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = "6000";
     process.env.MEMORY_LCM_FRESH_EVENT_TAIL = "0";
+    process.env.MEMORY_LCM_DEPTH1_FANOUT = "2";
     pool = createDbPool({ connectionString: databaseUrl });
     repo = createMemorySourceRepository(pool);
 
@@ -184,10 +190,25 @@ describeDb("memory repository visibility", () => {
   });
 
   afterAll(async () => {
+    if (originalLeafEventThreshold === undefined) {
+      delete process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
+    } else {
+      process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = originalLeafEventThreshold;
+    }
+    if (originalLeafTokenThreshold === undefined) {
+      delete process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD;
+    } else {
+      process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = originalLeafTokenThreshold;
+    }
     if (originalFreshEventTail === undefined) {
       delete process.env.MEMORY_LCM_FRESH_EVENT_TAIL;
     } else {
       process.env.MEMORY_LCM_FRESH_EVENT_TAIL = originalFreshEventTail;
+    }
+    if (originalDepthOneFanout === undefined) {
+      delete process.env.MEMORY_LCM_DEPTH1_FANOUT;
+    } else {
+      process.env.MEMORY_LCM_DEPTH1_FANOUT = originalDepthOneFanout;
     }
     await pool?.end();
   });

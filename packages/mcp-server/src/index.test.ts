@@ -132,6 +132,10 @@ describe("MemoryApiClient", () => {
 });
 
 describe("LCM summary background service", () => {
+  it("resolves a prompt budget above the default leaf token threshold", () => {
+    expect(resolveLcmSummaryWorkerConfig({}).maxPromptTokens).toBe(48_000);
+  });
+
   it("resolves conservative default cadence", () => {
     expect(resolveLcmSummaryServiceConfig({})).toEqual({
       initialDelayMs: 30_000,

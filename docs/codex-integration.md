@@ -24,6 +24,7 @@ Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
 Environment:
   MEMORY_API_URL=http://localhost:3000
   MEMORY_API_TOKEN=<token>
+  MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 Working directory: /path/to/koed-self-hosted
 ```
 
@@ -53,6 +54,7 @@ MEMORY_HOOK_MAX_ITEMS=10
 MEMORY_HOOK_TRIGGER_LCM_SUMMARY=true
 MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
 MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
+MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 ```
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If

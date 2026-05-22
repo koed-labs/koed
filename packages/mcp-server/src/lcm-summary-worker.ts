@@ -7,7 +7,7 @@ import type { MemoryApiClient } from "./index.js";
 
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_PROMPT_TOKENS = 32_000;
+const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
 export const LCM_SUMMARY_PROMPT_VERSION = "lcm-codex-summary-v1";
 
 export interface LcmSummaryWorkerConfig {

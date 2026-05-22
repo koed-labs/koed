@@ -9,7 +9,8 @@ pnpm setup:env
 ```
 
 This creates `.env` and generates `API_DATA_ENCRYPTION_KEY` and
-`API_TOKEN_PEPPER`. If `.env` already exists, the command leaves it unchanged.
+`API_TOKEN_PEPPER`. If `.env` already exists, the command preserves existing
+values and adds any missing keys from `.env.example`.
 
 ## Required Deployment Values
 
@@ -38,10 +39,10 @@ This creates `.env` and generates `API_DATA_ENCRYPTION_KEY` and
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_RERANKING_ENABLED`: enables local reranking when the embedding service supports it.
-- `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders.
-- `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: token threshold for creating LCM placeholders.
-- `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation.
-- `MEMORY_LCM_DEPTH1_FANOUT`: fanout for depth-1 LCM placeholder creation.
+- `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
+- `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: token threshold for creating LCM placeholders. Default `32000`.
+- `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
+- `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_REPO`: Hugging Face repository for the local embedding model.
 - `EMBEDDING_MODEL_FILE`: model file loaded by the embedding service.
 - `EMBEDDING_MODEL_NAME`: model name reported in retrieval metadata.
@@ -65,6 +66,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_HOOK_TRIGGER_LCM_SUMMARY`: when `true`, the Capture Hook starts local LCM summary processing after capture.
 - `MEMORY_HOOK_LCM_SUMMARY_DELAY_MS`: delay before Capture Hook-triggered LCM summary processing.
 - `MEMORY_HOOK_LCM_SUMMARY_LIMIT`: maximum pending LCM summaries processed from a Capture Hook trigger.
+- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for local Codex LCM summary calls. Default `48000`.
 - `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the MCP-local LCM Summary Service first checks for pending summaries.
 - `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture.
 - `MEMORY_LCM_BACKGROUND_INTERVAL_MS`: periodic background check interval for pending summaries.

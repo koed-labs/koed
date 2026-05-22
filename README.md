@@ -77,6 +77,10 @@ Start from `.env.example`. Important values:
   `koed-labs/koed-history-browser` frontend repository.
 - `HISTORY_BROWSER_REPO`, `HISTORY_BROWSER_REF`: optional override for the
   history-browser repository and branch/tag/SHA.
+- `MEMORY_LCM_LEAF_EVENT_THRESHOLD`, `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`,
+  `MEMORY_LCM_FRESH_EVENT_TAIL`, `MEMORY_LCM_DEPTH1_FANOUT`: LCM placeholder
+  cadence controls for Codex capture traffic.
+- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: local Codex summary prompt budget.
 
 Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis and backend LLM provider configuration are unsupported in this self-hosted build.
 
