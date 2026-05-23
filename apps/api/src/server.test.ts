@@ -20,7 +20,11 @@ import type {
   UserRecord,
   Visibility
 } from "@koed/db";
-import { buildServer } from "./server.js";
+import {
+  buildServer,
+  shouldIgnoreGraphStreamPayload,
+  shouldInvalidateGraphCacheForPayload
+} from "./server.js";
 
 afterEach(() => {
   for (const name of [
@@ -1331,6 +1335,24 @@ const createFakeRepository = (): MemorySourceRepository => {
 };
 
 describe("api health", () => {
+  it("invalidates graph cache for embedding updates without broadcasting them", () => {
+    const embeddingPayload = {
+      id: randomUUID(),
+      operation: "INSERT",
+      table: "memory_embeddings"
+    } as const;
+    const eventPayload = {
+      id: randomUUID(),
+      operation: "INSERT",
+      table: "memory_events"
+    } as const;
+
+    expect(shouldInvalidateGraphCacheForPayload(embeddingPayload)).toBe(true);
+    expect(shouldInvalidateGraphCacheForPayload(eventPayload)).toBe(true);
+    expect(shouldIgnoreGraphStreamPayload(embeddingPayload)).toBe(true);
+    expect(shouldIgnoreGraphStreamPayload(eventPayload)).toBe(false);
+  });
+
   it("returns OK", async () => {
     const app = await buildServer();
     const response = await app.inject({ method: "GET", url: "/health" });

@@ -45,7 +45,7 @@ interface MemoryJobStatus {
   };
 }
 
-interface GraphUpdatePayload {
+export interface GraphUpdatePayload {
   table?: string;
   operation?: string;
   id?: string | null;
@@ -70,6 +70,14 @@ interface GraphStreamClient {
   userId: string;
   reply: FastifyReply;
 }
+
+export const shouldIgnoreGraphStreamPayload = (
+  payload: GraphUpdatePayload
+): boolean => payload.table === "memory_embeddings";
+
+export const shouldInvalidateGraphCacheForPayload = (
+  _payload: GraphUpdatePayload
+): boolean => true;
 
 interface GraphListenClient {
   query(sql: string): Promise<unknown>;
@@ -703,12 +711,19 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   };
 
   const scheduleGraphUpdate = (payload: GraphUpdatePayload) => {
-    void cacheProvider.deleteByPrefix("koed:graph:").catch((error: unknown) => {
-      app.log.warn(
-        { error: String(error) },
-        "could not invalidate graph cache"
-      );
-    });
+    if (shouldInvalidateGraphCacheForPayload(payload)) {
+      void cacheProvider
+        .deleteByPrefix("koed:graph:")
+        .catch((error: unknown) => {
+          app.log.warn(
+            { error: String(error) },
+            "could not invalidate graph cache"
+          );
+        });
+    }
+    if (shouldIgnoreGraphStreamPayload(payload)) {
+      return;
+    }
     const key = graphUpdateKey(payload);
     const eventRef =
       payload.table === "memory_events" &&
