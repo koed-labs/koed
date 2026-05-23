@@ -496,6 +496,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   listLcmGraphEvents(
     actor: ActorContext,
     input?: {
+      eventId?: string;
       query?: string;
       visibility?: Visibility;
       projectId?: string;
@@ -2909,20 +2910,21 @@ export const createMemorySourceRepository = (
         from memory_events me
         left join sessions s on s.id = me.session_id
         left join memory_node_sources mns on mns.memory_event_id = me.id
-        where ($2::boolean = true or me.invalidated_at is null)
-          and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
-          and ($4::text is null or coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
-          and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
-          and ($6::text is null or me.payload ->> 'content' ilike '%' || $6 || '%' or me.id::text = $6)
-          and (
-            $7::timestamptz is null
-            or me.captured_at < $7::timestamptz
-            or (
-              $8::uuid is not null
-              and me.captured_at = $7::timestamptz
-              and me.id < $8::uuid
-            )
-          )
+	        where ($2::boolean = true or me.invalidated_at is null)
+	          and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
+	          and ($4::text is null or coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
+	          and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
+	          and ($6::uuid is null or me.id = $6)
+	          and ($7::text is null or me.payload ->> 'content' ilike '%' || $7 || '%' or me.id::text = $7)
+	          and (
+	            $8::timestamptz is null
+	            or me.captured_at < $8::timestamptz
+	            or (
+	              $9::uuid is not null
+	              and me.captured_at = $8::timestamptz
+	              and me.id < $9::uuid
+	            )
+	          )
           and (
             (me.visibility = 'personal' and me.owner_user_id = $1)
             or (
@@ -2935,16 +2937,17 @@ export const createMemorySourceRepository = (
               )
             )
           )
-        group by me.id, s.id
-        order by me.captured_at desc, me.id desc
-        limit $9
-      `,
+	        group by me.id, s.id
+	        order by me.captured_at desc, me.id desc
+	        limit $10
+	      `,
       [
         actor.userId,
         input.includeInvalidated ?? false,
         input.visibility ?? null,
         input.projectId ?? null,
         input.threadId ?? null,
+        input.eventId ?? null,
         input.query?.trim() || null,
         input.cursorTimestamp ?? null,
         input.cursorId ?? null,
@@ -3123,9 +3126,9 @@ export const createMemorySourceRepository = (
 
   async getLcmGraphEvent(actor, eventId, input = {}) {
     const events = await this.listLcmGraphEvents(actor, {
+      eventId,
       includeInvalidated: input.includeInvalidated,
       includeRaw: input.includeRaw,
-      query: eventId,
       limit: 1
     });
     const event = events.find((candidate) => candidate.id === eventId);

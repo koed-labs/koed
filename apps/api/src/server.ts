@@ -49,12 +49,21 @@ interface GraphUpdatePayload {
   table?: string;
   operation?: string;
   id?: string | null;
+  eventRefs?: GraphUpdateEventRef[];
   eventIds?: string[];
   ownerUserId?: string | null;
+  projectId?: string | null;
   teamId?: string | null;
+  threadId?: string | null;
   visibility?: "personal" | "team" | string | null;
   changedAt?: string;
   coalesced?: boolean;
+}
+
+interface GraphUpdateEventRef {
+  id: string;
+  projectId: string;
+  threadId: string;
 }
 
 interface GraphStreamClient {
@@ -615,10 +624,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     "GRAPH_UPDATE_DEBOUNCE_MS",
     1_000
   );
+  const memoryEventGraphUpdateDebounceMs = parsePositiveInt(
+    "MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS",
+    Math.min(graphUpdateDebounceMs, 100)
+  );
   const pendingGraphUpdates = new Map<
     string,
     {
-      eventIds: Set<string>;
+      eventRefs: Map<string, GraphUpdateEventRef>;
       payload: GraphUpdatePayload;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -697,36 +710,48 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       );
     });
     const key = graphUpdateKey(payload);
-    const eventIds =
+    const eventRef =
       payload.table === "memory_events" &&
       payload.operation !== "DELETE" &&
-      payload.id
-        ? [payload.id]
-        : [];
+      payload.id &&
+      payload.projectId &&
+      payload.threadId
+        ? {
+            id: payload.id,
+            projectId: payload.projectId,
+            threadId: payload.threadId
+          }
+        : null;
     const current = pendingGraphUpdates.get(key);
     if (current) {
-      for (const eventId of eventIds) {
-        current.eventIds.add(eventId);
+      if (eventRef) {
+        current.eventRefs.set(eventRef.id, eventRef);
       }
       pendingGraphUpdates.set(key, { ...current, payload });
       return;
     }
-    const timer = setTimeout(() => {
-      const pending = pendingGraphUpdates.get(key);
-      pendingGraphUpdates.delete(key);
-      if (pending) {
-        broadcastGraphUpdate({
-          ...pending.payload,
-          coalesced: true,
-          ...(pending.eventIds.size > 0
-            ? { eventIds: [...pending.eventIds] }
-            : {}),
-          changedAt: new Date().toISOString()
-        });
-      }
-    }, graphUpdateDebounceMs);
+    const timer = setTimeout(
+      () => {
+        const pending = pendingGraphUpdates.get(key);
+        pendingGraphUpdates.delete(key);
+        if (pending) {
+          broadcastGraphUpdate({
+            ...pending.payload,
+            coalesced: true,
+            ...(pending.eventRefs.size > 0
+              ? {
+                  eventIds: [...pending.eventRefs.keys()],
+                  eventRefs: [...pending.eventRefs.values()]
+                }
+              : {}),
+            changedAt: new Date().toISOString()
+          });
+        }
+      },
+      eventRef ? memoryEventGraphUpdateDebounceMs : graphUpdateDebounceMs
+    );
     pendingGraphUpdates.set(key, {
-      eventIds: new Set(eventIds),
+      eventRefs: new Map(eventRef ? [[eventRef.id, eventRef]] : []),
       payload,
       timer
     });
