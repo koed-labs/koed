@@ -22,8 +22,8 @@ import type {
 } from "@koed/db";
 import {
   buildServer,
-  shouldIgnoreGraphStreamPayload,
-  shouldInvalidateGraphCacheForPayload
+  graphUpdateActionForPayload,
+  shouldIgnoreGraphStreamPayload
 } from "./server.js";
 
 afterEach(() => {
@@ -1347,8 +1347,14 @@ describe("api health", () => {
       table: "memory_events"
     } as const;
 
-    expect(shouldInvalidateGraphCacheForPayload(embeddingPayload)).toBe(true);
-    expect(shouldInvalidateGraphCacheForPayload(eventPayload)).toBe(true);
+    expect(graphUpdateActionForPayload(embeddingPayload)).toEqual({
+      broadcast: false,
+      invalidateCache: true
+    });
+    expect(graphUpdateActionForPayload(eventPayload)).toEqual({
+      broadcast: true,
+      invalidateCache: true
+    });
     expect(shouldIgnoreGraphStreamPayload(embeddingPayload)).toBe(true);
     expect(shouldIgnoreGraphStreamPayload(eventPayload)).toBe(false);
   });

@@ -75,9 +75,10 @@ export const shouldIgnoreGraphStreamPayload = (
   payload: GraphUpdatePayload
 ): boolean => payload.table === "memory_embeddings";
 
-export const shouldInvalidateGraphCacheForPayload = (
-  _payload: GraphUpdatePayload
-): boolean => true;
+export const graphUpdateActionForPayload = (payload: GraphUpdatePayload) => ({
+  broadcast: !shouldIgnoreGraphStreamPayload(payload),
+  invalidateCache: true
+});
 
 interface GraphListenClient {
   query(sql: string): Promise<unknown>;
@@ -711,7 +712,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   };
 
   const scheduleGraphUpdate = (payload: GraphUpdatePayload) => {
-    if (shouldInvalidateGraphCacheForPayload(payload)) {
+    const action = graphUpdateActionForPayload(payload);
+    if (action.invalidateCache) {
       void cacheProvider
         .deleteByPrefix("koed:graph:")
         .catch((error: unknown) => {
@@ -721,7 +723,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           );
         });
     }
-    if (shouldIgnoreGraphStreamPayload(payload)) {
+    if (!action.broadcast) {
       return;
     }
     const key = graphUpdateKey(payload);
