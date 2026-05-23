@@ -1239,7 +1239,7 @@ describe("api health", () => {
 
     expect(firstRead.statusCode).not.toBe(429);
     expect(firstRead.headers["x-ratelimit-limit"]).toBe("1");
-    expect(firstRead.headers["retry-after"]).toBeDefined();
+    expect(firstRead.headers["retry-after"]).toBeUndefined();
     expect(secondRead.statusCode).toBe(429);
     expect(secondRead.headers["retry-after"]).toBeDefined();
     expect(firstWrite.statusCode).not.toBe(429);

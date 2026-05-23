@@ -800,12 +800,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         "x-ratelimit-reset",
         String(Math.ceil(bucket.resetAt / 1000))
       );
-      reply.header(
-        "retry-after",
-        String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000)))
-      );
-
       if (bucket.count > policy.max) {
+        reply.header(
+          "retry-after",
+          String(Math.max(1, Math.ceil((bucket.resetAt - Date.now()) / 1000)))
+        );
         throw Object.assign(new Error("Rate limit exceeded"), {
           statusCode: 429
         });
