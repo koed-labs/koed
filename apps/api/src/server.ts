@@ -49,6 +49,7 @@ interface GraphUpdatePayload {
   table?: string;
   operation?: string;
   id?: string | null;
+  eventIds?: string[];
   ownerUserId?: string | null;
   teamId?: string | null;
   visibility?: "personal" | "team" | string | null;
@@ -616,7 +617,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   );
   const pendingGraphUpdates = new Map<
     string,
-    { payload: GraphUpdatePayload; timer: ReturnType<typeof setTimeout> }
+    {
+      eventIds: Set<string>;
+      payload: GraphUpdatePayload;
+      timer: ReturnType<typeof setTimeout>;
+    }
   >();
   let graphListenClient: GraphListenClient | null = null;
   const memoryRateLimitWindowMs = parsePositiveInt(
@@ -692,8 +697,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       );
     });
     const key = graphUpdateKey(payload);
+    const eventIds =
+      payload.table === "memory_events" &&
+      payload.operation !== "DELETE" &&
+      payload.id
+        ? [payload.id]
+        : [];
     const current = pendingGraphUpdates.get(key);
     if (current) {
+      for (const eventId of eventIds) {
+        current.eventIds.add(eventId);
+      }
       pendingGraphUpdates.set(key, { ...current, payload });
       return;
     }
@@ -704,11 +718,18 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         broadcastGraphUpdate({
           ...pending.payload,
           coalesced: true,
+          ...(pending.eventIds.size > 0
+            ? { eventIds: [...pending.eventIds] }
+            : {}),
           changedAt: new Date().toISOString()
         });
       }
     }, graphUpdateDebounceMs);
-    pendingGraphUpdates.set(key, { payload, timer });
+    pendingGraphUpdates.set(key, {
+      eventIds: new Set(eventIds),
+      payload,
+      timer
+    });
   };
 
   if (pool) {
