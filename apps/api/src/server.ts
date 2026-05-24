@@ -973,6 +973,21 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
   };
 
+  const authenticateSession = async (request: FastifyRequest) => {
+    const repo = requireRepository();
+    const sessionSecret = request.cookies[sessionCookieName];
+    if (sessionSecret) {
+      const user = await repo.getSessionUser(hashSecret(sessionSecret));
+      if (user) {
+        return user;
+      }
+    }
+
+    throw Object.assign(new Error("Console session required"), {
+      statusCode: 401
+    });
+  };
+
   const authenticateApiToken = async (request: FastifyRequest) => {
     const repo = requireRepository();
     const authHeader = request.headers.authorization;
@@ -1383,7 +1398,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/self-host/diagnostics", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const [overview, embeddingStatus, policies, tokens] = await Promise.all([
       repo.getLcmGraphOverview({ userId: user.id }),
       repo.getLocalEmbeddingStatus(),
@@ -1423,7 +1438,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post("/self-host/smoke-test", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const requesterContext = { userId: user.id };
     const marker = `koed-self-hosted-console-${Date.now()}`;
     const content = `Koed self-hosted smoke test memory ${marker}. The setup is working.`;
@@ -1599,7 +1614,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/me", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const currentTeam = await repo.getCurrentTeam(user.id);
 
     return {
@@ -1610,7 +1625,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post("/teams", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const input = createTeamSchema.parse(request.body);
     const team = await repo.createTeam({
       name: input.name,
@@ -1623,7 +1638,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post("/teams/join", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const input = joinTeamSchema.parse(request.body);
     const team = await repo.joinTeamByInviteCode(user.id, input.inviteCode);
 
@@ -1632,14 +1647,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/teams/current", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
 
     return { team: await repo.getCurrentTeam(user.id) };
   });
 
   app.get("/teams/current/members", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const currentTeam = await repo.getCurrentTeam(user.id);
     if (!currentTeam) {
       return { members: [] };
@@ -1650,7 +1665,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.post("/api-tokens", { preHandler: authRateLimit }, async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const input = createApiTokenSchema.parse(request.body);
     const token = createOpaqueSecret("cmt");
     const record = await repo.createApiToken({
@@ -1667,14 +1682,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/api-tokens", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
 
     return { apiTokens: await repo.listApiTokens(user.id) };
   });
 
   app.delete("/api-tokens/:id", async (request, reply) => {
     const repo = requireRepository();
-    const user = await authenticate(request);
+    const user = await authenticateSession(request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const deleted = await repo.revokeApiToken(user.id, params.id);
 

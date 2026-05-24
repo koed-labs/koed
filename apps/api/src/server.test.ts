@@ -1743,6 +1743,62 @@ describe("account and access flows", () => {
     expect(jsonBody<AccessResponse>(authed).ok).toBe(true);
   });
 
+  it("rejects API-token access to Operator Console routes", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "console-auth@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const bearerHeaders = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+
+    const consoleRequests = await Promise.all([
+      app.inject({ method: "GET", url: "/me", headers: bearerHeaders }),
+      app.inject({
+        method: "GET",
+        url: "/api-tokens",
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: "/teams/current",
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: "/self-host/diagnostics",
+        headers: bearerHeaders
+      })
+    ]);
+    const accessCheck = await app.inject({
+      method: "GET",
+      url: "/v1/access/check",
+      headers: bearerHeaders
+    });
+    const sessionMe = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(createdToken.statusCode).toBe(200);
+    expect(consoleRequests.map((response) => response.statusCode)).toEqual([
+      401, 401, 401, 401
+    ]);
+    expect(accessCheck.statusCode).toBe(200);
+    expect(sessionMe.statusCode).toBe(200);
+  });
+
   it("does not expose provider configuration routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
