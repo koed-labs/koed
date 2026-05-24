@@ -330,6 +330,64 @@ describeDb("memory repository visibility", () => {
     expect(outsiderMemories).toHaveLength(0);
   });
 
+  it("requires admin or owner role to modify existing Team Memory", async () => {
+    const owner = await repo.createUser({
+      email: `owner-${randomUUID()}@example.com`
+    });
+    const admin = await repo.createUser({
+      email: `admin-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam({
+      name: "Permissions",
+      createdByUserId: owner.id
+    });
+    await repo.addTeamMember(team.id, admin.id, "admin");
+    await repo.addTeamMember(team.id, member.id);
+    const memory = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "team",
+        teamId: team.id,
+        summaryText: "Team-governed memory",
+        captureMethod: "mcp"
+      }
+    );
+    const personalMemory = await repo.createMemoryNode(
+      { userId: member.id },
+      {
+        visibility: "personal",
+        summaryText: "Member personal memory",
+        captureMethod: "mcp"
+      }
+    );
+
+    await expect(
+      repo.updateLcmGraphNode({ userId: member.id }, memory.id, {
+        summaryText: "Member edit"
+      })
+    ).rejects.toThrow("User is not allowed to modify Team Memory");
+    await expect(
+      repo.deleteMemory({ userId: member.id }, memory.id)
+    ).rejects.toThrow("User is not allowed to modify Team Memory");
+
+    await expect(
+      repo.updateLcmGraphNode({ userId: member.id }, personalMemory.id, {
+        summaryText: "Member personal edit"
+      })
+    ).resolves.toMatchObject({ summaryText: "Member personal edit" });
+    await expect(
+      repo.updateLcmGraphNode({ userId: admin.id }, memory.id, {
+        summaryText: "Admin edit"
+      })
+    ).resolves.toMatchObject({ summaryText: "Admin edit" });
+    await expect(
+      repo.deleteMemory({ userId: owner.id }, memory.id)
+    ).resolves.toBe(true);
+  });
+
   it("captures personal facts, compacts, searches, answers, and expands a cited node", async () => {
     const alice = await repo.createUser({
       email: `alice-${randomUUID()}@example.com`

@@ -255,6 +255,7 @@ export interface LcmGraphEvent {
   threadName: string | null;
   timestamp: string;
   visibility: Visibility;
+  teamId: string | null;
   invalidatedAt: string | null;
   invalidationReason: string | null;
   contentPreview: string;
@@ -701,6 +702,28 @@ const requireTeamMembership = async (
   }
 };
 
+const requireTeamMemoryWritePermission = async (
+  pool: pg.Pool,
+  userId: string,
+  teamId: string
+): Promise<void> => {
+  const result = await pool.query<{ role: "owner" | "admin" | "member" }>(
+    `
+      select role
+      from team_members
+      where user_id = $1
+        and team_id = $2
+        and removed_at is null
+      limit 1
+    `,
+    [userId, teamId]
+  );
+  const role = result.rows[0]?.role;
+  if (role !== "owner" && role !== "admin") {
+    throw new Error("User is not allowed to modify Team Memory");
+  }
+};
+
 const mapMemoryNode = (row: {
   id: string;
   owner_user_id: string | null;
@@ -1136,6 +1159,7 @@ const mapLcmGraphEvent = (row: {
   thread_name: string | null;
   captured_at: Date;
   visibility: Visibility;
+  team_id: string | null;
   invalidated_at: Date | null;
   invalidation_reason: string | null;
   content: string | null;
@@ -1161,6 +1185,7 @@ const mapLcmGraphEvent = (row: {
     threadName: row.thread_name,
     timestamp: row.captured_at.toISOString(),
     visibility: row.visibility,
+    teamId: row.team_id,
     invalidatedAt: row.invalidated_at?.toISOString() ?? null,
     invalidationReason: row.invalidation_reason,
     contentPreview: truncateDisplayText(content, 220),
@@ -2834,6 +2859,13 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
+    if (existing.visibility === "team" && existing.teamId) {
+      await requireTeamMemoryWritePermission(
+        pool,
+        actor.userId,
+        existing.teamId
+      );
+    }
     if (input.visibility === "team" && existing.visibility !== "team") {
       const currentTeam = await this.getCurrentTeam(actor.userId);
       if (!currentTeam) {
@@ -2894,6 +2926,17 @@ export const createMemorySourceRepository = (
   },
 
   async deleteMemory(actor, nodeId) {
+    const existing = await this.getVisibleMemoryNode(actor, nodeId);
+    if (!existing) {
+      return false;
+    }
+    if (existing.visibility === "team" && existing.teamId) {
+      await requireTeamMemoryWritePermission(
+        pool,
+        actor.userId,
+        existing.teamId
+      );
+    }
     const result = await pool.query(
       `
         update memory_nodes mn
@@ -3224,6 +3267,13 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
+    if (existing.visibility === "team" && existing.teamId) {
+      await requireTeamMemoryWritePermission(
+        pool,
+        actor.userId,
+        existing.teamId
+      );
+    }
     if (input.visibility === "team" && existing.visibility !== "team") {
       const currentTeam = await this.getCurrentTeam(actor.userId);
       if (!currentTeam) {
@@ -3313,6 +3363,7 @@ export const createMemorySourceRepository = (
           coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
           me.captured_at,
           me.visibility,
+          me.team_id,
           me.invalidated_at,
           me.invalidation_reason,
           me.payload ->> 'content' as content,
@@ -3573,6 +3624,13 @@ export const createMemorySourceRepository = (
     });
     if (!existing) {
       return null;
+    }
+    if (existing.visibility === "team" && existing.teamId) {
+      await requireTeamMemoryWritePermission(
+        pool,
+        actor.userId,
+        existing.teamId
+      );
     }
     if (input.visibility === "team" && existing.visibility !== "team") {
       const currentTeam = await this.getCurrentTeam(actor.userId);

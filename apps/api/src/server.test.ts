@@ -72,6 +72,7 @@ type TokenResponse = {
 };
 
 type TeamResponse = {
+  teamId: string;
   team: { name: string; inviteCode: string };
 };
 
@@ -185,6 +186,12 @@ const createFakeRepository = (): MemorySourceRepository => {
 
   const getMembership = (userId: string, teamId: string) =>
     teams.get(teamId)?.members.get(userId);
+  const requireTeamMemoryWritePermission = (userId: string, teamId: string) => {
+    const role = getMembership(userId, teamId);
+    if (role !== "owner" && role !== "admin") {
+      throw new Error("User is not allowed to modify Team Memory");
+    }
+  };
 
   return {
     health: async () => true,
@@ -742,6 +749,9 @@ const createFakeRepository = (): MemorySourceRepository => {
     async updateMemoryPresentation(actor, nodeId, input) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return null;
+      if (memory.visibility === "team" && memory.teamId) {
+        requireTeamMemoryWritePermission(actor.userId, memory.teamId);
+      }
       if (input.summaryText) memory.summaryText = input.summaryText;
       if (input.pinned !== undefined)
         memory.pinnedAt = input.pinned ? new Date().toISOString() : null;
@@ -755,6 +765,9 @@ const createFakeRepository = (): MemorySourceRepository => {
     async deleteMemory(actor, nodeId) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return false;
+      if (memory.visibility === "team" && memory.teamId) {
+        requireTeamMemoryWritePermission(actor.userId, memory.teamId);
+      }
       invalidatedNodes.add(memory.id);
       return true;
     },
@@ -894,6 +907,9 @@ const createFakeRepository = (): MemorySourceRepository => {
     async updateLcmGraphNode(actor, nodeId, input) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return null;
+      if (memory.visibility === "team" && memory.teamId) {
+        requireTeamMemoryWritePermission(actor.userId, memory.teamId);
+      }
       if (input.summaryText) {
         memory.summaryText = input.summaryText;
         memory.updatedAt = new Date().toISOString();
@@ -989,6 +1005,7 @@ const createFakeRepository = (): MemorySourceRepository => {
                 : null,
             timestamp: event.createdAt,
             visibility: event.visibility,
+            teamId: event.teamId,
             invalidatedAt: invalidatedEvents.has(event.id)
               ? new Date().toISOString()
               : null,
@@ -1264,6 +1281,9 @@ const createFakeRepository = (): MemorySourceRepository => {
     async updateLcmGraphEvent(actor, eventId, input) {
       const event = await this.getLcmGraphEvent(actor, eventId);
       if (!event) return null;
+      if (event.visibility === "team" && event.teamId) {
+        requireTeamMemoryWritePermission(actor.userId, event.teamId);
+      }
       const raw = events.find((candidate) => candidate.id === eventId);
       if (raw && input.visibility) raw.visibility = input.visibility;
       if (input.invalidated) invalidatedEvents.add(eventId);
@@ -1274,6 +1294,9 @@ const createFakeRepository = (): MemorySourceRepository => {
     async invalidateLcmGraphEvent(actor, eventId) {
       const event = await this.getLcmGraphEvent(actor, eventId);
       if (!event) return false;
+      if (event.visibility === "team" && event.teamId) {
+        requireTeamMemoryWritePermission(actor.userId, event.teamId);
+      }
       invalidatedEvents.add(eventId);
       return true;
     },
@@ -1712,6 +1735,96 @@ describe("account and access flows", () => {
     expect(created.statusCode).toBe(200);
     expect(joined.statusCode).toBe(200);
     expect(jsonBody<TeamResponse>(joined).team.name).toBe("Research");
+  });
+
+  it("requires owner or admin role to modify existing Team Memory", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    const repository = createFakeRepository();
+    const app = await buildServer({ repository });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "team-owner@example.com", password: "password123" }
+    });
+    const ownerCookie = cookieHeader(owner);
+    const ownerUserId = jsonBody<{ user: { id: string } }>(owner).user.id;
+    const created = await app.inject({
+      method: "POST",
+      url: "/teams",
+      headers: { cookie: ownerCookie },
+      payload: { name: "Permissions" }
+    });
+    const teamId = jsonBody<TeamResponse>(created).teamId;
+
+    const admin = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "team-admin@example.com", password: "password123" }
+    });
+    const adminCookie = cookieHeader(admin);
+    const adminUserId = jsonBody<{ user: { id: string } }>(admin).user.id;
+    const member = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "team-member@example.com", password: "password123" }
+    });
+    const memberCookie = cookieHeader(member);
+    const memberUserId = jsonBody<{ user: { id: string } }>(member).user.id;
+    await repository.addTeamMember(teamId, adminUserId, "admin");
+    await repository.addTeamMember(teamId, memberUserId, "member");
+    const teamMemory = await repository.createMemoryNode(
+      { userId: ownerUserId },
+      {
+        visibility: "team",
+        teamId,
+        summaryText: "Team Memory should be governed",
+        captureMethod: "mcp"
+      }
+    );
+    const personalMemory = await repository.createMemoryNode(
+      { userId: memberUserId },
+      {
+        visibility: "personal",
+        summaryText: "Personal Memory can still be edited",
+        captureMethod: "mcp"
+      }
+    );
+
+    const memberTeamPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/nodes/${teamMemory.id}`,
+      headers: { cookie: memberCookie },
+      payload: { summaryText: "Member edit" }
+    });
+    const memberPersonalPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/nodes/${personalMemory.id}`,
+      headers: { cookie: memberCookie },
+      payload: { summaryText: "Member personal edit" }
+    });
+    const adminTeamPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/nodes/${teamMemory.id}`,
+      headers: { cookie: adminCookie },
+      payload: { summaryText: "Admin edit" }
+    });
+    const memberTeamDelete = await app.inject({
+      method: "DELETE",
+      url: `/v1/memory/nodes/${teamMemory.id}`,
+      headers: { cookie: memberCookie }
+    });
+    const ownerTeamDelete = await app.inject({
+      method: "DELETE",
+      url: `/v1/memory/nodes/${teamMemory.id}`,
+      headers: { cookie: ownerCookie }
+    });
+    await app.close();
+
+    expect(memberTeamPatch.statusCode).toBe(403);
+    expect(memberPersonalPatch.statusCode).toBe(200);
+    expect(adminTeamPatch.statusCode).toBe(200);
+    expect(memberTeamDelete.statusCode).toBe(403);
+    expect(ownerTeamDelete.statusCode).toBe(200);
   });
 
   it("authenticates API requests with bearer tokens", async () => {
