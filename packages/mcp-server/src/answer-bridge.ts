@@ -13,7 +13,7 @@ import {
   MemoryApiError
 } from "./index.js";
 
-export const host = process.env.MEMORY_ANSWER_BRIDGE_HOST ?? "127.0.0.1";
+export const host = process.env.MEMORY_ANSWER_BRIDGE_HOST ?? "0.0.0.0";
 export const port = Number.parseInt(
   process.env.MEMORY_ANSWER_BRIDGE_PORT ?? "3210",
   10

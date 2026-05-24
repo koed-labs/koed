@@ -1541,6 +1541,24 @@ describe("api health", () => {
     expect(response.body).toBe("OK");
   });
 
+  it("allows browser PATCH preflight requests", async () => {
+    const app = await buildServer();
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/v1/memory/questions/00000000-0000-4000-8000-000000000000",
+      headers: {
+        origin: "http://localhost:5174",
+        "access-control-request-method": "PATCH"
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-methods"]).toContain(
+      "PATCH"
+    );
+  });
+
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {
     process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
     process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";

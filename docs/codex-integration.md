@@ -30,25 +30,20 @@ Working directory: /path/to/koed-self-hosted
 
 The console setup page generates these MCP values for your checkout. If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
 
-## Local Answer Bridge
+## Browser Questions
 
-The History Browser Questions tab uses a local bridge so the browser can ask a
-question, persist it in Koed, and delegate answer synthesis to the local Codex
-environment. The backend stores questions, retrieval evidence, citations, and
-answer status, but does not run LLM synthesis.
+The History Browser Questions tab uses the local MCP server as its AI-client
+sidecar. The browser can ask a question and persist it in Koed, then the MCP
+server delegates answer synthesis to the local Codex environment. The backend
+stores questions, retrieval evidence, citations, and answer status, but does
+not run LLM synthesis.
 
-Build the MCP package, then run the bridge from the checkout:
-
-```bash
-pnpm --filter @koed/mcp-server build
-MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<api-token> pnpm --filter @koed/mcp-server answer-bridge
-```
-
-The bridge listens on `http://localhost:3210` by default. The History Browser
-passes the API token from its settings as a bearer token on each direct request.
-`MEMORY_API_TOKEN` enables the bridge's local pending-question catch-up service,
-which claims unanswered browser questions and finishes them through local Codex
-answer synthesis after a refresh or interrupted browser request.
+When the MCP server starts, it also starts a local browser bridge on
+`http://localhost:3210` by default. The History Browser uses that local endpoint
+for Questions; there is no separate bridge process to run. `MEMORY_API_TOKEN`
+also enables the MCP server's local pending-question catch-up service, which
+claims unanswered browser questions and finishes them through local Codex answer
+synthesis after a refresh or interrupted browser request.
 
 ## Capture Hook
 

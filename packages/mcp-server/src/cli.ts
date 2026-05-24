@@ -6,6 +6,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { answerWithMemoryWorker } from "./answer-worker.js";
 import {
+  createAnswerBridgeServer,
+  host as answerBridgeHost,
+  port as answerBridgePort
+} from "./answer-bridge.js";
+import {
   MemoryApiClient,
   type McpServerConfig,
   defaultAnswerScope,
@@ -206,6 +211,29 @@ const backgroundLcmSummaryService = startLcmSummaryService(client, {
   serviceConfig: resolveLcmSummaryServiceConfig(process.env),
   workerConfig: resolveLcmSummaryWorkerConfig(process.env)
 });
+const answerBridgeEnabled =
+  process.env.MEMORY_ANSWER_BRIDGE_ENABLED?.trim().toLowerCase() !== "false";
+const answerBridgeServer = answerBridgeEnabled
+  ? createAnswerBridgeServer()
+  : null;
+
+if (answerBridgeServer) {
+  answerBridgeServer.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(
+        `Koed memory answer bridge already listening on ${answerBridgeHost}:${answerBridgePort}`
+      );
+      answerBridgeServer.close();
+      return;
+    }
+    console.error(`Koed memory answer bridge failed: ${error.message}`);
+  });
+  answerBridgeServer.listen(answerBridgePort, answerBridgeHost, () => {
+    console.error(
+      `Koed memory answer bridge listening on http://${answerBridgeHost}:${answerBridgePort}`
+    );
+  });
+}
 
 server.registerTool(
   "memory_access_check",
@@ -334,8 +362,24 @@ if (toolExposure.exposeLowLevelMemoryTools) {
 }
 
 const transport = new StdioServerTransport();
-try {
-  await server.connect(transport);
-} finally {
+let cleanedUp = false;
+const cleanup = () => {
+  if (cleanedUp) {
+    return;
+  }
+  cleanedUp = true;
+  answerBridgeServer?.close();
   backgroundLcmSummaryService?.stop();
-}
+};
+
+process.once("SIGINT", () => {
+  cleanup();
+  process.exit(130);
+});
+process.once("SIGTERM", () => {
+  cleanup();
+  process.exit(143);
+});
+process.once("exit", cleanup);
+
+await server.connect(transport);
