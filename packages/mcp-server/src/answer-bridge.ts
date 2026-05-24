@@ -14,10 +14,20 @@ import {
 } from "./index.js";
 
 export const host = process.env.MEMORY_ANSWER_BRIDGE_HOST ?? "0.0.0.0";
-export const port = Number.parseInt(
-  process.env.MEMORY_ANSWER_BRIDGE_PORT ?? "3210",
-  10
-);
+export const DEFAULT_ANSWER_BRIDGE_PORT = 3210;
+export const parseAnswerBridgePort = (value?: string): number | null => {
+  const candidate = (value ?? String(DEFAULT_ANSWER_BRIDGE_PORT)).trim();
+  if (!/^\d+$/.test(candidate)) {
+    return null;
+  }
+  const parsed = Number.parseInt(candidate, 10);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535
+    ? parsed
+    : null;
+};
+export const port =
+  parseAnswerBridgePort(process.env.MEMORY_ANSWER_BRIDGE_PORT) ??
+  DEFAULT_ANSWER_BRIDGE_PORT;
 const allowedOrigins = new Set(
   (
     process.env.MEMORY_ANSWER_BRIDGE_CORS_ORIGINS ??
@@ -509,11 +519,7 @@ export const createAnswerBridgeServer = (options?: {
     backgroundClientConfig.apiToken &&
     process.env.MEMORY_QUESTION_BACKGROUND_ENABLED?.trim().toLowerCase() !==
       "false";
-  const backgroundService = shouldStartBackgroundService
-    ? startPendingQuestionAnswerService(
-        new MemoryApiClient(backgroundClientConfig)
-      )
-    : null;
+  let backgroundService: PendingQuestionAnswerServiceHandle | null = null;
   const server = http.createServer((request, response) => {
     void (async () => {
       try {
@@ -549,17 +555,34 @@ export const createAnswerBridgeServer = (options?: {
       }
     })();
   });
+  server.on("listening", () => {
+    if (shouldStartBackgroundService && !backgroundService) {
+      backgroundService = startPendingQuestionAnswerService(
+        new MemoryApiClient(backgroundClientConfig)
+      );
+    }
+  });
   server.on("close", () => {
     backgroundService?.stop();
+    backgroundService = null;
   });
   return server;
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const server = createAnswerBridgeServer();
-  server.listen(port, host, () => {
+  const configuredPort = parseAnswerBridgePort(
+    process.env.MEMORY_ANSWER_BRIDGE_PORT
+  );
+  if (!configuredPort) {
     console.error(
-      `Koed memory answer bridge listening on http://${host}:${port}`
+      `Invalid MEMORY_ANSWER_BRIDGE_PORT "${process.env.MEMORY_ANSWER_BRIDGE_PORT}". Expected an integer from 1 to 65535.`
+    );
+    process.exit(1);
+  }
+  const server = createAnswerBridgeServer();
+  server.listen(configuredPort, host, () => {
+    console.error(
+      `Koed memory answer bridge listening on http://${host}:${configuredPort}`
     );
   });
 }

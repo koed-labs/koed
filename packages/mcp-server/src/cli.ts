@@ -5,11 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { answerWithMemoryWorker } from "./answer-worker.js";
-import {
-  createAnswerBridgeServer,
-  host as answerBridgeHost,
-  port as answerBridgePort
-} from "./answer-bridge.js";
+import { startAnswerBridgeWithRetry } from "./answer-bridge-lifecycle.js";
 import {
   MemoryApiClient,
   type McpServerConfig,
@@ -211,29 +207,7 @@ const backgroundLcmSummaryService = startLcmSummaryService(client, {
   serviceConfig: resolveLcmSummaryServiceConfig(process.env),
   workerConfig: resolveLcmSummaryWorkerConfig(process.env)
 });
-const answerBridgeEnabled =
-  process.env.MEMORY_ANSWER_BRIDGE_ENABLED?.trim().toLowerCase() !== "false";
-const answerBridgeServer = answerBridgeEnabled
-  ? createAnswerBridgeServer()
-  : null;
-
-if (answerBridgeServer) {
-  answerBridgeServer.on("error", (error: NodeJS.ErrnoException) => {
-    if (error.code === "EADDRINUSE") {
-      console.error(
-        `Koed memory answer bridge already listening on ${answerBridgeHost}:${answerBridgePort}`
-      );
-      answerBridgeServer.close();
-      return;
-    }
-    console.error(`Koed memory answer bridge failed: ${error.message}`);
-  });
-  answerBridgeServer.listen(answerBridgePort, answerBridgeHost, () => {
-    console.error(
-      `Koed memory answer bridge listening on http://${answerBridgeHost}:${answerBridgePort}`
-    );
-  });
-}
+const answerBridgeHandle = startAnswerBridgeWithRetry();
 
 server.registerTool(
   "memory_access_check",
@@ -368,7 +342,7 @@ const cleanup = () => {
     return;
   }
   cleanedUp = true;
-  answerBridgeServer?.close();
+  answerBridgeHandle.close();
   backgroundLcmSummaryService?.stop();
 };
 
