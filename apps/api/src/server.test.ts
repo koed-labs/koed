@@ -42,7 +42,8 @@ afterEach(() => {
     "RATE_LIMIT_REDIS_URL",
     "CACHE_STORE",
     "CACHE_REDIS_URL",
-    "GRAPH_CACHE_TTL_SECONDS"
+    "GRAPH_CACHE_TTL_SECONDS",
+    "KOED_HOST_CHECKOUT_PATH"
   ]) {
     delete process.env[name];
   }
@@ -1539,6 +1540,37 @@ describe("api health", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("OK");
+  });
+
+  it("keeps public status probes coarse and requires auth for details", async () => {
+    process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    const details = await app.inject({ method: "GET", url: "/health/details" });
+    const publicStatus = await app.inject({
+      method: "GET",
+      url: "/self-host/status"
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "status@example.com", password: "password123" }
+    });
+    const privateStatus = await app.inject({
+      method: "GET",
+      url: "/self-host/status",
+      headers: { cookie: cookieHeader(registered) }
+    });
+    await app.close();
+
+    expect(ready.statusCode).toBe(200);
+    expect(ready.body).not.toContain("test repository");
+    expect(details.statusCode).toBe(401);
+    expect(publicStatus.statusCode).toBe(200);
+    expect(publicStatus.body).toContain("not_disclosed");
+    expect(publicStatus.body).not.toContain("/sensitive/local/path");
+    expect(privateStatus.statusCode).toBe(200);
+    expect(privateStatus.body).not.toContain("/sensitive/local/path");
   });
 
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {

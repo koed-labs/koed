@@ -1222,26 +1222,25 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     reply.type("text/plain").send("OK")
   );
 
+  const publicHealth = (
+    service: string,
+    status: "ok" | "degraded" | "error" = "ok"
+  ) => createHealth(service, status);
+
   app.get("/ready", async (_request, reply) => {
-    const checks = [createHealth("api")];
+    const checks = [publicHealth("api")];
     const repo = repository;
 
     if (repo) {
       try {
         checks.push(
-          createHealth("postgres", (await repo.health()) ? "ok" : "error")
+          publicHealth("postgres", (await repo.health()) ? "ok" : "error")
         );
-      } catch (error) {
-        checks.push(
-          createHealth("postgres", "error", { message: String(error) })
-        );
+      } catch {
+        checks.push(publicHealth("postgres", "error"));
       }
     } else if (process.env.DATABASE_URL) {
-      checks.push(
-        createHealth("postgres", "error", {
-          message: "Database repository is not configured"
-        })
-      );
+      checks.push(publicHealth("postgres", "error"));
     }
 
     if (process.env.REDIS_URL) {
@@ -1252,9 +1251,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       try {
         await redis.connect();
         await redis.ping();
-        checks.push(createHealth("redis"));
-      } catch (error) {
-        checks.push(createHealth("redis", "error", { message: String(error) }));
+        checks.push(publicHealth("redis"));
+      } catch {
+        checks.push(publicHealth("redis", "error"));
       } finally {
         redis.disconnect();
       }
@@ -1264,21 +1263,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       try {
         const status = await repo.getLocalEmbeddingStatus();
         checks.push(
-          createHealth(
-            "embedding-service",
-            status.healthy ? "ok" : "degraded",
-            {
-              enabled: status.enabled,
-              model: status.model,
-              dimensions: status.dimensions,
-              error: status.error
-            }
-          )
+          publicHealth("embedding-service", status.healthy ? "ok" : "degraded")
         );
-      } catch (error) {
-        checks.push(
-          createHealth("embedding-service", "error", { message: String(error) })
-        );
+      } catch {
+        checks.push(publicHealth("embedding-service", "error"));
       }
     }
 
@@ -1292,7 +1280,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/openapi.json", () => openApiDocument);
 
-  app.get("/health/details", async () => {
+  app.get("/health/details", async (request) => {
+    await authenticate(request);
     const checks = [createHealth("api")];
 
     if (process.env.DATABASE_URL) {
@@ -1300,10 +1289,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       try {
         await pool.query("select 1");
         checks.push(createHealth("postgres"));
-      } catch (error) {
-        checks.push(
-          createHealth("postgres", "error", { message: String(error) })
-        );
+      } catch {
+        checks.push(createHealth("postgres", "error"));
       } finally {
         await pool.end();
       }
@@ -1318,8 +1305,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         await redis.connect();
         await redis.ping();
         checks.push(createHealth("redis"));
-      } catch (error) {
-        checks.push(createHealth("redis", "error", { message: String(error) }));
+      } catch {
+        checks.push(createHealth("redis", "error"));
       } finally {
         redis.disconnect();
       }
@@ -1333,24 +1320,41 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     };
   });
 
-  app.get("/self-host/status", async () => {
+  app.get("/self-host/status", async (request) => {
     const repo = requireRepository();
+    const user = await authenticate(request).catch(() => null);
+    if (!user) {
+      const ready = await repo.health().catch(() => false);
+      return {
+        status: ready ? "ok" : "error",
+        components: {
+          api: { status: "ok" },
+          postgres: { status: ready ? "ok" : "error" },
+          redis: {
+            status: process.env.REDIS_URL ? "configured" : "not_configured"
+          },
+          embeddingService: { status: "not_disclosed" },
+          workerQueues: { status: "not_disclosed" }
+        },
+        redacted: true
+      };
+    }
     const [ready, embedding, embeddingJobs, compactionJobs] = await Promise.all(
       [
         repo.health().catch(() => false),
-        repo.getLocalEmbeddingStatus().catch((error) => ({
+        repo.getLocalEmbeddingStatus().catch(() => ({
           enabled: true,
           healthy: false,
           model: null,
           dimensions: null,
-          error: String(error)
+          error: "unavailable"
         })),
         embeddingQueue
           ?.getJobCounts("waiting", "active", "delayed", "failed")
-          .catch((error) => ({ error: String(error) })),
+          .catch(() => ({ status: "unavailable" })),
         compactionQueue
           ?.getJobCounts("waiting", "active", "delayed", "failed")
-          .catch((error) => ({ error: String(error) }))
+          .catch(() => ({ status: "unavailable" }))
       ]
     );
 
@@ -1371,7 +1375,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       configuration: {
         supportedClients: ["codex"],
         plannedClients: ["claude", "gemini", "cursor", "pi"],
-        localRepositoryPath: process.env.KOED_HOST_CHECKOUT_PATH ?? null,
         embeddingModel: process.env.EMBEDDING_MODEL ?? embedding.model,
         embeddingDimensions:
           Number(process.env.EMBEDDING_DIMENSIONS ?? embedding.dimensions) ||
