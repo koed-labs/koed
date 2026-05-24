@@ -7,3 +7,6 @@ The console uses an HTTP-only session cookie. AI-client integrations use bearer 
 Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the console/API are accessible outside localhost.
 
 Diagnostics are redacted by design: they report whether secrets are configured, but not their values.
+
+Database role and row-boundary hardening is tracked in
+[database-row-boundary-safeguards.md](database-row-boundary-safeguards.md).
