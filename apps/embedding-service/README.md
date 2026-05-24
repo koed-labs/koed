@@ -2,6 +2,11 @@
 
 Local FastAPI service for embeddings and optional reranking.
 
+The embedding service is intended to run as a private backend component. Set
+`EMBEDDING_SERVICE_TOKEN` in shared deployments; `/embed` and `/rerank` then
+require API and worker callers to send it in `x-koed-embedding-token`. `/health`
+remains available for container health checks.
+
 ## Local Environment
 
 Use a local virtualenv for Python work. Do not commit `.venv/`.

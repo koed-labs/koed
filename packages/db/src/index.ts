@@ -1358,6 +1358,11 @@ const localEmbeddingServiceUrl = (): string | null =>
     process.env.EMBEDDING_SERVICE_URL ?? "http://embedding-service:8000"
   ).trim() || null;
 
+const embeddingServiceHeaders = (): Record<string, string> => {
+  const token = process.env.EMBEDDING_SERVICE_TOKEN?.trim();
+  return token ? { "x-koed-embedding-token": token } : {};
+};
+
 const localEmbeddingModel = (): string =>
   process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF";
 
@@ -1566,7 +1571,10 @@ const embedTexts = async (
 
   const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/embed`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...embeddingServiceHeaders()
+    },
     body: JSON.stringify({ texts })
   });
   const payload = (await response.json().catch(() => ({}))) as {
@@ -1606,7 +1614,10 @@ const rerankTexts = async (
 
   const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/rerank`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...embeddingServiceHeaders()
+    },
     body: JSON.stringify({ query, documents })
   });
   const payload = (await response.json().catch(() => ({}))) as {
@@ -1759,7 +1770,9 @@ export const createMemorySourceRepository = (
     }
 
     try {
-      const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/health`);
+      const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/health`, {
+        headers: embeddingServiceHeaders()
+      });
       const payload = (await response.json().catch(() => ({}))) as {
         model?: string;
         dimensions?: number;

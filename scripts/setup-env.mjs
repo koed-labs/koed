@@ -53,7 +53,8 @@ const exampleValues = parseEnv(example);
 
 const generatedValues = new Map([
   ["API_DATA_ENCRYPTION_KEY", randomBytes(32).toString("base64")],
-  ["API_TOKEN_PEPPER", randomBytes(48).toString("base64url")]
+  ["API_TOKEN_PEPPER", randomBytes(48).toString("base64url")],
+  ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")]
 ]);
 
 const renamedValues = new Map([
@@ -93,5 +94,5 @@ chmodSync(envPath, 0o600);
 console.log(
   existsSync(envPath) && existing
     ? "Updated .env with any missing current self-hosted variables."
-    : "Created .env with generated API_DATA_ENCRYPTION_KEY and API_TOKEN_PEPPER."
+    : "Created .env with generated API_DATA_ENCRYPTION_KEY, API_TOKEN_PEPPER, and EMBEDDING_SERVICE_TOKEN."
 );

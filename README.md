@@ -72,6 +72,7 @@ Start from `.env.example`. Important values:
 - `API_DATA_ENCRYPTION_KEY`: 32-byte base64 key used for encrypted server-side data.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
+- `EMBEDDING_SERVICE_TOKEN`: shared internal token used by the API and worker when calling the private embedding service.
 - `API_CORS_ORIGINS`: include the local console and history-browser origins.
 - `GITHUB_TOKEN`: GitHub token used by Docker to fetch the private
   `koed-labs/koed-history-browser` frontend repository.

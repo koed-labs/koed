@@ -470,8 +470,10 @@ describeDb("memory repository visibility", () => {
   it("keeps non-rerankable vector hits when summary reranking is enabled", async () => {
     const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
     const originalRerankingEnabled = process.env.RERANKING_ENABLED;
+    const originalEmbeddingServiceToken = process.env.EMBEDDING_SERVICE_TOKEN;
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
     process.env.RERANKING_ENABLED = "true";
+    process.env.EMBEDDING_SERVICE_TOKEN = "test-embedding-token";
 
     try {
       const dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
@@ -481,6 +483,9 @@ describeDb("memory repository visibility", () => {
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const endpoint = String(url);
         if (endpoint.endsWith("/embed")) {
+          expect(new Headers(init?.headers).get("x-koed-embedding-token")).toBe(
+            "test-embedding-token"
+          );
           return new Response(
             JSON.stringify({
               model:
@@ -495,6 +500,9 @@ describeDb("memory repository visibility", () => {
           );
         }
         if (endpoint.endsWith("/rerank")) {
+          expect(new Headers(init?.headers).get("x-koed-embedding-token")).toBe(
+            "test-embedding-token"
+          );
           const request = JSON.parse(String(init?.body ?? "{}")) as {
             documents?: string[];
           };
@@ -590,6 +598,11 @@ describeDb("memory repository visibility", () => {
         delete process.env.RERANKING_ENABLED;
       } else {
         process.env.RERANKING_ENABLED = originalRerankingEnabled;
+      }
+      if (originalEmbeddingServiceToken === undefined) {
+        delete process.env.EMBEDDING_SERVICE_TOKEN;
+      } else {
+        process.env.EMBEDDING_SERVICE_TOKEN = originalEmbeddingServiceToken;
       }
     }
   });
