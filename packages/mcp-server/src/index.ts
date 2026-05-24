@@ -190,6 +190,19 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/memory/questions", input);
   }
 
+  async getQuestion(questionId: string): Promise<Record<string, unknown>> {
+    return this.request(
+      "GET",
+      `/v1/memory/questions/${encodeURIComponent(questionId)}`
+    );
+  }
+
+  async claimPendingQuestions(
+    input: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/questions/claim-pending", input);
+  }
+
   async updateQuestion(
     questionId: string,
     input: Record<string, unknown>

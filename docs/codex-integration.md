@@ -41,12 +41,14 @@ Build the MCP package, then run the bridge from the checkout:
 
 ```bash
 pnpm --filter @koed/mcp-server build
-MEMORY_API_URL=http://localhost:3000 pnpm --filter @koed/mcp-server answer-bridge
+MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<api-token> pnpm --filter @koed/mcp-server answer-bridge
 ```
 
 The bridge listens on `http://localhost:3210` by default. The History Browser
-passes the API token from its settings as a bearer token on each request, so the
-bridge does not need a token in its environment.
+passes the API token from its settings as a bearer token on each direct request.
+`MEMORY_API_TOKEN` enables the bridge's local pending-question catch-up service,
+which claims unanswered browser questions and finishes them through local Codex
+answer synthesis after a refresh or interrupted browser request.
 
 ## Capture Hook
 

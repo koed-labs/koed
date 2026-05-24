@@ -10,8 +10,26 @@ vi.mock("./answer-worker.js", () => ({
 
 const servers: http.Server[] = [];
 
-const createServer = async (handler: http.RequestListener): Promise<string> => {
-  return listenServer(http.createServer(handler));
+type AsyncRequestListener = (
+  request: http.IncomingMessage,
+  response: http.ServerResponse
+) => Promise<void> | void;
+
+const createServer = async (handler: AsyncRequestListener): Promise<string> => {
+  return listenServer(
+    http.createServer((request, response) => {
+      void Promise.resolve(handler(request, response)).catch(
+        (error: unknown) => {
+          response.writeHead(500, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              error: error instanceof Error ? error.message : String(error)
+            })
+          );
+        }
+      );
+    })
+  );
 };
 
 const listenServer = async (server: http.Server): Promise<string> => {
@@ -25,9 +43,13 @@ const listenServer = async (server: http.Server): Promise<string> => {
 };
 
 const readJson = async (request: http.IncomingMessage) => {
-  const chunks: Buffer[] = [];
+  const chunks: Uint8Array[] = [];
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    if (typeof chunk === "string") {
+      chunks.push(Buffer.from(chunk));
+    } else if (chunk instanceof Uint8Array) {
+      chunks.push(chunk);
+    }
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<
     string,
@@ -58,6 +80,24 @@ const postJson = async <T>(
   });
   expect(response.status).toBe(200);
   return (await response.json()) as T;
+};
+
+const postRaw = async (
+  url: string,
+  body: string
+): Promise<{ status: number; body: Record<string, unknown> }> => {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer cmt_test",
+      "content-type": "application/json"
+    },
+    body
+  });
+  return {
+    status: response.status,
+    body: (await response.json()) as Record<string, unknown>
+  };
 };
 
 afterEach(async () => {
@@ -96,6 +136,25 @@ describe("local memory answer bridge", () => {
         return;
       }
       if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What did we decide?",
+              retrievalScope: "personal",
+              searchDomain: "project",
+              workspaceId: "project-1",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
         request.method === "PATCH" &&
         request.url === `/v1/memory/questions/${questionId}`
       ) {
@@ -103,6 +162,7 @@ describe("local memory answer bridge", () => {
         json(response, 200, {
           question: {
             id: questionId,
+            query: "What did we decide?",
             status: "answered",
             answerMarkdown: "The answer"
           }
@@ -135,9 +195,36 @@ describe("local memory answer bridge", () => {
     expect(patches).toHaveLength(1);
     expect(patches[0]).toMatchObject({
       status: "answered",
+      attempt_count: 1,
       answer_markdown: "The answer",
       local_memory_worker: { status: "ok" }
     });
+  });
+
+  it("returns 400 for local bridge validation errors", async () => {
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    const missingQuery = await postRaw(
+      `${bridgeUrl}/v1/memory/answer-local`,
+      JSON.stringify({ search_domain: "global" })
+    );
+    const malformedJson = await postRaw(
+      `${bridgeUrl}/v1/memory/answer-local`,
+      "{"
+    );
+
+    expect(missingQuery.status).toBe(400);
+    expect(missingQuery.body.error).toContain("query");
+    expect(malformedJson.status).toBe(400);
   });
 
   it("patches the question to error when local synthesis fails", async () => {
@@ -153,6 +240,24 @@ describe("local memory answer bridge", () => {
         return;
       }
       if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What did we decide?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
         request.method === "PATCH" &&
         request.url === `/v1/memory/questions/${questionId}`
       ) {
@@ -160,6 +265,7 @@ describe("local memory answer bridge", () => {
         json(response, 200, {
           question: {
             id: questionId,
+            query: "What did we decide?",
             status: "error",
             errorMessage: "Codex unavailable"
           }
@@ -191,8 +297,158 @@ describe("local memory answer bridge", () => {
     expect(patches).toEqual([
       {
         status: "error",
+        attempt_count: 1,
         error_message: "Codex unavailable"
       }
+    ]);
+  });
+
+  it("claims pending questions in the local background service", async () => {
+    const questionId = randomUUID();
+    const claims: Record<string, unknown>[] = [];
+    const patches: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/memory/answer") {
+        json(response, 200, { evidence: [{ id: "evidence-1" }] });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        claims.push(await readJson(request));
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What is pending?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        patches.push(await readJson(request));
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What is pending?",
+            status: "answered",
+            answerMarkdown: "Background answer"
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    vi.stubEnv("MEMORY_API_TOKEN", "cmt_test");
+    answerWithMemoryWorker.mockResolvedValue({
+      markdown: "Background answer",
+      evidenceBundle: { evidence: [{ id: "evidence-1" }] },
+      citations: [],
+      localMemoryWorker: { status: "ok" }
+    });
+    const { MemoryApiClient, defaultConfig } = await import("./index.js");
+    const { startPendingQuestionAnswerService } =
+      await import("./answer-bridge.js");
+    const service = startPendingQuestionAnswerService(
+      new MemoryApiClient(defaultConfig()),
+      {
+        serviceConfig: {
+          initialDelayMs: 60_000,
+          intervalMs: 60_000,
+          batchLimit: 1,
+          leaseSeconds: 180,
+          answerLimit: 10
+        }
+      }
+    );
+
+    const result = await service.trigger("test");
+    service.stop();
+
+    expect(result).toMatchObject({ ran: true, processed: 1 });
+    expect(claims).toEqual([{ limit: 1, lease_seconds: 180 }]);
+    expect(patches[0]).toMatchObject({
+      status: "answered",
+      attempt_count: 1,
+      answer_markdown: "Background answer"
+    });
+  });
+
+  it("uses a longer lease for synchronous local answering", async () => {
+    const questionId = randomUUID();
+    const claims: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.url === "/v1/memory/answer") {
+        json(response, 200, { evidence: [] });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        claims.push(await readJson(request));
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What is slow?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What is slow?",
+            status: "answered",
+            answerMarkdown: "Slow answer"
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    answerWithMemoryWorker.mockResolvedValue({
+      markdown: "Slow answer",
+      evidenceBundle: { evidence: [] },
+      citations: [],
+      localMemoryWorker: { status: "ok" }
+    });
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    await postJson(`${bridgeUrl}/v1/memory/answer-local`, {
+      question_id: questionId,
+      query: "What is slow?",
+      search_domain: "global"
+    });
+
+    expect(claims).toEqual([
+      { question_id: questionId, limit: 1, lease_seconds: 3600 }
     ]);
   });
 });

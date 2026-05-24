@@ -776,12 +776,55 @@ describeDb("memory repository visibility", () => {
 
     expect(created.status).toBe("pending");
     expect(created.answerMarkdown).toBeNull();
+    expect(created.processingLeaseUntil).toBeNull();
+
+    const claimed = await repo.claimPendingMemoryQuestions(
+      { userId: alice.id },
+      { questionId: created.id, limit: 1, leaseSeconds: 120 }
+    );
+    const claimedAgain = await repo.claimPendingMemoryQuestions(
+      { userId: alice.id },
+      { questionId: created.id, limit: 1, leaseSeconds: 120 }
+    );
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({
+      id: created.id,
+      status: "pending",
+      attemptCount: 1
+    });
+    expect(claimed[0]?.processingStartedAt).toBeTruthy();
+    expect(claimed[0]?.processingLeaseUntil).toBeTruthy();
+    expect(claimedAgain).toEqual([]);
+    await pool.query(
+      `
+        update memory_questions
+        set processing_lease_until = now() - interval '1 second'
+        where id = $1
+      `,
+      [created.id]
+    );
+    const reclaimed = await repo.claimPendingMemoryQuestions(
+      { userId: alice.id },
+      { questionId: created.id, limit: 1, leaseSeconds: 120 }
+    );
+    const staleCompletion = await repo.updateMemoryQuestion(
+      { userId: alice.id },
+      created.id,
+      {
+        status: "answered",
+        attemptCount: claimed[0]!.attemptCount,
+        answerMarkdown: "This stale worker should not win."
+      }
+    );
+    expect(reclaimed[0]?.attemptCount).toBe(2);
+    expect(staleCompletion).toBeNull();
 
     const updated = await repo.updateMemoryQuestion(
       { userId: alice.id },
       created.id,
       {
         status: "answered",
+        attemptCount: reclaimed[0]!.attemptCount,
         answerMarkdown: "Memory questions are persisted separately.",
         evidence: [{ id: "source-1" }],
         citations: [{ id: "citation-1" }],
@@ -799,8 +842,38 @@ describeDb("memory repository visibility", () => {
       created.id
     );
     const hidden = await repo.getMemoryQuestion({ userId: bob.id }, created.id);
+    const slowCreated = await repo.createMemoryQuestion(
+      { userId: alice.id },
+      {
+        query: "Can a slow local answer still complete?",
+        searchDomain: "global"
+      }
+    );
+    const slowClaimed = await repo.claimPendingMemoryQuestions(
+      { userId: alice.id },
+      { questionId: slowCreated.id, limit: 1, leaseSeconds: 120 }
+    );
+    await pool.query(
+      `
+        update memory_questions
+        set processing_lease_until = now() - interval '1 second'
+        where id = $1
+      `,
+      [slowCreated.id]
+    );
+    const slowCompletion = await repo.updateMemoryQuestion(
+      { userId: alice.id },
+      slowCreated.id,
+      {
+        status: "answered",
+        attemptCount: slowClaimed[0]!.attemptCount,
+        answerMarkdown: "Slow answers complete if no newer attempt exists."
+      }
+    );
 
     expect(updated?.status).toBe("answered");
+    expect(updated?.processingLeaseUntil).toBeNull();
+    expect(updated?.lastErrorMessage).toBeNull();
     expect(shells).toHaveLength(1);
     expect(shells[0]).toMatchObject({
       id: created.id,
@@ -810,6 +883,10 @@ describeDb("memory repository visibility", () => {
     });
     expect(detail?.evidence).toEqual([{ id: "source-1" }]);
     expect(hidden).toBeNull();
+    expect(slowCompletion?.status).toBe("answered");
+    expect(slowCompletion?.answerMarkdown).toBe(
+      "Slow answers complete if no newer attempt exists."
+    );
   });
 
   it("returns the original memory event for duplicate capture keys", async () => {

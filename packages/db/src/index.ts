@@ -386,6 +386,10 @@ export interface MemoryQuestionShellRecord {
   createdAt: string;
   updatedAt: string;
   answeredAt: string | null;
+  processingStartedAt: string | null;
+  processingLeaseUntil: string | null;
+  attemptCount: number;
+  lastErrorMessage: string | null;
   evidenceCount: number;
 }
 
@@ -466,12 +470,21 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     input?: {
       query?: string;
       searchDomain?: MemoryQuestionSearchDomain;
+      status?: MemoryQuestionStatus;
       workspaceId?: string;
       sessionId?: string;
       limit?: number;
       offset?: number;
     }
   ): Promise<MemoryQuestionShellRecord[]>;
+  claimPendingMemoryQuestions(
+    actor: ActorContext,
+    input?: {
+      questionId?: string;
+      limit?: number;
+      leaseSeconds?: number;
+    }
+  ): Promise<MemoryQuestionDetailRecord[]>;
   getMemoryQuestion(
     actor: ActorContext,
     questionId: string
@@ -483,6 +496,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       | {
           status: "answered";
           answerMarkdown: string;
+          attemptCount?: number;
           response?: Record<string, unknown>;
           evidence?: unknown[];
           citations?: unknown[];
@@ -492,6 +506,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       | {
           status: "error";
           errorMessage: string;
+          attemptCount?: number;
           response?: Record<string, unknown>;
           retrieval?: Record<string, unknown>;
           localMemoryWorker?: Record<string, unknown>;
@@ -1238,6 +1253,10 @@ const mapMemoryQuestionShell = (row: {
   created_at: Date;
   updated_at: Date;
   answered_at: Date | null;
+  processing_started_at: Date | null;
+  processing_lease_until: Date | null;
+  attempt_count: string | number | null;
+  last_error_message: string | null;
   evidence_count?: string | number | null;
 }): MemoryQuestionShellRecord => ({
   id: row.id,
@@ -1260,6 +1279,10 @@ const mapMemoryQuestionShell = (row: {
   createdAt: row.created_at.toISOString(),
   updatedAt: row.updated_at.toISOString(),
   answeredAt: row.answered_at?.toISOString() ?? null,
+  processingStartedAt: row.processing_started_at?.toISOString() ?? null,
+  processingLeaseUntil: row.processing_lease_until?.toISOString() ?? null,
+  attemptCount: Number(row.attempt_count ?? 0),
+  lastErrorMessage: row.last_error_message,
   evidenceCount: Number(row.evidence_count ?? 0)
 });
 
@@ -2179,7 +2202,8 @@ export const createMemorySourceRepository = (
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
-          created_at, updated_at, answered_at,
+          created_at, updated_at, answered_at, processing_started_at,
+          processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
       `,
       [
@@ -2211,6 +2235,8 @@ export const createMemorySourceRepository = (
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
+          processing_started_at, processing_lease_until, attempt_count,
+          last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
         from memory_questions
         where owner_user_id = $1
@@ -2218,6 +2244,7 @@ export const createMemorySourceRepository = (
           and ($2::memory_search_domain is null or search_domain = $2)
           and ($3::text is null or workspace_id = $3)
           and ($4::uuid is null or session_id = $4)
+          and ($8::memory_question_status is null or status = $8)
           and (
             $5::text is null
             or query ilike '%' || $5 || '%'
@@ -2236,11 +2263,65 @@ export const createMemorySourceRepository = (
         input.sessionId ?? null,
         input.query?.trim() || null,
         limit,
-        offset
+        offset,
+        input.status ?? null
       ]
     );
 
     return result.rows.map(mapMemoryQuestionShell);
+  },
+
+  async claimPendingMemoryQuestions(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 1, 1), 10);
+    const leaseSeconds = Math.min(
+      Math.max(input.leaseSeconds ?? 180, 30),
+      3600
+    );
+    const result = await pool.query<
+      Parameters<typeof mapMemoryQuestionDetail>[0]
+    >(
+      `
+        with candidates as (
+          select id
+          from memory_questions
+          where owner_user_id = $1
+            and visibility = 'personal'
+            and status = 'pending'
+            and ($2::uuid is null or id = $2)
+            and (
+              processing_lease_until is null
+              or processing_lease_until < now()
+            )
+          order by created_at asc, id asc
+          limit $3
+          for update skip locked
+        )
+        update memory_questions question
+        set
+          processing_started_at = now(),
+          processing_lease_until = now() + ($4::int * interval '1 second'),
+          attempt_count = attempt_count + 1,
+          last_error_message = null,
+          updated_at = now()
+        from candidates
+        where question.id = candidates.id
+        returning
+          question.id, question.owner_user_id, question.team_id,
+          question.visibility, question.retrieval_scope, question.search_domain,
+          question.workspace_id, question.project_name, question.project_path,
+          question.session_id, question.thread_id, question.thread_name,
+          question.query, question.answer_markdown, question.error_message,
+          question.evidence, question.citations, question.retrieval,
+          question.local_memory_worker, question.response, question.status,
+          question.created_at, question.updated_at, question.answered_at,
+          question.processing_started_at, question.processing_lease_until,
+          question.attempt_count, question.last_error_message,
+          jsonb_array_length(coalesce(question.evidence, '[]'::jsonb)) as evidence_count
+      `,
+      [actor.userId, input.questionId ?? null, limit, leaseSeconds]
+    );
+
+    return result.rows.map(mapMemoryQuestionDetail);
   },
 
   async getMemoryQuestion(actor, questionId) {
@@ -2253,7 +2334,8 @@ export const createMemorySourceRepository = (
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
-          created_at, updated_at, answered_at,
+          created_at, updated_at, answered_at, processing_started_at,
+          processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
         from memory_questions
         where id = $2
@@ -2282,17 +2364,25 @@ export const createMemorySourceRepository = (
           citations = coalesce($8::jsonb, citations),
           retrieval = coalesce($9::jsonb, retrieval),
           local_memory_worker = coalesce($10::jsonb, local_memory_worker),
+          processing_lease_until = null,
+          last_error_message = case when $3::text = 'error' then $5 else null end,
           answered_at = now(),
           updated_at = now()
         where id = $2
           and owner_user_id = $1
           and visibility = 'personal'
+          and status = 'pending'
+          and (
+            ($11::int is not null and attempt_count = $11)
+            or ($11::int is null and processing_lease_until is null)
+          )
         returning
           id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
-          created_at, updated_at, answered_at,
+          created_at, updated_at, answered_at, processing_started_at,
+          processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
       `,
       [
@@ -2309,7 +2399,10 @@ export const createMemorySourceRepository = (
           ? JSON.stringify(input.citations)
           : null,
         input.retrieval ? JSON.stringify(input.retrieval) : null,
-        input.localMemoryWorker ? JSON.stringify(input.localMemoryWorker) : null
+        input.localMemoryWorker
+          ? JSON.stringify(input.localMemoryWorker)
+          : null,
+        input.attemptCount ?? null
       ]
     );
 
