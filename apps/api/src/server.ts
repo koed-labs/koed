@@ -81,6 +81,22 @@ export const graphUpdateActionForPayload = (payload: GraphUpdatePayload) => ({
   invalidateCache: payload.table !== "memory_questions"
 });
 
+export const canReceiveGraphStreamPayload = async (
+  client: { userId: string },
+  payload: GraphUpdatePayload,
+  isTeamMember: (userId: string, teamId: string) => Promise<boolean>
+): Promise<boolean> => {
+  if (payload.visibility === "personal") {
+    return Boolean(payload.ownerUserId && payload.ownerUserId === client.userId);
+  }
+  if (payload.visibility === "team") {
+    return Boolean(
+      payload.teamId && (await isTeamMember(client.userId, payload.teamId))
+    );
+  }
+  return true;
+};
+
 interface GraphListenClient {
   query(sql: string): Promise<unknown>;
   on(
@@ -769,12 +785,30 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
-  const broadcastGraphUpdate = (payload: GraphUpdatePayload) => {
+  const isGraphStreamTeamMember = async (
+    userId: string,
+    teamId: string
+  ): Promise<boolean> => {
+    const repo = repository;
+    if (!repo) {
+      return false;
+    }
+    try {
+      await repo.listTeamMembers(userId, teamId);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const broadcastGraphUpdate = async (payload: GraphUpdatePayload) => {
     for (const client of graphStreamClients) {
       if (
-        payload.visibility === "personal" &&
-        payload.ownerUserId &&
-        payload.ownerUserId !== client.userId
+        !(await canReceiveGraphStreamPayload(
+          client,
+          payload,
+          isGraphStreamTeamMember
+        ))
       ) {
         continue;
       }
@@ -838,7 +872,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         const pending = pendingGraphUpdates.get(key);
         pendingGraphUpdates.delete(key);
         if (pending) {
-          broadcastGraphUpdate({
+          void broadcastGraphUpdate({
             ...pending.payload,
             coalesced: true,
             ...(pending.eventRefs.size > 0
@@ -851,6 +885,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               ? { questionIds: [...pending.questionIds] }
               : {}),
             changedAt: new Date().toISOString()
+          }).catch((error: unknown) => {
+            app.log.warn(
+              { error: String(error) },
+              "could not broadcast graph update"
+            );
           });
         }
       },
