@@ -166,6 +166,7 @@ describeDb("memory repository visibility", () => {
         truncate table
           audit_events,
           api_tokens,
+          memory_questions,
           memory_embeddings_3072,
           memory_embeddings_1536,
           memory_embeddings_1024,
@@ -734,6 +735,81 @@ describeDb("memory repository visibility", () => {
       nodeSessions.rows.every((row) => Number(row.session_count) === 1)
     ).toBe(true);
     expect(new Set(nodeSessions.rows.map((row) => row.sessions)).size).toBe(2);
+  });
+
+  it("persists personal memory questions as shells and hydrated detail", async () => {
+    const alice = await repo.createUser({
+      email: `alice-question-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-question-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Question Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `question-session-${randomUUID()}`,
+        idempotencyKey: `question-session-${randomUUID()}`
+      }
+    );
+    const created = await repo.createMemoryQuestion(
+      { userId: alice.id },
+      {
+        query: "What did we decide about memory questions?",
+        searchDomain: "session",
+        workspaceId,
+        projectName: "Question Project",
+        projectPath: "/tmp/question-project",
+        sessionId: session.id,
+        threadId: "thread-1",
+        threadName: "Question Thread"
+      }
+    );
+
+    expect(created.status).toBe("pending");
+    expect(created.answerMarkdown).toBeNull();
+
+    const updated = await repo.updateMemoryQuestion(
+      { userId: alice.id },
+      created.id,
+      {
+        status: "answered",
+        answerMarkdown: "Memory questions are persisted separately.",
+        evidence: [{ id: "source-1" }],
+        citations: [{ id: "citation-1" }],
+        retrieval: { searchDomain: "session" },
+        localMemoryWorker: { status: "ok" },
+        response: { markdown: "Memory questions are persisted separately." }
+      }
+    );
+    const shells = await repo.listMemoryQuestions(
+      { userId: alice.id },
+      { searchDomain: "session", sessionId: session.id }
+    );
+    const detail = await repo.getMemoryQuestion(
+      { userId: alice.id },
+      created.id
+    );
+    const hidden = await repo.getMemoryQuestion({ userId: bob.id }, created.id);
+
+    expect(updated?.status).toBe("answered");
+    expect(shells).toHaveLength(1);
+    expect(shells[0]).toMatchObject({
+      id: created.id,
+      answerPreview: "Memory questions are persisted separately.",
+      evidenceCount: 1,
+      sessionId: session.id
+    });
+    expect(detail?.evidence).toEqual([{ id: "source-1" }]);
+    expect(hidden).toBeNull();
   });
 
   it("returns the original memory event for duplicate capture keys", async () => {

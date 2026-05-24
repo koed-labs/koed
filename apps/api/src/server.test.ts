@@ -13,6 +13,7 @@ import type {
   CreateMemoryNodeInput,
   CreateTeamInput,
   CreateUserInput,
+  MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
   TeamMemberRecord,
@@ -145,6 +146,8 @@ type MemoryExportResponse = { nodes: Array<Record<string, unknown>> };
 type SessionResponse = { session: { id: string } };
 type ExpandedResponse = { expanded: { sources: Array<{ content: string }> } };
 type OpenApiResponse = { paths: Record<string, unknown> };
+type MemoryQuestionResponse = { question: MemoryQuestionDetailRecord };
+type MemoryQuestionsResponse = { questions: MemoryQuestionDetailRecord[] };
 
 const createFakeRepository = (): MemorySourceRepository => {
   const users = new Map<string, UserRecord>();
@@ -178,6 +181,7 @@ const createFakeRepository = (): MemorySourceRepository => {
   const invalidatedNodes = new Set<string>();
   const invalidatedEvents = new Set<string>();
   const summaryCorrections = new Map<string, string>();
+  const memoryQuestions = new Map<string, MemoryQuestionDetailRecord>();
 
   const getMembership = (userId: string, teamId: string) =>
     teams.get(teamId)?.members.get(userId);
@@ -344,6 +348,108 @@ const createFakeRepository = (): MemorySourceRepository => {
       };
       capturedSessions.set(id, record);
       return record;
+    },
+    async createMemoryQuestion(actor, input) {
+      const now = new Date().toISOString();
+      const record: MemoryQuestionDetailRecord = {
+        id: randomUUID(),
+        ownerUserId: actor.userId,
+        teamId: null,
+        visibility: "personal",
+        retrievalScope: input.retrievalScope ?? "personal",
+        searchDomain: input.searchDomain,
+        workspaceId: input.workspaceId ?? null,
+        projectName: input.projectName ?? null,
+        projectPath: input.projectPath ?? null,
+        sessionId: input.sessionId ?? null,
+        threadId: input.threadId ?? null,
+        threadName: input.threadName ?? null,
+        query: input.query,
+        answerPreview: null,
+        answerMarkdown: null,
+        errorMessage: null,
+        evidence: null,
+        citations: null,
+        retrieval: null,
+        localMemoryWorker: null,
+        response: null,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+        answeredAt: null,
+        evidenceCount: 0
+      };
+      memoryQuestions.set(record.id, record);
+      return record;
+    },
+    async listMemoryQuestions(actor, input = {}) {
+      const query = input.query?.toLowerCase();
+      return [...memoryQuestions.values()]
+        .filter((question) => question.ownerUserId === actor.userId)
+        .filter(
+          (question) =>
+            !input.searchDomain || question.searchDomain === input.searchDomain
+        )
+        .filter(
+          (question) =>
+            !input.workspaceId || question.workspaceId === input.workspaceId
+        )
+        .filter(
+          (question) =>
+            !input.sessionId || question.sessionId === input.sessionId
+        )
+        .filter(
+          (question) =>
+            !query ||
+            question.query.toLowerCase().includes(query) ||
+            (question.answerMarkdown ?? "").toLowerCase().includes(query)
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 100));
+    },
+    async getMemoryQuestion(actor, questionId) {
+      const question = memoryQuestions.get(questionId);
+      return question?.ownerUserId === actor.userId ? question : null;
+    },
+    async updateMemoryQuestion(actor, questionId, input) {
+      const question = memoryQuestions.get(questionId);
+      if (!question || question.ownerUserId !== actor.userId) {
+        return null;
+      }
+      const answeredAt = new Date().toISOString();
+      const updated: MemoryQuestionDetailRecord =
+        input.status === "answered"
+          ? {
+              ...question,
+              status: "answered",
+              answerMarkdown: input.answerMarkdown,
+              answerPreview: input.answerMarkdown.slice(0, 280),
+              errorMessage: null,
+              response: input.response ?? question.response,
+              evidence: input.evidence ?? question.evidence,
+              citations: input.citations ?? question.citations,
+              retrieval: input.retrieval ?? question.retrieval,
+              localMemoryWorker:
+                input.localMemoryWorker ?? question.localMemoryWorker,
+              evidenceCount: input.evidence?.length ?? question.evidenceCount,
+              answeredAt,
+              updatedAt: answeredAt
+            }
+          : {
+              ...question,
+              status: "error",
+              answerMarkdown: null,
+              answerPreview: null,
+              errorMessage: input.errorMessage,
+              response: input.response ?? question.response,
+              retrieval: input.retrieval ?? question.retrieval,
+              localMemoryWorker:
+                input.localMemoryWorker ?? question.localMemoryWorker,
+              answeredAt,
+              updatedAt: answeredAt
+            };
+      memoryQuestions.set(questionId, updated);
+      return updated;
     },
     async createMemoryNode(actor: ActorContext, input: CreateMemoryNodeInput) {
       if (input.visibility === "team") {
@@ -2739,6 +2845,80 @@ describe("account and access flows", () => {
     expect(access.statusCode).toBe(200);
     const body = jsonBody<AccessResponse>(access);
     expect(body.providerConfigSupported).toBe(false);
+  });
+
+  it("persists memory questions and exposes shell and detail records", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "memory-question@example.com", password: "password123" }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions",
+      headers,
+      payload: {
+        query: "What did we decide about rate limits?",
+        search_domain: "project",
+        workspace_id: "project-1",
+        project_name: "Koed",
+        thread_id: "thread-1",
+        thread_name: "Explorer"
+      }
+    });
+    const questionId = jsonBody<MemoryQuestionResponse>(created).question.id;
+    const answered = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/questions/${questionId}`,
+      headers,
+      payload: {
+        status: "answered",
+        answer_markdown: "Use the documented read and write limits.",
+        evidence: [{ id: "evidence-1" }],
+        citations: [{ id: "citation-1" }],
+        retrieval: { searchDomain: "project" },
+        local_memory_worker: { status: "ok" },
+        response: { markdown: "Use the documented read and write limits." }
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/memory/questions?search_domain=project&workspace_id=project-1",
+      headers
+    });
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/memory/questions/${questionId}`,
+      headers
+    });
+    await app.close();
+
+    expect(created.statusCode).toBe(200);
+    expect(jsonBody<MemoryQuestionResponse>(created).question.status).toBe(
+      "pending"
+    );
+    expect(answered.statusCode).toBe(200);
+    expect(jsonBody<MemoryQuestionResponse>(answered).question.status).toBe(
+      "answered"
+    );
+    expect(jsonBody<MemoryQuestionsResponse>(listed).questions).toHaveLength(1);
+    expect(jsonBody<MemoryQuestionResponse>(detail).question).toMatchObject({
+      id: questionId,
+      answerMarkdown: "Use the documented read and write limits.",
+      evidenceCount: 1,
+      searchDomain: "project",
+      workspaceId: "project-1"
+    });
   });
 
   it("creates MCP sessions, captures session events, exposes nodes, and serves OpenAPI JSON", async () => {

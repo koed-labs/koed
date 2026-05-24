@@ -34,6 +34,9 @@ export type CaptureMethod = "hook" | "mcp" | "web" | "api";
 export type SourceRuntime = "codex" | "codex-cli";
 export type CaptureState = "enabled" | "disabled" | "ask";
 export type CapturePolicyTarget = "global" | "project" | "thread";
+export type MemoryQuestionStatus = "pending" | "answered" | "error";
+export type MemoryQuestionSearchDomain = "global" | "project" | "session";
+export type MemoryQuestionRetrievalScope = "personal" | "personal+team";
 
 export interface ActorContext {
   userId: string;
@@ -264,6 +267,7 @@ export interface LcmGraphEvent {
 export interface LcmGraphThread {
   id: string;
   name: string;
+  sessionId: string | null;
   projectId: string;
   projectName: string;
   eventCount: number;
@@ -362,6 +366,38 @@ export interface CapturedSessionRecord {
   createdAt: string;
 }
 
+export interface MemoryQuestionShellRecord {
+  id: string;
+  ownerUserId: string;
+  teamId: string | null;
+  visibility: Visibility;
+  retrievalScope: MemoryQuestionRetrievalScope;
+  searchDomain: MemoryQuestionSearchDomain;
+  workspaceId: string | null;
+  projectName: string | null;
+  projectPath: string | null;
+  sessionId: string | null;
+  threadId: string | null;
+  threadName: string | null;
+  query: string;
+  answerPreview: string | null;
+  errorMessage: string | null;
+  status: MemoryQuestionStatus;
+  createdAt: string;
+  updatedAt: string;
+  answeredAt: string | null;
+  evidenceCount: number;
+}
+
+export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
+  answerMarkdown: string | null;
+  evidence: unknown[] | null;
+  citations: unknown[] | null;
+  retrieval: Record<string, unknown> | null;
+  localMemoryWorker: Record<string, unknown> | null;
+  response: Record<string, unknown> | null;
+}
+
 export interface MemorySourceRepository extends MemoryEngineRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
@@ -411,6 +447,56 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       metadata?: Record<string, unknown>;
     }
   ): Promise<CapturedSessionRecord>;
+  createMemoryQuestion(
+    actor: ActorContext,
+    input: {
+      query: string;
+      retrievalScope?: MemoryQuestionRetrievalScope;
+      searchDomain: MemoryQuestionSearchDomain;
+      workspaceId?: string;
+      projectName?: string;
+      projectPath?: string;
+      sessionId?: string;
+      threadId?: string;
+      threadName?: string;
+    }
+  ): Promise<MemoryQuestionDetailRecord>;
+  listMemoryQuestions(
+    actor: ActorContext,
+    input?: {
+      query?: string;
+      searchDomain?: MemoryQuestionSearchDomain;
+      workspaceId?: string;
+      sessionId?: string;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<MemoryQuestionShellRecord[]>;
+  getMemoryQuestion(
+    actor: ActorContext,
+    questionId: string
+  ): Promise<MemoryQuestionDetailRecord | null>;
+  updateMemoryQuestion(
+    actor: ActorContext,
+    questionId: string,
+    input:
+      | {
+          status: "answered";
+          answerMarkdown: string;
+          response?: Record<string, unknown>;
+          evidence?: unknown[];
+          citations?: unknown[];
+          retrieval?: Record<string, unknown>;
+          localMemoryWorker?: Record<string, unknown>;
+        }
+      | {
+          status: "error";
+          errorMessage: string;
+          response?: Record<string, unknown>;
+          retrieval?: Record<string, unknown>;
+          localMemoryWorker?: Record<string, unknown>;
+        }
+  ): Promise<MemoryQuestionDetailRecord | null>;
   createMemoryNode(
     actor: ActorContext,
     input: CreateMemoryNodeInput
@@ -1076,6 +1162,7 @@ const mapLcmGraphThreadRow = (row: {
   project_path: string | null;
   thread_id: string;
   thread_name: string;
+  session_id: string | null;
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
@@ -1086,6 +1173,7 @@ const mapLcmGraphThreadRow = (row: {
 }): LcmGraphThread & { projectPath: string | null } => ({
   id: row.thread_id,
   name: row.thread_name,
+  sessionId: row.session_id,
   projectId: row.project_id,
   projectName: row.project_name,
   projectPath: row.project_path,
@@ -1124,6 +1212,74 @@ const mapCapturedSession = (row: {
   cwd: row.cwd,
   metadata: row.metadata ?? {},
   createdAt: row.created_at.toISOString()
+});
+
+const previewMarkdown = (value: string | null): string | null =>
+  value ? truncateDisplayText(value, 280) : null;
+
+const mapMemoryQuestionShell = (row: {
+  id: string;
+  owner_user_id: string;
+  team_id: string | null;
+  visibility: Visibility;
+  retrieval_scope: MemoryQuestionRetrievalScope;
+  search_domain: MemoryQuestionSearchDomain;
+  workspace_id: string | null;
+  project_name: string | null;
+  project_path: string | null;
+  session_id: string | null;
+  thread_id: string | null;
+  thread_name: string | null;
+  query: string;
+  answer_markdown?: string | null;
+  answer_preview?: string | null;
+  error_message: string | null;
+  status: MemoryQuestionStatus;
+  created_at: Date;
+  updated_at: Date;
+  answered_at: Date | null;
+  evidence_count?: string | number | null;
+}): MemoryQuestionShellRecord => ({
+  id: row.id,
+  ownerUserId: row.owner_user_id,
+  teamId: row.team_id,
+  visibility: row.visibility,
+  retrievalScope: row.retrieval_scope,
+  searchDomain: row.search_domain,
+  workspaceId: row.workspace_id,
+  projectName: row.project_name,
+  projectPath: row.project_path,
+  sessionId: row.session_id,
+  threadId: row.thread_id,
+  threadName: row.thread_name,
+  query: row.query,
+  answerPreview:
+    row.answer_preview ?? previewMarkdown(row.answer_markdown ?? null),
+  errorMessage: row.error_message,
+  status: row.status,
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString(),
+  answeredAt: row.answered_at?.toISOString() ?? null,
+  evidenceCount: Number(row.evidence_count ?? 0)
+});
+
+const mapMemoryQuestionDetail = (
+  row: Parameters<typeof mapMemoryQuestionShell>[0] & {
+    answer_markdown: string | null;
+    evidence: unknown[] | null;
+    citations: unknown[] | null;
+    retrieval: Record<string, unknown> | null;
+    local_memory_worker: Record<string, unknown> | null;
+    response: Record<string, unknown> | null;
+  }
+): MemoryQuestionDetailRecord => ({
+  ...mapMemoryQuestionShell(row),
+  answerMarkdown: row.answer_markdown,
+  evidence: row.evidence,
+  citations: row.citations,
+  retrieval: row.retrieval,
+  localMemoryWorker: row.local_memory_worker,
+  response: row.response
 });
 
 const mapUser = (row: {
@@ -1996,6 +2152,168 @@ export const createMemorySourceRepository = (
     );
 
     return mapCapturedSession(result.rows[0]!);
+  },
+
+  async createMemoryQuestion(actor, input) {
+    const result = await pool.query<
+      Parameters<typeof mapMemoryQuestionDetail>[0]
+    >(
+      `
+        insert into memory_questions (
+          owner_user_id,
+          team_id,
+          visibility,
+          retrieval_scope,
+          search_domain,
+          workspace_id,
+          project_name,
+          project_path,
+          session_id,
+          thread_id,
+          thread_name,
+          query
+        )
+        values ($1, null, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        returning
+          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          workspace_id, project_name, project_path, session_id, thread_id,
+          thread_name, query, answer_markdown, error_message, evidence,
+          citations, retrieval, local_memory_worker, response, status,
+          created_at, updated_at, answered_at,
+          jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+      `,
+      [
+        actor.userId,
+        input.retrievalScope ?? "personal",
+        input.searchDomain,
+        input.workspaceId ?? null,
+        input.projectName ?? null,
+        input.projectPath ?? null,
+        input.sessionId ?? null,
+        input.threadId ?? null,
+        input.threadName ?? null,
+        input.query
+      ]
+    );
+
+    return mapMemoryQuestionDetail(result.rows[0]!);
+  },
+
+  async listMemoryQuestions(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const offset = Math.max(input.offset ?? 0, 0);
+    const result = await pool.query<
+      Parameters<typeof mapMemoryQuestionShell>[0]
+    >(
+      `
+        select
+          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          workspace_id, project_name, project_path, session_id, thread_id,
+          thread_name, query, left(answer_markdown, 280) as answer_preview,
+          error_message, status, created_at, updated_at, answered_at,
+          jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+        from memory_questions
+        where owner_user_id = $1
+          and visibility = 'personal'
+          and ($2::memory_search_domain is null or search_domain = $2)
+          and ($3::text is null or workspace_id = $3)
+          and ($4::uuid is null or session_id = $4)
+          and (
+            $5::text is null
+            or query ilike '%' || $5 || '%'
+            or coalesce(answer_markdown, '') ilike '%' || $5 || '%'
+            or coalesce(error_message, '') ilike '%' || $5 || '%'
+            or coalesce(project_name, '') ilike '%' || $5 || '%'
+            or coalesce(thread_name, '') ilike '%' || $5 || '%'
+          )
+        order by created_at desc, id desc
+        limit $6 offset $7
+      `,
+      [
+        actor.userId,
+        input.searchDomain ?? null,
+        input.workspaceId ?? null,
+        input.sessionId ?? null,
+        input.query?.trim() || null,
+        limit,
+        offset
+      ]
+    );
+
+    return result.rows.map(mapMemoryQuestionShell);
+  },
+
+  async getMemoryQuestion(actor, questionId) {
+    const result = await pool.query<
+      Parameters<typeof mapMemoryQuestionDetail>[0]
+    >(
+      `
+        select
+          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          workspace_id, project_name, project_path, session_id, thread_id,
+          thread_name, query, answer_markdown, error_message, evidence,
+          citations, retrieval, local_memory_worker, response, status,
+          created_at, updated_at, answered_at,
+          jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+        from memory_questions
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+        limit 1
+      `,
+      [actor.userId, questionId]
+    );
+
+    return result.rows[0] ? mapMemoryQuestionDetail(result.rows[0]) : null;
+  },
+
+  async updateMemoryQuestion(actor, questionId, input) {
+    const result = await pool.query<
+      Parameters<typeof mapMemoryQuestionDetail>[0]
+    >(
+      `
+        update memory_questions
+        set
+          status = $3::memory_question_status,
+          answer_markdown = case when $3::text = 'answered' then $4 else null end,
+          error_message = case when $3::text = 'error' then $5 else null end,
+          response = coalesce($6::jsonb, response),
+          evidence = coalesce($7::jsonb, evidence),
+          citations = coalesce($8::jsonb, citations),
+          retrieval = coalesce($9::jsonb, retrieval),
+          local_memory_worker = coalesce($10::jsonb, local_memory_worker),
+          answered_at = now(),
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+        returning
+          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          workspace_id, project_name, project_path, session_id, thread_id,
+          thread_name, query, answer_markdown, error_message, evidence,
+          citations, retrieval, local_memory_worker, response, status,
+          created_at, updated_at, answered_at,
+          jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+      `,
+      [
+        actor.userId,
+        questionId,
+        input.status,
+        input.status === "answered" ? input.answerMarkdown : null,
+        input.status === "error" ? input.errorMessage : null,
+        input.response ? JSON.stringify(input.response) : null,
+        "evidence" in input && input.evidence
+          ? JSON.stringify(input.evidence)
+          : null,
+        "citations" in input && input.citations
+          ? JSON.stringify(input.citations)
+          : null,
+        input.retrieval ? JSON.stringify(input.retrieval) : null,
+        input.localMemoryWorker ? JSON.stringify(input.localMemoryWorker) : null
+      ]
+    );
+
+    return result.rows[0] ? mapMemoryQuestionDetail(result.rows[0]) : null;
   },
 
   async createMemoryNode(actor, input) {
@@ -2976,6 +3294,7 @@ export const createMemorySourceRepository = (
             coalesce(me.payload #>> '{metadata,projectPath}', s.cwd, me.payload ->> 'workspaceId') as project_path,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            me.session_id,
             case
               when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
                 then 'subagent'
@@ -3028,6 +3347,7 @@ export const createMemorySourceRepository = (
             coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            s.id as session_id,
             case
               when s.metadata ->> 'threadKind' = 'subagent' then 'subagent'
               else 'conversation'
@@ -3068,6 +3388,7 @@ export const createMemorySourceRepository = (
             (array_agg(project_path order by captured_at desc, id desc))[1] as project_path,
             thread_id,
             (array_agg(thread_name order by captured_at desc, id desc))[1] as thread_name,
+            (array_agg(session_id order by captured_at desc, id desc) filter (where session_id is not null))[1] as session_id,
             (array_agg(thread_kind order by captured_at desc, id desc))[1] as thread_kind,
             (array_agg(parent_thread_id order by captured_at desc, id desc) filter (where parent_thread_id is not null))[1] as parent_thread_id,
             (array_agg(parent_session_id order by captured_at desc, id desc) filter (where parent_session_id is not null))[1] as parent_session_id,
@@ -3108,6 +3429,7 @@ export const createMemorySourceRepository = (
       project.threads.push({
         id: thread.id,
         name: thread.name,
+        sessionId: thread.sessionId,
         projectId: thread.projectId,
         projectName: thread.projectName,
         eventCount: thread.eventCount,

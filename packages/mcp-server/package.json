@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "koed-memory-answer-bridge": "dist/answer-bridge.js",
     "koed-mcp": "dist/cli.js",
     "koed-capture-hook": "dist/capture-hook.js"
   },
@@ -20,6 +21,7 @@
     "bundle": "pnpm run build && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/koed-mcp-bundled.mjs",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/cli.js",
+    "answer-bridge": "node dist/answer-bridge.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
