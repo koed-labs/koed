@@ -7,3 +7,9 @@ The console uses an HTTP-only session cookie. AI-client integrations use bearer 
 Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the console/API are accessible outside localhost.
 
 Diagnostics are redacted by design: they report whether secrets are configured, but not their values.
+
+## Data At Rest
+
+Postgres is the source of truth for memory data. API Tokens are hashed before storage, but captured Memory Events, Memory Nodes, LCM source evidence and summaries, graph text, and embedding metadata are stored plaintext at the application layer in this self-hosted build.
+
+Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.
