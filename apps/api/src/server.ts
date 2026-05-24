@@ -941,22 +941,28 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
 
   await app.register(cookie);
-  app.addHook("preHandler", async (request) => {
+  app.addHook("preHandler", (request, _reply, done) => {
     if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+      done();
       return;
     }
     const hasSessionCookie = Boolean(request.cookies[sessionCookieName]);
     const hasBearerAuth = request.headers.authorization?.startsWith("Bearer ");
     if (!hasSessionCookie || hasBearerAuth) {
+      done();
       return;
     }
     const requestOrigin =
       request.headers.origin ?? originFromReferer(request.headers.referer);
     if (requestOrigin && !corsOrigins.has(normalizeOrigin(requestOrigin))) {
-      throw Object.assign(new Error("Invalid request origin"), {
-        statusCode: 403
-      });
+      done(
+        Object.assign(new Error("Invalid request origin"), {
+          statusCode: 403
+        })
+      );
+      return;
     }
+    done();
   });
   const requireRepository = (): MemorySourceRepository => {
     if (!repository) {
