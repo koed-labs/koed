@@ -1,15 +1,16 @@
 import math
 import os
 from contextlib import asynccontextmanager, contextmanager
+from hmac import compare_digest
 from threading import Lock
 from typing import Any
 
 os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "3")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from huggingface_hub import hf_hub_download
 from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from qwen3_embed import TextCrossEncoder
 
 MODEL_REPO = os.getenv("MODEL_REPO", "Qwen/Qwen3-Embedding-0.6B-GGUF")
@@ -20,17 +21,47 @@ EXPECTED_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
 BATCH_LIMIT = int(os.getenv("EMBEDDING_BATCH_LIMIT", "16"))
 LLAMA_N_CTX = int(os.getenv("LLAMA_N_CTX", "32768"))
 EMBEDDING_MAX_TOKENS = int(os.getenv("EMBEDDING_MAX_TOKENS", str(LLAMA_N_CTX)))
+EMBEDDING_MAX_TEXT_CHARS = int(os.getenv("EMBEDDING_MAX_TEXT_CHARS", "200000"))
+EMBEDDING_MAX_REQUEST_CHARS = int(os.getenv("EMBEDDING_MAX_REQUEST_CHARS", "1000000"))
 LLAMA_N_THREADS = int(os.getenv("LLAMA_N_THREADS", str(os.cpu_count() or 1)))
 LLAMA_N_BATCH = int(os.getenv("LLAMA_N_BATCH", "512"))
 SUPPRESS_LLAMA_WARNINGS = os.getenv("EMBEDDING_SUPPRESS_LLAMA_WARNINGS", "true").lower() == "true"
 RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "n24q02m/Qwen3-Reranker-0.6B-ONNX")
 RERANKER_BATCH_LIMIT = int(os.getenv("RERANKER_BATCH_LIMIT", "100"))
+EMBEDDING_SERVICE_TOKEN = os.getenv("EMBEDDING_SERVICE_TOKEN", "").strip()
 
 model: Llama | None = None
 reranker: TextCrossEncoder | None = None
 model_lock = Lock()
 reranker_lock = Lock()
+
+
+def validate_text_limits(values: list[str], field_name: str) -> None:
+    total_chars = 0
+    for index, value in enumerate(values):
+        char_count = len(value)
+        if char_count > EMBEDDING_MAX_TEXT_CHARS:
+            raise ValueError(
+                f"{field_name}[{index}] exceeds maximum length of "
+                f"{EMBEDDING_MAX_TEXT_CHARS} characters"
+            )
+        total_chars += char_count
+    if total_chars > EMBEDDING_MAX_REQUEST_CHARS:
+        raise ValueError(
+            f"{field_name} exceeds maximum total length of {EMBEDDING_MAX_REQUEST_CHARS} characters"
+        )
+
+
+def require_internal_token(
+    x_koed_embedding_token: str | None = Header(default=None),
+) -> None:
+    if not EMBEDDING_SERVICE_TOKEN:
+        return
+    if not x_koed_embedding_token or not compare_digest(
+        x_koed_embedding_token, EMBEDDING_SERVICE_TOKEN
+    ):
+        raise HTTPException(status_code=401, detail="invalid embedding service token")
 
 
 class EmbedRequest(BaseModel):
@@ -44,6 +75,7 @@ class EmbedRequest(BaseModel):
         for index, text in enumerate(texts):
             if not text or not text.strip():
                 raise ValueError(f"texts[{index}] must not be empty")
+        validate_text_limits(texts, "texts")
         return texts
 
 
@@ -71,6 +103,7 @@ class RerankRequest(BaseModel):
     def validate_query(cls, query: str) -> str:
         if not query.strip():
             raise ValueError("query must not be empty")
+        validate_text_limits([query], "query")
         return query
 
     @field_validator("documents")
@@ -81,7 +114,13 @@ class RerankRequest(BaseModel):
         for index, document in enumerate(documents):
             if not document or not document.strip():
                 raise ValueError(f"documents[{index}] must not be empty")
+        validate_text_limits(documents, "documents")
         return documents
+
+    @model_validator(mode="after")
+    def validate_total_chars(self) -> "RerankRequest":
+        validate_text_limits([self.query, *self.documents], "request")
+        return self
 
 
 class RerankResponse(BaseModel):
@@ -117,6 +156,9 @@ def health() -> dict[str, Any]:
         "normalized": True,
         "batchLimit": BATCH_LIMIT,
         "maxTokens": EMBEDDING_MAX_TOKENS,
+        "maxTextChars": EMBEDDING_MAX_TEXT_CHARS,
+        "maxRequestChars": EMBEDDING_MAX_REQUEST_CHARS,
+        "authRequired": bool(EMBEDDING_SERVICE_TOKEN),
         "modelRepo": MODEL_REPO,
         "modelFile": MODEL_FILE,
         "nCtx": LLAMA_N_CTX,
@@ -180,7 +222,11 @@ def suppress_native_stderr(enabled: bool):
         os.close(devnull)
 
 
-@app.post("/embed", response_model=EmbedResponse)
+@app.post(
+    "/embed",
+    response_model=EmbedResponse,
+    dependencies=[Depends(require_internal_token)],
+)
 def embed(request: EmbedRequest) -> EmbedResponse:
     if model is None:
         raise HTTPException(status_code=503, detail="embedding model is still loading")
@@ -230,7 +276,11 @@ def get_reranker() -> TextCrossEncoder:
     return reranker
 
 
-@app.post("/rerank", response_model=RerankResponse)
+@app.post(
+    "/rerank",
+    response_model=RerankResponse,
+    dependencies=[Depends(require_internal_token)],
+)
 def rerank(request: RerankRequest) -> RerankResponse:
     try:
         local_reranker = get_reranker()

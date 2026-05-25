@@ -61,8 +61,11 @@ values and adds any missing keys from `.env.example`.
 - `EMBEDDING_MODEL_NAME`: model name reported in retrieval metadata.
 - `EMBEDDING_DIMENSIONS`: embedding vector dimensions expected by API, worker, and database.
 - `EMBEDDING_VERSION`: embedding version string stored with generated vectors.
+- `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm setup:env` generates this for Docker Compose deployments.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
 - `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request.
+- `EMBEDDING_MAX_TEXT_CHARS`: maximum characters accepted for any single embedding or reranking text before model processing.
+- `EMBEDDING_MAX_REQUEST_CHARS`: maximum total characters accepted for one embedding or reranking request before model processing.
 - `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service.
 - `EMBEDDING_RERANKER_ENABLED`: enables the embedding-service reranker.
 - `EMBEDDING_RERANKER_MODEL`: reranker model loaded by the embedding service.

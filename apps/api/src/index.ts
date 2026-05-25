@@ -7,6 +7,7 @@ if (process.env.NODE_ENV === "production") {
     "REDIS_URL",
     "DATA_ENCRYPTION_KEY",
     "API_TOKEN_PEPPER",
+    "EMBEDDING_SERVICE_TOKEN",
     "CORS_ORIGINS"
   ]);
 }

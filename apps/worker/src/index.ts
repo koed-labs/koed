@@ -13,6 +13,7 @@ if (process.env.NODE_ENV === "production") {
     "REDIS_URL",
     "DATA_ENCRYPTION_KEY",
     "EMBEDDING_SERVICE_URL",
+    "EMBEDDING_SERVICE_TOKEN",
     "EMBEDDING_MODEL",
     "EMBEDDING_DIMENSIONS",
     "EMBEDDING_VERSION"
@@ -60,6 +61,11 @@ const embeddingServiceUrl = (): string =>
 const embeddingDimensions = (): number =>
   Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
 
+const embeddingServiceHeaders = (): Record<string, string> => {
+  const token = process.env.EMBEDDING_SERVICE_TOKEN?.trim();
+  return token ? { "x-koed-embedding-token": token } : {};
+};
+
 interface EmbeddedChunk {
   inputIndex: number;
   chunkIndex: number;
@@ -85,7 +91,10 @@ const embedTexts = async (
     `${embeddingServiceUrl().replace(/\/+$/, "")}/embed`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...embeddingServiceHeaders()
+      },
       body: JSON.stringify({ texts: preparedTexts })
     }
   );

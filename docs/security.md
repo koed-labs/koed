@@ -10,6 +10,8 @@ Public health probes are intentionally coarse. `/health` and `/ready` do not exp
 
 Diagnostics are redacted by design: they report whether secrets are configured, but not their values. Detailed diagnostic endpoints are intended for authenticated Operator Console sessions, not public reverse-proxy exposure.
 
+The embedding service is an internal backend component. Keep it off public networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the embedding service, API, and worker so embedding and reranking requests require a shared internal header.
+
 ## Data At Rest
 
 Postgres is the source of truth for memory data. API Tokens are hashed before storage, but captured Memory Events, Memory Nodes, LCM source evidence and summaries, graph text, and embedding metadata are stored plaintext at the application layer in this self-hosted build.

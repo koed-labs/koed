@@ -28,7 +28,7 @@ The browser console cannot write local AI-client configuration files. This is de
 
 ## Production Notes
 
-Keep Postgres and Redis private. Expose only the console/API through your reverse proxy. Set strong `API_DATA_ENCRYPTION_KEY`, `API_TOKEN_PEPPER`, database password, and Redis password. Use TLS at the reverse proxy if the console or API are reachable beyond localhost.
+Keep Postgres, Redis, and the embedding service private. Expose only the console/API through your reverse proxy. Set strong `API_DATA_ENCRYPTION_KEY`, `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, database password, and Redis password. Use TLS at the reverse proxy if the console or API are reachable beyond localhost.
 
 Memory data is stored plaintext at the application layer in Postgres in this build. Protect the database and backups with private networking, least-privilege credentials, encrypted storage, and restricted administrator access.
 
