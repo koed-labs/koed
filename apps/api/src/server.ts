@@ -623,10 +623,12 @@ const updateMemoryQuestionSchema = z.discriminatedUnion("status", [
 ]);
 
 const lcmPendingSummariesQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(50).default(10)
+  limit: z.coerce.number().int().positive().max(50).default(10),
+  workerId: z.string().min(1)
 });
 
 const submitLcmSummarySchema = z.object({
+  workerId: z.string().min(1),
   summaryText: z.string().min(1),
   summaryModel: z.string().min(1),
   summaryPromptVersion: z.string().min(1),
@@ -2501,9 +2503,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const query = lcmPendingSummariesQuerySchema.parse(request.query);
-      const nodes = await repo.listLcmNodesNeedingSummaries(
+      const nodes = await repo.claimLcmNodesNeedingSummaries(
         { userId: user.id },
-        { limit: query.limit }
+        { limit: query.limit, workerId: query.workerId }
       );
 
       return {
@@ -2511,7 +2513,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         count: nodes.length,
         localOnly: true,
         instructions:
-          "Run LCM summarisation locally through the user's Codex subscription, then submit each summary back to /v1/memory/lcm/summaries/{nodeId}. Backend workers do not call LLMs for LCM summaries."
+          "Run LCM summarisation locally through the client's local synthesis path, then submit each claimed summary back to /v1/memory/lcm/summaries/{nodeId} with the same workerId. Backend workers do not call LLMs for LCM summaries."
       };
     }
   );
@@ -2534,19 +2536,32 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           .send({ error: "LCM node not found or not visible" });
       }
 
-      await repo.updateLcmNodeSummary({
-        nodeId: params.nodeId,
-        summaryText: input.summaryText,
-        summaryModel: input.summaryModel,
-        summaryPromptVersion: input.summaryPromptVersion,
-        summaryTokenEstimate: input.summaryTokenEstimate
-      });
+      try {
+        await repo.updateLcmNodeSummary({
+          actor: { userId: user.id },
+          workerId: input.workerId,
+          nodeId: params.nodeId,
+          summaryText: input.summaryText,
+          summaryModel: input.summaryModel,
+          summaryPromptVersion: input.summaryPromptVersion,
+          summaryTokenEstimate: input.summaryTokenEstimate
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "LCM summary claim missing, expired, or not owned by this worker"
+        ) {
+          return reply.status(409).send({ error: error.message });
+        }
+        throw error;
+      }
       const embedding = await enqueueEmbedding("memory_node", params.nodeId);
 
       return {
         nodeId: params.nodeId,
         kind: node.kind,
         depth: node.depth,
+        workerId: input.workerId,
         summaryModel: input.summaryModel,
         summaryPromptVersion: input.summaryPromptVersion,
         summaryTokenEstimate: input.summaryTokenEstimate,

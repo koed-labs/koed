@@ -234,6 +234,9 @@ export class MemoryApiClient {
     if (typeof input.limit === "string" || typeof input.limit === "number") {
       params.set("limit", String(input.limit));
     }
+    if (typeof input.workerId === "string" && input.workerId.length > 0) {
+      params.set("workerId", input.workerId);
+    }
     const query = params.toString();
     return this.request(
       "GET",
@@ -388,8 +391,8 @@ export const memoryAccessCheck = async (
           "MCP recall is personal-only in this build. search_domain controls the search boundary (session, project, or global).",
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval planning to the local memory-answer worker.",
           "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
-          "LCM summarisation is local-only: backend workers create pending LCM nodes, while the MCP background LCM summary service runs Codex on the user's machine and submits summaries back for embedding.",
-          "When answering from memory, cite each source."
+          "LCM summarisation is local-only: backend workers create pending LCM nodes, while the MCP background LCM summary service and memory_lcm_summarize_pending run Codex on the user's machine before submitting summaries back for embedding.",
+          "When answering from memory, cite whether each source is personal or team."
         ]
       : []
   };

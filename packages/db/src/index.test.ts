@@ -1445,4 +1445,41 @@ describeDb("memory repository visibility", () => {
     );
     expect(teammateSearch.results[0]?.citation.visibility).toBe("team");
   });
+
+  it("lets same worker reclaim pending LCM summaries before lease expiry", async () => {
+    const alice = await repo.createUser({
+      email: `alice-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+
+    for (let index = 1; index <= 5; index += 1) {
+      await captureUserEvent(engine, alice.id, {
+        workspaceId: "workspace-lcm-claim",
+        content: `Lease retry fact ${index}: pending nodes should be reclaimable by same worker.`
+      });
+    }
+
+    const compacted = await engine.scheduleCompaction({
+      requesterContext: { userId: alice.id },
+      visibility: "personal"
+    });
+    expect(compacted.leafNodeIds).toHaveLength(1);
+
+    const firstClaim = await repo.claimLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 1, workerId: "worker-a", leaseSeconds: 900 }
+    );
+    const secondClaim = await repo.claimLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 1, workerId: "worker-a", leaseSeconds: 900 }
+    );
+    const foreignClaim = await repo.claimLcmNodesNeedingSummaries(
+      { userId: alice.id },
+      { limit: 1, workerId: "worker-b", leaseSeconds: 900 }
+    );
+
+    expect(firstClaim.map((node) => node.id)).toEqual(compacted.leafNodeIds);
+    expect(secondClaim.map((node) => node.id)).toEqual(compacted.leafNodeIds);
+    expect(foreignClaim).toHaveLength(0);
+  });
 });

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,15 @@ import type { MemoryApiClient } from "./index.js";
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
+const SUMMARY_WORKER_ID = `mcp-lcm:${randomUUID()}`;
+const PI_THINKING_LEVELS = new Set([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+]);
 export const LCM_SUMMARY_PROMPT_VERSION = "lcm-codex-summary-v1";
 
 export interface LcmSummaryWorkerConfig {
@@ -20,8 +30,17 @@ export interface LcmSummaryWorkerConfig {
   concurrency: number;
   maxPromptTokens: number;
   codexBinary: string;
+  piBinary: string;
+  piModelFamilies: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+}
+
+export interface PiDiscoveredModel {
+  provider: string;
+  model: string;
+  family: string;
+  score: number;
 }
 
 interface LcmSourceItem {
@@ -61,7 +80,7 @@ export interface LcmSummaryResult {
   error?: string;
 }
 
-export type CodexLcmSummaryRunner = (
+export type LcmSummaryRunner = (
   prompt: string,
   config: LcmSummaryWorkerConfig,
   timeoutMs: number
@@ -98,13 +117,26 @@ export const resolveLcmSummaryWorkerConfig = (
       | "concurrency"
       | "maxPromptTokens"
       | "codexBinary"
+      | "piBinary"
+      | "piModelFamilies"
       | "cwd"
     >
   > = {}
 ): LcmSummaryWorkerConfig => {
-  const configuredBinary = resolveEnvValue(env, "MEMORY_LCM_CODEX_BINARY");
+  const configuredCodexBinary = resolveEnvValue(env, "MEMORY_LCM_CODEX_BINARY");
+  const configuredPiBinary = resolveEnvValue(env, "MEMORY_LCM_PI_BINARY");
   const codexBinary =
-    configuredBinary ?? (process.platform === "win32" ? "codex.cmd" : "codex");
+    configuredCodexBinary ??
+    (process.platform === "win32" ? "codex.cmd" : "codex");
+  const piBinary =
+    configuredPiBinary ?? (process.platform === "win32" ? "pi.cmd" : "pi");
+  const configuredPiFamilies = resolveEnvValue(
+    env,
+    "MEMORY_LCM_PI_MODEL_FAMILIES"
+  )
+    ?.split(",")
+    .map((family) => family.trim())
+    .filter(Boolean);
   return {
     provider:
       overrides.provider ??
@@ -150,6 +182,11 @@ export const resolveLcmSummaryWorkerConfig = (
         )
     ),
     codexBinary: overrides.codexBinary ?? codexBinary,
+    piBinary: overrides.piBinary ?? piBinary,
+    piModelFamilies:
+      overrides.piModelFamilies ??
+      configuredPiFamilies ??
+      [],
     cwd: overrides.cwd ?? process.cwd(),
     env
   };
@@ -256,7 +293,7 @@ export const buildLcmSummaryPrompt = (
   const header =
     mode === "partial"
       ? [
-          "You are a private local LCM summarisation worker running under the user's Codex subscription.",
+          "You are a private local LCM summarisation worker running through the user's configured local AI client.",
           "Summarize this token-bounded shard of one larger LCM node.",
           "",
           "Requirements:",
@@ -267,7 +304,7 @@ export const buildLcmSummaryPrompt = (
         ]
       : mode === "reduce"
         ? [
-            "You are a private local LCM summarisation worker running under the user's Codex subscription.",
+            "You are a private local LCM summarisation worker running through the user's configured local AI client.",
             "Combine these shard summaries into one coherent LCM summary.",
             "",
             "Requirements:",
@@ -278,7 +315,7 @@ export const buildLcmSummaryPrompt = (
           ]
         : isRollup
           ? [
-              "You are a private local LCM summarisation worker running under the user's Codex subscription.",
+              "You are a private local LCM summarisation worker running through the user's configured local AI client.",
               "Roll up these child LCM summaries into a higher-level memory graph summary.",
               "",
               "Requirements:",
@@ -288,7 +325,7 @@ export const buildLcmSummaryPrompt = (
               "- Return only the summary text, with no preamble."
             ]
           : [
-              "You are a private local LCM summarisation worker running under the user's Codex subscription.",
+              "You are a private local LCM summarisation worker running through the user's configured local AI client.",
               "Summarize this captured memory span for a lossless context memory graph.",
               "",
               "Requirements:",
@@ -338,7 +375,7 @@ const chunkSourceItems = (
 ): LcmSourceItem[] =>
   node.sourceItems.flatMap((item) => {
     const text = item.text ?? "";
-    const chunks = chunkTextForModel(text, {
+    const chunks: string[] = chunkTextForModel(text, {
       model: config.model,
       maxTokens: itemTextTokenBudget
     });
@@ -447,7 +484,326 @@ const buildSummaryPrompts = (
   }));
 };
 
-export const runCodexLcmSummary: CodexLcmSummaryRunner = (
+const normalizedFamily = (value: string): string =>
+  value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+const piThinkingLevel = (reasoningEffort: string): string => {
+  const normalized = reasoningEffort.trim().toLowerCase();
+  if (PI_THINKING_LEVELS.has(normalized)) {
+    return normalized;
+  }
+  if (normalized === "low") {
+    return "minimal";
+  }
+  if (normalized === "high") {
+    return "medium";
+  }
+  return "low";
+};
+
+const scorePiModelCandidate = (family: string, model: string): number => {
+  const normalizedModel = normalizedFamily(model);
+  const normalized = normalizedFamily(family);
+  if (normalizedModel === normalized) {
+    return 100;
+  }
+  if (normalizedModel.startsWith(`${normalized}-`)) {
+    return 90;
+  }
+  if (normalizedModel.includes(normalized)) {
+    return 80;
+  }
+  if (
+    normalized === "gemini-3-flash" &&
+    /gemini-3(?:-5)?-flash/.test(normalizedModel)
+  ) {
+    return 70;
+  }
+  return 0;
+};
+
+export const parsePiListModelsOutput = (
+  output: string,
+  family: string
+): PiDiscoveredModel[] => {
+  const discovered: PiDiscoveredModel[] = [];
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || /^provider\s+model\b/i.test(line)) {
+      continue;
+    }
+    const [provider, model] = line.split(/\s{2,}/, 3);
+    if (!provider || !model) {
+      continue;
+    }
+    const score = scorePiModelCandidate(family, model);
+    if (score <= 0) {
+      continue;
+    }
+    discovered.push({ provider, model, family, score });
+  }
+  return discovered;
+};
+
+const runLocalCommand = (
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    stdin?: string;
+  }
+): Promise<{ stdout: string; stderr: string }> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      shell: process.platform === "win32",
+      windowsHide: true
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (
+      handler: () => void,
+      error?: unknown
+    ) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error === undefined) {
+        handler();
+      } else {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    child.stdout!.setEncoding("utf8");
+    child.stdout!.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr!.setEncoding("utf8");
+    child.stderr!.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(
+        () => undefined,
+        new Error(
+          `${command} ${args[0] ?? ""}`.trim() +
+            ` timed out after ${options.timeoutMs}ms`
+        )
+      );
+    }, options.timeoutMs);
+
+    child.once("error", (error) => {
+      finish(() => undefined, error);
+    });
+
+    child.once("close", (code) => {
+      finish(() => {
+        if (code !== 0) {
+          const suffix = stderr.trim() ? `: ${stderr.trim()}` : "";
+          reject(
+            new Error(
+              `${command} exited with code ${code ?? "unknown"}${suffix}`
+            )
+          );
+          return;
+        }
+        resolve({ stdout, stderr });
+      });
+    });
+
+    if (options.stdin !== undefined) {
+      child.stdin!.end(options.stdin);
+    }
+  });
+
+const discoverPiModelCandidates = async (
+  config: LcmSummaryWorkerConfig
+): Promise<PiDiscoveredModel[]> => {
+  const discovered: PiDiscoveredModel[] = [];
+  const discoveryErrors: string[] = [];
+  const seen = new Set<string>();
+  for (const family of config.piModelFamilies) {
+    try {
+      const { stdout } = await runLocalCommand(
+        config.piBinary,
+        ["--list-models", family],
+        {
+          cwd: config.cwd,
+          env: config.env,
+          timeoutMs: Math.min(config.timeoutMs, 8_000)
+        }
+      );
+      for (const candidate of parsePiListModelsOutput(stdout, family)) {
+        const key = `${candidate.provider}\u0000${candidate.model}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        discovered.push(candidate);
+      }
+    } catch (error) {
+      discoveryErrors.push(
+        `${family}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  discovered.sort((left, right) => {
+    const familyOrder =
+      config.piModelFamilies.indexOf(left.family) -
+      config.piModelFamilies.indexOf(right.family);
+    return familyOrder !== 0 ? familyOrder : right.score - left.score;
+  });
+  if (discovered.length === 0 && discoveryErrors.length > 0) {
+    throw new Error(
+      `Pi model discovery failed: ${discoveryErrors.join("; ")}`
+    );
+  }
+  return discovered;
+};
+
+const runPiWithCandidate = async (
+  prompt: string,
+  config: LcmSummaryWorkerConfig,
+  timeoutMs: number,
+  candidate: PiDiscoveredModel
+): Promise<{ text: string; model: string }> => {
+  const args = [
+    "-p",
+    "--provider",
+    candidate.provider,
+    "--model",
+    candidate.model,
+    "--thinking",
+    piThinkingLevel(config.reasoningEffort),
+    "--no-session",
+    "--no-context-files",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--system-prompt",
+    "You are a private local LCM summarisation worker. Return only the final summary text.",
+    prompt
+  ];
+  const { stdout } = await runLocalCommand(config.piBinary, args, {
+    cwd: config.cwd,
+    env: config.env,
+    timeoutMs
+  });
+  const text = stdout.trim();
+  if (!text) {
+    throw new Error(
+      `Pi LCM summary produced empty output for ${candidate.provider}/${candidate.model}`
+    );
+  }
+  return {
+    text,
+    model: `pi:${candidate.provider}/${candidate.model}:${piThinkingLevel(
+      config.reasoningEffort
+    )}`
+  };
+};
+
+const createPiLcmSummaryRunner = (
+  config: LcmSummaryWorkerConfig
+): LcmSummaryRunner => {
+  let discoveryPromise: Promise<PiDiscoveredModel[]> | undefined;
+  let preferredCandidateKey: string | undefined;
+  const candidates = async () => {
+    if (!discoveryPromise) {
+      discoveryPromise = discoverPiModelCandidates(config);
+    }
+    const discovered = await discoveryPromise;
+    if (!preferredCandidateKey) {
+      return discovered;
+    }
+    return [...discovered].sort((left, right) => {
+      const leftPreferred =
+        `${left.provider}\u0000${left.model}` === preferredCandidateKey ? 1 : 0;
+      const rightPreferred =
+        `${right.provider}\u0000${right.model}` === preferredCandidateKey ? 1 : 0;
+      return rightPreferred - leftPreferred;
+    });
+  };
+
+  return async (prompt, runnerConfig, timeoutMs) => {
+    const failures: string[] = [];
+    for (const candidate of await candidates()) {
+      try {
+        const result = await runPiWithCandidate(
+          prompt,
+          runnerConfig,
+          timeoutMs,
+          candidate
+        );
+        preferredCandidateKey = `${candidate.provider}\u0000${candidate.model}`;
+        return result;
+      } catch (error) {
+        failures.push(
+          `${candidate.provider}/${candidate.model}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    throw new Error(
+      failures.length > 0
+        ? `Pi LCM summary failed after trying ${failures.length} model candidate(s): ${failures.join("; ")}`
+        : "Pi LCM summary could not find any suitable models from `pi --list-models`."
+    );
+  };
+};
+
+const createAutoLcmSummaryRunner = (
+  config: LcmSummaryWorkerConfig
+): LcmSummaryRunner => {
+  const piRunner = createPiLcmSummaryRunner(config);
+  return async (prompt, runnerConfig, timeoutMs) => {
+    const failures: string[] = [];
+    try {
+      return await runCodexLcmSummary(prompt, runnerConfig, timeoutMs);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+
+    try {
+      return await piRunner(prompt, runnerConfig, timeoutMs);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+
+    throw new Error(
+      `Local LCM summary failed for providers codex and pi: ${failures.join("; ")}`
+    );
+  };
+};
+
+export const resolveLcmSummaryRunner = (
+  config: LcmSummaryWorkerConfig
+): LcmSummaryRunner => {
+  switch (config.provider) {
+    case "codex":
+      return runCodexLcmSummary;
+    case "pi":
+      return createPiLcmSummaryRunner(config);
+    case "auto":
+      return createAutoLcmSummaryRunner(config);
+    default:
+      throw new Error(
+        `Unsupported local LCM summary provider: ${config.provider}`
+      );
+  }
+};
+
+export const runCodexLcmSummary: LcmSummaryRunner = (
   prompt,
   config,
   timeoutMs
@@ -545,7 +901,7 @@ export const runCodexLcmSummary: CodexLcmSummaryRunner = (
 const runPromptWithRetries = async (
   prompt: string,
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner
+  runner: LcmSummaryRunner
 ): Promise<{ text: string; model: string }> => {
   let lastError: unknown;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
@@ -565,7 +921,7 @@ const reduceShardSummaries = async (
   node: LcmSummaryNode,
   shardSummaries: Array<{ text: string; model: string }>,
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner,
+  runner: LcmSummaryRunner,
   stats: {
     promptTokenSum: number;
     maxPromptTokens: number;
@@ -615,18 +971,8 @@ const summarizeNode = async (
   client: MemoryApiClient,
   node: LcmSummaryNode,
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner
+  runner: LcmSummaryRunner
 ): Promise<LcmSummaryResult> => {
-  if (config.provider !== CODEX_SUMMARY_PROVIDER) {
-    return {
-      nodeId: node.id,
-      kind: node.kind,
-      depth: node.depth,
-      submitted: false,
-      error: `LCM summary provider is ${config.provider}`
-    };
-  }
-
   const stats = {
     promptTokenSum: 0,
     maxPromptTokens: 0,
@@ -660,6 +1006,7 @@ const summarizeNode = async (
       model: config.model
     });
     await client.submitLcmSummary(node.id, {
+      workerId: SUMMARY_WORKER_ID,
       summaryText,
       summaryModel: result.model,
       summaryPromptVersion: LCM_SUMMARY_PROMPT_VERSION,
@@ -716,11 +1063,11 @@ export const summarizePendingLcmNodes = async (
   options: {
     limit?: number;
     config?: LcmSummaryWorkerConfig;
-    runner?: CodexLcmSummaryRunner;
+    runner?: LcmSummaryRunner;
   } = {}
 ) => {
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
-  const runner = options.runner ?? runCodexLcmSummary;
+  const runner = options.runner ?? resolveLcmSummaryRunner(config);
   const requestedLimit = options.limit ?? 10;
   const releaseLock = acquireLocalSummaryLock(
     config.env,
@@ -754,7 +1101,8 @@ export const summarizePendingLcmNodes = async (
   try {
     while (results.length < requestedLimit) {
       const pending = (await client.listPendingLcmSummaries({
-        limit: requestedLimit - results.length
+        limit: requestedLimit - results.length,
+        workerId: SUMMARY_WORKER_ID
       })) as { nodes?: LcmSummaryNode[] };
       const nodes = pending.nodes ?? [];
       if (nodes.length === 0) {

@@ -13,7 +13,9 @@ import {
   startLcmSummaryService
 } from "./lcm-summary-service.js";
 import {
+  resolveLcmSummaryRunner,
   resolveLcmSummaryWorkerConfig,
+  runCodexLcmSummary,
   summarizePendingLcmNodes,
   type LcmSummaryNode
 } from "./lcm-summary-worker.js";
@@ -146,6 +148,35 @@ describe("LCM summary background service", () => {
       intervalMs: 1_800_000,
       batchLimit: 2
     });
+  });
+
+  it("defaults LCM worker to codex", () => {
+    expect(resolveLcmSummaryWorkerConfig({})).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      codexBinary: process.platform === "win32" ? "codex.cmd" : "codex"
+    });
+  });
+
+  it("respects configured LCM worker providers", () => {
+    const codexConfig = resolveLcmSummaryWorkerConfig({}, { provider: "codex" });
+    const piConfig = resolveLcmSummaryWorkerConfig(
+      {},
+      { provider: "pi", piModelFamilies: ["gpt-5.4-mini"] }
+    );
+    const autoConfig = resolveLcmSummaryWorkerConfig(
+      {},
+      { provider: "auto", piModelFamilies: ["gpt-5.4-mini"] }
+    );
+
+    expect(resolveLcmSummaryRunner(codexConfig)).toBe(runCodexLcmSummary);
+    expect(resolveLcmSummaryRunner(piConfig)).not.toBe(runCodexLcmSummary);
+    expect(resolveLcmSummaryRunner(autoConfig)).not.toBe(runCodexLcmSummary);
+    expect(() =>
+      resolveLcmSummaryRunner(
+        resolveLcmSummaryWorkerConfig({}, { provider: "bogus" })
+      )
+    ).toThrow("Unsupported local LCM summary provider: bogus");
   });
 
   it("uses a single in-process summarisation run", async () => {

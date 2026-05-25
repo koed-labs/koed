@@ -335,6 +335,56 @@ if (toolExposure.exposeLowLevelMemoryTools) {
   );
 }
 
+server.registerTool(
+  "memory_lcm_summarize_pending",
+  {
+    title: "Summarize pending LCM nodes locally",
+    description:
+      "Fetch claimed pending LCM leaf/rollup nodes from the backend, run Codex summarisation locally under the user's subscription, and submit summaries back for embedding using the same worker lease. This is intentionally outside the capture hot path and backend workers do not call LLMs for LCM summaries.",
+    inputSchema: {
+      limit: z.number().int().positive().max(50).default(10),
+      model: z
+        .string()
+        .min(1)
+        .default("gpt-5.4-mini")
+        .describe("Local Codex model for LCM summarisation."),
+      reasoning_effort: reasoningEffortSchema
+        .default("medium")
+        .describe("Local Codex reasoning effort for LCM summarisation."),
+      timeout_ms: z.number().int().positive().optional(),
+      max_attempts: z.number().int().positive().max(5).optional(),
+      retry_delay_ms: z.number().int().nonnegative().optional(),
+      concurrency: z.number().int().positive().max(4).default(1)
+    }
+  },
+  async (input) =>
+    jsonResponse(
+      backgroundLcmSummaryService
+        ? await backgroundLcmSummaryService.trigger("memory_tool", {
+            limit: input.limit,
+            workerConfig: resolveLcmSummaryWorkerConfig(process.env, {
+              model: input.model,
+              reasoningEffort: input.reasoning_effort,
+              timeoutMs: input.timeout_ms,
+              maxAttempts: input.max_attempts,
+              retryDelayMs: input.retry_delay_ms,
+              concurrency: input.concurrency
+            })
+          })
+        : await summarizePendingLcmNodes(client, {
+            limit: input.limit,
+            config: resolveLcmSummaryWorkerConfig(process.env, {
+              model: input.model,
+              reasoningEffort: input.reasoning_effort,
+              timeoutMs: input.timeout_ms,
+              maxAttempts: input.max_attempts,
+              retryDelayMs: input.retry_delay_ms,
+              concurrency: input.concurrency
+            })
+          })
+    )
+);
+
 const transport = new StdioServerTransport();
 let cleanedUp = false;
 const cleanup = () => {

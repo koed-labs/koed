@@ -1330,7 +1330,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getLcmNodeForSummarization() {
       return null;
     },
-    async listLcmNodesNeedingSummaries() {
+    async claimLcmNodesNeedingSummaries() {
       return [];
     },
     async getVisibleLcmNodeForSummarization() {

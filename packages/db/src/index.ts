@@ -653,15 +653,17 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   getLcmNodeForSummarization(
     nodeId: string
   ): Promise<LcmNodeForSummarization | null>;
-  listLcmNodesNeedingSummaries(
+  claimLcmNodesNeedingSummaries(
     actor: ActorContext,
-    input?: { limit?: number }
+    input: { limit?: number; workerId: string; leaseSeconds?: number }
   ): Promise<LcmNodeForSummarization[]>;
   getVisibleLcmNodeForSummarization(
     actor: ActorContext,
     nodeId: string
   ): Promise<LcmNodeForSummarization | null>;
   updateLcmNodeSummary(input: {
+    actor: ActorContext;
+    workerId: string;
     nodeId: string;
     summaryText: string;
     summaryModel: string;
@@ -3933,62 +3935,92 @@ export const createMemorySourceRepository = (
     return mapLcmNodeForSummarization(pool, row);
   },
 
-  async listLcmNodesNeedingSummaries(actor, input = {}) {
+  async claimLcmNodesNeedingSummaries(actor, input) {
     const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
-    const result = await pool.query<LcmNodeForSummarizationRow>(
-      `
-        select
-          mn.id,
-          mn.owner_user_id,
-          mn.team_id,
-          mn.visibility,
-          mn.kind,
-          mn.depth,
-          mn.summary_text,
-          mn.source_items_json,
-          mn.source_token_estimate,
-          mn.summary_token_estimate,
-          mn.summary_model,
-          mn.summary_prompt_version,
-          mn.lcm_algorithm_version
-        from memory_nodes mn
-        where mn.invalidated_at is null
-          and mn.kind in ('leaf', 'rollup')
-          and mn.summary_model is null
-          and (
-            mn.kind = 'leaf'
-            or not exists (
-              select 1
-              from memory_node_children mnc
-              join memory_nodes child on child.id = mnc.child_memory_node_id
-              where mnc.parent_memory_node_id = mn.id
-                and child.invalidated_at is null
-                and child.summary_model is null
-            )
-          )
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
+    const leaseSeconds = Math.min(Math.max(input.leaseSeconds ?? 900, 30), 3600);
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query<LcmNodeForSummarizationRow>(
+        `
+          with candidate as (
+            select mn.id
+            from memory_nodes mn
+            where mn.invalidated_at is null
+              and mn.kind in ('leaf', 'rollup')
+              and mn.summary_model is null
+              and (
+                mn.summary_claim_expires_at is null
+                or mn.summary_claim_expires_at <= now()
+                or (
+                  mn.summary_claimed_by = $3
+                  and mn.summary_claim_expires_at > now()
+                )
               )
-            )
+              and (
+                mn.kind = 'leaf'
+                or not exists (
+                  select 1
+                  from memory_node_children mnc
+                  join memory_nodes child on child.id = mnc.child_memory_node_id
+                  where mnc.parent_memory_node_id = mn.id
+                    and child.invalidated_at is null
+                    and child.summary_model is null
+                )
+              )
+              and (
+                (mn.visibility = 'personal' and mn.owner_user_id = $1)
+                or
+                (
+                  mn.visibility = 'team'
+                  and exists (
+                    select 1
+                    from team_members tm
+                    where tm.team_id = mn.team_id
+                      and tm.user_id = $1
+                      and tm.removed_at is null
+                  )
+                )
+              )
+            order by mn.depth asc, mn.created_at asc, mn.id asc
+            limit $2
+            for update skip locked
           )
-        order by mn.depth asc, mn.created_at asc, mn.id asc
-        limit $2
-      `,
-      [actor.userId, limit]
-    );
-
-    return Promise.all(
-      result.rows.map((row) => mapLcmNodeForSummarization(pool, row))
-    );
+          update memory_nodes mn
+          set
+            summary_claimed_by = $3,
+            summary_claimed_at = now(),
+            summary_claim_expires_at = now() + ($4::text || ' seconds')::interval,
+            updated_at = now()
+          from candidate
+          where mn.id = candidate.id
+          returning
+            mn.id,
+            mn.owner_user_id,
+            mn.team_id,
+            mn.visibility,
+            mn.kind,
+            mn.depth,
+            mn.summary_text,
+            mn.source_items_json,
+            mn.source_token_estimate,
+            mn.summary_token_estimate,
+            mn.summary_model,
+            mn.summary_prompt_version,
+            mn.lcm_algorithm_version
+        `,
+        [actor.userId, limit, input.workerId, leaseSeconds]
+      );
+      await client.query("commit");
+      return Promise.all(
+        result.rows.map((row) => mapLcmNodeForSummarization(pool, row))
+      );
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async getVisibleLcmNodeForSummarization(actor, nodeId) {
@@ -4040,19 +4072,35 @@ export const createMemorySourceRepository = (
       await client.query("begin");
       const current = await client.query<{ summary_text: string }>(
         `
-          select summary_text
-          from memory_nodes
-          where id = $1
-            and invalidated_at is null
-            and kind in ('leaf', 'rollup')
+          select mn.summary_text
+          from memory_nodes mn
+          where mn.id = $2
+            and mn.invalidated_at is null
+            and mn.kind in ('leaf', 'rollup')
+            and mn.summary_model is null
+            and mn.summary_claimed_by = $3
+            and mn.summary_claim_expires_at > now()
+            and (
+              (mn.visibility = 'personal' and mn.owner_user_id = $1)
+              or
+              (
+                mn.visibility = 'team'
+                and exists (
+                  select 1
+                  from team_members tm
+                  where tm.team_id = mn.team_id
+                    and tm.user_id = $1
+                    and tm.removed_at is null
+                )
+              )
+            )
           for update
         `,
-        [input.nodeId]
+        [input.actor.userId, input.nodeId, input.workerId]
       );
       const previousSummary = current.rows[0]?.summary_text;
       if (previousSummary === undefined) {
-        await client.query("commit");
-        return;
+        throw new Error("LCM summary claim missing, expired, or not owned by this worker");
       }
 
       await client.query(
@@ -4064,6 +4112,9 @@ export const createMemorySourceRepository = (
             summary_model = $3,
             summary_prompt_version = $4,
             summary_token_estimate = $5,
+            summary_claimed_by = null,
+            summary_claimed_at = null,
+            summary_claim_expires_at = null,
             updated_at = now()
           where id = $1
         `,
