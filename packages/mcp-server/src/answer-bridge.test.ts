@@ -407,6 +407,183 @@ describe("local memory answer bridge", () => {
     expect(patches[0]).not.toHaveProperty("citations");
   });
 
+  it("marks retry-exhausted fallback evidence as an explicit error", async () => {
+    const questionId = randomUUID();
+    const patches: Record<string, unknown>[] = [];
+    const fallbackMarkdown =
+      "Evidence bundle returned for Codex synthesis, but Codex failed.";
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.url === "/v1/memory/answer") {
+        json(response, 200, {
+          evidence: [{ id: "evidence-1" }],
+          evidenceBundle: { retrieval: { mode: "leaf_search" } }
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What did we decide?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        patches.push(await readJson(request));
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What did we decide?",
+            status: "error",
+            errorMessage: fallbackMarkdown
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    vi.stubEnv("MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS", "1");
+    answerWithMemoryWorker.mockResolvedValue({
+      markdown: fallbackMarkdown,
+      evidenceBundle: {
+        evidence: [{ id: "evidence-1" }],
+        retrieval: { mode: "leaf_search" }
+      },
+      citations: [],
+      retrieval: { evidenceCount: 1 },
+      localMemoryWorker: {
+        provider: "codex",
+        promptVersion: "test",
+        model: null,
+        usedFallback: true,
+        skippedReason: "codex_failed"
+      }
+    });
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    const result = await postJson<{
+      ok: boolean;
+      error: string;
+      question: { id: string; status: string; errorMessage: string };
+    }>(`${bridgeUrl}/v1/memory/answer-local`, {
+      question_id: questionId,
+      query: "What did we decide?",
+      search_domain: "global"
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: fallbackMarkdown,
+      question: {
+        id: questionId,
+        status: "error",
+        errorMessage: fallbackMarkdown
+      }
+    });
+    expect(patches[0]).toMatchObject({
+      status: "error",
+      attempt_count: 1,
+      error_message: fallbackMarkdown,
+      local_memory_worker: {
+        usedFallback: true,
+        skippedReason: "codex_failed"
+      }
+    });
+    expect(patches[0]).not.toHaveProperty("answer_markdown");
+  });
+
+  it("marks non-retryable API failures as explicit question errors", async () => {
+    const questionId = randomUUID();
+    const patches: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.url === "/v1/memory/answer") {
+        json(response, 400, { error: "Unsupported question shape" });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What should fail permanently?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        patches.push(await readJson(request));
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What should fail permanently?",
+            status: "error",
+            errorMessage: "Unsupported question shape"
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    const result = await postJson<{
+      ok: boolean;
+      question: { id: string; status: string };
+    }>(`${bridgeUrl}/v1/memory/answer-local`, {
+      question_id: questionId,
+      query: "What should fail permanently?",
+      search_domain: "global"
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      question: { id: questionId, status: "error" }
+    });
+    expect(patches[0]).toMatchObject({
+      status: "error",
+      attempt_count: 1
+    });
+    expect(String(patches[0]?.error_message)).toContain(
+      "Unsupported question shape"
+    );
+  });
+
   it("stores a deliberate no-evidence answer as final", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];

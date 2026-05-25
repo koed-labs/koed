@@ -112,6 +112,15 @@ const answerLocalLeaseSeconds = () =>
     .catch(300)
     .parse(process.env.MEMORY_QUESTION_ANSWER_LOCAL_LEASE_SECONDS);
 
+const questionAnswerMaxAttempts = () =>
+  z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(25)
+    .catch(3)
+    .parse(process.env.MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS);
+
 const applyCors = (
   request: http.IncomingMessage,
   response: http.ServerResponse
@@ -252,6 +261,27 @@ const releaseQuestionForRetry = async (
       : {})
   });
 
+const updateQuestionWithError = async (
+  client: MemoryApiClient,
+  question: MemoryQuestionRecord,
+  message: string,
+  diagnostics: Partial<{
+    response: MemoryAnswerWorkerResponse;
+    retrieval: unknown;
+    localMemoryWorker: MemoryAnswerWorkerResponse["localMemoryWorker"];
+  }> = {}
+) =>
+  client.updateQuestion(question.id, {
+    status: "error",
+    error_message: message,
+    ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
+    ...(diagnostics.response ? { response: diagnostics.response } : {}),
+    ...(diagnostics.retrieval ? { retrieval: diagnostics.retrieval } : {}),
+    ...(diagnostics.localMemoryWorker
+      ? { local_memory_worker: diagnostics.localMemoryWorker }
+      : {})
+  });
+
 const evidenceFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
   answer.evidenceBundle?.evidence ?? answer.evidence;
 
@@ -264,6 +294,23 @@ const retrievalFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
 const isRetryableSynthesisFallback = (answer: MemoryAnswerWorkerResponse) =>
   answer.localMemoryWorker.usedFallback === true &&
   answer.localMemoryWorker.skippedReason === "codex_failed";
+
+const hasQuestionAttemptsRemaining = (question: MemoryQuestionRecord): boolean =>
+  (question.attemptCount ?? 0) < questionAnswerMaxAttempts();
+
+const isRetryableBridgeError = (error: unknown): boolean => {
+  if (error instanceof MemoryApiError) {
+    return (
+      error.status === undefined ||
+      error.status === 408 ||
+      error.status === 409 ||
+      error.status === 425 ||
+      error.status === 429 ||
+      error.status >= 500
+    );
+  }
+  return true;
+};
 
 const normalizeSearchDomain = (
   value: MemoryQuestionRecord["searchDomain"]
@@ -328,11 +375,14 @@ export const answerClaimedMemoryQuestion = async (
       const message =
         answer.markdown?.trim() ||
         "Memory answer worker failed before judging retrieved evidence.";
-      const updated = await releaseQuestionForRetry(client, question, message, {
+      const diagnostics = {
         response: answer,
         retrieval: retrievalFromAnswer(answer),
         localMemoryWorker: answer.localMemoryWorker
-      });
+      };
+      const updated = await (hasQuestionAttemptsRemaining(question)
+        ? releaseQuestionForRetry(client, question, message, diagnostics)
+        : updateQuestionWithError(client, question, message, diagnostics));
       return {
         ok: false,
         question: questionFromResponse(updated),
@@ -347,10 +397,11 @@ export const answerClaimedMemoryQuestion = async (
     };
   } catch (error) {
     const message = errorMessage(error);
-    const updated = await releaseQuestionForRetry(
-      client,
-      question,
-      message
+    const retryable =
+      hasQuestionAttemptsRemaining(question) && isRetryableBridgeError(error);
+    const updated = await (retryable
+      ? releaseQuestionForRetry(client, question, message)
+      : updateQuestionWithError(client, question, message)
     ).catch(() => ({ question }));
     return {
       ok: false,
