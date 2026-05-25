@@ -1961,6 +1961,44 @@ describe("account and access flows", () => {
     expect(jsonBody<AccessResponse>(authed).ok).toBe(true);
   });
 
+  it("rejects cross-origin browser-session writes without blocking bearer API tokens", async () => {
+    process.env.CORS_ORIGINS = "http://console.example.test";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "origin@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie, origin: "http://evil.example.test" },
+      payload: { name: "Blocked" }
+    });
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie, origin: "http://console.example.test" },
+      payload: { name: "Client Integration" }
+    });
+    const token = jsonBody<TokenResponse>(allowed).token;
+    const bearerRequest = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers: {
+        authorization: `Bearer ${token}`,
+        origin: "http://evil.example.test"
+      },
+      payload: { query: "anything" }
+    });
+    await app.close();
+
+    expect(rejected.statusCode).toBe(403);
+    expect(allowed.statusCode).toBe(200);
+    expect(bearerRequest.statusCode).toBe(200);
+  });
+
   it("does not expose provider configuration routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({

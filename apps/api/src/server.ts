@@ -187,6 +187,19 @@ const allowedCorsOrigins = (): Set<string> => {
   );
 };
 
+const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
+
+const originFromReferer = (referer: string | undefined): string | null => {
+  if (!referer) {
+    return null;
+  }
+  try {
+    return new URL(referer).origin;
+  } catch {
+    return null;
+  }
+};
+
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
 class MemoryRateLimitStore implements RateLimitStore {
@@ -959,7 +972,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const corsOrigins = allowedCorsOrigins();
   await app.register(cors, {
     origin: (origin, callback) => {
-      if (!origin || corsOrigins.has(origin.replace(/\/+$/, ""))) {
+      if (!origin || corsOrigins.has(normalizeOrigin(origin))) {
         callback(null, true);
         return;
       }
@@ -971,6 +984,29 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
 
   await app.register(cookie);
+  app.addHook("preHandler", (request, _reply, done) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+      done();
+      return;
+    }
+    const hasSessionCookie = Boolean(request.cookies[sessionCookieName]);
+    const hasBearerAuth = request.headers.authorization?.startsWith("Bearer ");
+    if (!hasSessionCookie || hasBearerAuth) {
+      done();
+      return;
+    }
+    const requestOrigin =
+      request.headers.origin ?? originFromReferer(request.headers.referer);
+    if (requestOrigin && !corsOrigins.has(normalizeOrigin(requestOrigin))) {
+      done(
+        Object.assign(new Error("Invalid request origin"), {
+          statusCode: 403
+        })
+      );
+      return;
+    }
+    done();
+  });
   const requireRepository = (): MemorySourceRepository => {
     if (!repository) {
       throw Object.assign(new Error("Database is not configured"), {
