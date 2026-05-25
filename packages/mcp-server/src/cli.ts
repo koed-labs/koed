@@ -107,6 +107,7 @@ const memoryAnswerResponseDetailSchema = z.enum([
   "with_citations",
   "with_evidence"
 ]);
+const reasoningEffortSchema = z.enum(["minimal", "low", "medium", "high"]);
 const uuidSchema = z.string().uuid();
 const defaultWorkspaceId = (): string => process.cwd();
 const normalizeToolWorkspaceId = (workspaceId?: string): string =>

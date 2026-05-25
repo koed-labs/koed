@@ -312,7 +312,10 @@ describe("LCM summary background service", () => {
         );
         return;
       }
-      if (request.url === "/v1/memory/lcm/summaries/pending?limit=1") {
+      if (request.url?.startsWith("/v1/memory/lcm/summaries/pending?")) {
+        const url = new URL(request.url, apiUrl);
+        expect(url.searchParams.get("limit")).toBe("1");
+        expect(url.searchParams.get("workerId")).toMatch(/^mcp-lcm:/);
         response.end(
           JSON.stringify({
             nodes: submittedSummary
@@ -349,8 +352,12 @@ describe("LCM summary background service", () => {
           body += String(chunk);
         });
         request.on("end", () => {
-          submittedSummary =
-            (JSON.parse(body) as { summaryText?: string }).summaryText ?? null;
+          const parsed = JSON.parse(body) as {
+            summaryText?: string;
+            workerId?: string;
+          };
+          expect(parsed.workerId).toMatch(/^mcp-lcm:/);
+          submittedSummary = parsed.summaryText ?? null;
           response.end(JSON.stringify({ nodeId }));
         });
         return;
