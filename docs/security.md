@@ -6,7 +6,9 @@ The console uses an HTTP-only session cookie. AI-client integrations use bearer 
 
 Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the console/API are accessible outside localhost.
 
-Diagnostics are redacted by design: they report whether secrets are configured, but not their values.
+Public health probes are intentionally coarse. `/health` and `/ready` do not expose local paths, model details, dependency exception messages, or secret values.
+
+Diagnostics are redacted by design: they report whether secrets are configured, but not their values. Detailed diagnostic endpoints are intended for authenticated Operator Console sessions, not public reverse-proxy exposure.
 
 ## Data At Rest
 
