@@ -13,3 +13,6 @@ Diagnostics are redacted by design: they report whether secrets are configured, 
 Postgres is the source of truth for memory data. API Tokens are hashed before storage, but captured Memory Events, Memory Nodes, LCM source evidence and summaries, graph text, and embedding metadata are stored plaintext at the application layer in this self-hosted build.
 
 Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.
+
+Database role and row-boundary hardening is tracked in
+[database-row-boundary-safeguards.md](database-row-boundary-safeguards.md).
