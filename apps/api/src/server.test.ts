@@ -23,6 +23,7 @@ import type {
 } from "@koed/db";
 import {
   buildServer,
+  canReceiveGraphStreamPayload,
   graphUpdateActionForPayload,
   shouldIgnoreGraphStreamPayload
 } from "./server.js";
@@ -1553,6 +1554,60 @@ describe("api health", () => {
     expect(shouldIgnoreGraphStreamPayload(embeddingPayload)).toBe(true);
     expect(shouldIgnoreGraphStreamPayload(eventPayload)).toBe(false);
     expect(shouldIgnoreGraphStreamPayload(questionPayload)).toBe(false);
+  });
+
+  it("authorizes graph stream payloads by memory visibility", async () => {
+    const ownerId = randomUUID();
+    const teammateId = randomUUID();
+    const outsiderId = randomUUID();
+    const teamId = randomUUID();
+    const isTeamMember = async (userId: string, candidateTeamId: string) =>
+      candidateTeamId === teamId && userId === teammateId;
+
+    await expect(
+      canReceiveGraphStreamPayload(
+        { userId: ownerId },
+        {
+          table: "memory_events",
+          visibility: "personal",
+          ownerUserId: ownerId
+        },
+        isTeamMember
+      )
+    ).resolves.toBe(true);
+    await expect(
+      canReceiveGraphStreamPayload(
+        { userId: outsiderId },
+        {
+          table: "memory_events",
+          visibility: "personal",
+          ownerUserId: ownerId
+        },
+        isTeamMember
+      )
+    ).resolves.toBe(false);
+    await expect(
+      canReceiveGraphStreamPayload(
+        { userId: teammateId },
+        {
+          table: "memory_events",
+          visibility: "team",
+          teamId
+        },
+        isTeamMember
+      )
+    ).resolves.toBe(true);
+    await expect(
+      canReceiveGraphStreamPayload(
+        { userId: outsiderId },
+        {
+          table: "memory_events",
+          visibility: "team",
+          teamId
+        },
+        isTeamMember
+      )
+    ).resolves.toBe(false);
   });
 
   it("returns OK", async () => {
