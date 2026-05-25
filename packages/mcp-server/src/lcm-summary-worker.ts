@@ -9,15 +9,13 @@ import type { MemoryApiClient } from "./index.js";
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
+const DEFAULT_PI_MODEL_FAMILIES = [
+  "gpt-5.4-mini",
+  "gemini-3-flash",
+  "claude-haiku-4.5"
+] as const;
 const SUMMARY_WORKER_ID = `mcp-lcm:${randomUUID()}`;
-const PI_THINKING_LEVELS = new Set([
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh"
-]);
+const PI_THINKING_LEVELS = new Set(["off", "minimal", "medium", "xhigh"]);
 export const LCM_SUMMARY_PROMPT_VERSION = "lcm-codex-summary-v1";
 
 export interface LcmSummaryWorkerConfig {
@@ -186,7 +184,7 @@ export const resolveLcmSummaryWorkerConfig = (
     piModelFamilies:
       overrides.piModelFamilies ??
       configuredPiFamilies ??
-      [],
+      [...DEFAULT_PI_MODEL_FAMILIES],
     cwd: overrides.cwd ?? process.cwd(),
     env
   };
@@ -489,16 +487,13 @@ const normalizedFamily = (value: string): string =>
 
 const piThinkingLevel = (reasoningEffort: string): string => {
   const normalized = reasoningEffort.trim().toLowerCase();
-  if (PI_THINKING_LEVELS.has(normalized)) {
-    return normalized;
-  }
   if (normalized === "low") {
     return "minimal";
   }
   if (normalized === "high") {
     return "medium";
   }
-  return "low";
+  return PI_THINKING_LEVELS.has(normalized) ? normalized : "minimal";
 };
 
 const scorePiModelCandidate = (family: string, model: string): number => {
@@ -577,10 +572,8 @@ const runLocalCommand = (
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const finish = (
-      handler: () => void,
-      error?: unknown
-    ) => {
+
+    function finish(handler: () => void, error?: unknown): void {
       if (settled) {
         return;
       }
@@ -591,7 +584,7 @@ const runLocalCommand = (
       } else {
         reject(error instanceof Error ? error : new Error(unknownErrorMessage(error)));
       }
-    };
+    }
 
     child.stdout!.setEncoding("utf8");
     child.stdout!.on("data", (chunk: string) => {

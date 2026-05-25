@@ -9,6 +9,7 @@
     { "path": "./packages/db" },
     { "path": "./packages/evals" },
     { "path": "./packages/mcp-server" },
+    { "path": "./packages/pi-extension" },
     { "path": "./packages/shared" }
   ]
 }

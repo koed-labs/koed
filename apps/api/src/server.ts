@@ -15,6 +15,7 @@ import {
   type Visibility
 } from "@koed/core";
 import {
+  LcmSummaryClaimConflictError,
   createDbPool,
   createMemorySourceRepository,
   type MemorySourceRepository
@@ -400,7 +401,7 @@ const capturePersonalEventSchema = z.object({
   eventType: z.string().min(1),
   content: z.string().min(1),
   metadata: metadataSchema,
-  sourceRuntime: z.enum(["codex", "codex-cli", "pi"]).default("pi"),
+  sourceRuntime: z.enum(["codex", "codex-cli", "pi"]).default("codex-cli"),
   captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("hook"),
   codexTranscriptPath: z.string().min(1).optional(),
   idempotencyKey: z.string().min(1).optional(),
@@ -2547,10 +2548,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           summaryTokenEstimate: input.summaryTokenEstimate
         });
       } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message === "LCM summary claim missing, expired, or not owned by this worker"
-        ) {
+        if (error instanceof LcmSummaryClaimConflictError) {
           return reply.status(409).send({ error: error.message });
         }
         throw error;

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 import { randomUUID } from "node:crypto";
 import type { KoedApiClient } from "./koed-client.js";
 
@@ -17,9 +17,7 @@ const DEFAULT_PI_MODEL_FAMILIES = [
 const PI_THINKING_LEVELS = new Set([
   "off",
   "minimal",
-  "low",
   "medium",
-  "high",
   "xhigh"
 ]);
 const LCM_SUMMARY_PROMPT_VERSION = "lcm-local-summary-v2";
@@ -337,7 +335,7 @@ const buildTokenBoundedPrompts = (
       );
       if (
         currentItems.length > 0 &&
-        promptTokens(candidatePrompt, config) > maxPromptTokens
+        promptTokens(candidatePrompt) > maxPromptTokens
       ) {
         prompts.push(buildLcmSummaryPrompt(nodeWithItems(node, currentItems), mode));
         currentItems = [item];
@@ -352,7 +350,7 @@ const buildTokenBoundedPrompts = (
 
     if (
       prompts.length > 0 &&
-      prompts.every((prompt) => promptTokens(prompt, config) <= maxPromptTokens)
+      prompts.every((prompt) => promptTokens(prompt) <= maxPromptTokens)
     ) {
       return prompts;
     }
@@ -370,7 +368,7 @@ const buildSummaryPrompts = (
   config: LocalSummaryWorkerConfig
 ): string[] => {
   const prompt = buildLcmSummaryPrompt(node);
-  if (promptTokens(prompt, config) <= config.maxPromptTokens) {
+  if (promptTokens(prompt) <= config.maxPromptTokens) {
     return [prompt];
   }
   return buildTokenBoundedPrompts(node, config, "partial");
@@ -381,16 +379,13 @@ const normalizedFamily = (value: string): string =>
 
 const piThinkingLevel = (reasoningEffort: string): string => {
   const normalized = reasoningEffort.trim().toLowerCase();
-  if (PI_THINKING_LEVELS.has(normalized)) {
-    return normalized;
-  }
   if (normalized === "low") {
     return "minimal";
   }
   if (normalized === "high") {
     return "medium";
   }
-  return "low";
+  return PI_THINKING_LEVELS.has(normalized) ? normalized : "minimal";
 };
 
 const scorePiModelCandidate = (family: string, model: string): number => {
@@ -693,7 +688,7 @@ const reduceShardSummaries = async (
   const reducePrompts = buildTokenBoundedPrompts(reduceNode, config, "reduce");
   const nextSummaries: Array<{ text: string; model: string }> = [];
   for (const prompt of reducePrompts) {
-    const tokens = promptTokens(prompt, config);
+    const tokens = promptTokens(prompt);
     stats.promptTokenSum += tokens;
     stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
     stats.promptCallCount += 1;
@@ -724,7 +719,7 @@ const summarizeNode = async (
     const prompts = buildSummaryPrompts(node, config);
     const shardSummaries: Array<{ text: string; model: string }> = [];
     for (const prompt of prompts) {
-      const tokens = promptTokens(prompt, config);
+      const tokens = promptTokens(prompt);
       stats.promptTokenSum += tokens;
       stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
       stats.promptCallCount += 1;

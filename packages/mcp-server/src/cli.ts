@@ -341,17 +341,17 @@ server.registerTool(
   {
     title: "Summarize pending LCM nodes locally",
     description:
-      "Fetch claimed pending LCM leaf/rollup nodes from the backend, run Codex summarisation locally under the user's subscription, and submit summaries back for embedding using the same worker lease. This is intentionally outside the capture hot path and backend workers do not call LLMs for LCM summaries.",
+      "Fetch claimed pending LCM leaf/rollup nodes from the backend, run local LCM summarisation through the configured local provider, and submit summaries back for embedding using the same worker lease. This is intentionally outside the capture hot path and backend workers do not call LLMs for LCM summaries.",
     inputSchema: {
       limit: z.number().int().positive().max(50).default(10),
       model: z
         .string()
         .min(1)
         .default("gpt-5.4-mini")
-        .describe("Local Codex model for LCM summarisation."),
+        .describe("Preferred local model for LCM summarisation when supported by the configured provider."),
       reasoning_effort: reasoningEffortSchema
         .default("medium")
-        .describe("Local Codex reasoning effort for LCM summarisation."),
+        .describe("Preferred local reasoning effort for LCM summarisation when supported by the configured provider."),
       timeout_ms: z.number().int().positive().optional(),
       max_attempts: z.number().int().positive().max(5).optional(),
       retry_delay_ms: z.number().int().nonnegative().optional(),

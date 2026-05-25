@@ -403,6 +403,15 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
   response: Record<string, unknown> | null;
 }
 
+export class LcmSummaryClaimConflictError extends Error {
+  readonly code = "lcm_summary_claim_conflict" as const;
+
+  constructor(message = "LCM summary claim missing, expired, or not owned by this worker") {
+    super(message);
+    this.name = "LcmSummaryClaimConflictError";
+  }
+}
+
 export interface MemorySourceRepository extends MemoryEngineRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
@@ -4100,7 +4109,7 @@ export const createMemorySourceRepository = (
       );
       const previousSummary = current.rows[0]?.summary_text;
       if (previousSummary === undefined) {
-        throw new Error("LCM summary claim missing, expired, or not owned by this worker");
+        throw new LcmSummaryClaimConflictError();
       }
 
       await client.query(
