@@ -5043,9 +5043,24 @@ export const createMemorySourceRepository = (
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
         where mns.memory_node_id = $1
+          and me.invalidated_at is null
+          and (
+            (me.visibility = 'personal' and me.owner_user_id = $2)
+            or
+            (
+              me.visibility = 'team'
+              and exists (
+                select 1
+                from team_members tm
+                where tm.team_id = me.team_id
+                  and tm.user_id = $2
+                  and tm.removed_at is null
+              )
+            )
+          )
         order by me.created_at asc, me.id asc
       `,
-      [nodeId]
+      [nodeId, actor.userId]
     );
     const eventSourceItems: LcmSourceItem[] = sources.rows.map(
       (source, position) => ({
