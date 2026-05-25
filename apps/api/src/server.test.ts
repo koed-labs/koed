@@ -1993,14 +1993,25 @@ describe("account and access flows", () => {
       },
       payload: { query: "anything" }
     });
+    const mixedCredentialRequest = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: {
+        cookie,
+        authorization: `Bearer ${token}`,
+        origin: "http://evil.example.test"
+      },
+      payload: { name: "Mixed Credentials" }
+    });
     await app.close();
 
     expect(rejected.statusCode).toBe(403);
     expect(allowed.statusCode).toBe(200);
     expect(bearerRequest.statusCode).toBe(200);
+    expect(mixedCredentialRequest.statusCode).toBe(403);
   });
 
-  it("rejects API-token access to Operator Console routes", async () => {
+  it("does not grant API-token access to Operator Console routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -2034,6 +2045,16 @@ describe("account and access flows", () => {
         method: "GET",
         url: "/self-host/diagnostics",
         headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: "/health/details",
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: "/self-host/status",
+        headers: bearerHeaders
       })
     ]);
     const accessCheck = await app.inject({
@@ -2050,8 +2071,11 @@ describe("account and access flows", () => {
 
     expect(createdToken.statusCode).toBe(200);
     expect(consoleRequests.map((response) => response.statusCode)).toEqual([
-      401, 401, 401, 401
+      401, 401, 401, 401, 401, 200
     ]);
+    expect(jsonBody<{ redacted: boolean }>(consoleRequests[5]).redacted).toBe(
+      true
+    );
     expect(accessCheck.statusCode).toBe(200);
     expect(sessionMe.statusCode).toBe(200);
   });

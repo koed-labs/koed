@@ -57,6 +57,12 @@ const generatedValues = new Map([
   ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")]
 ]);
 
+const shouldGenerateValue = (key, value) =>
+  generatedValues.has(key) &&
+  (value === undefined ||
+    value.trim() === "" ||
+    value.trim().startsWith("replace_with_generated"));
+
 const renamedValues = new Map([
   ["API_DATA_ENCRYPTION_KEY", currentValues.get("DATA_ENCRYPTION_KEY")],
   ["API_CORS_ORIGINS", currentValues.get("CORS_ORIGINS")],
@@ -67,7 +73,7 @@ const renamedValues = new Map([
 
 const valueForKey = (key) => {
   const current = currentValues.get(key);
-  if (current !== undefined) {
+  if (current !== undefined && !shouldGenerateValue(key, current)) {
     return key === "API_CORS_ORIGINS" ? ensureOrigins(current) : current;
   }
   const renamed = renamedValues.get(key);

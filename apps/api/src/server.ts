@@ -817,13 +817,21 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   };
 
   const broadcastGraphUpdate = async (payload: GraphUpdatePayload) => {
+    const teamMembershipCache = new Map<string, Promise<boolean>>();
+    const isTeamMember = (userId: string, teamId: string) => {
+      const key = `${userId}:${teamId}`;
+      const cached = teamMembershipCache.get(key);
+      if (cached) {
+        return cached;
+      }
+      const result = isGraphStreamTeamMember(userId, teamId);
+      teamMembershipCache.set(key, result);
+      return result;
+    };
+
     for (const client of graphStreamClients) {
       if (
-        !(await canReceiveGraphStreamPayload(
-          client,
-          payload,
-          isGraphStreamTeamMember
-        ))
+        !(await canReceiveGraphStreamPayload(client, payload, isTeamMember))
       ) {
         continue;
       }
@@ -990,8 +998,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       return;
     }
     const hasSessionCookie = Boolean(request.cookies[sessionCookieName]);
-    const hasBearerAuth = request.headers.authorization?.startsWith("Bearer ");
-    if (!hasSessionCookie || hasBearerAuth) {
+    if (!hasSessionCookie) {
       done();
       return;
     }
@@ -1377,7 +1384,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   app.get("/openapi.json", () => openApiDocument);
 
   app.get("/health/details", async (request) => {
-    await authenticate(request);
+    await authenticateSession(request);
     const checks = [createHealth("api")];
 
     if (process.env.DATABASE_URL) {
@@ -1418,7 +1425,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   app.get("/self-host/status", async (request) => {
     const repo = requireRepository();
-    const user = await authenticate(request).catch(() => null);
+    const user = await authenticateSession(request).catch(() => null);
     if (!user) {
       const ready = await repo.health().catch(() => false);
       return {

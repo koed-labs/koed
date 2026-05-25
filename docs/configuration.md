@@ -8,9 +8,10 @@ For a local deployment, run:
 pnpm setup:env
 ```
 
-This creates `.env` and generates `API_DATA_ENCRYPTION_KEY` and
-`API_TOKEN_PEPPER`. If `.env` already exists, the command preserves existing
-values and adds any missing keys from `.env.example`.
+This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
+`API_TOKEN_PEPPER`, and `EMBEDDING_SERVICE_TOKEN`. If `.env` already exists,
+the command preserves existing values and adds any missing keys from
+`.env.example`.
 
 ## Required Deployment Values
 
