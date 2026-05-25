@@ -1801,13 +1801,20 @@ export const createMemorySourceRepository = (
       const payload = (await response.json().catch(() => ({}))) as {
         model?: string;
         dimensions?: number;
+        authRequired?: boolean;
+        authValid?: boolean;
       };
+      const authHealthy = !payload.authRequired || payload.authValid === true;
       return {
         enabled: true,
-        healthy: response.ok,
+        healthy: response.ok && authHealthy,
         model: payload.model ?? null,
         dimensions: payload.dimensions ?? null,
-        ...(response.ok ? {} : { error: `HTTP ${response.status}` })
+        ...(!response.ok
+          ? { error: `HTTP ${response.status}` }
+          : !authHealthy
+            ? { error: "Embedding service token rejected" }
+            : {})
       };
     } catch (error) {
       return {

@@ -200,6 +200,20 @@ const originFromReferer = (referer: string | undefined): string | null => {
   }
 };
 
+const sessionEstablishingWritePaths = new Set([
+  "/auth/setup",
+  "/auth/register",
+  "/auth/login"
+]);
+
+const requestPathname = (request: FastifyRequest): string => {
+  try {
+    return new URL(request.url, "http://koed.local").pathname;
+  } catch {
+    return request.url.split("?")[0] ?? request.url;
+  }
+};
+
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
 class MemoryRateLimitStore implements RateLimitStore {
@@ -998,7 +1012,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       return;
     }
     const hasSessionCookie = Boolean(request.cookies[sessionCookieName]);
-    if (!hasSessionCookie) {
+    const createsSessionCookie = sessionEstablishingWritePaths.has(
+      requestPathname(request)
+    );
+    if (!hasSessionCookie && !createsSessionCookie) {
       done();
       return;
     }

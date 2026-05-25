@@ -2011,6 +2011,36 @@ describe("account and access flows", () => {
     expect(mixedCredentialRequest.statusCode).toBe(403);
   });
 
+  it("rejects cross-origin session-establishing writes", async () => {
+    process.env.CORS_ORIGINS = "http://console.example.test";
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+
+    const app = await buildServer({ repository: createFakeRepository() });
+    const rejectedRegister = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin: "http://evil.example.test" },
+      payload: { email: "blocked-origin@example.com", password: "password123" }
+    });
+    const allowedRegister = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin: "http://console.example.test" },
+      payload: { email: "allowed-origin@example.com", password: "password123" }
+    });
+    const rejectedLogin = await app.inject({
+      method: "POST",
+      url: "/auth/login",
+      headers: { origin: "http://evil.example.test" },
+      payload: { email: "allowed-origin@example.com", password: "password123" }
+    });
+    await app.close();
+
+    expect(rejectedRegister.statusCode).toBe(403);
+    expect(allowedRegister.statusCode).toBe(200);
+    expect(rejectedLogin.statusCode).toBe(403);
+  });
+
   it("does not grant API-token access to Operator Console routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({

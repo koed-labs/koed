@@ -148,7 +148,14 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/health")
-def health() -> dict[str, Any]:
+def health(
+    x_koed_embedding_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    auth_required = bool(EMBEDDING_SERVICE_TOKEN)
+    auth_valid = not auth_required or bool(
+        x_koed_embedding_token
+        and compare_digest(x_koed_embedding_token, EMBEDDING_SERVICE_TOKEN)
+    )
     return {
         "status": "ok" if model is not None else "loading",
         "model": MODEL_NAME,
@@ -158,7 +165,8 @@ def health() -> dict[str, Any]:
         "maxTokens": EMBEDDING_MAX_TOKENS,
         "maxTextChars": EMBEDDING_MAX_TEXT_CHARS,
         "maxRequestChars": EMBEDDING_MAX_REQUEST_CHARS,
-        "authRequired": bool(EMBEDDING_SERVICE_TOKEN),
+        "authRequired": auth_required,
+        "authValid": auth_valid,
         "modelRepo": MODEL_REPO,
         "modelFile": MODEL_FILE,
         "nCtx": LLAMA_N_CTX,
