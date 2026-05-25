@@ -1195,9 +1195,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         ? 400
         : message.includes("not an active member")
           ? 403
-          : message.includes("not found or not visible")
-            ? 404
-            : undefined;
+          : message.includes("not allowed to modify Team Memory")
+            ? 403
+            : message.includes("not found or not visible")
+              ? 404
+              : undefined;
     const statusCode =
       typeof statusCodeCandidate === "number"
         ? statusCodeCandidate
