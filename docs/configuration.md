@@ -23,7 +23,7 @@ values and adds any missing keys from `.env.example`.
 - `API_PORT`: API port inside the API container.
 - `API_HOST_PORT`: host port mapped to the API container.
 - `API_LOG_LEVEL`: API log level.
-- `API_DATA_ENCRYPTION_KEY`: base64 32-byte key for encrypted server-side data.
+- `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current self-hosted build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
 - `API_CORS_ORIGINS`: comma-separated allowed Operator Console origins.
 - `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size.
@@ -92,3 +92,9 @@ The MCP-local LCM Summary Service is enabled by default in this build. Failures 
 
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
 for a future AI-client approval flow and is not an implemented backend prompt.
+
+## Data At Rest
+
+Postgres is the source of truth for Users, API Tokens, Capture Policies, Memory Events, Memory Nodes, embeddings, LCM placeholders, LCM summaries, and related evidence. The application hashes API Tokens with `API_TOKEN_PEPPER`, but captured memory content, generated summaries, graph text, and embedding metadata are stored as normal database rows.
+
+Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.

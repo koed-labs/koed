@@ -69,7 +69,7 @@ The console can verify Koed and generate exact setup values, but it cannot write
 Start from `.env.example`. Important values:
 
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Postgres container settings.
-- `API_DATA_ENCRYPTION_KEY`: 32-byte base64 key used for encrypted server-side data.
+- `API_DATA_ENCRYPTION_KEY`: reserved 32-byte base64 key for encrypted server-side fields. In the current self-hosted build, memory payloads remain plaintext at the application layer in Postgres and must be protected with deployment-level database, volume, backup, and access controls.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
 - `API_CORS_ORIGINS`: include the local console and history-browser origins.
