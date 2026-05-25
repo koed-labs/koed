@@ -1499,7 +1499,6 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         memoryMode: "codex_subscription",
         supportedClients: ["codex", "pi"],
         plannedClients: ["claude", "gemini", "cursor"],
-        localRepositoryPath: process.env.KOED_HOST_CHECKOUT_PATH ?? null,
         embeddingModel: process.env.EMBEDDING_MODEL ?? embedding.model,
         embeddingDimensions:
           Number(process.env.EMBEDDING_DIMENSIONS ?? embedding.dimensions) ||
