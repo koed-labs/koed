@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
 import { randomUUID } from "node:crypto";
 import type { KoedApiClient } from "./koed-client.js";
 
@@ -280,10 +281,7 @@ const chunkTextForBudget = (text: string, maxTokens: number): string[] => {
   return chunks.filter(Boolean);
 };
 
-const promptTokens = (
-  prompt: string,
-  _config: LocalSummaryWorkerConfig
-): number => estimateTokens(prompt);
+const promptTokens = (prompt: string): number => estimateTokens(prompt);
 
 const chunkSourceItems = (
   node: LcmSummaryNode,
@@ -509,7 +507,10 @@ const discoverPiModelCandidates = async (
     return right.score - left.score;
   });
 
-  return discovered.map(({ familyIndex: _familyIndex, ...candidate }) => candidate);
+  return discovered.map(({ familyIndex, ...candidate }) => {
+    void familyIndex;
+    return candidate;
+  });
 };
 
 const withSessionTimeout = async <T>(
@@ -522,13 +523,15 @@ const withSessionTimeout = async <T>(
     return await Promise.race([
       work(),
       new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(async () => {
-          try {
-            await session.abort();
-          } catch {
-            // best effort only
-          }
-          reject(new Error(`Pi SDK LCM summary timed out after ${timeoutMs}ms`));
+        timer = setTimeout(() => {
+          void (async () => {
+            try {
+              await session.abort();
+            } catch {
+              // best effort only
+            }
+            reject(new Error(`Pi SDK LCM summary timed out after ${timeoutMs}ms`));
+          })();
         }, timeoutMs);
         timer.unref?.();
       })

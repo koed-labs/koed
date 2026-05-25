@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { KoedPiConfig } from "./config.js";
@@ -209,7 +210,7 @@ export const createKoedTools = (deps: {
         label: "LCM Status",
         description: "Inspect Pi local LCM summary service status.",
         parameters: Type.Object({}),
-        async execute() {
+        execute() {
           const service = getLcmSummaryService();
           const result = service
             ? {

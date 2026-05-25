@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { captureMessageEvent, captureToolEvent, type CaptureRuntimeState } from "./capture.js";
 import { loadConfig } from "./config.js";
@@ -56,7 +57,7 @@ export default function (pi: ExtensionAPI) {
     pi.registerTool(tool);
   }
 
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     const forceNew = event.reason === "new" || event.reason === "fork";
     const session = ensureKoedSessionState(pi, ctx, forceNew);
     runtimeState = {

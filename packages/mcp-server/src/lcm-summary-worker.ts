@@ -545,6 +545,16 @@ export const parsePiListModelsOutput = (
   return discovered;
 };
 
+const unknownErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "Unknown error";
+};
+
 const runLocalCommand = (
   command: string,
   args: string[],
@@ -579,7 +589,7 @@ const runLocalCommand = (
       if (error === undefined) {
         handler();
       } else {
-        reject(error instanceof Error ? error : new Error(String(error)));
+        reject(error instanceof Error ? error : new Error(unknownErrorMessage(error)));
       }
     };
 
