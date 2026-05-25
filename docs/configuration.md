@@ -83,7 +83,11 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_HOOK_TRIGGER_LCM_SUMMARY`: when `true`, the Capture Hook starts local LCM summary processing after capture.
 - `MEMORY_HOOK_LCM_SUMMARY_DELAY_MS`: delay before Capture Hook-triggered LCM summary processing.
 - `MEMORY_HOOK_LCM_SUMMARY_LIMIT`: maximum pending LCM summaries processed from a Capture Hook trigger.
-- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for local Codex LCM summary calls. Default `48000`.
+- `MEMORY_LCM_SUMMARY_PROVIDER`: local LCM summariser provider for MCP flows. Supported values: `codex`, `pi`, `auto`. Default `codex`.
+- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: maximum prompt budget for local LCM summary calls. Default `48000`.
+- `MEMORY_LCM_CODEX_BINARY`: optional Codex binary override for MCP-local LCM summarisation.
+- `MEMORY_LCM_PI_BINARY`: optional Pi binary override for MCP-local LCM summarisation when provider is `pi` or `auto`.
+- `MEMORY_LCM_PI_MODEL_FAMILIES`: comma-separated Pi model families to try for MCP-local LCM summarisation when provider is `pi` or `auto`.
 - `MEMORY_LCM_BACKGROUND_INITIAL_DELAY_MS`: delay before the MCP-local LCM Summary Service first checks for pending summaries.
 - `MEMORY_LCM_BACKGROUND_PUSH_DELAY_MS`: delay used when the local service is nudged after capture.
 - `MEMORY_LCM_BACKGROUND_INTERVAL_MS`: periodic background check interval for pending summaries.

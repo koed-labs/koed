@@ -89,6 +89,17 @@ Compatibility aliases also work:
 - `CODEX_MEMORY_BASE_URL`
 - `CODEX_MEMORY_API_TOKEN`
 
+## Diagnostics
+
+If `KOED_EXPOSE_LOW_LEVEL_TOOLS=true`, Pi also exposes:
+
+- `memory_search`
+- `memory_expand`
+- `memory_lcm_status`
+- `memory_lcm_summarize_pending`
+
+Use these only for debugging and inspection. Normal recall should still go through `memory_answer`.
+
 ## Verify
 
 1. Start Koed self-hosted stack.

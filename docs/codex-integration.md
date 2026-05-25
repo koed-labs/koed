@@ -101,7 +101,7 @@ Use the console smoke test first. Then verify the local Capture Hook from the
 checkout:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
+MEMORY_API_URL=http://localhost:4170 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
 ```
 
 This command enables personal capture, invokes the same TypeScript Capture Hook

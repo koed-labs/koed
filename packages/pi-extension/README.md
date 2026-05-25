@@ -5,10 +5,11 @@ Phase 1 Pi integration for Koed Self-Hosted.
 ## Features
 
 - registers `memory_access_check` and `memory_answer` Pi tools;
-- optional low-level `memory_search` and `memory_expand` tools;
+- optional low-level `memory_search`, `memory_expand`, `memory_lcm_status`, and `memory_lcm_summarize_pending` tools;
 - captures Pi user and assistant messages into Koed personal memory;
-- optional tool-result capture;
-- uses Koed HTTP API directly, not MCP and not `codex` CLI.
+- can capture tool-result events when enabled;
+- runs background local LCM synthesis directly in Pi without MCP or `codex` CLI;
+- uses Koed HTTP API directly.
 
 ## Install in Pi
 
@@ -45,7 +46,8 @@ Example config:
   "captureEnabled": true,
   "captureToolEvents": false,
   "defaultRetrievalScope": "personal",
-  "exposeLowLevelTools": false
+  "exposeLowLevelTools": false,
+  "lcmSummaryEnabled": true
 }
 ```
 
@@ -61,3 +63,12 @@ See `packages/pi-extension/koed.defaults.json` and `packages/pi-extension/koed.e
 - `KOED_CAPTURE_TOOL_EVENTS=true|false` default `false`
 - `KOED_DEFAULT_RETRIEVAL_SCOPE=personal|personal+team` default `personal`
 - `KOED_EXPOSE_LOW_LEVEL_TOOLS=true|false` default `false`
+
+`lcmSummaryEnabled` currently lives in `koed.json` and defaults to `true`.
+
+## Diagnostics
+
+If low-level tools are enabled, the extension also exposes:
+
+- `memory_lcm_status` to inspect background LCM worker state
+- `memory_lcm_summarize_pending` to force an immediate local LCM pass for debugging

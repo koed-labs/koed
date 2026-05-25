@@ -118,14 +118,14 @@ If you changed `API_HOST_PORT`, use that port in `MEMORY_API_URL`.
 6. Verify the Capture Hook:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token from console> pnpm codex:verify-capture
+MEMORY_API_URL=http://localhost:4170 MEMORY_API_TOKEN=<token from console> pnpm codex:verify-capture
 ```
 
 See [docs/codex-integration.md](docs/codex-integration.md) for MCP and Capture Hook details.
 
 ## Pi Setup
 
-Pi Phase 1 integration uses a Pi extension that talks to Koed HTTP APIs directly. It registers memory tools and captures finalized Pi user and assistant messages as personal memory.
+Pi Phase 1 integration uses a dedicated Pi extension package that talks to Koed HTTP APIs directly. It registers memory tools, captures finalized Pi user and assistant messages as personal memory, and can run local background LCM synthesis in Pi.
 
 1. Open the console and create an API token for Pi.
 2. Install the extension from this checkout:
