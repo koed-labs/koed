@@ -93,7 +93,7 @@ if (mode === "build") {
       VITE_KOED_API_BASE_URL:
         process.env.VITE_KOED_API_BASE_URL ??
         process.env.VITE_API_BASE_URL ??
-        "http://localhost:3000"
+        "http://localhost:4170"
     }
   );
 } else if (mode === "dev") {
@@ -113,7 +113,7 @@ if (mode === "build") {
       VITE_KOED_API_BASE_URL:
         process.env.VITE_KOED_API_BASE_URL ??
         process.env.VITE_API_BASE_URL ??
-        "http://localhost:3000"
+        "http://localhost:4170"
     }
   );
 } else if (mode === "preview") {

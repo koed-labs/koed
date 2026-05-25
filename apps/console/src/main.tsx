@@ -10,7 +10,7 @@ type ViteEnvironment = {
 const viteEnvironment = import.meta.env as ViteEnvironment;
 const apiBaseUrl = (
   viteEnvironment.VITE_API_BASE_URL ??
-  (viteEnvironment.PROD ? window.location.origin : "http://localhost:3000")
+  (viteEnvironment.PROD ? window.location.origin : "http://localhost:4170")
 ).replace(/\/$/, "");
 
 type SetupStatus = { configured: boolean; authMode: string };

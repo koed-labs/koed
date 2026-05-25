@@ -22,7 +22,7 @@ Name: koed-selfhost
 Command: node
 Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
 Environment:
-  MEMORY_API_URL=http://localhost:3000
+  MEMORY_API_URL=http://localhost:4170
   MEMORY_API_TOKEN=<token>
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 Working directory: /path/to/koed-self-hosted

@@ -14,7 +14,7 @@ docker compose up --build
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=4170 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:4170 docker compose up --build
 ```
 
 Open `http://localhost:5173`, or the host port you selected. The T3-style history browser is available at `http://localhost:5174`. The console guides setup:

@@ -12,7 +12,7 @@ import "./styles.css";
 const apiBaseUrl = (
   import.meta.env.VITE_KOED_API_BASE_URL ??
   import.meta.env.VITE_API_BASE_URL ??
-  (import.meta.env.PROD ? window.location.origin : "http://localhost:3000")
+  (import.meta.env.PROD ? window.location.origin : "http://localhost:4170")
 ).replace(/\/$/, "");
 
 const tokenStorageKey = "koed.historyBrowser.token";

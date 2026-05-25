@@ -13,7 +13,7 @@ const repoRoot = process.cwd();
 const apiUrl =
   process.env.MEMORY_API_URL ??
   process.env.CODEX_MEMORY_BASE_URL ??
-  "http://localhost:3000";
+  "http://localhost:4170";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
