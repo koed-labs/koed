@@ -133,4 +133,37 @@ export class KoedApiClient {
       signal
     );
   }
+
+  listPendingLcmSummaries(
+    input: Record<string, unknown> = {},
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (typeof input.limit === "string" || typeof input.limit === "number") {
+      params.set("limit", String(input.limit));
+    }
+    if (typeof input.workerId === "string" && input.workerId.length > 0) {
+      params.set("workerId", input.workerId);
+    }
+    const query = params.toString();
+    return this.request(
+      "GET",
+      `/v1/memory/lcm/summaries/pending${query ? `?${query}` : ""}`,
+      undefined,
+      signal
+    );
+  }
+
+  submitLcmSummary(
+    nodeId: string,
+    input: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/lcm/summaries/${encodeURIComponent(nodeId)}`,
+      input,
+      signal
+    );
+  }
 }

@@ -21,10 +21,37 @@ pi install ./packages/pi-extension
 For one-off local testing:
 
 ```bash
-KOED_API_URL=http://localhost:3000 \
+KOED_API_URL=http://localhost:4170 \
 KOED_API_TOKEN=<token> \
 pi -e ./packages/pi-extension/src/index.ts
 ```
+
+## Config file support
+
+The extension reads config in this order:
+
+- `packages/pi-extension/koed.defaults.json` packaged defaults
+- `~/.pi/agent/koed.json`
+- `.pi/koed.json`
+
+Project config overrides global config. Environment variables override all file-based config.
+
+Example config:
+
+```json
+{
+  "apiUrl": "http://studio:4170",
+  "apiToken": "cmt_replace_me",
+  "captureEnabled": true,
+  "captureToolEvents": false,
+  "defaultRetrievalScope": "personal",
+  "exposeLowLevelTools": false
+}
+```
+
+Packaged default API URL is now `http://localhost:4170` to avoid assuming a crowded `3000` port.
+
+See `packages/pi-extension/koed.defaults.json` and `packages/pi-extension/koed.example.json`.
 
 ## Environment
 

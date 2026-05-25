@@ -1,0 +1,9 @@
+{
+  "apiUrl": "http://studio:4170",
+  "apiToken": "cmt_replace_me",
+  "captureEnabled": true,
+  "captureToolEvents": false,
+  "defaultRetrievalScope": "personal",
+  "exposeLowLevelTools": false,
+  "lcmSummaryEnabled": true
+}

@@ -39,7 +39,7 @@ running `docker compose up --build`.
 If the default ports are already in use, choose host ports before starting:
 
 ```bash
-API_HOST_PORT=3300 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=4170 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:4170 docker compose up --build
 ```
 
 Then open the local console:
@@ -105,7 +105,7 @@ Name: koed-selfhost
 Transport: STDIO
 Command: node
 Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
-MEMORY_API_URL: http://localhost:3000
+MEMORY_API_URL: http://localhost:4170
 MEMORY_API_TOKEN: <token from console>
 Working directory: /path/to/koed-self-hosted
 ```
@@ -134,11 +134,23 @@ Pi Phase 1 integration uses a Pi extension that talks to Koed HTTP APIs directly
 pi install ./packages/pi-extension
 ```
 
-3. Export env vars before starting Pi:
+3. Configure the Pi extension either with env vars or a Pi config file.
+
+Env option:
 
 ```bash
-export KOED_API_URL=http://localhost:3000
+export KOED_API_URL=http://localhost:4170
 export KOED_API_TOKEN=<token from console>
+```
+
+Config-file option:
+
+```json
+// ~/.pi/agent/koed.json
+{
+  "apiUrl": "http://localhost:4170",
+  "apiToken": "<token from console>"
+}
 ```
 
 4. Start Pi in this repo and run `memory_access_check` once to verify access.

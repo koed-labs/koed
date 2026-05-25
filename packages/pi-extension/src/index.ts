@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { captureMessageEvent, captureToolEvent, type CaptureRuntimeState } from "./capture.js";
 import { loadConfig } from "./config.js";
 import { KoedApiClient } from "./koed-client.js";
+import { startPiLcmSummaryService } from "./lcm-summary.js";
 import { ensureKoedSessionState } from "./session-state.js";
 import { createKoedTools } from "./tools.js";
 import { clip, flattenContent } from "./utils.js";
@@ -40,13 +41,17 @@ export default function (pi: ExtensionAPI) {
     apiUrl: config.apiUrl,
     apiToken: config.apiToken
   });
+  const lcmSummaryService = startPiLcmSummaryService(client, {
+    enabled: config.lcmSummaryEnabled
+  });
 
   let runtimeState: CaptureRuntimeState | undefined;
 
   for (const tool of createKoedTools({
     client,
     config,
-    getRuntimeState: () => runtimeState
+    getRuntimeState: () => runtimeState,
+    getLcmSummaryService: () => lcmSummaryService
   })) {
     pi.registerTool(tool);
   }
@@ -58,6 +63,7 @@ export default function (pi: ExtensionAPI) {
       externalSessionId: session.externalSessionId,
       backendSessionRegistered: false
     };
+    lcmSummaryService?.setCwd(ctx.cwd);
     if (ctx.hasUI) {
       ctx.ui.setStatus("koed", koedStatus(config));
     }
@@ -97,6 +103,7 @@ export default function (pi: ExtensionAPI) {
         },
         ctx.signal
       );
+      lcmSummaryService?.nudge(ctx.cwd);
     } catch (error) {
       setKoedErrorStatus(
         ctx,
@@ -125,6 +132,7 @@ export default function (pi: ExtensionAPI) {
         },
         ctx.signal
       );
+      lcmSummaryService?.nudge(ctx.cwd);
     } catch (error) {
       setKoedErrorStatus(
         ctx,

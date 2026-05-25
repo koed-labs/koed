@@ -2,6 +2,10 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { KoedPiConfig } from "./config.js";
 import type { KoedApiClient } from "./koed-client.js";
+import {
+  PI_LCM_SUMMARY_DEFAULTS,
+  type PiLcmSummaryServiceHandle
+} from "./lcm-summary.js";
 import type { CaptureRuntimeState } from "./capture.js";
 
 const retrievalScopeSchema = Type.Union([
@@ -48,8 +52,9 @@ export const createKoedTools = (deps: {
   client: KoedApiClient;
   config: KoedPiConfig;
   getRuntimeState(): CaptureRuntimeState | undefined;
+  getLcmSummaryService(): PiLcmSummaryServiceHandle | null;
 }) => {
-  const { client, config, getRuntimeState } = deps;
+  const { client, config, getRuntimeState, getLcmSummaryService } = deps;
 
   const memoryAccessCheck = defineTool({
     name: "memory_access_check",
@@ -67,15 +72,32 @@ export const createKoedTools = (deps: {
         defaultAutomaticCaptureScope: "personal",
         defaultAnswerScope: config.defaultRetrievalScope,
         automaticDiscussionCapture: "via_pi_extension_events",
+        localLcmSummaryService: {
+          enabled: config.lcmSummaryEnabled,
+          initialDelayMs: PI_LCM_SUMMARY_DEFAULTS.initialDelayMs,
+          pushDelayMs: PI_LCM_SUMMARY_DEFAULTS.pushDelayMs,
+          intervalMs: PI_LCM_SUMMARY_DEFAULTS.intervalMs,
+          batchLimit: PI_LCM_SUMMARY_DEFAULTS.batchLimit,
+          providerOrder: [...PI_LCM_SUMMARY_DEFAULTS.providerOrder],
+          piModelFamilies: [...PI_LCM_SUMMARY_DEFAULTS.piModelFamilies]
+        },
         exposedTools: [
           "memory_access_check",
           "memory_answer",
-          ...(config.exposeLowLevelTools ? ["memory_search", "memory_expand"] : [])
+          ...(config.exposeLowLevelTools
+            ? [
+                "memory_search",
+                "memory_expand",
+                "memory_lcm_status",
+                "memory_lcm_summarize_pending"
+              ]
+            : [])
         ],
         notes: [
           "Pi integration captures finalized user and assistant messages as personal memory.",
           "Tool-result capture is optional and disabled by default.",
-          "This Phase 1 Pi integration talks to Koed HTTP APIs directly and does not require MCP or codex exec."
+          "Pi integration talks to Koed HTTP APIs directly and does not require MCP.",
+          "Local Pi LCM summarisation is background work in the extension and uses compact Pi models discovered through `pi --list-models`."
         ]
       };
       return {
@@ -176,6 +198,55 @@ export const createKoedTools = (deps: {
         }),
         async execute(_toolCallId, params, signal) {
           const result = await client.expand(params.nodeId, signal);
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: result
+          };
+        }
+      }),
+      defineTool({
+        name: "memory_lcm_status",
+        label: "LCM Status",
+        description: "Inspect Pi local LCM summary service status.",
+        parameters: Type.Object({}),
+        async execute() {
+          const service = getLcmSummaryService();
+          const result = service
+            ? {
+                enabled: true,
+                ...service.snapshot()
+              }
+            : {
+                enabled: false,
+                reason: config.lcmSummaryEnabled
+                  ? "service_unavailable"
+                  : "disabled_in_config"
+              };
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: result
+          };
+        }
+      }),
+      defineTool({
+        name: "memory_lcm_summarize_pending",
+        label: "Summarize Pending LCM",
+        description: "Force one immediate Pi local LCM summary pass for debugging.",
+        parameters: Type.Object({
+          limit: Type.Optional(
+            Type.Number({ minimum: 1, maximum: 50, description: "Maximum nodes to process." })
+          )
+        }),
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+          const service = getLcmSummaryService();
+          if (!service) {
+            throw new Error(
+              config.lcmSummaryEnabled
+                ? "Pi LCM summary service is unavailable"
+                : "Pi LCM summary service is disabled in config"
+            );
+          }
+          const result = await service.trigger(ctx.cwd, params.limit ?? 1);
           return {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
             details: result

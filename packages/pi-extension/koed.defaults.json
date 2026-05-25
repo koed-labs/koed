@@ -1,0 +1,8 @@
+{
+  "apiUrl": "http://localhost:4170",
+  "captureEnabled": true,
+  "captureToolEvents": false,
+  "defaultRetrievalScope": "personal",
+  "exposeLowLevelTools": false,
+  "lcmSummaryEnabled": true
+}
