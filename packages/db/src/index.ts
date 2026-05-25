@@ -512,6 +512,16 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
           retrieval?: Record<string, unknown>;
           localMemoryWorker?: Record<string, unknown>;
         }
+      | {
+          status: "pending";
+          lastErrorMessage: string;
+          attemptCount?: number;
+          response?: Record<string, unknown>;
+          evidence?: unknown[];
+          citations?: unknown[];
+          retrieval?: Record<string, unknown>;
+          localMemoryWorker?: Record<string, unknown>;
+        }
   ): Promise<MemoryQuestionDetailRecord | null>;
   createMemoryNode(
     actor: ActorContext,
@@ -2410,8 +2420,19 @@ export const createMemorySourceRepository = (
           retrieval = coalesce($9::jsonb, retrieval),
           local_memory_worker = coalesce($10::jsonb, local_memory_worker),
           processing_lease_until = null,
-          last_error_message = case when $3::text = 'error' then $5 else null end,
-          answered_at = now(),
+          processing_started_at = case
+            when $3::text = 'pending' then null
+            else processing_started_at
+          end,
+          last_error_message = case
+            when $3::text = 'error' then $5
+            when $3::text = 'pending' then $12
+            else null
+          end,
+          answered_at = case
+            when $3::text in ('answered', 'error') then now()
+            else null
+          end,
           updated_at = now()
         where id = $2
           and owner_user_id = $1
@@ -2447,7 +2468,8 @@ export const createMemorySourceRepository = (
         input.localMemoryWorker
           ? JSON.stringify(input.localMemoryWorker)
           : null,
-        input.attemptCount ?? null
+        input.attemptCount ?? null,
+        input.status === "pending" ? input.lastErrorMessage : null
       ]
     );
 

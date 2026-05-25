@@ -474,7 +474,7 @@ const createFakeRepository = (): MemorySourceRepository => {
       ) {
         return null;
       }
-      const answeredAt = new Date().toISOString();
+      const updatedAt = new Date().toISOString();
       const updated: MemoryQuestionDetailRecord =
         input.status === "answered"
           ? {
@@ -490,26 +490,46 @@ const createFakeRepository = (): MemorySourceRepository => {
               localMemoryWorker:
                 input.localMemoryWorker ?? question.localMemoryWorker,
               evidenceCount: input.evidence?.length ?? question.evidenceCount,
-              answeredAt,
-              updatedAt: answeredAt,
+              answeredAt: updatedAt,
+              updatedAt,
               processingLeaseUntil: null,
               lastErrorMessage: null
             }
-          : {
-              ...question,
-              status: "error",
-              answerMarkdown: null,
-              answerPreview: null,
-              errorMessage: input.errorMessage,
-              response: input.response ?? question.response,
-              retrieval: input.retrieval ?? question.retrieval,
-              localMemoryWorker:
-                input.localMemoryWorker ?? question.localMemoryWorker,
-              answeredAt,
-              updatedAt: answeredAt,
-              processingLeaseUntil: null,
-              lastErrorMessage: input.errorMessage
-            };
+          : input.status === "error"
+            ? {
+                ...question,
+                status: "error",
+                answerMarkdown: null,
+                answerPreview: null,
+                errorMessage: input.errorMessage,
+                response: input.response ?? question.response,
+                retrieval: input.retrieval ?? question.retrieval,
+                localMemoryWorker:
+                  input.localMemoryWorker ?? question.localMemoryWorker,
+                answeredAt: updatedAt,
+                updatedAt,
+                processingLeaseUntil: null,
+                lastErrorMessage: input.errorMessage
+              }
+            : {
+                ...question,
+                status: "pending",
+                answerMarkdown: null,
+                answerPreview: null,
+                errorMessage: null,
+                response: input.response ?? question.response,
+                evidence: input.evidence ?? question.evidence,
+                citations: input.citations ?? question.citations,
+                retrieval: input.retrieval ?? question.retrieval,
+                localMemoryWorker:
+                  input.localMemoryWorker ?? question.localMemoryWorker,
+                evidenceCount: input.evidence?.length ?? question.evidenceCount,
+                answeredAt: null,
+                updatedAt,
+                processingStartedAt: null,
+                processingLeaseUntil: null,
+                lastErrorMessage: input.lastErrorMessage
+              };
       memoryQuestions.set(questionId, updated);
       return updated;
     },
@@ -3387,6 +3407,89 @@ describe("account and access flows", () => {
       evidenceCount: 1,
       searchDomain: "project",
       workspaceId: "project-1"
+    });
+  });
+
+  it("releases failed memory questions back to pending for retry", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "memory-question-retry@example.com",
+        password: "password123"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions",
+      headers,
+      payload: {
+        query: "What should retry?",
+        search_domain: "global"
+      }
+    });
+    const questionId = jsonBody<MemoryQuestionResponse>(created).question.id;
+    const claimed = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/claim-pending",
+      headers,
+      payload: { question_id: questionId, limit: 1, lease_seconds: 120 }
+    });
+    const released = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/questions/${questionId}`,
+      headers,
+      payload: {
+        status: "pending",
+        attempt_count:
+          jsonBody<MemoryQuestionsResponse>(claimed).questions[0]!.attemptCount,
+        last_error_message: "Codex unavailable",
+        response: { markdown: "raw fallback must not become the answer" },
+        retrieval: { mode: "test" },
+        local_memory_worker: {
+          usedFallback: true,
+          skippedReason: "codex_failed"
+        }
+      }
+    });
+    const reclaimed = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions/claim-pending",
+      headers,
+      payload: { question_id: questionId, limit: 1, lease_seconds: 120 }
+    });
+    await app.close();
+
+    expect(released.statusCode).toBe(200);
+    expect(jsonBody<MemoryQuestionResponse>(released).question).toMatchObject({
+      id: questionId,
+      status: "pending",
+      answerMarkdown: null,
+      errorMessage: null,
+      lastErrorMessage: "Codex unavailable"
+    });
+    expect(
+      jsonBody<MemoryQuestionResponse>(released).question.answerPreview
+    ).toBeNull();
+    expect(
+      jsonBody<MemoryQuestionsResponse>(reclaimed).questions[0]
+    ).toMatchObject({
+      id: questionId,
+      status: "pending",
+      attemptCount:
+        jsonBody<MemoryQuestionsResponse>(claimed).questions[0]!.attemptCount +
+        1,
+      lastErrorMessage: null
     });
   });
 

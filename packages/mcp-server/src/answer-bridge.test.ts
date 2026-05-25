@@ -227,7 +227,7 @@ describe("local memory answer bridge", () => {
     expect(malformedJson.status).toBe(400);
   });
 
-  it("patches the question to error when local synthesis fails", async () => {
+  it("releases the question for retry when local synthesis throws", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];
     const apiUrl = await createServer(async (request, response) => {
@@ -266,8 +266,8 @@ describe("local memory answer bridge", () => {
           question: {
             id: questionId,
             query: "What did we decide?",
-            status: "error",
-            errorMessage: "Codex unavailable"
+            status: "pending",
+            lastErrorMessage: "Codex unavailable"
           }
         });
         return;
@@ -296,11 +296,199 @@ describe("local memory answer bridge", () => {
     });
     expect(patches).toEqual([
       {
-        status: "error",
+        status: "pending",
         attempt_count: 1,
-        error_message: "Codex unavailable"
+        last_error_message: "Codex unavailable"
       }
     ]);
+  });
+
+  it("does not persist Codex fallback evidence as an answered question", async () => {
+    const questionId = randomUUID();
+    const patches: Record<string, unknown>[] = [];
+    const fallbackMarkdown =
+      "Evidence bundle returned for Codex synthesis, but Codex failed.";
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.url === "/v1/memory/answer") {
+        json(response, 200, {
+          evidence: [{ id: "evidence-1" }],
+          evidenceBundle: { retrieval: { mode: "leaf_search" } },
+          citations: [{ id: "citation-1" }]
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What did we decide?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        patches.push(await readJson(request));
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What did we decide?",
+            status: "pending",
+            lastErrorMessage: fallbackMarkdown
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    answerWithMemoryWorker.mockResolvedValue({
+      markdown: fallbackMarkdown,
+      evidenceBundle: {
+        evidence: [{ id: "evidence-1" }],
+        retrieval: { mode: "leaf_search" }
+      },
+      citations: [{ id: "citation-1" }],
+      retrieval: { evidenceCount: 1 },
+      localMemoryWorker: {
+        provider: "codex",
+        promptVersion: "test",
+        model: null,
+        usedFallback: true,
+        skippedReason: "codex_failed"
+      }
+    });
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    const result = await postJson<{
+      ok: boolean;
+      error: string;
+      question: { id: string; status: string };
+    }>(`${bridgeUrl}/v1/memory/answer-local`, {
+      question_id: questionId,
+      query: "What did we decide?",
+      search_domain: "global"
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: fallbackMarkdown,
+      question: { id: questionId, status: "pending" }
+    });
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({
+      status: "pending",
+      attempt_count: 1,
+      last_error_message: fallbackMarkdown,
+      local_memory_worker: {
+        usedFallback: true,
+        skippedReason: "codex_failed"
+      },
+      retrieval: { mode: "leaf_search" }
+    });
+    expect(patches[0]).not.toHaveProperty("answer_markdown");
+    expect(patches[0]).not.toHaveProperty("evidence");
+    expect(patches[0]).not.toHaveProperty("citations");
+  });
+
+  it("stores a deliberate no-evidence answer as final", async () => {
+    const questionId = randomUUID();
+    const patches: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.url === "/v1/memory/answer") {
+        json(response, 200, { evidence: [], citations: [] });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: 1,
+              query: "What is absent?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        patches.push(await readJson(request));
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What is absent?",
+            status: "answered",
+            answerMarkdown: "No matching memory evidence found."
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    answerWithMemoryWorker.mockResolvedValue({
+      markdown: "No matching memory evidence found.",
+      evidenceBundle: { evidence: [] },
+      citations: [],
+      localMemoryWorker: {
+        provider: "codex",
+        promptVersion: "test",
+        model: null,
+        usedFallback: true,
+        skippedReason: "no_evidence"
+      }
+    });
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    const result = await postJson<{ ok: boolean }>(
+      `${bridgeUrl}/v1/memory/answer-local`,
+      {
+        question_id: questionId,
+        query: "What is absent?",
+        search_domain: "global"
+      }
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(patches[0]).toMatchObject({
+      status: "answered",
+      attempt_count: 1,
+      answer_markdown: "No matching memory evidence found.",
+      local_memory_worker: {
+        usedFallback: true,
+        skippedReason: "no_evidence"
+      }
+    });
   });
 
   it("claims pending questions in the local background service", async () => {
@@ -384,7 +572,128 @@ describe("local memory answer bridge", () => {
     });
   });
 
-  it("uses a longer lease for synchronous local answering", async () => {
+  it("catches up a retryable synthesis fallback on a later background run", async () => {
+    const questionId = randomUUID();
+    const claims: Record<string, unknown>[] = [];
+    const patches: Record<string, unknown>[] = [];
+    const fallbackMarkdown =
+      "Memory answer worker failed before judging retrieved evidence.";
+    let claimAttempt = 0;
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/memory/answer") {
+        json(response, 200, { evidence: [{ id: "evidence-1" }] });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        claims.push(await readJson(request));
+        claimAttempt += 1;
+        json(response, 200, {
+          questions: [
+            {
+              id: questionId,
+              attemptCount: claimAttempt,
+              query: "What should be retried?",
+              retrievalScope: "personal",
+              searchDomain: "global",
+              status: "pending"
+            }
+          ]
+        });
+        return;
+      }
+      if (
+        request.method === "PATCH" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        const patch = await readJson(request);
+        patches.push(patch);
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What should be retried?",
+            status: patch.status,
+            answerMarkdown: patch.answer_markdown ?? null,
+            lastErrorMessage: patch.last_error_message ?? null
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    vi.stubEnv("MEMORY_API_TOKEN", "cmt_test");
+    answerWithMemoryWorker
+      .mockResolvedValueOnce({
+        markdown: fallbackMarkdown,
+        evidenceBundle: { evidence: [{ id: "evidence-1" }] },
+        citations: [],
+        localMemoryWorker: {
+          provider: "codex",
+          promptVersion: "test",
+          model: null,
+          usedFallback: true,
+          skippedReason: "codex_failed"
+        }
+      })
+      .mockResolvedValueOnce({
+        markdown: "Recovered answer",
+        evidenceBundle: { evidence: [{ id: "evidence-1" }] },
+        citations: [],
+        localMemoryWorker: {
+          provider: "codex",
+          promptVersion: "test",
+          model: "gpt-test",
+          usedFallback: false
+        }
+      });
+    const { MemoryApiClient, defaultConfig } = await import("./index.js");
+    const { startPendingQuestionAnswerService } =
+      await import("./answer-bridge.js");
+    const service = startPendingQuestionAnswerService(
+      new MemoryApiClient(defaultConfig()),
+      {
+        serviceConfig: {
+          initialDelayMs: 60_000,
+          intervalMs: 60_000,
+          batchLimit: 1,
+          leaseSeconds: 180,
+          answerLimit: 10
+        }
+      }
+    );
+
+    const firstRun = await service.trigger("first");
+    const secondRun = await service.trigger("second");
+    service.stop();
+
+    expect(firstRun).toMatchObject({ ran: true, processed: 1 });
+    expect(secondRun).toMatchObject({ ran: true, processed: 1 });
+    expect(claims).toEqual([
+      { limit: 1, lease_seconds: 180 },
+      { limit: 1, lease_seconds: 180 }
+    ]);
+    expect(patches[0]).toMatchObject({
+      status: "pending",
+      attempt_count: 1,
+      last_error_message: fallbackMarkdown,
+      local_memory_worker: {
+        usedFallback: true,
+        skippedReason: "codex_failed"
+      }
+    });
+    expect(patches[0]).not.toHaveProperty("answer_markdown");
+    expect(patches[1]).toMatchObject({
+      status: "answered",
+      attempt_count: 2,
+      answer_markdown: "Recovered answer",
+      local_memory_worker: { usedFallback: false }
+    });
+  });
+
+  it("uses a bounded lease for synchronous local answering", async () => {
     const questionId = randomUUID();
     const claims: Record<string, unknown>[] = [];
     const apiUrl = await createServer(async (request, response) => {
@@ -448,7 +757,7 @@ describe("local memory answer bridge", () => {
     });
 
     expect(claims).toEqual([
-      { question_id: questionId, limit: 1, lease_seconds: 3600 }
+      { question_id: questionId, limit: 1, lease_seconds: 300 }
     ]);
   });
 });

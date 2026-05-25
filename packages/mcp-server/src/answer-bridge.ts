@@ -109,7 +109,7 @@ const answerLocalLeaseSeconds = () =>
     .int()
     .positive()
     .max(3600)
-    .catch(3600)
+    .catch(300)
     .parse(process.env.MEMORY_QUESTION_ANSWER_LOCAL_LEASE_SECONDS);
 
 const applyCors = (
@@ -231,16 +231,25 @@ const questionsFromClaimResponse = (
   );
 };
 
-const updateQuestionWithError = async (
+const releaseQuestionForRetry = async (
   client: MemoryApiClient,
-  questionId: string,
+  question: MemoryQuestionRecord,
   message: string,
-  attemptCount?: number | null
+  diagnostics: Partial<{
+    response: MemoryAnswerWorkerResponse;
+    retrieval: unknown;
+    localMemoryWorker: MemoryAnswerWorkerResponse["localMemoryWorker"];
+  }> = {}
 ) =>
-  client.updateQuestion(questionId, {
-    status: "error",
-    error_message: message,
-    ...(attemptCount ? { attempt_count: attemptCount } : {})
+  client.updateQuestion(question.id, {
+    status: "pending",
+    last_error_message: message,
+    ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
+    ...(diagnostics.response ? { response: diagnostics.response } : {}),
+    ...(diagnostics.retrieval ? { retrieval: diagnostics.retrieval } : {}),
+    ...(diagnostics.localMemoryWorker
+      ? { local_memory_worker: diagnostics.localMemoryWorker }
+      : {})
   });
 
 const evidenceFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
@@ -251,6 +260,10 @@ const citationsFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
 
 const retrievalFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
   answer.evidenceBundle?.retrieval ?? answer.retrieval;
+
+const isRetryableSynthesisFallback = (answer: MemoryAnswerWorkerResponse) =>
+  answer.localMemoryWorker.usedFallback === true &&
+  answer.localMemoryWorker.skippedReason === "codex_failed";
 
 const normalizeSearchDomain = (
   value: MemoryQuestionRecord["searchDomain"]
@@ -311,6 +324,21 @@ export const answerClaimedMemoryQuestion = async (
       limit: options.limit ?? 10,
       responseDetail: "with_evidence"
     });
+    if (isRetryableSynthesisFallback(answer)) {
+      const message =
+        answer.markdown?.trim() ||
+        "Memory answer worker failed before judging retrieved evidence.";
+      const updated = await releaseQuestionForRetry(client, question, message, {
+        response: answer,
+        retrieval: retrievalFromAnswer(answer),
+        localMemoryWorker: answer.localMemoryWorker
+      });
+      return {
+        ok: false,
+        question: questionFromResponse(updated),
+        error: message
+      };
+    }
     const updated = await updateQuestionWithAnswer(client, question, answer);
     return {
       ok: true,
@@ -319,11 +347,10 @@ export const answerClaimedMemoryQuestion = async (
     };
   } catch (error) {
     const message = errorMessage(error);
-    const updated = await updateQuestionWithError(
+    const updated = await releaseQuestionForRetry(
       client,
-      question.id,
-      message,
-      question.attemptCount
+      question,
+      message
     ).catch(() => ({ question }));
     return {
       ok: false,

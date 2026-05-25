@@ -619,6 +619,16 @@ const updateMemoryQuestionSchema = z.discriminatedUnion("status", [
     response: z.record(z.string(), z.unknown()).optional(),
     retrieval: z.record(z.string(), z.unknown()).optional(),
     local_memory_worker: z.record(z.string(), z.unknown()).optional()
+  }),
+  z.object({
+    status: z.literal("pending"),
+    last_error_message: z.string().min(1),
+    attempt_count: z.number().int().positive().optional(),
+    response: z.record(z.string(), z.unknown()).optional(),
+    evidence: z.array(z.unknown()).optional(),
+    citations: z.array(z.unknown()).optional(),
+    retrieval: z.record(z.string(), z.unknown()).optional(),
+    local_memory_worker: z.record(z.string(), z.unknown()).optional()
   })
 ]);
 
@@ -2372,14 +2382,25 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               retrieval: input.retrieval,
               localMemoryWorker: input.local_memory_worker
             }
-          : {
-              status: input.status,
-              errorMessage: input.error_message,
-              attemptCount: input.attempt_count,
-              response: input.response,
-              retrieval: input.retrieval,
-              localMemoryWorker: input.local_memory_worker
-            }
+          : input.status === "error"
+            ? {
+                status: input.status,
+                errorMessage: input.error_message,
+                attemptCount: input.attempt_count,
+                response: input.response,
+                retrieval: input.retrieval,
+                localMemoryWorker: input.local_memory_worker
+              }
+            : {
+                status: input.status,
+                lastErrorMessage: input.last_error_message,
+                attemptCount: input.attempt_count,
+                response: input.response,
+                evidence: input.evidence,
+                citations: input.citations,
+                retrieval: input.retrieval,
+                localMemoryWorker: input.local_memory_worker
+              }
       );
       return question
         ? { question }

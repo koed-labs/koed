@@ -1140,6 +1140,53 @@ describeDb("memory repository visibility", () => {
     expect(reclaimed[0]?.attemptCount).toBe(2);
     expect(staleCompletion).toBeNull();
 
+    const retryCreated = await repo.createMemoryQuestion(
+      { userId: alice.id },
+      {
+        query: "Can a failed local answer retry later?",
+        searchDomain: "global"
+      }
+    );
+    const retryClaimed = await repo.claimPendingMemoryQuestions(
+      { userId: alice.id },
+      { questionId: retryCreated.id, limit: 1, leaseSeconds: 120 }
+    );
+    const retryReleased = await repo.updateMemoryQuestion(
+      { userId: alice.id },
+      retryCreated.id,
+      {
+        status: "pending",
+        attemptCount: retryClaimed[0]!.attemptCount,
+        lastErrorMessage: "Codex unavailable",
+        response: { markdown: "raw fallback must not become the answer" },
+        retrieval: { mode: "test" },
+        localMemoryWorker: {
+          usedFallback: true,
+          skippedReason: "codex_failed"
+        }
+      }
+    );
+    const retryReclaimed = await repo.claimPendingMemoryQuestions(
+      { userId: alice.id },
+      { questionId: retryCreated.id, limit: 1, leaseSeconds: 120 }
+    );
+
+    expect(retryReleased).toMatchObject({
+      id: retryCreated.id,
+      status: "pending",
+      answerMarkdown: null,
+      errorMessage: null,
+      processingStartedAt: null,
+      processingLeaseUntil: null,
+      lastErrorMessage: "Codex unavailable"
+    });
+    expect(retryReleased?.answeredAt).toBeNull();
+    expect(retryReclaimed).toHaveLength(1);
+    expect(retryReclaimed[0]?.attemptCount).toBe(
+      retryClaimed[0]!.attemptCount + 1
+    );
+    expect(retryReclaimed[0]?.lastErrorMessage).toBeNull();
+
     const updated = await repo.updateMemoryQuestion(
       { userId: alice.id },
       created.id,
