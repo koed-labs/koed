@@ -3,21 +3,24 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadEnv } from "vite";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const target = path.join(
-  root,
-  "apps",
-  "history-browser",
-  "t3code-history-browser"
-);
+const serviceDir = path.join(root, "apps", "history-browser");
+const target = path.join(serviceDir, "t3code-history-browser");
 const mode = process.argv[2];
+const loadedEnv = loadEnv(
+  process.env.NODE_ENV ?? "development",
+  serviceDir,
+  ""
+);
+const runtimeEnv = { ...loadedEnv, ...process.env };
 const token =
-  process.env.HISTORY_BROWSER_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
+  runtimeEnv.HISTORY_BROWSER_GITHUB_TOKEN ?? runtimeEnv.GITHUB_TOKEN ?? "";
 
 const optional =
   (mode === "build" || mode === "typecheck") &&
-  (process.env.CI === "true" || process.env.HISTORY_BROWSER_OPTIONAL === "1");
+  (runtimeEnv.CI === "true" || runtimeEnv.HISTORY_BROWSER_OPTIONAL === "1");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -35,7 +38,7 @@ function run(command, args, options = {}) {
   }
 }
 
-function pnpm(args, env = process.env) {
+function pnpm(args, env = runtimeEnv) {
   run(
     "corepack",
     [
@@ -68,7 +71,13 @@ if (optional && !fs.existsSync(target) && !token) {
   process.exit(0);
 }
 
-run(process.execPath, [path.join(root, "scripts", "sync-history-browser.mjs")]);
+run(
+  process.execPath,
+  [path.join(root, "scripts", "sync-history-browser.mjs")],
+  {
+    env: runtimeEnv
+  }
+);
 
 if (mode !== "preview") {
   pnpm([
@@ -88,11 +97,11 @@ if (mode === "build") {
       "build"
     ],
     {
-      ...process.env,
+      ...runtimeEnv,
       VITE_KOED_HISTORY_BROWSER: "1",
       VITE_KOED_API_BASE_URL:
-        process.env.VITE_KOED_API_BASE_URL ??
-        process.env.VITE_API_BASE_URL ??
+        runtimeEnv.VITE_KOED_API_BASE_URL ??
+        runtimeEnv.VITE_API_BASE_URL ??
         "http://localhost:3000"
     }
   );
@@ -108,11 +117,11 @@ if (mode === "build") {
       "0.0.0.0"
     ],
     {
-      ...process.env,
+      ...runtimeEnv,
       VITE_KOED_HISTORY_BROWSER: "1",
       VITE_KOED_API_BASE_URL:
-        process.env.VITE_KOED_API_BASE_URL ??
-        process.env.VITE_API_BASE_URL ??
+        runtimeEnv.VITE_KOED_API_BASE_URL ??
+        runtimeEnv.VITE_API_BASE_URL ??
         "http://localhost:3000"
     }
   );

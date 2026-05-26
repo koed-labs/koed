@@ -2,10 +2,7 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    MODEL_REPO=Qwen/Qwen3-Embedding-0.6B-GGUF \
-    MODEL_FILE=Qwen3-Embedding-0.6B-Q8_0.gguf \
-    MODEL_NAME=Qwen/Qwen3-Embedding-0.6B-GGUF \
-    EMBEDDING_DIMENSIONS=1024 \
+    MODEL_KEY=qwen3-0.6b \
     EMBEDDING_BATCH_LIMIT=16 \
     EMBEDDING_MAX_TOKENS=32768 \
     LLAMA_N_CTX=32768
@@ -22,6 +19,7 @@ RUN apt-get update \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app.py /app/app.py
+COPY env_config.py /app/env_config.py
 
 EXPOSE 8000
 

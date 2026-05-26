@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -9,6 +10,19 @@ const examplePath = resolve(process.cwd(), ".env.example");
 if (!existsSync(examplePath)) {
   console.error(".env.example not found. Run this command from the repo root.");
   process.exit(1);
+}
+
+const syncResult = spawnSync(
+  process.execPath,
+  [resolve(process.cwd(), "scripts/sync-app-env-examples.mjs")],
+  { stdio: "inherit" }
+);
+if (syncResult.error) {
+  console.error(syncResult.error.message);
+  process.exit(1);
+}
+if (syncResult.status !== 0) {
+  process.exit(syncResult.status ?? 1);
 }
 
 const splitEnvLine = (line) => {

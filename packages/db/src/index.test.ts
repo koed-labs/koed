@@ -121,7 +121,7 @@ describe("local embedding status", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
-          model: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+          model: "qwen3-0.6b",
           dimensions: 1024,
           authRequired: true,
           authValid: false
@@ -133,13 +133,15 @@ describe("local embedding status", () => {
     await expect(repo.getLocalEmbeddingStatus()).resolves.toMatchObject({
       enabled: true,
       healthy: false,
-      model: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+      model: "qwen3-0.6b",
       dimensions: 1024,
       error: "Embedding service token rejected"
     });
-    expect(new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get(
-      "x-koed-embedding-token"
-    )).toBe("api-token");
+    expect(
+      new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get(
+        "x-koed-embedding-token"
+      )
+    ).toBe("api-token");
   });
 
   it("reports embedding health as healthy when token authentication succeeds", async () => {
@@ -150,7 +152,7 @@ describe("local embedding status", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({
-          model: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+          model: "qwen3-0.6b",
           dimensions: 1024,
           authRequired: true,
           authValid: true
@@ -162,7 +164,7 @@ describe("local embedding status", () => {
     await expect(repo.getLocalEmbeddingStatus()).resolves.toMatchObject({
       enabled: true,
       healthy: true,
-      model: "Qwen/Qwen3-Embedding-0.6B-GGUF",
+      model: "qwen3-0.6b",
       dimensions: 1024
     });
   });
@@ -197,7 +199,7 @@ describeDb("memory repository visibility", () => {
     });
 
   const embedPendingSources = async () => {
-    const dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
+    const dimensions = 1024;
     const vector = Array.from({ length: dimensions }, (_, index) =>
       index === 0 ? 1 : 0
     );
@@ -205,10 +207,9 @@ describeDb("memory repository visibility", () => {
     for (const source of sources) {
       await repo.upsertSourceEmbedding({
         source,
-        model: process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF",
+        model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
         dimensions,
-        version:
-          process.env.EMBEDDING_VERSION ?? "local-qwen3-embedding-0.6b-gguf-v1",
+        version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
         vector
       });
     }
@@ -710,17 +711,15 @@ describeDb("memory repository visibility", () => {
     const source = await repo.getEmbeddableSource("memory_event", event.id);
     expect(source).not.toBeNull();
 
-    const dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
+    const dimensions = 1024;
     const firstVector = Array.from({ length: dimensions }, (_, index) =>
       index === 0 ? 1 : 0
     );
     const secondVector = Array.from({ length: dimensions }, (_, index) =>
       index === 1 ? 1 : 0
     );
-    const model =
-      process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF";
-    const version =
-      process.env.EMBEDDING_VERSION ?? "local-qwen3-embedding-0.6b-gguf-v1";
+    const model = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
+    const version = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
 
     await repo.upsertSourceEmbedding({
       source: source!,
@@ -777,14 +776,14 @@ describeDb("memory repository visibility", () => {
 
   it("keeps non-rerankable vector hits when summary reranking is enabled", async () => {
     const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
-    const originalRerankingEnabled = process.env.RERANKING_ENABLED;
+    const originalRerankerKey = process.env.RERANKER_KEY;
     const originalEmbeddingServiceToken = process.env.EMBEDDING_SERVICE_TOKEN;
     process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
-    process.env.RERANKING_ENABLED = "true";
+    process.env.RERANKER_KEY = "qwen3-reranker-0.6b";
     process.env.EMBEDDING_SERVICE_TOKEN = "test-embedding-token";
 
     try {
-      const dimensions = Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
+      const dimensions = 1024;
       const queryVector = Array.from({ length: dimensions }, (_, index) =>
         index === 0 ? 1 : 0
       );
@@ -796,8 +795,7 @@ describeDb("memory repository visibility", () => {
           );
           return new Response(
             JSON.stringify({
-              model:
-                process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF",
+              model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
               dimensions,
               vectors: [queryVector]
             }),
@@ -861,10 +859,8 @@ describeDb("memory repository visibility", () => {
       );
       expect(nodeSource).not.toBeNull();
       expect(eventSource).not.toBeNull();
-      const model =
-        process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF";
-      const version =
-        process.env.EMBEDDING_VERSION ?? "local-qwen3-embedding-0.6b-gguf-v1";
+      const model = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
+      const version = process.env.EMBEDDING_MODEL ?? "qwen3-0.6b";
       await repo.upsertSourceEmbedding({
         source: nodeSource!,
         model,
@@ -902,10 +898,10 @@ describeDb("memory repository visibility", () => {
       } else {
         process.env.EMBEDDING_SERVICE_URL = originalEmbeddingServiceUrl;
       }
-      if (originalRerankingEnabled === undefined) {
-        delete process.env.RERANKING_ENABLED;
+      if (originalRerankerKey === undefined) {
+        delete process.env.RERANKER_KEY;
       } else {
-        process.env.RERANKING_ENABLED = originalRerankingEnabled;
+        process.env.RERANKER_KEY = originalRerankerKey;
       }
       if (originalEmbeddingServiceToken === undefined) {
         delete process.env.EMBEDDING_SERVICE_TOKEN;

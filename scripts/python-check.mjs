@@ -43,7 +43,16 @@ try {
   requireTool(ruff, "ruff");
   requireTool(mypy, "mypy");
   run("ruff check apps/embedding-service", ruff, ["check", "."]);
-  run("mypy apps/embedding-service", mypy, ["app.py", "benchmark_embeddings.py"]);
+  run(
+    "python unit tests apps/embedding-service",
+    path.join(venvDir, "bin", "python"),
+    ["-m", "unittest", "discover"]
+  );
+  run("mypy apps/embedding-service", mypy, [
+    "app.py",
+    "benchmark_embeddings.py",
+    "env_config.py"
+  ]);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);

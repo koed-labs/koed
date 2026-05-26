@@ -19,7 +19,11 @@ import {
   createMemorySourceRepository,
   type MemorySourceRepository
 } from "@koed/db";
-import { createHealth } from "@koed/shared";
+import {
+  createHealth,
+  resolveSupportedEmbeddingModelConfig,
+  resolveSupportedRerankerModelConfig
+} from "@koed/shared";
 
 const sessionCookieName = "cm_session";
 const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
@@ -87,7 +91,9 @@ export const canReceiveGraphStreamPayload = async (
   isTeamMember: (userId: string, teamId: string) => Promise<boolean>
 ): Promise<boolean> => {
   if (payload.visibility === "personal") {
-    return Boolean(payload.ownerUserId && payload.ownerUserId === client.userId);
+    return Boolean(
+      payload.ownerUserId && payload.ownerUserId === client.userId
+    );
   }
   if (payload.visibility === "team") {
     return Boolean(
@@ -173,13 +179,13 @@ const allowedCorsOrigins = (): Set<string> => {
   const development =
     process.env.NODE_ENV === "production"
       ? []
-        : [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:5174",
-            "http://127.0.0.1:5174",
-            "http://localhost:3000"
-          ];
+      : [
+          "http://localhost:5173",
+          "http://127.0.0.1:5173",
+          "http://localhost:5174",
+          "http://127.0.0.1:5174",
+          "http://localhost:3000"
+        ];
   return new Set(
     [...configured, ...derived, ...development].map((origin) =>
       origin.replace(/\/+$/, "")
@@ -1506,10 +1512,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         supportedClients: ["codex"],
         plannedClients: ["claude", "gemini", "cursor", "pi"],
         embeddingModel: process.env.EMBEDDING_MODEL ?? embedding.model,
-        embeddingDimensions:
-          Number(process.env.EMBEDDING_DIMENSIONS ?? embedding.dimensions) ||
-          null,
-        rerankingEnabled: process.env.RERANKING_ENABLED === "true"
+        embeddingDimensions: resolveSupportedEmbeddingModelConfig(
+          process.env.EMBEDDING_MODEL ?? embedding.model ?? undefined
+        ).dimensions,
+        rerankingEnabled:
+          resolveSupportedRerankerModelConfig(process.env.RERANKER_KEY) !== null
       }
     };
   });

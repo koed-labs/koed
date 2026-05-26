@@ -34,10 +34,11 @@ FROM node:24.13.1-alpine AS runtime
 WORKDIR /app/apps/history-browser/t3code-history-browser/apps/web
 
 ENV NODE_ENV=production
+ENV HISTORY_WEB_PORT=5174
 
 COPY --from=build --chown=node:node /app /app
 
 USER node
 EXPOSE 5174
 
-CMD ["node", "node_modules/vite/bin/vite.js", "preview", "--host", "0.0.0.0", "--port", "5174"]
+CMD ["sh", "-c", "node node_modules/vite/bin/vite.js preview --host 0.0.0.0 --port \"${HISTORY_WEB_PORT:-5174}\""]

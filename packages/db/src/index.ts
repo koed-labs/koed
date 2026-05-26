@@ -11,7 +11,11 @@ import type {
   MemorySearchResult,
   RetrievalMetadata
 } from "@koed/core";
-import { env } from "@koed/shared";
+import {
+  env,
+  resolveSupportedEmbeddingModelConfig,
+  resolveSupportedRerankerModelConfig
+} from "@koed/shared";
 
 const { Pool } = pg;
 
@@ -1399,16 +1403,16 @@ const embeddingServiceHeaders = (): Record<string, string> => {
 };
 
 const localEmbeddingModel = (): string =>
-  process.env.EMBEDDING_MODEL ?? "Qwen/Qwen3-Embedding-0.6B-GGUF";
+  resolveSupportedEmbeddingModelConfig(process.env.EMBEDDING_MODEL).key;
 
 const localEmbeddingDimensions = (): number =>
-  Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
+  resolveSupportedEmbeddingModelConfig(process.env.EMBEDDING_MODEL).dimensions;
 
 const localEmbeddingVersion = (): string =>
-  process.env.EMBEDDING_VERSION ?? "local-qwen3-embedding-0.6b-gguf-v1";
+  resolveSupportedEmbeddingModelConfig(process.env.EMBEDDING_MODEL).key;
 
 const rerankingEnabled = (): boolean =>
-  (process.env.RERANKING_ENABLED ?? "false").trim().toLowerCase() === "true";
+  resolveSupportedRerankerModelConfig(process.env.RERANKER_KEY) !== null;
 
 const sourceHash = (
   sourceType: EmbeddableSourceType,

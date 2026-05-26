@@ -1,19 +1,28 @@
 import { Queue } from "bullmq";
 import { createDbPool, createMemorySourceRepository } from "@koed/db";
+import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 
-const batchSize = Number.parseInt(process.env.EMBEDDING_BACKFILL_BATCH ?? "500", 10);
+loadWorkerEnv();
+
+const workerEnv = resolveWorkerEnv();
+
+const batchSize = Number.parseInt(
+  process.env.EMBEDDING_BACKFILL_BATCH ?? "500",
+  10
+);
 const queue = new Queue("memory-embed", {
   connection: {
-    url: process.env.REDIS_URL ?? "redis://localhost:6379",
+    url: workerEnv.redisUrl,
     maxRetriesPerRequest: null
   }
 });
 const pool = createDbPool();
 const repo = createMemorySourceRepository(pool);
 
-const embeddingVersion = (
-  process.env.EMBEDDING_VERSION ?? "local-qwen3-embedding-0.6b-gguf-v1"
-).replace(/[^a-zA-Z0-9_-]/g, "-");
+const embeddingVersion = workerEnv.embeddingVersion.replace(
+  /[^a-zA-Z0-9_-]/g,
+  "-"
+);
 
 try {
   const sources = await repo.listSourcesNeedingEmbeddings(batchSize);

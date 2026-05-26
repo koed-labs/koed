@@ -1,12 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { resolveHistoryBrowserViteEnv } from "./env-config";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  server: {
-    port: Number(process.env.HISTORY_WEB_PORT ?? 5174)
-  },
-  preview: {
-    port: Number(process.env.HISTORY_WEB_PORT ?? 5174)
-  }
-});
+  ...resolveHistoryBrowserViteEnv(mode)
+}));
