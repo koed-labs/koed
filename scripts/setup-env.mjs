@@ -41,25 +41,6 @@ const parseEnv = (contents) => {
   return values;
 };
 
-const ensureOrigins = (value) => {
-  const required = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5174"
-  ];
-  const origins = new Set(
-    value
-      .split(",")
-      .map((origin) => origin.trim())
-      .filter(Boolean)
-  );
-  for (const origin of required) {
-    origins.add(origin);
-  }
-  return [...origins].join(",");
-};
-
 const example = readFileSync(examplePath, "utf8");
 const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
 const currentValues = parseEnv(existing);
@@ -77,22 +58,10 @@ const shouldGenerateValue = (key, value) =>
     value.trim() === "" ||
     value.trim().startsWith("replace_with_generated"));
 
-const renamedValues = new Map([
-  ["API_DATA_ENCRYPTION_KEY", currentValues.get("DATA_ENCRYPTION_KEY")],
-  ["API_CORS_ORIGINS", currentValues.get("CORS_ORIGINS")],
-  ["API_LOG_LEVEL", currentValues.get("LOG_LEVEL")],
-  ["CONSOLE_HOST_PORT", currentValues.get("WEB_HOST_PORT")],
-  ["CONSOLE_PORT", currentValues.get("WEB_PORT")]
-]);
-
 const valueForKey = (key) => {
   const current = currentValues.get(key);
   if (current !== undefined && !shouldGenerateValue(key, current)) {
-    return key === "API_CORS_ORIGINS" ? ensureOrigins(current) : current;
-  }
-  const renamed = renamedValues.get(key);
-  if (renamed !== undefined) {
-    return key === "API_CORS_ORIGINS" ? ensureOrigins(renamed) : renamed;
+    return current;
   }
   const generated = generatedValues.get(key);
   if (generated !== undefined) {
