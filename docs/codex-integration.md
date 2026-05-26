@@ -34,9 +34,9 @@ The console setup page generates these MCP values for your checkout. If your API
 
 The History Browser Questions tab uses the local MCP server as its AI-client
 sidecar. The browser can ask a question and persist it in Koed, then the MCP
-server delegates answer synthesis to the local Codex environment. The backend
-stores questions, retrieval evidence, citations, and answer status, but does
-not run LLM synthesis.
+server delegates answer synthesis to Codex app-server mode in the local Codex
+environment. The backend stores questions, retrieval evidence, citations, and
+answer status, but does not run LLM synthesis.
 
 When the MCP server starts, it also starts a local browser bridge on
 `http://localhost:3210` by default. The History Browser uses that local endpoint
@@ -44,6 +44,11 @@ for Questions; there is no separate bridge process to run. `MEMORY_API_TOKEN`
 also enables the MCP server's local pending-question catch-up service, which
 claims unanswered browser questions and finishes them through local Codex answer
 synthesis after a refresh or interrupted browser request.
+
+Koed starts Codex app-server mode internally when it needs local answer or LCM
+summary synthesis. Users do not need to run a separate app-server or answer
+bridge command. `MEMORY_CODEX_APP_SERVER_BINARY` can override the `codex`
+binary path when needed; the default is correct for normal Codex installs.
 
 ## Capture Hook
 
@@ -113,4 +118,7 @@ The MCP Server uses the Koed API Token for Recall, LCM summary submission, and M
 
 `memory_answer` is the normal recall tool. It returns a compact answer by default so normal Codex sessions are not filled with large evidence bundles. Use its explicit evidence/detail option only when debugging retrieval.
 
-LCM summaries are processed by the MCP-local background service. If that local service is delayed or fails, Koed still returns pending placeholders as degraded evidence and reports the backlog through diagnostics instead of marking the backend unhealthy.
+LCM summaries are processed by the MCP-local background service through Codex
+app-server mode. If that local service is delayed or fails, Koed still returns
+pending placeholders as degraded evidence and reports the backlog through
+diagnostics instead of marking the backend unhealthy.

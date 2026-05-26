@@ -58,7 +58,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     planningMode: "planned" | "single_pass";
     maxSearches: number;
     maxExpansions: number;
-    codexBinary: string;
+    appServerBinary: string;
     defaultResponseDetail: "answer_only";
   };
   localLcmSummaryWorker: {
@@ -67,7 +67,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     reasoningEffort: string;
     concurrency: number;
     maxPromptTokens: number;
-    codexBinary: string;
+    appServerBinary: string;
   };
   localLcmSummaryService: {
     initialDelayMs: number;
@@ -360,7 +360,7 @@ export const memoryAccessCheck = async (
       planningMode: answerWorker.planningMode,
       maxSearches: answerWorker.maxSearches,
       maxExpansions: answerWorker.maxExpansions,
-      codexBinary: answerWorker.codexBinary,
+      appServerBinary: answerWorker.appServerBinary,
       defaultResponseDetail: "answer_only"
     },
     localLcmSummaryWorker: {
@@ -369,7 +369,7 @@ export const memoryAccessCheck = async (
       reasoningEffort: lcmSummaryWorker.reasoningEffort,
       concurrency: lcmSummaryWorker.concurrency,
       maxPromptTokens: lcmSummaryWorker.maxPromptTokens,
-      codexBinary: lcmSummaryWorker.codexBinary
+      appServerBinary: lcmSummaryWorker.appServerBinary
     },
     localLcmSummaryService: lcmSummaryService,
     localLcmSummaryDiagnostics: {

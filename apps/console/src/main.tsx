@@ -594,6 +594,10 @@ const App = () => {
                   masked={newToken === null}
                 />
                 <FieldCopy
+                  label="MEMORY_CODEX_APP_SERVER_BINARY"
+                  value="codex"
+                />
+                <FieldCopy
                   label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
                   value="48000"
                 />

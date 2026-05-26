@@ -74,6 +74,7 @@ enabled = true
 [mcp_servers.${mcpName}.env]
 MEMORY_API_URL = "${apiUrl}"
 MEMORY_API_TOKEN = "${token}"
+MEMORY_CODEX_APP_SERVER_BINARY = "codex"
 
 ${hookBlocks}
 ${markerEnd}

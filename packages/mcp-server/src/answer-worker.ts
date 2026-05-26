@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { countTokensForModel } from "@koed/core";
+import {
+  runCodexAppServerTurn,
+  resolveCodexAppServerBinary,
+  type CodexThreadTokenUsage
+} from "./codex-app-server-runner.js";
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
@@ -17,7 +18,7 @@ export interface MemoryAnswerWorkerConfig {
   planningMode: "planned" | "single_pass";
   maxSearches: number;
   maxExpansions: number;
-  codexBinary: string;
+  appServerBinary: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
@@ -33,6 +34,7 @@ export interface MemoryAnswerWorkerStatus {
   searchCount?: number;
   expandCount?: number;
   memoryStatus?: "found" | "not_found" | "insufficient" | "pending_summary";
+  tokenUsage?: CodexThreadTokenUsage;
   usedFallback: boolean;
   skippedReason?: string;
 }
@@ -122,7 +124,11 @@ export type CodexAnswerRunner = (
   prompt: string,
   config: MemoryAnswerWorkerConfig,
   timeoutMs: number
-) => Promise<{ text: string; model: string }>;
+) => Promise<{
+  text: string;
+  model: string;
+  tokenUsage?: CodexThreadTokenUsage;
+}>;
 
 export interface MemoryAnswerRetrievalClient {
   search(input: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -149,9 +155,6 @@ const integerEnv = (
 export const resolveMemoryAnswerWorkerConfig = (
   env: NodeJS.ProcessEnv = process.env
 ): MemoryAnswerWorkerConfig => {
-  const configuredBinary = resolveEnvValue(env, "MEMORY_ANSWER_CODEX_BINARY");
-  const codexBinary =
-    configuredBinary ?? (process.platform === "win32" ? "codex.cmd" : "codex");
   return {
     provider:
       resolveEnvValue(env, "MEMORY_ANSWER_PROVIDER")?.toLowerCase() ??
@@ -174,7 +177,7 @@ export const resolveMemoryAnswerWorkerConfig = (
       0,
       integerEnv(env, "MEMORY_ANSWER_MAX_EXPANSIONS", 3)
     ),
-    codexBinary,
+    appServerBinary: resolveCodexAppServerBinary(env),
     cwd: process.cwd(),
     env
   };
@@ -437,7 +440,11 @@ const runCodexWithRetries = async (
   prompt: string,
   config: MemoryAnswerWorkerConfig,
   runner: CodexAnswerRunner
-): Promise<{ text: string; model: string }> => {
+): Promise<{
+  text: string;
+  model: string;
+  tokenUsage?: CodexThreadTokenUsage;
+}> => {
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
       const result = await runner(prompt, config, config.timeoutMs * attempt);
@@ -472,6 +479,7 @@ const runPlannedMemoryAnswer = async (
   searchCount: number;
   expandCount: number;
   memoryStatus: PlannedAnswerStatus;
+  tokenUsage?: CodexThreadTokenUsage;
   evidence: unknown[];
   citations: unknown[];
   retrievals: unknown[];
@@ -528,6 +536,7 @@ const runPlannedMemoryAnswer = async (
         searchCount: state.searches.length,
         expandCount: state.expansions.length,
         memoryStatus: action.memoryStatus ?? "insufficient",
+        tokenUsage: result.tokenUsage,
         evidence: state.evidence,
         citations: state.citations,
         retrievals: state.retrievals,
@@ -618,6 +627,7 @@ const runPlannedMemoryAnswer = async (
     searchCount: state.searches.length,
     expandCount: state.expansions.length,
     memoryStatus: finalAction.memoryStatus ?? "insufficient",
+    tokenUsage: finalResult.tokenUsage,
     evidence: state.evidence,
     citations: state.citations,
     retrievals: state.retrievals,
@@ -629,96 +639,26 @@ export const runCodexMemoryAnswer: CodexAnswerRunner = (
   prompt,
   config,
   timeoutMs
-) =>
-  new Promise((resolve, reject) => {
-    const tempDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-answer-")
-    );
-    const outputFile = path.join(tempDirectory, "answer.md");
-    const args = [
-      "exec",
-      "-m",
-      config.model,
-      "-c",
-      `reasoning_effort="${config.reasoningEffort}"`,
-      "--sandbox",
-      "read-only",
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--ignore-user-config",
-      "-C",
-      config.cwd,
-      "--output-last-message",
-      outputFile,
-      "-"
-    ];
-    const child = spawn(config.codexBinary, args, {
+): Promise<{
+  text: string;
+  model: string;
+  tokenUsage?: CodexThreadTokenUsage;
+}> =>
+  runCodexAppServerTurn(
+    prompt,
+    {
+      appServerBinary: config.appServerBinary,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
       cwd: config.cwd,
       env: config.env,
-      stdio: ["pipe", "ignore", "ignore"],
-      shell: process.platform === "win32",
-      windowsHide: true
-    });
-
-    let settled = false;
-    const cleanup = () => {
-      try {
-        fs.rmSync(tempDirectory, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup only.
-      }
-    };
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      child.kill();
-      cleanup();
-      reject(new Error(`Codex memory answer timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    child.once("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      cleanup();
-      reject(error);
-    });
-
-    child.once("close", (code) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      try {
-        if (code !== 0) {
-          throw new Error(
-            `Codex memory answer exited with code ${code ?? "unknown"}`
-          );
-        }
-        const text = fs.existsSync(outputFile)
-          ? fs.readFileSync(outputFile, "utf8").trim()
-          : "";
-        if (text.length === 0) {
-          throw new Error("Codex memory answer produced empty output");
-        }
-        resolve({
-          text,
-          model: `codex:${config.model}:${config.reasoningEffort}`
-        });
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-      } finally {
-        cleanup();
-      }
-    });
-
-    child.stdin.end(prompt);
-  });
+      clientName: "koed-memory-answer-worker",
+      baseInstructions:
+        "You are a private local Koed memory-answer worker running in Codex app-server mode. Return only the requested final answer.",
+      developerInstructions: ""
+    },
+    timeoutMs
+  );
 
 export const answerWithMemoryWorker = async (
   payload: MemoryAnswerPayload,
@@ -819,6 +759,7 @@ export const answerWithMemoryWorker = async (
             searchCount: planned.searchCount,
             expandCount: planned.expandCount,
             memoryStatus: planned.memoryStatus,
+            tokenUsage: planned.tokenUsage,
             usedFallback: false
           }
         },
@@ -872,6 +813,7 @@ export const answerWithMemoryWorker = async (
             promptTokenEstimate: promptTokens.tokens,
             tokenizerEncoding: promptTokens.encoding,
             tokenizerModelMatched: promptTokens.exactModelMatch,
+            tokenUsage: result.tokenUsage,
             usedFallback: false
           }
         },

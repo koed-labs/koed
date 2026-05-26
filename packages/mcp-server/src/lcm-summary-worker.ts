@@ -1,8 +1,11 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chunkTextForModel, countTokensForModel } from "@koed/core";
+import {
+  runCodexAppServerTurn,
+  resolveCodexAppServerBinary
+} from "./codex-app-server-runner.js";
 import type { MemoryApiClient } from "./index.js";
 
 const CODEX_SUMMARY_PROVIDER = "codex";
@@ -19,7 +22,7 @@ export interface LcmSummaryWorkerConfig {
   retryDelayMs: number;
   concurrency: number;
   maxPromptTokens: number;
-  codexBinary: string;
+  appServerBinary: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }
@@ -97,14 +100,11 @@ export const resolveLcmSummaryWorkerConfig = (
       | "retryDelayMs"
       | "concurrency"
       | "maxPromptTokens"
-      | "codexBinary"
+      | "appServerBinary"
       | "cwd"
     >
   > = {}
 ): LcmSummaryWorkerConfig => {
-  const configuredBinary = resolveEnvValue(env, "MEMORY_LCM_CODEX_BINARY");
-  const codexBinary =
-    configuredBinary ?? (process.platform === "win32" ? "codex.cmd" : "codex");
   return {
     provider:
       overrides.provider ??
@@ -149,7 +149,8 @@ export const resolveLcmSummaryWorkerConfig = (
           DEFAULT_MAX_PROMPT_TOKENS
         )
     ),
-    codexBinary: overrides.codexBinary ?? codexBinary,
+    appServerBinary:
+      overrides.appServerBinary ?? resolveCodexAppServerBinary(env),
     cwd: overrides.cwd ?? process.cwd(),
     env
   };
@@ -216,6 +217,19 @@ const acquireLocalSummaryLock = (
 const normalizeForPrompt = (text: string): string =>
   text.replace(/\s+/g, " ").trim();
 
+const MAX_SOURCE_PAYLOAD_PROMPT_CHARS = 2_000;
+
+const payloadTextForPrompt = (payload: unknown): string => {
+  if (payload === undefined) {
+    return "";
+  }
+  const normalized = normalizeForPrompt(JSON.stringify(payload));
+  if (normalized.length <= MAX_SOURCE_PAYLOAD_PROMPT_CHARS) {
+    return ` payload:${normalized}`;
+  }
+  return ` payload:${normalized.slice(0, MAX_SOURCE_PAYLOAD_PROMPT_CHARS)}... [payload truncated for prompt; source text remains authoritative]`;
+};
+
 const itemAnchor = (item: LcmSourceItem): string =>
   [
     item.kind,
@@ -237,13 +251,9 @@ const itemText = (item: LcmSourceItem): string => {
       : item.actor
         ? item.actor
         : (item.kind ?? "source");
-  const payload =
-    item.payload === undefined
-      ? ""
-      : ` payload:${normalizeForPrompt(JSON.stringify(item.payload))}`;
   return `- [${itemAnchor(item)}] ${label}: ${normalizeForPrompt(
     item.text ?? ""
-  )}${payload}`;
+  )}${payloadTextForPrompt(item.payload)}`;
 };
 
 export const buildLcmSummaryPrompt = (
@@ -451,96 +461,22 @@ export const runCodexLcmSummary: CodexLcmSummaryRunner = (
   prompt,
   config,
   timeoutMs
-) =>
-  new Promise((resolve, reject) => {
-    const tempDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "koed-lcm-summary-")
-    );
-    const outputFile = path.join(tempDirectory, "summary.txt");
-    const args = [
-      "exec",
-      "-m",
-      config.model,
-      "-c",
-      `reasoning_effort="${config.reasoningEffort}"`,
-      "--sandbox",
-      "read-only",
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--ignore-user-config",
-      "-C",
-      config.cwd,
-      "--output-last-message",
-      outputFile,
-      "-"
-    ];
-    const child = spawn(config.codexBinary, args, {
+): Promise<{ text: string; model: string }> =>
+  runCodexAppServerTurn(
+    prompt,
+    {
+      appServerBinary: config.appServerBinary,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
       cwd: config.cwd,
       env: config.env,
-      stdio: ["pipe", "ignore", "ignore"],
-      shell: process.platform === "win32",
-      windowsHide: true
-    });
-
-    let settled = false;
-    const cleanup = () => {
-      try {
-        fs.rmSync(tempDirectory, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup only.
-      }
-    };
-    const timer = setTimeout(() => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      child.kill();
-      cleanup();
-      reject(new Error(`Codex LCM summary timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    child.once("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      cleanup();
-      reject(error);
-    });
-
-    child.once("close", (code) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      try {
-        if (code !== 0) {
-          throw new Error(
-            `Codex LCM summary exited with code ${code ?? "unknown"}`
-          );
-        }
-        const text = fs.existsSync(outputFile)
-          ? fs.readFileSync(outputFile, "utf8").trim()
-          : "";
-        if (text.length === 0) {
-          throw new Error("Codex LCM summary produced empty output");
-        }
-        resolve({
-          text,
-          model: `codex:${config.model}:${config.reasoningEffort}`
-        });
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-      } finally {
-        cleanup();
-      }
-    });
-
-    child.stdin.end(prompt);
-  });
+      clientName: "koed-lcm-summary-worker",
+      baseInstructions:
+        "You are a private local Koed LCM summary worker running in Codex app-server mode. Return only the requested summary text.",
+      developerInstructions: ""
+    },
+    timeoutMs
+  );
 
 const runPromptWithRetries = async (
   prompt: string,
@@ -743,7 +679,7 @@ export const summarizePendingLcmNodes = async (
         retryDelayMs: config.retryDelayMs,
         concurrency: config.concurrency,
         maxPromptTokens: config.maxPromptTokens,
-        codexBinary: config.codexBinary
+        appServerBinary: config.appServerBinary
       },
       results: []
     };
@@ -789,7 +725,7 @@ export const summarizePendingLcmNodes = async (
         retryDelayMs: config.retryDelayMs,
         concurrency: config.concurrency,
         maxPromptTokens: config.maxPromptTokens,
-        codexBinary: config.codexBinary
+        appServerBinary: config.appServerBinary
       },
       results
     };
