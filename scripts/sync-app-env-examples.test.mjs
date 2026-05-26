@@ -131,14 +131,14 @@ test("renders shared memory config outside app sections", () => {
       source: "API",
       appKey: "RERANKER_KEY",
       rootKey: "EMBEDDING_RERANKER_KEY",
-      value: "qwen3-reranker-0.6b"
+      value: ""
     },
     { source: "API", appKey: "PORT", rootKey: "API_PORT", value: "3000" }
   ]);
 
   assert.match(
     block,
-    /# Shared app config\nMEMORY_LIMIT=20\nEMBEDDING_MODEL_KEY=qwen3-0.6b\nEMBEDDING_RERANKER_KEY=qwen3-reranker-0.6b\n\n# API app\nAPI_PORT=3000/
+    /# Shared app config\nMEMORY_LIMIT=20\nEMBEDDING_MODEL_KEY=qwen3-0.6b\nEMBEDDING_RERANKER_KEY=\n\n# API app\nAPI_PORT=3000/
   );
 });
 
