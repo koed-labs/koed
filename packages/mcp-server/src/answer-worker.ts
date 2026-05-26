@@ -177,7 +177,9 @@ export const resolveMemoryAnswerWorkerConfig = (
       0,
       integerEnv(env, "MEMORY_ANSWER_MAX_EXPANSIONS", 3)
     ),
-    appServerBinary: resolveCodexAppServerBinary(env),
+    appServerBinary: resolveCodexAppServerBinary(env, [
+      "MEMORY_ANSWER_CODEX_BINARY"
+    ]),
     cwd: process.cwd(),
     env
   };
@@ -635,7 +637,7 @@ const runPlannedMemoryAnswer = async (
   };
 };
 
-export const runCodexMemoryAnswer: CodexAnswerRunner = (
+export const runCodexAppServerMemoryAnswer: CodexAnswerRunner = (
   prompt,
   config,
   timeoutMs
@@ -717,7 +719,7 @@ export const answerWithMemoryWorker = async (
     );
   }
 
-  const runner = options.runner ?? runCodexMemoryAnswer;
+  const runner = options.runner ?? runCodexAppServerMemoryAnswer;
   if (config.planningMode === "planned" && options.client) {
     const fallbackMarkdown =
       typeof payload.markdown === "string" ? payload.markdown : "";

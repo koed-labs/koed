@@ -150,7 +150,8 @@ export const resolveLcmSummaryWorkerConfig = (
         )
     ),
     appServerBinary:
-      overrides.appServerBinary ?? resolveCodexAppServerBinary(env),
+      overrides.appServerBinary ??
+      resolveCodexAppServerBinary(env, ["MEMORY_LCM_CODEX_BINARY"]),
     cwd: overrides.cwd ?? process.cwd(),
     env
   };
@@ -457,7 +458,7 @@ const buildSummaryPrompts = (
   }));
 };
 
-export const runCodexLcmSummary: CodexLcmSummaryRunner = (
+export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
   prompt,
   config,
   timeoutMs
@@ -656,7 +657,7 @@ export const summarizePendingLcmNodes = async (
   } = {}
 ) => {
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
-  const runner = options.runner ?? runCodexLcmSummary;
+  const runner = options.runner ?? runCodexAppServerLcmSummary;
   const requestedLimit = options.limit ?? 10;
   const releaseLock = acquireLocalSummaryLock(
     config.env,

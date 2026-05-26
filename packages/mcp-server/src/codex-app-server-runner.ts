@@ -57,9 +57,13 @@ const resolveEnvValue = (
 };
 
 export const resolveCodexAppServerBinary = (
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  compatibilityNames: string[] = []
 ): string =>
   resolveEnvValue(env, "MEMORY_CODEX_APP_SERVER_BINARY") ??
+  compatibilityNames
+    .map((name) => resolveEnvValue(env, name))
+    .find((value): value is string => Boolean(value)) ??
   (process.platform === "win32" ? "codex.cmd" : "codex");
 
 const sourceCodexHome = (env: NodeJS.ProcessEnv): string =>
@@ -70,8 +74,17 @@ const createIsolatedCodexHome = (
   model: string
 ): string => {
   const sourceHome = sourceCodexHome(env);
-  const parent = fs.existsSync(sourceHome) ? sourceHome : os.tmpdir();
-  const isolatedHome = fs.mkdtempSync(path.join(parent, ".koed-app-server-"));
+  let isolatedHome: string;
+  try {
+    isolatedHome = fs.mkdtempSync(
+      path.join(
+        fs.existsSync(sourceHome) ? sourceHome : os.tmpdir(),
+        ".koed-app-server-"
+      )
+    );
+  } catch {
+    isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), ".koed-app-server-"));
+  }
   fs.chmodSync(isolatedHome, 0o700);
 
   for (const filename of ["auth.json", ".credentials.json"]) {
@@ -293,7 +306,19 @@ class CodexAppServerClient {
     if (!line.trim()) {
       return;
     }
-    const message = JSON.parse(line) as JsonRpcMessage;
+    let message: JsonRpcMessage;
+    try {
+      message = JSON.parse(line) as JsonRpcMessage;
+    } catch (error) {
+      this.failAll(
+        new Error(
+          `Codex app-server emitted malformed JSON on stdout: ${line.slice(0, 200)}`,
+          { cause: error }
+        )
+      );
+      this.close();
+      return;
+    }
     if (typeof message.id === "number") {
       const pending = this.pending.get(message.id);
       if (!pending) {
@@ -380,17 +405,19 @@ class CodexAppServerClient {
         return;
       }
       const state = this.stateFor(params.threadId, turn.id);
-      if (turn.status === "failed") {
+      if (turn.status === "completed") {
+        state.completed = true;
+      } else {
         const error = asRecord(turn.error);
         state.error = new Error(
           typeof error.message === "string"
             ? error.message
-            : "Codex app-server turn failed"
+            : `Codex app-server turn ended with status ${
+                typeof turn.status === "string" ? turn.status : "unknown"
+              }`
         );
-      } else {
         state.completed = true;
       }
-      state.completed = true;
       this.settleTurnIfReady(params.threadId, turn.id);
     }
   }
