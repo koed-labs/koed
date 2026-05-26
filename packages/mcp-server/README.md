@@ -6,7 +6,8 @@ and LCM summaries, and provides the capture hook binary used by Codex lifecycle
 hooks.
 
 The backend stores memory, graph data, questions, and retrieval evidence. This
-package runs on the user's machine and uses the local Codex CLI for synthesis.
+package runs on the user's machine and uses Codex app-server mode for local
+synthesis.
 
 ## Binaries
 
@@ -19,7 +20,8 @@ pnpm --filter @koed/mcp-server build
 After build, the package exposes:
 
 - `koed-mcp`: stdio MCP server for Codex.
-- `koed-memory-answer-bridge`: local HTTP bridge for History Browser questions.
+- `koed-memory-answer-bridge`: standalone local HTTP bridge for History Browser
+  questions. Normal MCP startup runs its own bridge.
 - `koed-capture-hook`: Codex lifecycle hook for automatic capture.
 
 For direct checkout usage, run the built files from `dist/`:
@@ -42,6 +44,8 @@ Working directory: /path/to/koed-self-hosted
 Environment:
   MEMORY_API_URL=http://localhost:3000
   MEMORY_API_TOKEN=<koed-api-token>
+  MEMORY_CODEX_APP_SERVER_BINARY=codex
+  MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 ```
 
 Run a quick health check from the package:
@@ -67,33 +71,29 @@ expand tools:
 MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS=true
 ```
 
-## Codex CLI Path
+## Codex App-Server Binary
 
-The local answer worker must be able to run the Codex CLI. By default it calls
-`codex`, so the process that starts `koed-mcp` or `koed-memory-answer-bridge`
-must have the Codex binary on `PATH`.
+The local answer and LCM summary workers start Codex app-server mode when they
+need synthesis. By default Koed calls `codex`, so the process that starts
+`koed-mcp` must have the Codex binary on `PATH`.
 
 Alternatively, point Koed at the binary explicitly:
 
 ```bash
-MEMORY_ANSWER_CODEX_BINARY=/absolute/path/to/codex
-```
-
-The same override is available for LCM summaries:
-
-```bash
-MEMORY_LCM_SUMMARY_CODEX_BINARY=/absolute/path/to/codex
+MEMORY_CODEX_APP_SERVER_BINARY=/absolute/path/to/codex
 ```
 
 ## History Browser Answer Bridge
 
 When `koed-mcp` starts, it also starts a local HTTP bridge on
-`http://localhost:3210`. The History Browser uses this bridge for Questions:
+`http://localhost:3210` by default. The History Browser uses this bridge for
+Questions; users do not need to run a separate app-server or answer bridge
+process for normal operation:
 
 1. The browser creates a pending question in the backend.
 2. The bridge claims the question.
 3. The backend retrieves evidence through local embeddings.
-4. The bridge asks local Codex to synthesize the answer.
+4. The bridge asks Codex app-server mode to synthesize the answer locally.
 5. The backend stores the answer and diagnostics.
 
 Useful bridge settings:
@@ -114,7 +114,8 @@ lsof -nP -iTCP:3210 -sTCP:LISTEN
 ```
 
 If questions remain pending with `localMemoryWorker.skippedReason=codex_failed`,
-first check that the process owning port `3210` can resolve `codex`. Prefer the
+first check that the process owning port `3210` can resolve `codex` or that
+`MEMORY_CODEX_APP_SERVER_BINARY` points at the correct binary. Prefer the
 MCP-owned bridge; avoid running a second standalone bridge on the same port.
 
 ## Capture Hook
@@ -192,6 +193,7 @@ node packages/mcp-server/dist/cli.js lcm-summarize --limit 2
 - Browser question says `Failed to fetch`: check the bridge health endpoint and
   CORS origins.
 - Question stays pending with `codex_failed`: check `which codex` in the same
-  environment that started the bridge, or set `MEMORY_ANSWER_CODEX_BINARY`.
+  environment that started the MCP server, or set
+  `MEMORY_CODEX_APP_SERVER_BINARY`.
 - Backend returns evidence but no final answer: the backend is working; local
   Codex synthesis is failing or unavailable.
