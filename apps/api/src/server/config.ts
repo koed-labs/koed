@@ -104,7 +104,7 @@ export const resolveApiServerConfig = (
     requestBodyLimitBytes: positiveIntEnv(
       environment,
       "REQUEST_BODY_LIMIT_BYTES",
-      256 * 1024
+      4 * 1024 * 1024
     ),
     databaseUrl,
     redisUrl,

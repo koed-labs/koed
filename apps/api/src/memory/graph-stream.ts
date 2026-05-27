@@ -10,6 +10,7 @@ export interface GraphUpdatePayload {
   eventIds?: string[];
   questionIds?: string[];
   ownerUserId?: string | null;
+  teamId?: string | null;
   projectId?: string | null;
   threadId?: string | null;
   visibility?: "personal" | string | null;
@@ -23,7 +24,7 @@ interface GraphUpdateEventRef {
   threadId: string;
 }
 
-interface GraphStreamClient {
+export interface GraphStreamClient {
   userId: string;
   reply: FastifyReply;
 }
@@ -85,11 +86,45 @@ const writeGraphStreamEvent = (
   reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
 };
 
-const graphUpdateKey = (payload: GraphUpdatePayload): string => {
+export const graphUpdateKey = (payload: GraphUpdatePayload): string => {
   if (payload.visibility === "personal" && payload.ownerUserId) {
     return `personal:${payload.ownerUserId}`;
   }
+  if (payload.visibility === "team" && payload.teamId) {
+    return `team:${payload.teamId}`;
+  }
   return "global";
+};
+
+export const guardedBroadcastGraphUpdate = ({
+  app,
+  clients,
+  payload
+}: {
+  app: Pick<FastifyInstance, "log">;
+  clients: Iterable<GraphStreamClient>;
+  payload: GraphUpdatePayload;
+}) => {
+  for (const client of clients) {
+    if (!canReceiveGraphStreamPayload(client, payload)) {
+      continue;
+    }
+    try {
+      writeGraphStreamEvent(client.reply, "graph_update", payload);
+    } catch (error) {
+      app.log.warn(
+        {
+          event: {
+            name: "graph_stream.broadcast_failed",
+            category: "stream"
+          },
+          component: "graph_stream",
+          err: error
+        },
+        "could not broadcast graph update"
+      );
+    }
+  }
 };
 
 export const createGraphStreamService = async ({
@@ -112,15 +147,6 @@ export const createGraphStreamService = async ({
     }
   >();
   let graphListenClient: GraphListenClient | null = null;
-
-  const broadcastGraphUpdate = (payload: GraphUpdatePayload) => {
-    for (const client of graphStreamClients) {
-      if (!canReceiveGraphStreamPayload(client, payload)) {
-        continue;
-      }
-      writeGraphStreamEvent(client.reply, "graph_update", payload);
-    }
-  };
 
   const scheduleGraphUpdate = (payload: GraphUpdatePayload) => {
     const action = graphUpdateActionForPayload(payload);
@@ -176,19 +202,23 @@ export const createGraphStreamService = async ({
         const pending = pendingGraphUpdates.get(key);
         pendingGraphUpdates.delete(key);
         if (pending) {
-          broadcastGraphUpdate({
-            ...pending.payload,
-            coalesced: true,
-            ...(pending.eventRefs.size > 0
-              ? {
-                  eventIds: [...pending.eventRefs.keys()],
-                  eventRefs: [...pending.eventRefs.values()]
-                }
-              : {}),
-            ...(pending.questionIds.size > 0
-              ? { questionIds: [...pending.questionIds] }
-              : {}),
-            changedAt: new Date().toISOString()
+          guardedBroadcastGraphUpdate({
+            app,
+            clients: graphStreamClients,
+            payload: {
+              ...pending.payload,
+              coalesced: true,
+              ...(pending.eventRefs.size > 0
+                ? {
+                    eventIds: [...pending.eventRefs.keys()],
+                    eventRefs: [...pending.eventRefs.values()]
+                  }
+                : {}),
+              ...(pending.questionIds.size > 0
+                ? { questionIds: [...pending.questionIds] }
+                : {}),
+              changedAt: new Date().toISOString()
+            }
           });
         }
       },

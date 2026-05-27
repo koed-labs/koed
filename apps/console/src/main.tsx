@@ -640,7 +640,7 @@ const App = () => {
                   masked={newToken === null}
                 />
                 <FieldCopy label="MEMORY_HOOK_STRICT" value="false" />
-                <FieldCopy label="MEMORY_HOOK_MAX_ITEMS" value="10" />
+                <FieldCopy label="MEMORY_RAW_INGEST_BATCH_ITEMS" value="10" />
                 <FieldCopy
                   label="MEMORY_HOOK_TRIGGER_LCM_SUMMARY"
                   value="true"

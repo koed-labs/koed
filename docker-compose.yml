@@ -99,9 +99,7 @@ services:
       COOKIE_SECURE: "${API_COOKIE_SECURE}"
       CORS_ORIGINS: ${API_CORS_ORIGINS}
     command: >
-      sh -c "cd node_modules/@koed/db &&
-      node_modules/.bin/node-pg-migrate up --migrations-dir src/migrations --migrations-table schema_migrations &&
-      cd /app &&
+      sh -c "node_modules/.bin/node-pg-migrate up --migrations-dir node_modules/@koed/db/src/migrations --migrations-table schema_migrations &&
       node dist/index.js"
     ports:
       - "${API_HOST_PORT}:${API_PORT}"

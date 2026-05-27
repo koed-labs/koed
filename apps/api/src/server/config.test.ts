@@ -10,7 +10,7 @@ describe("resolveApiServerConfig", () => {
       production: false,
       test: false,
       logLevel: "info",
-      requestBodyLimitBytes: 256 * 1024,
+      requestBodyLimitBytes: 4 * 1024 * 1024,
       cookieSecure: true,
       publicRegistrationEnabled: false,
       rateLimit: {
