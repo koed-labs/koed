@@ -2,7 +2,7 @@ import { loadApiEnv, resolveApiEnv } from "./env-config.js";
 
 loadApiEnv();
 
-const { buildServer } = await import("./server.js");
+const { buildServer } = await import("./server/index.js");
 const { host, port } = resolveApiEnv();
 
 const app = await buildServer();

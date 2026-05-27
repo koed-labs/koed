@@ -26,7 +26,7 @@ import {
   canReceiveGraphStreamPayload,
   graphUpdateActionForPayload,
   shouldIgnoreGraphStreamPayload
-} from "./server.js";
+} from "./server/index.js";
 
 afterEach(() => {
   for (const name of [
@@ -44,7 +44,9 @@ afterEach(() => {
     "CACHE_STORE",
     "CACHE_REDIS_URL",
     "GRAPH_CACHE_TTL_SECONDS",
-    "KOED_HOST_CHECKOUT_PATH"
+    "KOED_HOST_CHECKOUT_PATH",
+    "CORS_ORIGINS",
+    "API_CORS_ORIGINS"
   ]) {
     delete process.env[name];
   }
@@ -71,11 +73,6 @@ const jsonBody = <T>(response: { body: string }): T =>
 type TokenResponse = {
   token: string;
   apiToken: { tokenPrefix: string };
-};
-
-type TeamResponse = {
-  teamId: string;
-  team: { name: string; inviteCode: string };
 };
 
 type AccessResponse = {
@@ -191,7 +188,7 @@ const createFakeRepository = (): MemorySourceRepository => {
   const requireTeamMemoryWritePermission = (userId: string, teamId: string) => {
     const role = getMembership(userId, teamId);
     if (role !== "owner" && role !== "admin") {
-      throw new Error("User is not allowed to modify Team Memory");
+      throw new Error("User is not allowed to modify shared memory");
     }
   };
 
@@ -536,7 +533,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     async createMemoryNode(actor: ActorContext, input: CreateMemoryNodeInput) {
       if (input.visibility === "team") {
         if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
+          throw new Error("Unsupported visibility scope");
         }
         if (!getMembership(actor.userId, input.teamId)) {
           throw new Error("User is not an active member of the requested team");
@@ -1363,7 +1360,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     async createMemoryEvent(actor, input) {
       if (input.visibility === "team") {
         if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
+          throw new Error("Unsupported visibility scope");
         }
         if (!getMembership(actor.userId, input.teamId)) {
           throw new Error("User is not an active member of the requested team");
@@ -1454,7 +1451,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     async createLcmNodes(actor, input) {
       if (input.visibility === "team") {
         if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
+          throw new Error("Unsupported visibility scope");
         }
         if (!getMembership(actor.userId, input.teamId)) {
           throw new Error("User is not an active member of the requested team");
@@ -1577,58 +1574,47 @@ describe("api health", () => {
     expect(shouldIgnoreGraphStreamPayload(questionPayload)).toBe(false);
   });
 
-  it("authorizes graph stream payloads by memory visibility", async () => {
+  it("authorizes graph stream payloads by memory visibility", () => {
     const ownerId = randomUUID();
-    const teammateId = randomUUID();
     const outsiderId = randomUUID();
-    const teamId = randomUUID();
-    const isTeamMember = async (userId: string, candidateTeamId: string) =>
-      candidateTeamId === teamId && userId === teammateId;
 
-    await expect(
+    expect(
       canReceiveGraphStreamPayload(
         { userId: ownerId },
         {
           table: "memory_events",
           visibility: "personal",
           ownerUserId: ownerId
-        },
-        isTeamMember
+        }
       )
-    ).resolves.toBe(true);
-    await expect(
+    ).toBe(true);
+    expect(
       canReceiveGraphStreamPayload(
         { userId: outsiderId },
         {
           table: "memory_events",
           visibility: "personal",
           ownerUserId: ownerId
-        },
-        isTeamMember
+        }
       )
-    ).resolves.toBe(false);
-    await expect(
-      canReceiveGraphStreamPayload(
-        { userId: teammateId },
-        {
-          table: "memory_events",
-          visibility: "team",
-          teamId
-        },
-        isTeamMember
-      )
-    ).resolves.toBe(true);
-    await expect(
+    ).toBe(false);
+    expect(
       canReceiveGraphStreamPayload(
         { userId: outsiderId },
         {
           table: "memory_events",
-          visibility: "team",
-          teamId
-        },
-        isTeamMember
+          visibility: "unsupported"
+        }
       )
-    ).resolves.toBe(false);
+    ).toBe(false);
+    expect(
+      canReceiveGraphStreamPayload(
+        { userId: outsiderId },
+        {
+          table: "schema_migrations"
+        }
+      )
+    ).toBe(true);
   });
 
   it("returns OK", async () => {
@@ -1653,9 +1639,7 @@ describe("api health", () => {
     await app.close();
 
     expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-methods"]).toContain(
-      "PATCH"
-    );
+    expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
   });
 
   it("keeps public status probes coarse and requires auth for details", async () => {
@@ -1815,141 +1799,56 @@ describe("account and access flows", () => {
       method: "POST",
       url: "/memory-nodes",
       headers: { cookie },
-      payload: { visibility: "team", summaryText: "team memory" }
+      payload: { visibility: "shared", summaryText: "shared memory" }
     });
     await app.close();
 
     expect(registered.statusCode).toBe(200);
-    expect(
-      jsonBody<{ currentTeam: unknown | null }>(me).currentTeam
-    ).toBeNull();
+    expect(jsonBody<{ user: { email: string } }>(me).user.email).toBe(
+      "solo@example.com"
+    );
     expect(rejected.statusCode).toBe(404);
   });
 
-  it("creates a team and lets another user join by invite code", async () => {
+  it("does not expose team management endpoints", async () => {
     process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
     const repository = createFakeRepository();
     const app = await buildServer({ repository });
-    const owner = await app.inject({
+    const registered = await app.inject({
       method: "POST",
       url: "/auth/register",
-      payload: { email: "owner@example.com", password: "password123" }
+      payload: { email: "teams-disabled@example.com", password: "password123" }
     });
-    const ownerCookie = cookieHeader(owner);
-    const created = await app.inject({
-      method: "POST",
-      url: "/teams",
-      headers: { cookie: ownerCookie },
-      payload: { name: "Research" }
-    });
-    const inviteCode = jsonBody<TeamResponse>(created).team.inviteCode;
-
-    const member = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "member@example.com", password: "password123" }
-    });
-    const joined = await app.inject({
-      method: "POST",
-      url: "/teams/join",
-      headers: { cookie: cookieHeader(member) },
-      payload: { inviteCode }
-    });
+    const cookie = cookieHeader(registered);
+    const responses = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/teams",
+        headers: { cookie },
+        payload: { name: "Research" }
+      }),
+      app.inject({
+        method: "POST",
+        url: "/teams/join",
+        headers: { cookie },
+        payload: { inviteCode: "INVITE" }
+      }),
+      app.inject({
+        method: "GET",
+        url: "/teams/current",
+        headers: { cookie }
+      }),
+      app.inject({
+        method: "GET",
+        url: "/teams/current/members",
+        headers: { cookie }
+      })
+    ]);
     await app.close();
 
-    expect(created.statusCode).toBe(200);
-    expect(joined.statusCode).toBe(200);
-    expect(jsonBody<TeamResponse>(joined).team.name).toBe("Research");
-  });
-
-  it("requires owner or admin role to modify existing Team Memory", async () => {
-    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
-    const repository = createFakeRepository();
-    const app = await buildServer({ repository });
-    const owner = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "team-owner@example.com", password: "password123" }
-    });
-    const ownerCookie = cookieHeader(owner);
-    const ownerUserId = jsonBody<{ user: { id: string } }>(owner).user.id;
-    const created = await app.inject({
-      method: "POST",
-      url: "/teams",
-      headers: { cookie: ownerCookie },
-      payload: { name: "Permissions" }
-    });
-    const teamId = jsonBody<TeamResponse>(created).teamId;
-
-    const admin = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "team-admin@example.com", password: "password123" }
-    });
-    const adminCookie = cookieHeader(admin);
-    const adminUserId = jsonBody<{ user: { id: string } }>(admin).user.id;
-    const member = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "team-member@example.com", password: "password123" }
-    });
-    const memberCookie = cookieHeader(member);
-    const memberUserId = jsonBody<{ user: { id: string } }>(member).user.id;
-    await repository.addTeamMember(teamId, adminUserId, "admin");
-    await repository.addTeamMember(teamId, memberUserId, "member");
-    const teamMemory = await repository.createMemoryNode(
-      { userId: ownerUserId },
-      {
-        visibility: "team",
-        teamId,
-        summaryText: "Team Memory should be governed",
-        captureMethod: "mcp"
-      }
-    );
-    const personalMemory = await repository.createMemoryNode(
-      { userId: memberUserId },
-      {
-        visibility: "personal",
-        summaryText: "Personal Memory can still be edited",
-        captureMethod: "mcp"
-      }
-    );
-
-    const memberTeamPatch = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/nodes/${teamMemory.id}`,
-      headers: { cookie: memberCookie },
-      payload: { summaryText: "Member edit" }
-    });
-    const memberPersonalPatch = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/nodes/${personalMemory.id}`,
-      headers: { cookie: memberCookie },
-      payload: { summaryText: "Member personal edit" }
-    });
-    const adminTeamPatch = await app.inject({
-      method: "PATCH",
-      url: `/v1/memory/nodes/${teamMemory.id}`,
-      headers: { cookie: adminCookie },
-      payload: { summaryText: "Admin edit" }
-    });
-    const memberTeamDelete = await app.inject({
-      method: "DELETE",
-      url: `/v1/memory/nodes/${teamMemory.id}`,
-      headers: { cookie: memberCookie }
-    });
-    const ownerTeamDelete = await app.inject({
-      method: "DELETE",
-      url: `/v1/memory/nodes/${teamMemory.id}`,
-      headers: { cookie: ownerCookie }
-    });
-    await app.close();
-
-    expect(memberTeamPatch.statusCode).toBe(403);
-    expect(memberPersonalPatch.statusCode).toBe(200);
-    expect(adminTeamPatch.statusCode).toBe(200);
-    expect(memberTeamDelete.statusCode).toBe(403);
-    expect(ownerTeamDelete.statusCode).toBe(200);
+    expect(responses.map((response) => response.statusCode)).toEqual([
+      404, 404, 404, 404
+    ]);
   });
 
   it("authenticates API requests with bearer tokens", async () => {
@@ -2061,6 +1960,30 @@ describe("account and access flows", () => {
     expect(rejectedLogin.statusCode).toBe(403);
   });
 
+  it("does not treat root-level API_CORS_ORIGINS as an API process setting", async () => {
+    process.env.CORS_ORIGINS = "http://console.example.test";
+    process.env.API_CORS_ORIGINS = "http://legacy.example.test";
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+
+    const app = await buildServer({ repository: createFakeRepository() });
+    const rejectedRegister = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin: "http://legacy.example.test" },
+      payload: { email: "legacy-cors@example.com", password: "password123" }
+    });
+    const allowedRegister = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      headers: { origin: "http://console.example.test" },
+      payload: { email: "configured-cors@example.com", password: "password123" }
+    });
+    await app.close();
+
+    expect(rejectedRegister.statusCode).toBe(403);
+    expect(allowedRegister.statusCode).toBe(200);
+  });
+
   it("does not grant API-token access to Operator Console routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
@@ -2084,11 +2007,6 @@ describe("account and access flows", () => {
       app.inject({
         method: "GET",
         url: "/api-tokens",
-        headers: bearerHeaders
-      }),
-      app.inject({
-        method: "GET",
-        url: "/teams/current",
         headers: bearerHeaders
       }),
       app.inject({
@@ -2121,9 +2039,9 @@ describe("account and access flows", () => {
 
     expect(createdToken.statusCode).toBe(200);
     expect(consoleRequests.map((response) => response.statusCode)).toEqual([
-      401, 401, 401, 401, 401, 200
+      401, 401, 401, 401, 200
     ]);
-    expect(jsonBody<{ redacted: boolean }>(consoleRequests[5]).redacted).toBe(
+    expect(jsonBody<{ redacted: boolean }>(consoleRequests[4]).redacted).toBe(
       true
     );
     expect(accessCheck.statusCode).toBe(200);
@@ -2240,11 +2158,11 @@ describe("account and access flows", () => {
       headers,
       payload: { query: "concise changelog", retrieval_scope: "personal" }
     });
-    const rejectedTeamAnswer = await app.inject({
+    const rejectedSharedAnswer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
       headers,
-      payload: { query: "concise changelog", retrieval_scope: "personal+team" }
+      payload: { query: "concise changelog", retrieval_scope: "shared" }
     });
     const cookieAnswer = await app.inject({
       method: "POST",
@@ -2268,14 +2186,14 @@ describe("account and access flows", () => {
     );
     expect(answerBody.evidence[0]?.summaryText).toContain("concise changelog");
     expect(answerBody.citations).toHaveLength(1);
-    expect(rejectedTeamAnswer.statusCode).toBe(400);
+    expect(rejectedSharedAnswer.statusCode).toBe(400);
     expect(cookieAnswer.statusCode).toBe(200);
     expect(
       jsonBody<AnswerResponse>(cookieAnswer).evidence[0]?.summaryText
     ).toContain("concise changelog");
   });
 
-  it("rejects team capture policies for API-token setup", async () => {
+  it("rejects unsupported capture policy visibility for API-token setup", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),
       runMemoryJobsInlineForTests: true
@@ -2283,7 +2201,10 @@ describe("account and access flows", () => {
     const registered = await app.inject({
       method: "POST",
       url: "/auth/register",
-      payload: { email: "team-capture@example.com", password: "password123" }
+      payload: {
+        email: "unsupported-capture@example.com",
+        password: "password123"
+      }
     });
     const cookie = cookieHeader(registered);
     const tokenResponse = await app.inject({
@@ -2296,7 +2217,7 @@ describe("account and access flows", () => {
       authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
     };
 
-    const teamPolicy = await app.inject({
+    const unsupportedPolicy = await app.inject({
       method: "PUT",
       url: "/v1/capture-policies",
       headers,
@@ -2308,7 +2229,7 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(teamPolicy.statusCode).toBe(400);
+    expect(unsupportedPolicy.statusCode).toBe(400);
   });
 
   it("treats duplicate capture source hashes as idempotent", async () => {
@@ -2415,13 +2336,7 @@ describe("account and access flows", () => {
       headers,
       payload
     });
-    const createdTeam = await app.inject({
-      method: "POST",
-      url: "/teams",
-      headers: { cookie },
-      payload: { name: "Capture Team" }
-    });
-    await app.inject({
+    const rejectedTeamPolicy = await app.inject({
       method: "PUT",
       url: "/v1/capture-policies",
       headers,
@@ -2440,7 +2355,7 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(first.statusCode).toBe(200);
-    expect(createdTeam.statusCode).toBe(200);
+    expect(rejectedTeamPolicy.statusCode).toBe(400);
     expect(second.statusCode).toBe(200);
     expect(jsonBody<CaptureResponse>(second).event.visibility).toBe("personal");
     expect(compactionScopes.at(-1)).toEqual({
@@ -3516,8 +3431,8 @@ describe("account and access flows", () => {
         authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
       },
       payload: {
-        query: "What did we decide about team memory?",
-        retrieval_scope: "personal+team"
+        query: "What did we decide about shared memory?",
+        retrieval_scope: "shared"
       }
     });
     await app.close();

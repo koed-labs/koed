@@ -1,0 +1,343 @@
+import cors from "@fastify/cors";
+import cookie from "@fastify/cookie";
+import { Queue } from "bullmq";
+import Fastify, { type FastifyRequest } from "fastify";
+import { Redis } from "ioredis";
+import { z } from "zod";
+import { type Visibility } from "@koed/core";
+import {
+  createDbPool,
+  createMemorySourceRepository,
+  type MemorySourceRepository
+} from "@koed/db";
+import {
+  createAuthHelpers,
+  createHashSecret,
+  registerAuthRoutes,
+  sessionCookieName
+} from "../auth/index.js";
+import { registerApiTokenRoutes } from "../api-tokens/index.js";
+import {
+  type CacheProvider,
+  createRateLimitHandlers,
+  MemoryRateLimitStore,
+  NoopCacheProvider,
+  RedisCacheProvider,
+  RedisRateLimitStore,
+  resetMemoryRateLimitStore,
+  type RateLimitStore
+} from "../infra/index.js";
+import {
+  canReceiveGraphStreamPayload,
+  createGraphStreamService,
+  createMemoryJobScheduler,
+  graphUpdateActionForPayload,
+  registerCaptureRoutes,
+  registerGraphRoutes,
+  registerLcmRoutes,
+  registerQuestionRoutes,
+  registerRecallRoutes,
+  shouldIgnoreGraphStreamPayload
+} from "../memory/index.js";
+import { resolveApiServerConfig } from "./config.js";
+import { registerOperationalRoutes } from "./operational-routes.js";
+
+export {
+  canReceiveGraphStreamPayload,
+  graphUpdateActionForPayload,
+  shouldIgnoreGraphStreamPayload
+};
+
+interface BuildServerOptions {
+  repository?: MemorySourceRepository;
+  runMemoryJobsInlineForTests?: boolean;
+  rateLimitStore?: RateLimitStore;
+  cacheProvider?: CacheProvider;
+}
+
+const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
+
+const originFromReferer = (referer: string | undefined): string | null => {
+  if (!referer) {
+    return null;
+  }
+  try {
+    return new URL(referer).origin;
+  } catch {
+    return null;
+  }
+};
+
+const sessionEstablishingWritePaths = new Set([
+  "/auth/setup",
+  "/auth/register",
+  "/auth/login"
+]);
+
+const requestPathname = (request: FastifyRequest): string => {
+  try {
+    return new URL(request.url, "http://koed.local").pathname;
+  } catch {
+    return request.url.split("?")[0] ?? request.url;
+  }
+};
+
+export const buildServer = async (options: BuildServerOptions = {}) => {
+  const config = resolveApiServerConfig();
+
+  if (config.test) {
+    resetMemoryRateLimitStore();
+  }
+
+  const app = Fastify({
+    logger: config.test
+      ? false
+      : {
+          level: config.logLevel,
+          redact: [
+            "req.headers.authorization",
+            "req.headers.cookie",
+            "res.headers.set-cookie"
+          ]
+        },
+    bodyLimit: config.requestBodyLimitBytes
+  });
+
+  const pool =
+    options.repository || !config.databaseUrl ? null : createDbPool();
+  const repository =
+    options.repository ?? (pool ? createMemorySourceRepository(pool) : null);
+  const createQueue = (name: string) =>
+    config.redisUrl
+      ? new Queue(name, {
+          connection: {
+            url: config.redisUrl,
+            maxRetriesPerRequest: null
+          }
+        })
+      : null;
+  const embeddingQueue = createQueue("memory-embed");
+  const compactionQueue = createQueue("lcm-compact");
+  const rateLimitRedis =
+    !options.rateLimitStore &&
+    config.rateLimit.store === "redis" &&
+    config.rateLimit.redisUrl
+      ? new Redis(config.rateLimit.redisUrl, {
+          lazyConnect: true,
+          maxRetriesPerRequest: null
+        })
+      : null;
+  const cacheRedis =
+    !options.cacheProvider &&
+    config.cache.store === "redis" &&
+    config.cache.redisUrl
+      ? new Redis(config.cache.redisUrl, {
+          lazyConnect: true,
+          maxRetriesPerRequest: null
+        })
+      : null;
+  const rateLimitStore: RateLimitStore =
+    options.rateLimitStore ??
+    (rateLimitRedis
+      ? new RedisRateLimitStore(rateLimitRedis)
+      : new MemoryRateLimitStore());
+  const cacheProvider: CacheProvider =
+    options.cacheProvider ??
+    (cacheRedis ? new RedisCacheProvider(cacheRedis) : new NoopCacheProvider());
+  let graphStreamService: { registerRoutes(): void; close(): void } | null =
+    null;
+  const hashSecret = createHashSecret(config.apiTokenPepper);
+  const rateLimitHandlers = createRateLimitHandlers(
+    rateLimitStore,
+    hashSecret,
+    config.rateLimit.policies
+  );
+
+  app.addHook("onClose", async () => {
+    graphStreamService?.close();
+    await Promise.all([
+      embeddingQueue?.close(),
+      compactionQueue?.close(),
+      rateLimitStore.close?.(),
+      cacheProvider.close?.()
+    ]);
+    await pool?.end();
+  });
+
+  const corsOrigins = config.corsOrigins;
+  await app.register(cors, {
+    origin: (origin, callback) => {
+      if (!origin || corsOrigins.has(normalizeOrigin(origin))) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    preflight: true,
+    credentials: true
+  });
+
+  await app.register(cookie);
+  app.addHook("preHandler", (request, _reply, done) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+      done();
+      return;
+    }
+    const hasSessionCookie = Boolean(request.cookies[sessionCookieName]);
+    const createsSessionCookie = sessionEstablishingWritePaths.has(
+      requestPathname(request)
+    );
+    if (!hasSessionCookie && !createsSessionCookie) {
+      done();
+      return;
+    }
+    const requestOrigin =
+      request.headers.origin ?? originFromReferer(request.headers.referer);
+    if (requestOrigin && !corsOrigins.has(normalizeOrigin(requestOrigin))) {
+      done(
+        Object.assign(new Error("Invalid request origin"), {
+          statusCode: 403
+        })
+      );
+      return;
+    }
+    done();
+  });
+  const requireRepository = (): MemorySourceRepository => {
+    if (!repository) {
+      throw Object.assign(new Error("Database is not configured"), {
+        statusCode: 503
+      });
+    }
+
+    return repository;
+  };
+  const authHelpers = createAuthHelpers(requireRepository, {
+    hashSecret,
+    cookieSecure: config.cookieSecure
+  });
+  const {
+    runCompactionInline,
+    enqueueEmbedding,
+    scheduleMemoryEventProcessing
+  } = createMemoryJobScheduler({
+    embeddingQueue,
+    compactionQueue,
+    runMemoryJobsInlineForTests: options.runMemoryJobsInlineForTests,
+    log: app.log
+  });
+
+  const resolveCapturePolicyForRequest = async (
+    repo: MemorySourceRepository,
+    requesterContext: { userId: string },
+    input: { workspaceId?: string; sessionId?: string; threadId?: string }
+  ) =>
+    repo.getEffectiveCapturePolicy(requesterContext, {
+      projectId: input.workspaceId,
+      threadId: input.threadId,
+      sessionId: input.sessionId
+    });
+
+  const rejectUnsupportedCapturePolicy = (policy: {
+    visibility: Visibility;
+  }) => {
+    if (policy.visibility !== "personal") {
+      throw Object.assign(
+        new Error(
+          "Only personal capture visibility is supported in this build"
+        ),
+        { statusCode: 400 }
+      );
+    }
+  };
+
+  const routeContext = {
+    config,
+    requireRepository,
+    auth: authHelpers,
+    rateLimit: rateLimitHandlers,
+    jobs: {
+      enqueueEmbedding
+    },
+    graph: {
+      cacheProvider,
+      graphCacheTtlSeconds: config.cache.graphCacheTtlSeconds,
+      hashCacheKey: hashSecret
+    },
+    capture: {
+      scheduleMemoryEventProcessing,
+      resolveCapturePolicyForRequest,
+      rejectUnsupportedCapturePolicy
+    }
+  };
+  graphStreamService = await createGraphStreamService({
+    app,
+    auth: authHelpers,
+    pool,
+    cacheProvider,
+    corsOrigins,
+    graphUpdateDebounceMs: config.graph.updateDebounceMs,
+    memoryEventGraphUpdateDebounceMs: config.graph.memoryEventUpdateDebounceMs
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    const statusCodeCandidate =
+      typeof error === "object" && error !== null && "statusCode" in error
+        ? error.statusCode
+        : undefined;
+    const zodError = error instanceof z.ZodError;
+    const message = zodError
+      ? "Invalid request payload"
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    const domainStatusCode =
+      message === "Invalid invite code"
+        ? 400
+        : message.includes("not found or not visible")
+          ? 404
+          : undefined;
+    const statusCode =
+      typeof statusCodeCandidate === "number"
+        ? statusCodeCandidate
+        : domainStatusCode
+          ? domainStatusCode
+          : zodError
+            ? 400
+            : 500;
+
+    request.log.warn(
+      {
+        statusCode,
+        route: request.routeOptions.url,
+        method: request.method,
+        errorName: error instanceof Error ? error.name : "Error"
+      },
+      "request failed"
+    );
+
+    reply.status(statusCode).send({
+      error: statusCode === 500 ? "Internal Server Error" : message
+    });
+  });
+
+  registerOperationalRoutes(app, routeContext, {
+    repository,
+    embeddingQueue,
+    compactionQueue,
+    runCompactionInline,
+    enqueueEmbedding
+  });
+
+  registerAuthRoutes(app, routeContext);
+  registerApiTokenRoutes(app, routeContext);
+  registerCaptureRoutes(app, routeContext);
+  registerRecallRoutes(app, routeContext);
+  registerQuestionRoutes(app, routeContext);
+  registerLcmRoutes(app, routeContext);
+  registerGraphRoutes(app, routeContext);
+  graphStreamService.registerRoutes();
+
+  return app;
+};

@@ -1,0 +1,76 @@
+import { z } from "zod";
+import { metadataSchema, visibilitySchema } from "./common-schemas.js";
+
+const captureStateSchema = z.enum(["enabled", "disabled", "ask"]);
+
+const memoryActorSchema = z.enum([
+  "user",
+  "assistant",
+  "agent",
+  "subagent",
+  "tool",
+  "system"
+]);
+
+export const createMcpSessionSchema = z.object({
+  workspaceId: z.string().uuid().optional(),
+  externalSessionId: z.string().min(1).optional(),
+  sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex"),
+  captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("mcp"),
+  model: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+  codexTranscriptPath: z.string().min(1).optional(),
+  idempotencyKey: z.string().min(1).optional(),
+  sourceHash: z.string().min(1).optional(),
+  metadata: metadataSchema
+});
+
+export const mcpSessionEventSchema = z.object({
+  workspaceId: z.string().min(1).default("default"),
+  turnId: z.string().uuid().optional(),
+  actor: memoryActorSchema,
+  eventType: z.string().min(1).default("session_event"),
+  content: z.string().min(1),
+  metadata: metadataSchema
+});
+
+export const capturePersonalEventSchema = z.object({
+  workspaceId: z.string().min(1).default("default"),
+  sessionId: z.string().uuid().optional(),
+  turnId: z.string().uuid().optional(),
+  actor: memoryActorSchema,
+  eventType: z.string().min(1),
+  content: z.string().min(1),
+  metadata: metadataSchema,
+  sourceRuntime: z.enum(["codex", "codex-cli"]).default("codex-cli"),
+  captureMethod: z.enum(["hook", "mcp", "web", "api"]).default("hook"),
+  codexTranscriptPath: z.string().min(1).optional(),
+  idempotencyKey: z.string().min(1).optional(),
+  sourceHash: z.string().min(1).optional()
+});
+
+export const capturePolicySchema = z.object({
+  targetType: z.enum(["global", "project", "thread"]),
+  projectId: z.string().min(1).optional(),
+  projectName: z.string().min(1).optional(),
+  projectPath: z.string().min(1).optional(),
+  threadId: z.string().min(1).optional(),
+  threadName: z.string().min(1).optional(),
+  captureState: captureStateSchema.nullable().optional(),
+  visibility: visibilitySchema.nullable().optional(),
+  pauseUntil: z.string().datetime({ offset: true }).nullable().optional()
+});
+
+export const effectivePolicyQuerySchema = z.object({
+  projectId: z.string().min(1).optional(),
+  threadId: z.string().min(1).optional(),
+  sessionId: z.string().uuid().optional()
+});
+
+export const capturePoliciesQuerySchema = z.object({
+  targetType: z.enum(["global", "project", "thread"]).optional()
+});
+
+export const sessionIdParamsSchema = z.object({
+  sessionId: z.string().uuid()
+});

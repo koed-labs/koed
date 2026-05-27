@@ -1,0 +1,158 @@
+import { scheduleCompaction, type Visibility } from "@koed/core";
+import type { MemorySourceRepository } from "@koed/db";
+import type { Queue } from "bullmq";
+import { withTimeout } from "../server/utils.js";
+
+export type EmbeddingSourceType = "memory_node" | "memory_event" | "message";
+
+export interface MemoryJobStatus {
+  queued: boolean;
+  inline: boolean;
+  jobId?: string;
+  reason?: string;
+  compaction?: {
+    leafNodeIds: string[];
+    rollupNodeId: string | null;
+  };
+}
+
+interface MemoryJobSchedulerOptions {
+  embeddingQueue: Queue | null;
+  compactionQueue: Queue | null;
+  runMemoryJobsInlineForTests?: boolean;
+  log: {
+    warn(bindings: Record<string, unknown>, message: string): void;
+  };
+}
+
+export const createMemoryJobScheduler = ({
+  embeddingQueue,
+  compactionQueue,
+  runMemoryJobsInlineForTests,
+  log
+}: MemoryJobSchedulerOptions) => {
+  const runCompactionInline = async (
+    repo: MemorySourceRepository,
+    requesterContext: { userId: string },
+    visibility: Visibility
+  ) =>
+    scheduleCompaction({
+      repository: repo,
+      requesterContext,
+      visibility
+    });
+
+  const enqueueEmbedding = async (
+    sourceType: EmbeddingSourceType,
+    sourceId: string
+  ): Promise<MemoryJobStatus> => {
+    if (!embeddingQueue) {
+      log.warn({ sourceType, sourceId }, "embedding queue is unavailable");
+      return {
+        queued: false,
+        inline: false,
+        reason: "embedding queue is unavailable"
+      };
+    }
+
+    try {
+      const job = await withTimeout(
+        embeddingQueue.add(
+          "embed-source",
+          { sourceType, sourceId },
+          {
+            attempts: 5,
+            backoff: { type: "exponential", delay: 10_000 },
+            removeOnComplete: 1000,
+            removeOnFail: 5000
+          }
+        ),
+        750,
+        "embedding enqueue timed out"
+      );
+      return { queued: true, inline: false, jobId: job.id };
+    } catch (error) {
+      log.warn(
+        { sourceType, sourceId, error: String(error) },
+        "could not enqueue embedding job"
+      );
+      return { queued: false, inline: false, reason: String(error) };
+    }
+  };
+
+  const enqueueCompaction = async (
+    repo: MemorySourceRepository,
+    requesterContext: { userId: string },
+    visibility: Visibility
+  ): Promise<MemoryJobStatus> => {
+    if (runMemoryJobsInlineForTests) {
+      const compaction = await runCompactionInline(
+        repo,
+        requesterContext,
+        visibility
+      );
+      return { queued: false, inline: true, compaction };
+    }
+
+    if (!compactionQueue) {
+      log.warn(
+        { userId: requesterContext.userId, visibility },
+        "compaction queue is unavailable"
+      );
+      return {
+        queued: false,
+        inline: false,
+        reason: "compaction queue is unavailable"
+      };
+    }
+
+    try {
+      const job = await withTimeout(
+        compactionQueue.add(
+          "compact-scope",
+          { userId: requesterContext.userId, visibility },
+          {
+            attempts: 5,
+            backoff: { type: "exponential", delay: 10_000 },
+            removeOnComplete: 1000,
+            removeOnFail: 5000
+          }
+        ),
+        750,
+        "compaction enqueue timed out"
+      );
+      return { queued: true, inline: false, jobId: job.id };
+    } catch (error) {
+      log.warn(
+        {
+          userId: requesterContext.userId,
+          visibility,
+          error: String(error)
+        },
+        "could not enqueue compaction job"
+      );
+      return { queued: false, inline: false, reason: String(error) };
+    }
+  };
+
+  const scheduleMemoryEventProcessing = async (
+    repo: MemorySourceRepository,
+    requesterContext: { userId: string },
+    eventId: string,
+    visibility: Visibility
+  ) => {
+    const [embedding, compaction] = await Promise.all([
+      enqueueEmbedding("memory_event", eventId),
+      enqueueCompaction(repo, requesterContext, visibility)
+    ]);
+
+    return { embedding, compaction };
+  };
+
+  return {
+    runCompactionInline,
+    enqueueEmbedding,
+    enqueueCompaction,
+    scheduleMemoryEventProcessing
+  };
+};
