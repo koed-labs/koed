@@ -52,24 +52,18 @@ the command preserves existing values and adds any missing keys from
 - `CONSOLE_API_BASE_URL`: browser-visible API base URL used when building the Operator Console.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
-- `MEMORY_RERANKING_ENABLED`: enables local reranking when the embedding service supports it.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
 - `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: token threshold for creating LCM placeholders. Default `32000`.
 - `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
-- `EMBEDDING_MODEL_REPO`: Hugging Face repository for the local embedding model.
-- `EMBEDDING_MODEL_FILE`: model file loaded by the embedding service.
-- `EMBEDDING_MODEL_NAME`: model name reported in retrieval metadata.
-- `EMBEDDING_DIMENSIONS`: embedding vector dimensions expected by API, worker, and database.
-- `EMBEDDING_VERSION`: embedding version string stored with generated vectors.
+- `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
+- `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm setup:env` generates this for Docker Compose deployments.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
 - `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request.
 - `EMBEDDING_MAX_TEXT_CHARS`: maximum characters accepted for any single embedding or reranking text before model processing.
 - `EMBEDDING_MAX_REQUEST_CHARS`: maximum total characters accepted for one embedding or reranking request before model processing.
 - `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service.
-- `EMBEDDING_RERANKER_ENABLED`: enables the embedding-service reranker.
-- `EMBEDDING_RERANKER_MODEL`: reranker model loaded by the embedding service.
 - `EMBEDDING_RERANKER_BATCH_LIMIT`: reranker batch limit.
 
 ## AI Client Values

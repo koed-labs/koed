@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { configFlagEnabled, createHealth, requireEnv } from "./index.js";
+import {
+  configFlagEnabled,
+  createHealth,
+  requireEnv,
+  resolveSupportedEmbeddingModelConfig,
+  resolveSupportedRerankerModelConfig
+} from "./index.js";
 
 describe("createHealth", () => {
   it("creates an ok health payload", () => {
@@ -26,5 +32,40 @@ describe("requireEnv", () => {
     expect(() =>
       requireEnv(["DATABASE_URL"], { DATABASE_URL: "postgres://db" })
     ).not.toThrow();
+  });
+});
+
+describe("resolveSupportedEmbeddingModelConfig", () => {
+  it("resolves supported embedding model metadata", () => {
+    expect(resolveSupportedEmbeddingModelConfig("qwen3-0.6b")).toEqual({
+      key: "qwen3-0.6b",
+      dimensions: 1024
+    });
+  });
+
+  it("rejects unsupported embedding model keys", () => {
+    expect(() => resolveSupportedEmbeddingModelConfig("unknown")).toThrow(
+      "Unsupported embedding model key"
+    );
+  });
+});
+
+describe("resolveSupportedRerankerModelConfig", () => {
+  it("resolves supported reranker model metadata", () => {
+    expect(resolveSupportedRerankerModelConfig("qwen3-reranker-0.6b")).toEqual({
+      key: "qwen3-reranker-0.6b",
+      model: "n24q02m/Qwen3-Reranker-0.6B-ONNX"
+    });
+  });
+
+  it("treats a blank reranker key as disabled", () => {
+    expect(resolveSupportedRerankerModelConfig("")).toBeNull();
+    expect(resolveSupportedRerankerModelConfig(undefined)).toBeNull();
+  });
+
+  it("rejects unsupported reranker model keys", () => {
+    expect(() => resolveSupportedRerankerModelConfig("unknown")).toThrow(
+      "Unsupported reranker model key"
+    );
   });
 });

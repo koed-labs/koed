@@ -1,12 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { resolveConsoleViteEnv } from "./env-config";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  server: {
-    port: Number(process.env.WEB_PORT ?? 5173)
-  },
-  preview: {
-    port: Number(process.env.WEB_PORT ?? 5173)
-  }
-});
+  ...resolveConsoleViteEnv(mode)
+}));

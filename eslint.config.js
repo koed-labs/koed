@@ -80,6 +80,7 @@ export default tseslint.config(
     files: [
       "eslint.config.js",
       "*.config.ts",
+      "apps/*/env-config.ts",
       "apps/*/vite.config.ts",
       "apps/api/**/*.ts",
       "apps/worker/**/*.ts",

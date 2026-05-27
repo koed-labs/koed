@@ -18,6 +18,7 @@
     "@koed/db": "workspace:*",
     "@koed/shared": "workspace:*",
     "bullmq": "^5.76.9",
+    "dotenv": "^17.2.3",
     "ioredis": "^5.10.1"
   },
   "devDependencies": {

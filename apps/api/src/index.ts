@@ -1,19 +1,9 @@
-import { buildServer } from "./server.js";
-import { requireEnv } from "@koed/shared";
+import { loadApiEnv, resolveApiEnv } from "./env-config.js";
 
-if (process.env.NODE_ENV === "production") {
-  requireEnv([
-    "DATABASE_URL",
-    "REDIS_URL",
-    "DATA_ENCRYPTION_KEY",
-    "API_TOKEN_PEPPER",
-    "EMBEDDING_SERVICE_TOKEN",
-    "CORS_ORIGINS"
-  ]);
-}
+loadApiEnv();
 
-const host = process.env.API_HOST ?? "0.0.0.0";
-const port = Number(process.env.API_PORT ?? "3000");
+const { buildServer } = await import("./server.js");
+const { host, port } = resolveApiEnv();
 
 const app = await buildServer();
 

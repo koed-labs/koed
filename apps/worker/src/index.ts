@@ -5,23 +5,14 @@ import {
   createMemorySourceRepository,
   type EmbeddableSourceRecord
 } from "@koed/db";
-import { requireEnv } from "@koed/shared";
+import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 
-if (process.env.NODE_ENV === "production") {
-  requireEnv([
-    "DATABASE_URL",
-    "REDIS_URL",
-    "DATA_ENCRYPTION_KEY",
-    "EMBEDDING_SERVICE_URL",
-    "EMBEDDING_SERVICE_TOKEN",
-    "EMBEDDING_MODEL",
-    "EMBEDDING_DIMENSIONS",
-    "EMBEDDING_VERSION"
-  ]);
-}
+loadWorkerEnv();
+
+const workerEnv = resolveWorkerEnv();
 
 const connection = {
-  url: process.env.REDIS_URL ?? "redis://localhost:6379",
+  url: workerEnv.redisUrl,
   maxRetriesPerRequest: null
 };
 
@@ -52,14 +43,11 @@ const isTransientError = (error: unknown): boolean =>
     "transient" in error &&
     error.transient === true);
 
-const embeddingVersion = (): string =>
-  process.env.EMBEDDING_VERSION ?? "local-qwen3-embedding-0.6b-gguf-v1";
+const embeddingVersion = (): string => workerEnv.embeddingVersion;
 
-const embeddingServiceUrl = (): string =>
-  process.env.EMBEDDING_SERVICE_URL ?? "http://embedding-service:8000";
+const embeddingServiceUrl = (): string => workerEnv.embeddingServiceUrl;
 
-const embeddingDimensions = (): number =>
-  Number(process.env.EMBEDDING_DIMENSIONS ?? 1024);
+const embeddingDimensions = (): number => workerEnv.embeddingDimensions;
 
 const embeddingServiceHeaders = (): Record<string, string> => {
   const token = process.env.EMBEDDING_SERVICE_TOKEN?.trim();

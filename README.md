@@ -71,7 +71,7 @@ Start from `.env.example`. Important values:
 - `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Postgres container settings.
 - `API_DATA_ENCRYPTION_KEY`: reserved 32-byte base64 key for encrypted server-side fields. In the current self-hosted build, memory payloads remain plaintext at the application layer in Postgres and must be protected with deployment-level database, volume, backup, and access controls.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
-- `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`: local embedding settings.
+- `EMBEDDING_MODEL_KEY`: local embedding model setting. The embedding service only accepts supported model keys.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token used by the API and worker when calling the private embedding service.
 - `API_CORS_ORIGINS`: include the local console and history-browser origins.
 - `GITHUB_TOKEN`: GitHub token used by Docker to fetch the private
