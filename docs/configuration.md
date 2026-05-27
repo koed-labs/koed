@@ -23,7 +23,8 @@ the command preserves existing values and adds any missing keys from
 - `API_HOST`: bind host inside the API container.
 - `API_PORT`: API port inside the API container.
 - `API_HOST_PORT`: host port mapped to the API container.
-- `API_LOG_LEVEL`: API log level.
+- `API_LOG_LEVEL`: API log level. See [observability](observability.md) for
+  the structured API log schema and redaction rules.
 - `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current self-hosted build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
 - `API_CORS_ORIGINS`: comma-separated allowed Operator Console origins.
