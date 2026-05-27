@@ -53,16 +53,12 @@ class EnvConfigTest(unittest.TestCase):
             self.assertEqual(resolve_env().model_key, "qwen3-0.6b")
 
     def test_resolve_env_resolves_supported_reranker_key(self) -> None:
-        with patch.dict(
-            os.environ, {"RERANKER_KEY": "qwen3-reranker-0.6b"}, clear=True
-        ):
+        with patch.dict(os.environ, {"RERANKER_KEY": "qwen3-reranker-0.6b"}, clear=True):
             config = resolve_env()
 
         self.assertTrue(config.reranker_enabled)
         self.assertEqual(config.reranker_key, "qwen3-reranker-0.6b")
-        self.assertEqual(
-            config.reranker_model, "n24q02m/Qwen3-Reranker-0.6B-ONNX"
-        )
+        self.assertEqual(config.reranker_model, "n24q02m/Qwen3-Reranker-0.6B-ONNX")
 
     def test_blank_reranker_key_disables_reranking(self) -> None:
         with patch.dict(os.environ, {"RERANKER_KEY": ""}, clear=True):

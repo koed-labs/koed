@@ -42,6 +42,9 @@ jobs:
       - name: Check env examples are synced
         run: pnpm env:sync:check
 
+      - name: Check formatting
+        run: pnpm fmt:check
+
       - name: Verify
         run: pnpm verify
 

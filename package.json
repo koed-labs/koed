@@ -26,8 +26,12 @@
     "typecheck": "tsc -b",
     "typecheck:test": "tsc -p tsconfig.test.json",
     "verify": "node scripts/verify.mjs",
-    "fmt": "prettier --write .",
-    "fmt:check": "prettier --check ."
+    "fmt": "pnpm fmt:prettier && pnpm fmt:python",
+    "fmt:check": "pnpm fmt:prettier:check && pnpm fmt:python:check",
+    "fmt:prettier": "prettier --write .",
+    "fmt:prettier:check": "prettier --check .",
+    "fmt:python": "cd apps/embedding-service && .venv/bin/ruff format .",
+    "fmt:python:check": "cd apps/embedding-service && .venv/bin/ruff format --check ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

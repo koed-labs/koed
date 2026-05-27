@@ -14,9 +14,5 @@
     "packages/**/*.spec.ts",
     "packages/**/*.spec.tsx"
   ],
-  "exclude": [
-    "**/dist/**",
-    "**/node_modules/**",
-    "apps/history-browser/*/**"
-  ]
+  "exclude": ["**/dist/**", "**/node_modules/**", "apps/history-browser/*/**"]
 }

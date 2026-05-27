@@ -213,9 +213,7 @@ def print_markdown(results: list[BenchmarkResult]) -> None:
             (
                 "| {target_tokens} | {measured_tokens} | {text_chars} | {status} | "
                 "{median_ms} | {tokens_per_second} | {dimensions} | {error} |"
-            ).format(
-                **{key: "" if value is None else value for key, value in summary.items()}
-            )
+            ).format(**{key: "" if value is None else value for key, value in summary.items()})
         )
 
 

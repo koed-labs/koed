@@ -94,9 +94,7 @@ def resolve_env() -> EmbeddingServiceEnv:
     model_config = SUPPORTED_EMBEDDING_MODELS.get(model_key)
     if model_config is None:
         supported = ", ".join(sorted(SUPPORTED_EMBEDDING_MODELS))
-        raise ValueError(
-            f"Unsupported MODEL_KEY {model_key!r}. Supported model keys: {supported}"
-        )
+        raise ValueError(f"Unsupported MODEL_KEY {model_key!r}. Supported model keys: {supported}")
 
     reranker_key = os.getenv("RERANKER_KEY", "").strip()
     reranker_config = None
