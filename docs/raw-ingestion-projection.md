@@ -57,12 +57,21 @@ the projection backlog.
 ## Derived Memory Events
 
 `memory_events` are semantic retrieval units, not raw hook fragments. They
-should contain useful user prompts, agent messages, tool-call content, and other
-high-value conversation material. Telemetry, lifecycle noise, and rolling model
-context should remain raw records or metadata unless there is a deliberate
-retrieval reason to project them. Incremental app-server deltas are raw
-telemetry; if an app-server-backed conversation is projected into chat memory,
-use stable completed records rather than partial deltas.
+should contain useful user prompts, agent messages, human-readable reasoning
+summaries, tool-call content, and other high-value conversation material.
+Telemetry, lifecycle noise, raw reasoning content, encrypted reasoning, and
+rolling model context should remain raw records or metadata unless there is a
+deliberate retrieval reason to project them. Incremental app-server deltas are
+raw telemetry; if an app-server-backed conversation is projected into chat
+memory, use stable completed records rather than partial deltas.
+
+Koed intentionally projects human-readable Codex reasoning summaries into chat
+messages and semantic memory. These summaries explain agent intent, tool-use
+rationale, and investigation direction in a way that is useful for future
+retrieval. Koed distinguishes them from raw reasoning by following Codex's own
+shape: `summary` / `summary_text` / `AgentReasoning` records are displayable
+summaries, while `content` / `raw_content` / `AgentReasoningRawContent` /
+reasoning text deltas are raw reasoning and stay raw-only.
 
 Each projected memory event that came from raw source records should link back
 through `memory_event_sources`. The raw source rows remain the audit trail for

@@ -1537,6 +1537,57 @@ const stringFromNestedField = (
   return typeof current === "string" && current.trim() ? current : null;
 };
 
+const normalizeProjectionText = (value: string | null): string | null => {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+};
+
+const joinProjectionTexts = (values: string[]): string | null =>
+  normalizeProjectionText(values.map((value) => value.trim()).join("\n\n"));
+
+const textFromReasoningSummaryValue = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    return normalizeProjectionText(value);
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  return (
+    stringField(value, "text") ??
+    stringField(value, "summaryText") ??
+    stringField(value, "summary_text") ??
+    stringField(value, "message")
+  );
+};
+
+const reasoningSummaryTextFromItem = (
+  item: Record<string, unknown> | null
+): string | null => {
+  if (!item) {
+    return null;
+  }
+  const summary = item.summary ?? item.summary_text ?? item.summaryText;
+  if (Array.isArray(summary)) {
+    return joinProjectionTexts(
+      summary
+        .map(textFromReasoningSummaryValue)
+        .filter((value): value is string => Boolean(value))
+    );
+  }
+  return textFromReasoningSummaryValue(summary);
+};
+
+const projectionIsRawReasoningLabel = (label: string): boolean =>
+  /reasoning[_/ -]?raw|raw[_/ -]?reasoning|raw[_/ -]?content|reasoningTextDelta|ReasoningTextDelta|reasoning[_/ -]?text[_/ -]?delta|ReasoningRawContent|ReasoningRawContentDelta/i.test(
+    label
+  );
+
+const projectionIsReasoningLabel = (label: string): boolean =>
+  /reasoning|thought/i.test(label);
+
+const projectionIsReasoningSummaryLabel = (label: string): boolean =>
+  projectionIsReasoningLabel(label) && !projectionIsRawReasoningLabel(label);
+
 const tokenUsageBreakdown = (
   value: unknown
 ): {
@@ -1595,18 +1646,43 @@ const appServerTokenUsageFromRaw = (
 };
 
 const conversationItemContent = (row: {
+  source_event_type?: string | null;
+  source_record_type?: string;
+  metadata?: Record<string, unknown> | null;
   raw_text: string | null;
   raw_json: unknown;
 }): string | null => {
+  const raw = isRecord(row.raw_json) ? row.raw_json : null;
+  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
+  const label =
+    row.source_event_type !== undefined && row.source_record_type !== undefined
+      ? projectionLabelForConversationItem({
+          source_event_type: row.source_event_type,
+          source_record_type: row.source_record_type,
+          metadata: row.metadata ?? null
+        })
+      : "";
+  const params = payload && isRecord(payload.params) ? payload.params : null;
+  const item =
+    (params && isRecord(params.item) ? params.item : null) ??
+    (payload && isRecord(payload.item) ? payload.item : null) ??
+    (payload && isRecord(payload) ? payload : null);
+  if (projectionIsReasoningLabel(label)) {
+    if (projectionIsRawReasoningLabel(label)) {
+      return null;
+    }
+    return reasoningSummaryTextFromItem(item);
+  }
+  if (item && /^reasoning$/i.test(stringField(item, "type") ?? "")) {
+    return reasoningSummaryTextFromItem(item);
+  }
   if (row.raw_text?.trim()) {
     return row.raw_text.trim();
   }
-  const raw = isRecord(row.raw_json) ? row.raw_json : null;
-  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
   if (!payload) {
     return null;
   }
-  const appServerParams = isRecord(payload.params) ? payload.params : null;
+  const appServerParams = params;
   if (appServerParams) {
     for (const path of [
       ["delta"],
@@ -1629,8 +1705,8 @@ const conversationItemContent = (row: {
       return value;
     }
   }
-  const item = isRecord(payload.item) ? payload.item : null;
-  return item ? stringField(item, "text") : null;
+  const nestedItem = isRecord(payload.item) ? payload.item : null;
+  return nestedItem ? stringField(nestedItem, "text") : null;
 };
 
 const actorFromConversationItem = (row: {
@@ -1732,7 +1808,9 @@ const projectionIsInfrastructureEvent = (row: {
   return (
     /tokenUsage|session_meta|lifecycle|initialized|turn\/completed|error|agentMessage\/delta/i.test(
       label
-    ) || raw?.method === "thread/tokenUsage/updated"
+    ) ||
+    projectionIsRawReasoningLabel(label) ||
+    raw?.method === "thread/tokenUsage/updated"
   );
 };
 
@@ -1762,8 +1840,10 @@ const projectionIsSemanticAllowlisted = (row: {
   metadata: Record<string, unknown> | null;
 }): boolean => {
   const label = projectionLabelForConversationItem(row);
-  return /user_message|assistant_message|agent_message|agentMessage|subagent|reasoning|thought|function_call|custom_tool|codex_transcript_(user|agent|subagent|tool)|codex_tool_result/i.test(
-    label
+  return (
+    /user_message|assistant_message|agent_message|agentMessage|subagent|function_call|custom_tool|codex_transcript_(user|agent|subagent|tool)|codex_tool_result/i.test(
+      label
+    ) || projectionIsReasoningSummaryLabel(label)
   );
 };
 

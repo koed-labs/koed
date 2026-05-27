@@ -1973,6 +1973,31 @@ describeDb("memory repository visibility", () => {
         sourceHash: `projection-policy-reasoning-${randomUUID()}`
       },
       {
+        transcriptType: "reasoning",
+        text: "Raw reasoning content should not be projected.",
+        sourceHash: `projection-policy-reasoning-item-${randomUUID()}`,
+        rawJson: {
+          method: "item/completed",
+          params: {
+            item: {
+              type: "reasoning",
+              summary: [
+                {
+                  type: "summary_text",
+                  text: "Readable reasoning summary: choose the projection policy."
+                }
+              ],
+              content: ["Raw reasoning content should not be projected."]
+            }
+          }
+        }
+      },
+      {
+        transcriptType: "reasoning_raw_content",
+        text: "Raw reasoning content should stay raw-only.",
+        sourceHash: `projection-policy-raw-reasoning-${randomUUID()}`
+      },
+      {
         transcriptType: "function_call",
         text: "Tool call: exec_command",
         sourceHash: `projection-policy-tool-${randomUUID()}`
@@ -2005,7 +2030,7 @@ describeDb("memory repository visibility", () => {
           sourceRecordType: "app_server_notification",
           sourceEventType: "item/completed",
           sourceSequence: index,
-          rawJson: {
+          rawJson: row.rawJson ?? {
             method: "item/completed",
             params: {
               item: {
@@ -2047,20 +2072,22 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(projection.rawItemsProjected).toBe(rows.length);
-    expect(projection.memoryEventsCreated).toBe(4);
-    expect(projection.messagesCreated).toBe(4);
+    expect(projection.memoryEventsCreated).toBe(5);
+    expect(projection.messagesCreated).toBe(5);
     expect(projection.toolEventsCreated).toBe(1);
     expect(toolEvents.rows[0]?.count).toBe("1");
     expect(messages.rows.map((row) => row.content)).toEqual([
       "Please inspect the projection policy.",
       "The projection policy keeps raw audit data separate.",
       "Reasoning summary: compare transcript type against policy.",
+      "Readable reasoning summary: choose the projection policy.",
       "Tool call: exec_command"
     ]);
     expect(events.rows.map((row) => row.content)).toEqual([
       "Please inspect the projection policy.",
       "The projection policy keeps raw audit data separate.",
       "Reasoning summary: compare transcript type against policy.",
+      "Readable reasoning summary: choose the projection policy.",
       "Tool call: exec_command"
     ]);
     expect(messages.rows.map((row) => row.content).join("\n")).not.toContain(
@@ -2068,6 +2095,9 @@ describeDb("memory repository visibility", () => {
     );
     expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
       "Developer instruction"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Raw reasoning content"
     );
     expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
       "Rolling context"
