@@ -6,11 +6,58 @@ import {
   captureTranscriptPathForPayload,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
+  parseTranscriptFileRecords,
   parseTranscriptText,
-  selectCaptureItems
+  rawItemBatches,
+  rawItemsForCapture,
+  rawItemRequestChunks,
+  semanticEventChunks,
+  selectCaptureItems,
+  shouldReadTranscriptForHook
 } from "./capture-hook.js";
 
 describe("Codex capture hook transcript parsing", () => {
+  it("continues from the prior transcript checkpoint without jumping to the tail", () => {
+    process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES = "140";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message }
+      })}\n`;
+    fs.writeFileSync(
+      transcriptPath,
+      `${line("first message")}${line("second message")}${line("third message")}`
+    );
+    const size = fs.statSync(transcriptPath).size;
+
+    try {
+      const result = parseTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: {
+              offset: 0,
+              lineCount: 0,
+              size: Math.floor(size / 2)
+            }
+          }
+        },
+        stateScope: "scope"
+      });
+
+      expect(JSON.stringify(result.records[0])).toContain("first message");
+      expect(result.checkpoint?.offset).toBeGreaterThan(0);
+      expect(result.checkpoint?.offset).toBeLessThan(size);
+    } finally {
+      delete process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES;
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
   it("labels main Codex agent messages as agent", () => {
     const items = parseTranscriptText(
       JSON.stringify([
@@ -470,6 +517,7 @@ describe("Codex capture hook transcript parsing", () => {
     const items = selectCaptureItems(transcriptItems, {
       session_id: "session-a",
       hook_event_name: "PostToolUse",
+      tool_use_id: "toolu-1",
       tool_name: "exec_command",
       tool_input: { cmd: "git status" },
       tool_response: "clean"
@@ -480,8 +528,10 @@ describe("Codex capture hook transcript parsing", () => {
       eventType: "codex_tool_result",
       metadata: {
         toolName: "exec_command",
+        toolUseId: "toolu-1",
         toolCall: {
           kind: "hook",
+          id: "toolu-1",
           name: "exec_command",
           input: { cmd: "git status" },
           output: "clean"
@@ -489,6 +539,15 @@ describe("Codex capture hook transcript parsing", () => {
       }
     });
     expect(items[1]?.content).toContain("Tool result: exec_command");
+  });
+
+  it("reads the transcript tail on PostToolUse so agent commentary is not delayed until Stop", () => {
+    expect(
+      shouldReadTranscriptForHook({
+        hook_event_name: "PostToolUse",
+        tool_name: "exec_command"
+      })
+    ).toBe(true);
   });
 
   it("uses fallback hook payloads when no transcript messages are available", () => {
@@ -506,5 +565,211 @@ describe("Codex capture hook transcript parsing", () => {
         metadata: { externalSessionId: "session-b" }
       }
     ]);
+  });
+
+  it("splits oversized projected semantic events while preserving order metadata", () => {
+    process.env.MEMORY_EVENT_MAX_TOKENS = "25";
+    try {
+      const chunks = semanticEventChunks(
+        {
+          actor: "agent",
+          eventType: "codex_transcript_agent",
+          content: "Aston Villa and Paul McGrath ".repeat(60),
+          metadata: { transcriptIndex: 4 }
+        },
+        "gpt-5.4-mini"
+      );
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual(
+        chunks.map((_, index) => index)
+      );
+      expect(new Set(chunks.map((chunk) => chunk.chunkCount))).toEqual(
+        new Set([chunks.length])
+      );
+      expect(chunks.map((chunk) => chunk.content).join(" ")).toContain(
+        "Paul McGrath"
+      );
+    } finally {
+      delete process.env.MEMORY_EVENT_MAX_TOKENS;
+    }
+  });
+
+  it("batches raw conversation items under the configured request budget", () => {
+    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "1200";
+    try {
+      const item = {
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "hook",
+        sourceRecordType: "event_msg",
+        rawJson: { payload: "x".repeat(220) },
+        sourceHash: "source",
+        idempotencyKey: "source",
+        projectionStatus: "pending",
+        projectionVersion: "codex-transcript-v1",
+        metadata: {}
+      };
+      const batches = rawItemBatches([
+        { ...item, sourceHash: "source-1", idempotencyKey: "source-1" },
+        { ...item, sourceHash: "source-2", idempotencyKey: "source-2" },
+        { ...item, sourceHash: "source-3", idempotencyKey: "source-3" }
+      ]);
+
+      expect(batches.length).toBeGreaterThan(1);
+      expect(batches.flat()).toHaveLength(3);
+    } finally {
+      delete process.env.MEMORY_RAW_INGEST_BATCH_BYTES;
+    }
+  });
+
+  it("splits a single oversized raw conversation item without dropping the source sequence", () => {
+    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "1200";
+    try {
+      const chunks = rawItemRequestChunks({
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "hook",
+        externalSessionId: "thread-1",
+        externalThreadId: "thread-1",
+        sourceRecordType: "event_msg",
+        sourceEventType: "tool_output",
+        sourceSequence: 42,
+        rawJson: { payload: "x".repeat(2_000) },
+        rawText: "large tool output ".repeat(500),
+        sourceHash: "large-source",
+        idempotencyKey: "large-source",
+        projectionStatus: "pending",
+        projectionVersion: "codex-transcript-v1",
+        metadata: { transcriptIndex: 42 }
+      });
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(new Set(chunks.map((chunk) => chunk.sourceSequence))).toEqual(
+        new Set([42])
+      );
+      expect(chunks[0]?.metadata).toMatchObject({
+        sourceItemHash: "large-source",
+        sourceChunkIndex: 0,
+        sourceChunkCount: chunks.length
+      });
+      expect(chunks[0]).toMatchObject({
+        logicalSourceId: "large-source",
+        transportChunkIndex: 0,
+        transportChunkCount: chunks.length,
+        transportChunkEncoding: "conversation-item-json-v1"
+      });
+      expect(typeof chunks[0]?.transportChunkText).toBe("string");
+      expect(chunks.every((chunk) => chunk.sourceHash !== "large-source")).toBe(
+        true
+      );
+      expect(
+        chunks.every(
+          (chunk) =>
+            Buffer.byteLength(JSON.stringify({ items: [chunk] }), "utf8") <=
+            1200
+        )
+      ).toBe(true);
+    } finally {
+      delete process.env.MEMORY_RAW_INGEST_BATCH_BYTES;
+    }
+  });
+
+  it("keeps escaped oversized raw chunks under the request budget", () => {
+    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "1400";
+    try {
+      const chunks = rawItemRequestChunks({
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "hook",
+        externalSessionId: "thread-escaped",
+        externalThreadId: "thread-escaped",
+        sourceRecordType: "event_msg",
+        sourceSequence: 7,
+        rawJson: {
+          payload: '"quoted" \\\\ backslash \\n newline '.repeat(600)
+        },
+        sourceHash: "escaped-source",
+        idempotencyKey: "escaped-source",
+        projectionStatus: "pending",
+        projectionVersion: "codex-transcript-v1",
+        metadata: { transcriptIndex: 7 }
+      });
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(
+        chunks.every(
+          (chunk) =>
+            Buffer.byteLength(JSON.stringify({ items: [chunk] }), "utf8") <=
+            1400
+        )
+      ).toBe(true);
+    } finally {
+      delete process.env.MEMORY_RAW_INGEST_BATCH_BYTES;
+    }
+  });
+
+  it("delta-filters raw conversation items while retaining records needed for new projections", () => {
+    const item = {
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "hook",
+      sourceRecordType: "event_msg",
+      rawJson: { type: "event_msg" },
+      sourceHash: "raw-1",
+      idempotencyKey: "raw-1",
+      projectionStatus: "pending",
+      projectionVersion: "codex-transcript-v1",
+      metadata: {}
+    };
+
+    const filtered = rawItemsForCapture(
+      [
+        { ...item, sourceHash: "raw-1", idempotencyKey: "raw-1" },
+        {
+          ...item,
+          sourceHash: "raw-2",
+          idempotencyKey: "raw-2",
+          sourceSequence: 2
+        },
+        {
+          ...item,
+          sourceHash: "raw-3",
+          idempotencyKey: "raw-3",
+          sourceSequence: 3
+        }
+      ],
+      { "raw-1": true, "raw-2": true },
+      new Set([2])
+    );
+
+    expect(filtered.map((rawItem) => rawItem.sourceHash)).toEqual([
+      "raw-2",
+      "raw-3"
+    ]);
+  });
+
+  it("delta-filters raw hook payloads by required source hash when no transcript sequence exists", () => {
+    const item = {
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-hook-v1",
+      sourceTransport: "hook",
+      sourceRecordType: "hook_payload",
+      rawJson: { hook_event_name: "PostToolUse" },
+      sourceHash: "hook-raw",
+      idempotencyKey: "hook-raw",
+      projectionStatus: "pending",
+      projectionVersion: "codex-hook-v1",
+      metadata: {}
+    };
+
+    expect(
+      rawItemsForCapture(
+        [item],
+        { "hook-raw": true },
+        new Set(),
+        new Set(["hook-raw"])
+      )
+    ).toEqual([item]);
   });
 });

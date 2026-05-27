@@ -1,12 +1,19 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chunkTextForModel, countTokensForModel } from "@koed/core";
 import {
   runCodexAppServerTurn,
-  resolveCodexAppServerBinary
+  resolveCodexAppServerBinary,
+  type CodexAppServerRawEvent,
+  type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 import type { MemoryApiClient } from "./index.js";
+import {
+  persistRawConversationItems,
+  projectRawConversationItems
+} from "./raw-conversation-items.js";
 
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
@@ -64,11 +71,23 @@ export interface LcmSummaryResult {
   error?: string;
 }
 
+type LcmSummaryPromptResult = {
+  text: string;
+  model: string;
+  tokenUsage?: CodexThreadTokenUsage;
+  threadId?: string;
+  turnId?: string;
+  rawEvents?: CodexAppServerRawEvent[];
+};
+
 export type CodexLcmSummaryRunner = (
   prompt: string,
   config: LcmSummaryWorkerConfig,
   timeoutMs: number
-) => Promise<{ text: string; model: string }>;
+) => Promise<LcmSummaryPromptResult>;
+
+const hash = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 const resolveEnvValue = (
   env: NodeJS.ProcessEnv,
@@ -462,7 +481,7 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
   prompt,
   config,
   timeoutMs
-): Promise<{ text: string; model: string }> =>
+): Promise<LcmSummaryPromptResult> =>
   runCodexAppServerTurn(
     prompt,
     {
@@ -483,7 +502,7 @@ const runPromptWithRetries = async (
   prompt: string,
   config: LcmSummaryWorkerConfig,
   runner: CodexLcmSummaryRunner
-): Promise<{ text: string; model: string }> => {
+): Promise<LcmSummaryPromptResult> => {
   let lastError: unknown;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
@@ -498,17 +517,145 @@ const runPromptWithRetries = async (
   throw lastError;
 };
 
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const rawTextFromAppServerEvent = (event: {
+  params?: unknown;
+  result?: unknown;
+}): string | undefined => {
+  const value = event.params ?? event.result;
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  const record = asRecord(value);
+  for (const key of ["delta", "text", "content", "message"]) {
+    const field = record[key];
+    if (typeof field === "string" && field.trim()) {
+      return field;
+    }
+  }
+  const item = asRecord(record.item);
+  for (const key of ["text", "content", "message"]) {
+    const field = item[key];
+    if (typeof field === "string" && field.trim()) {
+      return field;
+    }
+  }
+  return undefined;
+};
+
+const persistLcmAppServerEvents = async (
+  client: MemoryApiClient,
+  node: LcmSummaryNode,
+  result: LcmSummaryPromptResult,
+  callIndex: number
+): Promise<void> => {
+  const events = result.rawEvents ?? [];
+  if (events.length === 0) {
+    return;
+  }
+  const items = events.map((event, index) => {
+    const sourceHash = hash({
+      workflow: "lcm_summary",
+      nodeId: node.id,
+      callIndex,
+      threadId: result.threadId,
+      turnId: result.turnId,
+      index,
+      method: event.method,
+      params: event.params,
+      result: event.result
+    });
+    return {
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-app-server-v1",
+      sourceTransport: "app_server",
+      externalSessionId: result.threadId,
+      externalThreadId: result.threadId,
+      externalTurnId: result.turnId,
+      sourceRecordType: "app_server_notification",
+      sourceEventType: event.method,
+      sourceSequence: index,
+      eventTime: event.observedAt,
+      rawJson: event,
+      rawText: rawTextFromAppServerEvent(event),
+      sourceHash,
+      idempotencyKey: sourceHash,
+      projectionStatus: "raw_only",
+      projectionVersion: "codex-app-server-v1",
+      metadata: {
+        workflow: "lcm_summary",
+        nodeId: node.id,
+        callIndex,
+        kind: node.kind,
+        depth: node.depth
+      }
+    };
+  });
+  const persisted = await persistRawConversationItems(
+    client,
+    items,
+    `LCM summary ${node.id}`
+  );
+  const tokenConversationItem = persisted.find((item) => {
+    const record = asRecord(item);
+    return record.sourceEventType === "thread/tokenUsage/updated";
+  });
+  const tokenConversationItemId =
+    typeof tokenConversationItem?.id === "string"
+      ? tokenConversationItem.id
+      : undefined;
+  const lastUsage = result.tokenUsage?.last;
+  if (lastUsage) {
+    await client.recordTokenUsage({
+      workflowType: "lcm_summary",
+      workflowId: node.id,
+      conversationItemId: tokenConversationItemId,
+      sourceRuntime: "codex",
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-app-server-v1",
+      model: result.model,
+      modelContextWindow: result.tokenUsage?.modelContextWindow ?? null,
+      inputTokens: lastUsage.inputTokens ?? null,
+      cachedInputTokens: lastUsage.cachedInputTokens ?? null,
+      outputTokens: lastUsage.outputTokens ?? null,
+      reasoningOutputTokens: lastUsage.reasoningOutputTokens ?? null,
+      totalTokens: lastUsage.totalTokens ?? null,
+      usageScope: "last",
+      metadata: {
+        threadId: result.threadId,
+        turnId: result.turnId,
+        callIndex,
+        kind: node.kind,
+        depth: node.depth
+      },
+      idempotencyKey: tokenConversationItemId
+        ? `token:${tokenConversationItemId}:last`
+        : `lcm-summary:${node.id}:${callIndex}:token:last`
+    });
+  }
+  await projectRawConversationItems(
+    client,
+    persisted,
+    `LCM summary ${node.id}`
+  );
+};
+
 const reduceShardSummaries = async (
   node: LcmSummaryNode,
-  shardSummaries: Array<{ text: string; model: string }>,
+  shardSummaries: LcmSummaryPromptResult[],
   config: LcmSummaryWorkerConfig,
   runner: CodexLcmSummaryRunner,
+  promptResults: LcmSummaryPromptResult[],
   stats: {
     promptTokenSum: number;
     maxPromptTokens: number;
     promptCallCount: number;
   }
-): Promise<{ text: string; model: string }> => {
+): Promise<LcmSummaryPromptResult> => {
   if (shardSummaries.length === 1) {
     return shardSummaries[0]!;
   }
@@ -529,14 +676,16 @@ const reduceShardSummaries = async (
     }))
   };
   const reducePrompts = buildTokenBoundedPrompts(reduceNode, config, "reduce");
-  const nextSummaries: Array<{ text: string; model: string }> = [];
+  const nextSummaries: LcmSummaryPromptResult[] = [];
 
   for (const prompt of reducePrompts) {
     const tokens = promptTokens(prompt, config);
     stats.promptTokenSum += tokens;
     stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
     stats.promptCallCount += 1;
-    nextSummaries.push(await runPromptWithRetries(prompt, config, runner));
+    const result = await runPromptWithRetries(prompt, config, runner);
+    promptResults.push(result);
+    nextSummaries.push(result);
   }
 
   if (nextSummaries.length === shardSummaries.length) {
@@ -545,7 +694,14 @@ const reduceShardSummaries = async (
     );
   }
 
-  return reduceShardSummaries(node, nextSummaries, config, runner, stats);
+  return reduceShardSummaries(
+    node,
+    nextSummaries,
+    config,
+    runner,
+    promptResults,
+    stats
+  );
 };
 
 const summarizeNode = async (
@@ -572,15 +728,16 @@ const summarizeNode = async (
 
   try {
     const prompts = buildSummaryPrompts(node, config);
-    const shardSummaries: Array<{ text: string; model: string }> = [];
+    const promptResults: LcmSummaryPromptResult[] = [];
+    const shardSummaries: LcmSummaryPromptResult[] = [];
     for (const entry of prompts) {
       const tokens = promptTokens(entry.prompt, config);
       stats.promptTokenSum += tokens;
       stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
       stats.promptCallCount += 1;
-      shardSummaries.push(
-        await runPromptWithRetries(entry.prompt, config, runner)
-      );
+      const result = await runPromptWithRetries(entry.prompt, config, runner);
+      promptResults.push(result);
+      shardSummaries.push(result);
     }
     const result =
       prompts.length === 1
@@ -590,12 +747,23 @@ const summarizeNode = async (
             shardSummaries,
             config,
             runner,
+            promptResults,
             stats
           );
     const summaryText = result.text.trim();
     const summaryTokens = countTokensForModel(summaryText, {
       model: config.model
     });
+    for (const [index, promptResult] of promptResults.entries()) {
+      try {
+        await persistLcmAppServerEvents(client, node, promptResult, index);
+      } catch (error) {
+        console.warn(
+          `[lcm-summary-worker] Failed to persist app-server telemetry for node ${node.id} shard ${index}; preserving generated summary.`,
+          error
+        );
+      }
+    }
     await client.submitLcmSummary(node.id, {
       summaryText,
       summaryModel: result.model,

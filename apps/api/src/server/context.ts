@@ -31,8 +31,21 @@ export interface ApiRouteContext {
       repo: MemorySourceRepository,
       requesterContext: { userId: string },
       eventId: string,
-      visibility: Visibility
+      visibility: Visibility,
+      teamId?: string
     ): Promise<{ embedding: MemoryJobStatus; compaction: MemoryJobStatus }>;
+    scheduleProjectedMemoryEventProcessing(
+      repo: MemorySourceRepository,
+      requesterContext: { userId: string },
+      scopes: Array<{
+        eventId: string;
+        visibility: Visibility;
+        teamId: string | null;
+      }>
+    ): Promise<{
+      embeddings: MemoryJobStatus[];
+      compactions: MemoryJobStatus[];
+    }>;
     resolveCapturePolicyForRequest(
       repo: MemorySourceRepository,
       requesterContext: { userId: string },

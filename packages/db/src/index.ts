@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { estimateTokens, type LcmSourceItem } from "@koed/core";
+import {
+  chunkTextForModel,
+  estimateTokens,
+  type LcmSourceItem
+} from "@koed/core";
 import type {
   CompactionResult,
   ExpandedMemoryNode,
@@ -371,6 +375,157 @@ export interface CapturedSessionRecord {
   createdAt: string;
 }
 
+export interface ConversationItemInput {
+  visibility?: Visibility;
+  teamId?: string;
+  sessionId?: string;
+  turnId?: string;
+  sourceKind: string;
+  sourceAdapterVersion: string;
+  sourceTransport: string;
+  externalSessionId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  externalItemId?: string;
+  parentExternalItemId?: string;
+  sourceRecordType: string;
+  sourceEventType?: string;
+  sourcePath?: string;
+  sourceLineNumber?: number;
+  sourceSequence?: number;
+  eventTime?: string;
+  rawJson: unknown;
+  rawText?: string;
+  logicalSourceId?: string;
+  transportChunkIndex?: number;
+  transportChunkCount?: number;
+  transportChunkText?: string;
+  transportChunkEncoding?: string;
+  sourceHash: string;
+  idempotencyKey: string;
+  projectionStatus?: "pending" | "projected" | "error" | string;
+  projectionVersion?: string;
+  projectionError?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ConversationItemRecord {
+  id: string;
+  sessionId: string | null;
+  turnId: string | null;
+  sourceKind: string;
+  sourceAdapterVersion: string;
+  sourceTransport: string;
+  externalSessionId: string | null;
+  externalThreadId: string | null;
+  externalTurnId: string | null;
+  externalItemId: string | null;
+  sourceRecordType: string;
+  sourceEventType: string | null;
+  sourceSequence: number | null;
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+type ConversationProjectionRawRow = {
+  id: string;
+  owner_user_id: string | null;
+  team_id: string | null;
+  visibility: Visibility;
+  session_id: string | null;
+  turn_id: string | null;
+  source_kind: string;
+  source_adapter_version: string;
+  source_transport: string;
+  source_record_type: string;
+  source_event_type: string | null;
+  source_path: string | null;
+  source_sequence: number | null;
+  event_time: Date | null;
+  raw_json: unknown;
+  raw_text: string | null;
+  logical_source_id: string | null;
+  transport_chunk_index: number;
+  transport_chunk_count: number;
+  transport_chunk_text: string | null;
+  transport_chunk_encoding: string | null;
+  source_hash: string;
+  idempotency_key: string;
+  metadata: Record<string, unknown> | null;
+  session_workspace_id: string | null;
+  session_cwd: string | null;
+  session_metadata: Record<string, unknown> | null;
+};
+
+type LogicalConversationProjectionItem = {
+  row: ConversationProjectionRawRow;
+  sourceIds: string[];
+  sourceIdentity: string;
+  sourceHash: string;
+};
+
+export interface WorkflowTokenUsageInput {
+  visibility?: Visibility;
+  teamId?: string;
+  workflowType: string;
+  workflowId?: string;
+  sessionId?: string;
+  turnId?: string;
+  conversationItemId?: string;
+  sourceRuntime?: SourceRuntime;
+  sourceKind?: string;
+  sourceAdapterVersion?: string;
+  model?: string;
+  modelContextWindow?: number | null;
+  inputTokens?: number | null;
+  cachedInputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningOutputTokens?: number | null;
+  totalTokens?: number | null;
+  usageScope?: "last" | "total" | string;
+  metadata?: Record<string, unknown>;
+  idempotencyKey?: string;
+  sourceHash?: string;
+}
+
+type ConversationProjectionInput = {
+  limit?: number;
+  conversationItemIds?: string[];
+  visibility?: Visibility;
+};
+
+export interface WorkflowTokenUsageRecord {
+  id: string;
+  workflowType: string;
+  workflowId: string | null;
+  sessionId: string | null;
+  turnId: string | null;
+  conversationItemId: string | null;
+  model: string | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  totalTokens: number | null;
+  usageScope: string;
+  createdAt: string;
+}
+
+export interface ConversationProjectionResult {
+  rawItemsScanned: number;
+  rawItemsProjected: number;
+  messagesCreated: number;
+  toolEventsCreated: number;
+  memoryEventsCreated: number;
+  tokenUsageRowsCreated: number;
+  memoryEventIds: string[];
+  memoryEventScopes: Array<{
+    eventId: string;
+    visibility: Visibility;
+    teamId: string | null;
+  }>;
+}
+
 export interface MemoryQuestionShellRecord {
   id: string;
   ownerUserId: string;
@@ -456,6 +611,21 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       metadata?: Record<string, unknown>;
     }
   ): Promise<CapturedSessionRecord>;
+  createConversationItems(
+    actor: ActorContext,
+    input: { items: ConversationItemInput[] }
+  ): Promise<ConversationItemRecord[]>;
+  recordWorkflowTokenUsage(
+    actor: ActorContext,
+    input: WorkflowTokenUsageInput
+  ): Promise<WorkflowTokenUsageRecord>;
+  projectPendingConversationItems(
+    actor: ActorContext,
+    input?: ConversationProjectionInput
+  ): Promise<ConversationProjectionResult>;
+  listConversationProjectionActors(input?: {
+    limit?: number;
+  }): Promise<ActorContext[]>;
   createMemoryQuestion(
     actor: ActorContext,
     input: {
@@ -885,6 +1055,9 @@ const truncateDisplayText = (value: string, maxLength = 280): string => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const jsonbParam = (value: unknown): string | null =>
+  value === undefined || value === null ? null : JSON.stringify(value);
+
 const getStringField = (
   value: Record<string, unknown>,
   key: string
@@ -1268,8 +1441,610 @@ const mapCapturedSession = (row: {
   createdAt: row.created_at.toISOString()
 });
 
+const mapConversationItem = (row: {
+  id: string;
+  session_id: string | null;
+  turn_id: string | null;
+  source_kind: string;
+  source_adapter_version: string;
+  source_transport: string;
+  external_session_id: string | null;
+  external_thread_id: string | null;
+  external_turn_id: string | null;
+  external_item_id: string | null;
+  source_record_type: string;
+  source_event_type: string | null;
+  source_sequence: number | null;
+  idempotency_key: string;
+  created_at: Date;
+}): ConversationItemRecord => ({
+  id: row.id,
+  sessionId: row.session_id,
+  turnId: row.turn_id,
+  sourceKind: row.source_kind,
+  sourceAdapterVersion: row.source_adapter_version,
+  sourceTransport: row.source_transport,
+  externalSessionId: row.external_session_id,
+  externalThreadId: row.external_thread_id,
+  externalTurnId: row.external_turn_id,
+  externalItemId: row.external_item_id,
+  sourceRecordType: row.source_record_type,
+  sourceEventType: row.source_event_type,
+  sourceSequence: row.source_sequence,
+  idempotencyKey: row.idempotency_key,
+  createdAt: row.created_at.toISOString()
+});
+
+const mapWorkflowTokenUsage = (row: {
+  id: string;
+  workflow_type: string;
+  workflow_id: string | null;
+  session_id: string | null;
+  turn_id: string | null;
+  conversation_item_id: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_tokens: number | null;
+  reasoning_output_tokens: number | null;
+  total_tokens: number | null;
+  usage_scope: string;
+  created_at: Date;
+}): WorkflowTokenUsageRecord => ({
+  id: row.id,
+  workflowType: row.workflow_type,
+  workflowId: row.workflow_id,
+  sessionId: row.session_id,
+  turnId: row.turn_id,
+  conversationItemId: row.conversation_item_id,
+  model: row.model,
+  inputTokens: row.input_tokens,
+  cachedInputTokens: row.cached_input_tokens,
+  outputTokens: row.output_tokens,
+  reasoningOutputTokens: row.reasoning_output_tokens,
+  totalTokens: row.total_tokens,
+  usageScope: row.usage_scope,
+  createdAt: row.created_at.toISOString()
+});
+
+const numberField = (
+  value: Record<string, unknown>,
+  key: string
+): number | null => {
+  const field = value[key];
+  return typeof field === "number" && Number.isFinite(field) ? field : null;
+};
+
+const stringField = (
+  value: Record<string, unknown>,
+  key: string
+): string | null => {
+  const field = value[key];
+  return typeof field === "string" && field.trim() ? field : null;
+};
+
+const stringFromNestedField = (
+  value: unknown,
+  path: string[]
+): string | null => {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) {
+      return null;
+    }
+    current = current[key];
+  }
+  return typeof current === "string" && current.trim() ? current : null;
+};
+
+const normalizeProjectionText = (value: string | null): string | null => {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+};
+
+const joinProjectionTexts = (values: string[]): string | null =>
+  normalizeProjectionText(values.map((value) => value.trim()).join("\n\n"));
+
+const textFromReasoningSummaryValue = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    return normalizeProjectionText(value);
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  return (
+    stringField(value, "text") ??
+    stringField(value, "summaryText") ??
+    stringField(value, "summary_text") ??
+    stringField(value, "message")
+  );
+};
+
+const reasoningSummaryTextFromItem = (
+  item: Record<string, unknown> | null
+): string | null => {
+  if (!item) {
+    return null;
+  }
+  const summary = item.summary ?? item.summary_text ?? item.summaryText;
+  if (Array.isArray(summary)) {
+    return joinProjectionTexts(
+      summary
+        .map(textFromReasoningSummaryValue)
+        .filter((value): value is string => Boolean(value))
+    );
+  }
+  return textFromReasoningSummaryValue(summary);
+};
+
+const projectionIsRawReasoningLabel = (label: string): boolean =>
+  /reasoning[_/ -]?raw|raw[_/ -]?reasoning|raw[_/ -]?content|reasoningTextDelta|ReasoningTextDelta|reasoning[_/ -]?text[_/ -]?delta|ReasoningRawContent|ReasoningRawContentDelta/i.test(
+    label
+  );
+
+const projectionIsReasoningLabel = (label: string): boolean =>
+  /reasoning|thought/i.test(label);
+
+const projectionIsReasoningSummaryLabel = (label: string): boolean =>
+  projectionIsReasoningLabel(label) && !projectionIsRawReasoningLabel(label);
+
+const tokenUsageBreakdown = (
+  value: unknown
+): {
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  totalTokens: number | null;
+} | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const totalTokens = numberField(value, "totalTokens");
+  const inputTokens = numberField(value, "inputTokens");
+  const cachedInputTokens = numberField(value, "cachedInputTokens");
+  const outputTokens = numberField(value, "outputTokens");
+  const reasoningOutputTokens = numberField(value, "reasoningOutputTokens");
+  if (
+    totalTokens === null &&
+    inputTokens === null &&
+    cachedInputTokens === null &&
+    outputTokens === null &&
+    reasoningOutputTokens === null
+  ) {
+    return null;
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens
+  };
+};
+
+const appServerTokenUsageFromRaw = (
+  rawJson: unknown
+): {
+  modelContextWindow: number | null;
+  last: ReturnType<typeof tokenUsageBreakdown>;
+  total: ReturnType<typeof tokenUsageBreakdown>;
+} | null => {
+  if (!isRecord(rawJson)) {
+    return null;
+  }
+  const params = isRecord(rawJson.params) ? rawJson.params : rawJson;
+  const tokenUsage = isRecord(params.tokenUsage) ? params.tokenUsage : null;
+  if (!tokenUsage) {
+    return null;
+  }
+  return {
+    modelContextWindow: numberField(tokenUsage, "modelContextWindow"),
+    last: tokenUsageBreakdown(tokenUsage.last),
+    total: tokenUsageBreakdown(tokenUsage.total)
+  };
+};
+
+const conversationItemContent = (row: {
+  source_event_type?: string | null;
+  source_record_type?: string;
+  metadata?: Record<string, unknown> | null;
+  raw_text: string | null;
+  raw_json: unknown;
+}): string | null => {
+  const raw = isRecord(row.raw_json) ? row.raw_json : null;
+  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
+  const label =
+    row.source_event_type !== undefined && row.source_record_type !== undefined
+      ? projectionLabelForConversationItem({
+          source_event_type: row.source_event_type,
+          source_record_type: row.source_record_type,
+          metadata: row.metadata ?? null
+        })
+      : "";
+  const params = payload && isRecord(payload.params) ? payload.params : null;
+  const item =
+    (params && isRecord(params.item) ? params.item : null) ??
+    (payload && isRecord(payload.item) ? payload.item : null) ??
+    (payload && isRecord(payload) ? payload : null);
+  if (projectionIsReasoningLabel(label)) {
+    if (projectionIsRawReasoningLabel(label)) {
+      return null;
+    }
+    return reasoningSummaryTextFromItem(item);
+  }
+  if (item && /^reasoning$/i.test(stringField(item, "type") ?? "")) {
+    return reasoningSummaryTextFromItem(item);
+  }
+  if (row.raw_text?.trim()) {
+    return row.raw_text.trim();
+  }
+  if (!payload) {
+    return null;
+  }
+  const appServerParams = params;
+  if (appServerParams) {
+    for (const path of [
+      ["delta"],
+      ["text"],
+      ["content"],
+      ["message"],
+      ["item", "text"],
+      ["item", "content"],
+      ["item", "message"]
+    ]) {
+      const value = stringFromNestedField(appServerParams, path);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  for (const key of ["message", "text", "content", "delta"]) {
+    const value = stringField(payload, key);
+    if (value) {
+      return value;
+    }
+  }
+  const nestedItem = isRecord(payload.item) ? payload.item : null;
+  return nestedItem ? stringField(nestedItem, "text") : null;
+};
+
+const actorFromConversationItem = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+  raw_json?: unknown;
+}): MemoryActor | null => {
+  const metadata = row.metadata ?? {};
+  const raw = isRecord(row.raw_json) ? row.raw_json : null;
+  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
+  const item = payload && isRecord(payload.item) ? payload.item : payload;
+  const role =
+    (item && stringField(item, "role")) ??
+    (item && isRecord(item.message) ? stringField(item.message, "role") : null);
+  const transcriptType =
+    stringField(metadata, "transcriptType") ??
+    row.source_event_type ??
+    row.source_record_type;
+  if (
+    /developer|instruction|rolling[_ -]?context|context[_ -]?summary/i.test(
+      transcriptType
+    )
+  ) {
+    return "system";
+  }
+  if (/user/i.test(transcriptType)) {
+    return "user";
+  }
+  if (/developer|system/i.test(role ?? "")) {
+    return "system";
+  }
+  if (/subagent/i.test(transcriptType)) {
+    return "subagent";
+  }
+  if (/agent|assistant|reasoning|thought/i.test(transcriptType)) {
+    return "agent";
+  }
+  if (/tool|function_call|custom_tool/i.test(transcriptType)) {
+    return "tool";
+  }
+  if (/system/i.test(transcriptType)) {
+    return "system";
+  }
+  return null;
+};
+
+const messageRoleForActor = (
+  actor: MemoryActor | null
+): "user" | "assistant" | "system" | "tool" | null => {
+  if (actor === "user" || actor === "system" || actor === "tool") {
+    return actor;
+  }
+  if (actor === "agent" || actor === "assistant" || actor === "subagent") {
+    return "assistant";
+  }
+  return null;
+};
+
+type ConversationProjectionPolicy = {
+  createMessage: boolean;
+  createSemanticEvent: boolean;
+  createToolEvent: boolean;
+  reason: string;
+};
+
+const projectionLabelForConversationItem = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+}): string => {
+  const metadata = row.metadata ?? {};
+  return [
+    row.source_record_type,
+    row.source_event_type,
+    stringField(metadata, "transcriptType"),
+    stringField(metadata, "transcriptParentType"),
+    stringField(metadata, "toolEventKind")
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+};
+
+const projectionWorkflowIsInternal = (
+  metadata: Record<string, unknown> | null
+): boolean => {
+  const workflow = stringField(metadata ?? {}, "workflow");
+  return workflow === "lcm_summary" || workflow === "memory_question";
+};
+
+const projectionIsInfrastructureEvent = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+  raw_json: unknown;
+}): boolean => {
+  const label = projectionLabelForConversationItem(row);
+  const raw = isRecord(row.raw_json) ? row.raw_json : null;
+  return (
+    /tokenUsage|session_meta|lifecycle|initialized|turn\/completed|error|agentMessage\/delta/i.test(
+      label
+    ) ||
+    projectionIsRawReasoningLabel(label) ||
+    raw?.method === "thread/tokenUsage/updated"
+  );
+};
+
+const projectionIsSystemContext = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+  raw_json: unknown;
+}): boolean => {
+  const label = projectionLabelForConversationItem(row);
+  const raw = isRecord(row.raw_json) ? row.raw_json : null;
+  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
+  const item = payload && isRecord(payload.item) ? payload.item : payload;
+  const role =
+    (item && stringField(item, "role")) ??
+    (item && isRecord(item.message) ? stringField(item.message, "role") : null);
+  return (
+    /(^|[_/ -])(system|developer|instruction|rolling[_ -]?context|context[_ -]?summary)([_/ -]|$)/i.test(
+      label
+    ) || /^(system|developer)$/i.test(role ?? "")
+  );
+};
+
+const projectionIsSemanticAllowlisted = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+}): boolean => {
+  const label = projectionLabelForConversationItem(row);
+  return (
+    /user_message|assistant_message|agent_message|agentMessage|subagent|function_call|custom_tool|codex_transcript_(user|agent|subagent|tool)|codex_tool_result/i.test(
+      label
+    ) || projectionIsReasoningSummaryLabel(label)
+  );
+};
+
+const classifyConversationItemProjection = (
+  row: {
+    source_event_type: string | null;
+    source_record_type: string;
+    metadata: Record<string, unknown> | null;
+    raw_json: unknown;
+  },
+  input: { actorType: MemoryActor | null; content: string | null }
+): ConversationProjectionPolicy => {
+  const base = {
+    createMessage: false,
+    createSemanticEvent: false,
+    createToolEvent: false,
+    reason: "not-projectable"
+  };
+  if (!input.content || !input.actorType) {
+    return { ...base, reason: "missing-content-or-actor" };
+  }
+  if (projectionWorkflowIsInternal(row.metadata)) {
+    return { ...base, reason: "internal-worker-workflow" };
+  }
+  if (projectionIsInfrastructureEvent(row)) {
+    return { ...base, reason: "infrastructure-event" };
+  }
+  if (projectionIsSystemContext(row)) {
+    return { ...base, reason: "system-or-context-record" };
+  }
+
+  const createMessage = Boolean(messageRoleForActor(input.actorType));
+  const createToolEvent = input.actorType === "tool";
+  const createSemanticEvent =
+    projectionIsSemanticAllowlisted(row) || input.actorType === "tool";
+  return {
+    createMessage,
+    createSemanticEvent,
+    createToolEvent,
+    reason: createSemanticEvent ? "projectable" : "not-semantic-allowlisted"
+  };
+};
+
 const previewMarkdown = (value: string | null): string | null =>
   value ? truncateDisplayText(value, 280) : null;
+
+const projectionMaxTokens = (): number =>
+  Math.min(
+    Math.max(
+      Number.parseInt(process.env.MEMORY_EVENT_MAX_TOKENS ?? "", 10) ||
+        Number.parseInt(process.env.EMBEDDING_MAX_TOKENS ?? "", 10) ||
+        QWEN_OPERATIONAL_MAX_TOKENS,
+      1
+    ),
+    QWEN_OPERATIONAL_MAX_TOKENS
+  );
+
+const CURRENT_CONVERSATION_PROJECTION_VERSION = "conversation-projection-v2";
+
+const isTransportChunkRow = (row: {
+  logical_source_id: string | null;
+  transport_chunk_count: number;
+  transport_chunk_text: string | null;
+}): boolean =>
+  Boolean(row.logical_source_id) ||
+  row.transport_chunk_count > 1 ||
+  row.transport_chunk_text !== null;
+
+const decodeTransportChunkEnvelope = (
+  text: string,
+  encoding: string | null
+): { rawJson: unknown; rawText: string | null } => {
+  const parsed = JSON.parse(text) as unknown;
+  if (encoding === "conversation-item-json-v1") {
+    if (!isRecord(parsed)) {
+      throw new Error("Invalid conversation item transport chunk envelope");
+    }
+    return {
+      rawJson: parsed.rawJson,
+      rawText: typeof parsed.rawText === "string" ? parsed.rawText : null
+    };
+  }
+  return { rawJson: parsed, rawText: null };
+};
+
+const loadLogicalConversationProjectionItem = async (
+  pool: pg.Pool,
+  row: ConversationProjectionRawRow
+): Promise<LogicalConversationProjectionItem> => {
+  if (!isTransportChunkRow(row)) {
+    return {
+      row,
+      sourceIds: [row.id],
+      sourceIdentity: row.id,
+      sourceHash: row.source_hash
+    };
+  }
+
+  if (!row.logical_source_id) {
+    throw new Error("Transport chunk row is missing logical_source_id");
+  }
+
+  const chunks = await pool.query<ConversationProjectionRawRow>(
+    `
+      select
+        ci.id, ci.owner_user_id, ci.team_id, ci.visibility, ci.session_id,
+        ci.turn_id, ci.source_kind, ci.source_adapter_version,
+        ci.source_transport, ci.source_record_type, ci.source_event_type,
+        ci.source_path, ci.source_sequence, ci.event_time, ci.raw_json,
+        ci.raw_text, ci.logical_source_id, ci.transport_chunk_index,
+        ci.transport_chunk_count, ci.transport_chunk_text,
+        ci.transport_chunk_encoding, ci.source_hash, ci.idempotency_key,
+        ci.metadata,
+        s.workspace_id as session_workspace_id,
+        s.cwd as session_cwd,
+        s.metadata as session_metadata
+      from conversation_items ci
+      left join sessions s on s.id = ci.session_id
+      where ci.logical_source_id = $1
+        and ci.visibility = $2::visibility_scope
+        and (
+          ($2::visibility_scope = 'personal' and ci.owner_user_id = $3)
+          or ($2::visibility_scope = 'team' and ci.team_id = $4)
+        )
+      order by ci.transport_chunk_index asc, ci.id asc
+    `,
+    [row.logical_source_id, row.visibility, row.owner_user_id, row.team_id]
+  );
+
+  const expectedCount = row.transport_chunk_count;
+  if (chunks.rowCount !== expectedCount) {
+    throw new Error(
+      `Incomplete transport chunk group: expected ${expectedCount}, found ${chunks.rowCount}`
+    );
+  }
+
+  const seen = new Set<number>();
+  for (const chunk of chunks.rows) {
+    if (chunk.transport_chunk_count !== expectedCount) {
+      throw new Error("Transport chunk count mismatch");
+    }
+    if (
+      chunk.transport_chunk_index < 0 ||
+      chunk.transport_chunk_index >= expectedCount
+    ) {
+      throw new Error("Transport chunk index out of range");
+    }
+    if (seen.has(chunk.transport_chunk_index)) {
+      throw new Error("Duplicate transport chunk index");
+    }
+    if (typeof chunk.transport_chunk_text !== "string") {
+      throw new Error("Transport chunk text is missing");
+    }
+    seen.add(chunk.transport_chunk_index);
+  }
+  for (let index = 0; index < expectedCount; index += 1) {
+    if (!seen.has(index)) {
+      throw new Error(`Missing transport chunk index ${index}`);
+    }
+  }
+
+  const sorted = [...chunks.rows].sort(
+    (a, b) => a.transport_chunk_index - b.transport_chunk_index
+  );
+  const encoding = sorted[0]?.transport_chunk_encoding ?? null;
+  const envelope = sorted
+    .map((chunk) => chunk.transport_chunk_text ?? "")
+    .join("");
+  const decoded = decodeTransportChunkEnvelope(envelope, encoding);
+  const representative =
+    sorted.find((chunk) => chunk.transport_chunk_index === 0) ?? row;
+
+  return {
+    row: {
+      ...representative,
+      raw_json: decoded.rawJson,
+      raw_text: decoded.rawText,
+      metadata: row.metadata,
+      source_hash: row.logical_source_id
+    },
+    sourceIds: sorted.map((chunk) => chunk.id),
+    sourceIdentity: row.logical_source_id,
+    sourceHash: row.logical_source_id
+  };
+};
+
+const semanticProjectionChunks = (
+  content: string,
+  model?: string | null
+): Array<{ content: string; chunkIndex: number; chunkCount: number }> => {
+  const chunks = chunkTextForModel(content, {
+    model: model ?? "gpt-5.4-mini",
+    maxTokens: projectionMaxTokens()
+  });
+  const effectiveChunks = chunks.length > 0 ? chunks : [content];
+  return effectiveChunks.map((chunk, index) => ({
+    content: chunk,
+    chunkIndex: index,
+    chunkCount: effectiveChunks.length
+  }));
+};
 
 const mapMemoryQuestionShell = (row: {
   id: string;
@@ -1446,6 +2221,14 @@ const positiveIntEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const QWEN_OPERATIONAL_MAX_TOKENS = 32_000;
+
+const positiveIntEnvCapped = (
+  name: string,
+  fallback: number,
+  max: number
+): number => Math.min(positiveIntEnv(name, fallback), max);
+
 const vectorCandidateLimit = (resultLimit: number): number =>
   Math.max(resultLimit, positiveIntEnv("MEMORY_VECTOR_CANDIDATE_LIMIT", 20));
 
@@ -1461,7 +2244,11 @@ const lcmLeafEventThreshold = (): number =>
   positiveIntEnv("MEMORY_LCM_LEAF_EVENT_THRESHOLD", 100);
 
 const lcmLeafTokenThreshold = (): number =>
-  positiveIntEnv("MEMORY_LCM_LEAF_TOKEN_THRESHOLD", 32_000);
+  positiveIntEnvCapped(
+    "MEMORY_LCM_LEAF_TOKEN_THRESHOLD",
+    QWEN_OPERATIONAL_MAX_TOKENS,
+    QWEN_OPERATIONAL_MAX_TOKENS
+  );
 
 const lcmFreshEventTail = (): number =>
   nonNegativeIntEnv("MEMORY_LCM_FRESH_EVENT_TAIL", 10);
@@ -1599,6 +2386,352 @@ const defaultRetrievalMetadata = (
   embeddingDimensions: null,
   ...overrides
 });
+
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const canonicalWorkspaceId = (input: {
+  metadata?: Record<string, unknown> | null;
+  sessionId?: string | null;
+  sessionWorkspaceId?: string | null;
+  sessionCwd?: string | null;
+  fallback?: string;
+}): string => {
+  const explicit = stringField(input.metadata ?? {}, "workspaceId");
+  if (
+    explicit &&
+    !(input.sessionId && explicit === input.sessionId) &&
+    !(explicit === "conversation-projection" && input.sessionCwd)
+  ) {
+    return explicit;
+  }
+  if (input.sessionWorkspaceId) {
+    return input.sessionWorkspaceId;
+  }
+  if (input.sessionCwd) {
+    return input.sessionCwd;
+  }
+  return input.fallback ?? "conversation-projection";
+};
+
+const canonicalProjectMetadata = (input: {
+  metadata?: Record<string, unknown> | null;
+  sessionMetadata?: Record<string, unknown> | null;
+  sessionId?: string | null;
+  sessionWorkspaceId?: string | null;
+  sessionCwd?: string | null;
+}): Record<string, unknown> => {
+  const sessionMetadata = input.sessionMetadata ?? {};
+  const metadata = input.metadata ?? {};
+  const workspaceId = canonicalWorkspaceId(input);
+  const projectName =
+    stringField(metadata, "projectName") ??
+    stringField(sessionMetadata, "projectName") ??
+    input.sessionWorkspaceId ??
+    input.sessionCwd;
+  const projectPath =
+    stringField(metadata, "projectPath") ??
+    stringField(sessionMetadata, "projectPath") ??
+    input.sessionCwd;
+  return {
+    ...sessionMetadata,
+    ...metadata,
+    workspaceId,
+    ...(projectName ? { projectName } : {}),
+    ...(projectPath ? { projectPath } : {})
+  };
+};
+
+const rawConversationItemIdsFromMetadata = (
+  metadata: Record<string, unknown> | undefined
+): string[] => {
+  const values = [
+    metadata?.rawConversationItemId,
+    metadata?.rawConversationItemIds
+  ];
+  const ids = new Set<string>();
+  for (const value of values) {
+    const candidates = Array.isArray(value) ? value : value ? [value] : [];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && uuidPattern.test(candidate)) {
+        ids.add(candidate);
+      }
+    }
+  }
+  return [...ids];
+};
+
+const linkMemoryEventSources = async (
+  pool: pg.Pool,
+  memoryEventId: string,
+  conversationItemIds: string[]
+): Promise<void> => {
+  for (let index = 0; index < conversationItemIds.length; index += 1) {
+    await pool.query(
+      `
+        insert into memory_event_sources (
+          memory_event_id,
+          conversation_item_id,
+          source_order,
+          source_role
+        )
+        select $1, ci.id, $3, 'derived_from'
+        from conversation_items ci
+        join memory_events me on me.id = $1
+        where ci.id = $2
+          and ci.visibility = me.visibility
+          and (
+            (
+              ci.visibility = 'personal'
+              and ci.owner_user_id = me.owner_user_id
+            )
+            or
+            (
+              ci.visibility = 'team'
+              and ci.team_id = me.team_id
+            )
+          )
+        on conflict do nothing
+      `,
+      [memoryEventId, conversationItemIds[index], index]
+    );
+  }
+};
+
+const captureMethodForConversationItem = (
+  item: Pick<ConversationItemInput, "sourceTransport">
+): CaptureMethod => {
+  if (item.sourceTransport === "hook") {
+    return "hook";
+  }
+  if (item.sourceTransport === "mcp") {
+    return "mcp";
+  }
+  if (item.sourceTransport === "web") {
+    return "web";
+  }
+  return "api";
+};
+
+const ensureConversationItemTurn = async (
+  pool: pg.Pool,
+  input: {
+    ownerUserId: string | null;
+    teamId: string | null;
+    visibility: Visibility;
+    item: ConversationItemInput;
+  }
+): Promise<string | null> => {
+  const { item } = input;
+  if (item.turnId) {
+    const turn = await pool.query<{ id: string }>(
+      `
+        select id
+        from turns
+        where id = $1
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+          and ($5::uuid is null or session_id = $5)
+        limit 1
+      `,
+      [
+        item.turnId,
+        input.visibility,
+        input.ownerUserId,
+        input.teamId,
+        item.sessionId ?? null
+      ]
+    );
+    if (turn.rowCount === 0) {
+      throw new Error("Turn not found or not visible");
+    }
+    return item.turnId;
+  }
+  if (!item.sessionId || !item.externalTurnId) {
+    return null;
+  }
+
+  let result: pg.QueryResult<{ id: string }> | null = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      result = await pool.query<{ id: string }>(
+        `
+          insert into turns (
+            session_id,
+            owner_user_id,
+            team_id,
+            visibility,
+            external_turn_id,
+            source_runtime,
+            capture_method,
+            codex_transcript_path,
+            idempotency_key,
+            source_hash,
+            turn_index,
+            source_kind,
+            source_adapter_version,
+            external_thread_id,
+            source_metadata
+          )
+          values (
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9, $10,
+            coalesce(
+              (select max(turn_index) + 1 from turns where session_id = $1),
+              0
+            ),
+            $11, $12, $13, $14
+          )
+          on conflict (session_id, external_turn_id)
+            where external_turn_id is not null
+          do update set
+            source_kind = coalesce(turns.source_kind, excluded.source_kind),
+            source_adapter_version = coalesce(
+              turns.source_adapter_version,
+              excluded.source_adapter_version
+            ),
+            external_thread_id = coalesce(
+              turns.external_thread_id,
+              excluded.external_thread_id
+            ),
+            source_metadata = turns.source_metadata || excluded.source_metadata
+          returning id
+        `,
+        [
+          item.sessionId,
+          input.ownerUserId,
+          input.teamId,
+          input.visibility,
+          item.externalTurnId,
+          item.sourceKind === "codex-cli" ? "codex-cli" : "codex",
+          captureMethodForConversationItem(item),
+          item.sourcePath ?? null,
+          `turn:${item.sessionId}:${item.externalTurnId}`,
+          `turn:${item.sessionId}:${item.externalTurnId}`,
+          item.sourceKind,
+          item.sourceAdapterVersion,
+          item.externalThreadId ?? item.externalSessionId ?? null,
+          {
+            externalSessionId: item.externalSessionId,
+            externalThreadId: item.externalThreadId ?? item.externalSessionId,
+            sourceTransport: item.sourceTransport
+          }
+        ]
+      );
+      break;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? String(error.code)
+          : "";
+      const constraint =
+        typeof error === "object" && error !== null && "constraint" in error
+          ? String(error.constraint)
+          : "";
+      if (
+        code === "23505" &&
+        constraint === "turns_session_turn_index_unique" &&
+        attempt < 4
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return result?.rows[0]?.id ?? null;
+};
+
+const validateWorkflowTokenUsageSources = async (
+  pool: pg.Pool,
+  input: {
+    ownerUserId: string | null;
+    teamId: string | null;
+    visibility: Visibility;
+    usage: WorkflowTokenUsageInput;
+  }
+): Promise<void> => {
+  const { usage } = input;
+  if (usage.sessionId) {
+    const session = await pool.query<{ id: string }>(
+      `
+        select id
+        from sessions
+        where id = $1
+          and invalidated_at is null
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+        limit 1
+      `,
+      [usage.sessionId, input.visibility, input.ownerUserId, input.teamId]
+    );
+    if (session.rowCount === 0) {
+      throw new Error("Session not found or not visible");
+    }
+  }
+
+  if (usage.turnId) {
+    const turn = await pool.query<{ id: string }>(
+      `
+        select id
+        from turns
+        where id = $1
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+          and ($5::uuid is null or session_id = $5)
+        limit 1
+      `,
+      [
+        usage.turnId,
+        input.visibility,
+        input.ownerUserId,
+        input.teamId,
+        usage.sessionId ?? null
+      ]
+    );
+    if (turn.rowCount === 0) {
+      throw new Error("Turn not found or not visible");
+    }
+  }
+
+  if (usage.conversationItemId) {
+    const item = await pool.query<{ id: string }>(
+      `
+        select id
+        from conversation_items
+        where id = $1
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+          and ($5::uuid is null or session_id = $5)
+          and ($6::uuid is null or turn_id = $6)
+        limit 1
+      `,
+      [
+        usage.conversationItemId,
+        input.visibility,
+        input.ownerUserId,
+        input.teamId,
+        usage.sessionId ?? null,
+        usage.turnId ?? null
+      ]
+    );
+    if (item.rowCount === 0) {
+      throw new Error("Conversation item not found or not visible");
+    }
+  }
+};
 
 const embedTexts = async (
   texts: string[]
@@ -2180,6 +3313,7 @@ export const createMemorySourceRepository = (
   },
 
   async createCapturedSession(actor, input) {
+    const metadata = input.metadata ?? {};
     const result = await pool.query<{
       id: string;
       owner_user_id: string | null;
@@ -2208,14 +3342,44 @@ export const createMemorySourceRepository = (
           source_hash,
           model,
           cwd,
-          metadata
+          metadata,
+          source_kind,
+          source_adapter_version,
+          external_thread_id,
+          forked_from_external_thread_id,
+          parent_external_thread_id,
+          parent_session_id,
+          agent_nickname,
+          agent_role,
+          agent_path,
+          thread_source,
+          source_metadata
         )
-        values ($1, null, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        values (
+          $1, null, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11,
+          $12, $13, $14, $15, $16,
+          (
+            select id
+            from sessions parent
+            where parent.owner_user_id = $1
+              and parent.visibility = 'personal'
+              and (
+                parent.external_thread_id = $16
+                or parent.external_session_id = $16
+                or parent.id::text = $16
+              )
+            order by parent.created_at desc
+            limit 1
+          ),
+          $17, $18, $19, $20, $21
+        )
         on conflict (idempotency_key)
         where idempotency_key is not null
         do update set
           updated_at = now(),
-          metadata = sessions.metadata || excluded.metadata
+          metadata = sessions.metadata || excluded.metadata,
+          parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
+          source_metadata = sessions.source_metadata || excluded.source_metadata
         returning id, owner_user_id, team_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
       `,
       [
@@ -2229,11 +3393,737 @@ export const createMemorySourceRepository = (
         input.sourceHash ?? null,
         input.model ?? null,
         input.cwd ?? null,
-        input.metadata ?? {}
+        metadata,
+        "codex",
+        input.sourceRuntime === "codex-cli"
+          ? "codex-cli-hook-v1"
+          : "codex-app-server-v1",
+        input.externalSessionId ?? null,
+        typeof metadata.forked_from_id === "string"
+          ? metadata.forked_from_id
+          : null,
+        typeof metadata.parentThreadId === "string"
+          ? metadata.parentThreadId
+          : typeof metadata.parentExternalSessionId === "string"
+            ? metadata.parentExternalSessionId
+            : null,
+        typeof metadata.agent_nickname === "string"
+          ? metadata.agent_nickname
+          : typeof metadata.agentNickname === "string"
+            ? metadata.agentNickname
+            : null,
+        typeof metadata.agent_role === "string"
+          ? metadata.agent_role
+          : typeof metadata.agentType === "string"
+            ? metadata.agentType
+            : null,
+        typeof metadata.agent_path === "string" ? metadata.agent_path : null,
+        typeof metadata.thread_source === "string"
+          ? metadata.thread_source
+          : typeof metadata.threadKind === "string"
+            ? metadata.threadKind
+            : null,
+        metadata
       ]
     );
 
     return mapCapturedSession(result.rows[0]!);
+  },
+
+  async createConversationItems(actor, input) {
+    const records: ConversationItemRecord[] = [];
+    for (const item of input.items) {
+      const visibility = item.visibility ?? "personal";
+      if (visibility === "team") {
+        if (!item.teamId) {
+          throw new Error("Team visibility requires a teamId");
+        }
+        await requireTeamMembership(pool, actor.userId, item.teamId);
+      }
+      const ownerUserId = visibility === "personal" ? actor.userId : null;
+      const teamId = visibility === "team" ? item.teamId! : null;
+      if (item.sessionId) {
+        const visibleSession = await pool.query<{ id: string }>(
+          `
+            select s.id
+            from sessions s
+            where s.id = $2
+              and s.invalidated_at is null
+              and s.visibility = $3::visibility_scope
+              and (
+                ($3::visibility_scope = 'personal' and s.owner_user_id = $1)
+                or ($3::visibility_scope = 'team' and s.team_id = $4)
+              )
+            limit 1
+          `,
+          [actor.userId, item.sessionId, visibility, teamId]
+        );
+        if (visibleSession.rowCount === 0) {
+          throw new Error("Session not found or not visible");
+        }
+      }
+
+      const turnId = await ensureConversationItemTurn(pool, {
+        ownerUserId,
+        teamId,
+        visibility,
+        item
+      });
+      const result = await pool.query<{
+        id: string;
+        session_id: string | null;
+        turn_id: string | null;
+        source_kind: string;
+        source_adapter_version: string;
+        source_transport: string;
+        external_session_id: string | null;
+        external_thread_id: string | null;
+        external_turn_id: string | null;
+        external_item_id: string | null;
+        source_record_type: string;
+        source_event_type: string | null;
+        source_sequence: number | null;
+        idempotency_key: string;
+        created_at: Date;
+      }>(
+        `
+          insert into conversation_items (
+            owner_user_id,
+            team_id,
+            visibility,
+            session_id,
+            turn_id,
+            source_kind,
+            source_adapter_version,
+            source_transport,
+            external_session_id,
+            external_thread_id,
+            external_turn_id,
+            external_item_id,
+            parent_external_item_id,
+            source_record_type,
+            source_event_type,
+            source_path,
+            source_line_number,
+            source_sequence,
+            event_time,
+            raw_json,
+            raw_text,
+            logical_source_id,
+            transport_chunk_index,
+            transport_chunk_count,
+            transport_chunk_text,
+            transport_chunk_encoding,
+            source_hash,
+            idempotency_key,
+            projection_status,
+            projection_version,
+            projection_error,
+            metadata
+          )
+          values (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
+            $30, $31, $32
+          )
+          on conflict do nothing
+          returning
+            id, session_id, turn_id, source_kind, source_adapter_version,
+            source_transport, external_session_id, external_thread_id,
+            external_turn_id, external_item_id, source_record_type,
+            source_event_type, source_sequence, idempotency_key, created_at
+        `,
+        [
+          ownerUserId,
+          teamId,
+          visibility,
+          item.sessionId ?? null,
+          turnId,
+          item.sourceKind,
+          item.sourceAdapterVersion,
+          item.sourceTransport,
+          item.externalSessionId ?? null,
+          item.externalThreadId ?? item.externalSessionId ?? null,
+          item.externalTurnId ?? null,
+          item.externalItemId ?? null,
+          item.parentExternalItemId ?? null,
+          item.sourceRecordType,
+          item.sourceEventType ?? null,
+          item.sourcePath ?? null,
+          item.sourceLineNumber ?? null,
+          item.sourceSequence ?? null,
+          item.eventTime ?? null,
+          JSON.stringify(item.rawJson),
+          item.rawText ?? null,
+          item.logicalSourceId ?? null,
+          item.transportChunkIndex ?? 0,
+          item.transportChunkCount ?? 1,
+          item.transportChunkText ?? null,
+          item.transportChunkEncoding ?? null,
+          item.sourceHash,
+          item.idempotencyKey,
+          item.projectionStatus ?? "pending",
+          item.projectionVersion ?? null,
+          item.projectionError ?? null,
+          item.metadata ?? {}
+        ]
+      );
+      const row =
+        result.rows[0] ??
+        (
+          await pool.query<{
+            id: string;
+            session_id: string | null;
+            turn_id: string | null;
+            source_kind: string;
+            source_adapter_version: string;
+            source_transport: string;
+            external_session_id: string | null;
+            external_thread_id: string | null;
+            external_turn_id: string | null;
+            external_item_id: string | null;
+            source_record_type: string;
+            source_event_type: string | null;
+            source_sequence: number | null;
+            idempotency_key: string;
+            created_at: Date;
+          }>(
+            `
+              select
+                id, session_id, turn_id, source_kind, source_adapter_version,
+                source_transport, external_session_id, external_thread_id,
+                external_turn_id, external_item_id, source_record_type,
+                source_event_type, source_sequence, idempotency_key, created_at
+              from conversation_items
+              where idempotency_key = $1
+                and visibility = $2::visibility_scope
+                and (
+                  ($2::visibility_scope = 'personal' and owner_user_id = $3)
+                  or ($2::visibility_scope = 'team' and team_id = $4)
+                )
+              limit 1
+            `,
+            [item.idempotencyKey, visibility, ownerUserId, teamId]
+          )
+        ).rows[0];
+      if (!row) {
+        throw Object.assign(
+          new Error(
+            "Duplicate raw conversation item conflicts with data outside caller visibility"
+          ),
+          { statusCode: 409 }
+        );
+      }
+      records.push(mapConversationItem(row));
+    }
+    return records;
+  },
+
+  async recordWorkflowTokenUsage(actor, input) {
+    const visibility = input.visibility ?? "personal";
+    if (visibility === "team") {
+      if (!input.teamId) {
+        throw new Error("Team visibility requires a teamId");
+      }
+      await requireTeamMembership(pool, actor.userId, input.teamId);
+    }
+    const ownerUserId = visibility === "personal" ? actor.userId : null;
+    const teamId = visibility === "team" ? input.teamId! : null;
+    await validateWorkflowTokenUsageSources(pool, {
+      ownerUserId,
+      teamId,
+      visibility,
+      usage: input
+    });
+    const idempotencyKey =
+      input.idempotencyKey ??
+      createHash("sha256")
+        .update(
+          JSON.stringify({
+            workflowType: input.workflowType,
+            workflowId: input.workflowId,
+            sessionId: input.sessionId,
+            turnId: input.turnId,
+            conversationItemId: input.conversationItemId,
+            usageScope: input.usageScope ?? "last",
+            model: input.model,
+            totalTokens: input.totalTokens,
+            inputTokens: input.inputTokens,
+            outputTokens: input.outputTokens,
+            cachedInputTokens: input.cachedInputTokens,
+            reasoningOutputTokens: input.reasoningOutputTokens
+          })
+        )
+        .digest("hex");
+    const result = await pool.query<{
+      id: string;
+      workflow_type: string;
+      workflow_id: string | null;
+      session_id: string | null;
+      turn_id: string | null;
+      conversation_item_id: string | null;
+      model: string | null;
+      input_tokens: number | null;
+      cached_input_tokens: number | null;
+      output_tokens: number | null;
+      reasoning_output_tokens: number | null;
+      total_tokens: number | null;
+      usage_scope: string;
+      created_at: Date;
+    }>(
+      `
+        insert into workflow_token_usage (
+          owner_user_id,
+          team_id,
+          visibility,
+          workflow_type,
+          workflow_id,
+          session_id,
+          turn_id,
+          conversation_item_id,
+          source_runtime,
+          source_kind,
+          source_adapter_version,
+          model,
+          model_context_window,
+          input_tokens,
+          cached_input_tokens,
+          output_tokens,
+          reasoning_output_tokens,
+          total_tokens,
+          usage_scope,
+          metadata,
+          idempotency_key,
+          source_hash
+        )
+        values (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, $14, $15, $16,
+          $17, $18, $19, $20, $21, $22
+        )
+        on conflict do nothing
+        returning
+          id, workflow_type, workflow_id, session_id, turn_id,
+          conversation_item_id, model, input_tokens, cached_input_tokens,
+          output_tokens, reasoning_output_tokens, total_tokens, usage_scope,
+          created_at
+      `,
+      [
+        ownerUserId,
+        teamId,
+        visibility,
+        input.workflowType,
+        input.workflowId ?? null,
+        input.sessionId ?? null,
+        input.turnId ?? null,
+        input.conversationItemId ?? null,
+        input.sourceRuntime ?? null,
+        input.sourceKind ?? null,
+        input.sourceAdapterVersion ?? null,
+        input.model ?? null,
+        input.modelContextWindow ?? null,
+        input.inputTokens ?? null,
+        input.cachedInputTokens ?? null,
+        input.outputTokens ?? null,
+        input.reasoningOutputTokens ?? null,
+        input.totalTokens ?? null,
+        input.usageScope ?? "last",
+        input.metadata ?? {},
+        idempotencyKey,
+        input.sourceHash ?? idempotencyKey
+      ]
+    );
+    const row =
+      result.rows[0] ??
+      (
+        await pool.query<(typeof result.rows)[number]>(
+          `
+            select
+              id, workflow_type, workflow_id, session_id, turn_id,
+              conversation_item_id, model, input_tokens, cached_input_tokens,
+              output_tokens, reasoning_output_tokens, total_tokens,
+              usage_scope, created_at
+            from workflow_token_usage
+            where idempotency_key = $1
+              and visibility = $2::visibility_scope
+              and (
+                ($2::visibility_scope = 'personal' and owner_user_id = $3)
+                or ($2::visibility_scope = 'team' and team_id = $4)
+              )
+            limit 1
+          `,
+          [idempotencyKey, visibility, ownerUserId, teamId]
+        )
+      ).rows[0];
+    if (!row) {
+      throw Object.assign(
+        new Error(
+          "Duplicate token usage conflicts with data outside caller visibility"
+        ),
+        { statusCode: 409 }
+      );
+    }
+    return mapWorkflowTokenUsage(row);
+  },
+
+  async projectPendingConversationItems(actor, input = {}) {
+    const conversationItemIds = input.conversationItemIds ?? null;
+    const visibility = input.visibility ?? null;
+    if (conversationItemIds && conversationItemIds.length === 0) {
+      return {
+        rawItemsScanned: 0,
+        rawItemsProjected: 0,
+        messagesCreated: 0,
+        toolEventsCreated: 0,
+        memoryEventsCreated: 0,
+        tokenUsageRowsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+    }
+    const limit = Math.min(
+      Math.max(input.limit ?? conversationItemIds?.length ?? 100, 1),
+      1000
+    );
+    const result: ConversationProjectionResult = {
+      rawItemsScanned: 0,
+      rawItemsProjected: 0,
+      messagesCreated: 0,
+      toolEventsCreated: 0,
+      memoryEventsCreated: 0,
+      tokenUsageRowsCreated: 0,
+      memoryEventIds: [],
+      memoryEventScopes: []
+    };
+    const rows = await pool.query<ConversationProjectionRawRow>(
+      `
+        select
+          ci.id, ci.owner_user_id, ci.team_id, ci.visibility, ci.session_id,
+          ci.turn_id, ci.source_kind, ci.source_adapter_version,
+          ci.source_transport, ci.source_record_type, ci.source_event_type,
+          ci.source_path, ci.source_sequence, ci.event_time, ci.raw_json,
+          ci.raw_text, ci.logical_source_id, ci.transport_chunk_index,
+          ci.transport_chunk_count, ci.transport_chunk_text,
+          ci.transport_chunk_encoding, ci.source_hash, ci.idempotency_key,
+          ci.metadata,
+          s.workspace_id as session_workspace_id,
+          s.cwd as session_cwd,
+          s.metadata as session_metadata
+        from conversation_items ci
+        left join sessions s on s.id = ci.session_id
+        where ci.projection_status in ('pending', 'error')
+          and ($3::uuid[] is null or ci.id = any($3::uuid[]))
+          and ($4::visibility_scope is null or ci.visibility = $4)
+          and (
+            $3::uuid[] is not null
+            or ci.transport_chunk_count = 1
+            or ci.transport_chunk_index = 0
+          )
+          and (
+            (ci.visibility = 'personal' and ci.owner_user_id = $1)
+            or (
+              ci.visibility = 'team'
+              and exists (
+                select 1
+                from team_members tm
+                where tm.team_id = ci.team_id
+                  and tm.user_id = $1
+                  and tm.removed_at is null
+              )
+            )
+          )
+        order by ci.observed_at asc, ci.id asc
+        limit $2
+      `,
+      [actor.userId, limit, conversationItemIds, visibility]
+    );
+
+    const processedSourceIdentities = new Set<string>();
+    for (const sourceRow of rows.rows) {
+      result.rawItemsScanned += 1;
+      let sourceIds = [sourceRow.id];
+      try {
+        const logicalItem = await loadLogicalConversationProjectionItem(
+          pool,
+          sourceRow
+        );
+        if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
+          continue;
+        }
+        processedSourceIdentities.add(logicalItem.sourceIdentity);
+        const row = logicalItem.row;
+        sourceIds = logicalItem.sourceIds;
+        const ownerUserId = row.visibility === "personal" ? actor.userId : null;
+        const teamId = row.visibility === "team" ? row.team_id : null;
+        const content = conversationItemContent(row);
+        const actorType = actorFromConversationItem(row);
+        const messageRole = messageRoleForActor(actorType);
+        const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
+        const projectionMetadata = canonicalProjectMetadata({
+          metadata: row.metadata,
+          sessionMetadata: row.session_metadata,
+          sessionId: row.session_id,
+          sessionWorkspaceId: row.session_workspace_id,
+          sessionCwd: row.session_cwd
+        });
+        const projectionPolicy = classifyConversationItemProjection(row, {
+          actorType,
+          content
+        });
+
+        if (tokenUsage) {
+          for (const scope of ["last", "total"] as const) {
+            const breakdown = tokenUsage[scope];
+            if (!breakdown) {
+              continue;
+            }
+            await this.recordWorkflowTokenUsage(
+              { userId: actor.userId },
+              {
+                visibility: row.visibility,
+                ...(teamId ? { teamId } : {}),
+                workflowType:
+                  stringField(row.metadata ?? {}, "workflow") ??
+                  "conversation_projection",
+                workflowId:
+                  stringField(row.metadata ?? {}, "questionId") ??
+                  stringField(row.metadata ?? {}, "nodeId") ??
+                  logicalItem.sourceIdentity,
+                sessionId: row.session_id ?? undefined,
+                turnId: row.turn_id ?? undefined,
+                conversationItemId: sourceIds[0],
+                sourceRuntime:
+                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                sourceKind: row.source_kind,
+                sourceAdapterVersion: row.source_adapter_version,
+                model: stringField(row.metadata ?? {}, "model") ?? undefined,
+                modelContextWindow: tokenUsage.modelContextWindow,
+                usageScope: scope,
+                ...breakdown,
+                metadata: {
+                  rawConversationItemId: sourceIds[0],
+                  rawConversationItemIds: sourceIds,
+                  logicalSourceId: logicalItem.sourceIdentity
+                },
+                idempotencyKey: `token:${logicalItem.sourceIdentity}:${scope}`
+              }
+            );
+            result.tokenUsageRowsCreated += 1;
+          }
+        }
+
+        if (
+          row.session_id &&
+          messageRole &&
+          content &&
+          projectionPolicy.createMessage
+        ) {
+          const inserted = await pool.query<{ id: string }>(
+            `
+              insert into messages (
+                session_id, turn_id, owner_user_id, team_id, visibility,
+                role, content, content_json, source_runtime, capture_method,
+                codex_transcript_path, transcript_item_id, idempotency_key,
+                source_hash, token_count
+              )
+              values (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12, $13, $14, $15
+              )
+              on conflict do nothing
+              returning id
+            `,
+            [
+              row.session_id,
+              row.turn_id,
+              ownerUserId,
+              teamId,
+              row.visibility,
+              messageRole,
+              content,
+              row.raw_json,
+              row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+              captureMethodForConversationItem({
+                sourceTransport: row.source_transport
+              }),
+              row.source_path,
+              row.source_sequence === null ? null : String(row.source_sequence),
+              `message:${logicalItem.sourceIdentity}`,
+              `message:${logicalItem.sourceHash}`,
+              estimateTokens(content)
+            ]
+          );
+          if ((inserted.rowCount ?? 0) > 0) {
+            result.messagesCreated += 1;
+          }
+        }
+
+        if (row.session_id && projectionPolicy.createToolEvent) {
+          const raw = isRecord(row.raw_json) ? row.raw_json : {};
+          const metadata = row.metadata ?? {};
+          const inserted = await pool.query<{ id: string }>(
+            `
+              insert into tool_events (
+                session_id, turn_id, owner_user_id, team_id, visibility,
+                tool_name, tool_input, tool_response, status, source_runtime,
+                capture_method, codex_transcript_path, transcript_item_id,
+                idempotency_key, source_hash
+              )
+              values (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12, $13, $14, $15
+              )
+              on conflict do nothing
+              returning id
+            `,
+            [
+              row.session_id,
+              row.turn_id,
+              ownerUserId,
+              teamId,
+              row.visibility,
+              stringField(metadata, "toolName") ??
+                stringField(raw, "name") ??
+                stringField(raw, "method") ??
+                "tool",
+              jsonbParam(isRecord(raw.params) ? raw.params : raw.toolInput),
+              jsonbParam(raw.result ?? raw.toolResponse ?? content),
+              stringField(metadata, "status") ?? null,
+              row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+              captureMethodForConversationItem({
+                sourceTransport: row.source_transport
+              }),
+              row.source_path,
+              row.source_sequence === null ? null : String(row.source_sequence),
+              `tool:${logicalItem.sourceIdentity}`,
+              `tool:${logicalItem.sourceHash}`
+            ]
+          );
+          if ((inserted.rowCount ?? 0) > 0) {
+            result.toolEventsCreated += 1;
+          }
+        }
+
+        if (content && actorType && projectionPolicy.createSemanticEvent) {
+          const chunks = semanticProjectionChunks(
+            content,
+            stringField(row.metadata ?? {}, "model")
+          );
+          for (const chunk of chunks) {
+            const event = await this.createMemoryEvent(
+              { userId: actor.userId },
+              {
+                workspaceId: canonicalWorkspaceId({
+                  metadata: row.metadata,
+                  sessionId: row.session_id,
+                  sessionWorkspaceId: row.session_workspace_id,
+                  sessionCwd: row.session_cwd
+                }),
+                sessionId: row.session_id ?? undefined,
+                turnId: row.turn_id ?? undefined,
+                actor: actorType,
+                eventType: "captured",
+                rawEventType: row.source_event_type ?? row.source_record_type,
+                content: chunk.content,
+                metadata: {
+                  ...projectionMetadata,
+                  rawConversationItemId: sourceIds[0],
+                  rawConversationItemIds: sourceIds,
+                  logicalSourceId: logicalItem.sourceIdentity,
+                  projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                  sourceAdapterVersion: row.source_adapter_version,
+                  sourceChunkIndex: chunk.chunkIndex,
+                  sourceChunkCount: chunk.chunkCount
+                },
+                visibility: row.visibility,
+                ...(teamId ? { teamId } : {}),
+                sourceRuntime:
+                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                captureMethod: captureMethodForConversationItem({
+                  sourceTransport: row.source_transport
+                }),
+                codexTranscriptPath: row.source_path ?? undefined,
+                idempotencyKey:
+                  chunks.length === 1
+                    ? `projection:${logicalItem.sourceIdentity}`
+                    : `projection:${logicalItem.sourceIdentity}:chunk:${chunk.chunkIndex}`,
+                sourceHash:
+                  chunks.length === 1
+                    ? `projection:${logicalItem.sourceHash}`
+                    : `projection:${logicalItem.sourceHash}:chunk:${chunk.chunkIndex}`
+              }
+            );
+            if (event.id) {
+              result.memoryEventsCreated += 1;
+              result.memoryEventIds.push(event.id);
+              result.memoryEventScopes.push({
+                eventId: event.id,
+                visibility: row.visibility,
+                teamId
+              });
+            }
+          }
+        }
+
+        await pool.query(
+          `
+            update conversation_items
+            set projection_status = 'projected',
+                projection_version = $2,
+                projection_error = null,
+                projected_at = now()
+            where id = any($1::uuid[])
+          `,
+          [sourceIds, CURRENT_CONVERSATION_PROJECTION_VERSION]
+        );
+        result.rawItemsProjected += sourceIds.length;
+      } catch (error) {
+        await pool.query(
+          `
+            update conversation_items
+            set projection_status = 'error',
+                projection_error = $2
+            where id = any($1::uuid[])
+          `,
+          [sourceIds, error instanceof Error ? error.message : String(error)]
+        );
+      }
+    }
+    return result;
+  },
+
+  async listConversationProjectionActors(input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
+    const result = await pool.query<{ user_id: string }>(
+      `
+        select user_id
+        from (
+          select ci.owner_user_id as user_id, min(ci.observed_at) as oldest_at
+          from conversation_items ci
+          where ci.projection_status in ('pending', 'error')
+            and ci.visibility = 'personal'
+            and ci.owner_user_id is not null
+          group by ci.owner_user_id
+
+          union all
+
+          select tm.user_id as user_id, min(ci.observed_at) as oldest_at
+          from conversation_items ci
+          join team_members tm
+            on tm.team_id = ci.team_id
+           and tm.removed_at is null
+          where ci.projection_status in ('pending', 'error')
+            and ci.visibility = 'team'
+            and ci.team_id is not null
+          group by tm.user_id
+        ) projection_actors
+        order by oldest_at asc
+        limit $1
+      `,
+      [limit]
+    );
+    return result.rows.map((row) => ({ userId: row.user_id }));
   },
 
   async createMemoryQuestion(actor, input) {
@@ -2797,9 +4687,17 @@ export const createMemorySourceRepository = (
           mn.created_at,
           mn.updated_at,
           mn.pinned_at,
-          coalesce(ev.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) as project_id,
+          coalesce(
+            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
+            s.workspace_id::text,
+            s.cwd
+          ) as project_id,
           coalesce(ev.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
-          coalesce(ev.payload #>> '{metadata,projectPath}', s.cwd, ev.payload ->> 'workspaceId') as project_path,
+          coalesce(
+            ev.payload #>> '{metadata,projectPath}',
+            s.cwd,
+            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end
+          ) as project_path,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name
         from memory_nodes mn
@@ -2829,7 +4727,11 @@ export const createMemorySourceRepository = (
             )
           )
           and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
-          and ($3::text is null or coalesce(ev.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) = $3)
+          and ($3::text is null or coalesce(
+            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
+            s.workspace_id::text,
+            s.cwd
+          ) = $3)
           and ($4::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $4)
           and ($5::boolean is null or (($5::boolean = true and mn.pinned_at is not null) or ($5::boolean = false and mn.pinned_at is null)))
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or coalesce(mn.title, '') ilike '%' || $6 || '%')
@@ -3174,9 +5076,17 @@ export const createMemorySourceRepository = (
           mn.summary_token_estimate, mn.summary_model, mn.summary_prompt_version,
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
-          coalesce(ev.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) as project_id,
+          coalesce(
+            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
+            s.workspace_id::text,
+            s.cwd
+          ) as project_id,
           coalesce(ev.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
-          coalesce(ev.payload #>> '{metadata,projectPath}', s.cwd, ev.payload ->> 'workspaceId') as project_path,
+          coalesce(
+            ev.payload #>> '{metadata,projectPath}',
+            s.cwd,
+            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end
+          ) as project_path,
           s.id::text as session_id,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
@@ -3195,7 +5105,11 @@ export const createMemorySourceRepository = (
         where mn.kind in ('leaf', 'rollup')
           and ($2::boolean = true or mn.invalidated_at is null)
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
-          and ($4::text is null or coalesce(ev.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
+          and ($4::text is null or coalesce(
+            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
+            s.workspace_id::text,
+            s.cwd
+          ) = $4)
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
@@ -3382,72 +5296,97 @@ export const createMemorySourceRepository = (
     const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
     const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
       `
-        select
-          me.id,
-          case
-            when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
-              and me.payload ->> 'actor' = 'assistant'
-              then 'subagent'
-            when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
-              and me.payload ->> 'actor' = 'user'
-              then 'agent'
-            when me.payload #>> '{metadata,transcriptType}' = 'agent_message'
-              and me.payload ->> 'actor' = 'assistant'
-              then 'agent'
-            else me.payload ->> 'actor'
-          end as actor,
-          coalesce(me.payload ->> 'rawEventType', me.payload ->> 'eventType', me.event_type::text) as event_type,
-          me.source_runtime,
-          me.capture_method,
-          s.model,
-          coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) as workspace_id,
-          coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) as project_id,
-          coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
-          coalesce(me.payload #>> '{metadata,projectPath}', s.cwd, me.payload ->> 'workspaceId') as project_path,
-          s.id::text as session_id,
-          coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
-          coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
-          me.captured_at,
-          me.visibility,
-          me.team_id,
-          me.invalidated_at,
-          me.invalidation_reason,
-          me.payload ->> 'content' as content,
-          coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata,
-          coalesce(array_agg(mns.memory_node_id::text order by mns.source_order) filter (where mns.memory_node_id is not null), array[]::text[]) as linked_node_ids
-        from memory_events me
-        left join sessions s on s.id = me.session_id
-        left join memory_node_sources mns on mns.memory_event_id = me.id
-	        where ($2::boolean = true or me.invalidated_at is null)
-	          and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
-	          and ($4::text is null or coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
-	          and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
-	          and ($6::uuid is null or me.id = $6)
-	          and ($7::text is null or me.payload ->> 'content' ilike '%' || $7 || '%' or me.id::text = $7)
-	          and (
-	            $8::timestamptz is null
-	            or me.captured_at < $8::timestamptz
-	            or (
-	              $9::uuid is not null
-	              and me.captured_at = $8::timestamptz
-	              and me.id < $9::uuid
-	            )
-	          )
-          and (
-            (me.visibility = 'personal' and me.owner_user_id = $1)
-            or (
-              me.visibility = 'team'
-              and exists (
-                select 1 from team_members tm
-                where tm.team_id = me.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
+        with visible_events as (
+          select
+            me.id,
+            case
+              when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
+                and me.payload ->> 'actor' = 'assistant'
+                then 'subagent'
+              when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
+                and me.payload ->> 'actor' = 'user'
+                then 'agent'
+              when me.payload #>> '{metadata,transcriptType}' = 'agent_message'
+                and me.payload ->> 'actor' = 'assistant'
+                then 'agent'
+              else me.payload ->> 'actor'
+            end as actor,
+            coalesce(me.payload ->> 'rawEventType', me.payload ->> 'eventType', me.event_type::text) as event_type,
+            me.source_runtime,
+            me.capture_method,
+            s.model,
+            coalesce(
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
+              s.workspace_id::text,
+              s.cwd
+            ) as workspace_id,
+            coalesce(
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
+              s.workspace_id::text,
+              s.cwd
+            ) as project_id,
+            coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
+            coalesce(
+              me.payload #>> '{metadata,projectPath}',
+              s.cwd,
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end
+            ) as project_path,
+            s.id::text as session_id,
+            coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
+            coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
+            me.captured_at,
+            me.visibility,
+            me.team_id,
+            me.invalidated_at,
+            me.invalidation_reason,
+            me.payload ->> 'content' as content,
+            coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata
+          from memory_events me
+          left join sessions s on s.id = me.session_id
+          where ($2::boolean = true or me.invalidated_at is null)
+            and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
+            and ($4::text is null or coalesce(
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
+              s.workspace_id::text,
+              s.cwd
+            ) = $4)
+            and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
+            and ($6::uuid is null or me.id = $6)
+            and ($7::text is null or me.payload ->> 'content' ilike '%' || $7 || '%' or me.id::text = $7)
+            and (
+              $8::timestamptz is null
+              or me.captured_at < $8::timestamptz
+              or (
+                $9::uuid is not null
+                and me.captured_at = $8::timestamptz
+                and me.id < $9::uuid
               )
             )
-          )
-	        group by me.id, s.id
-	        order by me.captured_at desc, me.id desc
-	        limit $10
+            and (
+              (me.visibility = 'personal' and me.owner_user_id = $1)
+              or (
+                me.visibility = 'team'
+                and exists (
+                  select 1 from team_members tm
+                  where tm.team_id = me.team_id
+                    and tm.user_id = $1
+                    and tm.removed_at is null
+                )
+              )
+            )
+          order by me.captured_at desc, me.id desc
+          limit $10
+        )
+        select
+          ve.*,
+          coalesce(linked_node_ids.linked_node_ids, array[]::text[]) as linked_node_ids
+        from visible_events ve
+        left join lateral (
+          select array_agg(mns.memory_node_id::text order by mns.source_order) as linked_node_ids
+          from memory_node_sources mns
+          where mns.memory_event_id = ve.id
+        ) linked_node_ids on true
+        order by ve.captured_at desc, ve.id desc
 	      `,
       [
         actor.userId,
@@ -3479,9 +5418,18 @@ export const createMemorySourceRepository = (
           select
             me.id::text as id,
             'event' as row_kind,
-            coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') as project_id,
+            coalesce(
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
+              s.workspace_id::text,
+              s.cwd,
+              'unknown-project'
+            ) as project_id,
             coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') as project_name,
-            coalesce(me.payload #>> '{metadata,projectPath}', s.cwd, me.payload ->> 'workspaceId') as project_path,
+            coalesce(
+              me.payload #>> '{metadata,projectPath}',
+              s.cwd,
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end
+            ) as project_path,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
@@ -3507,7 +5455,12 @@ export const createMemorySourceRepository = (
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
-            and ($4::text is null or coalesce(me.payload ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') = $4)
+            and ($4::text is null or coalesce(
+              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
+              s.workspace_id::text,
+              s.cwd,
+              'unknown-project'
+            ) = $4)
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and (
               $6::text is null
@@ -3803,19 +5756,6 @@ export const createMemorySourceRepository = (
             me.created_at
           from memory_events me
           where me.invalidated_at is null
-
-          union all
-
-          select
-            'message'::text as source_type,
-            m.id as source_id,
-            m.owner_user_id,
-            m.team_id,
-            m.visibility,
-            m.content as text,
-            m.created_at
-          from messages m
-          where m.invalidated_at is null
         )
         select source_type, source_id, owner_user_id, team_id, visibility, text
         from sources s
@@ -3830,7 +5770,6 @@ export const createMemorySourceRepository = (
               and (
                 (s.source_type = 'memory_node' and me.memory_node_id = s.source_id)
                 or (s.source_type = 'memory_event' and me.memory_event_id = s.source_id)
-                or (s.source_type = 'message' and me.message_id = s.source_id)
               )
           )
         order by s.created_at asc, s.source_id asc
@@ -3893,18 +5832,6 @@ export const createMemorySourceRepository = (
             coalesce(me.payload ->> 'content', '') as text
           from memory_events me
           where me.invalidated_at is null
-
-          union all
-
-          select
-            'message'::text as source_type,
-            m.id as source_id,
-            m.owner_user_id,
-            m.team_id,
-            m.visibility,
-            m.content as text
-          from messages m
-          where m.invalidated_at is null
         )
         select source_type, source_id, owner_user_id, team_id, visibility, text
         from sources
@@ -4289,6 +6216,9 @@ export const createMemorySourceRepository = (
       rawEventType: input.rawEventType,
       workspaceId: input.workspaceId
     };
+    const rawConversationItemIds = rawConversationItemIdsFromMetadata(
+      input.metadata
+    );
 
     type MemoryEventRow = {
       id: string;
@@ -4348,6 +6278,11 @@ export const createMemorySourceRepository = (
 
     const insertedRow = result.rows[0];
     if (insertedRow) {
+      await linkMemoryEventSources(
+        pool,
+        insertedRow.id,
+        rawConversationItemIds
+      );
       return mapMemoryEvent(insertedRow);
     }
 
@@ -4386,6 +6321,11 @@ export const createMemorySourceRepository = (
       );
       const duplicateRow = duplicate.rows[0];
       if (duplicateRow) {
+        await linkMemoryEventSources(
+          pool,
+          duplicateRow.id,
+          rawConversationItemIds
+        );
         return mapMemoryEvent(duplicateRow);
       }
       if (attempt < 2) {

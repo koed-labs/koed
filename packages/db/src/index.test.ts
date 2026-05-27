@@ -252,8 +252,11 @@ describeDb("memory repository visibility", () => {
           memory_embeddings,
           memory_node_children,
           memory_node_sources,
+          memory_event_sources,
+          workflow_token_usage,
           memory_nodes,
           memory_events,
+          conversation_items,
           tool_events,
           messages,
           turns,
@@ -1287,6 +1290,1042 @@ describeDb("memory repository visibility", () => {
     expect(duplicateBySourceHash.id).toBe(first.id);
     expect(duplicateByIdempotencyKey.id).toBe(first.id);
     expect(events.map((event) => event.id)).toEqual([first.id]);
+  });
+
+  it("stores raw conversation items idempotently and links projected memory events to sources", async () => {
+    const alice = await repo.createUser({
+      email: `alice-raw-conversation-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Raw Conversation Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `codex-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `session-${randomUUID()}`
+      }
+    );
+    const idempotencyKey = `raw-item-${randomUUID()}`;
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalSessionId: "codex-thread-1",
+            externalThreadId: "codex-thread-1",
+            externalTurnId: "turn-1",
+            externalItemId: "item-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/agentMessage/delta",
+            sourceSequence: 1,
+            eventTime: new Date().toISOString(),
+            rawJson: {
+              method: "item/agentMessage/delta",
+              params: { delta: "Hello from raw Codex output." }
+            },
+            rawText: "Hello from raw Codex output.",
+            sourceHash: `source-${idempotencyKey}`,
+            idempotencyKey,
+            projectionStatus: "pending",
+            metadata: { workflow: "test" }
+          }
+        ]
+      }
+    );
+    const [duplicateRawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalSessionId: "codex-thread-1",
+            externalThreadId: "codex-thread-1",
+            externalTurnId: "turn-1",
+            externalItemId: "item-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/agentMessage/delta",
+            sourceSequence: 1,
+            rawJson: { duplicate: true },
+            sourceHash: `other-source-${idempotencyKey}`,
+            idempotencyKey,
+            projectionStatus: "projected"
+          }
+        ]
+      }
+    );
+    const projected = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId,
+        sessionId: session.id,
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_message",
+        visibility: "personal",
+        content: "Hello from raw Codex output.",
+        idempotencyKey: `projected-${randomUUID()}`,
+        sourceHash: `projected-source-${randomUUID()}`,
+        metadata: { rawConversationItemId: rawItem!.id }
+      }
+    );
+    const rawCount = await pool.query<{ count: string }>(
+      "select count(*)::text as count from conversation_items where idempotency_key = $1",
+      [idempotencyKey]
+    );
+    const rawStatus = await pool.query<{
+      projection_status: string;
+      turn_id: string | null;
+      turn_index: number | null;
+    }>(
+      `
+        select ci.projection_status, ci.turn_id, t.turn_index
+        from conversation_items ci
+        left join turns t on t.id = ci.turn_id
+        where ci.id = $1
+      `,
+      [rawItem!.id]
+    );
+    const links = await pool.query<{
+      memory_event_id: string;
+      conversation_item_id: string;
+      source_order: number;
+    }>(
+      `
+        select memory_event_id, conversation_item_id, source_order
+        from memory_event_sources
+        where memory_event_id = $1
+      `,
+      [projected.id]
+    );
+
+    expect(rawItem?.id).toBeTruthy();
+    expect(duplicateRawItem?.id).toBe(rawItem?.id);
+    expect(rawCount.rows[0]?.count).toBe("1");
+    expect(rawStatus.rows[0]?.projection_status).toBe("pending");
+    expect(rawStatus.rows[0]?.turn_id).toBeTruthy();
+    expect(rawStatus.rows[0]?.turn_index).toBe(0);
+    expect(links.rows).toEqual([
+      {
+        memory_event_id: projected.id,
+        conversation_item_id: rawItem!.id,
+        source_order: 0
+      }
+    ]);
+
+    const bob = await repo.createUser({
+      email: `bob-raw-item-${randomUUID()}@example.com`
+    });
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        workspaceId,
+        externalSessionId: `bob-codex-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `bob-session-${randomUUID()}`
+      }
+    );
+    const [bobRawItem] = await repo.createConversationItems(
+      { userId: bob.id },
+      {
+        items: [
+          {
+            sessionId: bobSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            rawJson: { owner: "bob" },
+            sourceHash: `bob-source-${idempotencyKey}`,
+            idempotencyKey,
+            projectionStatus: "pending"
+          }
+        ]
+      }
+    );
+    expect(bobRawItem?.id).toBeTruthy();
+    expect(bobRawItem?.id).not.toBe(rawItem?.id);
+  });
+
+  it("does not link memory events to raw source rows outside caller ownership", async () => {
+    const workspaceId = randomUUID();
+    const alice = await repo.createUser({
+      email: `alice-source-link-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-source-link-${randomUUID()}@example.com`
+    });
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Bob Source Link Project')
+      `,
+      [workspaceId, bob.id]
+    );
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        workspaceId,
+        externalSessionId: `bob-source-link-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `bob-source-link-session-${randomUUID()}`
+      }
+    );
+    const [bobRawItem] = await repo.createConversationItems(
+      { userId: bob.id },
+      {
+        items: [
+          {
+            sessionId: bobSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            sourceRecordType: "hook_payload",
+            rawJson: { owner: "bob" },
+            sourceHash: `bob-private-raw-${randomUUID()}`,
+            idempotencyKey: `bob-private-raw-${randomUUID()}`,
+            projectionStatus: "pending"
+          }
+        ]
+      }
+    );
+
+    const projected = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId,
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_message",
+        visibility: "personal",
+        content: "Alice projected event",
+        idempotencyKey: `alice-projected-${randomUUID()}`,
+        sourceHash: `alice-projected-source-${randomUUID()}`,
+        metadata: { rawConversationItemId: bobRawItem!.id }
+      }
+    );
+    const links = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_event_sources where memory_event_id = $1",
+      [projected.id]
+    );
+
+    expect(links.rows[0]?.count).toBe("0");
+  });
+
+  it("rejects raw conversation items attached to sessions or turns outside caller scope", async () => {
+    const workspaceId = randomUUID();
+    const alice = await repo.createUser({
+      email: `alice-raw-scope-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-raw-scope-${randomUUID()}@example.com`
+    });
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Raw Scope Project')
+      `,
+      [workspaceId, bob.id]
+    );
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        workspaceId,
+        externalSessionId: `bob-raw-scope-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `bob-raw-scope-session-${randomUUID()}`
+      }
+    );
+    const [bobRawItem] = await repo.createConversationItems(
+      { userId: bob.id },
+      {
+        items: [
+          {
+            sessionId: bobSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "bob-turn-1",
+            sourceRecordType: "app_server_notification",
+            rawJson: { owner: "bob" },
+            sourceHash: `bob-raw-scope-${randomUUID()}`,
+            idempotencyKey: `bob-raw-scope-${randomUUID()}`
+          }
+        ]
+      }
+    );
+
+    await expect(
+      repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              sessionId: bobSession.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              sourceRecordType: "app_server_notification",
+              rawJson: { owner: "alice" },
+              sourceHash: `alice-bob-session-${randomUUID()}`,
+              idempotencyKey: `alice-bob-session-${randomUUID()}`
+            }
+          ]
+        }
+      )
+    ).rejects.toThrow("Session not found or not visible");
+
+    await expect(
+      repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              turnId: bobRawItem!.turnId!,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              sourceRecordType: "app_server_notification",
+              rawJson: { owner: "alice" },
+              sourceHash: `alice-bob-turn-${randomUUID()}`,
+              idempotencyKey: `alice-bob-turn-${randomUUID()}`
+            }
+          ]
+        }
+      )
+    ).rejects.toThrow("Turn not found or not visible");
+  });
+
+  it("rejects token usage linked to sessions, turns, or raw items outside caller scope", async () => {
+    const workspaceId = randomUUID();
+    const alice = await repo.createUser({
+      email: `alice-token-scope-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-token-scope-${randomUUID()}@example.com`
+    });
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Token Scope Project')
+      `,
+      [workspaceId, bob.id]
+    );
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        workspaceId,
+        externalSessionId: `bob-token-scope-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `bob-token-scope-session-${randomUUID()}`
+      }
+    );
+    const [bobRawItem] = await repo.createConversationItems(
+      { userId: bob.id },
+      {
+        items: [
+          {
+            sessionId: bobSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "bob-token-turn-1",
+            sourceRecordType: "app_server_notification",
+            rawJson: { owner: "bob" },
+            sourceHash: `bob-token-scope-${randomUUID()}`,
+            idempotencyKey: `bob-token-scope-${randomUUID()}`
+          }
+        ]
+      }
+    );
+
+    await expect(
+      repo.recordWorkflowTokenUsage(
+        { userId: alice.id },
+        {
+          workflowType: "memory_question",
+          sessionId: bobSession.id,
+          totalTokens: 1
+        }
+      )
+    ).rejects.toThrow("Session not found or not visible");
+
+    await expect(
+      repo.recordWorkflowTokenUsage(
+        { userId: alice.id },
+        {
+          workflowType: "memory_question",
+          turnId: bobRawItem!.turnId!,
+          totalTokens: 1
+        }
+      )
+    ).rejects.toThrow("Turn not found or not visible");
+
+    await expect(
+      repo.recordWorkflowTokenUsage(
+        { userId: alice.id },
+        {
+          workflowType: "memory_question",
+          conversationItemId: bobRawItem!.id,
+          totalTokens: 1
+        }
+      )
+    ).rejects.toThrow("Conversation item not found or not visible");
+  });
+
+  it("reprojects pending raw conversation items into messages, semantic events, and token usage", async () => {
+    const alice = await repo.createUser({
+      email: `alice-reproject-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Reproject Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `reproject-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `reproject-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: { type: "agentMessage", text: "Projected answer" }
+              }
+            },
+            sourceHash: `raw-message-${randomUUID()}`,
+            idempotencyKey: `raw-message-${randomUUID()}`,
+            metadata: { workspaceId, transcriptType: "agent_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "thread/tokenUsage/updated",
+            sourceSequence: 1,
+            rawJson: {
+              method: "thread/tokenUsage/updated",
+              params: {
+                tokenUsage: {
+                  modelContextWindow: 1000,
+                  last: {
+                    totalTokens: 7,
+                    inputTokens: 4,
+                    cachedInputTokens: 2,
+                    outputTokens: 3,
+                    reasoningOutputTokens: 1
+                  }
+                }
+              }
+            },
+            sourceHash: `raw-token-${randomUUID()}`,
+            idempotencyKey: `raw-token-${randomUUID()}`,
+            metadata: { workflow: "memory_question", questionId: "question-1" }
+          },
+          {
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 2,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "LCM summary worker output should not become a chat event"
+                }
+              }
+            },
+            sourceHash: `raw-lcm-output-${randomUUID()}`,
+            idempotencyKey: `raw-lcm-output-${randomUUID()}`,
+            metadata: {
+              workflow: "lcm_summary",
+              nodeId: randomUUID(),
+              transcriptType: "agent_message"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const secondProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const messages = await pool.query<{ content: string }>(
+      "select content from messages order by created_at asc"
+    );
+    const events = await pool.query<{ id: string; content: string }>(
+      "select id, payload ->> 'content' as content from memory_events order by created_at asc"
+    );
+    const links = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_event_sources"
+    );
+    const usage = await pool.query<{
+      workflow_type: string;
+      workflow_id: string | null;
+      total_tokens: number | null;
+    }>(
+      "select workflow_type, workflow_id, total_tokens from workflow_token_usage"
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_version: string | null;
+    }>(
+      "select projection_status, projection_version from conversation_items order by source_sequence asc"
+    );
+    const embeddable = await repo.listSourcesNeedingEmbeddings(20);
+
+    expect(projection.rawItemsProjected).toBe(3);
+    expect(projection.messagesCreated).toBe(1);
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(projection.tokenUsageRowsCreated).toBe(1);
+    expect(secondProjection.rawItemsScanned).toBe(0);
+    expect(messages.rows.map((row) => row.content)).toEqual([
+      "Projected answer"
+    ]);
+    expect(events.rows.map((row) => row.content)).toEqual(["Projected answer"]);
+    expect(links.rows[0]?.count).toBe("1");
+    expect(usage.rows).toEqual([
+      {
+        workflow_type: "memory_question",
+        workflow_id: "question-1",
+        total_tokens: 7
+      }
+    ]);
+    expect(
+      statuses.rows.map((row) => ({
+        projection_status: row.projection_status,
+        projection_version: row.projection_version
+      }))
+    ).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      }
+    ]);
+    expect(embeddable.some((source) => source.sourceType === "message")).toBe(
+      false
+    );
+    expect(
+      embeddable.some((source) => source.sourceType === "memory_event")
+    ).toBe(true);
+  });
+
+  it("does not automatically reproject stale projection-version rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-stale-projection-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Stale Projection Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `stale-projection-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `stale-projection-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "Already projected under an older derivation policy"
+                }
+              }
+            },
+            sourceHash: `stale-projection-raw-${randomUUID()}`,
+            idempotencyKey: `stale-projection-raw-${randomUUID()}`,
+            projectionStatus: "projected",
+            projectionVersion: "conversation-projection-v1",
+            metadata: { transcriptType: "agent_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_version: string | null;
+    }>("select projection_status, projection_version from conversation_items");
+
+    expect(projection.rawItemsScanned).toBe(0);
+    expect(statuses.rows).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v1"
+      }
+    ]);
+  });
+
+  it("projects only allowlisted transcript records into semantic memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-policy-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Projection Policy Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-policy-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-policy-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const rows = [
+      {
+        transcriptType: "user_message",
+        text: "Please inspect the projection policy.",
+        sourceHash: `projection-policy-user-${randomUUID()}`
+      },
+      {
+        transcriptType: "agent_message",
+        text: "The projection policy keeps raw audit data separate.",
+        sourceHash: `projection-policy-agent-${randomUUID()}`
+      },
+      {
+        transcriptType: "reasoning_summary",
+        text: "Reasoning summary: compare transcript type against policy.",
+        sourceHash: `projection-policy-reasoning-${randomUUID()}`
+      },
+      {
+        transcriptType: "reasoning",
+        text: "Raw reasoning content should not be projected.",
+        sourceHash: `projection-policy-reasoning-item-${randomUUID()}`,
+        rawJson: {
+          method: "item/completed",
+          params: {
+            item: {
+              type: "reasoning",
+              summary: [
+                {
+                  type: "summary_text",
+                  text: "Readable reasoning summary: choose the projection policy."
+                }
+              ],
+              content: ["Raw reasoning content should not be projected."]
+            }
+          }
+        }
+      },
+      {
+        transcriptType: "reasoning_raw_content",
+        text: "Raw reasoning content should stay raw-only.",
+        sourceHash: `projection-policy-raw-reasoning-${randomUUID()}`
+      },
+      {
+        transcriptType: "function_call",
+        text: "Tool call: exec_command",
+        sourceHash: `projection-policy-tool-${randomUUID()}`
+      },
+      {
+        transcriptType: "system_message",
+        text: "System instruction should stay raw-only.",
+        sourceHash: `projection-policy-system-${randomUUID()}`
+      },
+      {
+        transcriptType: "developer_message",
+        text: "Developer instruction should stay raw-only.",
+        sourceHash: `projection-policy-developer-${randomUUID()}`
+      },
+      {
+        transcriptType: "rolling_context",
+        text: "Rolling context package should stay raw-only.",
+        sourceHash: `projection-policy-context-${randomUUID()}`
+      }
+    ];
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: rows.map((row, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalTurnId: "turn-1",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "item/completed",
+          sourceSequence: index,
+          rawJson: row.rawJson ?? {
+            method: "item/completed",
+            params: {
+              item: {
+                type: row.transcriptType,
+                text: row.text
+              }
+            }
+          },
+          rawText: row.text,
+          sourceHash: row.sourceHash,
+          idempotencyKey: row.sourceHash,
+          metadata: { workspaceId, transcriptType: row.transcriptType }
+        }))
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const messages = await pool.query<{ content: string }>(
+      "select content from messages order by created_at asc"
+    );
+    const events = await pool.query<{ content: string }>(
+      "select payload ->> 'content' as content from memory_events order by created_at asc"
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from tool_events"
+    );
+    const rawStatuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        group by projection_status
+      `
+    );
+
+    expect(projection.rawItemsProjected).toBe(rows.length);
+    expect(projection.memoryEventsCreated).toBe(5);
+    expect(projection.messagesCreated).toBe(5);
+    expect(projection.toolEventsCreated).toBe(1);
+    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(messages.rows.map((row) => row.content)).toEqual([
+      "Please inspect the projection policy.",
+      "The projection policy keeps raw audit data separate.",
+      "Reasoning summary: compare transcript type against policy.",
+      "Readable reasoning summary: choose the projection policy.",
+      "Tool call: exec_command"
+    ]);
+    expect(events.rows.map((row) => row.content)).toEqual([
+      "Please inspect the projection policy.",
+      "The projection policy keeps raw audit data separate.",
+      "Reasoning summary: compare transcript type against policy.",
+      "Readable reasoning summary: choose the projection policy.",
+      "Tool call: exec_command"
+    ]);
+    expect(messages.rows.map((row) => row.content).join("\n")).not.toContain(
+      "System instruction"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Developer instruction"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Raw reasoning content"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Rolling context"
+    );
+    expect(rawStatuses.rows).toEqual([
+      { projection_status: "projected", count: String(rows.length) }
+    ]);
+  });
+
+  it("reconstructs oversized transport chunks before semantic projection", async () => {
+    const alice = await repo.createUser({
+      email: `alice-transport-chunks-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Transport Chunk Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `transport-chunk-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `transport-chunk-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const logicalSourceId = `transport-logical-${randomUUID()}`;
+    const reconstructedText =
+      "This clean reconstructed answer should be embedded without transport JSON.";
+    const rawJson = {
+      method: "item/completed",
+      params: {
+        item: {
+          type: "agentMessage",
+          text: reconstructedText
+        }
+      }
+    };
+    const envelope = JSON.stringify({
+      rawJson,
+      rawText: reconstructedText
+    });
+    const midpoint = Math.floor(envelope.length / 2);
+    const chunks = [envelope.slice(0, midpoint), envelope.slice(midpoint)];
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: chunks.map((chunk, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalTurnId: "turn-transport",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "item/completed",
+          sourceSequence: 100 + index,
+          rawJson: {
+            transportChunk: true,
+            sourceItemHash: logicalSourceId,
+            chunkIndex: index,
+            chunkCount: chunks.length
+          },
+          logicalSourceId,
+          transportChunkIndex: index,
+          transportChunkCount: chunks.length,
+          transportChunkText: chunk,
+          transportChunkEncoding: "conversation-item-json-v1",
+          sourceHash: `${logicalSourceId}-chunk-${index}`,
+          idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+          metadata: {
+            workspaceId,
+            transcriptType: "agent_message",
+            sourceItemHash: logicalSourceId,
+            sourceChunkIndex: index,
+            sourceChunkCount: chunks.length
+          }
+        }))
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const secondProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const messages = await pool.query<{ content: string }>(
+      "select content from messages order by created_at asc"
+    );
+    const events = await pool.query<{ id: string; content: string }>(
+      "select id, payload ->> 'content' as content from memory_events order by created_at asc"
+    );
+    const links = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_event_sources"
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_version: string | null;
+    }>(
+      "select projection_status, projection_version from conversation_items order by transport_chunk_index asc"
+    );
+
+    expect(projection.rawItemsScanned).toBe(1);
+    expect(projection.rawItemsProjected).toBe(2);
+    expect(projection.messagesCreated).toBe(1);
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(secondProjection.rawItemsScanned).toBe(0);
+    expect(messages.rows.map((row) => row.content)).toEqual([
+      reconstructedText
+    ]);
+    expect(events.rows.map((row) => row.content)).toEqual([reconstructedText]);
+    expect(events.rows[0]?.content).not.toContain("transportChunk");
+    expect(events.rows[0]?.content).not.toContain("rawJson");
+    expect(links.rows[0]?.count).toBe("2");
+    expect(statuses.rows).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      }
+    ]);
+  });
+
+  it("keeps projected app-server threads under the canonical session project", async () => {
+    const alice = await repo.createUser({
+      email: `alice-canonical-project-${randomUUID()}@example.com`
+    });
+    const cwd = "/workspace/koed";
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        cwd,
+        externalSessionId: `canonical-project-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `canonical-project-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "turn-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "Canonical project message"
+                }
+              }
+            },
+            sourceHash: `canonical-project-raw-${randomUUID()}`,
+            idempotencyKey: `canonical-project-raw-${randomUUID()}`,
+            metadata: {
+              workspaceId: session.id,
+              transcriptType: "agent_message"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const projects = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.id).toBe(cwd);
+    expect(projects[0]?.threads).toHaveLength(1);
+  });
+
+  it("stores concrete parent session linkage for subagent sessions", async () => {
+    const alice = await repo.createUser({
+      email: `alice-subagent-parent-${randomUUID()}@example.com`
+    });
+    const parent = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `parent-thread-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey: `parent-session-${randomUUID()}`
+      }
+    );
+    const child = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `child-thread-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey: `child-session-${randomUUID()}`,
+        metadata: {
+          threadKind: "subagent",
+          parentThreadId: parent.externalSessionId
+        }
+      }
+    );
+    const row = await pool.query<{ parent_session_id: string | null }>(
+      "select parent_session_id from sessions where id = $1",
+      [child.id]
+    );
+
+    expect(row.rows[0]?.parent_session_id).toBe(parent.id);
   });
 
   it("fetches an exact LCM graph node when newer summaries mention the node id", async () => {

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { z } from "zod";
@@ -12,6 +13,10 @@ import {
   MemoryApiClient,
   MemoryApiError
 } from "./index.js";
+import {
+  persistRawConversationItems,
+  projectRawConversationItems
+} from "./raw-conversation-items.js";
 
 export const host = process.env.MEMORY_ANSWER_BRIDGE_HOST ?? "0.0.0.0";
 export const DEFAULT_ANSWER_BRIDGE_PORT = 3210;
@@ -340,6 +345,153 @@ const updateQuestionWithAnswer = async (
     local_memory_worker: answer.localMemoryWorker
   });
 
+const hash = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const rawTextFromAppServerEvent = (event: {
+  params?: unknown;
+  result?: unknown;
+}): string | undefined => {
+  const value = event.params ?? event.result;
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+  const record =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  for (const key of ["delta", "text", "content", "message"]) {
+    const field = record[key];
+    if (typeof field === "string" && field.trim()) {
+      return field;
+    }
+  }
+  const item =
+    record.item &&
+    typeof record.item === "object" &&
+    !Array.isArray(record.item)
+      ? (record.item as Record<string, unknown>)
+      : {};
+  for (const key of ["text", "content", "message"]) {
+    const field = item[key];
+    if (typeof field === "string" && field.trim()) {
+      return field;
+    }
+  }
+  return undefined;
+};
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const persistAnswerAppServerEvents = async (
+  client: MemoryApiClient,
+  question: MemoryQuestionRecord,
+  answer: MemoryAnswerWorkerResponse
+): Promise<void> => {
+  const worker =
+    answer.localMemoryWorker as MemoryAnswerWorkerResponse["localMemoryWorker"] & {
+      appServerEvents?: Array<{
+        method: string;
+        params?: unknown;
+        result?: unknown;
+        observedAt?: string;
+      }>;
+      appServerThreadId?: string;
+      appServerTurnId?: string;
+    };
+  const events = worker.appServerEvents ?? [];
+  if (events.length === 0) {
+    return;
+  }
+  const items = events.map((event, index) => {
+    const sourceHash = hash({
+      workflow: "memory_question",
+      questionId: question.id,
+      threadId: worker.appServerThreadId,
+      turnId: worker.appServerTurnId,
+      index,
+      method: event.method,
+      params: event.params,
+      result: event.result
+    });
+    return {
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-app-server-v1",
+      sourceTransport: "app_server",
+      externalSessionId: worker.appServerThreadId,
+      externalThreadId: worker.appServerThreadId,
+      externalTurnId: worker.appServerTurnId,
+      sourceRecordType: "app_server_notification",
+      sourceEventType: event.method,
+      sourceSequence: index,
+      eventTime: event.observedAt,
+      rawJson: event,
+      rawText: rawTextFromAppServerEvent(event),
+      sourceHash,
+      idempotencyKey: sourceHash,
+      projectionStatus: "raw_only",
+      projectionVersion: "codex-app-server-v1",
+      metadata: {
+        workflow: "memory_question",
+        questionId: question.id,
+        searchDomain: question.searchDomain,
+        workspaceId: question.workspaceId,
+        sessionId: question.sessionId
+      }
+    };
+  });
+  const persisted = await persistRawConversationItems(
+    client,
+    items,
+    `memory question ${question.id}`
+  );
+  const tokenUsage = worker.tokenUsage;
+  const lastUsage = tokenUsage?.last;
+  const tokenConversationItem = persisted.find((item) => {
+    const record = asRecord(item);
+    return record.sourceEventType === "thread/tokenUsage/updated";
+  });
+  const tokenConversationItemId =
+    typeof tokenConversationItem?.id === "string"
+      ? tokenConversationItem.id
+      : undefined;
+  if (lastUsage) {
+    await client.recordTokenUsage({
+      workflowType: "memory_question",
+      workflowId: question.id,
+      sessionId: question.sessionId ?? undefined,
+      conversationItemId: tokenConversationItemId,
+      sourceRuntime: "codex",
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-app-server-v1",
+      model: worker.model ?? null,
+      modelContextWindow: tokenUsage.modelContextWindow ?? null,
+      inputTokens: lastUsage.inputTokens ?? null,
+      cachedInputTokens: lastUsage.cachedInputTokens ?? null,
+      outputTokens: lastUsage.outputTokens ?? null,
+      reasoningOutputTokens: lastUsage.reasoningOutputTokens ?? null,
+      totalTokens: lastUsage.totalTokens ?? null,
+      usageScope: "last",
+      metadata: {
+        appServerThreadId: worker.appServerThreadId,
+        appServerTurnId: worker.appServerTurnId,
+        searchDomain: question.searchDomain
+      },
+      idempotencyKey: tokenConversationItemId
+        ? `token:${tokenConversationItemId}:last`
+        : `memory-question:${question.id}:token:last`
+    });
+  }
+  await projectRawConversationItems(
+    client,
+    persisted,
+    `memory question ${question.id}`
+  );
+};
+
 export const answerClaimedMemoryQuestion = async (
   client: MemoryApiClient,
   question: MemoryQuestionRecord,
@@ -388,6 +540,14 @@ export const answerClaimedMemoryQuestion = async (
         question: questionFromResponse(updated),
         error: message
       };
+    }
+    try {
+      await persistAnswerAppServerEvents(client, question, answer);
+    } catch (error) {
+      console.warn(
+        `[answer-bridge] Failed to persist app-server telemetry for question ${question.id}; preserving synthesized answer.`,
+        error
+      );
     }
     const updated = await updateQuestionWithAnswer(client, question, answer);
     return {

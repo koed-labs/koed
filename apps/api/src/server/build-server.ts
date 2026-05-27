@@ -36,6 +36,7 @@ import {
   registerGraphRoutes,
   registerLcmRoutes,
   registerQuestionRoutes,
+  registerRawConversationRoutes,
   registerRecallRoutes,
   shouldIgnoreGraphStreamPayload
 } from "../memory/index.js";
@@ -256,7 +257,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const {
     runCompactionInline,
     enqueueEmbedding,
-    scheduleMemoryEventProcessing
+    scheduleMemoryEventProcessing,
+    scheduleProjectedMemoryEventProcessing
   } = createMemoryJobScheduler({
     embeddingQueue,
     compactionQueue,
@@ -303,6 +305,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     },
     capture: {
       scheduleMemoryEventProcessing,
+      scheduleProjectedMemoryEventProcessing,
       resolveCapturePolicyForRequest,
       rejectUnsupportedCapturePolicy
     }
@@ -384,6 +387,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerAuthRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
+  registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);
   registerQuestionRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);

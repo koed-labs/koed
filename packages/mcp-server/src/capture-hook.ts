@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { chunkTextForModel } from "@koed/core";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,7 @@ export interface HookPayload {
   agent_id?: string;
   agent_type?: string;
   turn_id?: string;
+  tool_use_id?: string;
   transcript_path?: string;
   agent_transcript_path?: string;
   cwd?: string;
@@ -35,8 +37,53 @@ export interface CaptureItem {
   metadata: Record<string, unknown>;
 }
 
+interface RawConversationItemResponse {
+  id: string;
+  sourceSequence: number | null;
+  idempotencyKey: string;
+}
+
+type RawConversationItemRequest = {
+  sourceKind: string;
+  sourceAdapterVersion: string;
+  sourceTransport: string;
+  sessionId?: string;
+  externalSessionId?: string;
+  externalThreadId?: string;
+  externalTurnId?: string;
+  externalItemId?: string;
+  parentExternalItemId?: string;
+  sourceRecordType: string;
+  sourceEventType?: string;
+  sourcePath?: string;
+  sourceLineNumber?: number;
+  sourceSequence?: number;
+  eventTime?: string;
+  rawJson: unknown;
+  rawText?: string;
+  logicalSourceId?: string;
+  transportChunkIndex?: number;
+  transportChunkCount?: number;
+  transportChunkText?: string;
+  transportChunkEncoding?: string;
+  sourceHash: string;
+  idempotencyKey: string;
+  projectionStatus: string;
+  projectionVersion: string;
+  metadata: Record<string, unknown>;
+};
+
 interface CaptureState {
   seen: Record<string, true>;
+  rawSeen: Record<string, true>;
+  transcriptOffsets?: Record<
+    string,
+    {
+      offset: number;
+      lineCount: number;
+      size: number;
+    }
+  >;
 }
 
 type CaptureHookConfig = McpServerConfig & {
@@ -82,6 +129,7 @@ const loadConfig = (configPath?: string): CaptureHookConfig => {
   return {
     apiUrl: fileConfig.apiUrl ?? fileConfig.baseUrl ?? envConfig.apiUrl,
     apiToken: fileConfig.apiToken ?? envConfig.apiToken,
+    requestTimeoutMs: fileConfig.requestTimeoutMs ?? envConfig.requestTimeoutMs,
     captureEnabled: fileConfig.captureEnabled,
     capturePausedUntil: fileConfig.capturePausedUntil
   };
@@ -103,7 +151,207 @@ const positiveIntEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const hookMaxItems = (): number => positiveIntEnv("MEMORY_HOOK_MAX_ITEMS", 10);
+const QWEN_OPERATIONAL_MAX_TOKENS = 32_000;
+
+const positiveIntEnvCapped = (
+  name: string,
+  fallback: number,
+  max: number
+): number => Math.min(positiveIntEnv(name, fallback), max);
+
+const hookTranscriptTailBytes = (): number =>
+  positiveIntEnv("MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES", 1_000_000);
+
+const hookDeadlineMs = (): number =>
+  positiveIntEnv("MEMORY_HOOK_DEADLINE_MS", 8_500);
+
+const rawIngestBatchBytes = (): number =>
+  positiveIntEnv("MEMORY_RAW_INGEST_BATCH_BYTES", 180_000);
+
+const semanticEventMaxTokens = (): number =>
+  positiveIntEnvCapped(
+    "MEMORY_EVENT_MAX_TOKENS",
+    positiveIntEnvCapped(
+      "EMBEDDING_MAX_TOKENS",
+      QWEN_OPERATIONAL_MAX_TOKENS,
+      QWEN_OPERATIONAL_MAX_TOKENS
+    ),
+    QWEN_OPERATIONAL_MAX_TOKENS
+  );
+
+export const semanticEventChunks = (
+  item: CaptureItem,
+  model: string | undefined
+): Array<{ content: string; chunkIndex: number; chunkCount: number }> => {
+  const chunks = chunkTextForModel(item.content, {
+    model: model ?? "gpt-5.4-mini",
+    maxTokens: semanticEventMaxTokens()
+  });
+  const effectiveChunks = chunks.length > 0 ? chunks : [item.content];
+  return effectiveChunks.map((content, index) => ({
+    content,
+    chunkIndex: index,
+    chunkCount: effectiveChunks.length
+  }));
+};
+
+const rawItemBodyBytes = (item: RawConversationItemRequest): number =>
+  Buffer.byteLength(JSON.stringify({ items: [item] }), "utf8");
+
+const chunkStringByUtf8Bytes = (value: string, maxBytes: number): string[] => {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) {
+    return [value];
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  let currentBytes = 0;
+  for (const char of value) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (current.length > 0 && currentBytes + charBytes > maxBytes) {
+      chunks.push(current);
+      current = "";
+      currentBytes = 0;
+    }
+    current += char;
+    currentBytes += charBytes;
+  }
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+  return chunks;
+};
+
+export const rawItemRequestChunks = (
+  item: RawConversationItemRequest
+): RawConversationItemRequest[] => {
+  const maxBytes = rawIngestBatchBytes();
+  if (rawItemBodyBytes(item) <= maxBytes) {
+    return [item];
+  }
+
+  const serializedRawItem = JSON.stringify({
+    rawJson: item.rawJson,
+    rawText: typeof item.rawText === "string" ? item.rawText : null
+  });
+  const envelopeBytes = rawItemBodyBytes({
+    ...item,
+    rawJson: {
+      transportChunk: true,
+      sourceItemHash: item.sourceHash,
+      chunkIndex: 0,
+      chunkCount: 1
+    },
+    rawText: undefined,
+    logicalSourceId: item.sourceHash,
+    transportChunkIndex: 0,
+    transportChunkCount: 1,
+    transportChunkText: "",
+    transportChunkEncoding: "conversation-item-json-v1"
+  });
+  let chunkBudget = Math.max(
+    100,
+    Math.floor((maxBytes - envelopeBytes - 1_024) / 2)
+  );
+  while (chunkBudget > 0) {
+    const chunks = chunkStringByUtf8Bytes(serializedRawItem, chunkBudget);
+    const requests = chunks.map((chunk, index) => {
+      const chunkHash = hash({
+        sourceHash: item.sourceHash,
+        transportChunkIndex: index,
+        transportChunkCount: chunks.length
+      });
+      return {
+        ...item,
+        rawJson: {
+          transportChunk: true,
+          sourceItemHash: item.sourceHash,
+          chunkIndex: index,
+          chunkCount: chunks.length
+        },
+        rawText: undefined,
+        logicalSourceId: item.sourceHash,
+        transportChunkIndex: index,
+        transportChunkCount: chunks.length,
+        transportChunkText: chunk,
+        transportChunkEncoding: "conversation-item-json-v1",
+        sourceHash: chunkHash,
+        idempotencyKey: chunkHash,
+        metadata: {
+          ...item.metadata,
+          sourceItemHash: item.sourceHash,
+          sourceChunkIndex: index,
+          sourceChunkCount: chunks.length
+        }
+      };
+    });
+    if (requests.every((request) => rawItemBodyBytes(request) <= maxBytes)) {
+      return requests;
+    }
+    chunkBudget = Math.floor(chunkBudget / 2);
+  }
+
+  throw new Error("Raw conversation item envelope exceeds ingest batch budget");
+};
+
+export const rawItemBatches = (
+  items: RawConversationItemRequest[]
+): RawConversationItemRequest[][] => {
+  const maxBytes = rawIngestBatchBytes();
+  const emptyBodyBytes = Buffer.byteLength('{"items":[]}', "utf8");
+  const batches: RawConversationItemRequest[][] = [];
+  let current: RawConversationItemRequest[] = [];
+  let currentBytes = emptyBodyBytes;
+
+  for (const item of items.flatMap(rawItemRequestChunks)) {
+    const itemBytes = rawItemBodyBytes(item);
+    if (current.length > 0 && currentBytes + itemBytes > maxBytes) {
+      batches.push(current);
+      current = [];
+      currentBytes = emptyBodyBytes;
+    }
+    current.push(item);
+    currentBytes += itemBytes;
+  }
+
+  if (current.length > 0) {
+    batches.push(current);
+  }
+
+  return batches;
+};
+
+export const rawItemsForCapture = (
+  items: RawConversationItemRequest[],
+  rawSeen: Record<string, true>,
+  requiredSourceSequences: Set<number>,
+  requiredSourceHashes = new Set<string>()
+): RawConversationItemRequest[] =>
+  items.filter(
+    (item) =>
+      !rawSeen[item.sourceHash] ||
+      requiredSourceHashes.has(item.sourceHash) ||
+      (typeof item.sourceSequence === "number" &&
+        requiredSourceSequences.has(item.sourceSequence))
+  );
+
+const createConversationItemsBatched = async (
+  client: MemoryApiClient,
+  items: RawConversationItemRequest[],
+  deadlineAtMs = Number.POSITIVE_INFINITY
+): Promise<{ completed: boolean; items: RawConversationItemResponse[] }> => {
+  const responses: RawConversationItemResponse[] = [];
+  for (const batch of rawItemBatches(items)) {
+    if (Date.now() > deadlineAtMs - 1_000) {
+      return { completed: false, items: responses };
+    }
+    const response = (await client.createConversationItems({
+      items: batch
+    })) as { items?: RawConversationItemResponse[] };
+    responses.push(...(response.items ?? []));
+  }
+  return { completed: true, items: responses };
+};
 
 const hookTriggersLcmSummary = (): boolean =>
   (process.env.MEMORY_HOOK_TRIGGER_LCM_SUMMARY ?? "true")
@@ -539,6 +787,7 @@ const hookPayloadMetadata = (
   parentThreadId: effectiveContext.parentThreadId,
   parentExternalSessionId: effectiveContext.parentThreadId,
   externalTurnId: payload.turn_id,
+  toolUseId: payload.tool_use_id,
   model: payload.model,
   cwd: payload.cwd,
   agentId: payload.agent_id,
@@ -682,7 +931,10 @@ const parseTranscriptRecordsText = (text: string): unknown[] => {
   return records;
 };
 
-export const parseTranscriptRecords = (records: unknown[]): CaptureItem[] => {
+export const parseTranscriptRecords = (
+  records: unknown[],
+  indexOffset = 0
+): CaptureItem[] => {
   if (records.length === 0) {
     return [];
   }
@@ -709,7 +961,10 @@ export const parseTranscriptRecords = (records: unknown[]): CaptureItem[] => {
 
   return records
     .map((record, index) =>
-      extractTranscriptItem(record, index, { preferEventMessages, context })
+      extractTranscriptItem(record, index + indexOffset, {
+        preferEventMessages,
+        context
+      })
     )
     .filter((item): item is CaptureItem => Boolean(item));
 };
@@ -717,12 +972,225 @@ export const parseTranscriptRecords = (records: unknown[]): CaptureItem[] => {
 export const parseTranscriptText = (text: string): CaptureItem[] =>
   parseTranscriptRecords(parseTranscriptRecordsText(text));
 
-const parseTranscriptFileRecords = (transcriptPath?: string): unknown[] => {
+export const shouldReadTranscriptForHook = (payload: HookPayload): boolean =>
+  payload.hook_event_name === "PostToolUse" ||
+  payload.hook_event_name === "Stop" ||
+  payload.hook_event_name === "SubagentStop";
+
+const splitCompleteTranscriptLines = (
+  text: string,
+  reachedEnd: boolean
+): { lines: string[]; consumedBytes: number } => {
+  const hasTrailingNewline = /\r?\n$/.test(text);
+  const parts = text.split(/\r?\n/);
+  let consumedText = text;
+  if (hasTrailingNewline) {
+    parts.pop();
+  } else if (!reachedEnd) {
+    const incomplete = parts.pop() ?? "";
+    consumedText = text.slice(0, Math.max(0, text.length - incomplete.length));
+  }
+  const lines = parts.filter((line) => line.trim());
+  return {
+    lines,
+    consumedBytes: Buffer.byteLength(consumedText, "utf8")
+  };
+};
+
+const transcriptStateKey = (scope: string, transcriptPath: string): string =>
+  scopedStateKey(scope, transcriptPath);
+
+export const parseTranscriptFileRecords = (input: {
+  transcriptPath?: string;
+  state: CaptureState;
+  stateScope: string;
+}): {
+  records: unknown[];
+  indexOffset: number;
+  checkpoint?: { key: string; offset: number; lineCount: number; size: number };
+} => {
+  const { transcriptPath } = input;
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
-    return [];
+    return { records: [], indexOffset: 0 };
   }
 
-  return parseTranscriptRecordsText(fs.readFileSync(transcriptPath, "utf8"));
+  const stat = fs.statSync(transcriptPath);
+  const key = transcriptStateKey(input.stateScope, transcriptPath);
+  const prior = input.state.transcriptOffsets?.[key];
+  const maxBytes = hookTranscriptTailBytes();
+  const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
+  const start = prior && hasUsableCheckpoint ? Math.max(0, prior.offset) : 0;
+  const indexOffset =
+    prior && hasUsableCheckpoint && start > 0 ? prior.lineCount : 0;
+  const end = Math.min(stat.size, start + maxBytes);
+  if (end <= start) {
+    return {
+      records: [],
+      indexOffset,
+      checkpoint: {
+        key,
+        offset: start,
+        lineCount: indexOffset,
+        size: stat.size
+      }
+    };
+  }
+
+  const buffer = Buffer.allocUnsafe(end - start);
+  const fd = fs.openSync(transcriptPath, "r");
+  try {
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const { lines, consumedBytes } = splitCompleteTranscriptLines(
+    buffer.toString("utf8"),
+    end >= stat.size
+  );
+  return {
+    records: parseTranscriptRecordsText(lines.join("\n")),
+    indexOffset,
+    checkpoint: {
+      key,
+      offset: start + consumedBytes,
+      lineCount: indexOffset + lines.length,
+      size: stat.size
+    }
+  };
+};
+
+const rawRecordPayload = (record: unknown): Record<string, unknown> | null =>
+  isRecord(record)
+    ? isRecord(record.payload)
+      ? record.payload
+      : record
+    : null;
+
+const rawRecordType = (record: unknown): string => {
+  if (!isRecord(record)) {
+    return "unknown";
+  }
+  return asString(record.type) ?? "unknown";
+};
+
+const rawEventType = (record: unknown): string | undefined => {
+  if (!isRecord(record)) {
+    return undefined;
+  }
+  const payload = isRecord(record.payload) ? record.payload : undefined;
+  return (
+    asString(payload?.type) ??
+    asString(record.type) ??
+    asString(payload?.method) ??
+    asString(record.method)
+  );
+};
+
+const rawExternalItemId = (record: unknown): string | undefined => {
+  const payload = rawRecordPayload(record);
+  return (
+    asString(payload?.id) ??
+    asString(payload?.item_id) ??
+    asString(payload?.itemId) ??
+    asString(payload?.call_id) ??
+    asString(payload?.callId)
+  );
+};
+
+const rawText = (record: unknown): string | undefined => {
+  const payload = rawRecordPayload(record);
+  if (!payload) {
+    return undefined;
+  }
+  return stringifyContent(
+    payload.content ?? payload.text ?? payload.message ?? payload.output
+  );
+};
+
+const sourceHashForRawRecord = (input: {
+  externalSessionId?: string;
+  transcriptPath?: string;
+  index: number;
+  record: unknown;
+}): string => hash(input);
+
+const buildRawTranscriptConversationItems = (input: {
+  records: unknown[];
+  indexOffset?: number;
+  sessionId?: string;
+  effectiveContext: EffectiveCaptureContext;
+  transcriptPath?: string;
+  payload: HookPayload;
+}): RawConversationItemRequest[] =>
+  input.records.map((record, index) => {
+    const sourceSequence = index + (input.indexOffset ?? 0);
+    const sourceHash = sourceHashForRawRecord({
+      externalSessionId: input.effectiveContext.externalSessionId,
+      transcriptPath: input.transcriptPath,
+      index: sourceSequence,
+      record
+    });
+    return {
+      sessionId: input.sessionId,
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "hook",
+      externalSessionId: input.effectiveContext.externalSessionId,
+      externalThreadId: input.effectiveContext.externalSessionId,
+      externalTurnId: input.payload.turn_id,
+      externalItemId: rawExternalItemId(record),
+      sourceRecordType: rawRecordType(record),
+      sourceEventType: rawEventType(record),
+      sourcePath: input.transcriptPath,
+      sourceLineNumber: sourceSequence,
+      sourceSequence,
+      rawJson: record,
+      rawText: rawText(record),
+      sourceHash,
+      idempotencyKey: sourceHash,
+      projectionStatus: "pending",
+      projectionVersion: "codex-transcript-v1",
+      metadata: {
+        hookEventName: input.payload.hook_event_name,
+        threadKind: input.effectiveContext.isSubagent
+          ? "subagent"
+          : "conversation",
+        parentThreadId: input.effectiveContext.parentThreadId
+      }
+    };
+  });
+
+const buildRawHookConversationItem = (input: {
+  sessionId?: string;
+  effectiveContext: EffectiveCaptureContext;
+  payload: HookPayload;
+}): RawConversationItemRequest => {
+  const sourceHash = hash({
+    externalSessionId: input.effectiveContext.externalSessionId,
+    hookEventName: input.payload.hook_event_name,
+    turnId: input.payload.turn_id,
+    payload: input.payload
+  });
+  return {
+    sessionId: input.sessionId,
+    sourceKind: "codex",
+    sourceAdapterVersion: "codex-hook-v1",
+    sourceTransport: "hook",
+    externalSessionId: input.effectiveContext.externalSessionId,
+    externalThreadId: input.effectiveContext.externalSessionId,
+    externalTurnId: input.payload.turn_id,
+    sourceRecordType: "hook_payload",
+    sourceEventType: input.payload.hook_event_name ?? "hook_payload",
+    rawJson: input.payload,
+    rawText:
+      input.payload.prompt ?? input.payload.last_assistant_message ?? undefined,
+    sourceHash,
+    idempotencyKey: sourceHash,
+    projectionStatus: "pending",
+    projectionVersion: "codex-hook-v1",
+    metadata: hookPayloadMetadata(input.payload, input.effectiveContext)
+  };
 };
 
 export const fallbackItems = (
@@ -783,8 +1251,12 @@ export const fallbackItems = (
         metadata: {
           ...metadata,
           toolName: payload.tool_name,
+          ...(payload.tool_use_id ? { toolUseId: payload.tool_use_id } : {}),
           toolSummary: summary,
-          toolCall
+          toolCall: {
+            ...toolCall,
+            ...(payload.tool_use_id ? { id: payload.tool_use_id } : {})
+          }
         }
       }
     ];
@@ -813,19 +1285,35 @@ const statePath = (): string =>
 
 const loadState = (): CaptureState => {
   try {
-    return JSON.parse(fs.readFileSync(statePath(), "utf8")) as CaptureState;
+    const state = JSON.parse(
+      fs.readFileSync(statePath(), "utf8")
+    ) as Partial<CaptureState>;
+    return {
+      seen: state.seen ?? {},
+      rawSeen: state.rawSeen ?? {},
+      transcriptOffsets: state.transcriptOffsets ?? {}
+    };
   } catch {
-    return { seen: {} };
+    return { seen: {}, rawSeen: {}, transcriptOffsets: {} };
   }
 };
 
 const saveState = (state: CaptureState): void => {
   const file = statePath();
+  const tempFile = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(
-    file,
+    tempFile,
     JSON.stringify(
-      { seen: Object.fromEntries(Object.entries(state.seen).slice(-5000)) },
+      {
+        seen: Object.fromEntries(Object.entries(state.seen).slice(-5000)),
+        rawSeen: Object.fromEntries(
+          Object.entries(state.rawSeen).slice(-20_000)
+        ),
+        transcriptOffsets: Object.fromEntries(
+          Object.entries(state.transcriptOffsets ?? {}).slice(-2_000)
+        )
+      },
       null,
       2
     ),
@@ -833,7 +1321,32 @@ const saveState = (state: CaptureState): void => {
       mode: 0o600
     }
   );
+  fs.renameSync(tempFile, file);
 };
+
+const stateScopeKey = (
+  config: Pick<McpServerConfig, "apiToken" | "apiUrl">,
+  workspaceId: string
+): string =>
+  hash({
+    apiUrl: config.apiUrl,
+    apiToken: config.apiToken,
+    workspaceId
+  });
+
+const scopedStateKey = (scope: string, key: string): string =>
+  `${scope}:${key}`;
+
+const scopedRawSeen = (
+  rawSeen: Record<string, true>,
+  scope: string,
+  items: RawConversationItemRequest[]
+): Record<string, true> =>
+  Object.fromEntries(
+    items
+      .filter((item) => rawSeen[scopedStateKey(scope, item.sourceHash)])
+      .map((item) => [item.sourceHash, true])
+  );
 
 const triggerDetachedLcmSummary = (configPath?: string): void => {
   if (!hookTriggersLcmSummary()) {
@@ -878,9 +1391,19 @@ const main = async () => {
   }
 
   const client = new MemoryApiClient(config);
+  const deadlineAtMs = Date.now() + hookDeadlineMs();
   const workspaceId = payload.cwd ?? "default";
+  const stateScope = stateScopeKey(config, workspaceId);
   const captureTranscriptPath = captureTranscriptPathForPayload(payload);
-  const transcriptRecords = parseTranscriptFileRecords(captureTranscriptPath);
+  const state = loadState();
+  const transcriptFile = shouldReadTranscriptForHook(payload)
+    ? parseTranscriptFileRecords({
+        transcriptPath: captureTranscriptPath,
+        state,
+        stateScope
+      })
+    : { records: [], indexOffset: 0 };
+  const transcriptRecords = transcriptFile.records;
   const transcriptSessionMetadata =
     extractTranscriptSessionMetadata(transcriptRecords);
   const effectiveContext = effectiveCaptureContext(
@@ -905,10 +1428,28 @@ const main = async () => {
     );
     return;
   }
-  const transcriptItems = parseTranscriptRecords(transcriptRecords);
-  const items = selectCaptureItems(transcriptItems, payload, effectiveContext);
-  const captureItems = items.slice(-hookMaxItems());
-  const state = loadState();
+  const transcriptItems = parseTranscriptRecords(
+    transcriptRecords,
+    transcriptFile.indexOffset
+  );
+  const captureItems = selectCaptureItems(
+    transcriptItems,
+    payload,
+    effectiveContext
+  );
+  const requiredRawSourceSequences = new Set(
+    captureItems
+      .filter((item) => {
+        const itemHash = hash({
+          session: effectiveContext.externalSessionId,
+          transcriptPath: captureTranscriptPath,
+          item
+        });
+        return !state.seen[scopedStateKey(stateScope, itemHash)];
+      })
+      .map((item) => item.metadata.transcriptIndex)
+      .filter((value): value is number => typeof value === "number")
+  );
   const session =
     effectiveContext.externalSessionId || captureTranscriptPath
       ? await client.createSession({
@@ -940,42 +1481,136 @@ const main = async () => {
     return;
   }
 
+  const rawItemsRequest =
+    transcriptRecords.length > 0
+      ? buildRawTranscriptConversationItems({
+          records: transcriptRecords,
+          indexOffset: transcriptFile.indexOffset,
+          sessionId: session?.session?.id,
+          effectiveContext,
+          transcriptPath: captureTranscriptPath,
+          payload
+        })
+      : [
+          buildRawHookConversationItem({
+            sessionId: session?.session?.id,
+            effectiveContext,
+            payload
+          })
+        ];
+  const rawItemsToSend = rawItemsForCapture(
+    rawItemsRequest,
+    scopedRawSeen(state.rawSeen, stateScope, rawItemsRequest),
+    requiredRawSourceSequences,
+    transcriptRecords.length === 0 && captureItems.length > 0
+      ? new Set(rawItemsRequest.map((item) => item.sourceHash))
+      : undefined
+  );
+  const rawItemsResult = await createConversationItemsBatched(
+    client,
+    rawItemsToSend,
+    deadlineAtMs
+  );
+  const rawItemsResponse = rawItemsResult.items;
+  for (const item of rawItemsResponse) {
+    state.rawSeen[scopedStateKey(stateScope, item.idempotencyKey)] = true;
+  }
+  const rawItemIdsBySequence = new Map<number, string[]>();
+  for (const item of rawItemsResponse) {
+    if (item.sourceSequence !== null) {
+      rawItemIdsBySequence.set(item.sourceSequence, [
+        ...(rawItemIdsBySequence.get(item.sourceSequence) ?? []),
+        item.id
+      ]);
+    }
+  }
+  const fallbackRawItemId = rawItemsResponse[0]?.id;
+
   let captured = 0;
+  let completedCaptureItems = rawItemsResult.completed;
+  if (!rawItemsResult.completed) {
+    console.error(
+      "koed capture hook left transcript checkpoint unchanged because raw capture did not finish before the deadline"
+    );
+  }
   for (const item of captureItems) {
+    const rawSourceMetadata = (() => {
+      const rawItemIds =
+        typeof item.metadata.transcriptIndex === "number"
+          ? rawItemIdsBySequence.get(item.metadata.transcriptIndex)
+          : undefined;
+      if (rawItemIds && rawItemIds.length > 0) {
+        return {
+          rawConversationItemId: rawItemIds[0],
+          rawConversationItemIds: rawItemIds
+        };
+      }
+      return fallbackRawItemId
+        ? { rawConversationItemId: fallbackRawItemId }
+        : null;
+    })();
+    if (!rawSourceMetadata) {
+      console.error(
+        `koed capture hook skipped semantic projection without raw source for ${item.eventType}`
+      );
+      completedCaptureItems = false;
+      break;
+    }
+
     const itemHash = hash({
       session: effectiveContext.externalSessionId,
       transcriptPath: captureTranscriptPath,
       item
     });
-    if (state.seen[itemHash]) {
+    const scopedItemHash = scopedStateKey(stateScope, itemHash);
+    if (state.seen[scopedItemHash]) {
       continue;
     }
 
     try {
-      await client.capturePersonalEvent({
-        workspaceId,
-        sessionId: session?.session?.id,
-        actor: item.actor,
-        eventType: item.eventType,
-        content: item.content,
-        metadata: {
-          ...item.metadata,
-          ...hookPayloadMetadata(payload, effectiveContext),
-          hookEventName: payload.hook_event_name,
-          externalSessionId: effectiveContext.externalSessionId,
-          externalTurnId: payload.turn_id,
-          sourceHash: itemHash,
-          automaticCaptureScope: "personal"
-        },
-        sourceRuntime: "codex-cli",
-        captureMethod: "hook",
-        codexTranscriptPath: captureTranscriptPath,
-        idempotencyKey: itemHash,
-        sourceHash: itemHash
-      });
-      state.seen[itemHash] = true;
+      const chunks = semanticEventChunks(item, payload.model);
+      for (const chunk of chunks) {
+        if (Date.now() > deadlineAtMs - 1_000) {
+          throw new Error("Capture hook deadline reached");
+        }
+        const chunkHash =
+          chunks.length === 1
+            ? itemHash
+            : hash({
+                itemHash,
+                chunkIndex: chunk.chunkIndex,
+                chunkCount: chunk.chunkCount
+              });
+        await client.capturePersonalEvent({
+          workspaceId,
+          sessionId: session?.session?.id,
+          actor: item.actor,
+          eventType: item.eventType,
+          content: chunk.content,
+          metadata: {
+            ...item.metadata,
+            ...rawSourceMetadata,
+            ...hookPayloadMetadata(payload, effectiveContext),
+            hookEventName: payload.hook_event_name,
+            externalSessionId: effectiveContext.externalSessionId,
+            externalTurnId: payload.turn_id,
+            sourceHash: chunkHash,
+            sourceItemHash: itemHash,
+            sourceChunkIndex: chunk.chunkIndex,
+            sourceChunkCount: chunk.chunkCount,
+            automaticCaptureScope: "personal"
+          },
+          sourceRuntime: "codex-cli",
+          captureMethod: "hook",
+          codexTranscriptPath: captureTranscriptPath,
+          idempotencyKey: chunkHash,
+          sourceHash: chunkHash
+        });
+      }
+      state.seen[scopedItemHash] = true;
       captured += 1;
     } catch (error) {
+      completedCaptureItems = false;
       console.error(
         `koed capture hook stopped after ${captured} event(s): ${
           error instanceof Error ? error.message : String(error)
@@ -985,6 +1620,20 @@ const main = async () => {
     }
   }
 
+  if (transcriptFile.checkpoint && completedCaptureItems) {
+    state.transcriptOffsets = {
+      ...(state.transcriptOffsets ?? {}),
+      [transcriptFile.checkpoint.key]: {
+        offset: transcriptFile.checkpoint.offset,
+        lineCount: transcriptFile.checkpoint.lineCount,
+        size: transcriptFile.checkpoint.size
+      }
+    };
+  } else if (transcriptFile.checkpoint) {
+    console.error(
+      "koed capture hook left transcript checkpoint unchanged so unread events can retry"
+    );
+  }
   saveState(state);
   if (captured > 0) {
     triggerDetachedLcmSummary(configPath);
