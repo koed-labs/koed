@@ -129,6 +129,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      embedding-service:
+        condition: service_healthy
 
   console:
     build:
