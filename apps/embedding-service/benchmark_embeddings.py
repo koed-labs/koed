@@ -9,7 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+DEFAULT_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32000]
 
 
 @dataclass
@@ -240,7 +240,7 @@ def parse_args() -> argparse.Namespace:
         "--model-name",
         default=os.getenv("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B-GGUF"),
     )
-    parser.add_argument("--n-ctx", type=int, default=int(os.getenv("BENCHMARK_N_CTX", "32768")))
+    parser.add_argument("--n-ctx", type=int, default=int(os.getenv("BENCHMARK_N_CTX", "32000")))
     parser.add_argument("--n-batch", type=int, default=int(os.getenv("LLAMA_N_BATCH", "512")))
     parser.add_argument(
         "--n-threads",

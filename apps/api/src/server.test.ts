@@ -358,6 +358,58 @@ const createFakeRepository = (): MemorySourceRepository => {
       capturedSessions.set(id, record);
       return record;
     },
+    async createConversationItems(_actor, input) {
+      return input.items.map((item, index) => ({
+        id: randomUUID(),
+        sessionId: item.sessionId ?? null,
+        turnId: item.turnId ?? null,
+        sourceKind: item.sourceKind,
+        sourceAdapterVersion: item.sourceAdapterVersion,
+        sourceTransport: item.sourceTransport,
+        externalSessionId: item.externalSessionId ?? null,
+        externalThreadId: item.externalThreadId ?? null,
+        externalTurnId: item.externalTurnId ?? null,
+        externalItemId: item.externalItemId ?? null,
+        sourceRecordType: item.sourceRecordType,
+        sourceEventType: item.sourceEventType ?? null,
+        sourceSequence: item.sourceSequence ?? index,
+        idempotencyKey: item.idempotencyKey,
+        createdAt: new Date().toISOString()
+      }));
+    },
+    async recordWorkflowTokenUsage(_actor, input) {
+      return {
+        id: randomUUID(),
+        workflowType: input.workflowType,
+        workflowId: input.workflowId ?? null,
+        sessionId: input.sessionId ?? null,
+        turnId: input.turnId ?? null,
+        conversationItemId: input.conversationItemId ?? null,
+        model: input.model ?? null,
+        inputTokens: input.inputTokens ?? null,
+        cachedInputTokens: input.cachedInputTokens ?? null,
+        outputTokens: input.outputTokens ?? null,
+        reasoningOutputTokens: input.reasoningOutputTokens ?? null,
+        totalTokens: input.totalTokens ?? null,
+        usageScope: input.usageScope ?? "last",
+        createdAt: new Date().toISOString()
+      };
+    },
+    async projectPendingConversationItems() {
+      return {
+        rawItemsScanned: 0,
+        rawItemsProjected: 0,
+        messagesCreated: 0,
+        toolEventsCreated: 0,
+        memoryEventsCreated: 0,
+        tokenUsageRowsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+    },
+    async listConversationProjectionActors() {
+      return [];
+    },
     async createMemoryQuestion(actor, input) {
       const now = new Date().toISOString();
       const record: MemoryQuestionDetailRecord = {
@@ -1653,9 +1705,7 @@ describe("api health", () => {
     await app.close();
 
     expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-methods"]).toContain(
-      "PATCH"
-    );
+    expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
   });
 
   it("keeps public status probes coarse and requires auth for details", async () => {
@@ -2240,6 +2290,68 @@ describe("account and access flows", () => {
       headers,
       payload: { query: "concise changelog", retrieval_scope: "personal" }
     });
+    const rawConversationItems = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers,
+      payload: {
+        items: [
+          {
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "thread-api-test",
+            externalTurnId: "turn-api-test",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "turn/completed",
+            sourceSequence: 0,
+            rawJson: { method: "turn/completed" },
+            sourceHash: "api-raw-source-hash",
+            idempotencyKey: "api-raw-idempotency-key"
+          }
+        ]
+      }
+    });
+    const tokenUsage = await app.inject({
+      method: "POST",
+      url: "/v1/memory/token-usage",
+      headers,
+      payload: {
+        workflowType: "memory_question",
+        workflowId: "question-api-test",
+        inputTokens: 4,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        totalTokens: 6,
+        usageScope: "last"
+      }
+    });
+    const projection = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/project",
+      headers,
+      payload: { limit: 10 }
+    });
+    const rejectedTeamRawConversationItems = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers,
+      payload: {
+        items: [
+          {
+            visibility: "team",
+            teamId: "11111111-1111-4111-8111-111111111111",
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            rawJson: { method: "turn/completed" },
+            sourceHash: "team-raw-source-hash",
+            idempotencyKey: "team-raw-idempotency-key"
+          }
+        ]
+      }
+    });
     const rejectedTeamAnswer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
@@ -2268,6 +2380,13 @@ describe("account and access flows", () => {
     );
     expect(answerBody.evidence[0]?.summaryText).toContain("concise changelog");
     expect(answerBody.citations).toHaveLength(1);
+    expect(rawConversationItems.statusCode).toBe(200);
+    expect(
+      jsonBody<{ items: unknown[] }>(rawConversationItems).items
+    ).toHaveLength(1);
+    expect(tokenUsage.statusCode).toBe(200);
+    expect(projection.statusCode).toBe(200);
+    expect(rejectedTeamRawConversationItems.statusCode).toBe(403);
     expect(rejectedTeamAnswer.statusCode).toBe(400);
     expect(cookieAnswer.statusCode).toBe(200);
     expect(

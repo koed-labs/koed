@@ -2,6 +2,7 @@ import { countTokensForModel } from "@koed/core";
 import {
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
+  type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
 
@@ -35,6 +36,9 @@ export interface MemoryAnswerWorkerStatus {
   expandCount?: number;
   memoryStatus?: "found" | "not_found" | "insufficient" | "pending_summary";
   tokenUsage?: CodexThreadTokenUsage;
+  appServerThreadId?: string;
+  appServerTurnId?: string;
+  appServerEvents?: CodexAppServerRawEvent[];
   usedFallback: boolean;
   skippedReason?: string;
 }
@@ -128,6 +132,9 @@ export type CodexAnswerRunner = (
   text: string;
   model: string;
   tokenUsage?: CodexThreadTokenUsage;
+  threadId?: string;
+  turnId?: string;
+  rawEvents?: CodexAppServerRawEvent[];
 }>;
 
 export interface MemoryAnswerRetrievalClient {
@@ -446,6 +453,9 @@ const runCodexWithRetries = async (
   text: string;
   model: string;
   tokenUsage?: CodexThreadTokenUsage;
+  threadId?: string;
+  turnId?: string;
+  rawEvents?: CodexAppServerRawEvent[];
 }> => {
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
@@ -482,6 +492,9 @@ const runPlannedMemoryAnswer = async (
   expandCount: number;
   memoryStatus: PlannedAnswerStatus;
   tokenUsage?: CodexThreadTokenUsage;
+  threadId?: string;
+  turnId?: string;
+  rawEvents?: CodexAppServerRawEvent[];
   evidence: unknown[];
   citations: unknown[];
   retrievals: unknown[];
@@ -539,6 +552,9 @@ const runPlannedMemoryAnswer = async (
         expandCount: state.expansions.length,
         memoryStatus: action.memoryStatus ?? "insufficient",
         tokenUsage: result.tokenUsage,
+        threadId: result.threadId,
+        turnId: result.turnId,
+        rawEvents: result.rawEvents,
         evidence: state.evidence,
         citations: state.citations,
         retrievals: state.retrievals,
@@ -630,6 +646,9 @@ const runPlannedMemoryAnswer = async (
     expandCount: state.expansions.length,
     memoryStatus: finalAction.memoryStatus ?? "insufficient",
     tokenUsage: finalResult.tokenUsage,
+    threadId: finalResult.threadId,
+    turnId: finalResult.turnId,
+    rawEvents: finalResult.rawEvents,
     evidence: state.evidence,
     citations: state.citations,
     retrievals: state.retrievals,
@@ -641,11 +660,7 @@ export const runCodexAppServerMemoryAnswer: CodexAnswerRunner = (
   prompt,
   config,
   timeoutMs
-): Promise<{
-  text: string;
-  model: string;
-  tokenUsage?: CodexThreadTokenUsage;
-}> =>
+) =>
   runCodexAppServerTurn(
     prompt,
     {
@@ -762,6 +777,9 @@ export const answerWithMemoryWorker = async (
             expandCount: planned.expandCount,
             memoryStatus: planned.memoryStatus,
             tokenUsage: planned.tokenUsage,
+            appServerThreadId: planned.threadId,
+            appServerTurnId: planned.turnId,
+            appServerEvents: planned.rawEvents,
             usedFallback: false
           }
         },
@@ -816,6 +834,9 @@ export const answerWithMemoryWorker = async (
             tokenizerEncoding: promptTokens.encoding,
             tokenizerModelMatched: promptTokens.exactModelMatch,
             tokenUsage: result.tokenUsage,
+            appServerThreadId: result.threadId,
+            appServerTurnId: result.turnId,
+            appServerEvents: result.rawEvents,
             usedFallback: false
           }
         },

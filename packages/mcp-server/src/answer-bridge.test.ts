@@ -118,6 +118,10 @@ describe("local memory answer bridge", () => {
   it("updates an existing pending question with a local worker answer", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];
+    const rawItemRequests: Record<string, unknown>[] = [];
+    const tokenUsageRequests: Record<string, unknown>[] = [];
+    const operations: string[] = [];
+    const tokenConversationItemId = randomUUID();
     const apiUrl = await createServer(async (request, response) => {
       if (request.url === "/v1/access/check") {
         json(response, 200, {
@@ -158,6 +162,7 @@ describe("local memory answer bridge", () => {
         request.method === "PATCH" &&
         request.url === `/v1/memory/questions/${questionId}`
       ) {
+        operations.push("patch");
         patches.push(await readJson(request));
         json(response, 200, {
           question: {
@@ -169,6 +174,60 @@ describe("local memory answer bridge", () => {
         });
         return;
       }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/conversation-items"
+      ) {
+        operations.push("raw");
+        const body = await readJson(request);
+        rawItemRequests.push(body);
+        const items = (body.items as Array<{ sourceEventType?: string }>).map(
+          (item) => ({
+            id:
+              item.sourceEventType === "thread/tokenUsage/updated"
+                ? tokenConversationItemId
+                : randomUUID(),
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: item.sourceEventType ?? "turn/completed",
+            idempotencyKey: "raw-question-test",
+            createdAt: new Date().toISOString()
+          })
+        );
+        json(response, 200, {
+          items
+        });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/token-usage"
+      ) {
+        operations.push("token");
+        tokenUsageRequests.push(await readJson(request));
+        json(response, 200, { tokenUsage: { id: randomUUID() } });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/conversation-items/project"
+      ) {
+        operations.push("project");
+        await readJson(request);
+        json(response, 200, {
+          projection: {
+            rawItemsScanned: 1,
+            rawItemsProjected: 1,
+            messagesCreated: 0,
+            toolEventsCreated: 0,
+            memoryEventsCreated: 0,
+            tokenUsageRowsCreated: 0
+          }
+        });
+        return;
+      }
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
@@ -176,7 +235,54 @@ describe("local memory answer bridge", () => {
       markdown: "The answer",
       evidenceBundle: { evidence: [{ id: "evidence-1" }] },
       citations: [{ id: "citation-1" }],
-      localMemoryWorker: { status: "ok" }
+      localMemoryWorker: {
+        status: "ok",
+        appServerThreadId: "thread-question-test",
+        appServerTurnId: "turn-question-test",
+        appServerEvents: [
+          {
+            method: "turn/completed",
+            observedAt: "2026-05-27T00:00:00.000Z",
+            params: { threadId: "thread-question-test" }
+          },
+          {
+            method: "thread/tokenUsage/updated",
+            observedAt: "2026-05-27T00:00:01.000Z",
+            params: {
+              threadId: "thread-question-test",
+              turnId: "turn-question-test",
+              tokenUsage: {
+                modelContextWindow: 32000,
+                last: {
+                  inputTokens: 10,
+                  cachedInputTokens: 2,
+                  outputTokens: 3,
+                  reasoningOutputTokens: 1,
+                  totalTokens: 13
+                }
+              }
+            }
+          }
+        ],
+        tokenUsage: {
+          modelContextWindow: 32000,
+          last: {
+            inputTokens: 10,
+            cachedInputTokens: 2,
+            outputTokens: 3,
+            reasoningOutputTokens: 1,
+            totalTokens: 13
+          },
+          total: {
+            inputTokens: 10,
+            cachedInputTokens: 2,
+            outputTokens: 3,
+            reasoningOutputTokens: 1,
+            totalTokens: 13
+          }
+        },
+        model: "codex-app-server:test"
+      }
     });
     const { createAnswerBridgeServer } = await import("./answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
@@ -199,6 +305,43 @@ describe("local memory answer bridge", () => {
       answer_markdown: "The answer",
       local_memory_worker: { status: "ok" }
     });
+    expect(rawItemRequests).toHaveLength(1);
+    expect(rawItemRequests[0]).toMatchObject({
+      items: [
+        expect.objectContaining({
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalThreadId: "thread-question-test",
+          externalTurnId: "turn-question-test",
+          sourceEventType: "turn/completed"
+        }),
+        expect.objectContaining({
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalThreadId: "thread-question-test",
+          externalTurnId: "turn-question-test",
+          sourceEventType: "thread/tokenUsage/updated"
+        })
+      ]
+    });
+    const firstRawItem = (
+      rawItemRequests[0] as { items?: Array<{ metadata?: unknown }> }
+    ).items?.[0];
+    expect(firstRawItem?.metadata).toMatchObject({
+      workflow: "memory_question",
+      questionId
+    });
+    expect(tokenUsageRequests).toEqual([
+      expect.objectContaining({
+        workflowType: "memory_question",
+        workflowId: questionId,
+        conversationItemId: tokenConversationItemId,
+        idempotencyKey: `token:${tokenConversationItemId}:last`
+      })
+    ]);
+    expect(operations).toEqual(["raw", "token", "project", "patch"]);
   });
 
   it("returns 400 for local bridge validation errors", async () => {

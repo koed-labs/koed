@@ -18,6 +18,13 @@ export interface CodexThreadTokenUsage {
   modelContextWindow?: number | null;
 }
 
+export interface CodexAppServerRawEvent {
+  method: string;
+  params?: unknown;
+  result?: unknown;
+  observedAt: string;
+}
+
 export interface CodexAppServerRunConfig {
   appServerBinary: string;
   model: string;
@@ -35,6 +42,7 @@ export interface CodexAppServerRunResult {
   tokenUsage?: CodexThreadTokenUsage;
   threadId?: string;
   turnId?: string;
+  rawEvents?: CodexAppServerRawEvent[];
 }
 
 interface JsonRpcMessage {
@@ -145,6 +153,7 @@ class CodexAppServerClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly lines: readline.Interface;
   private readonly stderrChunks: string[] = [];
+  private readonly rawEvents: CodexAppServerRawEvent[] = [];
   private closed = false;
   private readonly turnStates = new Map<
     string,
@@ -225,6 +234,7 @@ class CodexAppServerClient {
     if (typeof thread.id !== "string") {
       throw new Error("Codex app-server thread/start returned no thread id");
     }
+    this.recordRawEvent("thread/start", undefined, response.result);
     return thread.id;
   }
 
@@ -246,6 +256,7 @@ class CodexAppServerClient {
     if (typeof turn.id !== "string") {
       throw new Error("Codex app-server turn/start returned no turn id");
     }
+    this.recordRawEvent("turn/start", undefined, response.result);
     return turn.id;
   }
 
@@ -277,6 +288,10 @@ class CodexAppServerClient {
     if (!this.child.killed) {
       this.child.kill();
     }
+  }
+
+  getRawEvents(): CodexAppServerRawEvent[] {
+    return [...this.rawEvents];
   }
 
   private request(method: string, params: unknown): Promise<JsonRpcMessage> {
@@ -338,6 +353,8 @@ class CodexAppServerClient {
     if (typeof message.method !== "string") {
       return;
     }
+
+    this.recordRawEvent(message.method, message.params);
 
     if (message.method === "item/agentMessage/delta") {
       const params = asRecord(message.params);
@@ -486,6 +503,19 @@ class CodexAppServerClient {
     const stderr = this.stderrChunks.join("").trim();
     return stderr ? `: ${stderr}` : "";
   }
+
+  private recordRawEvent(
+    method: string,
+    params?: unknown,
+    result?: unknown
+  ): void {
+    this.rawEvents.push({
+      method,
+      ...(params !== undefined ? { params } : {}),
+      ...(result !== undefined ? { result } : {}),
+      observedAt: new Date().toISOString()
+    });
+  }
 }
 
 export const runCodexAppServerTurn = async (
@@ -522,7 +552,8 @@ export const runCodexAppServerTurn = async (
     const result = await client.waitForTurn(threadId, turnId);
     return {
       ...result,
-      model: `codex-app-server:${config.model}:${config.reasoningEffort}`
+      model: `codex-app-server:${config.model}:${config.reasoningEffort}`,
+      rawEvents: client.getRawEvents()
     };
   } catch (error) {
     if (timedOut) {

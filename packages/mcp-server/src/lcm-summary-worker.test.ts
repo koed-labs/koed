@@ -45,11 +45,48 @@ describe("LCM summary worker", () => {
       ]
     };
     const submitted: unknown[] = [];
+    const rawItemRequests: unknown[] = [];
+    const tokenUsageRequests: unknown[] = [];
+    const operations: string[] = [];
+    const tokenConversationItemId = "00000000-0000-4000-8000-000000000099";
     const client = {
       async listPendingLcmSummaries() {
         return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
       },
+      async createConversationItems(input: unknown) {
+        operations.push("raw");
+        rawItemRequests.push(input);
+        const items = (
+          input as { items?: Array<{ sourceEventType?: string }> }
+        ).items?.map((item) => ({
+          id:
+            item.sourceEventType === "thread/tokenUsage/updated"
+              ? tokenConversationItemId
+              : "00000000-0000-4000-8000-000000000098",
+          sourceEventType: item.sourceEventType
+        }));
+        return { items: items ?? [] };
+      },
+      async recordTokenUsage(input: unknown) {
+        operations.push("token");
+        tokenUsageRequests.push(input);
+        return { tokenUsage: { id: "token-usage-test" } };
+      },
+      async projectConversationItems() {
+        operations.push("project");
+        return {
+          projection: {
+            rawItemsScanned: 1,
+            rawItemsProjected: 1,
+            messagesCreated: 0,
+            toolEventsCreated: 0,
+            memoryEventsCreated: 0,
+            tokenUsageRowsCreated: 0
+          }
+        };
+      },
       async submitLcmSummary(_nodeId: string, input: unknown) {
+        operations.push("submit");
         submitted.push(input);
         return { ok: true };
       }
@@ -68,7 +105,54 @@ describe("LCM summary worker", () => {
       config,
       runner: async (prompt) => {
         expect(prompt).toContain("Roll up these child LCM summaries");
-        return { text: "rollup summarized", model: "codex-app-server:test" };
+        return {
+          text: "rollup summarized",
+          model: "codex-app-server:test",
+          threadId: "thread-lcm-test",
+          turnId: "turn-lcm-test",
+          rawEvents: [
+            {
+              method: "turn/completed",
+              observedAt: "2026-05-27T00:00:00.000Z",
+              params: { threadId: "thread-lcm-test" }
+            },
+            {
+              method: "thread/tokenUsage/updated",
+              observedAt: "2026-05-27T00:00:01.000Z",
+              params: {
+                threadId: "thread-lcm-test",
+                turnId: "turn-lcm-test",
+                tokenUsage: {
+                  modelContextWindow: 32000,
+                  last: {
+                    inputTokens: 20,
+                    cachedInputTokens: 5,
+                    outputTokens: 8,
+                    reasoningOutputTokens: 2,
+                    totalTokens: 28
+                  }
+                }
+              }
+            }
+          ],
+          tokenUsage: {
+            modelContextWindow: 32000,
+            last: {
+              inputTokens: 20,
+              cachedInputTokens: 5,
+              outputTokens: 8,
+              reasoningOutputTokens: 2,
+              totalTokens: 28
+            },
+            total: {
+              inputTokens: 20,
+              cachedInputTokens: 5,
+              outputTokens: 8,
+              reasoningOutputTokens: 2,
+              totalTokens: 28
+            }
+          }
+        };
       }
     });
 
@@ -82,6 +166,44 @@ describe("LCM summary worker", () => {
       summaryText: "rollup summarized",
       summaryModel: "codex-app-server:test"
     });
+    expect(rawItemRequests).toEqual([
+      {
+        items: [
+          expect.objectContaining({
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "thread-lcm-test",
+            externalTurnId: "turn-lcm-test",
+            sourceEventType: "turn/completed"
+          }),
+          expect.objectContaining({
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "thread-lcm-test",
+            externalTurnId: "turn-lcm-test",
+            sourceEventType: "thread/tokenUsage/updated"
+          })
+        ]
+      }
+    ]);
+    const firstRawItem = (
+      rawItemRequests[0] as { items?: Array<{ metadata?: unknown }> }
+    ).items?.[0];
+    expect(firstRawItem?.metadata).toMatchObject({
+      workflow: "lcm_summary",
+      nodeId: node.id
+    });
+    expect(tokenUsageRequests).toEqual([
+      expect.objectContaining({
+        workflowType: "lcm_summary",
+        workflowId: node.id,
+        conversationItemId: tokenConversationItemId,
+        idempotencyKey: `token:${tokenConversationItemId}:last`
+      })
+    ]);
+    expect(operations).toEqual(["raw", "token", "project", "submit"]);
   });
 
   it("bounds structured payloads so oversized tool payloads do not block catch-up", async () => {

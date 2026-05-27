@@ -132,6 +132,91 @@ describe("MemoryApiClient", () => {
     );
     expect(configured.defaultAnswerScope).toBe("personal");
   });
+
+  it("posts raw conversation items for source adapters", async () => {
+    const requests: unknown[] = [];
+    const apiUrl = await createApi((request, response) => {
+      response.setHeader("content-type", "application/json");
+      expect(request.headers.authorization).toBe("Bearer cmt_test");
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/conversation-items"
+      ) {
+        let body = "";
+        request.on("data", (chunk) => {
+          body += String(chunk);
+        });
+        request.on("end", () => {
+          const parsed = JSON.parse(body) as Record<string, unknown>;
+          requests.push(parsed);
+          response.end(
+            JSON.stringify({
+              items: [
+                {
+                  id: "00000000-0000-4000-8000-000000000001",
+                  sessionId: null,
+                  turnId: null,
+                  sourceKind: "codex",
+                  sourceAdapterVersion: "codex-app-server-v1",
+                  sourceTransport: "app_server",
+                  externalSessionId: "thread-1",
+                  externalThreadId: "thread-1",
+                  externalTurnId: "turn-1",
+                  externalItemId: null,
+                  sourceRecordType: "app_server_notification",
+                  sourceEventType: "turn/completed",
+                  sourceSequence: 0,
+                  idempotencyKey: "raw-1",
+                  createdAt: new Date().toISOString()
+                }
+              ]
+            })
+          );
+        });
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not found" }));
+    });
+
+    const result = await new MemoryApiClient({
+      apiUrl,
+      apiToken: "cmt_test"
+    }).createConversationItems({
+      items: [
+        {
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalSessionId: "thread-1",
+          externalThreadId: "thread-1",
+          externalTurnId: "turn-1",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "turn/completed",
+          sourceSequence: 0,
+          rawJson: { method: "turn/completed" },
+          sourceHash: "raw-1",
+          idempotencyKey: "raw-1"
+        }
+      ]
+    });
+
+    expect(requests).toEqual([
+      {
+        items: [
+          expect.objectContaining({
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            rawJson: { method: "turn/completed" }
+          })
+        ]
+      }
+    ]);
+    expect((result.items as Record<string, unknown>[])[0]).toMatchObject({
+      id: "00000000-0000-4000-8000-000000000001",
+      sourceEventType: "turn/completed"
+    });
+  });
 });
 
 describe("LCM summary background service", () => {

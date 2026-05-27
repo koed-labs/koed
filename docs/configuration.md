@@ -27,7 +27,7 @@ the command preserves existing values and adds any missing keys from
 - `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current self-hosted build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
 - `API_CORS_ORIGINS`: comma-separated allowed Operator Console origins.
-- `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size.
+- `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size. Default `4194304`.
 - `API_AUTH_RATE_LIMIT_WINDOW_MS`: auth rate-limit window.
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
 - `API_MEMORY_RATE_LIMIT_WINDOW_MS`: fallback API-token memory rate-limit window. The default window is 60 seconds.
@@ -51,19 +51,23 @@ the command preserves existing values and adds any missing keys from
 - `CONSOLE_HOST_PORT`: host port mapped to the Operator Console container.
 - `CONSOLE_API_BASE_URL`: browser-visible API base URL used when building the Operator Console.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
+- `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
+- `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
+- `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`: maximum personal/team actor scopes checked on each worker catch-up pass. Default `10`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
+- `MEMORY_EVENT_MAX_TOKENS`: maximum tokens per projected semantic Memory Event chunk. Default `32000`; values above `32000` are clamped to the Qwen operational cap.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
-- `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: token threshold for creating LCM placeholders. Default `32000`.
+- `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: token threshold for creating LCM placeholders. Default `32000`; values above `32000` are clamped to the Qwen operational cap.
 - `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
 - `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm setup:env` generates this for Docker Compose deployments.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
-- `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request.
+- `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request. Default `32000`; values above `32000` are clamped by the embedding service.
 - `EMBEDDING_MAX_TEXT_CHARS`: maximum characters accepted for any single embedding or reranking text before model processing.
 - `EMBEDDING_MAX_REQUEST_CHARS`: maximum total characters accepted for one embedding or reranking request before model processing.
-- `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service.
+- `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service. Default `32000`; values above `32000` are clamped by the embedding service.
 - `EMBEDDING_RERANKER_BATCH_LIMIT`: reranker batch limit.
 
 ## AI Client Values
@@ -73,7 +77,10 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
 - `MEMORY_API_TOKEN`: API Token created in the Operator Console for the User.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
-- `MEMORY_HOOK_MAX_ITEMS`: maximum transcript items processed by the Capture Hook per run.
+- `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`.
+- `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP and Capture Hook API calls. Default `4000`.
+- `MEMORY_HOOK_DEADLINE_MS`: soft deadline used by Capture Hooks to stop optional work before Codex kills the hook process. Default `8500`.
+- `MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES`: maximum appended Codex transcript bytes inspected by PostToolUse, Stop, and SubagentStop hooks per run. The hook checkpoints transcript offsets and resumes unread bytes on the next invocation. Default `1000000`.
 - `MEMORY_HOOK_TRIGGER_LCM_SUMMARY`: when `true`, the Capture Hook starts local LCM summary processing after capture.
 - `MEMORY_HOOK_LCM_SUMMARY_DELAY_MS`: delay before Capture Hook-triggered LCM summary processing.
 - `MEMORY_HOOK_LCM_SUMMARY_LIMIT`: maximum pending LCM summaries processed from a Capture Hook trigger.

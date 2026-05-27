@@ -11,6 +11,7 @@ export type RetrievalScope = "personal";
 export interface McpServerConfig {
   apiUrl: string;
   apiToken?: string;
+  requestTimeoutMs?: number;
 }
 
 export interface AccessCheckResult {
@@ -119,8 +120,14 @@ export const normalizeApiUrl = (apiUrl: string): string =>
 
 export const defaultConfig = (): McpServerConfig => ({
   apiUrl: process.env.MEMORY_API_URL ?? "http://localhost:3000",
-  apiToken: process.env.MEMORY_API_TOKEN
+  apiToken: process.env.MEMORY_API_TOKEN,
+  requestTimeoutMs: positiveIntEnv("MEMORY_API_REQUEST_TIMEOUT_MS", 4_000)
 });
+
+const positiveIntEnv = (name: string, fallback: number): number => {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 export class MemoryApiError extends Error {
   readonly status?: number;
@@ -176,6 +183,24 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/memory/capture-personal-event", input);
+  }
+
+  async createConversationItems(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/conversation-items", input);
+  }
+
+  async recordTokenUsage(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/token-usage", input);
+  }
+
+  async projectConversationItems(
+    input: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/conversation-items/project", input);
   }
 
   async answer(
@@ -270,8 +295,13 @@ export class MemoryApiClient {
 
     let response: Response;
     try {
+      const signal =
+        this.config.requestTimeoutMs && this.config.requestTimeoutMs > 0
+          ? AbortSignal.timeout(this.config.requestTimeoutMs)
+          : undefined;
       response = await fetch(`${this.config.apiUrl}${path}`, {
         method,
+        signal,
         headers: {
           authorization: `Bearer ${this.config.apiToken}`,
           ...(body === undefined ? {} : { "content-type": "application/json" })
@@ -279,8 +309,13 @@ export class MemoryApiClient {
         body: body === undefined ? undefined : JSON.stringify(body)
       });
     } catch (error) {
+      const timedOut =
+        error instanceof Error &&
+        (error.name === "TimeoutError" || error.name === "AbortError");
       throw new MemoryApiError(
-        `Could not reach memory API at ${this.config.apiUrl}. Set MEMORY_API_URL to the backend URL and verify it is running.`,
+        timedOut
+          ? `Memory API request to ${this.config.apiUrl}${path} timed out after ${this.config.requestTimeoutMs}ms.`
+          : `Could not reach memory API at ${this.config.apiUrl}. Set MEMORY_API_URL to the backend URL and verify it is running.`,
         { payload: error instanceof Error ? error.message : String(error) }
       );
     }

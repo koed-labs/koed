@@ -67,6 +67,7 @@ export interface GraphUpdatePayload {
 
 interface GraphUpdateEventRef {
   id: string;
+  operation?: string;
   projectId: string;
   threadId: string;
 }
@@ -413,6 +414,66 @@ const capturePersonalEventSchema = z.object({
   sourceHash: z.string().min(1).optional()
 });
 
+const conversationItemSchema = z.object({
+  visibility: visibilitySchema.optional(),
+  teamId: z.string().uuid().optional(),
+  sessionId: z.string().uuid().optional(),
+  turnId: z.string().uuid().optional(),
+  sourceKind: z.string().min(1),
+  sourceAdapterVersion: z.string().min(1),
+  sourceTransport: z.string().min(1),
+  externalSessionId: z.string().min(1).optional(),
+  externalThreadId: z.string().min(1).optional(),
+  externalTurnId: z.string().min(1).optional(),
+  externalItemId: z.string().min(1).optional(),
+  parentExternalItemId: z.string().min(1).optional(),
+  sourceRecordType: z.string().min(1),
+  sourceEventType: z.string().min(1).optional(),
+  sourcePath: z.string().min(1).optional(),
+  sourceLineNumber: z.number().int().nonnegative().optional(),
+  sourceSequence: z.number().int().nonnegative().optional(),
+  eventTime: z.string().datetime({ offset: true }).optional(),
+  rawJson: z.unknown(),
+  rawText: z.string().optional(),
+  sourceHash: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+  projectionStatus: z.string().min(1).optional(),
+  projectionVersion: z.string().min(1).optional(),
+  projectionError: z.string().optional(),
+  metadata: metadataSchema
+});
+
+const createConversationItemsSchema = z.object({
+  items: z.array(conversationItemSchema).min(1).max(1000)
+});
+
+const tokenUsageSchema = z.object({
+  workflowType: z.string().min(1),
+  workflowId: z.string().min(1).optional(),
+  sessionId: z.string().uuid().optional(),
+  turnId: z.string().uuid().optional(),
+  conversationItemId: z.string().uuid().optional(),
+  sourceRuntime: z.enum(["codex", "codex-cli"]).optional(),
+  sourceKind: z.string().min(1).optional(),
+  sourceAdapterVersion: z.string().min(1).optional(),
+  model: z.string().min(1).nullable().optional(),
+  modelContextWindow: z.number().int().nonnegative().nullable().optional(),
+  inputTokens: z.number().int().nonnegative().nullable().optional(),
+  cachedInputTokens: z.number().int().nonnegative().nullable().optional(),
+  outputTokens: z.number().int().nonnegative().nullable().optional(),
+  reasoningOutputTokens: z.number().int().nonnegative().nullable().optional(),
+  totalTokens: z.number().int().nonnegative().nullable().optional(),
+  usageScope: z.string().min(1).optional(),
+  metadata: metadataSchema.optional(),
+  idempotencyKey: z.string().min(1).optional(),
+  sourceHash: z.string().min(1).optional()
+});
+
+const projectConversationItemsSchema = z.object({
+  limit: z.number().int().positive().max(1000).optional(),
+  conversationItemIds: z.array(z.string().uuid()).max(1000).optional()
+});
+
 const capturePolicySchema = z
   .object({
     targetType: z.enum(["global", "project", "thread"]),
@@ -660,6 +721,7 @@ const openApiEndpoints: Array<[string, string]> = [
   ["POST", "/v1/sessions"],
   ["POST", "/v1/sessions/{sessionId}/events"],
   ["POST", "/v1/memory/capture-personal-event"],
+  ["POST", "/v1/memory/conversation-items"],
   ["GET", "/v1/memory/clusters"],
   ["GET", "/v1/memory/clusters/{clusterId}/memories"],
   ["GET", "/v1/memory/items"],
@@ -724,7 +786,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
               "res.headers.set-cookie"
             ]
           },
-    bodyLimit: parsePositiveInt("REQUEST_BODY_LIMIT_BYTES", 256 * 1024)
+    bodyLimit: parsePositiveInt(
+      "REQUEST_BODY_LIMIT_BYTES",
+      parsePositiveInt("API_REQUEST_BODY_LIMIT_BYTES", 4 * 1024 * 1024)
+    )
   });
 
   const pool =
@@ -903,6 +968,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       payload.threadId
         ? {
             id: payload.id,
+            operation: payload.operation,
             projectId: payload.projectId,
             threadId: payload.threadId
           }
@@ -1247,6 +1313,41 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     ]);
 
     return { embedding, compaction };
+  };
+
+  const scheduleProjectedMemoryEventProcessing = async (
+    repo: MemorySourceRepository,
+    requesterContext: { userId: string },
+    scopes: Array<{
+      eventId: string;
+      visibility: Visibility;
+      teamId: string | null;
+    }>
+  ) => {
+    const embeddings = await Promise.all(
+      scopes.map((scope) => enqueueEmbedding("memory_event", scope.eventId))
+    );
+    const scopeMap = new Map<
+      string,
+      { visibility: Visibility; teamId?: string }
+    >();
+    for (const scope of scopes) {
+      scopeMap.set(`${scope.visibility}:${scope.teamId ?? ""}`, {
+        visibility: scope.visibility,
+        ...(scope.teamId ? { teamId: scope.teamId } : {})
+      });
+    }
+    const compactions = await Promise.all(
+      [...scopeMap.values()].map((scope) =>
+        enqueueCompaction(
+          repo,
+          requesterContext,
+          scope.visibility,
+          scope.teamId
+        )
+      )
+    );
+    return { embeddings, compactions };
   };
 
   const resolveCapturePolicyForRequest = async (
@@ -2017,6 +2118,83 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         processing,
         compaction: processing.compaction.compaction
       };
+    }
+  );
+
+  app.post(
+    "/v1/memory/conversation-items",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const input = createConversationItemsSchema.parse(request.body);
+      const nonPersonalItem = input.items.find(
+        (item) => item.visibility === "team" || item.teamId
+      );
+      if (nonPersonalItem) {
+        return reply.status(403).send({
+          error:
+            "API token raw conversation item capture is limited to Personal Memory"
+        });
+      }
+      const items = await repo.createConversationItems(
+        { userId: user.id },
+        {
+          items: input.items.map((item) => ({
+            ...item,
+            visibility: "personal" as const,
+            teamId: undefined
+          }))
+        }
+      );
+
+      return { items };
+    }
+  );
+
+  app.post(
+    "/v1/memory/token-usage",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const input = tokenUsageSchema.parse(request.body);
+      const tokenUsage = await repo.recordWorkflowTokenUsage(
+        { userId: user.id },
+        {
+          ...input,
+          model: input.model ?? undefined,
+          modelContextWindow: input.modelContextWindow ?? undefined,
+          inputTokens: input.inputTokens ?? undefined,
+          cachedInputTokens: input.cachedInputTokens ?? undefined,
+          outputTokens: input.outputTokens ?? undefined,
+          reasoningOutputTokens: input.reasoningOutputTokens ?? undefined,
+          totalTokens: input.totalTokens ?? undefined
+        }
+      );
+
+      return { tokenUsage };
+    }
+  );
+
+  app.post(
+    "/v1/memory/conversation-items/project",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const input = projectConversationItemsSchema.parse(request.body);
+      const projection = await repo.projectPendingConversationItems(
+        { userId: user.id },
+        input
+      );
+      const processing = await scheduleProjectedMemoryEventProcessing(
+        repo,
+        { userId: user.id },
+        projection.memoryEventScopes ?? []
+      );
+
+      return { projection, processing };
     }
   );
 

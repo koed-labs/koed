@@ -36,6 +36,11 @@ const stringValue = (value: unknown, fallback = ""): string =>
     ? String(value)
     : fallback;
 
+const positiveIntEnv = (name: string, fallback: number): number => {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const isTransientError = (error: unknown): boolean =>
   error instanceof TypeError ||
   (typeof error === "object" &&
@@ -258,7 +263,90 @@ const workers = queueNames.map(
 
 console.log(`Worker listening on queues: ${queueNames.join(", ")}`);
 
+const rawProjectionIntervalMs = positiveIntEnv(
+  "MEMORY_RAW_PROJECTION_INTERVAL_MS",
+  5_000
+);
+const rawProjectionBatchLimit = positiveIntEnv(
+  "MEMORY_RAW_PROJECTION_BATCH_LIMIT",
+  1000
+);
+const rawProjectionActorLimit = positiveIntEnv(
+  "MEMORY_RAW_PROJECTION_ACTOR_LIMIT",
+  10
+);
+let rawProjectionRunning = false;
+
+const runRawProjectionCatchup = async () => {
+  if (!repository || rawProjectionRunning) {
+    return;
+  }
+  rawProjectionRunning = true;
+  try {
+    const actors = await repository.listConversationProjectionActors({
+      limit: rawProjectionActorLimit
+    });
+    let scanned = 0;
+    let projected = 0;
+    for (const actor of actors) {
+      const result = await repository.projectPendingConversationItems(actor, {
+        limit: rawProjectionBatchLimit
+      });
+      await Promise.all(
+        result.memoryEventIds.map((eventId) =>
+          embedSource("memory_event", eventId)
+        )
+      );
+      const scopes = new Map<
+        string,
+        { visibility: Visibility; teamId?: string }
+      >();
+      for (const scope of result.memoryEventScopes) {
+        scopes.set(`${scope.visibility}:${scope.teamId ?? ""}`, {
+          visibility: scope.visibility,
+          ...(scope.teamId ? { teamId: scope.teamId } : {})
+        });
+      }
+      for (const scope of scopes.values()) {
+        const compaction = await scheduleCompaction({
+          repository,
+          requesterContext: actor,
+          visibility: scope.visibility,
+          teamId: scope.teamId
+        });
+        const nodeIds = [
+          ...compaction.leafNodeIds,
+          ...(compaction.rollupNodeId ? [compaction.rollupNodeId] : [])
+        ];
+        await enqueueLcmNodeEmbeddings(nodeIds);
+      }
+      scanned += result.rawItemsScanned;
+      projected += result.rawItemsProjected;
+    }
+    if (scanned > 0) {
+      console.log(
+        `Raw conversation projection catch-up scanned ${scanned}, projected ${projected}.`
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `Raw conversation projection catch-up failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  } finally {
+    rawProjectionRunning = false;
+  }
+};
+
+const rawProjectionTimer = setInterval(
+  () => void runRawProjectionCatchup(),
+  rawProjectionIntervalMs
+);
+void runRawProjectionCatchup();
+
 const shutdown = async () => {
+  clearInterval(rawProjectionTimer);
   await Promise.all(workers.map((worker) => worker.close()));
   await lcmEmbedQueue.close();
   await pool?.end();

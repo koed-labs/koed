@@ -41,6 +41,7 @@ SUPPORTED_RERANKER_MODELS: dict[str, SupportedRerankerModel] = {
 }
 
 DEFAULT_EMBEDDING_MODEL_KEY = "qwen3-0.6b"
+QWEN_OPERATIONAL_MAX_TOKENS = 32000
 
 
 def int_env(name: str, fallback: int) -> int:
@@ -108,7 +109,10 @@ def resolve_env() -> EmbeddingServiceEnv:
                 f"Unsupported RERANKER_KEY {reranker_key!r}. Supported model keys: {supported}"
             )
 
-    llama_n_ctx = int_env("LLAMA_N_CTX", 32768)
+    llama_n_ctx = min(
+        int_env("LLAMA_N_CTX", QWEN_OPERATIONAL_MAX_TOKENS),
+        QWEN_OPERATIONAL_MAX_TOKENS,
+    )
     return EmbeddingServiceEnv(
         model_key=model_config.key,
         model_repo=model_config.repo,
@@ -118,7 +122,10 @@ def resolve_env() -> EmbeddingServiceEnv:
         expected_dimensions=model_config.dimensions,
         batch_limit=int_env("EMBEDDING_BATCH_LIMIT", 16),
         llama_n_ctx=llama_n_ctx,
-        embedding_max_tokens=int_env("EMBEDDING_MAX_TOKENS", llama_n_ctx),
+        embedding_max_tokens=min(
+            int_env("EMBEDDING_MAX_TOKENS", llama_n_ctx),
+            QWEN_OPERATIONAL_MAX_TOKENS,
+        ),
         embedding_max_text_chars=int_env("EMBEDDING_MAX_TEXT_CHARS", 200000),
         embedding_max_request_chars=int_env("EMBEDDING_MAX_REQUEST_CHARS", 1000000),
         llama_n_threads=int_env("LLAMA_N_THREADS", os.cpu_count() or 1),

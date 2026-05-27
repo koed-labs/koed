@@ -140,6 +140,16 @@ describe("Codex app-server runner", () => {
         turnId: "turn-test"
       });
       expect(result.tokenUsage?.last?.cachedInputTokens).toBe(1);
+      expect(result.rawEvents?.map((event) => event.method)).toEqual(
+        expect.arrayContaining([
+          "thread/start",
+          "turn/start",
+          "item/agentMessage/delta",
+          "thread/tokenUsage/updated",
+          "turn/completed"
+        ])
+      );
+      expect(result.rawEvents).toHaveLength(5);
     } finally {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }

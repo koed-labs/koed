@@ -322,7 +322,8 @@ const App = () => {
 
   const graphCounts = {
     events: Number(overview?.capturedEvents ?? 0),
-    nodes: Number(overview?.leafNodes ?? 0) + Number(overview?.rollupNodes ?? 0),
+    nodes:
+      Number(overview?.leafNodes ?? 0) + Number(overview?.rollupNodes ?? 0),
     leafNodes: Number(overview?.leafNodes ?? 0),
     rollups: Number(overview?.rollupNodes ?? 0),
     pending: Number(overview?.pendingSummaries ?? 0),
@@ -380,7 +381,9 @@ const App = () => {
   const quickStartItems = [
     {
       label: "Local admin",
-      detail: user ? `Signed in as ${user.email}` : "Create the first local account.",
+      detail: user
+        ? `Signed in as ${user.email}`
+        : "Create the first local account.",
       done: Boolean(user)
     },
     {
@@ -399,9 +402,10 @@ const App = () => {
     },
     {
       label: "Memory verified",
-      detail: smokeResult?.ok || graphCounts.events > 0
-        ? "Koed has captured local memory."
-        : "Verify capture once the token exists.",
+      detail:
+        smokeResult?.ok || graphCounts.events > 0
+          ? "Koed has captured local memory."
+          : "Verify capture once the token exists.",
       done: Boolean(smokeResult?.ok || graphCounts.events > 0)
     }
   ];
@@ -492,11 +496,16 @@ const App = () => {
                   <h2>Quick start</h2>
                   <p>Core checks for a working local Koed install.</p>
                 </div>
-                <StatusDot status={setupComplete ? "good to go" : "in progress"} />
+                <StatusDot
+                  status={setupComplete ? "good to go" : "in progress"}
+                />
               </div>
               <ol>
                 {quickStartItems.map((item, index) => (
-                  <li key={item.label} className={item.done ? "done" : "current"}>
+                  <li
+                    key={item.label}
+                    className={item.done ? "done" : "current"}
+                  >
                     <span>{item.done ? "OK" : index + 1}</span>
                     <div>
                       <strong>{item.label}</strong>
@@ -505,7 +514,9 @@ const App = () => {
                   </li>
                 ))}
               </ol>
-              {tokens.length > 0 && !smokeResult?.ok && graphCounts.events === 0 ? (
+              {tokens.length > 0 &&
+              !smokeResult?.ok &&
+              graphCounts.events === 0 ? (
                 <button type="button" onClick={() => void runSmokeTest()}>
                   Verify local memory
                 </button>
@@ -615,9 +626,9 @@ const App = () => {
                 alongside MCP using the same token.
               </p>
               <p>
-                Codex may ask you to review or trust changed hooks after
-                editing config.toml; approve only entries pointing at this
-                checkout or the installed Koed package.
+                Codex may ask you to review or trust changed hooks after editing
+                config.toml; approve only entries pointing at this checkout or
+                the installed Koed package.
               </p>
               <div className="field-grid">
                 <FieldCopy label="Hook command" value={nodeCommand} />
@@ -629,8 +640,10 @@ const App = () => {
                   masked={newToken === null}
                 />
                 <FieldCopy label="MEMORY_HOOK_STRICT" value="false" />
-                <FieldCopy label="MEMORY_HOOK_MAX_ITEMS" value="10" />
-                <FieldCopy label="MEMORY_HOOK_TRIGGER_LCM_SUMMARY" value="true" />
+                <FieldCopy
+                  label="MEMORY_HOOK_TRIGGER_LCM_SUMMARY"
+                  value="true"
+                />
                 <FieldCopy
                   label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
                   value="48000"
@@ -797,7 +810,13 @@ const App = () => {
                 </div>
                 <div>
                   <span>Verification</span>
-                  <StatusDot status={smokeResult?.ok || graphCounts.events > 0 ? "verified" : "pending"} />
+                  <StatusDot
+                    status={
+                      smokeResult?.ok || graphCounts.events > 0
+                        ? "verified"
+                        : "pending"
+                    }
+                  />
                 </div>
               </div>
               {smokeResult ? (
@@ -816,9 +835,9 @@ const App = () => {
               <h2>Capture control</h2>
               <p>
                 Hooks check this policy before storing conversation events.
-                Disable or pause capture here to stop automatic ingestion without
-                editing Codex config. Ask currently blocks automatic capture
-                until an AI-client approval flow exists.
+                Disable or pause capture here to stop automatic ingestion
+                without editing Codex config. Ask currently blocks automatic
+                capture until an AI-client approval flow exists.
               </p>
               <div className="segmented">
                 {["enabled", "ask", "disabled"].map((state) => (
