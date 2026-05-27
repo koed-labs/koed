@@ -2923,9 +2923,12 @@ describeDb("memory repository visibility", () => {
     const usage = await pool.query<{
       workflow_type: string;
       workflow_id: string | null;
+      usage_source: string;
+      usage_accuracy: string;
+      usage_kind: string;
       total_tokens: number | null;
     }>(
-      "select workflow_type, workflow_id, total_tokens from workflow_token_usage"
+      "select workflow_type, workflow_id, usage_source, usage_accuracy, usage_kind, total_tokens from workflow_token_usage"
     );
     const statuses = await pool.query<{
       projection_status: string;
@@ -2949,6 +2952,9 @@ describeDb("memory repository visibility", () => {
       {
         workflow_type: "memory_question",
         workflow_id: "question-1",
+        usage_source: "app_server",
+        usage_accuracy: "provider_reported",
+        usage_kind: "turn_delta",
         total_tokens: 7
       }
     ]);
@@ -2977,6 +2983,261 @@ describeDb("memory repository visibility", () => {
     expect(
       embeddable.some((source) => source.sourceType === "memory_event")
     ).toBe(true);
+  });
+
+  it("projects Codex transcript token_count rows into token usage without semantic memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-count-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Transcript Token Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `token-count-session-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey: `token-count-session-${randomUUID()}`,
+        metadata: {
+          workspaceId,
+          threadKind: "subagent",
+          parentThreadId: "parent-thread",
+          parentSessionId: "parent-session"
+        }
+      }
+    );
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "token-count-turn",
+            sourceRecordType: "token_count",
+            sourceEventType: "token_count",
+            sourcePath: "/tmp/codex/transcript.jsonl",
+            sourceSequence: 9,
+            rawJson: {
+              type: "token_count",
+              input_tokens: 11,
+              cached_input_tokens: 3,
+              output_tokens: 7,
+              reasoning_output_tokens: 5,
+              total_tokens: 26,
+              model: "gpt-5-codex"
+            },
+            sourceHash: `raw-token-count-${randomUUID()}`,
+            idempotencyKey: `raw-token-count-${randomUUID()}`,
+            metadata: {
+              threadKind: "subagent",
+              parentThreadId: "parent-thread",
+              parentSessionId: "parent-session"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const usage = await pool.query<{
+      workflow_type: string;
+      workflow_id: string | null;
+      conversation_item_id: string | null;
+      usage_source: string;
+      usage_accuracy: string;
+      usage_kind: string;
+      connector_client: string | null;
+      model: string | null;
+      input_tokens: number | null;
+      cached_input_tokens: number | null;
+      output_tokens: number | null;
+      reasoning_output_tokens: number | null;
+      total_tokens: number | null;
+      metadata: Record<string, unknown>;
+    }>(
+      `
+        select
+          workflow_type, workflow_id, conversation_item_id, usage_source,
+          usage_accuracy, usage_kind, connector_client, model, input_tokens,
+          cached_input_tokens, output_tokens, reasoning_output_tokens,
+          total_tokens, metadata
+        from workflow_token_usage
+      `
+    );
+    const events = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_events"
+    );
+
+    expect(projection.tokenUsageRowsCreated).toBe(1);
+    expect(projection.memoryEventsCreated).toBe(0);
+    expect(events.rows[0]?.count).toBe("0");
+    expect(usage.rows).toEqual([
+      expect.objectContaining({
+        workflow_type: "subagent_turn",
+        workflow_id: rawItem?.turnId,
+        conversation_item_id: rawItem?.id,
+        usage_source: "transcript",
+        usage_accuracy: "provider_reported",
+        usage_kind: "turn_delta",
+        connector_client: "codex",
+        model: "gpt-5-codex",
+        input_tokens: 11,
+        cached_input_tokens: 3,
+        output_tokens: 7,
+        reasoning_output_tokens: 5,
+        total_tokens: 26
+      })
+    ]);
+    expect(usage.rows[0]?.metadata).toMatchObject({
+      threadKind: "subagent",
+      parentThreadId: "parent-thread",
+      parentSessionId: "parent-session",
+      transcriptPath: "/tmp/codex/transcript.jsonl",
+      sourceLineNumber: 9
+    });
+  });
+
+  it("uses input plus output as transcript total fallback", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-count-fallback-${randomUUID()}@example.com`
+    });
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            sourceRecordType: "token_count",
+            sourceEventType: "token_count",
+            rawJson: {
+              type: "token_count",
+              input_tokens: 11,
+              cached_input_tokens: 3,
+              output_tokens: 7,
+              reasoning_output_tokens: 5
+            },
+            sourceHash: `raw-token-count-fallback-${randomUUID()}`,
+            idempotencyKey: `raw-token-count-fallback-${randomUUID()}`
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const usage = await pool.query<{ total_tokens: number | null }>(
+      "select total_tokens from workflow_token_usage where conversation_item_id = $1",
+      [rawItem?.id]
+    );
+
+    expect(projection.tokenUsageRowsCreated).toBe(1);
+    expect(usage.rows[0]?.total_tokens).toBe(18);
+  });
+
+  it("keeps estimate rows out of spend rollups unless requested", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-rollup-${randomUUID()}@example.com`
+    });
+
+    await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "memory_question",
+        workflowId: "question-provider",
+        usageSource: "app_server",
+        usageAccuracy: "provider_reported",
+        usageKind: "turn_delta",
+        connectorClient: "codex",
+        model: "gpt-5-codex",
+        inputTokens: 4,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        totalTokens: 6,
+        metadata: { appServerThreadId: "thread-provider" },
+        idempotencyKey: `provider-${randomUUID()}`
+      }
+    );
+    const estimate = await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "memory_question",
+        workflowId: "question-estimate",
+        usageSource: "local_estimate",
+        usageAccuracy: "local_estimate",
+        usageKind: "estimate",
+        connectorClient: "codex",
+        tokenizerPackage: "js-tiktoken",
+        tokenizerEncoding: "o200k_base",
+        tokenizerModel: "gpt-5-codex",
+        tokenizerExactModelMatch: true,
+        tokenizerHeuristicFallback: false,
+        tokenizerVersion: "test",
+        model: "gpt-5-codex",
+        inputTokens: 70,
+        outputTokens: 30,
+        totalTokens: 100,
+        metadata: { executionThreadId: "thread-estimate" },
+        idempotencyKey: `estimate-${randomUUID()}`
+      }
+    );
+
+    const spendOnly = await repo.listWorkflowTokenUsageRollups(
+      { userId: alice.id },
+      { groupBy: ["workflow"], includeEstimates: false }
+    );
+    const estimateAware = await repo.listWorkflowTokenUsageRollups(
+      { userId: alice.id },
+      { groupBy: ["workflow"], includeEstimates: true }
+    );
+    const threadRollup = await repo.listWorkflowTokenUsageRollups(
+      { userId: alice.id },
+      { groupBy: ["thread"], includeEstimates: true }
+    );
+
+    expect(estimate.tokenizerPackage).toBe("js-tiktoken");
+    expect(estimate.tokenizerEncoding).toBe("o200k_base");
+    expect(estimate.tokenizerExactModelMatch).toBe(true);
+    expect(estimate.tokenizerHeuristicFallback).toBe(false);
+    expect(spendOnly).toEqual([
+      expect.objectContaining({
+        group: { workflow: "memory_question" },
+        rowCount: 1,
+        totalTokens: 6
+      })
+    ]);
+    expect(estimateAware).toEqual([
+      expect.objectContaining({
+        group: { workflow: "memory_question" },
+        rowCount: 2,
+        totalTokens: 106
+      })
+    ]);
+    expect(threadRollup).toEqual([
+      expect.objectContaining({
+        group: { thread: "thread-estimate" },
+        totalTokens: 100
+      }),
+      expect.objectContaining({
+        group: { thread: "thread-provider" },
+        totalTokens: 6
+      })
+    ]);
   });
 
   it("does not automatically reproject stale projection-version rows", async () => {

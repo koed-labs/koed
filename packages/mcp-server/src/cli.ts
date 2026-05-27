@@ -316,20 +316,80 @@ server.registerTool(
         retrieval: { mode: "planner_controlled_initial" }
       }
     };
-    return jsonResponse(
-      await answerWithMemoryWorker(evidence, {
-        client,
-        retrievalScope: retrieval_scope,
-        searchDomain: input.search_domain,
-        workspaceId: workspace_id,
-        sessionId: input.session_id,
-        recentDays: input.recent_days,
-        sourceAfter: input.source_after,
-        sourceBefore: input.source_before,
-        limit: input.limit,
-        responseDetail: include_evidence ? "with_evidence" : response_detail
-      })
-    );
+    const answer = await answerWithMemoryWorker(evidence, {
+      client,
+      retrievalScope: retrieval_scope,
+      searchDomain: input.search_domain,
+      workspaceId: workspace_id,
+      sessionId: input.session_id,
+      recentDays: input.recent_days,
+      sourceAfter: input.source_after,
+      sourceBefore: input.source_before,
+      limit: input.limit,
+      responseDetail: include_evidence ? "with_evidence" : response_detail
+    });
+    const executions =
+      answer.localMemoryWorker.appServerExecutions &&
+      answer.localMemoryWorker.appServerExecutions.length > 0
+        ? answer.localMemoryWorker.appServerExecutions
+        : [
+            {
+              stepIndex: 0,
+              stepKind: "final" as const,
+              model: answer.localMemoryWorker.model ?? "codex-app-server",
+              tokenUsage: answer.localMemoryWorker.tokenUsage,
+              threadId: answer.localMemoryWorker.appServerThreadId,
+              turnId: answer.localMemoryWorker.appServerTurnId
+            }
+          ];
+    try {
+      await Promise.all(
+        executions.map(async (execution, executionIndex) => {
+          const lastUsage = execution.tokenUsage?.last;
+          if (!lastUsage) {
+            return;
+          }
+          await client.recordTokenUsage({
+            workflowType: "mcp_memory_answer",
+            workflowId: answer.localMemoryWorker.jobId,
+            sessionId: input.session_id,
+            sourceRuntime: "codex",
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            usageSource: "app_server",
+            usageAccuracy: "provider_reported",
+            usageKind: "turn_delta",
+            connectorClient: "codex",
+            model: execution.model,
+            modelContextWindow:
+              execution.tokenUsage?.modelContextWindow ?? null,
+            inputTokens: lastUsage.inputTokens ?? null,
+            cachedInputTokens: lastUsage.cachedInputTokens ?? null,
+            outputTokens: lastUsage.outputTokens ?? null,
+            reasoningOutputTokens: lastUsage.reasoningOutputTokens ?? null,
+            totalTokens: lastUsage.totalTokens ?? null,
+            usageScope: "last",
+            metadata: {
+              appServerThreadId: execution.threadId,
+              appServerTurnId: execution.turnId,
+              searchDomain: input.search_domain,
+              workspaceId: workspace_id,
+              stepIndex: execution.stepIndex,
+              stepKind: execution.stepKind,
+              executionIndex
+            },
+            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${execution.stepIndex}:last`
+          });
+        })
+      );
+    } catch (error) {
+      console.error(
+        `koed memory_answer token telemetry skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    return jsonResponse(answer);
   }
 );
 

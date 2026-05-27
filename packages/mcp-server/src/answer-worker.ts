@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
@@ -33,6 +34,7 @@ export interface MemoryAnswerWorkerConfig {
 export interface MemoryAnswerWorkerStatus {
   provider: string;
   promptVersion: string;
+  jobId: string;
   model: string | null;
   planningMode?: "planned" | "single_pass";
   promptTokenEstimate?: number;
@@ -45,8 +47,19 @@ export interface MemoryAnswerWorkerStatus {
   appServerThreadId?: string;
   appServerTurnId?: string;
   appServerEvents?: CodexAppServerRawEvent[];
+  appServerExecutions?: MemoryAnswerAppServerExecution[];
   usedFallback: boolean;
   skippedReason?: string;
+}
+
+export interface MemoryAnswerAppServerExecution {
+  stepIndex: number;
+  stepKind: "planner" | "final";
+  model: string;
+  tokenUsage?: CodexThreadTokenUsage;
+  threadId?: string;
+  turnId?: string;
+  rawEvents?: CodexAppServerRawEvent[];
 }
 
 export type MemoryAnswerResponseDetail =
@@ -300,7 +313,7 @@ export const buildMemoryAnswerPrompt = (
           {
             evidence_index: 0,
             source_id: "optional source/node id",
-            visibility: "personal | team",
+            visibility: "personal",
             relevance: "why this evidence supports the answer",
             support: "short quote or paraphrase from evidence"
           }
@@ -915,6 +928,7 @@ const runPlannedMemoryAnswer = async (
   threadId?: string;
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
+  appServerExecutions: MemoryAnswerAppServerExecution[];
   evidence: unknown[];
   citations: unknown[];
   retrievals: unknown[];
@@ -939,6 +953,7 @@ const runPlannedMemoryAnswer = async (
   };
   const runner = options.runner;
   let totalPromptTokens = 0;
+  const appServerExecutions: MemoryAnswerAppServerExecution[] = [];
   const maxSteps =
     options.config.maxSearches + options.config.maxExpansions + 1;
 
@@ -949,6 +964,15 @@ const runPlannedMemoryAnswer = async (
     });
     totalPromptTokens += promptTokens.tokens;
     const result = await runCodexWithRetries(prompt, options.config, runner);
+    appServerExecutions.push({
+      stepIndex: step,
+      stepKind: "planner",
+      model: result.model,
+      tokenUsage: result.tokenUsage,
+      threadId: result.threadId,
+      turnId: result.turnId,
+      rawEvents: result.rawEvents
+    });
     let action: ParsedPlannerAction;
     try {
       action = parsePlannerAction(result.text);
@@ -1038,6 +1062,7 @@ const runPlannedMemoryAnswer = async (
         threadId: result.threadId,
         turnId: result.turnId,
         rawEvents: result.rawEvents,
+        appServerExecutions,
         evidence: curatedEvidence,
         citations: citationsFromHits(curatedEvidence),
         retrievals: state.retrievals,
@@ -1208,6 +1233,15 @@ const runPlannedMemoryAnswer = async (
     options.config,
     runner
   );
+  appServerExecutions.push({
+    stepIndex: maxSteps,
+    stepKind: "final",
+    model: finalResult.model,
+    tokenUsage: finalResult.tokenUsage,
+    threadId: finalResult.threadId,
+    turnId: finalResult.turnId,
+    rawEvents: finalResult.rawEvents
+  });
   const finalAction = parsePlannerAction(finalResult.text);
   if (finalAction.action !== "answer") {
     throw new Error("Planner did not return a final answer");
@@ -1269,6 +1303,7 @@ const runPlannedMemoryAnswer = async (
     threadId: finalResult.threadId,
     turnId: finalResult.turnId,
     rawEvents: finalResult.rawEvents,
+    appServerExecutions,
     evidence: finalCuratedEvidence,
     citations: citationsFromHits(finalCuratedEvidence),
     retrievals: state.retrievals,
@@ -1346,6 +1381,7 @@ export const answerWithMemoryWorker = async (
 ): Promise<MemoryAnswerWorkerResponse> => {
   const config = options.config ?? resolveMemoryAnswerWorkerConfig();
   const promptVersion = MEMORY_ANSWER_PROMPT_VERSION;
+  const jobId = randomUUID();
   const responseDetail = options.responseDetail ?? "answer_only";
 
   if (config.provider !== CODEX_ANSWER_PROVIDER) {
@@ -1355,6 +1391,7 @@ export const answerWithMemoryWorker = async (
         localMemoryWorker: {
           provider: config.provider,
           promptVersion,
+          jobId,
           model: null,
           planningMode: config.planningMode,
           usedFallback: true,
@@ -1392,6 +1429,7 @@ export const answerWithMemoryWorker = async (
         localMemoryWorker: {
           provider: config.provider,
           promptVersion,
+          jobId,
           model: null,
           planningMode: "single_pass",
           usedFallback: true,
@@ -1440,6 +1478,7 @@ export const answerWithMemoryWorker = async (
           localMemoryWorker: {
             provider: config.provider,
             promptVersion,
+            jobId,
             model: planned.model,
             planningMode: "planned",
             promptTokenEstimate: planned.promptTokens.tokens,
@@ -1452,6 +1491,7 @@ export const answerWithMemoryWorker = async (
             appServerThreadId: planned.threadId,
             appServerTurnId: planned.turnId,
             appServerEvents: planned.rawEvents,
+            appServerExecutions: planned.appServerExecutions,
             usedFallback: false
           }
         },
@@ -1470,6 +1510,7 @@ export const answerWithMemoryWorker = async (
           localMemoryWorker: {
             provider: config.provider,
             promptVersion,
+            jobId,
             model: null,
             planningMode: "planned",
             promptTokenEstimate: promptTokens.tokens,
@@ -1504,6 +1545,7 @@ export const answerWithMemoryWorker = async (
           localMemoryWorker: {
             provider: config.provider,
             promptVersion,
+            jobId,
             model: result.model,
             planningMode: "single_pass",
             promptTokenEstimate: promptTokens.tokens,
@@ -1531,6 +1573,7 @@ export const answerWithMemoryWorker = async (
       localMemoryWorker: {
         provider: config.provider,
         promptVersion,
+        jobId,
         model: null,
         planningMode: "single_pass",
         promptTokenEstimate: promptTokens.tokens,

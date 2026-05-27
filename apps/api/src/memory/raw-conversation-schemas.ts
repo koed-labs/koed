@@ -62,6 +62,43 @@ export const tokenUsageSchema = z.object({
   sourceHash: z.string().min(1).optional()
 });
 
+const booleanQuerySchema = z
+  .enum(["true", "false"])
+  .transform((value) => value === "true");
+
+export const tokenUsageRollupQuerySchema = z.object({
+  group_by: z
+    .string()
+    .optional()
+    .transform((value) =>
+      value
+        ? value
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : undefined
+    )
+    .pipe(
+      z
+        .array(
+          z.enum([
+            "workflow",
+            "model",
+            "owner",
+            "project",
+            "thread",
+            "connector",
+            "accuracy",
+            "date"
+          ])
+        )
+        .optional()
+    ),
+  include_estimates: booleanQuerySchema.optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional()
+});
+
 export const projectConversationItemsSchema = z.object({
   limit: z.number().int().positive().max(1000).optional(),
   conversationItemIds: z.array(z.string().uuid()).max(1000).optional()

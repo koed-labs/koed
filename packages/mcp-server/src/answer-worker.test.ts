@@ -784,7 +784,12 @@ describe("memory answer worker", () => {
             query: "memory cost decision local Codex Gemini embeddings",
             limit: 5
           }),
-          model: `codex:${config.model}:${config.reasoningEffort}`
+          model: `codex:${config.model}:${config.reasoningEffort}`,
+          threadId: "planner-thread-1",
+          turnId: "planner-turn-1",
+          tokenUsage: {
+            last: { inputTokens: 10, outputTokens: 2, totalTokens: 12 }
+          }
         };
       }
       return {
@@ -794,7 +799,12 @@ describe("memory answer worker", () => {
             "We decided embeddings can use Gemini, while answer synthesis should stay on the user's local Codex subscription. [personal]"
           )
         }),
-        model: `codex:${config.model}:${config.reasoningEffort}`
+        model: `codex:${config.model}:${config.reasoningEffort}`,
+        threadId: "planner-thread-2",
+        turnId: "planner-turn-2",
+        tokenUsage: {
+          last: { inputTokens: 20, outputTokens: 4, totalTokens: 24 }
+        }
       };
     };
     const client: MemoryAnswerRetrievalClient = {
@@ -862,6 +872,26 @@ describe("memory answer worker", () => {
       memoryStatus: "found",
       usedFallback: false
     });
+    expect(result.localMemoryWorker.appServerExecutions).toEqual([
+      expect.objectContaining({
+        stepIndex: 0,
+        stepKind: "planner",
+        threadId: "planner-thread-1",
+        turnId: "planner-turn-1",
+        tokenUsage: {
+          last: { inputTokens: 10, outputTokens: 2, totalTokens: 12 }
+        }
+      }),
+      expect.objectContaining({
+        stepIndex: 1,
+        stepKind: "planner",
+        threadId: "planner-thread-2",
+        turnId: "planner-turn-2",
+        tokenUsage: {
+          last: { inputTokens: 20, outputTokens: 4, totalTokens: 24 }
+        }
+      })
+    ]);
   });
 
   it("does not narrow a global planner follow-up to project without a workspace", async () => {

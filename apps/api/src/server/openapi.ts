@@ -8,6 +8,7 @@ const openApiEndpoints: Array<[string, string]> = [
   ["POST", "/v1/memory/capture-personal-event"],
   ["POST", "/v1/memory/conversation-items"],
   ["POST", "/v1/memory/token-usage"],
+  ["GET", "/v1/memory/token-usage/rollups"],
   ["POST", "/v1/memory/conversation-items/project"],
   ["GET", "/v1/memory/clusters"],
   ["GET", "/v1/memory/clusters/{clusterId}/memories"],

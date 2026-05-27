@@ -100,11 +100,14 @@ derived answer or summary.
 
 ## Token Usage
 
-`workflow_token_usage` stores local Codex app-server token counts by workflow,
-model, session/turn, and raw `conversation_items` source where available. This
-keeps token attribution separate from retrieval text while allowing future
+`workflow_token_usage` stores token attribution by workflow, model,
+session/turn, and raw `conversation_items` source where available. It also marks
+the usage source, accuracy, and kind so provider-reported turn deltas can be
+kept distinct from cumulative snapshots and local estimates. This keeps token
+attribution separate from retrieval text while allowing future
 pricing/benchmarking by workflow, model, Question, LCM summary, and source raw
-record.
+record. See `docs/token-usage-attribution.md` for the current attribution
+boundary.
 
 ## Token Bounds
 

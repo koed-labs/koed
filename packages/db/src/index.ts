@@ -481,6 +481,16 @@ export interface WorkflowTokenUsageInput {
   sourceRuntime?: SourceRuntime;
   sourceKind?: string;
   sourceAdapterVersion?: string;
+  usageSource?: string;
+  usageAccuracy?: string;
+  usageKind?: string;
+  connectorClient?: string;
+  tokenizerPackage?: string;
+  tokenizerEncoding?: string;
+  tokenizerModel?: string;
+  tokenizerExactModelMatch?: boolean | null;
+  tokenizerHeuristicFallback?: boolean | null;
+  tokenizerVersion?: string;
   model?: string;
   modelContextWindow?: number | null;
   inputTokens?: number | null;
@@ -508,6 +518,16 @@ export interface WorkflowTokenUsageRecord {
   turnId: string | null;
   conversationItemId: string | null;
   model: string | null;
+  usageSource: string;
+  usageAccuracy: string;
+  usageKind: string;
+  connectorClient: string | null;
+  tokenizerPackage: string | null;
+  tokenizerEncoding: string | null;
+  tokenizerModel: string | null;
+  tokenizerExactModelMatch: boolean | null;
+  tokenizerHeuristicFallback: boolean | null;
+  tokenizerVersion: string | null;
   inputTokens: number | null;
   cachedInputTokens: number | null;
   outputTokens: number | null;
@@ -515,6 +535,32 @@ export interface WorkflowTokenUsageRecord {
   totalTokens: number | null;
   usageScope: string;
   createdAt: string;
+}
+
+export interface WorkflowTokenUsageRollupInput {
+  groupBy?: Array<
+    | "workflow"
+    | "model"
+    | "owner"
+    | "project"
+    | "thread"
+    | "connector"
+    | "accuracy"
+    | "date"
+  >;
+  includeEstimates?: boolean;
+  from?: string;
+  to?: string;
+}
+
+export interface WorkflowTokenUsageRollupRecord {
+  group: Record<string, string | null>;
+  rowCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
 }
 
 export interface ConversationProjectionResult {
@@ -613,6 +659,10 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     actor: ActorContext,
     input: WorkflowTokenUsageInput
   ): Promise<WorkflowTokenUsageRecord>;
+  listWorkflowTokenUsageRollups(
+    actor: ActorContext,
+    input?: WorkflowTokenUsageRollupInput
+  ): Promise<WorkflowTokenUsageRollupRecord[]>;
   projectPendingConversationItems(
     actor: ActorContext,
     input?: ConversationProjectionInput
@@ -1431,6 +1481,16 @@ const mapWorkflowTokenUsage = (row: {
   turn_id: string | null;
   conversation_item_id: string | null;
   model: string | null;
+  usage_source: string;
+  usage_accuracy: string;
+  usage_kind: string;
+  connector_client: string | null;
+  tokenizer_package: string | null;
+  tokenizer_encoding: string | null;
+  tokenizer_model: string | null;
+  tokenizer_exact_model_match: boolean | null;
+  tokenizer_heuristic_fallback: boolean | null;
+  tokenizer_version: string | null;
   input_tokens: number | null;
   cached_input_tokens: number | null;
   output_tokens: number | null;
@@ -1446,6 +1506,16 @@ const mapWorkflowTokenUsage = (row: {
   turnId: row.turn_id,
   conversationItemId: row.conversation_item_id,
   model: row.model,
+  usageSource: row.usage_source,
+  usageAccuracy: row.usage_accuracy,
+  usageKind: row.usage_kind,
+  connectorClient: row.connector_client,
+  tokenizerPackage: row.tokenizer_package,
+  tokenizerEncoding: row.tokenizer_encoding,
+  tokenizerModel: row.tokenizer_model,
+  tokenizerExactModelMatch: row.tokenizer_exact_model_match,
+  tokenizerHeuristicFallback: row.tokenizer_heuristic_fallback,
+  tokenizerVersion: row.tokenizer_version,
   inputTokens: row.input_tokens,
   cachedInputTokens: row.cached_input_tokens,
   outputTokens: row.output_tokens,
@@ -1576,6 +1646,19 @@ const tokenUsageBreakdown = (
   };
 };
 
+const tokenNumberField = (
+  value: Record<string, unknown>,
+  ...keys: string[]
+): number | null => {
+  for (const key of keys) {
+    const direct = numberField(value, key);
+    if (direct !== null) {
+      return direct;
+    }
+  }
+  return null;
+};
+
 const appServerTokenUsageFromRaw = (
   rawJson: unknown
 ): {
@@ -1619,6 +1702,101 @@ const hookToolContent = (
       ? `Output:\n${compactProjectionValue(raw.tool_response, 1200)}`
       : ""
   ]);
+};
+
+const transcriptTokenUsageFromRaw = (
+  rawJson: unknown
+): {
+  model: string | null;
+  modelContextWindow: number | null;
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  outputTokens: number | null;
+  reasoningOutputTokens: number | null;
+  totalTokens: number | null;
+} | null => {
+  if (!isRecord(rawJson)) {
+    return null;
+  }
+  const payload = isRecord(rawJson.payload) ? rawJson.payload : rawJson;
+  const type =
+    stringField(payload, "type") ??
+    stringField(rawJson, "type") ??
+    stringField(payload, "event") ??
+    stringField(rawJson, "event");
+  if (!type || !/token[_-]?count/i.test(type)) {
+    return null;
+  }
+  const usage = isRecord(payload.usage)
+    ? payload.usage
+    : isRecord(payload.token_count)
+      ? payload.token_count
+      : isRecord(payload.tokenCount)
+        ? payload.tokenCount
+        : payload;
+  const inputTokens = tokenNumberField(
+    usage,
+    "inputTokens",
+    "input_tokens",
+    "promptTokens",
+    "prompt_tokens"
+  );
+  const cachedInputTokens = tokenNumberField(
+    usage,
+    "cachedInputTokens",
+    "cached_input_tokens",
+    "cachedPromptTokens",
+    "cached_prompt_tokens"
+  );
+  const outputTokens = tokenNumberField(
+    usage,
+    "outputTokens",
+    "output_tokens",
+    "completionTokens",
+    "completion_tokens"
+  );
+  const reasoningOutputTokens = tokenNumberField(
+    usage,
+    "reasoningOutputTokens",
+    "reasoning_output_tokens",
+    "reasoningTokens",
+    "reasoning_tokens"
+  );
+  const totalTokens =
+    tokenNumberField(usage, "totalTokens", "total_tokens", "tokens") ??
+    [inputTokens, outputTokens].reduce<number | null>((sum, value) => {
+      if (value === null) {
+        return sum;
+      }
+      return (sum ?? 0) + value;
+    }, null);
+  if (
+    inputTokens === null &&
+    cachedInputTokens === null &&
+    outputTokens === null &&
+    reasoningOutputTokens === null &&
+    totalTokens === null
+  ) {
+    return null;
+  }
+  return {
+    model:
+      stringField(usage, "model") ??
+      stringField(payload, "model") ??
+      stringField(rawJson, "model"),
+    modelContextWindow: tokenNumberField(
+      usage,
+      "modelContextWindow",
+      "model_context_window",
+      "contextWindow",
+      "context_window"
+    ),
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens
+  };
 };
 
 const conversationItemContent = (row: {
@@ -1812,7 +1990,7 @@ const projectionIsInfrastructureEvent = (row: {
   const label = projectionLabelForConversationItem(row);
   const raw = isRecord(row.raw_json) ? row.raw_json : null;
   return (
-    /tokenUsage|session_meta|lifecycle|initialized|turn\/completed|error|agentMessage\/delta/i.test(
+    /tokenUsage|token[_-]?count|session_meta|lifecycle|initialized|turn\/completed|error|agentMessage\/delta/i.test(
       label
     ) ||
     projectionIsRawReasoningLabel(label) ||
@@ -3774,6 +3952,9 @@ export const createMemorySourceRepository = (
             turnId: input.turnId,
             conversationItemId: input.conversationItemId,
             usageScope: input.usageScope ?? "last",
+            usageSource: input.usageSource ?? "app_server",
+            usageAccuracy: input.usageAccuracy ?? "provider_reported",
+            usageKind: input.usageKind ?? "turn_delta",
             model: input.model,
             totalTokens: input.totalTokens,
             inputTokens: input.inputTokens,
@@ -3791,6 +3972,16 @@ export const createMemorySourceRepository = (
       turn_id: string | null;
       conversation_item_id: string | null;
       model: string | null;
+      usage_source: string;
+      usage_accuracy: string;
+      usage_kind: string;
+      connector_client: string | null;
+      tokenizer_package: string | null;
+      tokenizer_encoding: string | null;
+      tokenizer_model: string | null;
+      tokenizer_exact_model_match: boolean | null;
+      tokenizer_heuristic_fallback: boolean | null;
+      tokenizer_version: string | null;
       input_tokens: number | null;
       cached_input_tokens: number | null;
       output_tokens: number | null;
@@ -3811,6 +4002,16 @@ export const createMemorySourceRepository = (
           source_runtime,
           source_kind,
           source_adapter_version,
+          usage_source,
+          usage_accuracy,
+          usage_kind,
+          connector_client,
+          tokenizer_package,
+          tokenizer_encoding,
+          tokenizer_model,
+          tokenizer_exact_model_match,
+          tokenizer_heuristic_fallback,
+          tokenizer_version,
           model,
           model_context_window,
           input_tokens,
@@ -3824,14 +4025,19 @@ export const createMemorySourceRepository = (
           source_hash
         )
         values (
-          $1, $2, $3, $4, $5, $6, $7,
-          $8, $9, $10, $11, $12, $13, $14, $15,
-          $16, $17, $18, $19, $20, $21
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, $14, $15, $16,
+          $17, $18, $19, $20, $21, $22, $23, $24,
+          $25, $26, $27, $28, $29, $30, $31, $32
         )
         on conflict do nothing
         returning
           id, workflow_type, workflow_id, session_id, turn_id,
-          conversation_item_id, model, input_tokens, cached_input_tokens,
+          conversation_item_id, model, usage_source, usage_accuracy,
+          usage_kind, connector_client, tokenizer_package, tokenizer_encoding,
+          tokenizer_model, tokenizer_exact_model_match,
+          tokenizer_heuristic_fallback, tokenizer_version,
+          input_tokens, cached_input_tokens,
           output_tokens, reasoning_output_tokens, total_tokens, usage_scope,
           created_at
       `,
@@ -3846,6 +4052,16 @@ export const createMemorySourceRepository = (
         input.sourceRuntime ?? null,
         input.sourceKind ?? null,
         input.sourceAdapterVersion ?? null,
+        input.usageSource ?? "app_server",
+        input.usageAccuracy ?? "provider_reported",
+        input.usageKind ?? "turn_delta",
+        input.connectorClient ?? null,
+        input.tokenizerPackage ?? null,
+        input.tokenizerEncoding ?? null,
+        input.tokenizerModel ?? null,
+        input.tokenizerExactModelMatch ?? null,
+        input.tokenizerHeuristicFallback ?? null,
+        input.tokenizerVersion ?? null,
         input.model ?? null,
         input.modelContextWindow ?? null,
         input.inputTokens ?? null,
@@ -3866,7 +4082,11 @@ export const createMemorySourceRepository = (
           `
             select
               id, workflow_type, workflow_id, session_id, turn_id,
-              conversation_item_id, model, input_tokens, cached_input_tokens,
+              conversation_item_id, model, usage_source, usage_accuracy,
+              usage_kind, connector_client, tokenizer_package,
+              tokenizer_encoding, tokenizer_model,
+              tokenizer_exact_model_match, tokenizer_heuristic_fallback,
+              tokenizer_version, input_tokens, cached_input_tokens,
               output_tokens, reasoning_output_tokens, total_tokens,
               usage_scope, created_at
             from workflow_token_usage
@@ -3887,6 +4107,80 @@ export const createMemorySourceRepository = (
       );
     }
     return mapWorkflowTokenUsage(row);
+  },
+
+  async listWorkflowTokenUsageRollups(actor, input = {}) {
+    const groupBy = input.groupBy?.length ? input.groupBy : ["workflow"];
+    const groupExpressions: Record<string, string> = {
+      workflow: "workflow_type",
+      model: "coalesce(model, 'unknown')",
+      owner: "owner_user_id::text",
+      project: "coalesce(s.workspace_id::text, wtu.metadata ->> 'workspaceId')",
+      thread:
+        "coalesce(s.external_session_id, wtu.metadata ->> 'appServerThreadId', wtu.metadata ->> 'executionThreadId', wtu.metadata ->> 'threadId', wtu.session_id::text)",
+      connector:
+        "coalesce(connector_client, source_kind, source_runtime::text)",
+      accuracy: "usage_accuracy",
+      date: "observed_at::date::text"
+    };
+    const selectedGroups = groupBy.filter((group) => groupExpressions[group]);
+    const selectGroups = selectedGroups.map(
+      (group) => `${groupExpressions[group]} as ${group}`
+    );
+    const groupSql = selectedGroups.map((group) => groupExpressions[group]);
+    const estimateFilter = input.includeEstimates
+      ? `and usage_accuracy in ('provider_reported', 'provider_partial', 'local_estimate')
+         and usage_kind in ('turn_delta', 'estimate')`
+      : `and usage_accuracy = 'provider_reported'
+         and usage_kind = 'turn_delta'`;
+    const rows = await pool.query<
+      Record<string, string | null> & {
+        row_count: string;
+        input_tokens: string | null;
+        cached_input_tokens: string | null;
+        output_tokens: string | null;
+        reasoning_output_tokens: string | null;
+        total_tokens: string | null;
+      }
+    >(
+      `
+        select
+          ${selectGroups.join(",\n          ")},
+          count(*)::text as row_count,
+          coalesce(sum(input_tokens), 0)::text as input_tokens,
+          coalesce(sum(cached_input_tokens), 0)::text as cached_input_tokens,
+          coalesce(sum(output_tokens), 0)::text as output_tokens,
+          coalesce(sum(reasoning_output_tokens), 0)::text as reasoning_output_tokens,
+          coalesce(sum(total_tokens), 0)::text as total_tokens
+        from workflow_token_usage wtu
+        left join sessions s on s.id = wtu.session_id
+        where (
+            wtu.visibility = 'personal'
+            and wtu.owner_user_id = $1
+          )
+          ${estimateFilter}
+          and ($2::timestamptz is null or wtu.observed_at >= $2)
+          and ($3::timestamptz is null or wtu.observed_at < $3)
+        group by ${groupSql.join(", ")}
+        order by ${groupSql.join(", ")}
+      `,
+      [actor.userId, input.from ?? null, input.to ?? null]
+    );
+    return rows.rows.map((row) => {
+      const group: Record<string, string | null> = {};
+      for (const key of selectedGroups) {
+        group[key] = row[key] ?? null;
+      }
+      return {
+        group,
+        rowCount: Number(row.row_count),
+        inputTokens: Number(row.input_tokens ?? 0),
+        cachedInputTokens: Number(row.cached_input_tokens ?? 0),
+        outputTokens: Number(row.output_tokens ?? 0),
+        reasoningOutputTokens: Number(row.reasoning_output_tokens ?? 0),
+        totalTokens: Number(row.total_tokens ?? 0)
+      };
+    });
   },
 
   async projectPendingConversationItems(actor, input = {}) {
@@ -4187,6 +4481,9 @@ export const createMemorySourceRepository = (
         const actorType = actorFromConversationItem(row);
         const messageRole = messageRoleForActor(actorType);
         const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
+        const transcriptTokenUsage = tokenUsage
+          ? null
+          : transcriptTokenUsageFromRaw(row.raw_json);
         const projectionMetadata = canonicalProjectMetadata({
           metadata: row.metadata,
           sessionMetadata: row.session_metadata,
@@ -4223,6 +4520,13 @@ export const createMemorySourceRepository = (
                   row.source_kind === "codex-cli" ? "codex-cli" : "codex",
                 sourceKind: row.source_kind,
                 sourceAdapterVersion: row.source_adapter_version,
+                usageSource:
+                  row.source_transport === "hook" ? "transcript" : "app_server",
+                usageAccuracy:
+                  scope === "last" ? "provider_reported" : "provider_replayed",
+                usageKind:
+                  scope === "last" ? "turn_delta" : "cumulative_snapshot",
+                connectorClient: row.source_kind,
                 model: stringField(row.metadata ?? {}, "model") ?? undefined,
                 modelContextWindow: tokenUsage.modelContextWindow,
                 usageScope: scope,
@@ -4237,6 +4541,63 @@ export const createMemorySourceRepository = (
             );
             result.tokenUsageRowsCreated += 1;
           }
+        }
+        if (transcriptTokenUsage) {
+          const threadKind =
+            stringField(row.metadata ?? {}, "threadKind") ??
+            stringField(row.session_metadata ?? {}, "threadKind");
+          const workflowType =
+            threadKind === "subagent" ? "subagent_turn" : "main_agent_turn";
+          await this.recordWorkflowTokenUsage(
+            { userId: actor.userId },
+            {
+              visibility: row.visibility,
+              workflowType,
+              workflowId:
+                stringField(row.metadata ?? {}, "transcriptId") ??
+                row.turn_id ??
+                row.session_id ??
+                logicalItem.sourceIdentity,
+              sessionId: row.session_id ?? undefined,
+              turnId: row.turn_id ?? undefined,
+              conversationItemId: sourceIds[0],
+              sourceRuntime:
+                row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+              sourceKind: row.source_kind,
+              sourceAdapterVersion: row.source_adapter_version,
+              usageSource: "transcript",
+              usageAccuracy: "provider_reported",
+              usageKind: "turn_delta",
+              connectorClient: row.source_kind,
+              model:
+                transcriptTokenUsage.model ??
+                stringField(row.metadata ?? {}, "model") ??
+                undefined,
+              modelContextWindow: transcriptTokenUsage.modelContextWindow,
+              inputTokens: transcriptTokenUsage.inputTokens,
+              cachedInputTokens: transcriptTokenUsage.cachedInputTokens,
+              outputTokens: transcriptTokenUsage.outputTokens,
+              reasoningOutputTokens: transcriptTokenUsage.reasoningOutputTokens,
+              totalTokens: transcriptTokenUsage.totalTokens,
+              usageScope: "last",
+              metadata: {
+                rawConversationItemId: sourceIds[0],
+                rawConversationItemIds: sourceIds,
+                logicalSourceId: logicalItem.sourceIdentity,
+                threadKind: threadKind ?? "conversation",
+                parentThreadId:
+                  stringField(row.metadata ?? {}, "parentThreadId") ??
+                  stringField(row.session_metadata ?? {}, "parentThreadId"),
+                parentSessionId:
+                  stringField(row.metadata ?? {}, "parentSessionId") ??
+                  stringField(row.session_metadata ?? {}, "parentSessionId"),
+                transcriptPath: row.source_path,
+                sourceLineNumber: row.source_sequence
+              },
+              idempotencyKey: `token:${logicalItem.sourceIdentity}:transcript:last`
+            }
+          );
+          result.tokenUsageRowsCreated += 1;
         }
 
         if (
