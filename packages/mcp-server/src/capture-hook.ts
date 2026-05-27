@@ -61,6 +61,11 @@ type RawConversationItemRequest = {
   eventTime?: string;
   rawJson: unknown;
   rawText?: string;
+  logicalSourceId?: string;
+  transportChunkIndex?: number;
+  transportChunkCount?: number;
+  transportChunkText?: string;
+  transportChunkEncoding?: string;
   sourceHash: string;
   idempotencyKey: string;
   projectionStatus: string;
@@ -225,47 +230,58 @@ export const rawItemRequestChunks = (
     return [item];
   }
 
-  const serializedRawJson = JSON.stringify(item.rawJson);
+  const serializedRawItem = JSON.stringify({
+    rawJson: item.rawJson,
+    rawText: typeof item.rawText === "string" ? item.rawText : null
+  });
   const envelopeBytes = rawItemBodyBytes({
     ...item,
     rawJson: {
-      koedRawJsonChunk: true,
-      originalSourceHash: item.sourceHash,
+      transportChunk: true,
+      sourceItemHash: item.sourceHash,
       chunkIndex: 0,
-      chunkCount: 1,
-      value: ""
+      chunkCount: 1
     },
-    rawText: undefined
+    rawText: undefined,
+    logicalSourceId: item.sourceHash,
+    transportChunkIndex: 0,
+    transportChunkCount: 1,
+    transportChunkText: "",
+    transportChunkEncoding: "conversation-item-json-v1"
   });
   let chunkBudget = Math.max(
     100,
     Math.floor((maxBytes - envelopeBytes - 1_024) / 2)
   );
   while (chunkBudget > 0) {
-    const chunks = chunkStringByUtf8Bytes(serializedRawJson, chunkBudget);
+    const chunks = chunkStringByUtf8Bytes(serializedRawItem, chunkBudget);
     const requests = chunks.map((chunk, index) => {
       const chunkHash = hash({
         sourceHash: item.sourceHash,
-        rawJsonChunkIndex: index,
-        rawJsonChunkCount: chunks.length
+        transportChunkIndex: index,
+        transportChunkCount: chunks.length
       });
       return {
         ...item,
         rawJson: {
-          koedRawJsonChunk: true,
-          originalSourceHash: item.sourceHash,
+          transportChunk: true,
+          sourceItemHash: item.sourceHash,
           chunkIndex: index,
-          chunkCount: chunks.length,
-          value: chunk
+          chunkCount: chunks.length
         },
         rawText: undefined,
+        logicalSourceId: item.sourceHash,
+        transportChunkIndex: index,
+        transportChunkCount: chunks.length,
+        transportChunkText: chunk,
+        transportChunkEncoding: "conversation-item-json-v1",
         sourceHash: chunkHash,
         idempotencyKey: chunkHash,
         metadata: {
           ...item.metadata,
-          rawChunkOfSourceHash: item.sourceHash,
-          rawChunkIndex: index,
-          rawChunkCount: chunks.length
+          sourceItemHash: item.sourceHash,
+          sourceChunkIndex: index,
+          sourceChunkCount: chunks.length
         }
       };
     });
@@ -1004,7 +1020,8 @@ export const parseTranscriptFileRecords = (input: {
   const maxBytes = hookTranscriptTailBytes();
   const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
   const start = prior && hasUsableCheckpoint ? Math.max(0, prior.offset) : 0;
-  const indexOffset = prior && hasUsableCheckpoint && start > 0 ? prior.lineCount : 0;
+  const indexOffset =
+    prior && hasUsableCheckpoint && start > 0 ? prior.lineCount : 0;
   const end = Math.min(stat.size, start + maxBytes);
   if (end <= start) {
     return {

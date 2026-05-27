@@ -1812,8 +1812,11 @@ describeDb("memory repository visibility", () => {
     }>(
       "select workflow_type, workflow_id, total_tokens from workflow_token_usage"
     );
-    const statuses = await pool.query<{ projection_status: string }>(
-      "select projection_status from conversation_items order by source_sequence asc"
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_version: string | null;
+    }>(
+      "select projection_status, projection_version from conversation_items order by source_sequence asc"
     );
     const embeddable = await repo.listSourcesNeedingEmbeddings(20);
 
@@ -1834,10 +1837,24 @@ describeDb("memory repository visibility", () => {
         total_tokens: 7
       }
     ]);
-    expect(statuses.rows.map((row) => row.projection_status)).toEqual([
-      "projected",
-      "projected",
-      "projected"
+    expect(
+      statuses.rows.map((row) => ({
+        projection_status: row.projection_status,
+        projection_version: row.projection_version
+      }))
+    ).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      }
     ]);
     expect(embeddable.some((source) => source.sourceType === "message")).toBe(
       false
@@ -1845,6 +1862,344 @@ describeDb("memory repository visibility", () => {
     expect(
       embeddable.some((source) => source.sourceType === "memory_event")
     ).toBe(true);
+  });
+
+  it("does not automatically reproject stale projection-version rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-stale-projection-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Stale Projection Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `stale-projection-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `stale-projection-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "Already projected under an older derivation policy"
+                }
+              }
+            },
+            sourceHash: `stale-projection-raw-${randomUUID()}`,
+            idempotencyKey: `stale-projection-raw-${randomUUID()}`,
+            projectionStatus: "projected",
+            projectionVersion: "conversation-projection-v1",
+            metadata: { transcriptType: "agent_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_version: string | null;
+    }>("select projection_status, projection_version from conversation_items");
+
+    expect(projection.rawItemsScanned).toBe(0);
+    expect(statuses.rows).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v1"
+      }
+    ]);
+  });
+
+  it("projects only allowlisted transcript records into semantic memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-policy-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Projection Policy Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-policy-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-policy-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const rows = [
+      {
+        transcriptType: "user_message",
+        text: "Please inspect the projection policy.",
+        sourceHash: `projection-policy-user-${randomUUID()}`
+      },
+      {
+        transcriptType: "agent_message",
+        text: "The projection policy keeps raw audit data separate.",
+        sourceHash: `projection-policy-agent-${randomUUID()}`
+      },
+      {
+        transcriptType: "reasoning_summary",
+        text: "Reasoning summary: compare transcript type against policy.",
+        sourceHash: `projection-policy-reasoning-${randomUUID()}`
+      },
+      {
+        transcriptType: "function_call",
+        text: "Tool call: exec_command",
+        sourceHash: `projection-policy-tool-${randomUUID()}`
+      },
+      {
+        transcriptType: "system_message",
+        text: "System instruction should stay raw-only.",
+        sourceHash: `projection-policy-system-${randomUUID()}`
+      },
+      {
+        transcriptType: "developer_message",
+        text: "Developer instruction should stay raw-only.",
+        sourceHash: `projection-policy-developer-${randomUUID()}`
+      },
+      {
+        transcriptType: "rolling_context",
+        text: "Rolling context package should stay raw-only.",
+        sourceHash: `projection-policy-context-${randomUUID()}`
+      }
+    ];
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: rows.map((row, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalTurnId: "turn-1",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "item/completed",
+          sourceSequence: index,
+          rawJson: {
+            method: "item/completed",
+            params: {
+              item: {
+                type: row.transcriptType,
+                text: row.text
+              }
+            }
+          },
+          rawText: row.text,
+          sourceHash: row.sourceHash,
+          idempotencyKey: row.sourceHash,
+          metadata: { workspaceId, transcriptType: row.transcriptType }
+        }))
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const messages = await pool.query<{ content: string }>(
+      "select content from messages order by created_at asc"
+    );
+    const events = await pool.query<{ content: string }>(
+      "select payload ->> 'content' as content from memory_events order by created_at asc"
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from tool_events"
+    );
+    const rawStatuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        group by projection_status
+      `
+    );
+
+    expect(projection.rawItemsProjected).toBe(rows.length);
+    expect(projection.memoryEventsCreated).toBe(4);
+    expect(projection.messagesCreated).toBe(4);
+    expect(projection.toolEventsCreated).toBe(1);
+    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(messages.rows.map((row) => row.content)).toEqual([
+      "Please inspect the projection policy.",
+      "The projection policy keeps raw audit data separate.",
+      "Reasoning summary: compare transcript type against policy.",
+      "Tool call: exec_command"
+    ]);
+    expect(events.rows.map((row) => row.content)).toEqual([
+      "Please inspect the projection policy.",
+      "The projection policy keeps raw audit data separate.",
+      "Reasoning summary: compare transcript type against policy.",
+      "Tool call: exec_command"
+    ]);
+    expect(messages.rows.map((row) => row.content).join("\n")).not.toContain(
+      "System instruction"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Developer instruction"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Rolling context"
+    );
+    expect(rawStatuses.rows).toEqual([
+      { projection_status: "projected", count: String(rows.length) }
+    ]);
+  });
+
+  it("reconstructs oversized transport chunks before semantic projection", async () => {
+    const alice = await repo.createUser({
+      email: `alice-transport-chunks-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Transport Chunk Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `transport-chunk-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `transport-chunk-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const logicalSourceId = `transport-logical-${randomUUID()}`;
+    const reconstructedText =
+      "This clean reconstructed answer should be embedded without transport JSON.";
+    const rawJson = {
+      method: "item/completed",
+      params: {
+        item: {
+          type: "agentMessage",
+          text: reconstructedText
+        }
+      }
+    };
+    const envelope = JSON.stringify({
+      rawJson,
+      rawText: reconstructedText
+    });
+    const midpoint = Math.floor(envelope.length / 2);
+    const chunks = [envelope.slice(0, midpoint), envelope.slice(midpoint)];
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: chunks.map((chunk, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalTurnId: "turn-transport",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "item/completed",
+          sourceSequence: 100 + index,
+          rawJson: {
+            transportChunk: true,
+            sourceItemHash: logicalSourceId,
+            chunkIndex: index,
+            chunkCount: chunks.length
+          },
+          logicalSourceId,
+          transportChunkIndex: index,
+          transportChunkCount: chunks.length,
+          transportChunkText: chunk,
+          transportChunkEncoding: "conversation-item-json-v1",
+          sourceHash: `${logicalSourceId}-chunk-${index}`,
+          idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+          metadata: {
+            workspaceId,
+            transcriptType: "agent_message",
+            sourceItemHash: logicalSourceId,
+            sourceChunkIndex: index,
+            sourceChunkCount: chunks.length
+          }
+        }))
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const secondProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const messages = await pool.query<{ content: string }>(
+      "select content from messages order by created_at asc"
+    );
+    const events = await pool.query<{ id: string; content: string }>(
+      "select id, payload ->> 'content' as content from memory_events order by created_at asc"
+    );
+    const links = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_event_sources"
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_version: string | null;
+    }>(
+      "select projection_status, projection_version from conversation_items order by transport_chunk_index asc"
+    );
+
+    expect(projection.rawItemsScanned).toBe(1);
+    expect(projection.rawItemsProjected).toBe(2);
+    expect(projection.messagesCreated).toBe(1);
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(secondProjection.rawItemsScanned).toBe(0);
+    expect(messages.rows.map((row) => row.content)).toEqual([
+      reconstructedText
+    ]);
+    expect(events.rows.map((row) => row.content)).toEqual([reconstructedText]);
+    expect(events.rows[0]?.content).not.toContain("transportChunk");
+    expect(events.rows[0]?.content).not.toContain("rawJson");
+    expect(links.rows[0]?.count).toBe("2");
+    expect(statuses.rows).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v2"
+      }
+    ]);
   });
 
   it("keeps projected app-server threads under the canonical session project", async () => {

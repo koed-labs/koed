@@ -36,7 +36,10 @@ const splitOversizedItem = (
   if (envelopeBytes([item]) <= byteLimit) {
     return [item];
   }
-  const rawJsonText = JSON.stringify(item.rawJson ?? item);
+  const rawJsonText = JSON.stringify({
+    rawJson: item.rawJson ?? item,
+    rawText: typeof item.rawText === "string" ? item.rawText : null
+  });
   const sourceItemHash =
     typeof item.sourceHash === "string"
       ? item.sourceHash
@@ -49,13 +52,17 @@ const splitOversizedItem = (
     const chunked = chunks.map((chunk, index) => ({
       ...item,
       rawJson: {
-        oversizedRawJson: true,
+        transportChunk: true,
         sourceItemHash,
         chunkIndex: index,
-        chunkCount: chunks.length,
-        chunk
+        chunkCount: chunks.length
       },
-      rawText: chunk,
+      rawText: undefined,
+      logicalSourceId: sourceItemHash,
+      transportChunkIndex: index,
+      transportChunkCount: chunks.length,
+      transportChunkText: chunk,
+      transportChunkEncoding: "conversation-item-json-v1",
       sourceHash: hash({ sourceItemHash, chunkIndex: index }),
       idempotencyKey: hash({
         idempotencyKey: item.idempotencyKey ?? sourceItemHash,
@@ -113,7 +120,9 @@ export const persistRawConversationItems = async (
   const persisted: RawConversationItemRequest[] = [];
   for (const batch of rawConversationItemBatches(items)) {
     try {
-      const response = (await client.createConversationItems({ items: batch })) as {
+      const response = (await client.createConversationItems({
+        items: batch
+      })) as {
         items?: RawConversationItemRequest[];
       };
       persisted.push(...(response.items ?? []));
@@ -160,13 +169,11 @@ export const queueRawConversationItemsBestEffort = (
   items: RawConversationItemRequest[],
   context: string
 ): void => {
-  void persistRawConversationItems(client, items, context).catch(
-    (error) => {
-      console.error(
-        `koed raw conversation item capture skipped for ${context}: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-  );
+  void persistRawConversationItems(client, items, context).catch((error) => {
+    console.error(
+      `koed raw conversation item capture skipped for ${context}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  });
 };

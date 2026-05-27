@@ -649,10 +649,17 @@ describe("Codex capture hook transcript parsing", () => {
         new Set([42])
       );
       expect(chunks[0]?.metadata).toMatchObject({
-        rawChunkOfSourceHash: "large-source",
-        rawChunkIndex: 0,
-        rawChunkCount: chunks.length
+        sourceItemHash: "large-source",
+        sourceChunkIndex: 0,
+        sourceChunkCount: chunks.length
       });
+      expect(chunks[0]).toMatchObject({
+        logicalSourceId: "large-source",
+        transportChunkIndex: 0,
+        transportChunkCount: chunks.length,
+        transportChunkEncoding: "conversation-item-json-v1"
+      });
+      expect(typeof chunks[0]?.transportChunkText).toBe("string");
       expect(chunks.every((chunk) => chunk.sourceHash !== "large-source")).toBe(
         true
       );
