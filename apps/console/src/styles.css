@@ -136,7 +136,13 @@ main {
   height: 38px;
   border-radius: 12px;
   background:
-    linear-gradient(135deg, #2e82ef 0 28%, transparent 28% 42%, #f4e319 42% 66%, transparent 66%),
+    linear-gradient(
+      135deg,
+      #2e82ef 0 28%,
+      transparent 28% 42%,
+      #f4e319 42% 66%,
+      transparent 66%
+    ),
     linear-gradient(225deg, #90b29e 0 38%, #e9156b 75%);
   color: transparent;
   box-shadow: 0 10px 24px rgba(46, 130, 239, 0.2);
@@ -184,7 +190,11 @@ nav button {
 }
 
 nav button.active {
-  background: linear-gradient(90deg, rgba(46, 130, 239, 0.14), rgba(244, 227, 25, 0.18));
+  background: linear-gradient(
+    90deg,
+    rgba(46, 130, 239, 0.14),
+    rgba(244, 227, 25, 0.18)
+  );
   color: #17202d;
   box-shadow: none;
 }
@@ -296,7 +306,11 @@ nav button.active {
   width: 30px;
   height: 28px;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(46, 130, 239, 0.18), rgba(244, 227, 25, 0.32));
+  background: linear-gradient(
+    135deg,
+    rgba(46, 130, 239, 0.18),
+    rgba(244, 227, 25, 0.32)
+  );
   font-size: 0.86rem;
   font-weight: 760;
 }
@@ -403,11 +417,7 @@ label {
 
 code,
 pre {
-  font-family:
-    "SFMono-Regular",
-    Consolas,
-    "Liberation Mono",
-    monospace;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .client-list {

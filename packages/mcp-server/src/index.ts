@@ -21,14 +21,7 @@ export interface AccessCheckResult {
     email: string;
     displayName: string | null;
   };
-  currentTeam: {
-    id: string;
-    name: string;
-    inviteCode: string | null;
-    role?: string;
-  } | null;
   canWritePersonal: boolean;
-  canWriteTeam: boolean;
   providerConfigSupported?: boolean;
   embeddingRetrieval?: {
     enabled: boolean;

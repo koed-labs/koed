@@ -20,9 +20,7 @@ const apiUrl = (
   "http://localhost:3000"
 ).replace(/\/+$/, "");
 const composeProject =
-  args.get("compose-project") ??
-  process.env.COMPOSE_PROJECT_NAME ??
-  "koed";
+  args.get("compose-project") ?? process.env.COMPOSE_PROJECT_NAME ?? "koed";
 const eventCount = Number.parseInt(
   args.get("events") ?? process.env.LCM_SMOKE_EVENTS ?? "12",
   10
@@ -416,12 +414,7 @@ const main = async () => {
     JSON.stringify({ apiUrl, apiToken: token }, null, 2)
   );
 
-  runCommand("corepack", [
-    "pnpm",
-    "--filter",
-    "@koed/mcp-server",
-    "build"
-  ]);
+  runCommand("corepack", ["pnpm", "--filter", "@koed/mcp-server", "build"]);
   const summaryOutput = runCommand("node", [
     "packages/mcp-server/dist/cli.js",
     "--config",

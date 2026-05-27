@@ -41,12 +41,7 @@ function run(command, args, options = {}) {
 function pnpm(args, env = runtimeEnv) {
   run(
     "corepack",
-    [
-      "pnpm@11.1.2",
-      "-C",
-      "apps/history-browser/koed-history-browser",
-      ...args
-    ],
+    ["pnpm@11.1.2", "-C", "apps/history-browser/koed-history-browser", ...args],
     {
       env: {
         ...env,

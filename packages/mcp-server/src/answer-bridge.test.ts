@@ -122,8 +122,7 @@ describe("local memory answer bridge", () => {
       if (request.url === "/v1/access/check") {
         json(response, 200, {
           ok: true,
-          canWritePersonal: true,
-          canWriteTeam: false
+          canWritePersonal: true
         });
         return;
       }

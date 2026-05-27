@@ -48,7 +48,10 @@ const run = (label, command, args) => {
 const readCommandVersion = (command) => {
   const result = spawnSync(
     command,
-    ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+    [
+      "-c",
+      "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    ],
     {
       cwd: serviceDir,
       encoding: "utf8"
@@ -74,7 +77,10 @@ const readVenvVersion = () => {
 
   const result = spawnSync(
     python,
-    ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+    [
+      "-c",
+      "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    ],
     {
       cwd: serviceDir,
       encoding: "utf8"

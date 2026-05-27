@@ -70,9 +70,7 @@ describe("MemoryApiClient", () => {
           ok: true,
           auth: "bearer_api_token",
           user: { id: "user-1", email: "solo@example.com", displayName: null },
-          currentTeam: null,
           canWritePersonal: true,
-          canWriteTeam: false,
           providerConfigSupported: false
         })
       );
@@ -94,7 +92,7 @@ describe("MemoryApiClient", () => {
     expect(result.notes).toEqual([]);
   });
 
-  it("keeps memory_answer scope personal even when a team exists", async () => {
+  it("keeps memory_answer scope personal when unsupported scope is configured", async () => {
     const apiUrl = await createApi((request, response) => {
       response.setHeader("content-type", "application/json");
       if (request.url === "/v1/memory/graph/overview") {
@@ -105,14 +103,8 @@ describe("MemoryApiClient", () => {
         JSON.stringify({
           ok: true,
           auth: "bearer_api_token",
-          user: { id: "user-1", email: "team@example.com", displayName: null },
-          currentTeam: {
-            id: "11111111-1111-4111-8111-111111111111",
-            name: "Team",
-            inviteCode: null
-          },
+          user: { id: "user-1", email: "solo@example.com", displayName: null },
           canWritePersonal: true,
-          canWriteTeam: false,
           providerConfigSupported: false
         })
       );
@@ -125,7 +117,7 @@ describe("MemoryApiClient", () => {
 
     expect(result.defaultAnswerScope).toBe("personal");
 
-    vi.stubEnv("MEMORY_DEFAULT_RETRIEVAL_SCOPE", "personal+team");
+    vi.stubEnv("MEMORY_DEFAULT_RETRIEVAL_SCOPE", "shared");
     const configured = await memoryAccessCheck(
       new MemoryApiClient({ apiUrl, apiToken: "cmt_test" }),
       false

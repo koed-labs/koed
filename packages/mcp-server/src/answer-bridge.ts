@@ -42,7 +42,7 @@ const requestSchema = z
   .object({
     query: z.string().min(1),
     question_id: z.string().uuid().optional(),
-    retrieval_scope: z.enum(["personal", "personal+team"]).optional(),
+    retrieval_scope: z.literal("personal").optional(),
     search_domain: z.enum(["global", "project", "session"]).default("global"),
     workspace_id: z.string().min(1).optional(),
     project_name: z.string().min(1).optional(),
@@ -295,8 +295,9 @@ const isRetryableSynthesisFallback = (answer: MemoryAnswerWorkerResponse) =>
   answer.localMemoryWorker.usedFallback === true &&
   answer.localMemoryWorker.skippedReason === "codex_failed";
 
-const hasQuestionAttemptsRemaining = (question: MemoryQuestionRecord): boolean =>
-  (question.attemptCount ?? 0) < questionAnswerMaxAttempts();
+const hasQuestionAttemptsRemaining = (
+  question: MemoryQuestionRecord
+): boolean => (question.attemptCount ?? 0) < questionAnswerMaxAttempts();
 
 const isRetryableBridgeError = (error: unknown): boolean => {
   if (error instanceof MemoryApiError) {
@@ -320,8 +321,7 @@ const normalizeSearchDomain = (
 const normalizeRetrievalScope = (
   value: MemoryQuestionRecord["retrievalScope"],
   fallback: string
-): string =>
-  value === "personal" || value === "personal+team" ? value : fallback;
+): string => (value === "personal" ? value : fallback);
 
 const updateQuestionWithAnswer = async (
   client: MemoryApiClient,
@@ -399,9 +399,10 @@ export const answerClaimedMemoryQuestion = async (
     const message = errorMessage(error);
     const retryable =
       hasQuestionAttemptsRemaining(question) && isRetryableBridgeError(error);
-    const updated = await (retryable
-      ? releaseQuestionForRetry(client, question, message)
-      : updateQuestionWithError(client, question, message)
+    const updated = await (
+      retryable
+        ? releaseQuestionForRetry(client, question, message)
+        : updateQuestionWithError(client, question, message)
     ).catch(() => ({ question }));
     return {
       ok: false,

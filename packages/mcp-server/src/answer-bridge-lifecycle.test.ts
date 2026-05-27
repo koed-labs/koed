@@ -55,9 +55,12 @@ describe("answer bridge lifecycle", () => {
       setTimeoutFn
     });
 
-    firstServer.emit("error", Object.assign(new Error("busy"), {
-      code: "EADDRINUSE"
-    }));
+    firstServer.emit(
+      "error",
+      Object.assign(new Error("busy"), {
+        code: "EADDRINUSE"
+      })
+    );
 
     expect(firstServer.close).toHaveBeenCalledTimes(1);
     expect(setTimeoutFn).toHaveBeenCalledTimes(1);

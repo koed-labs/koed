@@ -109,7 +109,9 @@ const hit = Array.isArray(search.hits)
   : null;
 
 if (!hit) {
-  console.error(`Capture Hook ran but marker was not found in memory: ${marker}`);
+  console.error(
+    `Capture Hook ran but marker was not found in memory: ${marker}`
+  );
   process.exit(1);
 }
 

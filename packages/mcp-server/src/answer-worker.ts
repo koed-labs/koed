@@ -206,7 +206,7 @@ export const buildMemoryAnswerPrompt = (
     "",
     "Requirements:",
     "- Do not use outside knowledge.",
-    "- Cite claims with the evidence index and include personal/team visibility when available.",
+    "- Cite claims with the evidence index and include memory visibility when available.",
     "- If the evidence is insufficient, say what is missing instead of guessing.",
     "- Return only concise markdown for the final answer.",
     "",

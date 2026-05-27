@@ -5,7 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const target = path.join(root, "apps", "history-browser", "koed-history-browser");
+const target = path.join(
+  root,
+  "apps",
+  "history-browser",
+  "koed-history-browser"
+);
 const repo =
   process.env.HISTORY_BROWSER_REPO ??
   "https://github.com/koed-labs/koed-history-browser.git";

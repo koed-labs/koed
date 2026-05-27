@@ -42,8 +42,7 @@ export const startAnswerBridgeWithRetry = (
 ): AnswerBridgeLifecycleHandle => {
   const enabled =
     options.enabled ??
-    (process.env.MEMORY_ANSWER_BRIDGE_ENABLED?.trim().toLowerCase() !==
-      "false");
+    process.env.MEMORY_ANSWER_BRIDGE_ENABLED?.trim().toLowerCase() !== "false";
   const log = options.log ?? console;
 
   if (!enabled) {

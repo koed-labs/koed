@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-const token = process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN;
+const token =
+  process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN;
 if (!token) {
   console.error("Set MEMORY_API_TOKEN to a console-created Koed API token.");
   process.exit(1);
@@ -92,4 +93,6 @@ writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 console.log(`Updated ${codexConfigPath}`);
 console.log(`Wrote ${hookConfigPath}`);
 console.log("Restart Codex to load the MCP server and hooks.");
-console.log("Codex may ask you to review/trust changed hooks after config.toml changes.");
+console.log(
+  "Codex may ask you to review/trust changed hooks after config.toml changes."
+);

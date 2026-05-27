@@ -1,0 +1,13 @@
+node_modules
+dist
+coverage
+target
+
+.venv
+.turbo
+.pnpm-store
+
+.env
+.env.*
+
+pnpm-*
