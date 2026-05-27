@@ -156,6 +156,10 @@ It talks to the same API and accepts the same console-created bearer API tokens.
 
 Self-hosted Koed assumes the operator controls the deployment. The API supports first-run local admin creation, cookie login for the console, and bearer API tokens for AI-client integrations. Postgres and Redis should stay on private Docker/internal networks in production deployments. See [docs/security.md](docs/security.md).
 
+Report suspected vulnerabilities privately. See [SECURITY.md](SECURITY.md) for
+supported versions, the reporting channel, and guidance on not disclosing user
+Memory data publicly.
+
 ## Backups, Upgrades, Migrations
 
 Use normal Postgres backups and restore into the same Koed version before upgrading. Run migrations during API startup or manually with:

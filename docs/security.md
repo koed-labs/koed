@@ -1,5 +1,10 @@
 # Security
 
+For responsible disclosure, supported versions, and vulnerability reporting,
+see [../SECURITY.md](../SECURITY.md). Do not disclose captured Memory data,
+database exports, backups, API Tokens, cookies, or private deployment secrets in
+public reports.
+
 Koed Self-Hosted uses first-run local admin setup. After a user exists, public registration is disabled unless `KOED_ALLOW_PUBLIC_REGISTRATION=true` is explicitly set.
 
 The console uses an HTTP-only session cookie. AI-client integrations use bearer API tokens. Store generated API tokens immediately; only token prefixes are listed later.
