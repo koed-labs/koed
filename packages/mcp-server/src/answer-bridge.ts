@@ -542,7 +542,14 @@ export const answerClaimedMemoryQuestion = async (
         error: message
       };
     }
-    await persistAnswerAppServerEvents(client, question, answer);
+    try {
+      await persistAnswerAppServerEvents(client, question, answer);
+    } catch (error) {
+      console.warn(
+        `[answer-bridge] Failed to persist app-server telemetry for question ${question.id}; preserving synthesized answer.`,
+        error
+      );
+    }
     const updated = await updateQuestionWithAnswer(client, question, answer);
     return {
       ok: true,

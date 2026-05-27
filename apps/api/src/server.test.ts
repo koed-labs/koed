@@ -395,7 +395,10 @@ const createFakeRepository = (): MemorySourceRepository => {
         createdAt: new Date().toISOString()
       };
     },
-    async projectPendingConversationItems() {
+    async projectPendingConversationItems(_actor, input) {
+      if (input?.visibility !== "personal") {
+        throw new Error("API token projection must stay personal-scoped");
+      }
       return {
         rawItemsScanned: 0,
         rawItemsProjected: 0,

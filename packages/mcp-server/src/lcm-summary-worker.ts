@@ -755,7 +755,14 @@ const summarizeNode = async (
       model: config.model
     });
     for (const [index, promptResult] of promptResults.entries()) {
-      await persistLcmAppServerEvents(client, node, promptResult, index);
+      try {
+        await persistLcmAppServerEvents(client, node, promptResult, index);
+      } catch (error) {
+        console.warn(
+          `[lcm-summary-worker] Failed to persist app-server telemetry for node ${node.id} shard ${index}; preserving generated summary.`,
+          error
+        );
+      }
     }
     await client.submitLcmSummary(node.id, {
       summaryText,

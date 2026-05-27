@@ -1416,7 +1416,7 @@ describeDb("memory repository visibility", () => {
     expect(rawItem?.id).toBeTruthy();
     expect(duplicateRawItem?.id).toBe(rawItem?.id);
     expect(rawCount.rows[0]?.count).toBe("1");
-    expect(rawStatus.rows[0]?.projection_status).toBe("projected");
+    expect(rawStatus.rows[0]?.projection_status).toBe("pending");
     expect(rawStatus.rows[0]?.turn_id).toBeTruthy();
     expect(rawStatus.rows[0]?.turn_index).toBe(0);
     expect(links.rows).toEqual([
@@ -1608,6 +1608,83 @@ describeDb("memory repository visibility", () => {
         }
       )
     ).rejects.toThrow("Turn not found or not visible");
+  });
+
+  it("rejects token usage linked to sessions, turns, or raw items outside caller scope", async () => {
+    const workspaceId = randomUUID();
+    const alice = await repo.createUser({
+      email: `alice-token-scope-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-token-scope-${randomUUID()}@example.com`
+    });
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Token Scope Project')
+      `,
+      [workspaceId, bob.id]
+    );
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        workspaceId,
+        externalSessionId: `bob-token-scope-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `bob-token-scope-session-${randomUUID()}`
+      }
+    );
+    const [bobRawItem] = await repo.createConversationItems(
+      { userId: bob.id },
+      {
+        items: [
+          {
+            sessionId: bobSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "bob-token-turn-1",
+            sourceRecordType: "app_server_notification",
+            rawJson: { owner: "bob" },
+            sourceHash: `bob-token-scope-${randomUUID()}`,
+            idempotencyKey: `bob-token-scope-${randomUUID()}`
+          }
+        ]
+      }
+    );
+
+    await expect(
+      repo.recordWorkflowTokenUsage(
+        { userId: alice.id },
+        {
+          workflowType: "memory_question",
+          sessionId: bobSession.id,
+          totalTokens: 1
+        }
+      )
+    ).rejects.toThrow("Session not found or not visible");
+
+    await expect(
+      repo.recordWorkflowTokenUsage(
+        { userId: alice.id },
+        {
+          workflowType: "memory_question",
+          turnId: bobRawItem!.turnId!,
+          totalTokens: 1
+        }
+      )
+    ).rejects.toThrow("Turn not found or not visible");
+
+    await expect(
+      repo.recordWorkflowTokenUsage(
+        { userId: alice.id },
+        {
+          workflowType: "memory_question",
+          conversationItemId: bobRawItem!.id,
+          totalTokens: 1
+        }
+      )
+    ).rejects.toThrow("Conversation item not found or not visible");
   });
 
   it("reprojects pending raw conversation items into messages, semantic events, and token usage", async () => {

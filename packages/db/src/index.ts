@@ -446,6 +446,12 @@ export interface WorkflowTokenUsageInput {
   sourceHash?: string;
 }
 
+type ConversationProjectionInput = {
+  limit?: number;
+  conversationItemIds?: string[];
+  visibility?: Visibility;
+};
+
 export interface WorkflowTokenUsageRecord {
   id: string;
   workflowType: string;
@@ -573,7 +579,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   ): Promise<WorkflowTokenUsageRecord>;
   projectPendingConversationItems(
     actor: ActorContext,
-    input?: { limit?: number; conversationItemIds?: string[] }
+    input?: ConversationProjectionInput
   ): Promise<ConversationProjectionResult>;
   listConversationProjectionActors(input?: {
     limit?: number;
@@ -2141,20 +2147,6 @@ const linkMemoryEventSources = async (
       `,
       [memoryEventId, conversationItemIds[index], index]
     );
-    await pool.query(
-      `
-        update conversation_items ci
-        set
-          projection_status = 'projected',
-          projected_at = coalesce(ci.projected_at, now()),
-          projection_error = null
-        from memory_event_sources mes
-        where mes.memory_event_id = $1
-          and mes.conversation_item_id = ci.id
-          and ci.id = $2
-      `,
-      [memoryEventId, conversationItemIds[index]]
-    );
   }
 };
 
@@ -2303,6 +2295,94 @@ const ensureConversationItemTurn = async (
   }
 
   return result?.rows[0]?.id ?? null;
+};
+
+const validateWorkflowTokenUsageSources = async (
+  pool: pg.Pool,
+  input: {
+    ownerUserId: string | null;
+    teamId: string | null;
+    visibility: Visibility;
+    usage: WorkflowTokenUsageInput;
+  }
+): Promise<void> => {
+  const { usage } = input;
+  if (usage.sessionId) {
+    const session = await pool.query<{ id: string }>(
+      `
+        select id
+        from sessions
+        where id = $1
+          and invalidated_at is null
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+        limit 1
+      `,
+      [usage.sessionId, input.visibility, input.ownerUserId, input.teamId]
+    );
+    if (session.rowCount === 0) {
+      throw new Error("Session not found or not visible");
+    }
+  }
+
+  if (usage.turnId) {
+    const turn = await pool.query<{ id: string }>(
+      `
+        select id
+        from turns
+        where id = $1
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+          and ($5::uuid is null or session_id = $5)
+        limit 1
+      `,
+      [
+        usage.turnId,
+        input.visibility,
+        input.ownerUserId,
+        input.teamId,
+        usage.sessionId ?? null
+      ]
+    );
+    if (turn.rowCount === 0) {
+      throw new Error("Turn not found or not visible");
+    }
+  }
+
+  if (usage.conversationItemId) {
+    const item = await pool.query<{ id: string }>(
+      `
+        select id
+        from conversation_items
+        where id = $1
+          and visibility = $2::visibility_scope
+          and (
+            ($2::visibility_scope = 'personal' and owner_user_id = $3)
+            or ($2::visibility_scope = 'team' and team_id = $4)
+          )
+          and ($5::uuid is null or session_id = $5)
+          and ($6::uuid is null or turn_id = $6)
+        limit 1
+      `,
+      [
+        usage.conversationItemId,
+        input.visibility,
+        input.ownerUserId,
+        input.teamId,
+        usage.sessionId ?? null,
+        usage.turnId ?? null
+      ]
+    );
+    if (item.rowCount === 0) {
+      throw new Error("Conversation item not found or not visible");
+    }
+  }
 };
 
 const embedTexts = async (
@@ -3191,6 +3271,12 @@ export const createMemorySourceRepository = (
     }
     const ownerUserId = visibility === "personal" ? actor.userId : null;
     const teamId = visibility === "team" ? input.teamId! : null;
+    await validateWorkflowTokenUsageSources(pool, {
+      ownerUserId,
+      teamId,
+      visibility,
+      usage: input
+    });
     const idempotencyKey =
       input.idempotencyKey ??
       createHash("sha256")
@@ -3324,6 +3410,7 @@ export const createMemorySourceRepository = (
 
   async projectPendingConversationItems(actor, input = {}) {
     const conversationItemIds = input.conversationItemIds ?? null;
+    const visibility = input.visibility ?? null;
     if (conversationItemIds && conversationItemIds.length === 0) {
       return {
         rawItemsScanned: 0,
@@ -3388,6 +3475,7 @@ export const createMemorySourceRepository = (
         left join sessions s on s.id = ci.session_id
         where ci.projection_status in ('pending', 'error')
           and ($3::uuid[] is null or ci.id = any($3::uuid[]))
+          and ($4::visibility_scope is null or ci.visibility = $4)
           and (
             (ci.visibility = 'personal' and ci.owner_user_id = $1)
             or (
@@ -3404,7 +3492,7 @@ export const createMemorySourceRepository = (
         order by ci.observed_at asc, ci.id asc
         limit $2
       `,
-      [actor.userId, limit, conversationItemIds]
+      [actor.userId, limit, conversationItemIds, visibility]
     );
 
     for (const row of rows.rows) {

@@ -2186,7 +2186,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       const input = projectConversationItemsSchema.parse(request.body);
       const projection = await repo.projectPendingConversationItems(
         { userId: user.id },
-        input
+        { ...input, visibility: "personal" }
       );
       const processing = await scheduleProjectedMemoryEventProcessing(
         repo,
