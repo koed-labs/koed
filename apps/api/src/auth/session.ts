@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { MemorySourceRepository } from "@koed/db";
+import type { AuthLogKind } from "../server/logging.js";
 
 export const sessionCookieName = "cm_session";
 export const sessionTtlMs = 1000 * 60 * 60 * 24 * 30;
@@ -53,9 +54,23 @@ export const createAuthHelpers = (
   options: {
     hashSecret: HashSecret;
     cookieSecure: boolean;
+    recordAuthContext?: (
+      request: FastifyRequest,
+      context: {
+        kind: Exclude<AuthLogKind, "anonymous">;
+        userId: string;
+      }
+    ) => void;
   }
 ): AuthHelpers => {
   const { hashSecret } = options;
+  const recordAuthContext = (
+    request: FastifyRequest,
+    kind: Exclude<AuthLogKind, "anonymous">,
+    userId: string
+  ): void => {
+    options.recordAuthContext?.(request, { kind, userId });
+  };
   const setSessionCookie = (reply: FastifyReply, secret: string): void => {
     reply.setCookie(sessionCookieName, secret, {
       httpOnly: true,
@@ -76,6 +91,7 @@ export const createAuthHelpers = (
     if (bearer) {
       const user = await repo.getApiTokenUser(hashSecret(bearer));
       if (user) {
+        recordAuthContext(request, "api_token", user.id);
         return user;
       }
     }
@@ -84,6 +100,7 @@ export const createAuthHelpers = (
     if (sessionSecret) {
       const user = await repo.getSessionUser(hashSecret(sessionSecret));
       if (user) {
+        recordAuthContext(request, "session", user.id);
         return user;
       }
     }
@@ -97,6 +114,7 @@ export const createAuthHelpers = (
     if (sessionSecret) {
       const user = await repo.getSessionUser(hashSecret(sessionSecret));
       if (user) {
+        recordAuthContext(request, "session", user.id);
         return user;
       }
     }
@@ -121,6 +139,7 @@ export const createAuthHelpers = (
     if (!user) {
       throw Object.assign(new Error("Invalid API token"), { statusCode: 401 });
     }
+    recordAuthContext(request, "api_token", user.id);
     return user;
   };
 

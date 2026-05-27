@@ -10,6 +10,15 @@ const app = await buildServer();
 try {
   await app.listen({ host, port });
 } catch (error) {
-  app.log.error(error);
+  app.log.error(
+    {
+      event: {
+        name: "api.listen.failed",
+        category: "lifecycle"
+      },
+      err: error
+    },
+    "api listen failed"
+  );
   process.exit(1);
 }

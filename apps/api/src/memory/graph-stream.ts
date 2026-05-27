@@ -129,7 +129,15 @@ export const createGraphStreamService = async ({
         .deleteByPrefix("koed:graph:")
         .catch((error: unknown) => {
           app.log.warn(
-            { error: String(error) },
+            {
+              event: {
+                name: "graph.cache.invalidate_failed",
+                category: "cache"
+              },
+              component: "graph_stream",
+              cache: { prefix: "koed:graph:" },
+              err: error
+            },
             "could not invalidate graph cache"
           );
         });
@@ -208,19 +216,47 @@ export const createGraphStreamService = async ({
           );
         } catch (error) {
           app.log.warn(
-            { error: String(error), payload: message.payload },
+            {
+              event: {
+                name: "graph_stream.notification.parse_failed",
+                category: "stream"
+              },
+              component: "graph_stream",
+              notification: {
+                channel: message.channel,
+                payload_length: message.payload.length
+              },
+              err: error
+            },
             "could not parse graph update notification"
           );
         }
       });
       graphListenClient.on("error", (error) => {
-        app.log.warn({ error: String(error) }, "graph update listener failed");
+        app.log.warn(
+          {
+            event: {
+              name: "graph_stream.listener.failed",
+              category: "stream"
+            },
+            component: "graph_stream",
+            err: error
+          },
+          "graph update listener failed"
+        );
       });
     } catch (error) {
       graphListenClient?.release();
       graphListenClient = null;
       app.log.warn(
-        { error: String(error) },
+        {
+          event: {
+            name: "graph_stream.listener.start_failed",
+            category: "stream"
+          },
+          component: "graph_stream",
+          err: error
+        },
         "could not start graph update listener"
       );
     }

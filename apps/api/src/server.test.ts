@@ -1626,6 +1626,20 @@ describe("api health", () => {
     expect(response.body).toBe("OK");
   });
 
+  it("returns a request id header and accepts safe caller-provided ids", async () => {
+    const app = await buildServer();
+    const generated = await app.inject({ method: "GET", url: "/health" });
+    const provided = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: { "x-request-id": "operator-request-1" }
+    });
+    await app.close();
+
+    expect(generated.headers["x-request-id"]).toEqual(expect.any(String));
+    expect(provided.headers["x-request-id"]).toBe("operator-request-1");
+  });
+
   it("allows browser PATCH preflight requests", async () => {
     const app = await buildServer();
     const response = await app.inject({

@@ -47,7 +47,16 @@ export const createMemoryJobScheduler = ({
     sourceId: string
   ): Promise<MemoryJobStatus> => {
     if (!embeddingQueue) {
-      log.warn({ sourceType, sourceId }, "embedding queue is unavailable");
+      log.warn(
+        {
+          event: { name: "job.enqueue.unavailable", category: "queue" },
+          component: "memory_jobs",
+          queue: { name: "memory-embed" },
+          job: { name: "embed-source" },
+          resource: { type: sourceType, id: sourceId }
+        },
+        "embedding queue is unavailable"
+      );
       return {
         queued: false,
         inline: false,
@@ -73,7 +82,14 @@ export const createMemoryJobScheduler = ({
       return { queued: true, inline: false, jobId: job.id };
     } catch (error) {
       log.warn(
-        { sourceType, sourceId, error: String(error) },
+        {
+          event: { name: "job.enqueue.failed", category: "queue" },
+          component: "memory_jobs",
+          queue: { name: "memory-embed" },
+          job: { name: "embed-source" },
+          resource: { type: sourceType, id: sourceId },
+          err: error
+        },
         "could not enqueue embedding job"
       );
       return { queued: false, inline: false, reason: String(error) };
@@ -96,7 +112,14 @@ export const createMemoryJobScheduler = ({
 
     if (!compactionQueue) {
       log.warn(
-        { userId: requesterContext.userId, visibility },
+        {
+          event: { name: "job.enqueue.unavailable", category: "queue" },
+          component: "memory_jobs",
+          queue: { name: "lcm-compact" },
+          job: { name: "compact-scope" },
+          actor: { user_id: requesterContext.userId },
+          resource: { type: "compaction_scope", visibility }
+        },
         "compaction queue is unavailable"
       );
       return {
@@ -125,9 +148,13 @@ export const createMemoryJobScheduler = ({
     } catch (error) {
       log.warn(
         {
-          userId: requesterContext.userId,
-          visibility,
-          error: String(error)
+          event: { name: "job.enqueue.failed", category: "queue" },
+          component: "memory_jobs",
+          queue: { name: "lcm-compact" },
+          job: { name: "compact-scope" },
+          actor: { user_id: requesterContext.userId },
+          resource: { type: "compaction_scope", visibility },
+          err: error
         },
         "could not enqueue compaction job"
       );

@@ -40,6 +40,17 @@ import {
   shouldIgnoreGraphStreamPayload
 } from "../memory/index.js";
 import { resolveApiServerConfig } from "./config.js";
+import {
+  apiLogSchemaVersion,
+  apiServiceName,
+  authenticatedRequestLogContext,
+  formatApiLogBindings,
+  getRequestLogContext,
+  resolveRequestId,
+  sanitizeZodIssues,
+  serializeApiRequest,
+  setRequestLogContext
+} from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
 
 export {
@@ -90,15 +101,31 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   }
 
   const app = Fastify({
+    genReqId: (request) => resolveRequestId(request.headers["x-request-id"]),
+    requestIdHeader: "x-request-id",
     logger: config.test
       ? false
       : {
           level: config.logLevel,
+          base: {
+            schema_version: apiLogSchemaVersion,
+            service: apiServiceName,
+            env: config.nodeEnv
+          },
           redact: [
             "req.headers.authorization",
             "req.headers.cookie",
-            "res.headers.set-cookie"
-          ]
+            "res.headers.set-cookie",
+            "request.headers.authorization",
+            "request.headers.cookie",
+            "response.headers.set-cookie"
+          ],
+          serializers: {
+            req: serializeApiRequest
+          },
+          formatters: {
+            log: formatApiLogBindings
+          }
         },
     bodyLimit: config.requestBodyLimitBytes
   });
@@ -163,6 +190,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     ]);
     await pool?.end();
   });
+  app.addHook("onRequest", (request, reply, done) => {
+    reply.header("x-request-id", request.id);
+    done();
+  });
 
   const corsOrigins = config.corsOrigins;
   await app.register(cors, {
@@ -215,7 +246,12 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   };
   const authHelpers = createAuthHelpers(requireRepository, {
     hashSecret,
-    cookieSecure: config.cookieSecure
+    cookieSecure: config.cookieSecure,
+    recordAuthContext: (request, authContext) =>
+      setRequestLogContext(
+        request,
+        authenticatedRequestLogContext(authContext.kind, authContext.userId)
+      )
   });
   const {
     runCompactionInline,
@@ -307,15 +343,30 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
             ? 400
             : 500;
 
-    request.log.warn(
-      {
-        statusCode,
-        route: request.routeOptions.url,
-        method: request.method,
-        errorName: error instanceof Error ? error.name : "Error"
+    const logBindings = {
+      event: {
+        name: "http.request.failed",
+        category: "http"
       },
-      "request failed"
-    );
+      request: {
+        id: request.id,
+        method: request.method,
+        path: requestPathname(request),
+        route: request.routeOptions.url
+      },
+      http: {
+        status_code: statusCode
+      },
+      ...getRequestLogContext(request),
+      error_name: error instanceof Error ? error.name : "Error",
+      ...(zodError ? { validation_issues: sanitizeZodIssues(error) } : {})
+    };
+
+    if (statusCode >= 500) {
+      request.log.error({ ...logBindings, err: error }, "request failed");
+    } else {
+      request.log.warn(logBindings, "request failed");
+    }
 
     reply.status(statusCode).send({
       error: statusCode === 500 ? "Internal Server Error" : message
