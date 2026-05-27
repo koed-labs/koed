@@ -9,7 +9,7 @@ const target = path.join(
   root,
   "apps",
   "history-browser",
-  "t3code-history-browser"
+  "koed-history-browser"
 );
 const mode = process.argv[2];
 const token =
@@ -41,7 +41,7 @@ function pnpm(args, env = process.env) {
     [
       "pnpm@11.1.2",
       "-C",
-      "apps/history-browser/t3code-history-browser",
+      "apps/history-browser/koed-history-browser",
       ...args
     ],
     {

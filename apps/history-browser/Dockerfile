@@ -20,7 +20,7 @@ RUN --mount=type=secret,id=github_token,required=false \
   HISTORY_BROWSER_GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)" \
   node scripts/sync-history-browser.mjs
 
-RUN CI=true pnpm -C apps/history-browser/t3code-history-browser install --frozen-lockfile
+RUN CI=true pnpm -C apps/history-browser/koed-history-browser install --frozen-lockfile
 
 FROM base AS build
 ARG VITE_API_BASE_URL
@@ -28,10 +28,10 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_KOED_API_BASE_URL=$VITE_API_BASE_URL
 ENV HISTORY_BROWSER_SKIP_SYNC=1
 
-RUN CI=true pnpm -C apps/history-browser/t3code-history-browser build
+RUN CI=true pnpm -C apps/history-browser/koed-history-browser build
 
 FROM node:24.13.1-alpine AS runtime
-WORKDIR /app/apps/history-browser/t3code-history-browser/apps/web
+WORKDIR /app/apps/history-browser/koed-history-browser/apps/web
 
 ENV NODE_ENV=production
 

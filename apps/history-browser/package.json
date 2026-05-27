@@ -7,17 +7,7 @@
     "build": "node ../../scripts/history-browser.mjs build",
     "dev": "node ../../scripts/history-browser.mjs dev",
     "preview": "node ../../scripts/history-browser.mjs preview",
-    "test": "vitest run --passWithNoTests --exclude 't3code-history-browser/**'",
+    "test": "vitest run --passWithNoTests --exclude '*/**'",
     "typecheck": "node ../../scripts/history-browser.mjs typecheck"
-  },
-  "dependencies": {
-    "@vitejs/plugin-react": "^6.0.2",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "vite": "^8.0.13"
-  },
-  "devDependencies": {
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3"
   }
 }

@@ -18,4 +18,6 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 packages/evals/reports/*.json
-apps/history-browser/t3code-history-browser/
+apps/history-browser/*
+!apps/history-browser/Dockerfile
+!apps/history-browser/package.json

@@ -17,7 +17,7 @@ If ports conflict with another local app:
 API_HOST_PORT=3300 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:3300 docker compose up --build
 ```
 
-Open `http://localhost:5173`, or the host port you selected. The T3-style history browser is available at `http://localhost:5174`. The console guides setup:
+Open `http://localhost:5173`, or the host port you selected. The separate history browser frontend is available at `http://localhost:5174`. The console guides setup:
 
 1. Create the first local admin.
 2. Create an API token.

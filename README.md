@@ -10,7 +10,7 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `apps/worker`: BullMQ worker for embedding and memory background jobs.
 - `apps/embedding-service`: local embedding/reranking HTTP service.
 - `apps/console`: local operator console for setup, status, tokens, policy, memory overview, Codex setup, and redacted diagnostics.
-- `apps/history-browser`: second local frontend adapted from the T3 Code history-browser experiment for side-by-side memory UX review.
+- `apps/history-browser`: wrapper package and Docker integration that fetches and builds the separate `koed-labs/koed-history-browser` frontend.
 - `packages/db`: Postgres repository and migrations.
 - `packages/core`: memory capture, retrieval, answer, and compaction logic.
 - `packages/mcp-server`: Koed MCP Server and TypeScript Codex Capture Hook.
@@ -30,8 +30,8 @@ pnpm test
 docker compose up --build
 ```
 
-The T3-style history browser is pulled from the private
-`koed-labs/koed-history-browser` repository during local builds. Set
+The history browser is pulled from the private `koed-labs/koed-history-browser`
+repository during local builds. Set
 `GITHUB_TOKEN` in `.env` to a GitHub token that can read that repository before
 running `docker compose up --build`.
 
@@ -47,7 +47,7 @@ Then open the local console:
 http://localhost:5173
 ```
 
-The T3-style history browser runs beside it:
+The history browser runs beside it:
 
 ```text
 http://localhost:5174
@@ -139,11 +139,11 @@ The console is an operator UI, not a marketing site. It includes:
 
 ## History Browser
 
-The history browser is a second frontend for gap analysis against the operator
-console. It lives in the private `koed-labs/koed-history-browser` repository and
-is fetched into `apps/history-browser/t3code-history-browser` when needed. It
-focuses on the T3 Code-style chat timeline, project/session sidebar, LCM
-inspector, and scoped memory questions. Run it locally with:
+The history browser is a separate frontend for inspecting captured Koed memory
+history. Its implementation lives in the private `koed-labs/koed-history-browser`
+repository. This self-hosted repository only keeps the wrapper scripts and Docker
+integration that fetch that repository into
+`apps/history-browser/koed-history-browser` when needed. Run it locally with:
 
 ```bash
 GITHUB_TOKEN=<token with access to koed-labs/koed-history-browser>

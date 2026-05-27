@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const target = path.join(root, "apps", "history-browser", "t3code-history-browser");
+const target = path.join(root, "apps", "history-browser", "koed-history-browser");
 const repo =
   process.env.HISTORY_BROWSER_REPO ??
   "https://github.com/koed-labs/koed-history-browser.git";
@@ -41,7 +41,7 @@ function run(command, args, options = {}) {
 if (skipSync) {
   if (!fs.existsSync(target)) {
     console.error(
-      "History browser sync is disabled, but apps/history-browser/t3code-history-browser is missing."
+      "History browser sync is disabled, but apps/history-browser/koed-history-browser is missing."
     );
     process.exit(1);
   }
@@ -51,7 +51,7 @@ if (skipSync) {
 
 if (fs.existsSync(target) && !fs.existsSync(path.join(target, ".git"))) {
   console.error(
-    "apps/history-browser/t3code-history-browser exists but is not a Git checkout."
+    "apps/history-browser/koed-history-browser exists but is not a Git checkout."
   );
   process.exit(1);
 }
