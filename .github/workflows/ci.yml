@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     name: Test and lint
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 2
 
     steps:
@@ -47,7 +47,7 @@ jobs:
 
   build:
     name: Build packages
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
 
     steps:
@@ -71,7 +71,7 @@ jobs:
 
   python-dependencies:
     name: Python dependency resolution
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
 
     steps:
