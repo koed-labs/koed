@@ -1358,7 +1358,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         }
       };
     },
-    async createLcmNodes(actor, input) {
+    async createLcmNodes(actor) {
       const uncompacted = events.filter((event) => {
         const visible = event.ownerUserId === actor.userId;
         return (

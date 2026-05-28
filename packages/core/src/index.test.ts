@@ -167,7 +167,7 @@ const createFakeRepository = (): MemoryEngineRepository => {
       }
       return { leafNodeIds, rollupNodeId };
     },
-    async expandMemoryNode(nodeId, actor) {
+    async expandMemoryNode(nodeId) {
       const node = nodes.find((candidate) => candidate.id === nodeId);
       if (!node) {
         throw new Error("Memory node not found or not visible");

@@ -20,7 +20,7 @@ export const registerRawConversationRoutes = (
   app.post(
     "/v1/memory/conversation-items",
     { preHandler: memoryWriteRateLimit },
-    async (request, reply) => {
+    async (request) => {
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const input = createConversationItemsSchema.parse(request.body);
