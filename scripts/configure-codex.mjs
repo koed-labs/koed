@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 
 const token =
   process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN;
@@ -20,9 +20,6 @@ const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
 );
-const hookConfigPath = resolve(
-  process.env.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
-);
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
 const captureHookPath = resolve(
   repoRoot,
@@ -38,17 +35,22 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
   }
 }
 
-mkdirSync(dirname(hookConfigPath), { recursive: true, mode: 0o700 });
-writeFileSync(
-  hookConfigPath,
-  JSON.stringify({ apiUrl, apiToken: token, captureEnabled: true }, null, 2) +
-    "\n",
-  { mode: 0o600 }
-);
-
 const markerStart = "# >>> koed-self-hosted";
 const markerEnd = "# <<< koed-self-hosted";
-const hookCommand = `${nodeCommand} ${captureHookPath} --config ${hookConfigPath}`;
+const shellEscapeDoubleQuoted = (value) =>
+  value.replace(/([\\"$`])/g, "\\$1");
+const shellDoubleQuoted = (value) => `"${shellEscapeDoubleQuoted(value)}"`;
+const hookEnvAssignments = [
+  `MEMORY_API_URL=${shellDoubleQuoted(apiUrl)}`,
+  `MEMORY_API_TOKEN=${shellDoubleQuoted(token)}`,
+  'MEMORY_CODEX_APP_SERVER_BINARY="codex"',
+  'MEMORY_HOOK_STRICT="false"',
+  'MEMORY_HOOK_TRIGGER_LCM_SUMMARY="true"',
+  'MEMORY_HOOK_LCM_SUMMARY_DELAY_MS="10000"',
+  'MEMORY_HOOK_LCM_SUMMARY_LIMIT="2"',
+  'MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS="48000"'
+];
+const hookCommand = `env ${hookEnvAssignments.join(" ")} ${shellDoubleQuoted(nodeCommand)} ${shellDoubleQuoted(captureHookPath)}`;
 const hookEvents = [
   ["SessionStart", 10],
   ["UserPromptSubmit", 10],
@@ -66,7 +68,8 @@ command = "${hookCommand}"
 timeout = ${timeout}`
   )
   .join("\n\n");
-const koedBlock = `${markerStart}
+const koedBlock = `# Replace any existing [mcp_servers.${mcpName}] block before pasting again.
+${markerStart}
 [mcp_servers.${mcpName}]
 command = "${nodeCommand}"
 args = ["${mcpCliPath}"]
@@ -91,7 +94,6 @@ const withoutPrevious = existing.replace(
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 
 console.log(`Updated ${codexConfigPath}`);
-console.log(`Wrote ${hookConfigPath}`);
 console.log("Restart Codex to load the MCP server and hooks.");
 console.log(
   "Codex may ask you to review/trust changed hooks after config.toml changes."

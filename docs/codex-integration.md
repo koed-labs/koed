@@ -30,19 +30,11 @@ Working directory: /path/to/koed-self-hosted
 
 The console setup page generates these MCP values for your checkout. If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
 
-If you prefer one paste into `~/.codex/config.toml`, first create hook config JSON:
-
-```json
-{
-  "apiUrl": "http://localhost:3000",
-  "apiToken": "<token>",
-  "captureEnabled": true
-}
-```
-
-Save it at `~/.koed/config.json`, then use a complete block like this:
+If you prefer one paste into `~/.codex/config.toml`, replace any existing Koed block instead of pasting a second `[mcp_servers.koed-selfhost]` table, then use a complete block like this:
 
 ```toml
+# Replace any existing [mcp_servers.koed-selfhost] block before pasting again.
+# >>> koed-self-hosted
 [mcp_servers.koed-selfhost]
 command = "node"
 args = ["/path/to/koed-self-hosted/packages/mcp-server/dist/cli.js"]
@@ -57,41 +49,43 @@ MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS = "48000"
 [[hooks.SessionStart]]
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js --config /absolute/path/to/.koed/config.json"
+command = "env MEMORY_API_URL=\"http://localhost:3000\" MEMORY_API_TOKEN=\"<token>\" MEMORY_CODEX_APP_SERVER_BINARY=\"codex\" MEMORY_HOOK_STRICT=\"false\" MEMORY_HOOK_TRIGGER_LCM_SUMMARY=\"true\" MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=\"10000\" MEMORY_HOOK_LCM_SUMMARY_LIMIT=\"2\" MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=\"48000\" node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js"
 timeout = 10
 
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
-command = "node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js --config /absolute/path/to/.koed/config.json"
+command = "env MEMORY_API_URL=\"http://localhost:3000\" MEMORY_API_TOKEN=\"<token>\" MEMORY_CODEX_APP_SERVER_BINARY=\"codex\" MEMORY_HOOK_STRICT=\"false\" MEMORY_HOOK_TRIGGER_LCM_SUMMARY=\"true\" MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=\"10000\" MEMORY_HOOK_LCM_SUMMARY_LIMIT=\"2\" MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=\"48000\" node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js"
 timeout = 10
 
 [[hooks.PostToolUse]]
 [[hooks.PostToolUse.hooks]]
 type = "command"
-command = "node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js --config /absolute/path/to/.koed/config.json"
+command = "env MEMORY_API_URL=\"http://localhost:3000\" MEMORY_API_TOKEN=\"<token>\" MEMORY_CODEX_APP_SERVER_BINARY=\"codex\" MEMORY_HOOK_STRICT=\"false\" MEMORY_HOOK_TRIGGER_LCM_SUMMARY=\"true\" MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=\"10000\" MEMORY_HOOK_LCM_SUMMARY_LIMIT=\"2\" MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=\"48000\" node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js"
 timeout = 10
 
 [[hooks.Stop]]
 [[hooks.Stop.hooks]]
 type = "command"
-command = "node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js --config /absolute/path/to/.koed/config.json"
+command = "env MEMORY_API_URL=\"http://localhost:3000\" MEMORY_API_TOKEN=\"<token>\" MEMORY_CODEX_APP_SERVER_BINARY=\"codex\" MEMORY_HOOK_STRICT=\"false\" MEMORY_HOOK_TRIGGER_LCM_SUMMARY=\"true\" MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=\"10000\" MEMORY_HOOK_LCM_SUMMARY_LIMIT=\"2\" MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=\"48000\" node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js"
 timeout = 30
 
 [[hooks.SubagentStart]]
 [[hooks.SubagentStart.hooks]]
 type = "command"
-command = "node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js --config /absolute/path/to/.koed/config.json"
+command = "env MEMORY_API_URL=\"http://localhost:3000\" MEMORY_API_TOKEN=\"<token>\" MEMORY_CODEX_APP_SERVER_BINARY=\"codex\" MEMORY_HOOK_STRICT=\"false\" MEMORY_HOOK_TRIGGER_LCM_SUMMARY=\"true\" MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=\"10000\" MEMORY_HOOK_LCM_SUMMARY_LIMIT=\"2\" MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=\"48000\" node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js"
 timeout = 10
 
 [[hooks.SubagentStop]]
 [[hooks.SubagentStop.hooks]]
 type = "command"
-command = "node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js --config /absolute/path/to/.koed/config.json"
+command = "env MEMORY_API_URL=\"http://localhost:3000\" MEMORY_API_TOKEN=\"<token>\" MEMORY_CODEX_APP_SERVER_BINARY=\"codex\" MEMORY_HOOK_STRICT=\"false\" MEMORY_HOOK_TRIGGER_LCM_SUMMARY=\"true\" MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=\"10000\" MEMORY_HOOK_LCM_SUMMARY_LIMIT=\"2\" MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=\"48000\" node /path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js"
 timeout = 30
+
+# <<< koed-self-hosted
 ```
 
-Replace checkout and config paths with your local absolute paths. The console setup page now generates both the hook JSON and matching TOML blocks for the current checkout and token.
+Replace checkout paths with your local absolute paths. The console setup page now generates a single `config.toml` block for the current checkout and token, and the hook command carries the required Koed environment inline.
 
 ## Browser Questions
 

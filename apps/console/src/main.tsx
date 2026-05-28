@@ -45,7 +45,6 @@ type SmokeResult = {
 
 type CodexSetup = {
   localRepositoryPath: string | null;
-  hookConfigPath: string | null;
 };
 
 type CodexSetupMode = "manual" | "configToml";
@@ -297,49 +296,55 @@ const escapeToml = (value: string): string =>
 const escapeShellDoubleQuoted = (value: string): string =>
   value.replace(/([\\"$`])/g, "\\$1");
 
-const defaultHookConfigPath = "~/.koed/config.json";
+const shellDoubleQuoted = (value: string): string =>
+  `"${escapeShellDoubleQuoted(value)}"`;
 
-const buildCodexHookCommand = ({
-  nodeCommand,
-  captureHookArg,
-  hookConfigPath
-}: {
-  nodeCommand: string;
-  captureHookArg: string;
-  hookConfigPath: string;
-}): string =>
-  `${nodeCommand} ${captureHookArg} --config ${hookConfigPath}`;
-
-const buildHookConfigJsonBlock = ({
+const buildHookEnvAssignments = ({
   apiUrl,
   token
 }: {
   apiUrl: string;
   token: string;
-}): string =>
-  `${JSON.stringify(
-    {
-      apiUrl,
-      apiToken: token,
-      captureEnabled: true
-    },
-    null,
-    2
-  )}\n`;
+}): string[] => [
+  `MEMORY_API_URL=${shellDoubleQuoted(apiUrl)}`,
+  `MEMORY_API_TOKEN=${shellDoubleQuoted(token)}`,
+  'MEMORY_CODEX_APP_SERVER_BINARY="codex"',
+  'MEMORY_HOOK_STRICT="false"',
+  'MEMORY_HOOK_TRIGGER_LCM_SUMMARY="true"',
+  'MEMORY_HOOK_LCM_SUMMARY_DELAY_MS="10000"',
+  'MEMORY_HOOK_LCM_SUMMARY_LIMIT="2"',
+  'MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS="48000"'
+];
 
-const buildCodexHookTomlBlock = ({
+const buildCodexHookCommand = ({
+  apiUrl,
+  token,
   nodeCommand,
-  captureHookArg,
-  hookConfigPath
+  captureHookArg
 }: {
+  apiUrl: string;
+  token: string;
   nodeCommand: string;
   captureHookArg: string;
-  hookConfigPath: string;
+}): string =>
+  `env ${buildHookEnvAssignments({ apiUrl, token }).join(" ")} ${shellDoubleQuoted(nodeCommand)} ${shellDoubleQuoted(captureHookArg)}`;
+
+const buildCodexHookTomlBlock = ({
+  apiUrl,
+  token,
+  nodeCommand,
+  captureHookArg
+}: {
+  apiUrl: string;
+  token: string;
+  nodeCommand: string;
+  captureHookArg: string;
 }): string => {
   const hookCommand = buildCodexHookCommand({
+    apiUrl,
+    token,
     nodeCommand,
-    captureHookArg,
-    hookConfigPath
+    captureHookArg
   });
 
   return codexHookEvents
@@ -358,23 +363,23 @@ const buildCodexTomlBlock = ({
   token,
   nodeCommand,
   mcpArg,
-  captureHookArg,
-  hookConfigPath
+  captureHookArg
 }: {
   apiUrl: string;
   token: string;
   nodeCommand: string;
   mcpArg: string;
   captureHookArg: string;
-  hookConfigPath: string;
 }): string => {
   const hookBlocks = buildCodexHookTomlBlock({
+    apiUrl,
+    token,
     nodeCommand,
-    captureHookArg,
-    hookConfigPath
+    captureHookArg
   });
 
-  return `# Paste into ~/.codex/config.toml
+  return `# Replace any existing [mcp_servers.koed-selfhost] block before pasting again.
+# >>> koed-self-hosted
 [mcp_servers.koed-selfhost]
 command = "${escapeToml(nodeCommand)}"
 args = ["${escapeToml(mcpArg)}"]
@@ -386,7 +391,8 @@ MEMORY_API_TOKEN = "${escapeToml(token)}"
 MEMORY_CODEX_APP_SERVER_BINARY = "codex"
 MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS = "48000"
 
-${hookBlocks}`;
+${hookBlocks}
+# <<< koed-self-hosted`;
 };
 
 const defaultMemoryApiUrl = "http://localhost:3000";
@@ -462,9 +468,6 @@ const App = () => {
   const [repoPath, setCheckoutPath] = useState(
     localStorage.getItem("koed.repoPath") ?? ""
   );
-  const [hookConfigPath, setHookConfigPath] = useState(
-    localStorage.getItem("koed.hookConfigPath") ?? defaultHookConfigPath
-  );
   const [nodeCommand, setNodeCommand] = useState(
     localStorage.getItem("koed.nodeCommand") ?? "node"
   );
@@ -516,12 +519,6 @@ const App = () => {
     if (!repoPath && codexSetup.localRepositoryPath) {
       setCheckoutPath(codexSetup.localRepositoryPath);
     }
-    if (
-      (hookConfigPath === defaultHookConfigPath || !hookConfigPath) &&
-      codexSetup.hookConfigPath
-    ) {
-      setHookConfigPath(codexSetup.hookConfigPath);
-    }
   };
 
   useEffect(() => {
@@ -537,10 +534,6 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem("koed.nodeCommand", nodeCommand);
   }, [nodeCommand]);
-
-  useEffect(() => {
-    localStorage.setItem("koed.hookConfigPath", hookConfigPath);
-  }, [hookConfigPath]);
 
   const submitAuth = async (event: FormEvent) => {
     event.preventDefault();
@@ -656,17 +649,13 @@ const App = () => {
     token: tokenForSetup,
     nodeCommand,
     mcpArg,
-    captureHookArg,
-    hookConfigPath
+    captureHookArg
   });
   const codexHookTomlBlock = buildCodexHookTomlBlock({
-    nodeCommand,
-    captureHookArg,
-    hookConfigPath
-  });
-  const hookConfigJsonBlock = buildHookConfigJsonBlock({
     apiUrl: apiBaseUrl,
-    token: tokenForSetup
+    token: tokenForSetup,
+    nodeCommand,
+    captureHookArg
   });
   const mcpEnvItems = codexMcpEnvItems(apiBaseUrl, tokenForSetup);
   const memoryVerified = Boolean(smokeResult?.ok || graphCounts.events > 0);
@@ -974,15 +963,11 @@ const App = () => {
                   <div className="manual-config-group">
                     <h3>Capture Hook</h3>
                     <p>
-                      Codex does not expose hook editing in settings UI. Create
-                      hook config JSON first, then add hook blocks in
-                      <code> config.toml</code>.
+                      Codex does not expose hook editing in the MCP settings
+                      UI. Add the Koed hook entries directly in
+                      <code> ~/.codex/config.toml</code>.
                     </p>
                     <div className="codex-setup-stack compact-stack">
-                      <JsonBlock
-                        title={hookConfigPath}
-                        value={hookConfigJsonBlock}
-                      />
                       <div className="codex-callout">
                         <div>
                           <strong>Hooks live in config.toml</strong>
@@ -1016,6 +1001,7 @@ const App = () => {
                       Open Codex settings
                     </a>
                   </div>
+                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
                   <div className="codex-callout">
                     <div>
                       <strong>Trust hooks in Codex</strong>
@@ -1028,7 +1014,6 @@ const App = () => {
                       Open Codex settings
                     </a>
                   </div>
-                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
                 </div>
               )}
             </section>
@@ -1096,14 +1081,6 @@ const App = () => {
                     onChange={(event) => setNodeCommand(event.target.value)}
                   />
                 </label>
-                <label>
-                  Hook config path
-                  <input
-                    value={hookConfigPath}
-                    onChange={(event) => setHookConfigPath(event.target.value)}
-                    placeholder="~/.koed/config.json"
-                  />
-                </label>
               </div>
               {codexSetupMode === "manual" ? (
                 <div className="codex-setup-stack">
@@ -1156,6 +1133,7 @@ const App = () => {
                       Open Codex settings
                     </a>
                   </div>
+                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
                   <div className="codex-callout">
                     <div>
                       <strong>Trust hooks in Codex</strong>
@@ -1168,7 +1146,6 @@ const App = () => {
                       Open Codex settings
                     </a>
                   </div>
-                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
                 </div>
               )}
             </section>
