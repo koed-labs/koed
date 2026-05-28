@@ -11,6 +11,7 @@ from env_config import resolve_env
 from fastapi import Depends, FastAPI, Header, HTTPException
 from huggingface_hub import hf_hub_download
 from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
+from priority_scheduler import EmbeddingPriorityScheduler, normalize_embedding_priority
 from pydantic import BaseModel, Field, field_validator, model_validator
 from qwen3_embed import TextCrossEncoder
 
@@ -20,6 +21,7 @@ model: Llama | None = None
 reranker: TextCrossEncoder | None = None
 model_lock = Lock()
 reranker_lock = Lock()
+embedding_scheduler = EmbeddingPriorityScheduler()
 
 
 def validate_text_limits(values: list[str], field_name: str) -> None:
@@ -161,6 +163,7 @@ def health(
         "modelRepo": config.model_repo,
         "modelFile": config.model_file,
         "nCtx": config.llama_n_ctx,
+        "queue": embedding_scheduler.snapshot().__dict__,
         "reranker": {
             "enabled": config.reranker_enabled,
             "loaded": reranker is not None,
@@ -227,31 +230,36 @@ def suppress_native_stderr(enabled: bool):
     response_model=EmbedResponse,
     dependencies=[Depends(require_internal_token)],
 )
-def embed(request: EmbedRequest) -> EmbedResponse:
+def embed(
+    request: EmbedRequest,
+    x_koed_embedding_priority: str | None = Header(default=None),
+) -> EmbedResponse:
     if model is None:
         raise HTTPException(status_code=503, detail="embedding model is still loading")
 
+    priority = normalize_embedding_priority(x_koed_embedding_priority)
     try:
         vectors: list[list[float]] = []
         chunks: list[EmbeddedChunk] = []
-        with model_lock:
-            for input_index, text in enumerate(request.texts):
-                text_chunks = split_text_by_embedding_tokens(text)
-                for chunk_index, chunk_text in enumerate(text_chunks):
-                    with suppress_native_stderr(config.suppress_llama_warnings):
-                        result = model.create_embedding(chunk_text, model=config.model_name)
-                    embedding = result["data"][0]["embedding"]
-                    vector = normalize_vector(list(embedding))
-                    vectors.append(vector)
-                    chunks.append(
-                        EmbeddedChunk(
-                            inputIndex=input_index,
-                            chunkIndex=chunk_index,
-                            chunkCount=len(text_chunks),
-                            text=chunk_text,
-                            vector=vector,
+        with embedding_scheduler.slot(priority):
+            with model_lock:
+                for input_index, text in enumerate(request.texts):
+                    text_chunks = split_text_by_embedding_tokens(text)
+                    for chunk_index, chunk_text in enumerate(text_chunks):
+                        with suppress_native_stderr(config.suppress_llama_warnings):
+                            result = model.create_embedding(chunk_text, model=config.model_name)
+                        embedding = result["data"][0]["embedding"]
+                        vector = normalize_vector(list(embedding))
+                        vectors.append(vector)
+                        chunks.append(
+                            EmbeddedChunk(
+                                inputIndex=input_index,
+                                chunkIndex=chunk_index,
+                                chunkCount=len(text_chunks),
+                                text=chunk_text,
+                                vector=vector,
+                            )
                         )
-                    )
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"model embedding failed: {error}") from error
 

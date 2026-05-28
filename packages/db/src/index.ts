@@ -2197,9 +2197,16 @@ const localEmbeddingServiceUrl = (): string | null =>
     process.env.EMBEDDING_SERVICE_URL ?? "http://embedding-service:8000"
   ).trim() || null;
 
-const embeddingServiceHeaders = (): Record<string, string> => {
+type EmbeddingRequestPriority = "interactive" | "background";
+
+const embeddingServiceHeaders = (
+  priority: EmbeddingRequestPriority = "interactive"
+): Record<string, string> => {
   const token = process.env.EMBEDDING_SERVICE_TOKEN?.trim();
-  return token ? { "x-koed-embedding-token": token } : {};
+  return {
+    ...(token ? { "x-koed-embedding-token": token } : {}),
+    "x-koed-embedding-priority": priority
+  };
 };
 
 const localEmbeddingModel = (): string =>

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,10 +13,156 @@ import {
   rawItemRequestChunks,
   semanticEventChunks,
   selectCaptureItems,
-  shouldReadTranscriptForHook
+  shouldReadTranscriptForHook,
+  stateScopeKey
 } from "./capture-hook.js";
 
 describe("Codex capture hook transcript parsing", () => {
+  it("keeps transcript checkpoints stable when the API token changes", () => {
+    const workspaceId = "/home/mark/code/koed/koed-self-hosted";
+
+    expect(
+      stateScopeKey(
+        { apiUrl: "http://localhost:3000", apiToken: "old-token" },
+        workspaceId,
+        "user-1"
+      )
+    ).toBe(
+      stateScopeKey(
+        { apiUrl: "http://localhost:3000/", apiToken: "new-token" },
+        workspaceId,
+        "user-1"
+      )
+    );
+  });
+
+  it("keeps transcript checkpoints separate for different API token owners", () => {
+    const workspaceId = "/home/mark/code/koed/koed-self-hosted";
+
+    expect(
+      stateScopeKey(
+        { apiUrl: "http://localhost:3000", apiToken: "token-a" },
+        workspaceId,
+        "user-1"
+      )
+    ).not.toBe(
+      stateScopeKey(
+        { apiUrl: "http://localhost:3000", apiToken: "token-b" },
+        workspaceId,
+        "user-2"
+      )
+    );
+  });
+
+  it("checkpoints an existing transcript on first contact instead of replaying history", () => {
+    process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES = "140";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message }
+      })}\n`;
+    fs.writeFileSync(
+      transcriptPath,
+      `${line("old message one")}${line("old message two")}`
+    );
+    const size = fs.statSync(transcriptPath).size;
+
+    try {
+      const result = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope"
+      });
+
+      expect(result.records).toEqual([]);
+      expect(result.indexOffset).toBe(0);
+      expect(result.checkpoint).toMatchObject({
+        offset: size,
+        lineCount: 0,
+        size
+      });
+    } finally {
+      delete process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES;
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("does not scan old transcript content when checkpointing first contact", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message: "already captured elsewhere"
+        }
+      })}\n`
+    );
+    const openSpy = vi.spyOn(fs, "openSync");
+
+    try {
+      const result = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope"
+      });
+
+      expect(result.records).toEqual([]);
+      expect(result.checkpoint?.offset).toBe(fs.statSync(transcriptPath).size);
+      expect(openSpy).not.toHaveBeenCalled();
+    } finally {
+      openSpy.mockRestore();
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("reads only appended transcript records after the initial checkpoint", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message }
+      })}\n`;
+    fs.writeFileSync(transcriptPath, line("old message"));
+    const initialSize = fs.statSync(transcriptPath).size;
+    fs.appendFileSync(transcriptPath, line("new message"));
+    const finalSize = fs.statSync(transcriptPath).size;
+
+    try {
+      const result = parseTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: {
+              offset: initialSize,
+              lineCount: 1,
+              size: initialSize
+            }
+          }
+        },
+        stateScope: "scope"
+      });
+
+      expect(result.records).toHaveLength(1);
+      expect(JSON.stringify(result.records[0])).toContain("new message");
+      expect(result.indexOffset).toBe(1);
+      expect(result.checkpoint).toMatchObject({
+        offset: finalSize,
+        lineCount: 2,
+        size: finalSize
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
   it("continues from the prior transcript checkpoint without jumping to the tail", () => {
     process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES = "140";
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
@@ -548,6 +694,19 @@ describe("Codex capture hook transcript parsing", () => {
         tool_name: "exec_command"
       })
     ).toBe(true);
+  });
+
+  it("reads transcript checkpoints on lifecycle hooks that can start or advance capture", () => {
+    for (const hook_event_name of [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PostToolUse",
+      "Stop",
+      "SubagentStart",
+      "SubagentStop"
+    ]) {
+      expect(shouldReadTranscriptForHook({ hook_event_name })).toBe(true);
+    }
   });
 
   it("uses fallback hook payloads when no transcript messages are available", () => {

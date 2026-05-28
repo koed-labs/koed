@@ -793,9 +793,11 @@ describeDb("memory repository visibility", () => {
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const endpoint = String(url);
         if (endpoint.endsWith("/embed")) {
-          expect(new Headers(init?.headers).get("x-koed-embedding-token")).toBe(
+          const headers = new Headers(init?.headers);
+          expect(headers.get("x-koed-embedding-token")).toBe(
             "test-embedding-token"
           );
+          expect(headers.get("x-koed-embedding-priority")).toBe("interactive");
           return new Response(
             JSON.stringify({
               model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",

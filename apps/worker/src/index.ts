@@ -59,7 +59,10 @@ const embeddingDimensions = (): number => workerEnv.embeddingDimensions;
 
 const embeddingServiceHeaders = (): Record<string, string> => {
   const token = process.env.EMBEDDING_SERVICE_TOKEN?.trim();
-  return token ? { "x-koed-embedding-token": token } : {};
+  return {
+    ...(token ? { "x-koed-embedding-token": token } : {}),
+    "x-koed-embedding-priority": "background"
+  };
 };
 
 interface EmbeddedChunk {

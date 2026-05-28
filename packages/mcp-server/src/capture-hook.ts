@@ -973,8 +973,11 @@ export const parseTranscriptText = (text: string): CaptureItem[] =>
   parseTranscriptRecords(parseTranscriptRecordsText(text));
 
 export const shouldReadTranscriptForHook = (payload: HookPayload): boolean =>
+  payload.hook_event_name === "SessionStart" ||
+  payload.hook_event_name === "UserPromptSubmit" ||
   payload.hook_event_name === "PostToolUse" ||
   payload.hook_event_name === "Stop" ||
+  payload.hook_event_name === "SubagentStart" ||
   payload.hook_event_name === "SubagentStop";
 
 const splitCompleteTranscriptLines = (
@@ -1019,6 +1022,18 @@ export const parseTranscriptFileRecords = (input: {
   const prior = input.state.transcriptOffsets?.[key];
   const maxBytes = hookTranscriptTailBytes();
   const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
+  if (!hasUsableCheckpoint && stat.size > 0) {
+    return {
+      records: [],
+      indexOffset: 0,
+      checkpoint: {
+        key,
+        offset: stat.size,
+        lineCount: 0,
+        size: stat.size
+      }
+    };
+  }
   const start = prior && hasUsableCheckpoint ? Math.max(0, prior.offset) : 0;
   const indexOffset =
     prior && hasUsableCheckpoint && start > 0 ? prior.lineCount : 0;
@@ -1324,13 +1339,15 @@ const saveState = (state: CaptureState): void => {
   fs.renameSync(tempFile, file);
 };
 
-const stateScopeKey = (
+export const stateScopeKey = (
   config: Pick<McpServerConfig, "apiToken" | "apiUrl">,
-  workspaceId: string
+  workspaceId: string,
+  ownerUserId: string
 ): string =>
   hash({
-    apiUrl: config.apiUrl,
-    apiToken: config.apiToken,
+    apiUrl: config.apiUrl.replace(/\/+$/, ""),
+    checkpointSchema: "codex-transcript-v1",
+    ownerUserId,
     workspaceId
   });
 
@@ -1393,7 +1410,8 @@ const main = async () => {
   const client = new MemoryApiClient(config);
   const deadlineAtMs = Date.now() + hookDeadlineMs();
   const workspaceId = payload.cwd ?? "default";
-  const stateScope = stateScopeKey(config, workspaceId);
+  const access = await client.accessCheck();
+  const stateScope = stateScopeKey(config, workspaceId, access.user.id);
   const captureTranscriptPath = captureTranscriptPathForPayload(payload);
   const state = loadState();
   const transcriptFile = shouldReadTranscriptForHook(payload)

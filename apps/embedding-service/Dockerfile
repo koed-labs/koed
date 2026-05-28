@@ -20,6 +20,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app.py /app/app.py
 COPY env_config.py /app/env_config.py
+COPY priority_scheduler.py /app/priority_scheduler.py
 
 EXPOSE 8000
 
