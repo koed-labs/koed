@@ -45,6 +45,7 @@ afterEach(() => {
     "CACHE_REDIS_URL",
     "GRAPH_CACHE_TTL_SECONDS",
     "KOED_HOST_CHECKOUT_PATH",
+    "KOED_HOST_HOOK_CONFIG_PATH",
     "CORS_ORIGINS",
     "API_CORS_ORIGINS"
   ]) {
@@ -1713,6 +1714,7 @@ describe("api health", () => {
 
   it("keeps public status probes coarse and requires auth for details", async () => {
     process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
+    process.env.KOED_HOST_HOOK_CONFIG_PATH = "/sensitive/home/.koed/config.json";
     const app = await buildServer({ repository: createFakeRepository() });
     const ready = await app.inject({ method: "GET", url: "/ready" });
     const details = await app.inject({ method: "GET", url: "/health/details" });
@@ -1730,6 +1732,15 @@ describe("api health", () => {
       url: "/self-host/status",
       headers: { cookie: cookieHeader(registered) }
     });
+    const publicSetup = await app.inject({
+      method: "GET",
+      url: "/self-host/codex-setup"
+    });
+    const privateSetup = await app.inject({
+      method: "GET",
+      url: "/self-host/codex-setup",
+      headers: { cookie: cookieHeader(registered) }
+    });
     await app.close();
 
     expect(ready.statusCode).toBe(200);
@@ -1740,6 +1751,10 @@ describe("api health", () => {
     expect(publicStatus.body).not.toContain("/sensitive/local/path");
     expect(privateStatus.statusCode).toBe(200);
     expect(privateStatus.body).not.toContain("/sensitive/local/path");
+    expect(publicSetup.statusCode).toBe(401);
+    expect(privateSetup.statusCode).toBe(200);
+    expect(privateSetup.body).toContain("/sensitive/local/path");
+    expect(privateSetup.body).toContain("/sensitive/home/.koed/config.json");
   });
 
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {

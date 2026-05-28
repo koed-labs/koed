@@ -10,6 +10,8 @@ export interface ApiServerConfig {
   databaseUrl?: string;
   redisUrl?: string;
   apiPort?: string;
+  hostCheckoutPath?: string;
+  hostHookConfigPath?: string;
   dataEncryptionKeyConfigured: boolean;
   apiTokenPepperConfigured: boolean;
   apiTokenPepper: string;
@@ -109,6 +111,8 @@ export const resolveApiServerConfig = (
     databaseUrl,
     redisUrl,
     apiPort: optionalEnv(environment.API_PORT),
+    hostCheckoutPath: optionalEnv(environment.KOED_HOST_CHECKOUT_PATH),
+    hostHookConfigPath: optionalEnv(environment.KOED_HOST_HOOK_CONFIG_PATH),
     dataEncryptionKeyConfigured: Boolean(
       optionalEnv(environment.DATA_ENCRYPTION_KEY)
     ),

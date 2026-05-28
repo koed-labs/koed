@@ -212,6 +212,14 @@ export const registerOperationalRoutes = (
     };
   });
 
+  app.get("/self-host/codex-setup", async (request) => {
+    await auth.authenticateSession(request);
+    return {
+      localRepositoryPath: config.hostCheckoutPath ?? null,
+      hookConfigPath: config.hostHookConfigPath ?? null
+    };
+  });
+
   app.get("/self-host/diagnostics", async (request) => {
     const repo = requireRepository();
     const user = await auth.authenticateSession(request);

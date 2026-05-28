@@ -80,4 +80,18 @@ describe("resolveApiServerConfig", () => {
       graphCacheTtlSeconds: 30
     });
   });
+
+  it("resolves optional host setup paths", () => {
+    const config = resolveApiServerConfig({
+      KOED_HOST_CHECKOUT_PATH: "/absolute/path/to/koed-self-hosted",
+      KOED_HOST_HOOK_CONFIG_PATH: "/absolute/path/to/home/.koed/config.json"
+    });
+
+    expect(config.hostCheckoutPath).toBe(
+      "/absolute/path/to/koed-self-hosted"
+    );
+    expect(config.hostHookConfigPath).toBe(
+      "/absolute/path/to/home/.koed/config.json"
+    );
+  });
 });
