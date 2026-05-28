@@ -43,6 +43,21 @@ type SmokeResult = {
   recall: { hits: number; topHit: unknown; retrieval: unknown };
 };
 
+type CodexSetup = {
+  localRepositoryPath: string | null;
+  hookConfigPath: string | null;
+};
+
+type CodexSetupMode = "manual" | "configToml";
+
+type EnvVarStatus = "required" | "optional" | "defaulted";
+
+type EnvVarItem = {
+  key: string;
+  value: string;
+  status: EnvVarStatus;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -81,7 +96,54 @@ const requestJson = async <T,>(
   return (await response.json()) as T;
 };
 
-const copyText = (value: string) => void navigator.clipboard.writeText(value);
+const copyText = async (value: string) => {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+  } catch {
+    // Fall back for non-secure contexts like custom local hosts.
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+};
+
+const CopyButton = ({
+  value,
+  className = "ghost"
+}: {
+  value: string;
+  className?: string;
+}) => {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      type="button"
+      className={`${className} copy-feedback-button ${copied ? "copied" : ""}`}
+      onClick={() => {
+        void copyText(value);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1000);
+      }}
+      aria-label={copied ? "Copied" : "Copy"}
+    >
+      <span className="copy-feedback-label">Copy</span>
+      <span className="copy-feedback-tick" aria-hidden="true">
+        ✅
+      </span>
+    </button>
+  );
+};
 
 const FieldCopy = ({
   label,
@@ -95,9 +157,84 @@ const FieldCopy = ({
   <div className="copy-field">
     <span>{label}</span>
     <code>{masked ? value.replace(/^(.{8}).+(.{4})$/, "$1...$2") : value}</code>
-    <button type="button" className="ghost" onClick={() => copyText(value)}>
-      Copy
-    </button>
+    <CopyButton value={value} className="ghost" />
+  </div>
+);
+
+const EnvVarGroup = ({
+  items,
+  maskedKeys = []
+}: {
+  items: ReadonlyArray<EnvVarItem>;
+  maskedKeys?: string[];
+}) => (
+  <div className="env-var-group">
+    <div className="env-var-header">
+      <strong>Environment Variables</strong>
+    </div>
+    <div className="env-var-list">
+      {items.map(({ key, value, status }) => {
+        const masked = maskedKeys.includes(key);
+        const displayValue = masked
+          ? value.replace(/^(.{8}).+(.{4})$/, "$1...$2")
+          : value;
+        return (
+          <div key={key} className="env-var-row">
+            <div className="env-var-pair">
+              <div>
+                <span>
+                  Name <span className={`env-var-badge ${status}`}>{status === "required" ? "Required" : status === "defaulted" ? "Defaulted" : "Optional"}</span>
+                </span>
+                <div className="inline-copy-value">
+                  <code>{key}</code>
+                  <CopyButton value={key} className="ghost mini-copy" />
+                </div>
+              </div>
+              <div>
+                <span>Value</span>
+                <div className="inline-copy-value">
+                  <code>{displayValue}</code>
+                  <CopyButton value={value} className="ghost mini-copy" />
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
+
+const ManualConfigValueSection = ({
+  title,
+  value
+}: {
+  title: string;
+  value: string;
+}) => (
+  <div className="env-var-group">
+    <div className="env-var-header">
+      <strong>{title}</strong>
+    </div>
+    <div className="value-copy-row">
+      <code>{value}</code>
+      <CopyButton value={value} className="ghost mini-copy" />
+    </div>
+  </div>
+);
+
+const EmptyConfigSection = ({
+  title,
+  tone = "subtle"
+}: {
+  title: string;
+  tone?: "subtle" | "neutral";
+}) => (
+  <div className={`env-var-group ${tone === "neutral" ? "neutral-note" : ""}`}>
+    <div className="env-var-header">
+      <strong>{title}</strong>
+    </div>
+    <p className="empty-config-copy">None</p>
   </div>
 );
 
@@ -122,21 +259,178 @@ const StatusDot = ({ status }: { status: string }) => {
   return <span className={`status-dot ${tone}`}>{status}</span>;
 };
 
-const JsonBlock = ({ value }: { value: unknown }) => (
-  <div className="code-box">
-    <pre>
-      {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
-    </pre>
+const JsonBlock = ({
+  value,
+  title
+}: {
+  value: unknown;
+  title?: string;
+}) => (
+  <div className="code-card">
+    <div className="code-card-header">
+      <strong>{title ?? "Configuration block"}</strong>
+      <CopyButton
+        value={typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+        className="secondary"
+      />
+    </div>
+    <div className="code-box">
+      <pre>
+        {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  </div>
+);
+
+const codexHookEvents = [
+  ["SessionStart", 10],
+  ["UserPromptSubmit", 10],
+  ["PostToolUse", 10],
+  ["Stop", 30],
+  ["SubagentStart", 10],
+  ["SubagentStop", 30]
+] as const;
+
+const escapeToml = (value: string): string =>
+  value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+const escapeShellDoubleQuoted = (value: string): string =>
+  value.replace(/([\\"$`])/g, "\\$1");
+
+const defaultHookConfigPath = "~/.koed/config.json";
+
+const buildCodexHookCommand = ({
+  nodeCommand,
+  captureHookArg,
+  hookConfigPath
+}: {
+  nodeCommand: string;
+  captureHookArg: string;
+  hookConfigPath: string;
+}): string =>
+  `${nodeCommand} ${captureHookArg} --config ${hookConfigPath}`;
+
+const buildHookConfigJsonBlock = ({
+  apiUrl,
+  token
+}: {
+  apiUrl: string;
+  token: string;
+}): string =>
+  `${JSON.stringify(
+    {
+      apiUrl,
+      apiToken: token,
+      captureEnabled: true
+    },
+    null,
+    2
+  )}\n`;
+
+const buildCodexHookTomlBlock = ({
+  nodeCommand,
+  captureHookArg,
+  hookConfigPath
+}: {
+  nodeCommand: string;
+  captureHookArg: string;
+  hookConfigPath: string;
+}): string => {
+  const hookCommand = buildCodexHookCommand({
+    nodeCommand,
+    captureHookArg,
+    hookConfigPath
+  });
+
+  return codexHookEvents
+    .map(
+      ([eventName, timeout]) => `[[hooks.${eventName}]]
+[[hooks.${eventName}.hooks]]
+type = "command"
+command = "${escapeToml(hookCommand)}"
+timeout = ${timeout}`
+    )
+    .join("\n\n");
+};
+
+const buildCodexTomlBlock = ({
+  apiUrl,
+  token,
+  nodeCommand,
+  mcpArg,
+  captureHookArg,
+  hookConfigPath
+}: {
+  apiUrl: string;
+  token: string;
+  nodeCommand: string;
+  mcpArg: string;
+  captureHookArg: string;
+  hookConfigPath: string;
+}): string => {
+  const hookBlocks = buildCodexHookTomlBlock({
+    nodeCommand,
+    captureHookArg,
+    hookConfigPath
+  });
+
+  return `# Paste into ~/.codex/config.toml
+[mcp_servers.koed-selfhost]
+command = "${escapeToml(nodeCommand)}"
+args = ["${escapeToml(mcpArg)}"]
+enabled = true
+
+[mcp_servers.koed-selfhost.env]
+MEMORY_API_URL = "${escapeToml(apiUrl)}"
+MEMORY_API_TOKEN = "${escapeToml(token)}"
+MEMORY_CODEX_APP_SERVER_BINARY = "codex"
+MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS = "48000"
+
+${hookBlocks}`;
+};
+
+const defaultMemoryApiUrl = "http://localhost:3000";
+
+const codexMcpEnvItems = (apiUrl: string, token: string): ReadonlyArray<EnvVarItem> => [
+  {
+    key: "MEMORY_API_URL",
+    value: apiUrl,
+    status: apiUrl === defaultMemoryApiUrl ? "defaulted" : "required"
+  },
+  { key: "MEMORY_API_TOKEN", value: token, status: "required" },
+  {
+    key: "MEMORY_CODEX_APP_SERVER_BINARY",
+    value: "codex",
+    status: "defaulted"
+  },
+  {
+    key: "MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS",
+    value: "48000",
+    status: "optional"
+  }
+];
+
+const CodexSetupModeToggle = ({
+  mode,
+  setMode
+}: {
+  mode: CodexSetupMode;
+  setMode: (mode: CodexSetupMode) => void;
+}) => (
+  <div className="pill-row" role="tablist" aria-label="Codex setup mode">
     <button
       type="button"
-      className="secondary"
-      onClick={() =>
-        copyText(
-          typeof value === "string" ? value : JSON.stringify(value, null, 2)
-        )
-      }
+      className={mode === "configToml" ? "active" : "ghost"}
+      onClick={() => setMode("configToml")}
     >
-      Copy
+      Edit config
+    </button>
+    <button
+      type="button"
+      className={mode === "manual" ? "active" : "ghost"}
+      onClick={() => setMode("manual")}
+    >
+      Manual entry
     </button>
   </div>
 );
@@ -168,9 +462,14 @@ const App = () => {
   const [repoPath, setCheckoutPath] = useState(
     localStorage.getItem("koed.repoPath") ?? ""
   );
+  const [hookConfigPath, setHookConfigPath] = useState(
+    localStorage.getItem("koed.hookConfigPath") ?? defaultHookConfigPath
+  );
   const [nodeCommand, setNodeCommand] = useState(
     localStorage.getItem("koed.nodeCommand") ?? "node"
   );
+  const [codexSetupMode, setCodexSetupMode] =
+    useState<CodexSetupMode>("configToml");
   const [activeSection, setActiveSection] = useState("setup");
   const [error, setError] = useState<string | null>(null);
 
@@ -200,18 +499,29 @@ const App = () => {
   };
 
   const refreshPrivate = async () => {
-    const [me, graph, apiTokens, capturePolicies] = await Promise.all([
-      requestJson<{ user: User }>("/me"),
-      requestJson<{ overview: Record<string, unknown> }>(
-        "/v1/memory/graph/overview"
-      ),
-      requestJson<{ apiTokens: ApiToken[] }>("/api-tokens"),
-      requestJson<{ policies: CapturePolicy[] }>("/v1/capture-policies")
-    ]);
+    const [me, graph, apiTokens, capturePolicies, codexSetup] =
+      await Promise.all([
+        requestJson<{ user: User }>("/me"),
+        requestJson<{ overview: Record<string, unknown> }>(
+          "/v1/memory/graph/overview"
+        ),
+        requestJson<{ apiTokens: ApiToken[] }>("/api-tokens"),
+        requestJson<{ policies: CapturePolicy[] }>("/v1/capture-policies"),
+        requestJson<CodexSetup>("/self-host/codex-setup")
+      ]);
     setUser(me.user);
     setOverview(graph.overview);
     setTokens(apiTokens.apiTokens);
     setPolicies(capturePolicies.policies);
+    if (!repoPath && codexSetup.localRepositoryPath) {
+      setCheckoutPath(codexSetup.localRepositoryPath);
+    }
+    if (
+      (hookConfigPath === defaultHookConfigPath || !hookConfigPath) &&
+      codexSetup.hookConfigPath
+    ) {
+      setHookConfigPath(codexSetup.hookConfigPath);
+    }
   };
 
   useEffect(() => {
@@ -227,6 +537,10 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem("koed.nodeCommand", nodeCommand);
   }, [nodeCommand]);
+
+  useEffect(() => {
+    localStorage.setItem("koed.hookConfigPath", hookConfigPath);
+  }, [hookConfigPath]);
 
   const submitAuth = async (event: FormEvent) => {
     event.preventDefault();
@@ -330,18 +644,37 @@ const App = () => {
     deleted: Number(overview?.invalidatedRecords ?? 0)
   };
 
-  const tokenForSetup = newToken ?? "<create a token first>";
+  const tokenForSetup = "<api_token>";
   const mcpArg = repoPath
     ? `${repoPath.replace(/\/$/, "")}/packages/mcp-server/dist/cli.js`
     : "/path/to/koed-self-hosted/packages/mcp-server/dist/cli.js";
   const captureHookArg = repoPath
     ? `${repoPath.replace(/\/$/, "")}/packages/mcp-server/dist/capture-hook.js`
     : "/path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js";
+  const codexTomlBlock = buildCodexTomlBlock({
+    apiUrl: apiBaseUrl,
+    token: tokenForSetup,
+    nodeCommand,
+    mcpArg,
+    captureHookArg,
+    hookConfigPath
+  });
+  const codexHookTomlBlock = buildCodexHookTomlBlock({
+    nodeCommand,
+    captureHookArg,
+    hookConfigPath
+  });
+  const hookConfigJsonBlock = buildHookConfigJsonBlock({
+    apiUrl: apiBaseUrl,
+    token: tokenForSetup
+  });
+  const mcpEnvItems = codexMcpEnvItems(apiBaseUrl, tokenForSetup);
+  const memoryVerified = Boolean(smokeResult?.ok || graphCounts.events > 0);
   const setupComplete =
     Boolean(user) &&
     tokens.length > 0 &&
     Boolean(configuration?.embeddingModel) &&
-    Boolean(smokeResult?.ok || graphCounts.events > 0);
+    memoryVerified;
 
   const sections = [
     ["setup", "Setup & Status"],
@@ -402,11 +735,10 @@ const App = () => {
     },
     {
       label: "Memory verified",
-      detail:
-        smokeResult?.ok || graphCounts.events > 0
-          ? "Koed has captured local memory."
-          : "Verify capture once the token exists.",
-      done: Boolean(smokeResult?.ok || graphCounts.events > 0)
+      detail: memoryVerified
+        ? "Koed has captured local memory."
+        : "Verify capture once the token exists.",
+      done: memoryVerified
     }
   ];
 
@@ -475,7 +807,7 @@ const App = () => {
               <span>Copy it now. Koed will only show the full value once.</span>
             </div>
             <code>{newToken}</code>
-            <button type="button" onClick={() => copyText(newToken)}>
+            <button type="button" onClick={() => void copyText(newToken)}>
               Copy token
             </button>
             <button
@@ -587,69 +919,118 @@ const App = () => {
               )}
             </section>
 
-            <section className="surface">
-              <h2>MCP Server</h2>
-              <p>
-                Recall path for Codex. MCP alone does not capture full
-                conversations automatically.
-              </p>
-              <div className="field-grid">
-                <FieldCopy label="Name" value="koed-selfhost" />
-                <FieldCopy label="Transport" value="STDIO" />
-                <FieldCopy label="Command" value={nodeCommand} />
-                <FieldCopy label="Argument" value={mcpArg} />
-                <FieldCopy label="MEMORY_API_URL" value={apiBaseUrl} />
-                <FieldCopy
-                  label="MEMORY_API_TOKEN"
-                  value={tokenForSetup}
-                  masked={newToken === null}
-                />
-                <FieldCopy
-                  label="MEMORY_CODEX_APP_SERVER_BINARY"
-                  value="codex"
-                />
-                <FieldCopy
-                  label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
-                  value="48000"
-                />
-                <FieldCopy
-                  label="Working directory"
-                  value={repoPath || "/path/to/koed-self-hosted"}
+            <section className="surface wide">
+              <div className="section-title-row codex-setup-header">
+                <div>
+                  <h2>Codex setup</h2>
+                </div>
+                <CodexSetupModeToggle
+                  mode={codexSetupMode}
+                  setMode={setCodexSetupMode}
                 />
               </div>
-            </section>
 
-            <section className="surface">
-              <h2>Capture Hook</h2>
-              <p>
-                Supported automatic capture path for Codex. Configure this
-                alongside MCP using the same token.
-              </p>
-              <p>
-                Codex may ask you to review or trust changed hooks after editing
-                config.toml; approve only entries pointing at this checkout or
-                the installed Koed package.
-              </p>
-              <div className="field-grid">
-                <FieldCopy label="Hook command" value={nodeCommand} />
-                <FieldCopy label="Hook argument" value={captureHookArg} />
-                <FieldCopy label="MEMORY_API_URL" value={apiBaseUrl} />
-                <FieldCopy
-                  label="MEMORY_API_TOKEN"
-                  value={tokenForSetup}
-                  masked={newToken === null}
-                />
-                <FieldCopy label="MEMORY_HOOK_STRICT" value="false" />
-                <FieldCopy label="MEMORY_RAW_INGEST_BATCH_ITEMS" value="10" />
-                <FieldCopy
-                  label="MEMORY_HOOK_TRIGGER_LCM_SUMMARY"
-                  value="true"
-                />
-                <FieldCopy
-                  label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
-                  value="48000"
-                />
-              </div>
+              {codexSetupMode === "manual" ? (
+                <div className="codex-setup-stack">
+                  <div className="codex-callout">
+                    <div>
+                      <strong>Manual entry in Codex</strong>
+                      <p>
+                        Open Codex settings, click <strong>MCP servers</strong>,
+                        then <strong>+ Add server</strong>.
+                      </p>
+                    </div>
+                    <a className="button-link" href="codex://settings">
+                      Open Codex settings
+                    </a>
+                  </div>
+
+                  <div className="manual-config-group">
+                    <h3>MCP server</h3>
+                    <p>
+                      Name server <code>koed-selfhost</code>. MCP alone does not
+                      capture full conversations automatically.
+                    </p>
+                    <div className="field-grid">
+                      <ManualConfigValueSection
+                        title="Command to launch"
+                        value={`${nodeCommand} ${mcpArg}`}
+                      />
+                      <EmptyConfigSection title="Arguments" />
+                      <EnvVarGroup
+                        items={mcpEnvItems}
+                      />
+                      <EmptyConfigSection
+                        title="Environment variable passthrough"
+                        tone="neutral"
+                      />
+                      <ManualConfigValueSection
+                        title="Working Directory"
+                        value={repoPath || "/path/to/koed-self-hosted"}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="manual-config-group">
+                    <h3>Capture Hook</h3>
+                    <p>
+                      Codex does not expose hook editing in settings UI. Create
+                      hook config JSON first, then add hook blocks in
+                      <code> config.toml</code>.
+                    </p>
+                    <div className="codex-setup-stack compact-stack">
+                      <JsonBlock
+                        title={hookConfigPath}
+                        value={hookConfigJsonBlock}
+                      />
+                      <div className="codex-callout">
+                        <div>
+                          <strong>Hooks live in config.toml</strong>
+                          <p>
+                            Open Codex settings, click <strong>Configuration</strong>,
+                            then <strong>Open config.toml</strong>.
+                          </p>
+                        </div>
+                        <a className="button-link" href="codex://settings">
+                          Open Codex settings
+                        </a>
+                      </div>
+                      <JsonBlock
+                        title="~/.codex/config.toml hooks"
+                        value={codexHookTomlBlock}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="codex-setup-stack">
+                  <div className="codex-callout">
+                    <div>
+                      <strong>config.toml in Codex</strong>
+                      <p>
+                        Open Codex settings, click <strong>Configuration</strong>,
+                        then <strong>Open config.toml</strong>.
+                      </p>
+                    </div>
+                    <a className="button-link" href="codex://settings">
+                      Open Codex settings
+                    </a>
+                  </div>
+                  <div className="codex-callout">
+                    <div>
+                      <strong>Trust hooks in Codex</strong>
+                      <p>
+                        Open Codex Settings, click <strong>Hooks</strong>, then
+                        follow review markers and click <strong>Trust</strong>.
+                      </p>
+                    </div>
+                    <a className="button-link" href="codex://settings">
+                      Open Codex settings
+                    </a>
+                  </div>
+                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
+                </div>
+              )}
             </section>
 
             <section className="surface">
@@ -690,11 +1071,15 @@ const App = () => {
         {activeSection === "clients" ? (
           <div className="client-layout">
             <section className="surface">
-              <h2>Codex Desktop</h2>
-              <p>
-                Codex is supported now. The console can generate the fields, but
-                Codex Desktop must save its own MCP configuration.
-              </p>
+              <div className="section-title-row codex-setup-header">
+                <div>
+                  <h2>Codex Desktop</h2>
+                </div>
+                <CodexSetupModeToggle
+                  mode={codexSetupMode}
+                  setMode={setCodexSetupMode}
+                />
+              </div>
               <div className="form-stack">
                 <label>
                   Local repository path
@@ -711,27 +1096,81 @@ const App = () => {
                     onChange={(event) => setNodeCommand(event.target.value)}
                   />
                 </label>
+                <label>
+                  Hook config path
+                  <input
+                    value={hookConfigPath}
+                    onChange={(event) => setHookConfigPath(event.target.value)}
+                    placeholder="~/.koed/config.json"
+                  />
+                </label>
               </div>
-              <div className="field-grid">
-                <FieldCopy label="Name" value="koed-selfhost" />
-                <FieldCopy label="Transport" value="STDIO" />
-                <FieldCopy label="Command" value={nodeCommand} />
-                <FieldCopy label="Argument" value={mcpArg} />
-                <FieldCopy label="MEMORY_API_URL" value={apiBaseUrl} />
-                <FieldCopy
-                  label="MEMORY_API_TOKEN"
-                  value={tokenForSetup}
-                  masked={newToken === null}
-                />
-                <FieldCopy
-                  label="MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"
-                  value="48000"
-                />
-                <FieldCopy
-                  label="Working directory"
-                  value={repoPath || "/path/to/koed-self-hosted"}
-                />
-              </div>
+              {codexSetupMode === "manual" ? (
+                <div className="codex-setup-stack">
+                  <div className="codex-callout">
+                    <div>
+                      <strong>Manual entry in Codex</strong>
+                      <p>
+                        Open Codex settings, click <strong>MCP servers</strong>,
+                        then <strong>+ Add server</strong>.
+                      </p>
+                    </div>
+                    <a className="button-link" href="codex://settings">
+                      Open Codex settings
+                    </a>
+                  </div>
+                  <div className="manual-config-group">
+                    <h3>MCP server</h3>
+                    <p>Name server <code>koed-selfhost</code>.</p>
+                    <div className="field-grid">
+                      <ManualConfigValueSection
+                        title="Command to launch"
+                        value={`${nodeCommand} ${mcpArg}`}
+                      />
+                      <EmptyConfigSection title="Arguments" />
+                      <EnvVarGroup
+                        items={mcpEnvItems}
+                      />
+                      <EmptyConfigSection
+                        title="Environment variable passthrough"
+                        tone="neutral"
+                      />
+                      <ManualConfigValueSection
+                        title="Working Directory"
+                        value={repoPath || "/path/to/koed-self-hosted"}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="codex-setup-stack">
+                  <div className="codex-callout">
+                    <div>
+                      <strong>config.toml in Codex</strong>
+                      <p>
+                        Open Codex settings, click <strong>Configuration</strong>,
+                        then <strong>Open config.toml</strong>.
+                      </p>
+                    </div>
+                    <a className="button-link" href="codex://settings">
+                      Open Codex settings
+                    </a>
+                  </div>
+                  <div className="codex-callout">
+                    <div>
+                      <strong>Trust hooks in Codex</strong>
+                      <p>
+                        Open Codex Settings, click <strong>Hooks</strong>, then
+                        follow review markers and click <strong>Trust</strong>.
+                      </p>
+                    </div>
+                    <a className="button-link" href="codex://settings">
+                      Open Codex settings
+                    </a>
+                  </div>
+                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
+                </div>
+              )}
             </section>
             <section className="surface">
               <h2>Other clients</h2>
@@ -811,18 +1250,12 @@ const App = () => {
                 </div>
                 <div>
                   <span>Verification</span>
-                  <StatusDot
-                    status={
-                      smokeResult?.ok || graphCounts.events > 0
-                        ? "verified"
-                        : "pending"
-                    }
-                  />
+                  <StatusDot status={memoryVerified ? "verified" : "pending"} />
                 </div>
               </div>
               {smokeResult ? (
                 <div className="result-box">
-                  <StatusDot status={smokeResult.ok ? "verified" : "failed"} />
+                  <StatusDot status={memoryVerified ? "verified" : "failed"} />
                   <p>{smokeResult.content}</p>
                   <small>{smokeResult.marker}</small>
                 </div>
