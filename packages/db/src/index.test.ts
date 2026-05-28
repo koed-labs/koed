@@ -1998,6 +1998,20 @@ describeDb("memory repository visibility", () => {
         sourceHash: `projection-policy-raw-reasoning-${randomUUID()}`
       },
       {
+        transcriptType: "reasoning",
+        text: "Unsummarized reasoning item should stay raw-only.",
+        sourceHash: `projection-policy-unsummarized-reasoning-${randomUUID()}`,
+        rawJson: {
+          method: "item/completed",
+          params: {
+            item: {
+              type: "reasoning",
+              content: ["Unsummarized reasoning item should stay raw-only."]
+            }
+          }
+        }
+      },
+      {
         transcriptType: "function_call",
         text: "Tool call: exec_command",
         sourceHash: `projection-policy-tool-${randomUUID()}`
@@ -2098,6 +2112,9 @@ describeDb("memory repository visibility", () => {
     );
     expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
       "Raw reasoning content"
+    );
+    expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
+      "Unsummarized reasoning item"
     );
     expect(events.rows.map((row) => row.content).join("\n")).not.toContain(
       "Rolling context"

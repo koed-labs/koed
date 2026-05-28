@@ -1599,6 +1599,11 @@ const projectionIsRawReasoningLabel = (label: string): boolean =>
 const projectionIsReasoningLabel = (label: string): boolean =>
   /reasoning|thought/i.test(label);
 
+const projectionIsExplicitReasoningSummaryLabel = (label: string): boolean =>
+  /reasoning[_/ -]?summary|summary[_/ -]?reasoning|ReasoningSummary|thought[_/ -]?summary|summary[_/ -]?thought/i.test(
+    label
+  );
+
 const projectionIsReasoningSummaryLabel = (label: string): boolean =>
   projectionIsReasoningLabel(label) && !projectionIsRawReasoningLabel(label);
 
@@ -1685,10 +1690,16 @@ const conversationItemContent = (row: {
     if (projectionIsRawReasoningLabel(label)) {
       return null;
     }
-    return reasoningSummaryTextFromItem(item) ?? row.raw_text?.trim() ?? null;
+    return (
+      reasoningSummaryTextFromItem(item) ??
+      (projectionIsExplicitReasoningSummaryLabel(label)
+        ? row.raw_text?.trim()
+        : null) ??
+      null
+    );
   }
   if (item && /^reasoning$/i.test(stringField(item, "type") ?? "")) {
-    return reasoningSummaryTextFromItem(item) ?? row.raw_text?.trim() ?? null;
+    return reasoningSummaryTextFromItem(item);
   }
   if (row.raw_text?.trim()) {
     return row.raw_text.trim();
