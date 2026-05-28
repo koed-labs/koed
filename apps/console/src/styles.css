@@ -1036,6 +1036,64 @@ td:first-child {
   gap: 20px;
 }
 
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: #eef2f7;
+  border-radius: 999px;
+  padding: 4px;
+  gap: 4px;
+}
+
+.auth-tabs button {
+  min-height: 36px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.auth-tabs button:hover {
+  transform: none;
+  box-shadow: none;
+  color: #0b1220;
+}
+
+.auth-tabs button.active {
+  background: #fff;
+  color: #0b1220;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.auth-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+}
+
+.auth-card-header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  color: #0b1220;
+}
+
+.auth-card-header p {
+  margin: 0;
+  font-size: 14px;
+  color: #64748b;
+}
+
 .auth-card h1 {
   margin: 0;
   text-align: center;

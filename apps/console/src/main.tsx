@@ -441,14 +441,17 @@ const CodexSetupModeToggle = ({
   </div>
 );
 
+type AuthMode = "login" | "signup";
+
 type AuthGateProps = {
   setup: SetupStatus | null;
   email: string;
   setEmail: (value: string) => void;
   password: string;
   setPassword: (value: string) => void;
-  onSubmit: (event: FormEvent) => void;
+  onSubmit: (mode: AuthMode, event: FormEvent) => void;
   error: string | null;
+  clearError: () => void;
 };
 
 const AuthGate = ({
@@ -458,9 +461,40 @@ const AuthGate = ({
   password,
   setPassword,
   onSubmit,
-  error
+  error,
+  clearError
 }: AuthGateProps) => {
-  const buttonLabel = setup?.configured ? "Continue" : "Create admin";
+  const configured = Boolean(setup?.configured);
+  const [mode, setMode] = useState<AuthMode>(configured ? "login" : "signup");
+
+  useEffect(() => {
+    setMode(configured ? "login" : "signup");
+  }, [configured]);
+
+  const switchMode = (next: AuthMode) => {
+    if (next === mode) return;
+    clearError();
+    setPassword("");
+    setMode(next);
+  };
+
+  const isSignup = mode === "signup";
+  const heading = !configured
+    ? "Create local admin"
+    : isSignup
+      ? "Sign Up"
+      : "Log In";
+  const subheading = !configured
+    ? "Set the first account for this local Koed service."
+    : isSignup
+      ? "Create another account on this local Koed service."
+      : "Welcome back. Sign in to the operator console.";
+  const buttonLabel = !configured
+    ? "Create admin"
+    : isSignup
+      ? "Create account"
+      : "Log in";
+
   return (
     <main className="auth-gate">
       <div className="auth-gate-inner">
@@ -472,8 +506,39 @@ const AuthGate = ({
           height={48}
         />
         <section className="auth-card" aria-labelledby="auth-card-title">
-          <h1 id="auth-card-title">Log In or Sign Up</h1>
-          <form onSubmit={onSubmit}>
+          {configured ? (
+            <div
+              className="auth-tabs"
+              role="tablist"
+              aria-label="Authentication mode"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "login"}
+                className={mode === "login" ? "active" : ""}
+                onClick={() => switchMode("login")}
+              >
+                Log In
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "signup"}
+                className={mode === "signup" ? "active" : ""}
+                onClick={() => switchMode("signup")}
+              >
+                Sign Up
+              </button>
+            </div>
+          ) : null}
+
+          <div className="auth-card-header">
+            <h1 id="auth-card-title">{heading}</h1>
+            <p>{subheading}</p>
+          </div>
+
+          <form onSubmit={(event) => onSubmit(mode, event)}>
             <input
               type="email"
               value={email}
@@ -481,6 +546,7 @@ const AuthGate = ({
               placeholder="Email address"
               aria-label="Email address"
               autoComplete="email"
+              required
             />
             <input
               type="password"
@@ -488,15 +554,20 @@ const AuthGate = ({
               onChange={(event) => setPassword(event.target.value)}
               placeholder="Password"
               aria-label="Password"
-              autoComplete={
-                setup?.configured ? "current-password" : "new-password"
-              }
+              autoComplete={isSignup ? "new-password" : "current-password"}
+              required
             />
             <button type="submit">{buttonLabel}</button>
           </form>
-          <p className="auth-card-footnote">
-            This account will have full control over the local service instance.
-          </p>
+
+          {!configured || isSignup ? (
+            <p className="auth-card-footnote">
+              {!configured
+                ? "This account will have full control over the local service instance."
+                : "New accounts can only be created when public registration is enabled on this instance."}
+            </p>
+          ) : null}
+
           {error ? (
             <div className="alert auth-card-alert" role="alert">
               {error}
@@ -602,11 +673,16 @@ const App = () => {
     localStorage.setItem("koed.nodeCommand", nodeCommand);
   }, [nodeCommand]);
 
-  const submitAuth = async (event: FormEvent) => {
+  const submitAuth = async (mode: AuthMode, event: FormEvent) => {
     event.preventDefault();
     setError(null);
+    const endpoint = !setup?.configured
+      ? "/auth/setup"
+      : mode === "signup"
+        ? "/auth/register"
+        : "/auth/login";
     try {
-      await requestJson(setup?.configured ? "/auth/login" : "/auth/setup", {
+      await requestJson(endpoint, {
         method: "POST",
         body: JSON.stringify({ email, password })
       });
@@ -806,8 +882,9 @@ const App = () => {
         setEmail={setEmail}
         password={password}
         setPassword={setPassword}
-        onSubmit={(event) => void submitAuth(event)}
+        onSubmit={(mode, event) => void submitAuth(mode, event)}
         error={error}
+        clearError={() => setError(null)}
       />
     );
   }
