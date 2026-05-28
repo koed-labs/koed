@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-Koed Self-Hosted is currently pre-1.0. Until versioned releases are published,
-security fixes are made on the default branch and are intended for the latest
-available source.
+Koed Self-Hosted is currently pre-release software. Until further notice, there
+are no supported production versions, maintenance branches, or backport
+commitments. Security fixes, when made, are made on the default branch and may
+require operators to update to the latest available source.
 
-Operators should run the latest published commit or release candidate available
-for the self-hosted distribution. Older commits, forks, and locally modified
-deployments are not supported unless a maintainer explicitly says otherwise.
+Older commits, tags, release candidates, forks, and locally modified deployments
+are not supported unless a maintainer explicitly says otherwise.
 
 ## Reporting a Vulnerability
 
@@ -47,8 +47,8 @@ When reporting security issues:
 
 ## Scope
 
-Security reports are in scope when they affect the Koed Self-Hosted repository,
-including:
+We welcome private reports about security issues affecting the Koed Self-Hosted
+repository, including:
 
 - authentication or session handling;
 - API Token handling;
@@ -57,6 +57,9 @@ including:
 - exposure of Memory data, diagnostics, logs, backups, or exports;
 - container, deployment, or default-configuration issues that could expose
   Koed services unexpectedly.
+
+This scope describes what reports are useful for triage. It is not a support
+commitment, warranty, bug bounty program, or remediation SLA.
 
 Issues in third-party services, private deployments, or modified forks may be
 out of scope unless they demonstrate a problem in Koed Self-Hosted itself.
