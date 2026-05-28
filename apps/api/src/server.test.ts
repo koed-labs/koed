@@ -939,6 +939,8 @@ const createFakeRepository = (): MemorySourceRepository => {
           summaryTokenEstimate: null,
           summaryModel: summaryCorrections.get(memory.id) ?? null,
           summaryPromptVersion: null,
+          summaryStructuredJson: null,
+          summaryStructuredSchemaVersion: null,
           lcmAlgorithmVersion: "test-lcm",
           embeddingCount: 0,
           summaryCorrectedAt: summaryCorrections.has(memory.id)
