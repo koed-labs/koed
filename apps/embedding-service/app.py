@@ -195,8 +195,8 @@ def detokenize_text(tokens: list[int]) -> str:
 
 def split_text_by_embedding_tokens(text: str) -> list[str]:
     stripped = text.strip()
-    tokens = tokenize_text(stripped)
     max_tokens = max(1, min(config.embedding_max_tokens, config.llama_n_ctx))
+    tokens = tokenize_text(stripped)
     if len(tokens) <= max_tokens:
         return [stripped]
 
@@ -206,6 +206,23 @@ def split_text_by_embedding_tokens(text: str) -> list[str]:
         if chunk:
             chunks.append(chunk)
     return chunks
+
+
+def scheduled_text_chunks(text: str, priority: str) -> list[str]:
+    with embedding_scheduler.slot(priority):
+        with model_lock:
+            return split_text_by_embedding_tokens(text)
+
+
+def scheduled_embedding(chunk_text: str, priority: str) -> list[float]:
+    with embedding_scheduler.slot(priority):
+        with model_lock:
+            if model is None:
+                raise HTTPException(status_code=503, detail="embedding model is still loading")
+            with suppress_native_stderr(config.suppress_llama_warnings):
+                result = model.create_embedding(chunk_text, model=config.model_name)
+            embedding = result["data"][0]["embedding"]
+            return normalize_vector(list(embedding))
 
 
 @contextmanager
@@ -241,25 +258,20 @@ def embed(
     try:
         vectors: list[list[float]] = []
         chunks: list[EmbeddedChunk] = []
-        with embedding_scheduler.slot(priority):
-            with model_lock:
-                for input_index, text in enumerate(request.texts):
-                    text_chunks = split_text_by_embedding_tokens(text)
-                    for chunk_index, chunk_text in enumerate(text_chunks):
-                        with suppress_native_stderr(config.suppress_llama_warnings):
-                            result = model.create_embedding(chunk_text, model=config.model_name)
-                        embedding = result["data"][0]["embedding"]
-                        vector = normalize_vector(list(embedding))
-                        vectors.append(vector)
-                        chunks.append(
-                            EmbeddedChunk(
-                                inputIndex=input_index,
-                                chunkIndex=chunk_index,
-                                chunkCount=len(text_chunks),
-                                text=chunk_text,
-                                vector=vector,
-                            )
-                        )
+        for input_index, text in enumerate(request.texts):
+            text_chunks = scheduled_text_chunks(text, priority)
+            for chunk_index, chunk_text in enumerate(text_chunks):
+                vector = scheduled_embedding(chunk_text, priority)
+                vectors.append(vector)
+                chunks.append(
+                    EmbeddedChunk(
+                        inputIndex=input_index,
+                        chunkIndex=chunk_index,
+                        chunkCount=len(text_chunks),
+                        text=chunk_text,
+                        vector=vector,
+                    )
+                )
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"model embedding failed: {error}") from error
 
