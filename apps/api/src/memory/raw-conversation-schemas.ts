@@ -1,11 +1,10 @@
 import { z } from "zod";
 import { metadataSchema } from "./common-schemas.js";
 
-const rawVisibilitySchema = z.enum(["personal", "team"]);
+const rawVisibilitySchema = z.literal("personal");
 
 const conversationItemSchema = z.object({
   visibility: rawVisibilitySchema.optional(),
-  teamId: z.string().uuid().optional(),
   sessionId: z.string().uuid().optional(),
   turnId: z.string().uuid().optional(),
   sourceKind: z.string().min(1),

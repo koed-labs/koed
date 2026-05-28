@@ -34,14 +34,12 @@ export const createMemoryJobScheduler = ({
   const runCompactionInline = async (
     repo: MemorySourceRepository,
     requesterContext: { userId: string },
-    visibility: Visibility,
-    teamId?: string
+    visibility: Visibility
   ) =>
     scheduleCompaction({
       repository: repo,
       requesterContext,
-      visibility,
-      teamId
+      visibility
     });
 
   const enqueueEmbedding = async (
@@ -101,15 +99,13 @@ export const createMemoryJobScheduler = ({
   const enqueueCompaction = async (
     repo: MemorySourceRepository,
     requesterContext: { userId: string },
-    visibility: Visibility,
-    teamId?: string
+    visibility: Visibility
   ): Promise<MemoryJobStatus> => {
     if (runMemoryJobsInlineForTests) {
       const compaction = await runCompactionInline(
         repo,
         requesterContext,
-        visibility,
-        teamId
+        visibility
       );
       return { queued: false, inline: true, compaction };
     }
@@ -122,7 +118,7 @@ export const createMemoryJobScheduler = ({
           queue: { name: "lcm-compact" },
           job: { name: "compact-scope" },
           actor: { user_id: requesterContext.userId },
-          resource: { type: "compaction_scope", visibility, team_id: teamId }
+          resource: { type: "compaction_scope", visibility }
         },
         "compaction queue is unavailable"
       );
@@ -137,7 +133,7 @@ export const createMemoryJobScheduler = ({
       const job = await withTimeout(
         compactionQueue.add(
           "compact-scope",
-          { userId: requesterContext.userId, visibility, teamId },
+          { userId: requesterContext.userId, visibility },
           {
             attempts: 5,
             backoff: { type: "exponential", delay: 10_000 },
@@ -157,7 +153,7 @@ export const createMemoryJobScheduler = ({
           queue: { name: "lcm-compact" },
           job: { name: "compact-scope" },
           actor: { user_id: requesterContext.userId },
-          resource: { type: "compaction_scope", visibility, team_id: teamId },
+          resource: { type: "compaction_scope", visibility },
           err: error
         },
         "could not enqueue compaction job"
@@ -170,12 +166,11 @@ export const createMemoryJobScheduler = ({
     repo: MemorySourceRepository,
     requesterContext: { userId: string },
     eventId: string,
-    visibility: Visibility,
-    teamId?: string
+    visibility: Visibility
   ) => {
     const [embedding, compaction] = await Promise.all([
       enqueueEmbedding("memory_event", eventId),
-      enqueueCompaction(repo, requesterContext, visibility, teamId)
+      enqueueCompaction(repo, requesterContext, visibility)
     ]);
 
     return { embedding, compaction };
@@ -187,30 +182,18 @@ export const createMemoryJobScheduler = ({
     scopes: Array<{
       eventId: string;
       visibility: Visibility;
-      teamId: string | null;
     }>
   ) => {
     const embeddings = await Promise.all(
       scopes.map((scope) => enqueueEmbedding("memory_event", scope.eventId))
     );
-    const scopeMap = new Map<
-      string,
-      { visibility: Visibility; teamId?: string }
-    >();
+    const scopeMap = new Map<string, { visibility: Visibility }>();
     for (const scope of scopes) {
-      scopeMap.set(`${scope.visibility}:${scope.teamId ?? ""}`, {
-        visibility: scope.visibility,
-        ...(scope.teamId ? { teamId: scope.teamId } : {})
-      });
+      scopeMap.set(scope.visibility, { visibility: scope.visibility });
     }
     const compactions = await Promise.all(
       [...scopeMap.values()].map((scope) =>
-        enqueueCompaction(
-          repo,
-          requesterContext,
-          scope.visibility,
-          scope.teamId
-        )
+        enqueueCompaction(repo, requesterContext, scope.visibility)
       )
     );
 

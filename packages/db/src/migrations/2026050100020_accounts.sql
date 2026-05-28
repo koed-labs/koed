@@ -1,13 +1,6 @@
 alter table users
   add column if not exists password_hash text;
 
-alter table teams
-  add column if not exists invite_code text;
-
-create unique index if not exists teams_invite_code_unique
-  on teams(invite_code)
-  where invite_code is not null;
-
 create table if not exists user_sessions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references users(id) on delete cascade,

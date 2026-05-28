@@ -27,7 +27,7 @@ type CapturePolicy = {
   id: string;
   targetType: "global" | "project" | "thread";
   captureState: "enabled" | "disabled" | "ask" | null;
-  visibility: "personal" | "team" | null;
+  visibility: "personal" | null;
 };
 type GraphRecord = {
   id: string;

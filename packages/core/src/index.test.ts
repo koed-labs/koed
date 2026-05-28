@@ -85,32 +85,18 @@ describe("core schemas", () => {
 });
 
 const createFakeRepository = (
-  memberships = new Map<string, Set<string>>()
 ): MemoryEngineRepository => {
   const events: MemoryEventRecord[] = [];
   const nodes: Array<{
     id: string;
     visibility: Visibility;
-    teamId: string | null;
     sourceEventIds: string[];
     summaryText: string;
     lcmNodeSummaryStatus?: "pending" | "summarized";
   }> = [];
 
-  const assertTeamMember = (userId: string, teamId: string) => {
-    if (!memberships.get(teamId)?.has(userId)) {
-      throw new Error("User is not an active member of the requested team");
-    }
-  };
-
   return {
     async createMemoryEvent(actor, input) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
-        }
-        assertTeamMember(actor.userId, input.teamId);
-      }
       const event: MemoryEventRecord = {
         id: `event-${events.length + 1}`,
         workspaceId: input.workspaceId,
@@ -121,8 +107,7 @@ const createFakeRepository = (
         content: input.content,
         metadata: input.metadata ?? {},
         visibility: input.visibility,
-        ownerUserId: input.visibility === "personal" ? actor.userId : null,
-        teamId: input.visibility === "team" ? input.teamId! : null,
+        ownerUserId: actor.userId,
         createdAt: new Date(events.length).toISOString()
       };
       events.push(event);
@@ -131,18 +116,7 @@ const createFakeRepository = (
     async searchMemoryNodes(actor, input) {
       const results = nodes
         .filter((node) => {
-          if (
-            input.scope !== "personal_and_team" &&
-            node.visibility !== input.scope
-          ) {
-            return false;
-          }
-          if (node.visibility === "team") {
-            return Boolean(
-              node.teamId && memberships.get(node.teamId)?.has(actor.userId)
-            );
-          }
-          return true;
+          return node.visibility === input.scope;
         })
         .filter((node) => node.summaryText.includes(input.query))
         .map(
@@ -167,23 +141,14 @@ const createFakeRepository = (
       };
     },
     async createLcmNodes(actor, input) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Team visibility requires a teamId");
-        }
-        assertTeamMember(actor.userId, input.teamId);
-      }
       const scoped = events.filter((event) =>
-        input.visibility === "personal"
-          ? event.ownerUserId === actor.userId
-          : event.teamId === input.teamId
+        event.ownerUserId === actor.userId
       );
       const leafNodeIds = scoped.map((event) => {
         const id = `node-${nodes.length + 1}`;
         nodes.push({
           id,
           visibility: input.visibility,
-          teamId: input.teamId ?? null,
           sourceEventIds: [event.id],
           summaryText: event.content,
           lcmNodeSummaryStatus: "pending"
@@ -196,7 +161,6 @@ const createFakeRepository = (
         nodes.push({
           id: rollupNodeId,
           visibility: input.visibility,
-          teamId: input.teamId ?? null,
           sourceEventIds: scoped.map((event) => event.id),
           summaryText: scoped.map((event) => event.content).join("\n"),
           lcmNodeSummaryStatus: "pending"
@@ -206,11 +170,7 @@ const createFakeRepository = (
     },
     async expandMemoryNode(nodeId, actor) {
       const node = nodes.find((candidate) => candidate.id === nodeId);
-      if (
-        !node ||
-        (node.visibility === "team" &&
-          (!node.teamId || !memberships.get(node.teamId)?.has(actor.userId)))
-      ) {
+      if (!node) {
         throw new Error("Memory node not found or not visible");
       }
       return {
@@ -258,76 +218,22 @@ describe("provider-neutral memory engine", () => {
 
     expect(event.visibility).toBe("personal");
     expect(event.ownerUserId).toBe("alice");
-    expect(event.teamId).toBeNull();
   });
 
-  it("allows repositories to enforce team visibility for captured events", async () => {
-    const memberships = new Map([["team-1", new Set(["alice"])]]);
-    const repository = createFakeRepository(memberships);
-
-    await expect(
-      repository.createMemoryEvent(
-        { userId: "bob" },
-        {
-          actor: "user",
-          eventType: "captured",
-          rawEventType: "user_prompt",
-          visibility: "team",
-          teamId: "team-1",
-          workspaceId: "workspace-1",
-          content: "Team deploys on Fridays."
-        }
-      )
-    ).rejects.toThrow("not an active member");
-
-    const event = await repository.createMemoryEvent(
-      { userId: "alice" },
-      {
-        actor: "user",
-        eventType: "captured",
-        rawEventType: "user_prompt",
-        visibility: "team",
-        teamId: "team-1",
-        workspaceId: "workspace-1",
-        content: "Team deploys on Fridays."
-      }
-    );
-    expect(event.visibility).toBe("team");
-  });
-
-  it("creates LCM leaves and rollups without mixing visibility", async () => {
-    const memberships = new Map([["team-1", new Set(["alice"])]]);
-    const repository = createFakeRepository(memberships);
+  it("creates LCM leaves and rollups for the requesting user", async () => {
+    const repository = createFakeRepository();
     const engine = createMemoryEngine(repository);
     await captureUserEvent(engine, "alice", "Personal fact one");
     await captureUserEvent(engine, "alice", "Personal fact two");
-    await repository.createMemoryEvent(
-      { userId: "alice" },
-      {
-        actor: "user",
-        eventType: "captured",
-        rawEventType: "user_prompt",
-        visibility: "team",
-        teamId: "team-1",
-        workspaceId: "w",
-        content: "Team fact"
-      }
-    );
+    await captureUserEvent(engine, "bob", "Other user fact");
 
     const personal = await engine.scheduleCompaction({
       requesterContext: { userId: "alice" },
       visibility: "personal"
     });
-    const team = await engine.scheduleCompaction({
-      requesterContext: { userId: "alice" },
-      visibility: "team",
-      teamId: "team-1"
-    });
 
     expect(personal.leafNodeIds).toHaveLength(2);
     expect(personal.rollupNodeId).not.toBeNull();
-    expect(team.leafNodeIds).toHaveLength(1);
-    expect(team.rollupNodeId).toBeNull();
   });
 
   it("expands cited nodes into exact ordered source events", async () => {
@@ -349,31 +255,13 @@ describe("provider-neutral memory engine", () => {
     ]);
   });
 
-  it("keeps personal and team retrieval isolated unless mixed scope is requested", async () => {
-    const memberships = new Map([["team-1", new Set(["alice"])]]);
-    const repository = createFakeRepository(memberships);
+  it("searches personal memory only", async () => {
+    const repository = createFakeRepository();
     const engine = createMemoryEngine(repository);
     await captureUserEvent(engine, "alice", "alpha personal");
-    await repository.createMemoryEvent(
-      { userId: "alice" },
-      {
-        actor: "user",
-        eventType: "captured",
-        rawEventType: "user_prompt",
-        visibility: "team",
-        teamId: "team-1",
-        workspaceId: "w",
-        content: "alpha team"
-      }
-    );
     await engine.scheduleCompaction({
       requesterContext: { userId: "alice" },
       visibility: "personal"
-    });
-    await engine.scheduleCompaction({
-      requesterContext: { userId: "alice" },
-      visibility: "team",
-      teamId: "team-1"
     });
 
     expect(
@@ -385,24 +273,6 @@ describe("provider-neutral memory engine", () => {
         })
       ).results
     ).toHaveLength(1);
-    expect(
-      (
-        await engine.searchMemory({
-          requesterContext: { userId: "alice" },
-          query: "alpha",
-          scope: "team"
-        })
-      ).results
-    ).toHaveLength(1);
-    expect(
-      (
-        await engine.searchMemory({
-          requesterContext: { userId: "alice" },
-          query: "alpha",
-          scope: "personal_and_team"
-        })
-      ).results.map((result) => result.citation.visibility)
-    ).toEqual(["personal", "team"]);
   });
 
   it("returns a cited evidence bundle without requiring an answer provider", async () => {

@@ -11,13 +11,10 @@ import type {
   ApiTokenRecord,
   CapturedSessionRecord,
   CreateMemoryNodeInput,
-  CreateTeamInput,
   CreateUserInput,
   MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
-  TeamMemberRecord,
-  TeamRecord,
   UserRecord,
   Visibility
 } from "@koed/db";
@@ -152,10 +149,6 @@ type MemoryQuestionsResponse = { questions: MemoryQuestionDetailRecord[] };
 const createFakeRepository = (): MemorySourceRepository => {
   const users = new Map<string, UserRecord>();
   const sessions = new Map<string, string>();
-  const teams = new Map<
-    string,
-    TeamRecord & { members: Map<string, "owner" | "admin" | "member"> }
-  >();
   const tokens = new Map<string, ApiTokenRecord & { tokenHash: string }>();
   const memories: MemoryNodeRecord[] = [];
   const policies: Array<{
@@ -182,15 +175,6 @@ const createFakeRepository = (): MemorySourceRepository => {
   const invalidatedEvents = new Set<string>();
   const summaryCorrections = new Map<string, string>();
   const memoryQuestions = new Map<string, MemoryQuestionDetailRecord>();
-
-  const getMembership = (userId: string, teamId: string) =>
-    teams.get(teamId)?.members.get(userId);
-  const requireTeamMemoryWritePermission = (userId: string, teamId: string) => {
-    const role = getMembership(userId, teamId);
-    if (role !== "owner" && role !== "admin") {
-      throw new Error("User is not allowed to modify shared memory");
-    }
-  };
 
   return {
     health: async () => true,
@@ -227,83 +211,11 @@ const createFakeRepository = (): MemorySourceRepository => {
     async revokeSession(sessionHash: string) {
       sessions.delete(sessionHash);
     },
-    async createTeam(input: CreateTeamInput) {
-      const id = randomUUID();
-      teams.set(id, {
-        id,
-        name: input.name,
-        inviteCode: input.inviteCode ?? "INVITE",
-        role: "owner",
-        members: new Map([[input.createdByUserId, "owner"]])
-      });
-      return { id };
-    },
-    async addTeamMember(teamId: string, userId: string, role = "member") {
-      teams.get(teamId)?.members.set(userId, role);
-    },
-    async joinTeamByInviteCode(userId: string, inviteCode: string) {
-      const team = [...teams.values()].find(
-        (candidate) => candidate.inviteCode === inviteCode
-      );
-      if (!team) {
-        throw new Error("Invalid invite code");
-      }
-      team.members.set(userId, "member");
-      return {
-        id: team.id,
-        name: team.name,
-        inviteCode: team.inviteCode,
-        role: "member"
-      };
-    },
-    async getCurrentTeam(userId: string) {
-      const team = [...teams.values()].find((candidate) =>
-        candidate.members.has(userId)
-      );
-      if (!team) {
-        return null;
-      }
-      return {
-        id: team.id,
-        name: team.name,
-        inviteCode: team.inviteCode,
-        role: team.members.get(userId)
-      };
-    },
-    async listTeamMembers(userId: string, teamId: string) {
-      if (!getMembership(userId, teamId)) {
-        throw new Error("User is not an active member of the requested team");
-      }
-      const team = teams.get(teamId);
-      if (!team) {
-        return [];
-      }
-      return [...team.members.entries()].flatMap<TeamMemberRecord>(
-        ([memberUserId, role]) => {
-          const member = users.get(memberUserId);
-          return member
-            ? [
-                {
-                  userId: member.id,
-                  email: member.email,
-                  displayName: member.displayName,
-                  role,
-                  joinedAt: new Date().toISOString()
-                }
-              ]
-            : [];
-        }
-      );
-    },
     async createApiToken(input) {
-      if (input.teamId && !getMembership(input.ownerUserId, input.teamId)) {
-        throw new Error("User is not an active member of the requested team");
-      }
       const id = randomUUID();
       const record = {
         id,
         ownerUserId: input.ownerUserId,
-        teamId: input.teamId ?? null,
         name: input.name,
         tokenPrefix: input.tokenPrefix,
         scopes: input.scopes ?? [],
@@ -341,7 +253,6 @@ const createFakeRepository = (): MemorySourceRepository => {
       const record: CapturedSessionRecord = {
         id,
         ownerUserId: actor.userId,
-        teamId: null,
         visibility: "personal",
         externalSessionId: input.externalSessionId ?? null,
         workspaceId: input.workspaceId ?? input.cwd ?? null,
@@ -415,7 +326,6 @@ const createFakeRepository = (): MemorySourceRepository => {
       const record: MemoryQuestionDetailRecord = {
         id: randomUUID(),
         ownerUserId: actor.userId,
-        teamId: null,
         visibility: "personal",
         retrievalScope: input.retrievalScope ?? "personal",
         searchDomain: input.searchDomain,
@@ -586,18 +496,9 @@ const createFakeRepository = (): MemorySourceRepository => {
       return updated;
     },
     async createMemoryNode(actor: ActorContext, input: CreateMemoryNodeInput) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Unsupported visibility scope");
-        }
-        if (!getMembership(actor.userId, input.teamId)) {
-          throw new Error("User is not an active member of the requested team");
-        }
-      }
       const record: MemoryNodeRecord = {
         id: randomUUID(),
-        ownerUserId: input.visibility === "personal" ? actor.userId : null,
-        teamId: input.visibility === "team" ? input.teamId! : null,
+        ownerUserId: actor.userId,
         visibility: input.visibility,
         title: input.title ?? null,
         summaryText: input.summaryText
@@ -706,9 +607,7 @@ const createFakeRepository = (): MemorySourceRepository => {
           if (memory.visibility === "personal") {
             return memory.ownerUserId === actor.userId;
           }
-          return Boolean(
-            memory.teamId && getMembership(actor.userId, memory.teamId)
-          );
+          return false;
         }) ?? null
       );
     },
@@ -721,9 +620,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         if (memory.visibility === "personal") {
           return memory.ownerUserId === actor.userId;
         }
-        return Boolean(
-          memory.teamId && getMembership(actor.userId, memory.teamId)
-        );
+        return false;
       });
     },
     async getLocalEmbeddingStatus() {
@@ -755,9 +652,7 @@ const createFakeRepository = (): MemorySourceRepository => {
             return false;
           if (memory.visibility === "personal")
             return memory.ownerUserId === actor.userId;
-          return Boolean(
-            memory.teamId && getMembership(actor.userId, memory.teamId)
-          );
+          return false;
         })
         .slice(0, input.limit ?? 100)
         .map((memory) => ({
@@ -823,9 +718,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async updateMemoryPresentation(actor, nodeId, input) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return null;
-      if (memory.visibility === "team" && memory.teamId) {
-        requireTeamMemoryWritePermission(actor.userId, memory.teamId);
-      }
       if (input.summaryText) memory.summaryText = input.summaryText;
       if (input.pinned !== undefined)
         memory.pinnedAt = input.pinned ? new Date().toISOString() : null;
@@ -839,9 +731,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async deleteMemory(actor, nodeId) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return false;
-      if (memory.visibility === "team" && memory.teamId) {
-        requireTeamMemoryWritePermission(actor.userId, memory.teamId);
-      }
       invalidatedNodes.add(memory.id);
       return true;
     },
@@ -904,9 +793,7 @@ const createFakeRepository = (): MemorySourceRepository => {
             return false;
           if (memory.visibility === "personal")
             return memory.ownerUserId === actor.userId;
-          return Boolean(
-            memory.teamId && getMembership(actor.userId, memory.teamId)
-          );
+          return false;
         })
         .slice(0, input.limit ?? 100)
         .map((memory) => ({
@@ -919,7 +806,6 @@ const createFakeRepository = (): MemorySourceRepository => {
             : ("pending" as const),
           visibility: memory.visibility,
           ownerUserId: memory.ownerUserId,
-          teamId: memory.teamId,
           projectId: memory.projectId ?? null,
           projectName: memory.projectName ?? null,
           projectPath: memory.projectPath ?? null,
@@ -981,9 +867,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async updateLcmGraphNode(actor, nodeId, input) {
       const memory = await this.getVisibleMemoryNode(actor, nodeId);
       if (!memory) return null;
-      if (memory.visibility === "team" && memory.teamId) {
-        requireTeamMemoryWritePermission(actor.userId, memory.teamId);
-      }
       if (input.summaryText) {
         memory.summaryText = input.summaryText;
         memory.updatedAt = new Date().toISOString();
@@ -1017,9 +900,7 @@ const createFakeRepository = (): MemorySourceRepository => {
           if (input.threadId && threadId !== input.threadId) return false;
           if (event.visibility === "personal")
             return event.ownerUserId === actor.userId;
-          return Boolean(
-            event.teamId && getMembership(actor.userId, event.teamId)
-          );
+          return false;
         })
         .sort(
           (left, right) =>
@@ -1079,7 +960,6 @@ const createFakeRepository = (): MemorySourceRepository => {
                 : null,
             timestamp: event.createdAt,
             visibility: event.visibility,
-            teamId: event.teamId,
             invalidatedAt: invalidatedEvents.has(event.id)
               ? new Date().toISOString()
               : null,
@@ -1225,11 +1105,6 @@ const createFakeRepository = (): MemorySourceRepository => {
           session.ownerUserId !== actor.userId
         )
           continue;
-        if (
-          session.visibility === "team" &&
-          (!session.teamId || !getMembership(actor.userId, session.teamId))
-        )
-          continue;
         const projectId =
           (typeof session.metadata.workspaceId === "string"
             ? session.metadata.workspaceId
@@ -1355,9 +1230,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async updateLcmGraphEvent(actor, eventId, input) {
       const event = await this.getLcmGraphEvent(actor, eventId);
       if (!event) return null;
-      if (event.visibility === "team" && event.teamId) {
-        requireTeamMemoryWritePermission(actor.userId, event.teamId);
-      }
       const raw = events.find((candidate) => candidate.id === eventId);
       if (raw && input.visibility) raw.visibility = input.visibility;
       if (input.invalidated) invalidatedEvents.add(eventId);
@@ -1368,9 +1240,6 @@ const createFakeRepository = (): MemorySourceRepository => {
     async invalidateLcmGraphEvent(actor, eventId) {
       const event = await this.getLcmGraphEvent(actor, eventId);
       if (!event) return false;
-      if (event.visibility === "team" && event.teamId) {
-        requireTeamMemoryWritePermission(actor.userId, event.teamId);
-      }
       invalidatedEvents.add(eventId);
       return true;
     },
@@ -1413,14 +1282,6 @@ const createFakeRepository = (): MemorySourceRepository => {
       return { id: randomUUID(), inserted: true };
     },
     async createMemoryEvent(actor, input) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Unsupported visibility scope");
-        }
-        if (!getMembership(actor.userId, input.teamId)) {
-          throw new Error("User is not an active member of the requested team");
-        }
-      }
       if (input.sessionId) {
         const session = capturedSessions.get(input.sessionId);
         if (!session || session.ownerUserId !== actor.userId) {
@@ -1450,8 +1311,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         content: input.content,
         metadata: input.metadata ?? {},
         visibility: input.visibility,
-        ownerUserId: input.visibility === "personal" ? actor.userId : null,
-        teamId: input.visibility === "team" ? input.teamId! : null,
+        ownerUserId: actor.userId,
         createdAt: new Date(Date.now() + events.length).toISOString()
       };
       events.push(event);
@@ -1466,18 +1326,13 @@ const createFakeRepository = (): MemorySourceRepository => {
     async searchMemoryNodes(actor, input) {
       const results = memories
         .filter((memory) => {
-          if (
-            input.scope !== "personal_and_team" &&
-            memory.visibility !== input.scope
-          ) {
+          if (memory.visibility !== input.scope) {
             return false;
           }
           if (memory.visibility === "personal") {
             return memory.ownerUserId === actor.userId;
           }
-          return Boolean(
-            memory.teamId && getMembership(actor.userId, memory.teamId)
-          );
+          return false;
         })
         .filter((memory) =>
           memory.summaryText.toLowerCase().includes(input.query.toLowerCase())
@@ -1504,19 +1359,8 @@ const createFakeRepository = (): MemorySourceRepository => {
       };
     },
     async createLcmNodes(actor, input) {
-      if (input.visibility === "team") {
-        if (!input.teamId) {
-          throw new Error("Unsupported visibility scope");
-        }
-        if (!getMembership(actor.userId, input.teamId)) {
-          throw new Error("User is not an active member of the requested team");
-        }
-      }
       const uncompacted = events.filter((event) => {
-        const visible =
-          input.visibility === "personal"
-            ? event.ownerUserId === actor.userId
-            : event.teamId === input.teamId;
+        const visible = event.ownerUserId === actor.userId;
         return (
           visible &&
           ![...nodeSources.values()].some((sourceIds) =>
@@ -1527,8 +1371,7 @@ const createFakeRepository = (): MemorySourceRepository => {
       const leafNodeIds = uncompacted.map((event) => {
         const node: MemoryNodeRecord = {
           id: randomUUID(),
-          ownerUserId: event.visibility === "personal" ? actor.userId : null,
-          teamId: event.visibility === "team" ? event.teamId : null,
+          ownerUserId: actor.userId,
           visibility: event.visibility,
           title: null,
           summaryText: event.content,
@@ -1568,9 +1411,7 @@ const createFakeRepository = (): MemorySourceRepository => {
           if (memory.visibility === "personal") {
             return memory.ownerUserId === actor.userId;
           }
-          return Boolean(
-            memory.teamId && getMembership(actor.userId, memory.teamId)
-          );
+          return false;
         }) ?? null;
       if (!node) {
         throw new Error("Memory node not found or not visible");
@@ -1877,47 +1718,6 @@ describe("account and access flows", () => {
       "solo@example.com"
     );
     expect(rejected.statusCode).toBe(404);
-  });
-
-  it("does not expose team management endpoints", async () => {
-    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
-    const repository = createFakeRepository();
-    const app = await buildServer({ repository });
-    const registered = await app.inject({
-      method: "POST",
-      url: "/auth/register",
-      payload: { email: "teams-disabled@example.com", password: "password123" }
-    });
-    const cookie = cookieHeader(registered);
-    const responses = await Promise.all([
-      app.inject({
-        method: "POST",
-        url: "/teams",
-        headers: { cookie },
-        payload: { name: "Research" }
-      }),
-      app.inject({
-        method: "POST",
-        url: "/teams/join",
-        headers: { cookie },
-        payload: { inviteCode: "INVITE" }
-      }),
-      app.inject({
-        method: "GET",
-        url: "/teams/current",
-        headers: { cookie }
-      }),
-      app.inject({
-        method: "GET",
-        url: "/teams/current/members",
-        headers: { cookie }
-      })
-    ]);
-    await app.close();
-
-    expect(responses.map((response) => response.statusCode)).toEqual([
-      404, 404, 404, 404
-    ]);
   });
 
   it("authenticates API requests with bearer tokens", async () => {
@@ -2269,26 +2069,6 @@ describe("account and access flows", () => {
       headers,
       payload: { limit: 10 }
     });
-    const rejectedTeamRawConversationItems = await app.inject({
-      method: "POST",
-      url: "/v1/memory/conversation-items",
-      headers,
-      payload: {
-        items: [
-          {
-            visibility: "team",
-            teamId: "11111111-1111-4111-8111-111111111111",
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-app-server-v1",
-            sourceTransport: "app_server",
-            sourceRecordType: "app_server_notification",
-            rawJson: { method: "turn/completed" },
-            sourceHash: "team-raw-source-hash",
-            idempotencyKey: "team-raw-idempotency-key"
-          }
-        ]
-      }
-    });
     const rejectedSharedAnswer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
@@ -2323,7 +2103,6 @@ describe("account and access flows", () => {
     ).toHaveLength(1);
     expect(tokenUsage.statusCode).toBe(200);
     expect(projection.statusCode).toBe(200);
-    expect(rejectedTeamRawConversationItems.statusCode).toBe(403);
     expect(rejectedSharedAnswer.statusCode).toBe(400);
     expect(cookieAnswer.statusCode).toBe(200);
     expect(
@@ -2362,7 +2141,7 @@ describe("account and access flows", () => {
       payload: {
         targetType: "global",
         captureState: "enabled",
-        visibility: "team"
+        visibility: "public"
       }
     });
     await app.close();
@@ -2429,13 +2208,11 @@ describe("account and access flows", () => {
 
   it("compacts duplicate captures using the returned event visibility", async () => {
     const repository = createFakeRepository();
-    const compactionScopes: Array<{ visibility: Visibility; teamId?: string }> =
-      [];
+    const compactionScopes: Array<{ visibility: Visibility }> = [];
     const originalCreateLcmNodes = repository.createLcmNodes.bind(repository);
     repository.createLcmNodes = async (actor, input) => {
       compactionScopes.push({
         visibility: input.visibility,
-        teamId: input.teamId
       });
       return originalCreateLcmNodes(actor, input);
     };
@@ -2474,16 +2251,6 @@ describe("account and access flows", () => {
       headers,
       payload
     });
-    const rejectedTeamPolicy = await app.inject({
-      method: "PUT",
-      url: "/v1/capture-policies",
-      headers,
-      payload: {
-        targetType: "global",
-        captureState: "enabled",
-        visibility: "team"
-      }
-    });
     const second = await app.inject({
       method: "POST",
       url: "/v1/memory/capture-personal-event",
@@ -2493,12 +2260,10 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(first.statusCode).toBe(200);
-    expect(rejectedTeamPolicy.statusCode).toBe(400);
     expect(second.statusCode).toBe(200);
     expect(jsonBody<CaptureResponse>(second).event.visibility).toBe("personal");
     expect(compactionScopes.at(-1)).toEqual({
       visibility: "personal",
-      teamId: undefined
     });
   });
 
@@ -3546,7 +3311,7 @@ describe("account and access flows", () => {
     });
   });
 
-  it("rejects unsupported team retrieval scope for persisted questions", async () => {
+  it("rejects unsupported retrieval scope for persisted questions", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",
@@ -3569,7 +3334,7 @@ describe("account and access flows", () => {
         authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
       },
       payload: {
-        query: "What did we decide about shared memory?",
+        query: "What did we decide about memory?",
         retrieval_scope: "shared"
       }
     });

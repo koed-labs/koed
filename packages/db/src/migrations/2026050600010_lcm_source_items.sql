@@ -19,5 +19,5 @@ create index if not exists memory_node_children_child_idx
   on memory_node_children(child_memory_node_id, parent_memory_node_id);
 
 create index if not exists memory_nodes_lcm_scope_depth_idx
-  on memory_nodes(visibility, owner_user_id, team_id, depth, created_at)
+  on memory_nodes(visibility, owner_user_id, depth, created_at)
   where invalidated_at is null;

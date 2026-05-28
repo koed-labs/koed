@@ -225,11 +225,7 @@ export const chunkTextForModel = (
   }
 };
 
-export const memoryScopeSchema = z.enum([
-  "personal",
-  "team",
-  "personal_and_team"
-]);
+export const memoryScopeSchema = z.literal("personal");
 export type MemoryScope = z.infer<typeof memoryScopeSchema>;
 export const memorySearchDomainSchema = z.enum([
   "global",
@@ -290,12 +286,12 @@ export interface LcmNode {
   id: string;
   depth: 0 | 1;
   kind: "leaf" | "rollup";
-  scope: Exclude<MemoryScope, "personal_and_team">;
+  scope: MemoryScope;
   summaryText: string;
   sourceItemIds: string[];
 }
 
-export type Visibility = "personal" | "team";
+export type Visibility = "personal";
 export type MemoryActor =
   | "user"
   | "assistant"
@@ -323,7 +319,6 @@ export interface PersonalEventInput {
   content: string;
   metadata?: Record<string, unknown>;
   visibility?: Visibility;
-  teamId?: string;
   sourceRuntime?: "codex" | "codex-cli";
   captureMethod?: "hook" | "mcp" | "web" | "api";
   codexTranscriptPath?: string;
@@ -346,7 +341,6 @@ export type AnswerMemoryInput = SearchMemoryInput;
 export interface ScheduleCompactionInput {
   requesterContext: RequesterContext;
   visibility: Visibility;
-  teamId?: string;
 }
 
 export interface MemoryEventRecord {
@@ -360,7 +354,6 @@ export interface MemoryEventRecord {
   metadata: Record<string, unknown>;
   visibility: Visibility;
   ownerUserId: string | null;
-  teamId: string | null;
   createdAt: string;
 }
 
@@ -431,7 +424,6 @@ export interface MemoryEngineRepository {
       content: string;
       metadata?: Record<string, unknown>;
       visibility: Visibility;
-      teamId?: string;
       sourceRuntime?: "codex" | "codex-cli";
       captureMethod?: "hook" | "mcp" | "web" | "api";
       codexTranscriptPath?: string;
@@ -455,7 +447,7 @@ export interface MemoryEngineRepository {
   }>;
   createLcmNodes(
     actor: RequesterContext,
-    input: { visibility: Visibility; teamId?: string }
+    input: { visibility: Visibility }
   ): Promise<CompactionResult>;
   expandMemoryNode(
     nodeId: string,
@@ -479,7 +471,6 @@ export const capturePersonalEvent = async (
     eventType: "captured",
     rawEventType: event.eventType,
     visibility: event.visibility ?? "personal",
-    teamId: event.teamId,
     sourceRuntime: event.sourceRuntime,
     captureMethod: event.captureMethod,
     codexTranscriptPath: event.codexTranscriptPath,
@@ -509,7 +500,7 @@ export const answerMemory = async (
   );
   const results = search.results;
   const instructions =
-    "Codex should synthesize the final answer using only the cited evidence in this bundle. Cite each claim with the provided personal/team visibility and source id. If evidence has lcmNodeSummaryStatus=pending, say that the relevant LCM summary is still pending and rely on the exact source text cautiously instead of pretending the rollup is complete. If the evidence is insufficient, say what is missing instead of guessing.";
+    "Codex should synthesize the final answer using only the cited evidence in this bundle. Cite each claim with the provided personal visibility and source id. If evidence has lcmNodeSummaryStatus=pending, say that the relevant LCM summary is still pending and rely on the exact source text cautiously instead of pretending the rollup is complete. If the evidence is insufficient, say what is missing instead of guessing.";
   const answerText =
     results.length === 0
       ? "No matching memory found."

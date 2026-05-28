@@ -5,14 +5,14 @@
 - Read `CONTEXT.md` before making domain, naming, API, documentation, or user-facing wording changes.
 - Treat `CONTEXT.md` as the glossary and relationship map for Koed Self-Hosted. It is not an implementation spec, roadmap, scratch pad, or changelog.
 - Keep `CONTEXT.md` implementation-free. Add only resolved domain terms, relationships, example dialogue, and flagged ambiguities.
-- Use the canonical terms from `CONTEXT.md`, especially **Operator**, **Operator Console**, **User**, **API Token**, **AI Client**, **MCP Server**, **Capture Hook**, **Supported Capture Hook**, **Memory Answer**, **Evidence Bundle**, **LCM Placeholder**, **LCM Summary**, **Personal Memory**, **Team Memory**, **Capture Policy**, **Capture State**, **Capture Target**, and **Capture Pause**.
+- Use the canonical terms from `CONTEXT.md`, especially **Operator**, **Operator Console**, **User**, **API Token**, **AI Client**, **MCP Server**, **Capture Hook**, **Supported Capture Hook**, **Memory Answer**, **Evidence Bundle**, **LCM Placeholder**, **LCM Summary**, **Personal Memory**, **Capture Policy**, **Capture State**, **Capture Target**, and **Capture Pause**.
 - If a requested change conflicts with `CONTEXT.md`, stop and surface the conflict instead of silently inventing new language.
 
 ## Planning And TODOs
 
 - Put implementation follow-ups in `TODO.md`, not `CONTEXT.md`.
 - `TODO.md` is the current implementation backlog from the domain discussion. Check it before starting cleanup work.
-- Team-scoped API token behavior is deferred. Current API-token behavior is personal-memory only; do not reintroduce Team Memory through API tokens without revisiting the deferred notes.
+- Current API-token behavior is personal-memory only.
 - Server-side LLM synthesis is out of scope for this self-hosted build. Do not add or revive backend LLM calls for answer or LCM summary synthesis.
 
 ## ADRs
@@ -20,7 +20,6 @@
 - ADRs live in `docs/adr/`.
 - Add an ADR only for decisions that are hard to reverse, surprising without context, and the result of a real trade-off.
 - `docs/adr/0001-ai-client-synthesis-only.md` is accepted direction: Koed Self-Hosted relies on the connected AI Client for LLM synthesis.
-- `docs/adr/0002-bind-api-token-team-access-at-creation-time.md` is deferred until team-scoped token behavior returns to scope.
 
 ## Ticketing
 

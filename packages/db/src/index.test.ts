@@ -181,8 +181,7 @@ describeDb("memory repository visibility", () => {
       workspaceId: string;
       content: string;
       sessionId?: string;
-      visibility?: "personal" | "team";
-      teamId?: string;
+      visibility?: "personal";
       metadata?: Record<string, unknown>;
     }
   ) =>
@@ -194,7 +193,6 @@ describeDb("memory repository visibility", () => {
       eventType: "user_prompt",
       content: input.content,
       visibility: input.visibility,
-      teamId: input.teamId,
       metadata: input.metadata
     });
 
@@ -262,8 +260,6 @@ describeDb("memory repository visibility", () => {
           turns,
           sessions,
           workspaces,
-          team_members,
-          teams,
           user_sessions,
           users
         restart identity cascade
@@ -396,250 +392,6 @@ describeDb("memory repository visibility", () => {
     expect(aliceExpanded.sources.map((source) => source.content)).toEqual([
       "Alice-only source evidence."
     ]);
-  });
-
-  it("rejects team memory writes from solo users", async () => {
-    const alice = await repo.createUser({
-      email: `alice-${randomUUID()}@example.com`
-    });
-
-    await expect(
-      repo.createMemoryNode(
-        { userId: alice.id },
-        {
-          visibility: "team",
-          summaryText: "No team target"
-        }
-      )
-    ).rejects.toThrow("Team visibility requires a teamId");
-  });
-
-  it("rejects team memory writes from non-members", async () => {
-    const alice = await repo.createUser({
-      email: `alice-${randomUUID()}@example.com`
-    });
-    const bob = await repo.createUser({
-      email: `bob-${randomUUID()}@example.com`
-    });
-    const team = await repo.createTeam({
-      name: "Research",
-      createdByUserId: bob.id
-    });
-
-    await expect(
-      repo.createMemoryNode(
-        { userId: alice.id },
-        {
-          visibility: "team",
-          teamId: team.id,
-          summaryText: "Alice should not be able to write here"
-        }
-      )
-    ).rejects.toThrow("User is not an active member");
-  });
-
-  it("allows team members to read team memory", async () => {
-    const alice = await repo.createUser({
-      email: `alice-${randomUUID()}@example.com`
-    });
-    const bob = await repo.createUser({
-      email: `bob-${randomUUID()}@example.com`
-    });
-    const outsider = await repo.createUser({
-      email: `outsider-${randomUUID()}@example.com`
-    });
-    const team = await repo.createTeam({
-      name: "Research",
-      createdByUserId: alice.id
-    });
-    await repo.addTeamMember(team.id, bob.id);
-
-    await repo.createMemoryNode(
-      { userId: alice.id },
-      {
-        visibility: "team",
-        teamId: team.id,
-        summaryText: "Shared team memory",
-        captureMethod: "mcp"
-      }
-    );
-
-    const aliceMemories = await repo.listVisibleMemoryNodes(
-      { userId: alice.id },
-      "team"
-    );
-    const bobMemories = await repo.listVisibleMemoryNodes(
-      { userId: bob.id },
-      "team"
-    );
-    const outsiderMemories = await repo.listVisibleMemoryNodes(
-      { userId: outsider.id },
-      "team"
-    );
-
-    expect(aliceMemories).toHaveLength(1);
-    expect(bobMemories).toHaveLength(1);
-    expect(bobMemories[0]?.summaryText).toBe("Shared team memory");
-    expect(outsiderMemories).toHaveLength(0);
-  });
-
-  it("keeps Team Memory graph, search, and export scoped to team membership", async () => {
-    const alice = await repo.createUser({
-      email: `alice-team-boundary-${randomUUID()}@example.com`
-    });
-    const bob = await repo.createUser({
-      email: `bob-team-boundary-${randomUUID()}@example.com`
-    });
-    const outsider = await repo.createUser({
-      email: `outsider-team-boundary-${randomUUID()}@example.com`
-    });
-    const aliceTeam = await repo.createTeam({
-      name: "Alpha Research",
-      createdByUserId: alice.id
-    });
-    const bobTeam = await repo.createTeam({
-      name: "Beta Research",
-      createdByUserId: bob.id
-    });
-    const engine = createMemoryEngine(repo);
-
-    const aliceEvent = await captureUserEvent(engine, alice.id, {
-      workspaceId: "workspace-team-alpha",
-      visibility: "team",
-      teamId: aliceTeam.id,
-      content: "Alpha team source evidence."
-    });
-    const bobEvent = await captureUserEvent(engine, bob.id, {
-      workspaceId: "workspace-team-beta",
-      visibility: "team",
-      teamId: bobTeam.id,
-      content: "Beta team source evidence."
-    });
-    const aliceNode = await repo.createMemoryNode(
-      { userId: alice.id },
-      {
-        visibility: "team",
-        teamId: aliceTeam.id,
-        summaryText: "Alpha team memory node"
-      }
-    );
-    const bobNode = await repo.createMemoryNode(
-      { userId: bob.id },
-      {
-        visibility: "team",
-        teamId: bobTeam.id,
-        summaryText: "Beta team memory node"
-      }
-    );
-    await pool.query(
-      `
-        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
-        values ($1, $2, 0), ($3, $4, 0)
-      `,
-      [aliceNode.id, aliceEvent.id, bobNode.id, bobEvent.id]
-    );
-    await embedPendingSources();
-
-    const bobGraphNodes = await repo.listLcmGraphNodes(
-      { userId: bob.id },
-      { visibility: "team", includeInvalidated: true }
-    );
-    expect(bobGraphNodes.map((node) => node.id)).toContain(bobNode.id);
-    expect(bobGraphNodes.map((node) => node.id)).not.toContain(aliceNode.id);
-
-    const bobGraphEvents = await repo.listLcmGraphEvents(
-      { userId: bob.id },
-      { visibility: "team", includeContent: true, includeRaw: true }
-    );
-    expect(bobGraphEvents.map((event) => event.id)).toContain(bobEvent.id);
-    expect(bobGraphEvents.map((event) => event.id)).not.toContain(
-      aliceEvent.id
-    );
-
-    const bobSearch = await engine.searchMemory({
-      requesterContext: { userId: bob.id },
-      query: "team source evidence",
-      scope: "team",
-      limit: 10
-    });
-    expect(bobSearch.results.map((result) => result.nodeId)).toContain(
-      bobNode.id
-    );
-    expect(bobSearch.results.map((result) => result.nodeId)).not.toContain(
-      aliceNode.id
-    );
-
-    const bobExport = await repo.exportMemoryRecords({ userId: bob.id });
-    expect(bobExport.nodes.map((node) => node.id)).toContain(bobNode.id);
-    expect(bobExport.nodes.map((node) => node.id)).not.toContain(aliceNode.id);
-    expect(bobExport.events.map((event) => event.id)).toContain(bobEvent.id);
-    expect(bobExport.events.map((event) => event.id)).not.toContain(
-      aliceEvent.id
-    );
-
-    const outsiderExport = await repo.exportMemoryRecords({
-      userId: outsider.id
-    });
-    expect(outsiderExport.nodes).toHaveLength(0);
-    expect(outsiderExport.events).toHaveLength(0);
-  });
-
-  it("requires admin or owner role to modify existing Team Memory", async () => {
-    const owner = await repo.createUser({
-      email: `owner-${randomUUID()}@example.com`
-    });
-    const admin = await repo.createUser({
-      email: `admin-${randomUUID()}@example.com`
-    });
-    const member = await repo.createUser({
-      email: `member-${randomUUID()}@example.com`
-    });
-    const team = await repo.createTeam({
-      name: "Permissions",
-      createdByUserId: owner.id
-    });
-    await repo.addTeamMember(team.id, admin.id, "admin");
-    await repo.addTeamMember(team.id, member.id);
-    const memory = await repo.createMemoryNode(
-      { userId: owner.id },
-      {
-        visibility: "team",
-        teamId: team.id,
-        summaryText: "Team-governed memory",
-        captureMethod: "mcp"
-      }
-    );
-    const personalMemory = await repo.createMemoryNode(
-      { userId: member.id },
-      {
-        visibility: "personal",
-        summaryText: "Member personal memory",
-        captureMethod: "mcp"
-      }
-    );
-
-    await expect(
-      repo.updateLcmGraphNode({ userId: member.id }, memory.id, {
-        summaryText: "Member edit"
-      })
-    ).rejects.toThrow("User is not allowed to modify Team Memory");
-    await expect(
-      repo.deleteMemory({ userId: member.id }, memory.id)
-    ).rejects.toThrow("User is not allowed to modify Team Memory");
-
-    await expect(
-      repo.updateLcmGraphNode({ userId: member.id }, personalMemory.id, {
-        summaryText: "Member personal edit"
-      })
-    ).resolves.toMatchObject({ summaryText: "Member personal edit" });
-    await expect(
-      repo.updateLcmGraphNode({ userId: admin.id }, memory.id, {
-        summaryText: "Admin edit"
-      })
-    ).resolves.toMatchObject({ summaryText: "Admin edit" });
-    await expect(
-      repo.deleteMemory({ userId: owner.id }, memory.id)
-    ).resolves.toBe(true);
   });
 
   it("captures personal facts, compacts, searches, answers, and expands a cited node", async () => {
@@ -2480,51 +2232,4 @@ describeDb("memory repository visibility", () => {
     expect(events.map((event) => event.id)).toEqual([captures[0]!.id]);
   });
 
-  it("retrieves team-visible captured conversation for a teammate", async () => {
-    const alice = await repo.createUser({
-      email: `alice-${randomUUID()}@example.com`
-    });
-    const bob = await repo.createUser({
-      email: `bob-${randomUUID()}@example.com`
-    });
-    const team = await repo.createTeam({
-      name: "Research",
-      createdByUserId: alice.id
-    });
-    await repo.addTeamMember(team.id, bob.id);
-    const engine = createMemoryEngine(repo);
-
-    for (let index = 1; index <= 5; index += 1) {
-      await repo.createMemoryEvent(
-        { userId: alice.id },
-        {
-          workspaceId: "workspace-team",
-          actor: "user",
-          eventType: "captured",
-          rawEventType: "user_prompt",
-          visibility: "team",
-          teamId: team.id,
-          content: `Team fact ${index}: release train owner is Bob.`
-        }
-      );
-    }
-    await engine.scheduleCompaction({
-      requesterContext: { userId: alice.id },
-      visibility: "team",
-      teamId: team.id
-    });
-    await embedPendingSources();
-
-    const teammateSearch = await engine.searchMemory({
-      requesterContext: { userId: bob.id },
-      query: "release train owner",
-      scope: "team"
-    });
-
-    expect(teammateSearch.results.length).toBeGreaterThan(0);
-    expect(teammateSearch.results[0]?.summaryText).toContain(
-      "release train owner is Bob"
-    );
-    expect(teammateSearch.results[0]?.citation.visibility).toBe("team");
-  });
 });

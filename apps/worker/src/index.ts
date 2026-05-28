@@ -204,8 +204,7 @@ const handleJob = async (queueName: string, data: Record<string, unknown>) => {
     const compaction = await scheduleCompaction({
       repository: requireRepository(),
       requesterContext: { userId },
-      visibility,
-      teamId: typeof data.teamId === "string" ? data.teamId : undefined
+      visibility
     });
     const nodeIds = [
       ...compaction.leafNodeIds,
@@ -300,22 +299,15 @@ const runRawProjectionCatchup = async () => {
           embedSource("memory_event", eventId)
         )
       );
-      const scopes = new Map<
-        string,
-        { visibility: Visibility; teamId?: string }
-      >();
+      const scopes = new Map<string, { visibility: Visibility }>();
       for (const scope of result.memoryEventScopes) {
-        scopes.set(`${scope.visibility}:${scope.teamId ?? ""}`, {
-          visibility: scope.visibility,
-          ...(scope.teamId ? { teamId: scope.teamId } : {})
-        });
+        scopes.set(scope.visibility, { visibility: scope.visibility });
       }
       for (const scope of scopes.values()) {
         const compaction = await scheduleCompaction({
           repository,
           requesterContext: actor,
-          visibility: scope.visibility,
-          teamId: scope.teamId
+          visibility: scope.visibility
         });
         const nodeIds = [
           ...compaction.leafNodeIds,

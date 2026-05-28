@@ -8,10 +8,6 @@ create index if not exists memory_questions_personal_pending_claim_idx
   on memory_questions(owner_user_id, processing_lease_until, created_at, id)
   where visibility = 'personal' and status = 'pending';
 
-create index if not exists memory_questions_team_pending_claim_idx
-  on memory_questions(team_id, processing_lease_until, created_at, id)
-  where visibility = 'team' and status = 'pending';
-
 drop trigger if exists memory_questions_graph_update_notify on memory_questions;
 create trigger memory_questions_graph_update_notify
 after insert or update or delete on memory_questions

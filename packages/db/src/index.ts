@@ -37,14 +37,14 @@ export const checkDatabase = async (pool: pg.Pool): Promise<boolean> => {
   return result.rows[0]?.ok === 1;
 };
 
-export type Visibility = "personal" | "team";
+export type Visibility = "personal";
 export type CaptureMethod = "hook" | "mcp" | "web" | "api";
 export type SourceRuntime = "codex" | "codex-cli";
 export type CaptureState = "enabled" | "disabled" | "ask";
 export type CapturePolicyTarget = "global" | "project" | "thread";
 export type MemoryQuestionStatus = "pending" | "answered" | "error";
 export type MemoryQuestionSearchDomain = "global" | "project" | "session";
-export type MemoryQuestionRetrievalScope = "personal" | "personal+team";
+export type MemoryQuestionRetrievalScope = "personal";
 
 export interface ActorContext {
   userId: string;
@@ -56,12 +56,6 @@ export interface CreateUserInput {
   passwordHash?: string;
 }
 
-export interface CreateTeamInput {
-  name: string;
-  createdByUserId: string;
-  inviteCode?: string;
-}
-
 export interface UserRecord {
   id: string;
   email: string;
@@ -69,25 +63,9 @@ export interface UserRecord {
   passwordHash: string | null;
 }
 
-export interface TeamRecord {
-  id: string;
-  name: string;
-  inviteCode: string | null;
-  role?: "owner" | "admin" | "member";
-}
-
-export interface TeamMemberRecord {
-  userId: string;
-  email: string;
-  displayName: string | null;
-  role: "owner" | "admin" | "member";
-  joinedAt: string;
-}
-
 export interface ApiTokenRecord {
   id: string;
   ownerUserId: string;
-  teamId: string | null;
   name: string;
   tokenPrefix: string;
   scopes: string[];
@@ -100,7 +78,6 @@ export interface ApiTokenRecord {
 export interface CreateMemoryNodeInput {
   visibility: Visibility;
   summaryText: string;
-  teamId?: string;
   title?: string;
   bodyText?: string;
   captureMethod?: CaptureMethod;
@@ -116,7 +93,6 @@ export interface CreateMemoryNodeInput {
 export interface MemoryNodeRecord {
   id: string;
   ownerUserId: string | null;
-  teamId: string | null;
   visibility: Visibility;
   title: string | null;
   summaryText: string;
@@ -225,7 +201,6 @@ export interface LcmGraphNode {
   summaryStatus: "pending" | "summarized";
   visibility: Visibility;
   ownerUserId: string | null;
-  teamId: string | null;
   projectId: string | null;
   projectName: string | null;
   projectPath: string | null;
@@ -263,7 +238,6 @@ export interface LcmGraphEvent {
   threadName: string | null;
   timestamp: string;
   visibility: Visibility;
-  teamId: string | null;
   invalidatedAt: string | null;
   invalidationReason: string | null;
   contentPreview: string;
@@ -306,7 +280,6 @@ export interface LcmGraphNodeDetail extends LcmGraphNode {
 export interface LcmNodeForSummarization {
   id: string;
   ownerUserId: string | null;
-  teamId: string | null;
   visibility: Visibility;
   kind: "leaf" | "rollup";
   depth: number;
@@ -322,7 +295,6 @@ export interface LcmNodeForSummarization {
 interface LcmNodeForSummarizationRow {
   id: string;
   owner_user_id: string | null;
-  team_id: string | null;
   visibility: Visibility;
   kind: "leaf" | "rollup";
   depth: number;
@@ -341,7 +313,6 @@ export interface EmbeddableSourceRecord {
   sourceType: EmbeddableSourceType;
   sourceId: string;
   ownerUserId: string | null;
-  teamId: string | null;
   visibility: Visibility;
   text: string;
   sourceHash: string;
@@ -363,7 +334,6 @@ interface RerankResult {
 export interface CapturedSessionRecord {
   id: string;
   ownerUserId: string | null;
-  teamId: string | null;
   visibility: Visibility;
   externalSessionId: string | null;
   workspaceId: string | null;
@@ -377,7 +347,6 @@ export interface CapturedSessionRecord {
 
 export interface ConversationItemInput {
   visibility?: Visibility;
-  teamId?: string;
   sessionId?: string;
   turnId?: string;
   sourceKind: string;
@@ -430,7 +399,6 @@ export interface ConversationItemRecord {
 type ConversationProjectionRawRow = {
   id: string;
   owner_user_id: string | null;
-  team_id: string | null;
   visibility: Visibility;
   session_id: string | null;
   turn_id: string | null;
@@ -466,7 +434,6 @@ type LogicalConversationProjectionItem = {
 
 export interface WorkflowTokenUsageInput {
   visibility?: Visibility;
-  teamId?: string;
   workflowType: string;
   workflowId?: string;
   sessionId?: string;
@@ -522,14 +489,12 @@ export interface ConversationProjectionResult {
   memoryEventScopes: Array<{
     eventId: string;
     visibility: Visibility;
-    teamId: string | null;
   }>;
 }
 
 export interface MemoryQuestionShellRecord {
   id: string;
   ownerUserId: string;
-  teamId: string | null;
   visibility: Visibility;
   retrievalScope: MemoryQuestionRetrievalScope;
   searchDomain: MemoryQuestionSearchDomain;
@@ -575,18 +540,8 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   ): Promise<void>;
   getSessionUser(sessionHash: string): Promise<UserRecord | null>;
   revokeSession(sessionHash: string): Promise<void>;
-  createTeam(input: CreateTeamInput): Promise<{ id: string }>;
-  addTeamMember(
-    teamId: string,
-    userId: string,
-    role?: "owner" | "admin" | "member"
-  ): Promise<void>;
-  joinTeamByInviteCode(userId: string, inviteCode: string): Promise<TeamRecord>;
-  getCurrentTeam(userId: string): Promise<TeamRecord | null>;
-  listTeamMembers(userId: string, teamId: string): Promise<TeamMemberRecord[]>;
   createApiToken(input: {
     ownerUserId: string;
-    teamId?: string;
     name: string;
     tokenHash: string;
     tokenPrefix: string;
@@ -864,54 +819,9 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   }): Promise<{ id: string; inserted: boolean }>;
 }
 
-const requireTeamMembership = async (
-  pool: pg.Pool,
-  userId: string,
-  teamId: string
-): Promise<void> => {
-  const result = await pool.query<{ ok: number }>(
-    `
-      select 1 as ok
-      from team_members
-      where user_id = $1
-        and team_id = $2
-        and removed_at is null
-      limit 1
-    `,
-    [userId, teamId]
-  );
-
-  if (result.rowCount === 0) {
-    throw new Error("User is not an active member of the requested team");
-  }
-};
-
-const requireTeamMemoryWritePermission = async (
-  pool: pg.Pool,
-  userId: string,
-  teamId: string
-): Promise<void> => {
-  const result = await pool.query<{ role: "owner" | "admin" | "member" }>(
-    `
-      select role
-      from team_members
-      where user_id = $1
-        and team_id = $2
-        and removed_at is null
-      limit 1
-    `,
-    [userId, teamId]
-  );
-  const role = result.rows[0]?.role;
-  if (role !== "owner" && role !== "admin") {
-    throw new Error("User is not allowed to modify Team Memory");
-  }
-};
-
 const mapMemoryNode = (row: {
   id: string;
   owner_user_id: string | null;
-  team_id: string | null;
   visibility: Visibility;
   title: string | null;
   summary_text: string;
@@ -926,7 +836,6 @@ const mapMemoryNode = (row: {
 }): MemoryNodeRecord => ({
   id: row.id,
   ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
   visibility: row.visibility,
   title: row.title,
   summaryText: row.summary_text,
@@ -1201,7 +1110,7 @@ const clusterRules: Array<{ label: string; pattern: RegExp }> = [
   {
     label: "Capture Control",
     pattern:
-      /\b(capture policy|capture control|pause capture|capture enabled|capture disabled|visibility|personal|team shareable|thread override|project override)\b/i
+      /\b(capture policy|capture control|pause capture|capture enabled|capture disabled|visibility|personal|thread override|project override)\b/i
   },
   {
     label: "Codex Integration",
@@ -1215,7 +1124,7 @@ const clusterRules: Array<{ label: string; pattern: RegExp }> = [
   {
     label: "Sports",
     pattern:
-      /\b(sport|football|soccer|tennis|arsenal|barcelona|team|league|match)\b/i
+      /\b(sport|football|soccer|tennis|arsenal|barcelona|league|match)\b/i
   },
   {
     label: "Preferences",
@@ -1224,7 +1133,7 @@ const clusterRules: Array<{ label: string; pattern: RegExp }> = [
   },
   {
     label: "People",
-    pattern: /\b(friend|colleague|teammate|jacobo|user|person|people)\b/i
+    pattern: /\b(friend|colleague|jacobo|user|person|people)\b/i
   },
   {
     label: "Decisions",
@@ -1276,7 +1185,6 @@ const mapMemoryBrowserItem = (row: {
 const mapLcmGraphNode = (row: {
   id: string;
   owner_user_id: string | null;
-  team_id: string | null;
   visibility: Visibility;
   kind: "leaf" | "rollup";
   depth: number;
@@ -1308,7 +1216,6 @@ const mapLcmGraphNode = (row: {
   summaryStatus: row.summary_model ? "summarized" : "pending",
   visibility: row.visibility,
   ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
   projectId: row.project_id,
   projectName: row.project_name,
   projectPath: row.project_path,
@@ -1346,7 +1253,6 @@ const mapLcmGraphEvent = (row: {
   thread_name: string | null;
   captured_at: Date;
   visibility: Visibility;
-  team_id: string | null;
   invalidated_at: Date | null;
   invalidation_reason: string | null;
   content: string | null;
@@ -1372,7 +1278,6 @@ const mapLcmGraphEvent = (row: {
     threadName: row.thread_name,
     timestamp: row.captured_at.toISOString(),
     visibility: row.visibility,
-    teamId: row.team_id,
     invalidatedAt: row.invalidated_at?.toISOString() ?? null,
     invalidationReason: row.invalidation_reason,
     contentPreview: truncateDisplayText(content, 220),
@@ -1416,7 +1321,6 @@ const mapLcmGraphThreadRow = (row: {
 const mapCapturedSession = (row: {
   id: string;
   owner_user_id: string | null;
-  team_id: string | null;
   visibility: Visibility;
   external_session_id: string | null;
   workspace_id: string | null;
@@ -1429,7 +1333,6 @@ const mapCapturedSession = (row: {
 }): CapturedSessionRecord => ({
   id: row.id,
   ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
   visibility: row.visibility,
   externalSessionId: row.external_session_id,
   workspaceId: row.workspace_id,
@@ -1949,7 +1852,7 @@ const loadLogicalConversationProjectionItem = async (
   const chunks = await pool.query<ConversationProjectionRawRow>(
     `
       select
-        ci.id, ci.owner_user_id, ci.team_id, ci.visibility, ci.session_id,
+        ci.id, ci.owner_user_id, ci.visibility, ci.session_id,
         ci.turn_id, ci.source_kind, ci.source_adapter_version,
         ci.source_transport, ci.source_record_type, ci.source_event_type,
         ci.source_path, ci.source_sequence, ci.event_time, ci.raw_json,
@@ -1964,13 +1867,10 @@ const loadLogicalConversationProjectionItem = async (
       left join sessions s on s.id = ci.session_id
       where ci.logical_source_id = $1
         and ci.visibility = $2::visibility_scope
-        and (
-          ($2::visibility_scope = 'personal' and ci.owner_user_id = $3)
-          or ($2::visibility_scope = 'team' and ci.team_id = $4)
-        )
+        and ci.owner_user_id = $3
       order by ci.transport_chunk_index asc, ci.id asc
     `,
-    [row.logical_source_id, row.visibility, row.owner_user_id, row.team_id]
+    [row.logical_source_id, row.visibility, row.owner_user_id]
   );
 
   const expectedCount = row.transport_chunk_count;
@@ -2049,7 +1949,6 @@ const semanticProjectionChunks = (
 const mapMemoryQuestionShell = (row: {
   id: string;
   owner_user_id: string;
-  team_id: string | null;
   visibility: Visibility;
   retrieval_scope: MemoryQuestionRetrievalScope;
   search_domain: MemoryQuestionSearchDomain;
@@ -2075,7 +1974,6 @@ const mapMemoryQuestionShell = (row: {
 }): MemoryQuestionShellRecord => ({
   id: row.id,
   ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
   visibility: row.visibility,
   retrievalScope: row.retrieval_scope,
   searchDomain: row.search_domain,
@@ -2131,22 +2029,9 @@ const mapUser = (row: {
   passwordHash: row.password_hash
 });
 
-const mapTeam = (row: {
-  id: string;
-  name: string;
-  invite_code: string | null;
-  role?: "owner" | "admin" | "member";
-}): TeamRecord => ({
-  id: row.id,
-  name: row.name,
-  inviteCode: row.invite_code,
-  ...(row.role ? { role: row.role } : {})
-});
-
 const mapApiToken = (row: {
   id: string;
   owner_user_id: string;
-  team_id: string | null;
   name: string;
   token_prefix: string;
   scopes: string[];
@@ -2157,7 +2042,6 @@ const mapApiToken = (row: {
 }): ApiTokenRecord => ({
   id: row.id,
   ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
   name: row.name,
   tokenPrefix: row.token_prefix,
   scopes: row.scopes,
@@ -2480,17 +2364,7 @@ const linkMemoryEventSources = async (
         join memory_events me on me.id = $1
         where ci.id = $2
           and ci.visibility = me.visibility
-          and (
-            (
-              ci.visibility = 'personal'
-              and ci.owner_user_id = me.owner_user_id
-            )
-            or
-            (
-              ci.visibility = 'team'
-              and ci.team_id = me.team_id
-            )
-          )
+          and ci.owner_user_id = me.owner_user_id
         on conflict do nothing
       `,
       [memoryEventId, conversationItemIds[index], index]
@@ -2517,7 +2391,6 @@ const ensureConversationItemTurn = async (
   pool: pg.Pool,
   input: {
     ownerUserId: string | null;
-    teamId: string | null;
     visibility: Visibility;
     item: ConversationItemInput;
   }
@@ -2530,20 +2403,11 @@ const ensureConversationItemTurn = async (
         from turns
         where id = $1
           and visibility = $2::visibility_scope
-          and (
-            ($2::visibility_scope = 'personal' and owner_user_id = $3)
-            or ($2::visibility_scope = 'team' and team_id = $4)
-          )
-          and ($5::uuid is null or session_id = $5)
+          and owner_user_id = $3
+          and ($4::uuid is null or session_id = $4)
         limit 1
       `,
-      [
-        item.turnId,
-        input.visibility,
-        input.ownerUserId,
-        input.teamId,
-        item.sessionId ?? null
-      ]
+      [item.turnId, input.visibility, input.ownerUserId, item.sessionId ?? null]
     );
     if (turn.rowCount === 0) {
       throw new Error("Turn not found or not visible");
@@ -2562,7 +2426,6 @@ const ensureConversationItemTurn = async (
           insert into turns (
             session_id,
             owner_user_id,
-            team_id,
             visibility,
             external_turn_id,
             source_runtime,
@@ -2577,13 +2440,13 @@ const ensureConversationItemTurn = async (
             source_metadata
           )
           values (
-            $1, $2, $3, $4, $5, $6, $7, $8,
-            $9, $10,
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9,
             coalesce(
               (select max(turn_index) + 1 from turns where session_id = $1),
               0
             ),
-            $11, $12, $13, $14
+            $10, $11, $12, $13
           )
           on conflict (session_id, external_turn_id)
             where external_turn_id is not null
@@ -2603,7 +2466,6 @@ const ensureConversationItemTurn = async (
         [
           item.sessionId,
           input.ownerUserId,
-          input.teamId,
           input.visibility,
           item.externalTurnId,
           item.sourceKind === "codex-cli" ? "codex-cli" : "codex",
@@ -2649,7 +2511,6 @@ const validateWorkflowTokenUsageSources = async (
   pool: pg.Pool,
   input: {
     ownerUserId: string | null;
-    teamId: string | null;
     visibility: Visibility;
     usage: WorkflowTokenUsageInput;
   }
@@ -2663,13 +2524,10 @@ const validateWorkflowTokenUsageSources = async (
         where id = $1
           and invalidated_at is null
           and visibility = $2::visibility_scope
-          and (
-            ($2::visibility_scope = 'personal' and owner_user_id = $3)
-            or ($2::visibility_scope = 'team' and team_id = $4)
-          )
+          and owner_user_id = $3
         limit 1
       `,
-      [usage.sessionId, input.visibility, input.ownerUserId, input.teamId]
+      [usage.sessionId, input.visibility, input.ownerUserId]
     );
     if (session.rowCount === 0) {
       throw new Error("Session not found or not visible");
@@ -2683,20 +2541,11 @@ const validateWorkflowTokenUsageSources = async (
         from turns
         where id = $1
           and visibility = $2::visibility_scope
-          and (
-            ($2::visibility_scope = 'personal' and owner_user_id = $3)
-            or ($2::visibility_scope = 'team' and team_id = $4)
-          )
-          and ($5::uuid is null or session_id = $5)
+          and owner_user_id = $3
+          and ($4::uuid is null or session_id = $4)
         limit 1
       `,
-      [
-        usage.turnId,
-        input.visibility,
-        input.ownerUserId,
-        input.teamId,
-        usage.sessionId ?? null
-      ]
+      [usage.turnId, input.visibility, input.ownerUserId, usage.sessionId ?? null]
     );
     if (turn.rowCount === 0) {
       throw new Error("Turn not found or not visible");
@@ -2710,19 +2559,15 @@ const validateWorkflowTokenUsageSources = async (
         from conversation_items
         where id = $1
           and visibility = $2::visibility_scope
-          and (
-            ($2::visibility_scope = 'personal' and owner_user_id = $3)
-            or ($2::visibility_scope = 'team' and team_id = $4)
-          )
-          and ($5::uuid is null or session_id = $5)
-          and ($6::uuid is null or turn_id = $6)
+          and owner_user_id = $3
+          and ($4::uuid is null or session_id = $4)
+          and ($5::uuid is null or turn_id = $5)
         limit 1
       `,
       [
         usage.conversationItemId,
         input.visibility,
         input.ownerUserId,
-        input.teamId,
         usage.sessionId ?? null,
         usage.turnId ?? null
       ]
@@ -2822,7 +2667,6 @@ const rerankTexts = async (
 const mapMemoryEvent = (row: {
   id: string;
   owner_user_id: string | null;
-  team_id: string | null;
   visibility: Visibility;
   event_type: MemoryEventType;
   session_id: string | null;
@@ -2846,7 +2690,6 @@ const mapMemoryEvent = (row: {
   metadata: row.payload.metadata ?? {},
   visibility: row.visibility,
   ownerUserId: row.owner_user_id,
-  teamId: row.team_id,
   createdAt: row.created_at.toISOString()
 });
 
@@ -2910,7 +2753,6 @@ const mapLcmNodeForSummarization = async (
   return {
     id: row.id,
     ownerUserId: row.owner_user_id,
-    teamId: row.team_id,
     visibility: row.visibility,
     kind: row.kind,
     depth: row.depth,
@@ -3080,137 +2922,10 @@ export const createMemorySourceRepository = (
     );
   },
 
-  async createTeam(input) {
-    const result = await pool.query<{ id: string }>(
-      `
-        insert into teams (name, created_by_user_id, invite_code)
-        values ($1, $2, $3)
-        returning id
-      `,
-      [input.name, input.createdByUserId, input.inviteCode ?? null]
-    );
-
-    await pool.query(
-      `
-        insert into team_members (team_id, user_id, role)
-        values ($1, $2, 'owner')
-        on conflict (team_id, user_id) do update
-        set role = excluded.role,
-            removed_at = null
-      `,
-      [result.rows[0]!.id, input.createdByUserId]
-    );
-
-    return { id: result.rows[0]!.id };
-  },
-
-  async addTeamMember(teamId, userId, role = "member") {
-    await pool.query(
-      `
-        insert into team_members (team_id, user_id, role)
-        values ($1, $2, $3)
-        on conflict (team_id, user_id) do update
-        set role = excluded.role,
-            removed_at = null
-      `,
-      [teamId, userId, role]
-    );
-  },
-
-  async joinTeamByInviteCode(userId, inviteCode) {
-    const teamResult = await pool.query<{
-      id: string;
-      name: string;
-      invite_code: string | null;
-    }>(
-      `
-        select id, name, invite_code
-        from teams
-        where invite_code = $1 and archived_at is null
-        limit 1
-      `,
-      [inviteCode]
-    );
-
-    const team = teamResult.rows[0];
-    if (!team) {
-      throw new Error("Invalid invite code");
-    }
-
-    await pool.query(
-      `
-        insert into team_members (team_id, user_id, role)
-        values ($1, $2, 'member')
-        on conflict (team_id, user_id) do update
-        set role = excluded.role,
-            removed_at = null
-      `,
-      [team.id, userId]
-    );
-    return mapTeam({ ...team, role: "member" });
-  },
-
-  async getCurrentTeam(userId) {
-    const result = await pool.query<{
-      id: string;
-      name: string;
-      invite_code: string | null;
-      role: "owner" | "admin" | "member";
-    }>(
-      `
-        select t.id, t.name, t.invite_code, tm.role
-        from team_members tm
-        join teams t on t.id = tm.team_id
-        where tm.user_id = $1
-          and tm.removed_at is null
-          and t.archived_at is null
-        order by tm.created_at desc
-        limit 1
-      `,
-      [userId]
-    );
-
-    return result.rows[0] ? mapTeam(result.rows[0]) : null;
-  },
-
-  async listTeamMembers(userId, teamId) {
-    await requireTeamMembership(pool, userId, teamId);
-    const result = await pool.query<{
-      user_id: string;
-      email: string;
-      display_name: string | null;
-      role: "owner" | "admin" | "member";
-      joined_at: Date;
-    }>(
-      `
-        select u.id as user_id, u.email, u.display_name, tm.role, tm.created_at as joined_at
-        from team_members tm
-        join users u on u.id = tm.user_id
-        where tm.team_id = $1
-          and tm.removed_at is null
-        order by tm.created_at asc
-      `,
-      [teamId]
-    );
-
-    return result.rows.map((row) => ({
-      userId: row.user_id,
-      email: row.email,
-      displayName: row.display_name,
-      role: row.role,
-      joinedAt: row.joined_at.toISOString()
-    }));
-  },
-
   async createApiToken(input) {
-    if (input.teamId) {
-      await requireTeamMembership(pool, input.ownerUserId, input.teamId);
-    }
-
     const result = await pool.query<{
       id: string;
       owner_user_id: string;
-      team_id: string | null;
       name: string;
       token_prefix: string;
       scopes: string[];
@@ -3220,13 +2935,12 @@ export const createMemorySourceRepository = (
       revoked_at: Date | null;
     }>(
       `
-        insert into api_tokens (owner_user_id, team_id, name, token_hash, token_prefix, scopes, expires_at)
-        values ($1, $2, $3, $4, $5, $6, $7)
-        returning id, owner_user_id, team_id, name, token_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
+        insert into api_tokens (owner_user_id, name, token_hash, token_prefix, scopes, expires_at)
+        values ($1, $2, $3, $4, $5, $6)
+        returning id, owner_user_id, name, token_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
       `,
       [
         input.ownerUserId,
-        input.teamId ?? null,
         input.name,
         input.tokenHash,
         input.tokenPrefix,
@@ -3242,7 +2956,6 @@ export const createMemorySourceRepository = (
     const result = await pool.query<{
       id: string;
       owner_user_id: string;
-      team_id: string | null;
       name: string;
       token_prefix: string;
       scopes: string[];
@@ -3252,7 +2965,7 @@ export const createMemorySourceRepository = (
       revoked_at: Date | null;
     }>(
       `
-        select id, owner_user_id, team_id, name, token_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
+        select id, owner_user_id, name, token_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
         from api_tokens
         where owner_user_id = $1 and revoked_at is null
         order by created_at desc
@@ -3317,7 +3030,6 @@ export const createMemorySourceRepository = (
     const result = await pool.query<{
       id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       external_session_id: string | null;
       workspace_id: string | null;
@@ -3331,7 +3043,6 @@ export const createMemorySourceRepository = (
       `
         insert into sessions (
           owner_user_id,
-          team_id,
           workspace_id,
           visibility,
           external_session_id,
@@ -3356,7 +3067,7 @@ export const createMemorySourceRepository = (
           source_metadata
         )
         values (
-          $1, null, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11,
+          $1, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11,
           $12, $13, $14, $15, $16,
           (
             select id
@@ -3380,7 +3091,7 @@ export const createMemorySourceRepository = (
           metadata = sessions.metadata || excluded.metadata,
           parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
           source_metadata = sessions.source_metadata || excluded.source_metadata
-        returning id, owner_user_id, team_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
       `,
       [
         actor.userId,
@@ -3434,14 +3145,7 @@ export const createMemorySourceRepository = (
     const records: ConversationItemRecord[] = [];
     for (const item of input.items) {
       const visibility = item.visibility ?? "personal";
-      if (visibility === "team") {
-        if (!item.teamId) {
-          throw new Error("Team visibility requires a teamId");
-        }
-        await requireTeamMembership(pool, actor.userId, item.teamId);
-      }
-      const ownerUserId = visibility === "personal" ? actor.userId : null;
-      const teamId = visibility === "team" ? item.teamId! : null;
+      const ownerUserId = actor.userId;
       if (item.sessionId) {
         const visibleSession = await pool.query<{ id: string }>(
           `
@@ -3450,13 +3154,10 @@ export const createMemorySourceRepository = (
             where s.id = $2
               and s.invalidated_at is null
               and s.visibility = $3::visibility_scope
-              and (
-                ($3::visibility_scope = 'personal' and s.owner_user_id = $1)
-                or ($3::visibility_scope = 'team' and s.team_id = $4)
-              )
+              and s.owner_user_id = $1
             limit 1
           `,
-          [actor.userId, item.sessionId, visibility, teamId]
+          [actor.userId, item.sessionId, visibility]
         );
         if (visibleSession.rowCount === 0) {
           throw new Error("Session not found or not visible");
@@ -3465,7 +3166,6 @@ export const createMemorySourceRepository = (
 
       const turnId = await ensureConversationItemTurn(pool, {
         ownerUserId,
-        teamId,
         visibility,
         item
       });
@@ -3489,7 +3189,6 @@ export const createMemorySourceRepository = (
         `
           insert into conversation_items (
             owner_user_id,
-            team_id,
             visibility,
             session_id,
             turn_id,
@@ -3522,10 +3221,10 @@ export const createMemorySourceRepository = (
             metadata
           )
           values (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, $15, $16, $17, $18, $19,
-            $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
-            $30, $31, $32
+            $1, $2, $3, $4, $5, $6, $7, $8, $9,
+            $10, $11, $12, $13, $14, $15, $16, $17, $18,
+            $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+            $29, $30, $31
           )
           on conflict do nothing
           returning
@@ -3536,7 +3235,6 @@ export const createMemorySourceRepository = (
         `,
         [
           ownerUserId,
-          teamId,
           visibility,
           item.sessionId ?? null,
           turnId,
@@ -3598,13 +3296,10 @@ export const createMemorySourceRepository = (
               from conversation_items
               where idempotency_key = $1
                 and visibility = $2::visibility_scope
-                and (
-                  ($2::visibility_scope = 'personal' and owner_user_id = $3)
-                  or ($2::visibility_scope = 'team' and team_id = $4)
-                )
+                and owner_user_id = $3
               limit 1
             `,
-            [item.idempotencyKey, visibility, ownerUserId, teamId]
+            [item.idempotencyKey, visibility, ownerUserId]
           )
         ).rows[0];
       if (!row) {
@@ -3622,17 +3317,9 @@ export const createMemorySourceRepository = (
 
   async recordWorkflowTokenUsage(actor, input) {
     const visibility = input.visibility ?? "personal";
-    if (visibility === "team") {
-      if (!input.teamId) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, input.teamId);
-    }
-    const ownerUserId = visibility === "personal" ? actor.userId : null;
-    const teamId = visibility === "team" ? input.teamId! : null;
+    const ownerUserId = actor.userId;
     await validateWorkflowTokenUsageSources(pool, {
       ownerUserId,
-      teamId,
       visibility,
       usage: input
     });
@@ -3675,7 +3362,6 @@ export const createMemorySourceRepository = (
       `
         insert into workflow_token_usage (
           owner_user_id,
-          team_id,
           visibility,
           workflow_type,
           workflow_id,
@@ -3698,9 +3384,9 @@ export const createMemorySourceRepository = (
           source_hash
         )
         values (
-          $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13, $14, $15, $16,
-          $17, $18, $19, $20, $21, $22
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10, $11, $12, $13, $14, $15,
+          $16, $17, $18, $19, $20, $21
         )
         on conflict do nothing
         returning
@@ -3711,7 +3397,6 @@ export const createMemorySourceRepository = (
       `,
       [
         ownerUserId,
-        teamId,
         visibility,
         input.workflowType,
         input.workflowId ?? null,
@@ -3747,13 +3432,10 @@ export const createMemorySourceRepository = (
             from workflow_token_usage
             where idempotency_key = $1
               and visibility = $2::visibility_scope
-              and (
-                ($2::visibility_scope = 'personal' and owner_user_id = $3)
-                or ($2::visibility_scope = 'team' and team_id = $4)
-              )
+              and owner_user_id = $3
             limit 1
           `,
-          [idempotencyKey, visibility, ownerUserId, teamId]
+          [idempotencyKey, visibility, ownerUserId]
         )
       ).rows[0];
     if (!row) {
@@ -3799,7 +3481,7 @@ export const createMemorySourceRepository = (
     const rows = await pool.query<ConversationProjectionRawRow>(
       `
         select
-          ci.id, ci.owner_user_id, ci.team_id, ci.visibility, ci.session_id,
+          ci.id, ci.owner_user_id, ci.visibility, ci.session_id,
           ci.turn_id, ci.source_kind, ci.source_adapter_version,
           ci.source_transport, ci.source_record_type, ci.source_event_type,
           ci.source_path, ci.source_sequence, ci.event_time, ci.raw_json,
@@ -3820,19 +3502,7 @@ export const createMemorySourceRepository = (
             or ci.transport_chunk_count = 1
             or ci.transport_chunk_index = 0
           )
-          and (
-            (ci.visibility = 'personal' and ci.owner_user_id = $1)
-            or (
-              ci.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = ci.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and ci.owner_user_id = $1
         order by ci.observed_at asc, ci.id asc
         limit $2
       `,
@@ -3854,8 +3524,7 @@ export const createMemorySourceRepository = (
         processedSourceIdentities.add(logicalItem.sourceIdentity);
         const row = logicalItem.row;
         sourceIds = logicalItem.sourceIds;
-        const ownerUserId = row.visibility === "personal" ? actor.userId : null;
-        const teamId = row.visibility === "team" ? row.team_id : null;
+        const ownerUserId = actor.userId;
         const content = conversationItemContent(row);
         const actorType = actorFromConversationItem(row);
         const messageRole = messageRoleForActor(actorType);
@@ -3882,7 +3551,6 @@ export const createMemorySourceRepository = (
               { userId: actor.userId },
               {
                 visibility: row.visibility,
-                ...(teamId ? { teamId } : {}),
                 workflowType:
                   stringField(row.metadata ?? {}, "workflow") ??
                   "conversation_projection",
@@ -3922,14 +3590,14 @@ export const createMemorySourceRepository = (
           const inserted = await pool.query<{ id: string }>(
             `
               insert into messages (
-                session_id, turn_id, owner_user_id, team_id, visibility,
+                session_id, turn_id, owner_user_id, visibility,
                 role, content, content_json, source_runtime, capture_method,
                 codex_transcript_path, transcript_item_id, idempotency_key,
                 source_hash, token_count
               )
               values (
-                $1, $2, $3, $4, $5, $6, $7, $8,
-                $9, $10, $11, $12, $13, $14, $15
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10, $11, $12, $13, $14
               )
               on conflict do nothing
               returning id
@@ -3938,7 +3606,6 @@ export const createMemorySourceRepository = (
               row.session_id,
               row.turn_id,
               ownerUserId,
-              teamId,
               row.visibility,
               messageRole,
               content,
@@ -3965,14 +3632,14 @@ export const createMemorySourceRepository = (
           const inserted = await pool.query<{ id: string }>(
             `
               insert into tool_events (
-                session_id, turn_id, owner_user_id, team_id, visibility,
+                session_id, turn_id, owner_user_id, visibility,
                 tool_name, tool_input, tool_response, status, source_runtime,
                 capture_method, codex_transcript_path, transcript_item_id,
                 idempotency_key, source_hash
               )
               values (
-                $1, $2, $3, $4, $5, $6, $7, $8,
-                $9, $10, $11, $12, $13, $14, $15
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10, $11, $12, $13, $14
               )
               on conflict do nothing
               returning id
@@ -3981,7 +3648,6 @@ export const createMemorySourceRepository = (
               row.session_id,
               row.turn_id,
               ownerUserId,
-              teamId,
               row.visibility,
               stringField(metadata, "toolName") ??
                 stringField(raw, "name") ??
@@ -4037,7 +3703,6 @@ export const createMemorySourceRepository = (
                   sourceChunkCount: chunk.chunkCount
                 },
                 visibility: row.visibility,
-                ...(teamId ? { teamId } : {}),
                 sourceRuntime:
                   row.source_kind === "codex-cli" ? "codex-cli" : "codex",
                 captureMethod: captureMethodForConversationItem({
@@ -4059,8 +3724,7 @@ export const createMemorySourceRepository = (
               result.memoryEventIds.push(event.id);
               result.memoryEventScopes.push({
                 eventId: event.id,
-                visibility: row.visibility,
-                teamId
+                visibility: row.visibility
               });
             }
           }
@@ -4105,18 +3769,6 @@ export const createMemorySourceRepository = (
             and ci.visibility = 'personal'
             and ci.owner_user_id is not null
           group by ci.owner_user_id
-
-          union all
-
-          select tm.user_id as user_id, min(ci.observed_at) as oldest_at
-          from conversation_items ci
-          join team_members tm
-            on tm.team_id = ci.team_id
-           and tm.removed_at is null
-          where ci.projection_status in ('pending', 'error')
-            and ci.visibility = 'team'
-            and ci.team_id is not null
-          group by tm.user_id
         ) projection_actors
         order by oldest_at asc
         limit $1
@@ -4133,7 +3785,6 @@ export const createMemorySourceRepository = (
       `
         insert into memory_questions (
           owner_user_id,
-          team_id,
           visibility,
           retrieval_scope,
           search_domain,
@@ -4145,9 +3796,9 @@ export const createMemorySourceRepository = (
           thread_name,
           query
         )
-        values ($1, null, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9)
         returning
-          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
@@ -4180,7 +3831,7 @@ export const createMemorySourceRepository = (
     >(
       `
         select
-          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, left(answer_markdown, 280) as answer_preview,
           error_message, status, created_at, updated_at, answered_at,
@@ -4255,7 +3906,7 @@ export const createMemorySourceRepository = (
         from candidates
         where question.id = candidates.id
         returning
-          question.id, question.owner_user_id, question.team_id,
+          question.id, question.owner_user_id,
           question.visibility, question.retrieval_scope, question.search_domain,
           question.workspace_id, question.project_name, question.project_path,
           question.session_id, question.thread_id, question.thread_name,
@@ -4279,7 +3930,7 @@ export const createMemorySourceRepository = (
     >(
       `
         select
-          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
@@ -4337,7 +3988,7 @@ export const createMemorySourceRepository = (
             or ($11::int is null and processing_lease_until is null)
           )
         returning
-          id, owner_user_id, team_id, visibility, retrieval_scope, search_domain,
+          id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
           citations, retrieval, local_memory_worker, response, status,
@@ -4371,21 +4022,11 @@ export const createMemorySourceRepository = (
   },
 
   async createMemoryNode(actor, input) {
-    if (input.visibility === "team") {
-      if (!input.teamId) {
-        throw new Error("Team visibility requires a teamId");
-      }
-
-      await requireTeamMembership(pool, actor.userId, input.teamId);
-    }
-
-    const ownerUserId = input.visibility === "personal" ? actor.userId : null;
-    const teamId = input.visibility === "team" ? input.teamId! : null;
+    const ownerUserId = actor.userId;
 
     const result = await pool.query<{
       id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       title: string | null;
       summary_text: string;
@@ -4393,7 +4034,6 @@ export const createMemorySourceRepository = (
       `
         insert into memory_nodes (
           owner_user_id,
-          team_id,
           created_by_user_id,
           visibility,
           kind,
@@ -4411,13 +4051,12 @@ export const createMemorySourceRepository = (
           lcm_algorithm_version
         )
         values (
-          $1, $2, $3, $4, 'leaf', 0, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+          $1, $2, $3, 'leaf', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
         )
-        returning id, owner_user_id, team_id, visibility, title, summary_text
+        returning id, owner_user_id, visibility, title, summary_text
       `,
       [
         ownerUserId,
-        teamId,
         actor.userId,
         input.visibility,
         input.title ?? null,
@@ -4606,30 +4245,17 @@ export const createMemorySourceRepository = (
     const result = await pool.query<{
       id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       title: string | null;
       summary_text: string;
     }>(
       `
-        select mn.id, mn.owner_user_id, mn.team_id, mn.visibility, mn.title, mn.summary_text
+        select mn.id, mn.owner_user_id, mn.visibility, mn.title, mn.summary_text
         from memory_nodes mn
         where mn.id = $2
           and mn.invalidated_at is null
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
         limit 1
       `,
       [actor.userId, nodeId]
@@ -4642,29 +4268,16 @@ export const createMemorySourceRepository = (
     const result = await pool.query<{
       id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       title: string | null;
       summary_text: string;
     }>(
       `
-        select mn.id, mn.owner_user_id, mn.team_id, mn.visibility, mn.title, mn.summary_text
+        select mn.id, mn.owner_user_id, mn.visibility, mn.title, mn.summary_text
         from memory_nodes mn
         where mn.invalidated_at is null
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
           and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
         order by mn.created_at asc, mn.id asc
       `,
@@ -4712,20 +4325,8 @@ export const createMemorySourceRepository = (
         left join memory_events ev on ev.id = first_source.memory_event_id
         left join sessions s on s.id = ev.session_id
         where mn.invalidated_at is null
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
           and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
           and ($3::text is null or coalesce(
             case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
@@ -4807,20 +4408,6 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
-    if (existing.visibility === "team" && existing.teamId) {
-      await requireTeamMemoryWritePermission(
-        pool,
-        actor.userId,
-        existing.teamId
-      );
-    }
-    if (input.visibility === "team" && existing.visibility !== "team") {
-      const currentTeam = await this.getCurrentTeam(actor.userId);
-      if (!currentTeam) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, currentTeam.id);
-    }
     const result = await pool.query<Parameters<typeof mapMemoryBrowserItem>[0]>(
       `
         update memory_nodes mn
@@ -4833,14 +4420,8 @@ export const createMemorySourceRepository = (
           end,
           visibility = coalesce($5::visibility_scope, mn.visibility),
           owner_user_id = case
-            when $5::visibility_scope = 'team' then null
             when $5::visibility_scope = 'personal' then $1
             else mn.owner_user_id
-          end,
-          team_id = case
-            when $5::visibility_scope = 'team' then $6::uuid
-            when $5::visibility_scope = 'personal' then null
-            else mn.team_id
           end,
           updated_at = now()
         where mn.id = $2
@@ -4864,10 +4445,7 @@ export const createMemorySourceRepository = (
         nodeId,
         input.summaryText ?? null,
         input.pinned ?? null,
-        input.visibility ?? null,
-        input.visibility === "team"
-          ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
-          : null
+        input.visibility ?? null
       ]
     );
     return result.rows[0] ? mapMemoryBrowserItem(result.rows[0]) : null;
@@ -4878,33 +4456,14 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return false;
     }
-    if (existing.visibility === "team" && existing.teamId) {
-      await requireTeamMemoryWritePermission(
-        pool,
-        actor.userId,
-        existing.teamId
-      );
-    }
     const result = await pool.query(
       `
         update memory_nodes mn
         set invalidated_at = now(), invalidation_reason = 'user_deleted'
         where mn.id = $2
           and mn.invalidated_at is null
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
       `,
       [actor.userId, nodeId]
     );
@@ -4926,34 +4485,14 @@ export const createMemorySourceRepository = (
           with visible_nodes as (
             select *
             from memory_nodes mn
-            where (
-              (mn.visibility = 'personal' and mn.owner_user_id = $1)
-              or (
-                mn.visibility = 'team'
-                and exists (
-                  select 1 from team_members tm
-                  where tm.team_id = mn.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            where mn.visibility = 'personal'
+              and mn.owner_user_id = $1
           ),
           visible_events as (
             select *
             from memory_events me
-            where (
-              (me.visibility = 'personal' and me.owner_user_id = $1)
-              or (
-                me.visibility = 'team'
-                and exists (
-                  select 1 from team_members tm
-                  where tm.team_id = me.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            where me.visibility = 'personal'
+              and me.owner_user_id = $1
           )
           select
             (select count(*) from visible_events where invalidated_at is null)::text as captured_events,
@@ -4987,39 +4526,21 @@ export const createMemorySourceRepository = (
                 select 1 from memory_nodes mn
                 where mn.id = me.memory_node_id
                   and (
-                    (mn.visibility = 'personal' and mn.owner_user_id = $1)
-                    or exists (
-                      select 1 from team_members tm
-                      where tm.team_id = mn.team_id
-                        and tm.user_id = $1
-                        and tm.removed_at is null
-                    )
+                    mn.visibility = 'personal' and mn.owner_user_id = $1
                   )
               )
               or exists (
                 select 1 from memory_events ev
                 where ev.id = me.memory_event_id
                   and (
-                    (ev.visibility = 'personal' and ev.owner_user_id = $1)
-                    or exists (
-                      select 1 from team_members tm
-                      where tm.team_id = ev.team_id
-                        and tm.user_id = $1
-                        and tm.removed_at is null
-                    )
+                    ev.visibility = 'personal' and ev.owner_user_id = $1
                   )
               )
               or exists (
                 select 1 from messages msg
                 where msg.id = me.message_id
                   and (
-                    (msg.visibility = 'personal' and msg.owner_user_id = $1)
-                    or exists (
-                      select 1 from team_members tm
-                      where tm.team_id = msg.team_id
-                        and tm.user_id = $1
-                        and tm.removed_at is null
-                    )
+                    msg.visibility = 'personal' and msg.owner_user_id = $1
                   )
               )
             )
@@ -5070,7 +4591,7 @@ export const createMemorySourceRepository = (
     const result = await pool.query<Parameters<typeof mapLcmGraphNode>[0]>(
       `
         select
-          mn.id, mn.owner_user_id, mn.team_id, mn.visibility, mn.kind, mn.depth,
+          mn.id, mn.owner_user_id, mn.visibility, mn.kind, mn.depth,
           mn.summary_text, mn.created_at, mn.updated_at, mn.invalidated_at,
           mn.invalidation_reason, mn.source_event_count, mn.source_token_estimate,
           mn.summary_token_estimate, mn.summary_model, mn.summary_prompt_version,
@@ -5113,18 +4634,8 @@ export const createMemorySourceRepository = (
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or (
-              mn.visibility = 'team'
-              and exists (
-                select 1 from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
         group by mn.id, ev.id, s.id
         order by mn.updated_at desc, mn.created_at desc
         limit $8
@@ -5227,24 +4738,6 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
-    if (existing.visibility === "team" && existing.teamId) {
-      await requireTeamMemoryWritePermission(
-        pool,
-        actor.userId,
-        existing.teamId
-      );
-    }
-    if (input.visibility === "team" && existing.visibility !== "team") {
-      const currentTeam = await this.getCurrentTeam(actor.userId);
-      if (!currentTeam) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, currentTeam.id);
-    }
-    const teamId =
-      input.visibility === "team"
-        ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
-        : null;
     await pool.query(
       `
         update memory_nodes
@@ -5255,14 +4748,8 @@ export const createMemorySourceRepository = (
           summary_corrected_by_user_id = case when $3::text is null then summary_corrected_by_user_id else $1 end,
           visibility = coalesce($4::visibility_scope, visibility),
           owner_user_id = case
-            when $4::visibility_scope = 'team' then null
             when $4::visibility_scope = 'personal' then $1
             else owner_user_id
-          end,
-          team_id = case
-            when $4::visibility_scope = 'team' then $5::uuid
-            when $4::visibility_scope = 'personal' then null
-            else team_id
           end,
           updated_at = now()
         where id = $2 and invalidated_at is null
@@ -5271,8 +4758,7 @@ export const createMemorySourceRepository = (
         actor.userId,
         nodeId,
         input.summaryText ?? null,
-        input.visibility ?? null,
-        teamId
+        input.visibility ?? null
       ]
     );
     if (input.summaryText !== undefined) {
@@ -5336,7 +4822,6 @@ export const createMemorySourceRepository = (
             coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
             me.captured_at,
             me.visibility,
-            me.team_id,
             me.invalidated_at,
             me.invalidation_reason,
             me.payload ->> 'content' as content,
@@ -5362,18 +4847,8 @@ export const createMemorySourceRepository = (
                 and me.id < $9::uuid
               )
             )
-            and (
-              (me.visibility = 'personal' and me.owner_user_id = $1)
-              or (
-                me.visibility = 'team'
-                and exists (
-                  select 1 from team_members tm
-                  where tm.team_id = me.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            and me.visibility = 'personal'
+            and me.owner_user_id = $1
           order by me.captured_at desc, me.id desc
           limit $10
         )
@@ -5469,18 +4944,8 @@ export const createMemorySourceRepository = (
               or coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
               or coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
             )
-            and (
-              (me.visibility = 'personal' and me.owner_user_id = $1)
-              or (
-                me.visibility = 'team'
-                and exists (
-                  select 1 from team_members tm
-                  where tm.team_id = me.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            and me.visibility = 'personal'
+            and me.owner_user_id = $1
           union all
           select
             s.id::text as id,
@@ -5511,18 +4976,8 @@ export const createMemorySourceRepository = (
               or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
               or coalesce(s.metadata ->> 'projectName', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
             )
-            and (
-              (s.visibility = 'personal' and s.owner_user_id = $1)
-              or (
-                s.visibility = 'team'
-                and exists (
-                  select 1 from team_members tm
-                  where tm.team_id = s.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            and s.visibility = 'personal'
+            and s.owner_user_id = $1
         ),
         ranked_threads as (
           select
@@ -5624,41 +5079,17 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
-    if (existing.visibility === "team" && existing.teamId) {
-      await requireTeamMemoryWritePermission(
-        pool,
-        actor.userId,
-        existing.teamId
-      );
-    }
-    if (input.visibility === "team" && existing.visibility !== "team") {
-      const currentTeam = await this.getCurrentTeam(actor.userId);
-      if (!currentTeam) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, currentTeam.id);
-    }
-    const teamId =
-      input.visibility === "team"
-        ? ((await this.getCurrentTeam(actor.userId))?.id ?? null)
-        : null;
     await pool.query(
       `
         update memory_events
         set
           visibility = coalesce($3::visibility_scope, visibility),
           owner_user_id = case
-            when $3::visibility_scope = 'team' then null
             when $3::visibility_scope = 'personal' then $1
             else owner_user_id
           end,
-          team_id = case
-            when $3::visibility_scope = 'team' then $4::uuid
-            when $3::visibility_scope = 'personal' then null
-            else team_id
-          end,
-          invalidated_at = case when $5::boolean = true then coalesce(invalidated_at, now()) else invalidated_at end,
-          invalidation_reason = case when $5::boolean = true then coalesce(invalidation_reason, 'user_deleted') else invalidation_reason end,
+          invalidated_at = case when $4::boolean = true then coalesce(invalidated_at, now()) else invalidated_at end,
+          invalidation_reason = case when $4::boolean = true then coalesce(invalidation_reason, 'user_deleted') else invalidation_reason end,
           updated_at = now()
         where id = $2
       `,
@@ -5666,7 +5097,6 @@ export const createMemorySourceRepository = (
         actor.userId,
         eventId,
         input.visibility ?? null,
-        teamId,
         input.invalidated ?? null
       ]
     );
@@ -5721,7 +5151,6 @@ export const createMemorySourceRepository = (
       source_type: EmbeddableSourceType;
       source_id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       text: string;
     }>(
@@ -5731,7 +5160,6 @@ export const createMemorySourceRepository = (
             'memory_node'::text as source_type,
             mn.id as source_id,
             mn.owner_user_id,
-            mn.team_id,
             mn.visibility,
             case
               when mn.body_text is null
@@ -5750,14 +5178,13 @@ export const createMemorySourceRepository = (
             'memory_event'::text as source_type,
             me.id as source_id,
             me.owner_user_id,
-            me.team_id,
             me.visibility,
             coalesce(me.payload ->> 'content', '') as text,
             me.created_at
           from memory_events me
           where me.invalidated_at is null
         )
-        select source_type, source_id, owner_user_id, team_id, visibility, text
+        select source_type, source_id, owner_user_id, visibility, text
         from sources s
         where length(trim(s.text)) > 0
           and not exists (
@@ -5787,7 +5214,6 @@ export const createMemorySourceRepository = (
       sourceType: row.source_type,
       sourceId: row.source_id,
       ownerUserId: row.owner_user_id,
-      teamId: row.team_id,
       visibility: row.visibility,
       text: row.text,
       sourceHash: sourceHash(row.source_type, row.source_id, row.text)
@@ -5799,7 +5225,6 @@ export const createMemorySourceRepository = (
       source_type: EmbeddableSourceType;
       source_id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       text: string;
     }>(
@@ -5809,7 +5234,6 @@ export const createMemorySourceRepository = (
             'memory_node'::text as source_type,
             mn.id as source_id,
             mn.owner_user_id,
-            mn.team_id,
             mn.visibility,
             case
               when mn.body_text is null
@@ -5827,13 +5251,12 @@ export const createMemorySourceRepository = (
             'memory_event'::text as source_type,
             me.id as source_id,
             me.owner_user_id,
-            me.team_id,
             me.visibility,
             coalesce(me.payload ->> 'content', '') as text
           from memory_events me
           where me.invalidated_at is null
         )
-        select source_type, source_id, owner_user_id, team_id, visibility, text
+        select source_type, source_id, owner_user_id, visibility, text
         from sources
         where source_type = $1 and source_id = $2 and length(trim(text)) > 0
         limit 1
@@ -5846,7 +5269,6 @@ export const createMemorySourceRepository = (
           sourceType: row.source_type,
           sourceId: row.source_id,
           ownerUserId: row.owner_user_id,
-          teamId: row.team_id,
           visibility: row.visibility,
           text: row.text,
           sourceHash: sourceHash(row.source_type, row.source_id, row.text)
@@ -5860,7 +5282,6 @@ export const createMemorySourceRepository = (
         select
           id,
           owner_user_id,
-          team_id,
           visibility,
           kind,
           depth,
@@ -5893,7 +5314,6 @@ export const createMemorySourceRepository = (
         select
           mn.id,
           mn.owner_user_id,
-          mn.team_id,
           mn.visibility,
           mn.kind,
           mn.depth,
@@ -5919,20 +5339,8 @@ export const createMemorySourceRepository = (
                 and child.summary_model is null
             )
           )
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
         order by mn.depth asc, mn.created_at asc, mn.id asc
         limit $2
       `,
@@ -5950,7 +5358,6 @@ export const createMemorySourceRepository = (
         select
           mn.id,
           mn.owner_user_id,
-          mn.team_id,
           mn.visibility,
           mn.kind,
           mn.depth,
@@ -5965,20 +5372,8 @@ export const createMemorySourceRepository = (
         where mn.id = $2
           and mn.invalidated_at is null
           and mn.kind in ('leaf', 'rollup')
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
         limit 1
       `,
       [actor.userId, nodeId]
@@ -6070,7 +5465,6 @@ export const createMemorySourceRepository = (
             memory_event_id,
             message_id,
             owner_user_id,
-            team_id,
             visibility,
             embedding_model,
             embedding_dimensions,
@@ -6092,8 +5486,7 @@ export const createMemorySourceRepository = (
             $8,
             $9,
             $10,
-            $11,
-            $12
+            $11
           )
           on conflict do nothing
           returning id, true as inserted
@@ -6102,7 +5495,6 @@ export const createMemorySourceRepository = (
           input.source.sourceType,
           input.source.sourceId,
           input.source.ownerUserId,
-          input.source.teamId,
           input.source.visibility,
           input.model,
           input.dimensions,
@@ -6171,12 +5563,6 @@ export const createMemorySourceRepository = (
   },
 
   async createMemoryEvent(actor, input) {
-    if (input.visibility === "team") {
-      if (!input.teamId) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, input.teamId);
-    }
     if (input.sessionId) {
       const visibleSession = await pool.query<{ id: string }>(
         `
@@ -6184,20 +5570,8 @@ export const createMemorySourceRepository = (
           from sessions s
           where s.id = $2
             and s.invalidated_at is null
-            and (
-              (s.visibility = 'personal' and s.owner_user_id = $1)
-              or
-              (
-                s.visibility = 'team'
-                and exists (
-                  select 1
-                  from team_members tm
-                  where tm.team_id = s.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            and s.visibility = 'personal'
+            and s.owner_user_id = $1
           limit 1
         `,
         [actor.userId, input.sessionId]
@@ -6207,8 +5581,7 @@ export const createMemorySourceRepository = (
       }
     }
 
-    const ownerUserId = input.visibility === "personal" ? actor.userId : null;
-    const teamId = input.visibility === "team" ? input.teamId! : null;
+    const ownerUserId = actor.userId;
     const payload = {
       actor: input.actor,
       content: input.content,
@@ -6223,7 +5596,6 @@ export const createMemorySourceRepository = (
     type MemoryEventRow = {
       id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       event_type: MemoryEventType;
       session_id: string | null;
@@ -6243,7 +5615,6 @@ export const createMemorySourceRepository = (
         insert into memory_events (
           actor_user_id,
           owner_user_id,
-          team_id,
           visibility,
           event_type,
           source_runtime,
@@ -6255,14 +5626,13 @@ export const createMemorySourceRepository = (
           source_hash,
           payload
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         on conflict do nothing
-        returning id, owner_user_id, team_id, visibility, event_type, session_id, turn_id, payload, created_at
+        returning id, owner_user_id, visibility, event_type, session_id, turn_id, payload, created_at
       `,
       [
         actor.userId,
         ownerUserId,
-        teamId,
         input.visibility,
         input.eventType,
         input.sourceRuntime ?? null,
@@ -6289,25 +5659,14 @@ export const createMemorySourceRepository = (
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const duplicate = await pool.query<MemoryEventRow>(
         `
-          select me.id, me.owner_user_id, me.team_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at
+          select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at
           from memory_events me
           where (
               ($2::text is not null and me.idempotency_key = $2)
               or ($3::text is not null and me.source_hash = $3)
             )
-            and (
-              (me.visibility = 'personal' and me.owner_user_id = $1)
-              or (
-                me.visibility = 'team'
-                and exists (
-                  select 1
-                  from team_members tm
-                  where tm.team_id = me.team_id
-                    and tm.user_id = $1
-                    and tm.removed_at is null
-                )
-              )
-            )
+            and me.visibility = 'personal'
+            and me.owner_user_id = $1
           order by
             case
               when $2::text is not null and me.idempotency_key = $2 then 0
@@ -6342,7 +5701,7 @@ export const createMemorySourceRepository = (
   },
 
   async searchMemoryNodes(actor, input) {
-    const visibility = input.scope === "personal_and_team" ? null : input.scope;
+    const visibility = input.scope;
     const searchDomain = input.searchDomain ?? "global";
     if (searchDomain === "session" && !input.sessionId) {
       throw new Error("Session-scoped memory search requires sessionId");
@@ -6422,20 +5781,8 @@ export const createMemorySourceRepository = (
                 or (me.memory_event_id is not null and ev.id is not null)
                 or (me.message_id is not null and msg.id is not null)
               )
-              and (
-                (me.visibility = 'personal' and me.owner_user_id = $1)
-                or
-                (
-                  me.visibility = 'team'
-                  and exists (
-                    select 1
-                    from team_members tm
-                    where tm.team_id = me.team_id
-                      and tm.user_id = $1
-                      and tm.removed_at is null
-                  )
-                )
-              )
+              and me.visibility = 'personal'
+              and me.owner_user_id = $1
               and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
               and (
                 $8::text = 'global'
@@ -6670,15 +6017,7 @@ export const createMemorySourceRepository = (
   },
 
   async createLcmNodes(actor, input) {
-    if (input.visibility === "team") {
-      if (!input.teamId) {
-        throw new Error("Team visibility requires a teamId");
-      }
-      await requireTeamMembership(pool, actor.userId, input.teamId);
-    }
-
-    const ownerUserId = input.visibility === "personal" ? actor.userId : null;
-    const teamId = input.visibility === "team" ? input.teamId! : null;
+    const ownerUserId = actor.userId;
     const client = await pool.connect();
 
     try {
@@ -6710,11 +6049,7 @@ export const createMemorySourceRepository = (
           from memory_events me
           where me.invalidated_at is null
             and me.visibility = $1
-            and (
-              ($1 = 'personal' and me.owner_user_id = $2)
-              or
-              ($1 = 'team' and me.team_id = $3)
-            )
+            and me.owner_user_id = $2
             and not exists (
               select 1
               from memory_node_sources mns
@@ -6725,7 +6060,7 @@ export const createMemorySourceRepository = (
             )
           order by me.created_at asc, me.id asc
         `,
-        [input.visibility, ownerUserId, teamId]
+        [input.visibility, ownerUserId]
       );
 
       const freshTail = lcmFreshEventTail();
@@ -6799,7 +6134,6 @@ export const createMemorySourceRepository = (
           `
             insert into memory_nodes (
               owner_user_id,
-              team_id,
               created_by_user_id,
               visibility,
               kind,
@@ -6816,13 +6150,12 @@ export const createMemorySourceRepository = (
               source_span_end,
               source_hash
             )
-            values ($1, $2, $3, $4, 'leaf', 0, $5, $5, 'mcp', 'depth0-source-items-v1', $6::jsonb, $7, $8, $9, $10, $11, $12)
+            values ($1, $2, $3, 'leaf', 0, $4, $4, 'mcp', 'depth0-source-items-v1', $5::jsonb, $6, $7, $8, $9, $10, $11)
             on conflict (source_hash) where source_hash is not null do nothing
             returning id
           `,
           [
             ownerUserId,
-            teamId,
             actor.userId,
             input.visibility,
             summaryText,
@@ -6889,14 +6222,10 @@ export const createMemorySourceRepository = (
             and mn.depth = 0
             and mnc.parent_memory_node_id is null
             and mn.visibility = $1
-            and (
-              ($1 = 'personal' and mn.owner_user_id = $2)
-              or
-              ($1 = 'team' and mn.team_id = $3)
-            )
+            and mn.owner_user_id = $2
           order by mn.created_at asc, mn.id asc
         `,
-        [input.visibility, ownerUserId, teamId]
+        [input.visibility, ownerUserId]
       );
       const unparentedBySession = new Map<string, typeof unparented.rows>();
       for (const row of unparented.rows) {
@@ -6933,7 +6262,6 @@ export const createMemorySourceRepository = (
           `
             insert into memory_nodes (
               owner_user_id,
-              team_id,
               created_by_user_id,
               visibility,
               kind,
@@ -6948,13 +6276,12 @@ export const createMemorySourceRepository = (
               summary_token_estimate,
               source_hash
             )
-            values ($1, $2, $3, $4, 'rollup', 1, $5, $5, 'mcp', 'depth1-child-rollup-v1', $6::jsonb, $7, $8, $9, $10)
+            values ($1, $2, $3, 'rollup', 1, $4, $4, 'mcp', 'depth1-child-rollup-v1', $5::jsonb, $6, $7, $8, $9)
             on conflict (source_hash) where source_hash is not null do nothing
             returning id
           `,
           [
             ownerUserId,
-            teamId,
             actor.userId,
             input.visibility,
             rollupSummary,
@@ -7042,20 +6369,8 @@ export const createMemorySourceRepository = (
         from memory_nodes mn
         where mn.id = $2
           and mn.invalidated_at is null
-          and (
-            (mn.visibility = 'personal' and mn.owner_user_id = $1)
-            or
-            (
-              mn.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = mn.team_id
-                  and tm.user_id = $1
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and mn.visibility = 'personal'
+          and mn.owner_user_id = $1
         limit 1
       `,
       [actor.userId, nodeId]
@@ -7068,7 +6383,6 @@ export const createMemorySourceRepository = (
     const sources = await pool.query<{
       id: string;
       owner_user_id: string | null;
-      team_id: string | null;
       visibility: Visibility;
       event_type: MemoryEventType;
       session_id: string | null;
@@ -7083,25 +6397,13 @@ export const createMemorySourceRepository = (
       created_at: Date;
     }>(
       `
-        select me.id, me.owner_user_id, me.team_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at
+        select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
         where mns.memory_node_id = $1
           and me.invalidated_at is null
-          and (
-            (me.visibility = 'personal' and me.owner_user_id = $2)
-            or
-            (
-              me.visibility = 'team'
-              and exists (
-                select 1
-                from team_members tm
-                where tm.team_id = me.team_id
-                  and tm.user_id = $2
-                  and tm.removed_at is null
-              )
-            )
-          )
+          and me.visibility = 'personal'
+          and me.owner_user_id = $2
         order by me.created_at asc, me.id asc
       `,
       [nodeId, actor.userId]

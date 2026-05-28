@@ -10,7 +10,6 @@ export interface GraphUpdatePayload {
   eventIds?: string[];
   questionIds?: string[];
   ownerUserId?: string | null;
-  teamId?: string | null;
   projectId?: string | null;
   threadId?: string | null;
   visibility?: "personal" | string | null;
@@ -89,9 +88,6 @@ const writeGraphStreamEvent = (
 export const graphUpdateKey = (payload: GraphUpdatePayload): string => {
   if (payload.visibility === "personal" && payload.ownerUserId) {
     return `personal:${payload.ownerUserId}`;
-  }
-  if (payload.visibility === "team" && payload.teamId) {
-    return `team:${payload.teamId}`;
   }
   return "global";
 };

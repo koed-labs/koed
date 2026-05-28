@@ -25,7 +25,3 @@ alter table conversation_items
 create index if not exists conversation_items_personal_logical_source_idx
   on conversation_items(owner_user_id, logical_source_id, transport_chunk_index)
   where visibility = 'personal' and logical_source_id is not null;
-
-create index if not exists conversation_items_team_logical_source_idx
-  on conversation_items(team_id, logical_source_id, transport_chunk_index)
-  where visibility = 'team' and logical_source_id is not null;

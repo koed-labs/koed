@@ -35,7 +35,7 @@ describe("LCM summary worker", () => {
         {
           kind: "lcm_child",
           nodeId: "00000000-0000-4000-8000-000000000012",
-          text: "Child summary says the team moved memory answers to app-server mode."
+          text: "Child summary says the project moved memory answers to app-server mode."
         },
         {
           kind: "lcm_child",

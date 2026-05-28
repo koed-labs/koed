@@ -21,17 +21,10 @@ interface EvalUser {
   email: string;
 }
 
-interface EvalTeam {
-  id: string;
-  name: string;
-  members: Set<string>;
-}
-
 interface EvalNode {
   id: string;
   visibility: Visibility;
   ownerUserId: string | null;
-  teamId: string | null;
   summaryText: string;
   sourceEventIds: string[];
   depth: 0 | 1;
@@ -42,9 +35,7 @@ interface EvalWorld {
   users: {
     alice: EvalUser;
     bob: EvalUser;
-    solo: EvalUser;
   };
-  team: EvalTeam;
   workspaceId: string;
 }
 
@@ -81,13 +72,8 @@ const scoreText = (query: string, text: string): number => {
 };
 
 class DeterministicMemoryRepository implements MemoryEngineRepository {
-  private readonly teams = new Map<string, EvalTeam>();
   private readonly events: MemoryEventRecord[] = [];
   private readonly nodes: EvalNode[] = [];
-
-  addTeam(team: EvalTeam): void {
-    this.teams.set(team.id, team);
-  }
 
   createMemoryEvent(
     actor: RequesterContext,
@@ -101,13 +87,8 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       content: string;
       metadata?: Record<string, unknown>;
       visibility: Visibility;
-      teamId?: string;
     }
   ): Promise<MemoryEventRecord> {
-    if (input.visibility === "team") {
-      this.requireTeamMembership(actor.userId, input.teamId);
-    }
-
     const event: MemoryEventRecord = {
       id: randomUUID(),
       workspaceId: input.workspaceId,
@@ -118,8 +99,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       content: input.content,
       metadata: input.metadata ?? {},
       visibility: input.visibility,
-      ownerUserId: input.visibility === "personal" ? actor.userId : null,
-      teamId: input.visibility === "team" ? input.teamId! : null,
+      ownerUserId: actor.userId,
       createdAt: new Date(1_800_000_000_000 + this.events.length).toISOString()
     };
     this.events.push(event);
@@ -132,10 +112,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
   ) {
     const results = this.nodes
       .filter((node) => this.isNodeVisible(actor.userId, node))
-      .filter(
-        (node) =>
-          input.scope === "personal_and_team" || node.visibility === input.scope
-      )
+      .filter((node) => node.visibility === input.scope)
       .map((node) => ({
         node,
         score: scoreText(input.query, node.summaryText)
@@ -173,12 +150,8 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
 
   createLcmNodes(
     actor: RequesterContext,
-    input: { visibility: Visibility; teamId?: string }
+    input: { visibility: Visibility }
   ): Promise<CompactionResult> {
-    if (input.visibility === "team") {
-      this.requireTeamMembership(actor.userId, input.teamId);
-    }
-
     const compactedEventIds = new Set(
       this.nodes.flatMap((node) => node.sourceEventIds)
     );
@@ -192,7 +165,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       if (event.visibility === "personal") {
         return event.ownerUserId === actor.userId;
       }
-      return event.teamId === input.teamId;
+      return false;
     });
 
     const leafNodeIds: string[] = [];
@@ -201,8 +174,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       const node: EvalNode = {
         id: randomUUID(),
         visibility: input.visibility,
-        ownerUserId: input.visibility === "personal" ? actor.userId : null,
-        teamId: input.visibility === "team" ? input.teamId! : null,
+        ownerUserId: actor.userId,
         summaryText: chunk.map((event) => event.content).join("\n"),
         sourceEventIds: chunk.map((event) => event.id),
         depth: 0
@@ -219,15 +191,12 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       ) {
         return false;
       }
-      return input.visibility === "personal"
-        ? node.ownerUserId === actor.userId
-        : node.teamId === input.teamId;
+      return node.ownerUserId === actor.userId;
     });
     const rollupNodeId =
       visibleLeaves.length >= 3
         ? this.createRollup(
             input.visibility,
-            input.visibility === "team" ? input.teamId! : null,
             actor.userId,
             visibleLeaves
           )
@@ -264,7 +233,6 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
 
   private createRollup(
     visibility: Visibility,
-    teamId: string | null,
     ownerUserId: string,
     leaves: EvalNode[]
   ): string {
@@ -272,7 +240,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
       (node) =>
         node.depth === 1 &&
         node.visibility === visibility &&
-        node.teamId === teamId
+        node.ownerUserId === ownerUserId
     );
     if (existing) {
       return existing.id;
@@ -281,8 +249,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
     const node: EvalNode = {
       id: randomUUID(),
       visibility,
-      ownerUserId: visibility === "personal" ? ownerUserId : null,
-      teamId,
+      ownerUserId,
       summaryText: leaves.map((leaf) => leaf.summaryText).join("\n"),
       sourceEventIds: [
         ...new Set(leaves.flatMap((leaf) => leaf.sourceEventIds))
@@ -294,21 +261,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
   }
 
   private isNodeVisible(userId: string, node: EvalNode): boolean {
-    if (node.visibility === "personal") {
-      return node.ownerUserId === userId;
-    }
-    return Boolean(
-      node.teamId && this.teams.get(node.teamId)?.members.has(userId)
-    );
-  }
-
-  private requireTeamMembership(userId: string, teamId?: string): void {
-    if (!teamId) {
-      throw new Error("Team visibility requires a teamId");
-    }
-    if (!this.teams.get(teamId)?.members.has(userId)) {
-      throw new Error("User is not an active member of the requested team");
-    }
+    return node.ownerUserId === userId;
   }
 }
 
@@ -322,19 +275,9 @@ const createWorld = (): EvalWorld => {
     bob: {
       id: "00000000-0000-4000-8000-000000000002",
       email: "bob@example.test"
-    },
-    solo: {
-      id: "00000000-0000-4000-8000-000000000003",
-      email: "solo@example.test"
     }
   };
-  const team = {
-    id: "10000000-0000-4000-8000-000000000001",
-    name: "Research",
-    members: new Set([users.alice.id, users.bob.id])
-  };
-  repository.addTeam(team);
-  return { repository, users, team, workspaceId: "eval-workspace" };
+  return { repository, users, workspaceId: "eval-workspace" };
 };
 
 const ingestCodexStopHook = async (
@@ -428,16 +371,6 @@ const seedEvalDataset = async (world: EvalWorld) => {
       "The private deployment alias violet-saturn was discussed."
   });
 
-  await world.repository.createMemoryEvent(alice, {
-    workspaceId: world.workspaceId,
-    actor: "user",
-    eventType: "captured",
-    rawEventType: "codex_user_prompt",
-    visibility: "team",
-    teamId: world.team.id,
-    content: "Team fact: the shared release captain is Morgan."
-  });
-
   await engine.capturePersonalEvent({
     requesterContext: alice,
     workspaceId: world.workspaceId,
@@ -457,16 +390,6 @@ const seedEvalDataset = async (world: EvalWorld) => {
     metadata: { automaticCaptureScope: "personal" }
   });
 
-  await world.repository.createMemoryEvent(alice, {
-    workspaceId: world.workspaceId,
-    actor: "user",
-    eventType: "captured",
-    rawEventType: "codex_user_prompt",
-    visibility: "team",
-    teamId: world.team.id,
-    content: "Team conflict fact: deploy window is 14:00 Oslo."
-  });
-
   for (let index = 1; index <= 9; index += 1) {
     await engine.capturePersonalEvent({
       requesterContext: alice,
@@ -481,11 +404,6 @@ const seedEvalDataset = async (world: EvalWorld) => {
   await engine.scheduleCompaction({
     requesterContext: alice,
     visibility: "personal"
-  });
-  await engine.scheduleCompaction({
-    requesterContext: alice,
-    visibility: "team",
-    teamId: world.team.id
   });
 };
 
@@ -525,7 +443,6 @@ const evalCases = (world: EvalWorld) => {
   const engine = createMemoryEngine(world.repository);
   const alice = { userId: world.users.alice.id };
   const bob = { userId: world.users.bob.id };
-  const solo = { userId: world.users.solo.id };
 
   return [
     runCase(
@@ -559,19 +476,7 @@ const evalCases = (world: EvalWorld) => {
         "expected personal evidence with personal visibility label"
       );
     }),
-    runCase("team memory recall", async () => {
-      const answer = await engine.answerMemory({
-        requesterContext: bob,
-        query: "release captain Morgan",
-        scope: "team"
-      });
-      return assert(
-        answer.answer.includes("(team)") &&
-          answer.answer.includes("shared release captain is Morgan"),
-        "expected teammate team evidence with team visibility label"
-      );
-    }),
-    runCase("personal memory not visible to teammate", async () => {
+    runCase("personal memory not visible to another user", async () => {
       const result = await engine.searchMemory({
         requesterContext: bob,
         query: "violet-saturn",
@@ -581,26 +486,6 @@ const evalCases = (world: EvalWorld) => {
         result.results.length === 0,
         "expected Bob to have zero hits for Alice personal memory"
       );
-    }),
-    runCase("solo user cannot create team memory", async () => {
-      try {
-        await world.repository.createMemoryEvent(solo, {
-          workspaceId: world.workspaceId,
-          actor: "user",
-          eventType: "captured",
-          rawEventType: "codex_user_prompt",
-          visibility: "team",
-          teamId: world.team.id,
-          content: "Solo user should not create this team memory."
-        });
-      } catch (error) {
-        return assert(
-          error instanceof Error &&
-            error.message.includes("not an active member"),
-          "expected non-member team write rejection"
-        );
-      }
-      throw new Error("expected non-member team write to fail");
     }),
     runCase("old fact recalled after LCM compaction", async () => {
       const answer = await engine.answerMemory({
@@ -632,34 +517,25 @@ const evalCases = (world: EvalWorld) => {
       const answer = await engine.answerMemory({
         requesterContext: alice,
         query: "nonexistent periwinkle invoice approval",
-        scope: "personal_and_team"
+        scope: "personal"
       });
       return assert(
         answer.answer === "No matching memory found.",
         "expected not found answer"
       );
     }),
-    runCase(
-      "conflicting personal/team facts are cited separately",
-      async () => {
-        const answer = await engine.answerMemory({
-          requesterContext: alice,
-          query: "deploy window",
-          scope: "personal_and_team",
-          limit: 10
-        });
-        const visibilities = new Set(
-          answer.citations.map((citation) => citation.visibility)
-        );
-        return assert(
-          visibilities.has("personal") &&
-            visibilities.has("team") &&
-            answer.answer.includes("10:00 Oslo") &&
-            answer.answer.includes("14:00 Oslo"),
-          "expected conflicting personal and team facts with separate visibility citations"
-        );
-      }
-    ),
+    runCase("personal conflict fact is recalled", async () => {
+      const answer = await engine.answerMemory({
+        requesterContext: alice,
+        query: "deploy window",
+        scope: "personal",
+        limit: 10
+      });
+      return assert(
+        answer.answer.includes("10:00 Oslo"),
+        "expected personal conflict fact with personal visibility citation"
+      );
+    }),
     runCase("source expansion returns exact original events", async () => {
       const search = await engine.searchMemory({
         requesterContext: alice,
@@ -681,16 +557,16 @@ const evalCases = (world: EvalWorld) => {
     }),
     runCase("answer uses only retrieved evidence", async () => {
       const answer = await engine.answerMemory({
-        requesterContext: bob,
-        query: "release captain Morgan",
-        scope: "team",
+        requesterContext: alice,
+        query: "Solar Pine",
+        scope: "personal",
         limit: 1
       });
       return assert(
-        answer.answer.includes("Morgan") &&
+        answer.answer.includes("Solar Pine") &&
           !answer.answer.includes("violet-saturn") &&
-          !answer.answer.includes("Solar Pine"),
-        "expected answer to include only retrieved team evidence"
+          !answer.answer.includes("Docker Compose"),
+        "expected answer to include only retrieved personal evidence"
       );
     })
   ];

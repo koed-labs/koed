@@ -44,7 +44,3 @@ create unique index if not exists memory_embeddings_unique_active_message_source
 create index if not exists memory_embeddings_personal_visible_idx
   on memory_embeddings(owner_user_id, embedding_dimensions, created_at desc)
   where visibility = 'personal' and invalidated_at is null;
-
-create index if not exists memory_embeddings_team_visible_idx
-  on memory_embeddings(team_id, embedding_dimensions, created_at desc)
-  where visibility = 'team' and invalidated_at is null;

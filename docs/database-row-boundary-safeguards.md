@@ -30,7 +30,6 @@ memory evidence:
 - `memory_questions`
 - `capture_policies`
 - `api_tokens`
-- `team_members`
 
 ## Recommendation
 
@@ -65,9 +64,9 @@ permissions during migration startup.
 ## RLS Fit
 
 PostgreSQL RLS is a good fit for high-value read boundaries, but it should not
-be added as a broad migration without a spike. Koed queries often need both
-Personal Memory and Team Memory visibility, and Team Memory membership checks
-span `team_members`. RLS policies would need request-scoped settings such as:
+be added as a broad migration without a spike. Koed queries currently need
+personal owner checks based on `owner_user_id`. RLS policies would need
+request-scoped settings such as:
 
 ```sql
 set local app.user_id = '<user uuid>';
@@ -94,8 +93,6 @@ Tables that need extra care:
   node, or message.
 - vector partition tables: enforcement likely belongs through
   `memory_embeddings`, not duplicated vector-table policies.
-- `team_members`: policies must allow membership checks without exposing other
-  teams.
 
 ## Spike Plan
 
@@ -115,14 +112,13 @@ Tables that need extra care:
 
 - Do not make RLS the only authorization layer. Repository predicates and API
   checks should remain readable and testable.
-- Do not use API Tokens for Team Memory until team-scoped API Token behavior
-  returns to scope.
+- Do not add multi-user memory access as part of this work.
 - Do not add backend LLM or synthesis behavior as part of this work.
 
 ## Acceptance Criteria For The Spike
 
 - Runtime code can run without schema-owner privileges.
 - User-scoped memory reads fail closed when `app.user_id` is missing.
-- Personal Memory and Team Memory visibility tests pass with RLS enabled.
+- Personal Memory visibility tests pass with RLS enabled.
 - Migration commands still work in local Docker Compose.
 - Operators have clear upgrade and rollback guidance.

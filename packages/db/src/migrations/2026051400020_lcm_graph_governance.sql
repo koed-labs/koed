@@ -8,7 +8,3 @@ alter table memory_events
 create index if not exists memory_events_personal_graph_idx
   on memory_events(owner_user_id, created_at desc)
   where visibility = 'personal';
-
-create index if not exists memory_events_team_graph_idx
-  on memory_events(team_id, created_at desc)
-  where visibility = 'team';

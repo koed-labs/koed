@@ -52,7 +52,3 @@ alter table memory_nodes
 create index if not exists memory_nodes_personal_pinned_idx
   on memory_nodes(owner_user_id, pinned_at desc)
   where visibility = 'personal' and invalidated_at is null and pinned_at is not null;
-
-create index if not exists memory_nodes_team_pinned_idx
-  on memory_nodes(team_id, pinned_at desc)
-  where visibility = 'team' and invalidated_at is null and pinned_at is not null;

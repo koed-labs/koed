@@ -31,8 +31,7 @@ export interface ApiRouteContext {
       repo: MemorySourceRepository,
       requesterContext: { userId: string },
       eventId: string,
-      visibility: Visibility,
-      teamId?: string
+      visibility: Visibility
     ): Promise<{ embedding: MemoryJobStatus; compaction: MemoryJobStatus }>;
     scheduleProjectedMemoryEventProcessing(
       repo: MemorySourceRepository,
@@ -40,7 +39,6 @@ export interface ApiRouteContext {
       scopes: Array<{
         eventId: string;
         visibility: Visibility;
-        teamId: string | null;
       }>
     ): Promise<{
       embeddings: MemoryJobStatus[];

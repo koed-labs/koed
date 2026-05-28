@@ -3,7 +3,7 @@ create extension if not exists pgcrypto;
 
 do $$
 begin
-  create type visibility_scope as enum ('personal', 'team');
+  create type visibility_scope as enum ('personal');
 exception
   when duplicate_object then null;
 end $$;
@@ -24,13 +24,6 @@ end $$;
 
 do $$
 begin
-  create type team_member_role as enum ('owner', 'admin', 'member');
-exception
-  when duplicate_object then null;
-end $$;
-
-do $$
-begin
   create type memory_event_type as enum ('captured', 'invalidated', 'summarized', 'embedded');
 exception
   when duplicate_object then null;
@@ -45,32 +38,9 @@ create table if not exists users (
   disabled_at timestamptz
 );
 
-create table if not exists teams (
-  id uuid primary key default gen_random_uuid(),
-  name text not null,
-  created_by_user_id uuid not null references users(id) on delete restrict,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  archived_at timestamptz
-);
-
-create table if not exists team_members (
-  team_id uuid not null references teams(id) on delete cascade,
-  user_id uuid not null references users(id) on delete cascade,
-  role team_member_role not null default 'member',
-  created_at timestamptz not null default now(),
-  removed_at timestamptz,
-  primary key (team_id, user_id)
-);
-
-create unique index if not exists team_members_one_active_membership
-  on team_members(team_id, user_id)
-  where removed_at is null;
-
 create table if not exists workspaces (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null,
   name text not null,
   root_path text,
@@ -78,17 +48,12 @@ create table if not exists workspaces (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   archived_at timestamptz,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create table if not exists sessions (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   workspace_id uuid references workspaces(id) on delete set null,
   visibility visibility_scope not null default 'personal',
   external_session_id text,
@@ -104,11 +69,7 @@ create table if not exists sessions (
   updated_at timestamptz not null default now(),
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists sessions_idempotency_key_unique
@@ -123,7 +84,6 @@ create table if not exists turns (
   id uuid primary key default gen_random_uuid(),
   session_id uuid not null references sessions(id) on delete cascade,
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null default 'personal',
   external_turn_id text,
   source_runtime source_runtime not null,
@@ -136,11 +96,7 @@ create table if not exists turns (
   completed_at timestamptz,
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists turns_session_external_turn_unique
@@ -160,7 +116,6 @@ create table if not exists messages (
   session_id uuid not null references sessions(id) on delete cascade,
   turn_id uuid references turns(id) on delete cascade,
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null default 'personal',
   role text not null check (role in ('user', 'assistant', 'system', 'tool')),
   content text not null,
@@ -176,11 +131,7 @@ create table if not exists messages (
   created_at timestamptz not null default now(),
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists messages_transcript_item_unique
@@ -201,7 +152,6 @@ create table if not exists tool_events (
   turn_id uuid references turns(id) on delete cascade,
   message_id uuid references messages(id) on delete set null,
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null default 'personal',
   tool_name text not null,
   tool_input jsonb,
@@ -218,11 +168,7 @@ create table if not exists tool_events (
   completed_at timestamptz,
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists tool_events_transcript_item_unique
@@ -241,7 +187,6 @@ create table if not exists memory_events (
   id uuid primary key default gen_random_uuid(),
   actor_user_id uuid references users(id) on delete set null,
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null,
   event_type memory_event_type not null,
   source_runtime source_runtime,
@@ -258,11 +203,7 @@ create table if not exists memory_events (
   created_at timestamptz not null default now(),
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists memory_events_idempotency_key_unique
@@ -276,7 +217,6 @@ create unique index if not exists memory_events_source_hash_unique
 create table if not exists memory_nodes (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   created_by_user_id uuid references users(id) on delete set null,
   visibility visibility_scope not null,
   kind text not null check (kind in ('leaf', 'rollup')),
@@ -297,11 +237,7 @@ create table if not exists memory_nodes (
   updated_at timestamptz not null default now(),
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists memory_nodes_idempotency_key_unique
@@ -315,10 +251,6 @@ create unique index if not exists memory_nodes_source_hash_unique
 create index if not exists memory_nodes_personal_visible_idx
   on memory_nodes(owner_user_id, created_at desc)
   where visibility = 'personal' and invalidated_at is null;
-
-create index if not exists memory_nodes_team_visible_idx
-  on memory_nodes(team_id, created_at desc)
-  where visibility = 'team' and invalidated_at is null;
 
 create table if not exists memory_node_sources (
   memory_node_id uuid not null references memory_nodes(id) on delete cascade,
@@ -340,7 +272,6 @@ create table if not exists memory_embeddings (
   id uuid primary key default gen_random_uuid(),
   memory_node_id uuid not null references memory_nodes(id) on delete cascade,
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null,
   embedding_model text not null,
   embedding_dimensions integer not null check (embedding_dimensions in (1536, 3072)),
@@ -349,11 +280,7 @@ create table if not exists memory_embeddings (
   created_at timestamptz not null default now(),
   invalidated_at timestamptz,
   invalidation_reason text,
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  )
+  check (visibility = 'personal' and owner_user_id is not null)
 );
 
 create unique index if not exists memory_embeddings_unique_active_source
@@ -376,7 +303,6 @@ create table if not exists memory_embeddings_3072 (
 create table if not exists api_tokens (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid not null references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   name text not null,
   token_hash text not null unique,
   token_prefix text not null,
@@ -392,7 +318,6 @@ create table if not exists audit_events (
   id uuid primary key default gen_random_uuid(),
   actor_user_id uuid references users(id) on delete set null,
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope,
   action text not null,
   target_table text,
@@ -403,4 +328,3 @@ create table if not exists audit_events (
 
 create index if not exists audit_events_actor_idx on audit_events(actor_user_id, created_at desc);
 create index if not exists audit_events_owner_idx on audit_events(owner_user_id, created_at desc);
-create index if not exists audit_events_team_idx on audit_events(team_id, created_at desc);

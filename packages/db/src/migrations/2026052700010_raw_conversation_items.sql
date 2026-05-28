@@ -25,7 +25,6 @@ create unique index if not exists turns_session_turn_index_unique
 create table if not exists conversation_items (
   id uuid primary key default gen_random_uuid(),
   owner_user_id uuid references users(id) on delete cascade,
-  team_id uuid references teams(id) on delete cascade,
   visibility visibility_scope not null default 'personal',
   session_id uuid references sessions(id) on delete set null,
   turn_id uuid references turns(id) on delete set null,
@@ -54,11 +53,7 @@ create table if not exists conversation_items (
   projection_error text,
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  check (
-    (visibility = 'personal' and owner_user_id is not null and team_id is null)
-    or
-    (visibility = 'team' and team_id is not null)
-  ),
+  check (visibility = 'personal' and owner_user_id is not null),
   check (source_line_number is null or source_line_number >= 0),
   check (source_sequence is null or source_sequence >= 0)
 );
@@ -66,10 +61,6 @@ create table if not exists conversation_items (
 create unique index if not exists conversation_items_personal_idempotency_key_unique
   on conversation_items(owner_user_id, idempotency_key)
   where visibility = 'personal';
-
-create unique index if not exists conversation_items_team_idempotency_key_unique
-  on conversation_items(team_id, idempotency_key)
-  where visibility = 'team';
 
 create index if not exists conversation_items_session_observed_idx
   on conversation_items(session_id, observed_at, id);

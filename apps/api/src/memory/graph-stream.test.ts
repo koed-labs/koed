@@ -30,21 +30,14 @@ describe("graph stream updates", () => {
     ).toBe(false);
   });
 
-  it("keys team graph updates by team id", () => {
+  it("keys graph updates by personal owner or global fallback", () => {
     expect(
       graphUpdateKey({
         table: "memory_events",
-        visibility: "team",
-        teamId: "team-1"
+        visibility: "personal",
+        ownerUserId: "user-1"
       })
-    ).toBe("team:team-1");
-    expect(
-      graphUpdateKey({
-        table: "memory_events",
-        visibility: "team",
-        teamId: "team-2"
-      })
-    ).toBe("team:team-2");
+    ).toBe("personal:user-1");
     expect(graphUpdateKey({ table: "schema_migrations" })).toBe("global");
   });
 
