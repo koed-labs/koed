@@ -259,10 +259,16 @@ const releaseQuestionForRetry = async (
     status: "pending",
     last_error_message: message,
     ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
-    ...(diagnostics.response ? { response: diagnostics.response } : {}),
+    ...(diagnostics.response
+      ? { response: stripAppServerEvents(diagnostics.response) }
+      : {}),
     ...(diagnostics.retrieval ? { retrieval: diagnostics.retrieval } : {}),
     ...(diagnostics.localMemoryWorker
-      ? { local_memory_worker: diagnostics.localMemoryWorker }
+      ? {
+          local_memory_worker: stripAppServerEvents(
+            diagnostics.localMemoryWorker
+          )
+        }
       : {})
   });
 
@@ -280,10 +286,16 @@ const updateQuestionWithError = async (
     status: "error",
     error_message: message,
     ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
-    ...(diagnostics.response ? { response: diagnostics.response } : {}),
+    ...(diagnostics.response
+      ? { response: stripAppServerEvents(diagnostics.response) }
+      : {}),
     ...(diagnostics.retrieval ? { retrieval: diagnostics.retrieval } : {}),
     ...(diagnostics.localMemoryWorker
-      ? { local_memory_worker: diagnostics.localMemoryWorker }
+      ? {
+          local_memory_worker: stripAppServerEvents(
+            diagnostics.localMemoryWorker
+          )
+        }
       : {})
   });
 
@@ -295,6 +307,23 @@ const citationsFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
 
 const retrievalFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
   answer.evidenceBundle?.retrieval ?? answer.retrieval;
+
+const stripAppServerEvents = <T>(value: T): T => {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(stripAppServerEvents) as T;
+  }
+  const { appServerEvents, ...rest } = value as Record<string, unknown>;
+  void appServerEvents;
+  return Object.fromEntries(
+    Object.entries(rest).map(([key, entry]) => [
+      key,
+      stripAppServerEvents(entry)
+    ])
+  ) as T;
+};
 
 const isRetryableSynthesisFallback = (answer: MemoryAnswerWorkerResponse) =>
   answer.localMemoryWorker.usedFallback === true &&
@@ -338,11 +367,11 @@ const updateQuestionWithAnswer = async (
     ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
     answer_markdown:
       answer.markdown?.trim() || "No matching memory evidence found.",
-    response: answer,
+    response: stripAppServerEvents(answer),
     evidence: evidenceFromAnswer(answer),
     citations: citationsFromAnswer(answer),
     retrieval: retrievalFromAnswer(answer),
-    local_memory_worker: answer.localMemoryWorker
+    local_memory_worker: stripAppServerEvents(answer.localMemoryWorker)
   });
 
 const hash = (value: unknown): string =>

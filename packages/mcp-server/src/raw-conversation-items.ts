@@ -21,10 +21,24 @@ const envelopeBytes = (items: RawConversationItemRequest[]): number =>
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-const chunkString = (value: string, size: number): string[] => {
+const chunkStringByUtf8Bytes = (value: string, maxBytes: number): string[] => {
   const chunks: string[] = [];
-  for (let index = 0; index < value.length; index += size) {
-    chunks.push(value.slice(index, index + size));
+  let current = "";
+  let currentBytes = 0;
+
+  for (const char of value) {
+    const charBytes = Buffer.byteLength(char, "utf8");
+    if (current && currentBytes + charBytes > maxBytes) {
+      chunks.push(current);
+      current = "";
+      currentBytes = 0;
+    }
+    current += char;
+    currentBytes += charBytes;
+  }
+
+  if (current) {
+    chunks.push(current);
   }
   return chunks.length > 0 ? chunks : [""];
 };
@@ -46,9 +60,9 @@ const splitOversizedItem = (
       : typeof item.idempotencyKey === "string"
         ? item.idempotencyKey
         : hash(item);
-  let chunkBudget = Math.max(1024, Math.floor(byteLimit * 0.6));
-  while (chunkBudget >= 1024) {
-    const chunks = chunkString(rawJsonText, chunkBudget);
+  let chunkBudget = Math.max(100, Math.floor((byteLimit - 1_024) / 2));
+  while (chunkBudget > 0) {
+    const chunks = chunkStringByUtf8Bytes(rawJsonText, chunkBudget);
     const chunked = chunks.map((chunk, index) => ({
       ...item,
       rawJson: {

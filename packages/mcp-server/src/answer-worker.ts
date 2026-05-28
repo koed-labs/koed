@@ -406,6 +406,42 @@ const sourceKey = (item: unknown): string => {
     .join(":");
 };
 
+const plannerSearchDomain = (
+  action: ParsedPlannerAction,
+  options: {
+    searchDomain: string;
+    sessionId?: string;
+    workspaceId?: string;
+  }
+): {
+  searchDomain: string;
+  sessionId?: string;
+  workspaceId?: string;
+} => {
+  const requested = action.search_domain ?? options.searchDomain;
+  if (requested === "session") {
+    const sessionId = action.session_id ?? options.sessionId;
+    return sessionId
+      ? { searchDomain: "session", sessionId }
+      : {
+          searchDomain: options.searchDomain,
+          sessionId: options.sessionId,
+          workspaceId: options.workspaceId
+        };
+  }
+  if (requested === "project") {
+    const workspaceId = action.workspace_id ?? options.workspaceId;
+    return workspaceId
+      ? { searchDomain: "project", workspaceId }
+      : {
+          searchDomain: options.searchDomain,
+          sessionId: options.sessionId,
+          workspaceId: options.workspaceId
+        };
+  }
+  return { searchDomain: "global" };
+};
+
 const appendEvidence = (
   existing: unknown[],
   incoming: unknown[]
@@ -499,7 +535,8 @@ export const buildPlannedMemoryAnswerPrompt = (
     "Rules:",
     "- Return only one JSON object and no prose outside JSON.",
     "- Use only memory evidence supplied in this loop; do not use outside knowledge.",
-    "- Default to project-scoped memory search unless the user or task clearly needs one conversation session or all projects.",
+    `- Honor the requested default search domain (${state.searchDomain}) for follow-up searches unless the current evidence clearly shows that a different boundary is needed.`,
+    "- Use search_domain=project only when a workspace_id is available.",
     "- Use search_domain=session only when a backend session_id is available.",
     "- Use search_domain=global only for deliberately cross-project/cross-session questions.",
     "- Treat semantic/vector retrieval hits as candidates, not proof of relevance.",
@@ -519,7 +556,18 @@ export const buildPlannedMemoryAnswerPrompt = (
       : "- Choose search or expand only if it is likely to materially improve the answer.",
     "",
     "Example no-evidence first step:",
-    '{"action":"search","query":"the user question rewritten for memory retrieval","search_domain":"project","limit":10}',
+    JSON.stringify({
+      action: "search",
+      query: "the user question rewritten for memory retrieval",
+      search_domain: state.searchDomain,
+      ...(state.searchDomain === "project" && state.workspaceId
+        ? { workspace_id: state.workspaceId }
+        : {}),
+      ...(state.searchDomain === "session" && state.sessionId
+        ? { session_id: state.sessionId }
+        : {}),
+      limit: 10
+    }),
     "",
     "Example final not-found answer:",
     `{"action":"answer","answer":{"schema_version":"${MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION}","memory_status":"not_found","relevant_memory_found":false,"answer_markdown":"No matching memory evidence found.","relevance_explanation":"The supplied candidates do not directly answer the question.","evidence":[],"missing":["relevant memory evidence"],"missing_evidence":["relevant memory evidence"]}}`,
@@ -685,9 +733,10 @@ const runPlannedMemoryAnswer = async (
       }
       const searchQuery = action.query?.trim() || state.query;
       const retrievalScope = options.retrievalScope;
-      const searchDomain = action.search_domain ?? options.searchDomain;
-      const sessionId = action.session_id ?? options.sessionId;
-      const workspaceId = action.workspace_id ?? options.workspaceId;
+      const { searchDomain, sessionId, workspaceId } = plannerSearchDomain(
+        action,
+        options
+      );
       const limit = clampLimit(action.limit, options.limit);
       const searchResult = await options.client.search({
         query: searchQuery,

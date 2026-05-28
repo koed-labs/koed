@@ -120,6 +120,8 @@ describe("memory answer worker", () => {
     expect(prompt).toContain("candidates, not proof of relevance");
     expect(prompt).toContain("clearly off-topic");
     expect(prompt).toContain("memory_status=not_found");
+    expect(prompt).toContain("Honor the requested default search domain (global)");
+    expect(prompt).toContain('"search_domain":"global"');
   });
 
   it("uses the configured Codex runner by default", async () => {
@@ -342,6 +344,85 @@ describe("memory answer worker", () => {
       memoryStatus: "found",
       usedFallback: false
     });
+  });
+
+  it("does not narrow a global planner follow-up to project without a workspace", async () => {
+    const searches: Record<string, unknown>[] = [];
+    const runner: CodexAnswerRunner = async (prompt, config) => {
+      if (searches.length === 0 && prompt.includes('"evidence": []')) {
+        return {
+          text: JSON.stringify({
+            action: "search",
+            query: "cross project memory decision",
+            search_domain: "project"
+          }),
+          model: `codex:${config.model}:${config.reasoningEffort}`
+        };
+      }
+      return {
+        text: JSON.stringify({
+          action: "answer",
+          answer: answerObject(
+            "We found the cross-project decision in global memory."
+          )
+        }),
+        model: `codex:${config.model}:${config.reasoningEffort}`
+      };
+    };
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        searches.push(input);
+        return {
+          hits: [
+            {
+              nodeId: "node-global",
+              visibility: "personal",
+              summaryText: "Cross-project decision.",
+              citation: { nodeId: "node-global", visibility: "personal" }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    await answerWithMemoryWorker(
+      {
+        markdown: "No matching memory found.",
+        evidenceBundle: {
+          query: "What was the cross-project decision?",
+          evidence: [],
+          retrieval: { retrievalMode: "semantic_vector" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "2"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "global",
+        limit: 10
+      }
+    );
+
+    expect(searches[0]).toMatchObject({
+      query: "cross project memory decision",
+      retrieval_scope: "personal",
+      search_domain: "global"
+    });
+    expect(searches[0]?.workspace_id).toBeUndefined();
   });
 
   it("accepts planner evidence entries that only include copied source fields", async () => {

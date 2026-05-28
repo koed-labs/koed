@@ -304,6 +304,19 @@ describe("local memory answer bridge", () => {
       answer_markdown: "The answer",
       local_memory_worker: { status: "ok" }
     });
+    expect(
+      (patches[0]?.local_memory_worker as { appServerEvents?: unknown })
+        .appServerEvents
+    ).toBeUndefined();
+    expect(
+      (
+        (
+          patches[0]?.response as {
+            localMemoryWorker?: { appServerEvents?: unknown };
+          }
+        ).localMemoryWorker ?? {}
+      ).appServerEvents
+    ).toBeUndefined();
     expect(rawItemRequests).toHaveLength(1);
     expect(rawItemRequests[0]).toMatchObject({
       items: [
