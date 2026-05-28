@@ -68,7 +68,10 @@ describe("MCP tool exposure", () => {
 
   it("exposes diagnostic and low-level tools only through explicit env flags", () => {
     expect([...diagnosticMemoryTools]).toEqual(["memory_access_check"]);
-    expect([...lowLevelMemoryTools]).toEqual(["memory_search", "memory_expand"]);
+    expect([...lowLevelMemoryTools]).toEqual([
+      "memory_search",
+      "memory_expand"
+    ]);
     expect([...allTools]).not.toContain("memory_lcm_summarize_pending");
 
     expect(
