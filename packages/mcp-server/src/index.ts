@@ -44,6 +44,7 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
   automaticDiscussionCapture: "not_via_mcp";
   captureFallback: "codex_lifecycle_hooks_transcript_path";
   exposedTools: MemoryToolName[];
+  diagnosticMemoryToolsExposed: boolean;
   lowLevelMemoryToolsExposed: boolean;
   localMemoryAnswerWorker: {
     provider: string;
@@ -81,20 +82,29 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
 }
 
 export interface ToolExposureConfig {
+  exposeDiagnosticMemoryTools: boolean;
   exposeLowLevelMemoryTools: boolean;
 }
 
-export const defaultTools = ["memory_access_check", "memory_answer"] as const;
+export const defaultTools = ["memory_answer"] as const;
+
+export const diagnosticMemoryTools = ["memory_access_check"] as const;
 
 export const lowLevelMemoryTools = ["memory_search", "memory_expand"] as const;
 
-export const allTools = [...defaultTools, ...lowLevelMemoryTools] as const;
+export const allTools = [
+  ...defaultTools,
+  ...diagnosticMemoryTools,
+  ...lowLevelMemoryTools
+] as const;
 
 export type MemoryToolName = (typeof allTools)[number];
 
 export const resolveToolExposureConfig = (
   env: NodeJS.ProcessEnv = process.env
 ): ToolExposureConfig => ({
+  exposeDiagnosticMemoryTools:
+    env.MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS?.trim().toLowerCase() === "true",
   exposeLowLevelMemoryTools:
     env.MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS?.trim().toLowerCase() === "true"
 });
@@ -103,6 +113,7 @@ export const exposedTools = (
   config: ToolExposureConfig = resolveToolExposureConfig()
 ): MemoryToolName[] => [
   ...defaultTools,
+  ...(config.exposeDiagnosticMemoryTools ? diagnosticMemoryTools : []),
   ...(config.exposeLowLevelMemoryTools ? lowLevelMemoryTools : [])
 ];
 
@@ -380,6 +391,7 @@ export const memoryAccessCheck = async (
     automaticDiscussionCapture: "not_via_mcp",
     captureFallback: "codex_lifecycle_hooks_transcript_path",
     exposedTools: exposedTools(toolExposure),
+    diagnosticMemoryToolsExposed: toolExposure.exposeDiagnosticMemoryTools,
     lowLevelMemoryToolsExposed: toolExposure.exposeLowLevelMemoryTools,
     localMemoryAnswerWorker: {
       provider: answerWorker.provider,

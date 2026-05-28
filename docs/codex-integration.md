@@ -115,7 +115,7 @@ that, start a fresh Codex session and ask it to check memory access through the
 
 The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed Self-Hosted relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone. Recall-only or MCP-only integrations are experimental because they do not provide supported automatic capture.
 
-`memory_answer` is the normal recall tool. It returns a compact answer by default so normal Codex sessions are not filled with large evidence bundles. Use its explicit evidence/detail option only when debugging retrieval.
+`memory_answer` is the only normal recall tool exposed by default. It returns a compact answer by default so normal Codex sessions are not filled with large evidence bundles. Use its explicit evidence/detail option only when debugging retrieval. Setup checks should use `node packages/mcp-server/dist/cli.js doctor`; optional MCP diagnostic tools such as `memory_access_check`, `memory_search`, and `memory_expand` require explicit development/operator environment flags and are not part of the normal agent-facing surface.
 
 LCM summaries are processed by the MCP-local background service through Codex
 app-server mode. If that local service is delayed or fails, Koed still returns

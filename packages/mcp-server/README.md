@@ -58,18 +58,30 @@ node packages/mcp-server/dist/cli.js doctor
 
 ## Tools
 
-The MCP server always exposes:
+The MCP server exposes one normal recall tool by default:
 
-- `memory_access_check`: verifies API access and reports local worker status.
 - `memory_answer`: retrieves memory evidence and asks local Codex to synthesize
   a compact answer.
 
-Debug tools are hidden by default. Set this to expose low-level search and
-expand tools:
+Use the `doctor` command above for setup and health checks without expanding the
+normal agent-facing MCP schema.
+
+Diagnostic and low-level tools are hidden by default. Set this to expose the MCP
+diagnostic access check tool:
+
+```bash
+MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS=true
+```
+
+Set this to expose low-level search and expand tools:
 
 ```bash
 MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS=true
 ```
+
+Those diagnostic tools are intended for development and operator inspection.
+Normal agents should use `memory_answer` so the local memory-answer worker owns
+retrieval planning and expansion.
 
 ## Codex App-Server Binary
 

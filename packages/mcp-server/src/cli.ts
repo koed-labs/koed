@@ -209,26 +209,28 @@ const backgroundLcmSummaryService = startLcmSummaryService(client, {
 });
 const answerBridgeHandle = startAnswerBridgeWithRetry();
 
-server.registerTool(
-  "memory_access_check",
-  {
-    title: "Memory access check",
-    description:
-      "Validate MEMORY_API_URL and MEMORY_API_TOKEN against /v1/access/check. Backend LLM provider configuration is unsupported in this build. Reports local semantic embedding retrieval status and that automatic full-discussion capture must use Codex hooks/transcript ingestion where available; MCP alone is for explicit tools and retrieval.",
-    inputSchema: {
-      include_notes: z
-        .boolean()
-        .optional()
-        .describe("Include integration guidance notes. Defaults to true.")
-    }
-  },
-  async ({ include_notes = true }) =>
-    jsonResponse(
-      await memoryAccessCheck(client, include_notes, {
-        lcmSummaryService: backgroundLcmSummaryService
-      })
-    )
-);
+if (toolExposure.exposeDiagnosticMemoryTools) {
+  server.registerTool(
+    "memory_access_check",
+    {
+      title: "Memory access check",
+      description:
+        "Diagnostic tool for validating MEMORY_API_URL and MEMORY_API_TOKEN against /v1/access/check. Normal agents should call memory_answer for recall; use the CLI doctor command for setup checks without expanding the default MCP schema.",
+      inputSchema: {
+        include_notes: z
+          .boolean()
+          .optional()
+          .describe("Include integration guidance notes. Defaults to true.")
+      }
+    },
+    async ({ include_notes = true }) =>
+      jsonResponse(
+        await memoryAccessCheck(client, include_notes, {
+          lcmSummaryService: backgroundLcmSummaryService
+        })
+      )
+  );
+}
 
 server.registerTool(
   "memory_answer",

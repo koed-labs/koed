@@ -1,7 +1,17 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryApiClient, memoryAccessCheck } from "./index.js";
+import {
+  MemoryApiClient,
+  allTools,
+  defaultTools,
+  diagnosticMemoryTools,
+  exposedTools,
+  lowLevelMemoryTools,
+  memoryAccessCheck,
+  requiredTools,
+  resolveToolExposureConfig
+} from "./index.js";
 import {
   answerWithMemoryWorker,
   compactMemoryAnswerPayload,
@@ -41,6 +51,56 @@ afterEach(async () => {
           new Promise<void>((resolve) => server.close(() => resolve()))
       )
   );
+});
+
+describe("MCP tool exposure", () => {
+  it("exposes only memory_answer by default", () => {
+    const config = resolveToolExposureConfig({} as NodeJS.ProcessEnv);
+
+    expect([...defaultTools]).toEqual(["memory_answer"]);
+    expect([...requiredTools]).toEqual(["memory_answer"]);
+    expect(exposedTools(config)).toEqual(["memory_answer"]);
+    expect(exposedTools(config)).not.toContain("memory_access_check");
+    expect(exposedTools(config)).not.toContain("memory_search");
+    expect(exposedTools(config)).not.toContain("memory_expand");
+    expect(exposedTools(config)).not.toContain("memory_lcm_summarize_pending");
+  });
+
+  it("exposes diagnostic and low-level tools only through explicit env flags", () => {
+    expect([...diagnosticMemoryTools]).toEqual(["memory_access_check"]);
+    expect([...lowLevelMemoryTools]).toEqual(["memory_search", "memory_expand"]);
+    expect([...allTools]).not.toContain("memory_lcm_summarize_pending");
+
+    expect(
+      exposedTools(
+        resolveToolExposureConfig({
+          MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS: "true"
+        } as NodeJS.ProcessEnv)
+      )
+    ).toEqual(["memory_answer", "memory_access_check"]);
+
+    expect(
+      exposedTools(
+        resolveToolExposureConfig({
+          MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS: "true"
+        } as NodeJS.ProcessEnv)
+      )
+    ).toEqual(["memory_answer", "memory_search", "memory_expand"]);
+
+    expect(
+      exposedTools(
+        resolveToolExposureConfig({
+          MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS: "true",
+          MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS: "true"
+        } as NodeJS.ProcessEnv)
+      )
+    ).toEqual([
+      "memory_answer",
+      "memory_access_check",
+      "memory_search",
+      "memory_expand"
+    ]);
+  });
 });
 
 describe("MemoryApiClient", () => {
