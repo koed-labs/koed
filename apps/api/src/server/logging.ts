@@ -78,6 +78,20 @@ const getRecord = (
     : undefined;
 };
 
+const safeLogString = (value: unknown): string | undefined => {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+  return undefined;
+};
+
 const parseTraceparent = (
   traceparent: string | undefined
 ): { trace_id: string; span_id: string } | undefined => {
@@ -115,7 +129,7 @@ export const serializeApiRequest = (request: unknown) => {
   const trace = parseTraceparent(firstHeaderValue(headers?.traceparent));
 
   return {
-    id: String(record.id ?? ""),
+    id: safeLogString(record.id) ?? "",
     method: getString(record, "method"),
     ...parsePath(url),
     ...(route ? { route } : {}),

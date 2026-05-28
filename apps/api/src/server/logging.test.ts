@@ -62,6 +62,20 @@ describe("API logging", () => {
     );
   });
 
+  it("does not stringify object request ids in logs", () => {
+    expect(
+      serializeApiRequest({
+        id: { toString: () => "should-not-log" },
+        method: "GET",
+        url: "/health"
+      })
+    ).toEqual({
+      id: "",
+      method: "GET",
+      path: "/health"
+    });
+  });
+
   it("normalizes Fastify log keys to the API schema", () => {
     expect(
       formatApiLogBindings({
