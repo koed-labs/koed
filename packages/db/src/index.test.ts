@@ -2231,5 +2231,4 @@ describeDb("memory repository visibility", () => {
     expect(new Set(captures.map((event) => event.id)).size).toBe(1);
     expect(events.map((event) => event.id)).toEqual([captures[0]!.id]);
   });
-
 });

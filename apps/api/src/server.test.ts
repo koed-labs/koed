@@ -2212,7 +2212,7 @@ describe("account and access flows", () => {
     const originalCreateLcmNodes = repository.createLcmNodes.bind(repository);
     repository.createLcmNodes = async (actor, input) => {
       compactionScopes.push({
-        visibility: input.visibility,
+        visibility: input.visibility
       });
       return originalCreateLcmNodes(actor, input);
     };
@@ -2263,7 +2263,7 @@ describe("account and access flows", () => {
     expect(second.statusCode).toBe(200);
     expect(jsonBody<CaptureResponse>(second).event.visibility).toBe("personal");
     expect(compactionScopes.at(-1)).toEqual({
-      visibility: "personal",
+      visibility: "personal"
     });
   });
 

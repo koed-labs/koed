@@ -84,8 +84,7 @@ describe("core schemas", () => {
   });
 });
 
-const createFakeRepository = (
-): MemoryEngineRepository => {
+const createFakeRepository = (): MemoryEngineRepository => {
   const events: MemoryEventRecord[] = [];
   const nodes: Array<{
     id: string;
@@ -141,8 +140,8 @@ const createFakeRepository = (
       };
     },
     async createLcmNodes(actor, input) {
-      const scoped = events.filter((event) =>
-        event.ownerUserId === actor.userId
+      const scoped = events.filter(
+        (event) => event.ownerUserId === actor.userId
       );
       const leafNodeIds = scoped.map((event) => {
         const id = `node-${nodes.length + 1}`;

@@ -195,11 +195,7 @@ class DeterministicMemoryRepository implements MemoryEngineRepository {
     });
     const rollupNodeId =
       visibleLeaves.length >= 3
-        ? this.createRollup(
-            input.visibility,
-            actor.userId,
-            visibleLeaves
-          )
+        ? this.createRollup(input.visibility, actor.userId, visibleLeaves)
         : null;
 
     return Promise.resolve({ leafNodeIds, rollupNodeId });

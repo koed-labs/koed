@@ -2545,7 +2545,12 @@ const validateWorkflowTokenUsageSources = async (
           and ($4::uuid is null or session_id = $4)
         limit 1
       `,
-      [usage.turnId, input.visibility, input.ownerUserId, usage.sessionId ?? null]
+      [
+        usage.turnId,
+        input.visibility,
+        input.ownerUserId,
+        usage.sessionId ?? null
+      ]
     );
     if (turn.rowCount === 0) {
       throw new Error("Turn not found or not visible");
