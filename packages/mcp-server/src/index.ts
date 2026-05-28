@@ -114,7 +114,7 @@ export const normalizeApiUrl = (apiUrl: string): string =>
 export const defaultConfig = (): McpServerConfig => ({
   apiUrl: process.env.MEMORY_API_URL ?? "http://localhost:3000",
   apiToken: process.env.MEMORY_API_TOKEN,
-  requestTimeoutMs: positiveIntEnv("MEMORY_API_REQUEST_TIMEOUT_MS", 4_000)
+  requestTimeoutMs: positiveIntEnv("MEMORY_API_REQUEST_TIMEOUT_MS", 60_000)
 });
 
 const positiveIntEnv = (name: string, fallback: number): number => {
