@@ -1,4 +1,5 @@
 import { countTokensForModel } from "@koed/core";
+import { z } from "zod";
 import {
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
@@ -8,7 +9,8 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v1";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v2";
+export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 
 export interface MemoryAnswerWorkerConfig {
   provider: string;
@@ -50,6 +52,7 @@ export type MemoryAnswerResponseDetail =
 
 export interface MemoryAnswerPayload {
   markdown?: string;
+  structuredAnswer?: StructuredMemoryAnswer;
   evidence?: unknown[];
   citations?: unknown[];
   evidenceBundle?: {
@@ -68,6 +71,43 @@ const CITATION_METADATA_KEYS = [
   "expandedNodeIds",
   "visibilityLabels"
 ] as const;
+
+const memoryAnswerStatusSchema = z.enum([
+  "found",
+  "not_found",
+  "insufficient",
+  "pending_summary"
+]);
+
+type MemoryAnswerStatus = z.infer<typeof memoryAnswerStatusSchema>;
+
+const memoryAnswerEvidenceSchema = z
+  .object({
+    evidence_index: z.number().int().nonnegative().optional(),
+    source_id: z.string().min(1).optional(),
+    node_id: z.string().min(1).optional(),
+    visibility: z.string().min(1).optional(),
+    relevance: z.string().min(1),
+    support: z.string().min(1).optional()
+  })
+  .passthrough();
+
+const structuredMemoryAnswerSchema = z
+  .object({
+    schema_version: z.literal(MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION),
+    memory_status: memoryAnswerStatusSchema,
+    relevant_memory_found: z.boolean(),
+    answer_markdown: z.string(),
+    relevance_explanation: z.string(),
+    evidence: z.array(memoryAnswerEvidenceSchema).default([]),
+    missing: z.array(z.string()).default([]),
+    missing_evidence: z.array(z.string()).default([])
+  })
+  .passthrough();
+
+export type StructuredMemoryAnswer = z.infer<
+  typeof structuredMemoryAnswerSchema
+>;
 
 export type MemoryAnswerWorkerResponse = Partial<MemoryAnswerPayload> & {
   markdown?: string;
@@ -215,7 +255,39 @@ export const buildMemoryAnswerPrompt = (
     "- Do not use outside knowledge.",
     "- Cite claims with the evidence index and include memory visibility when available.",
     "- If the evidence is insufficient, say what is missing instead of guessing.",
-    "- Return only concise markdown for the final answer.",
+    "- Return only one JSON object and no prose outside JSON.",
+    "- The answer_markdown field is the only place for user-facing markdown.",
+    "- Use memory_status=found only when supplied evidence directly supports the answer.",
+    "- Use memory_status=not_found when candidates are empty or irrelevant.",
+    "- Use memory_status=insufficient when evidence is partial.",
+    "- Use memory_status=pending_summary when relevant memory appears to need LCM summaries before a useful answer.",
+    "- Include evidence entries only for genuinely supporting evidence.",
+    "",
+    "Required JSON shape:",
+    JSON.stringify(
+      {
+        schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
+        memory_status: "found | not_found | insufficient | pending_summary",
+        relevant_memory_found:
+          "true only when at least one memory candidate is genuinely relevant",
+        answer_markdown: "Concise markdown answer for the main agent.",
+        relevance_explanation:
+          "Short explanation of why the selected evidence is relevant, or why no relevant memory was found.",
+        evidence: [
+          {
+            evidence_index: 0,
+            source_id: "optional source/node id",
+            visibility: "personal | team",
+            relevance: "why this evidence supports the answer",
+            support: "short quote or paraphrase from evidence"
+          }
+        ],
+        missing: ["what is missing when status is insufficient or not_found"],
+        missing_evidence: ["what would be needed if insufficient"]
+      },
+      null,
+      2
+    ),
     "",
     `Question: ${query}`,
     "",
@@ -235,11 +307,7 @@ export const buildMemoryAnswerPrompt = (
   ].join("\n");
 };
 
-type PlannedAnswerStatus =
-  | "found"
-  | "not_found"
-  | "insufficient"
-  | "pending_summary";
+type PlannedAnswerStatus = MemoryAnswerStatus;
 
 interface PlanningSearchRecord {
   query: string;
@@ -276,6 +344,8 @@ interface ParsedPlannerAction {
   nodeId?: string;
   memoryStatus?: PlannedAnswerStatus;
   markdown?: string;
+  answer?: unknown;
+  structuredAnswer?: StructuredMemoryAnswer;
 }
 
 const clampLimit = (limit: unknown, fallback: number): number => {
@@ -363,13 +433,42 @@ const stripJsonFence = (text: string): string => {
     : unfenced;
 };
 
+const parseStructuredMemoryAnswer = (value: unknown): StructuredMemoryAnswer =>
+  structuredMemoryAnswerSchema.parse(value);
+
 const parsePlannerAction = (text: string): ParsedPlannerAction => {
   const parsed = JSON.parse(stripJsonFence(text)) as Record<string, unknown>;
   const action = parsed.action;
   if (action !== "search" && action !== "expand" && action !== "answer") {
     throw new Error("Planner returned an unknown action");
   }
-  return parsed as unknown as ParsedPlannerAction;
+  if (action !== "answer") {
+    return parsed as unknown as ParsedPlannerAction;
+  }
+
+  const answer =
+    parsed.answer && typeof parsed.answer === "object"
+      ? parsed.answer
+      : {
+          schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
+          memory_status: parsed.memoryStatus,
+          relevant_memory_found: parsed.memoryStatus === "found",
+          answer_markdown: parsed.markdown,
+          relevance_explanation:
+            parsed.memoryStatus === "found"
+              ? "Legacy planner answer marked memory as found."
+              : "Legacy planner answer did not provide relevant supporting memory.",
+          evidence: [],
+          missing: [],
+          missing_evidence: []
+        };
+  const structuredAnswer = parseStructuredMemoryAnswer(answer);
+  return {
+    ...(parsed as unknown as ParsedPlannerAction),
+    memoryStatus: structuredAnswer.memory_status,
+    markdown: structuredAnswer.answer_markdown,
+    structuredAnswer
+  };
 };
 
 const summarizeForPrompt = (value: unknown): unknown => {
@@ -395,7 +494,7 @@ export const buildPlannedMemoryAnswerPrompt = (
     "Available actions:",
     '- search: {"action":"search","query":"...","search_domain":"project|session|global","workspace_id":"...","session_id":"...","limit":10}',
     '- expand: {"action":"expand","nodeId":"..."}',
-    '- answer: {"action":"answer","memoryStatus":"found|not_found|insufficient|pending_summary","markdown":"..."}',
+    `- answer: {"action":"answer","answer":{"schema_version":"${MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION}","memory_status":"found|not_found|insufficient|pending_summary","relevant_memory_found":true,"answer_markdown":"...","relevance_explanation":"...","evidence":[],"missing":[],"missing_evidence":[]}}`,
     "",
     "Rules:",
     "- Return only one JSON object and no prose outside JSON.",
@@ -407,9 +506,11 @@ export const buildPlannedMemoryAnswerPrompt = (
     "- Ignore irrelevant candidate hits silently; do not include them in the markdown answer.",
     "- If the evidence is good enough, answer now instead of searching again.",
     "- If the current evidence array is empty, search budget remains, and you are not forced to answer, your first action must be search.",
-    "- If candidate hits exist but are clearly off-topic, use memoryStatus=not_found and say that no matching relevant memory evidence was found.",
-    "- Only use memoryStatus=found when at least one candidate is genuinely relevant to the question.",
-    "- If evidence is partial or summaries are pending, say that clearly with memoryStatus=insufficient or pending_summary.",
+    "- If candidate hits exist but are clearly off-topic, use memory_status=not_found and say that no matching relevant memory evidence was found.",
+    "- Only use memory_status=found when at least one candidate is genuinely relevant to the question.",
+    "- If evidence is partial or summaries are pending, say that clearly with memory_status=insufficient or pending_summary.",
+    "- The answer_markdown field is the only place for user-facing markdown.",
+    "- Include evidence entries only for genuinely supporting evidence.",
     "- The main agent may decide whether to tell the user about a not_found result, so keep not_found markdown concise.",
     `- Remaining search budget: ${Math.max(0, config.maxSearches - state.searches.length)}.`,
     `- Remaining expand budget: ${Math.max(0, config.maxExpansions - state.expansions.length)}.`,
@@ -421,7 +522,7 @@ export const buildPlannedMemoryAnswerPrompt = (
     '{"action":"search","query":"the user question rewritten for memory retrieval","search_domain":"project","limit":10}',
     "",
     "Example final not-found answer:",
-    '{"action":"answer","memoryStatus":"not_found","markdown":"No matching memory evidence found."}',
+    `{"action":"answer","answer":{"schema_version":"${MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION}","memory_status":"not_found","relevant_memory_found":false,"answer_markdown":"No matching memory evidence found.","relevance_explanation":"The supplied candidates do not directly answer the question.","evidence":[],"missing":["relevant memory evidence"],"missing_evidence":["relevant memory evidence"]}}`,
     "",
     `Question: ${state.query}`,
     `Default retrieval scope: ${state.retrievalScope}`,
@@ -486,6 +587,7 @@ const runPlannedMemoryAnswer = async (
   }
 ): Promise<{
   markdown: string;
+  structuredAnswer: StructuredMemoryAnswer;
   model: string;
   promptTokens: ReturnType<typeof countTokensForModel>;
   searchCount: number;
@@ -540,6 +642,20 @@ const runPlannedMemoryAnswer = async (
       return {
         markdown:
           action.markdown?.trim() || "No matching memory evidence found.",
+        structuredAnswer:
+          action.structuredAnswer ??
+          parseStructuredMemoryAnswer({
+            schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
+            memory_status: action.memoryStatus ?? "insufficient",
+            relevant_memory_found: action.memoryStatus === "found",
+            answer_markdown:
+              action.markdown?.trim() || "No matching memory evidence found.",
+            evidence: [],
+            relevance_explanation:
+              "Planner returned a legacy answer without structured relevance metadata.",
+            missing: [],
+            missing_evidence: []
+          }),
         model: result.model,
         promptTokens: {
           tokens: totalPromptTokens,
@@ -634,6 +750,20 @@ const runPlannedMemoryAnswer = async (
   return {
     markdown:
       finalAction.markdown?.trim() || "No matching memory evidence found.",
+    structuredAnswer:
+      finalAction.structuredAnswer ??
+      parseStructuredMemoryAnswer({
+        schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
+        memory_status: finalAction.memoryStatus ?? "insufficient",
+        relevant_memory_found: finalAction.memoryStatus === "found",
+        answer_markdown:
+          finalAction.markdown?.trim() || "No matching memory evidence found.",
+        evidence: [],
+        relevance_explanation:
+          "Planner returned a legacy final answer without structured relevance metadata.",
+        missing: [],
+        missing_evidence: []
+      }),
     model: finalResult.model,
     promptTokens: {
       tokens: totalPromptTokens,
@@ -671,7 +801,7 @@ export const runCodexAppServerMemoryAnswer: CodexAnswerRunner = (
       env: config.env,
       clientName: "koed-memory-answer-worker",
       baseInstructions:
-        "You are a private local Koed memory-answer worker running in Codex app-server mode. Return only the requested final answer.",
+        "You are a private local Koed memory-answer worker running in Codex app-server mode. Return only the requested JSON object.",
       developerInstructions: ""
     },
     timeoutMs
@@ -753,6 +883,7 @@ export const answerWithMemoryWorker = async (
         {
           ...payload,
           markdown: planned.markdown,
+          structuredAnswer: planned.structuredAnswer,
           evidence: planned.evidence,
           citations: planned.citations,
           evidenceBundle: {
@@ -817,7 +948,10 @@ export const answerWithMemoryWorker = async (
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
       const result = await runner(prompt, config, config.timeoutMs * attempt);
-      const markdown = result.text.trim();
+      const structuredAnswer = parseStructuredMemoryAnswer(
+        JSON.parse(stripJsonFence(result.text))
+      );
+      const markdown = structuredAnswer.answer_markdown.trim();
       if (markdown.length === 0) {
         throw new Error("Codex memory answer produced empty output");
       }
@@ -825,6 +959,7 @@ export const answerWithMemoryWorker = async (
         {
           ...payload,
           markdown,
+          structuredAnswer,
           localMemoryWorker: {
             provider: config.provider,
             promptVersion,
@@ -833,6 +968,7 @@ export const answerWithMemoryWorker = async (
             promptTokenEstimate: promptTokens.tokens,
             tokenizerEncoding: promptTokens.encoding,
             tokenizerModelMatched: promptTokens.exactModelMatch,
+            memoryStatus: structuredAnswer.memory_status,
             tokenUsage: result.tokenUsage,
             appServerThreadId: result.threadId,
             appServerTurnId: result.turnId,

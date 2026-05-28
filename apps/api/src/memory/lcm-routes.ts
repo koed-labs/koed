@@ -65,7 +65,9 @@ export const registerLcmRoutes = (
         summaryText: input.summaryText,
         summaryModel: input.summaryModel,
         summaryPromptVersion: input.summaryPromptVersion,
-        summaryTokenEstimate: input.summaryTokenEstimate
+        summaryTokenEstimate: input.summaryTokenEstimate,
+        summaryStructuredJson: input.summaryStructuredJson,
+        summaryStructuredSchemaVersion: input.summaryStructuredSchemaVersion
       });
       const embedding = await enqueueEmbedding("memory_node", params.nodeId);
 
@@ -76,6 +78,7 @@ export const registerLcmRoutes = (
         summaryModel: input.summaryModel,
         summaryPromptVersion: input.summaryPromptVersion,
         summaryTokenEstimate: input.summaryTokenEstimate,
+        summaryStructuredSchemaVersion: input.summaryStructuredSchemaVersion,
         embedding
       };
     }

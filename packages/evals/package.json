@@ -10,6 +10,7 @@
     "eval": "tsc -p tsconfig.json && node dist/index.js",
     "eval:tool-choice": "tsc -p tsconfig.json && node dist/tool-choice/index.js",
     "eval:tool-choice:live": "tsc -p tsconfig.json && node dist/tool-choice/live-runner.js",
+    "eval:workers": "tsc -p tsconfig.json && node dist/worker-json/index.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

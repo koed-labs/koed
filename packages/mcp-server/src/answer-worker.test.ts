@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_ANSWER_PROMPT_VERSION,
+  MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
   answerWithMemoryWorker,
   buildMemoryAnswerPrompt,
   buildPlannedMemoryAnswerPrompt,
@@ -10,6 +11,46 @@ import {
   type MemoryAnswerPayload,
   type MemoryAnswerRetrievalClient
 } from "./answer-worker.js";
+
+const answerObject = (
+  answer_markdown: string,
+  memory_status:
+    | "found"
+    | "not_found"
+    | "insufficient"
+    | "pending_summary" = "found"
+) => ({
+  schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
+  memory_status,
+  relevant_memory_found: memory_status === "found",
+  answer_markdown,
+  relevance_explanation:
+    memory_status === "found"
+      ? "The evidence directly supports the answer."
+      : "No supplied candidate directly supports the answer.",
+  evidence:
+    memory_status === "found"
+      ? [
+          {
+            evidence_index: 0,
+            source_id: "node-1",
+            visibility: "personal",
+            relevance: "directly supports the answer"
+          }
+        ]
+      : [],
+  missing: memory_status === "found" ? [] : ["relevant memory evidence"],
+  missing_evidence: []
+});
+
+const answerJson = (
+  answer_markdown: string,
+  memory_status:
+    | "found"
+    | "not_found"
+    | "insufficient"
+    | "pending_summary" = "found"
+) => JSON.stringify(answerObject(answer_markdown, memory_status));
 
 const payload = {
   markdown: "Evidence bundle returned for Codex synthesis.",
@@ -48,6 +89,8 @@ describe("memory answer worker", () => {
     expect(prompt).toContain("What did we decide about memory costs?");
     expect(prompt).toContain("local Codex subscription");
     expect(prompt).toContain("personal");
+    expect(prompt).toContain("Required JSON shape");
+    expect(prompt).toContain(MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION);
   });
 
   it("tells the planner that vector hits are only relevance candidates", () => {
@@ -76,7 +119,7 @@ describe("memory answer worker", () => {
 
     expect(prompt).toContain("candidates, not proof of relevance");
     expect(prompt).toContain("clearly off-topic");
-    expect(prompt).toContain("memoryStatus=not_found");
+    expect(prompt).toContain("memory_status=not_found");
   });
 
   it("uses the configured Codex runner by default", async () => {
@@ -84,7 +127,9 @@ describe("memory answer worker", () => {
     const runner: CodexAnswerRunner = async (_prompt, config, timeoutMs) => {
       calls.push(timeoutMs);
       return {
-        text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [1 personal]",
+        text: answerJson(
+          "Use Gemini only for embeddings; answer synthesis uses local Codex. [1 personal]"
+        ),
         model: `codex:${config.model}:${config.reasoningEffort}`
       };
     };
@@ -118,7 +163,9 @@ describe("memory answer worker", () => {
 
   it("returns compact answer-only output by default", async () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
-      text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]",
+      text: answerJson(
+        "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]"
+      ),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });
 
@@ -143,7 +190,9 @@ describe("memory answer worker", () => {
 
   it("can return citations without the full evidence bundle", async () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
-      text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]",
+      text: answerJson(
+        "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]"
+      ),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });
 
@@ -178,7 +227,9 @@ describe("memory answer worker", () => {
 
   it("can return the full evidence bundle when requested", async () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
-      text: "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]",
+      text: answerJson(
+        "Use Gemini only for embeddings; answer synthesis uses local Codex. [personal]"
+      ),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });
 
@@ -217,9 +268,9 @@ describe("memory answer worker", () => {
       return {
         text: JSON.stringify({
           action: "answer",
-          memoryStatus: "found",
-          markdown:
+          answer: answerObject(
             "We decided embeddings can use Gemini, while answer synthesis should stay on the user's local Codex subscription. [personal]"
+          )
         }),
         model: `codex:${config.model}:${config.reasoningEffort}`
       };
@@ -297,9 +348,9 @@ describe("memory answer worker", () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
       text: JSON.stringify({
         action: "answer",
-        memoryStatus: "found",
-        markdown:
+        answer: answerObject(
           "The supported flow is capture hook, local LCM summary, then memory_answer recall. [personal]"
+        )
       }),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });
@@ -338,8 +389,10 @@ describe("memory answer worker", () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
       text: JSON.stringify({
         action: "answer",
-        memoryStatus: "not_found",
-        markdown: "No matching memory evidence found for Aston Villa."
+        answer: answerObject(
+          "No matching memory evidence found for Aston Villa.",
+          "not_found"
+        )
       }),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });

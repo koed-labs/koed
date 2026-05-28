@@ -15,6 +15,7 @@ import {
   resolveToolExposureConfig
 } from "./index.js";
 import {
+  MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
   answerWithMemoryWorker,
   compactMemoryAnswerPayload,
   resolveMemoryAnswerWorkerConfig,
@@ -25,12 +26,47 @@ import {
   startLcmSummaryService
 } from "./lcm-summary-service.js";
 import {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
   type LcmSummaryNode
 } from "./lcm-summary-worker.js";
 
 const servers: http.Server[] = [];
+
+const memoryAnswerObject = (answer_markdown: string) => ({
+  schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
+  memory_status: "found",
+  relevant_memory_found: true,
+  answer_markdown,
+  relevance_explanation: "The evidence directly supports the answer.",
+  evidence: [
+    {
+      evidence_index: 0,
+      source_id: "node-1",
+      visibility: "personal",
+      relevance: "directly supports the answer"
+    }
+  ],
+  missing: [],
+  missing_evidence: []
+});
+
+const lcmSummaryJson = (summary_text: string) =>
+  JSON.stringify({
+    schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    summary_text,
+    user_requests: [],
+    decisions: [],
+    facts: [summary_text],
+    files: [],
+    commands: [],
+    model_names: [],
+    tool_outcomes: [],
+    errors: [],
+    unresolved_questions: [],
+    provenance_hints: []
+  });
 
 const createApi = async (handler: http.RequestListener): Promise<string> => {
   const server = http.createServer(handler);
@@ -412,8 +448,12 @@ describe("LCM summary background service", () => {
       config,
       runner: async (prompt) => ({
         text: prompt.includes("Combine these shard summaries")
-          ? "Final summary: Aston Villa and Paul McGrath were discussed."
-          : "Shard summary: Aston Villa and Paul McGrath were discussed.",
+          ? lcmSummaryJson(
+              "Final summary: Aston Villa and Paul McGrath were discussed."
+            )
+          : lcmSummaryJson(
+              "Shard summary: Aston Villa and Paul McGrath were discussed."
+            ),
         model: "codex:test"
       })
     });
@@ -431,7 +471,8 @@ describe("LCM summary background service", () => {
     expect(submissions[0]).toMatchObject({
       summaryText:
         "Final summary: Aston Villa and Paul McGrath were discussed.",
-      summaryModel: "codex:test"
+      summaryModel: "codex:test",
+      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
     });
   });
 
@@ -559,7 +600,9 @@ describe("LCM summary background service", () => {
         { timeoutMs: 1_000, maxAttempts: 1 }
       ),
       runner: async () => ({
-        text: "The MVP recall flow captures by hook, summarizes locally, and recalls through memory_answer.",
+        text: lcmSummaryJson(
+          "The MVP recall flow captures by hook, summarizes locally, and recalls through memory_answer."
+        ),
         model: "codex:test"
       })
     });
@@ -575,9 +618,9 @@ describe("LCM summary background service", () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
       text: JSON.stringify({
         action: "answer",
-        memoryStatus: "found",
-        markdown:
+        answer: memoryAnswerObject(
           "The MVP flow captures by hook, summarizes locally, and recalls through memory_answer. [personal]"
+        )
       }),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });

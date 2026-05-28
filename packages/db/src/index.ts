@@ -122,6 +122,8 @@ export interface MemoryNodeRecord {
   summaryText: string;
   createdAt?: string;
   updatedAt?: string;
+  summaryStructuredJson?: Record<string, unknown> | null;
+  summaryStructuredSchemaVersion?: string | null;
   pinnedAt?: string | null;
   projectId?: string | null;
   projectName?: string | null;
@@ -241,6 +243,8 @@ export interface LcmGraphNode {
   summaryTokenEstimate: number | null;
   summaryModel: string | null;
   summaryPromptVersion: string | null;
+  summaryStructuredJson: Record<string, unknown> | null;
+  summaryStructuredSchemaVersion: string | null;
   lcmAlgorithmVersion: string | null;
   embeddingCount: number;
   summaryCorrectedAt?: string | null;
@@ -316,6 +320,8 @@ export interface LcmNodeForSummarization {
   summaryTokenEstimate: number | null;
   summaryModel: string | null;
   summaryPromptVersion: string | null;
+  summaryStructuredJson: Record<string, unknown> | null;
+  summaryStructuredSchemaVersion: string | null;
   lcmAlgorithmVersion: string | null;
 }
 
@@ -332,6 +338,8 @@ interface LcmNodeForSummarizationRow {
   summary_token_estimate: number | null;
   summary_model: string | null;
   summary_prompt_version: string | null;
+  summary_structured_json: Record<string, unknown> | null;
+  summary_structured_schema_version: string | null;
   lcm_algorithm_version: string | null;
 }
 
@@ -851,6 +859,8 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     summaryModel: string;
     summaryPromptVersion: string;
     summaryTokenEstimate: number;
+    summaryStructuredJson?: Record<string, unknown>;
+    summaryStructuredSchemaVersion?: string;
   }): Promise<void>;
   upsertSourceEmbedding(input: {
     source: EmbeddableSourceRecord;
@@ -1290,6 +1300,8 @@ const mapLcmGraphNode = (row: {
   summary_token_estimate: number | null;
   summary_model: string | null;
   summary_prompt_version: string | null;
+  summary_structured_json?: Record<string, unknown> | null;
+  summary_structured_schema_version?: string | null;
   lcm_algorithm_version: string | null;
   summary_corrected_at?: Date | null;
   summary_corrected_by_user_id?: string | null;
@@ -1324,6 +1336,8 @@ const mapLcmGraphNode = (row: {
   summaryTokenEstimate: row.summary_token_estimate,
   summaryModel: row.summary_model,
   summaryPromptVersion: row.summary_prompt_version,
+  summaryStructuredJson: row.summary_structured_json ?? null,
+  summaryStructuredSchemaVersion: row.summary_structured_schema_version ?? null,
   lcmAlgorithmVersion: row.lcm_algorithm_version,
   embeddingCount: Number(row.embedding_count ?? 0),
   summaryCorrectedAt: row.summary_corrected_at?.toISOString() ?? null,
@@ -1671,10 +1685,10 @@ const conversationItemContent = (row: {
     if (projectionIsRawReasoningLabel(label)) {
       return null;
     }
-    return reasoningSummaryTextFromItem(item);
+    return reasoningSummaryTextFromItem(item) ?? row.raw_text?.trim() ?? null;
   }
   if (item && /^reasoning$/i.test(stringField(item, "type") ?? "")) {
-    return reasoningSummaryTextFromItem(item);
+    return reasoningSummaryTextFromItem(item) ?? row.raw_text?.trim() ?? null;
   }
   if (row.raw_text?.trim()) {
     return row.raw_text.trim();
@@ -2920,6 +2934,8 @@ const mapLcmNodeForSummarization = async (
     summaryTokenEstimate: row.summary_token_estimate,
     summaryModel: row.summary_model,
     summaryPromptVersion: row.summary_prompt_version,
+    summaryStructuredJson: row.summary_structured_json,
+    summaryStructuredSchemaVersion: row.summary_structured_schema_version,
     lcmAlgorithmVersion: row.lcm_algorithm_version
   };
 };
@@ -5074,6 +5090,7 @@ export const createMemorySourceRepository = (
           mn.summary_text, mn.created_at, mn.updated_at, mn.invalidated_at,
           mn.invalidation_reason, mn.source_event_count, mn.source_token_estimate,
           mn.summary_token_estimate, mn.summary_model, mn.summary_prompt_version,
+          mn.summary_structured_json, mn.summary_structured_schema_version,
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
           coalesce(
@@ -5870,6 +5887,8 @@ export const createMemorySourceRepository = (
           summary_token_estimate,
           summary_model,
           summary_prompt_version,
+          summary_structured_json,
+          summary_structured_schema_version,
           lcm_algorithm_version
         from memory_nodes
         where id = $1
@@ -5903,6 +5922,8 @@ export const createMemorySourceRepository = (
           mn.summary_token_estimate,
           mn.summary_model,
           mn.summary_prompt_version,
+          mn.summary_structured_json,
+          mn.summary_structured_schema_version,
           mn.lcm_algorithm_version
         from memory_nodes mn
         where mn.invalidated_at is null
@@ -5960,6 +5981,8 @@ export const createMemorySourceRepository = (
           mn.summary_token_estimate,
           mn.summary_model,
           mn.summary_prompt_version,
+          mn.summary_structured_json,
+          mn.summary_structured_schema_version,
           mn.lcm_algorithm_version
         from memory_nodes mn
         where mn.id = $2
@@ -6017,6 +6040,8 @@ export const createMemorySourceRepository = (
             summary_model = $3,
             summary_prompt_version = $4,
             summary_token_estimate = $5,
+            summary_structured_json = $6::jsonb,
+            summary_structured_schema_version = $7,
             updated_at = now()
           where id = $1
         `,
@@ -6025,7 +6050,11 @@ export const createMemorySourceRepository = (
           input.summaryText,
           input.summaryModel,
           input.summaryPromptVersion,
-          input.summaryTokenEstimate
+          input.summaryTokenEstimate,
+          input.summaryStructuredJson === undefined
+            ? null
+            : JSON.stringify(input.summaryStructuredJson),
+          input.summaryStructuredSchemaVersion ?? null
         ]
       );
 

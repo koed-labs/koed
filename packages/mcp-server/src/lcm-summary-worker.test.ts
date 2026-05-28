@@ -3,6 +3,8 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  buildLcmSummaryPrompt,
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
   type LcmSummaryNode
@@ -22,7 +24,56 @@ const tempLockPath = async (): Promise<string> => {
   return path.join(directory, "lcm-summary.lock");
 };
 
+const summaryJson = (summary_text: string) =>
+  JSON.stringify({
+    schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    summary_text,
+    user_requests: [],
+    decisions: [],
+    facts: [summary_text],
+    files: [],
+    commands: [],
+    model_names: [],
+    tool_outcomes: [],
+    errors: [],
+    unresolved_questions: [],
+    provenance_hints: []
+  });
+
 describe("LCM summary worker", () => {
+  it("uses the structured summary contract for leaf, rollup, partial, and reduce prompts", () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000031",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 100,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceTable: "memory_events",
+          sourceId: "00000000-0000-4000-8000-000000000032",
+          text: "User asked to preserve structured LCM details."
+        }
+      ]
+    };
+
+    for (const mode of ["summary", "partial", "reduce"] as const) {
+      const prompt = buildLcmSummaryPrompt(node, mode);
+      expect(prompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
+      expect(prompt).toContain('"summary_text"');
+      expect(prompt).toContain('"user_requests"');
+      expect(prompt).toContain('"decisions"');
+      expect(prompt).toContain('"provenance_hints"');
+      expect(prompt).toContain("Return only one JSON object");
+    }
+
+    const rollupPrompt = buildLcmSummaryPrompt({ ...node, kind: "rollup" });
+    expect(rollupPrompt).toContain("Roll up these child LCM summaries");
+    expect(rollupPrompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
+  });
+
   it("submits rollup summaries through the same local runner path", async () => {
     const node: LcmSummaryNode = {
       id: "00000000-0000-4000-8000-000000000011",
@@ -105,8 +156,9 @@ describe("LCM summary worker", () => {
       config,
       runner: async (prompt) => {
         expect(prompt).toContain("Roll up these child LCM summaries");
+        expect(prompt).toContain("Required JSON schema");
         return {
-          text: "rollup summarized",
+          text: summaryJson("rollup summarized"),
           model: "codex-app-server:test",
           threadId: "thread-lcm-test",
           turnId: "turn-lcm-test",
@@ -164,7 +216,15 @@ describe("LCM summary worker", () => {
     });
     expect(submitted[0]).toMatchObject({
       summaryText: "rollup summarized",
-      summaryModel: "codex-app-server:test"
+      summaryModel: "codex-app-server:test",
+      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+    });
+    expect(
+      (submitted[0] as { summaryStructuredJson?: unknown })
+        .summaryStructuredJson
+    ).toMatchObject({
+      summary_text: "rollup summarized",
+      facts: ["rollup summarized"]
     });
     expect(rawItemRequests).toEqual([
       {
@@ -251,7 +311,10 @@ describe("LCM summary worker", () => {
       config,
       runner: async (prompt) => {
         expect(prompt).toContain("[payload truncated for prompt");
-        return { text: "summarized", model: "codex-app-server:test" };
+        return {
+          text: summaryJson("summarized"),
+          model: "codex-app-server:test"
+        };
       }
     });
 
@@ -260,7 +323,59 @@ describe("LCM summary worker", () => {
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toMatchObject({
       summaryText: "summarized",
-      summaryModel: "codex-app-server:test"
+      summaryModel: "codex-app-server:test",
+      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
     });
+  });
+
+  it("does not submit invalid structured summary output", async () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000021",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 100,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceTable: "memory_events",
+          sourceId: "00000000-0000-4000-8000-000000000022",
+          text: "The worker must reject prose-only summaries."
+        }
+      ]
+    };
+    const submitted: unknown[] = [];
+    const client = {
+      async listPendingLcmSummaries() {
+        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      },
+      async submitLcmSummary(_nodeId: string, input: unknown) {
+        submitted.push(input);
+        return { ok: true };
+      }
+    };
+    const config = resolveLcmSummaryWorkerConfig(
+      {
+        MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+      },
+      {
+        maxAttempts: 1
+      }
+    );
+
+    const result = await summarizePendingLcmNodes(client as never, {
+      limit: 1,
+      config,
+      runner: async () => ({
+        text: "plain summary text is no longer a valid LCM worker contract",
+        model: "codex-app-server:test"
+      })
+    });
+
+    expect(result.submittedCount).toBe(0);
+    expect(result.failedCount).toBe(1);
+    expect(result.results[0]?.error).toContain("Unexpected token");
+    expect(submitted).toHaveLength(0);
   });
 });

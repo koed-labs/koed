@@ -21,8 +21,33 @@ const apiUrl = (
 ).replace(/\/+$/, "");
 const composeProject =
   args.get("compose-project") ?? process.env.COMPOSE_PROJECT_NAME ?? "koed";
+const smokeLeafEventThreshold = Number.parseInt(
+  args.get("leaf-event-threshold") ??
+    process.env.LCM_SMOKE_LEAF_EVENT_THRESHOLD ??
+    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD ??
+    "6",
+  10
+);
+const smokeFreshEventTail = Number.parseInt(
+  args.get("fresh-event-tail") ??
+    process.env.LCM_SMOKE_FRESH_EVENT_TAIL ??
+    process.env.MEMORY_LCM_FRESH_EVENT_TAIL ??
+    "10",
+  10
+);
+const smokeDepthOneFanout = Number.parseInt(
+  args.get("depth-one-fanout") ??
+    process.env.LCM_SMOKE_DEPTH1_FANOUT ??
+    process.env.MEMORY_LCM_DEPTH1_FANOUT ??
+    "2",
+  10
+);
+const defaultSmokeEvents =
+  smokeLeafEventThreshold * smokeDepthOneFanout + smokeFreshEventTail;
 const eventCount = Number.parseInt(
-  args.get("events") ?? process.env.LCM_SMOKE_EVENTS ?? "12",
+  args.get("events") ??
+    process.env.LCM_SMOKE_EVENTS ??
+    String(defaultSmokeEvents),
   10
 );
 const timeoutMs = Number.parseInt(
@@ -40,6 +65,10 @@ const summaryReasoningEffort =
   args.get("summary-reasoning-effort") ??
   process.env.LCM_SMOKE_SUMMARY_REASONING_EFFORT ??
   "medium";
+const existingApiToken =
+  args.get("api-token") ??
+  process.env.LCM_SMOKE_API_TOKEN ??
+  process.env.MEMORY_API_TOKEN;
 
 const assert = (condition, message, details) => {
   if (!condition) {
@@ -175,7 +204,13 @@ const getDbState = () =>
       'codexSummaryCount', (
         select count(*)
         from marked_nodes
-        where summary_model like 'codex:%'
+        where summary_model like 'codex%'
+      ),
+      'structuredSummaryCount', (
+        select count(*)
+        from marked_nodes
+        where summary_structured_json is not null
+          and summary_structured_schema_version = 'lcm-structured-summary-v1'
       ),
       'embeddedNodeCount', (
         select count(distinct me.memory_node_id)
@@ -219,6 +254,7 @@ const getDbState = () =>
             'summaryTokenEstimate', summary_token_estimate,
             'summaryModel', summary_model,
             'summaryPromptVersion', summary_prompt_version,
+            'summaryStructuredSchemaVersion', summary_structured_schema_version,
             'summaryPreview', left(summary_text, 220)
           )
           order by depth, created_at, id
@@ -273,6 +309,7 @@ const waitForLocalSummaries = async () => {
       totalNodes >= 3 &&
       Number(lastState.summarizedNodeCount) >= totalNodes &&
       Number(lastState.codexSummaryCount) >= totalNodes &&
+      Number(lastState.structuredSummaryCount) >= totalNodes &&
       Number(lastState.pendingSummaryCount) === 0 &&
       Number(lastState.embeddedNodeCount) >= totalNodes
     ) {
@@ -288,8 +325,10 @@ const waitForLocalSummaries = async () => {
 
 const main = async () => {
   assert(
-    Number.isFinite(eventCount) && eventCount >= 12,
-    "--events must be at least 12 to trigger two leaves and a rollup with default LCM settings"
+    Number.isFinite(eventCount) &&
+      eventCount >=
+        smokeLeafEventThreshold * smokeDepthOneFanout + smokeFreshEventTail,
+    "--events must be high enough to exceed the fresh tail and trigger the requested leaf/rollup structure"
   );
 
   console.log(`LCM smoke marker: ${marker}`);
@@ -299,29 +338,36 @@ const main = async () => {
     `Local LCM summary model: ${summaryModel} (${summaryReasoningEffort})`
   );
 
-  const email = `lcm-smoke-${marker}@example.com`;
-  const password = `local-lcm-smoke-${randomUUID()}`;
-  const registered = await requestJson("/auth/register", {
-    method: "POST",
-    body: JSON.stringify({
-      email,
-      password,
-      displayName: "LCM Smoke Test"
-    })
-  });
-  const cookie = registered.headers.get("set-cookie")?.split(";")[0];
-  assert(cookie, "Registration did not return a session cookie");
+  let token = existingApiToken;
+  let authLabel = "existing API token";
+  if (token) {
+    console.log("Using existing smoke API token.");
+  } else {
+    const email = `lcm-smoke-${marker}@example.com`;
+    const password = `local-lcm-smoke-${randomUUID()}`;
+    const registered = await requestJson("/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password,
+        displayName: "LCM Smoke Test"
+      })
+    });
+    const cookie = registered.headers.get("set-cookie")?.split(";")[0];
+    assert(cookie, "Registration did not return a session cookie");
 
-  const tokenResponse = await requestJson("/api-tokens", {
-    method: "POST",
-    headers: { cookie },
-    body: JSON.stringify({ name: `LCM smoke ${marker}` })
-  });
-  const token = tokenResponse.body.token;
+    const tokenResponse = await requestJson("/api-tokens", {
+      method: "POST",
+      headers: { cookie },
+      body: JSON.stringify({ name: `LCM smoke ${marker}` })
+    });
+    token = tokenResponse.body.token;
+    authLabel = `created user ${email}`;
+  }
   assert(
     typeof token === "string" && token.startsWith("cmt_"),
     "API token was not returned",
-    tokenResponse.body
+    { tokenType: typeof token, tokenPrefix: String(token).slice(0, 4) }
   );
 
   const authHeaders = { authorization: `Bearer ${token}` };
@@ -330,11 +376,11 @@ const main = async () => {
   });
   assert(access.body.ok === true, "Access check failed", access.body);
   assert(
-    access.body.memoryMode === "codex_subscription",
-    "Expected codex_subscription mode for cost-safety smoke test",
+    access.body.providerConfigSupported === false,
+    "Expected backend provider configuration to stay unsupported for cost-safety smoke test",
     access.body
   );
-  console.log(`Created user ${email}; token prefix ${token.slice(0, 12)}`);
+  console.log(`Authenticated with ${authLabel}; token prefix ${token.slice(0, 12)}`);
 
   for (let index = 1; index <= eventCount; index += 1) {
     const content = [
@@ -492,7 +538,8 @@ const main = async () => {
     expanded.body
   );
   assert(
-    expanded.body.expanded?.sources?.length >= eventCount - 2,
+    expanded.body.expanded?.sources?.length >=
+      smokeLeafEventThreshold * smokeDepthOneFanout,
     "Expanded rollup did not recover enough original source events",
     expanded.body
   );

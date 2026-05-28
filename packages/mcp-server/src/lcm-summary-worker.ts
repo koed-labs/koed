@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chunkTextForModel, countTokensForModel } from "@koed/core";
+import { z } from "zod";
 import {
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
@@ -18,7 +19,9 @@ import {
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
-export const LCM_SUMMARY_PROMPT_VERSION = "lcm-codex-summary-v1";
+export const LCM_SUMMARY_PROMPT_VERSION = "lcm-codex-summary-json-v2";
+export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION =
+  "lcm-structured-summary-v1";
 
 export interface LcmSummaryWorkerConfig {
   provider: string;
@@ -73,12 +76,32 @@ export interface LcmSummaryResult {
 
 type LcmSummaryPromptResult = {
   text: string;
+  structuredSummary?: StructuredLcmSummary;
   model: string;
   tokenUsage?: CodexThreadTokenUsage;
   threadId?: string;
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
 };
+
+const structuredLcmSummarySchema = z
+  .object({
+    schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
+    summary_text: z.string().min(1),
+    user_requests: z.array(z.string()).default([]),
+    decisions: z.array(z.string()).default([]),
+    facts: z.array(z.string()).default([]),
+    files: z.array(z.string()).default([]),
+    commands: z.array(z.string()).default([]),
+    model_names: z.array(z.string()).default([]),
+    tool_outcomes: z.array(z.string()).default([]),
+    errors: z.array(z.string()).default([]),
+    unresolved_questions: z.array(z.string()).default([]),
+    provenance_hints: z.array(z.string()).default([])
+  })
+  .passthrough();
+
+export type StructuredLcmSummary = z.infer<typeof structuredLcmSummarySchema>;
 
 export type CodexLcmSummaryRunner = (
   prompt: string,
@@ -276,6 +299,21 @@ const itemText = (item: LcmSourceItem): string => {
   )}${payloadTextForPrompt(item.payload)}`;
 };
 
+const lcmSummaryJsonShape = () => ({
+  schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  summary_text: "Compact information-dense summary for retrieval.",
+  user_requests: ["durable user request or preference"],
+  decisions: ["decision and rationale when present"],
+  facts: ["stable fact captured from the sources"],
+  files: ["file path, package, service, or component when present"],
+  commands: ["command or tool action when semantically important"],
+  model_names: ["model name when present"],
+  tool_outcomes: ["important tool result or observed outcome"],
+  errors: ["error, failure, or regression when present"],
+  unresolved_questions: ["open issue, blocker, or pending decision"],
+  provenance_hints: ["node/source/turn/chunk ids that help trace claims"]
+});
+
 export const buildLcmSummaryPrompt = (
   node: LcmSummaryNode,
   mode: "summary" | "partial" | "reduce" = "summary"
@@ -293,7 +331,7 @@ export const buildLcmSummaryPrompt = (
           "- Preserve durable decisions, facts, implementation details, exact identifiers, and open threads from this shard.",
           "- Keep provenance hints such as node IDs, source spans, turn IDs, and chunk indexes when useful.",
           "- Do not add anything that is not supported by this shard.",
-          "- Return only the shard summary text, with no preamble."
+          "- Return only one JSON object matching the required schema; no prose outside JSON."
         ]
       : mode === "reduce"
         ? [
@@ -304,7 +342,7 @@ export const buildLcmSummaryPrompt = (
             "- Preserve durable decisions, facts, implementation details, exact identifiers, and open threads.",
             "- Keep provenance hints such as node IDs, source spans, turn IDs, and chunk indexes when useful.",
             "- Do not add anything that is not supported by the shard summaries.",
-            "- Return only the final summary text, with no preamble."
+            "- Return only one JSON object matching the required schema; no prose outside JSON."
           ]
         : isRollup
           ? [
@@ -315,7 +353,7 @@ export const buildLcmSummaryPrompt = (
               "- Preserve durable decisions, facts, implementation details, exact identifiers, and open threads.",
               "- Keep provenance hints such as node IDs, source spans, and turn IDs when useful.",
               "- Do not add anything that is not supported by the child summaries.",
-              "- Return only the summary text, with no preamble."
+              "- Return only one JSON object matching the required schema; no prose outside JSON."
             ]
           : [
               "You are a private local LCM summarisation worker running under the user's Codex subscription.",
@@ -326,7 +364,7 @@ export const buildLcmSummaryPrompt = (
               "- Mention source items in the same order they occurred when they affect meaning.",
               "- Do not invent details. If a source item is ambiguous, say so compactly.",
               "- Write a compact but information-dense summary for future agent retrieval.",
-              "- Return only the summary text, with no preamble."
+              "- Return only one JSON object matching the required schema; no prose outside JSON."
             ];
 
   const placeholderSection =
@@ -347,6 +385,9 @@ export const buildLcmSummaryPrompt = (
     `Visibility: ${node.visibility}`,
     `Source token estimate: ${node.sourceTokenEstimate ?? "unknown"}`,
     "",
+    "Required JSON schema:",
+    JSON.stringify(lcmSummaryJsonShape(), null, 2),
+    "",
     ...placeholderSection,
     "Exact ordered source outline:",
     ...node.sourceItems.map(itemText)
@@ -355,6 +396,20 @@ export const buildLcmSummaryPrompt = (
 
 const promptTokens = (prompt: string, config: LcmSummaryWorkerConfig): number =>
   countTokensForModel(prompt, { model: config.model }).tokens;
+
+const stripJsonFence = (text: string): string => {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const unfenced = fenced ? (fenced[1] ?? "").trim() : trimmed;
+  const firstBrace = unfenced.indexOf("{");
+  const lastBrace = unfenced.lastIndexOf("}");
+  return firstBrace >= 0 && lastBrace > firstBrace
+    ? unfenced.slice(firstBrace, lastBrace + 1)
+    : unfenced;
+};
+
+const parseStructuredLcmSummary = (text: string): StructuredLcmSummary =>
+  structuredLcmSummarySchema.parse(JSON.parse(stripJsonFence(text)));
 
 const objectPayload = (payload: unknown): Record<string, unknown> =>
   payload && typeof payload === "object" && !Array.isArray(payload)
@@ -492,7 +547,7 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
       env: config.env,
       clientName: "koed-lcm-summary-worker",
       baseInstructions:
-        "You are a private local Koed LCM summary worker running in Codex app-server mode. Return only the requested summary text.",
+        "You are a private local Koed LCM summary worker running in Codex app-server mode. Return only the requested JSON object.",
       developerInstructions: ""
     },
     timeoutMs
@@ -506,7 +561,13 @@ const runPromptWithRetries = async (
   let lastError: unknown;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
-      return await runner(prompt, config, config.timeoutMs * attempt);
+      const result = await runner(prompt, config, config.timeoutMs * attempt);
+      const structuredSummary = parseStructuredLcmSummary(result.text);
+      return {
+        ...result,
+        text: structuredSummary.summary_text.trim(),
+        structuredSummary
+      };
     } catch (error) {
       lastError = error;
       if (attempt < config.maxAttempts && config.retryDelayMs > 0) {
@@ -768,7 +829,9 @@ const summarizeNode = async (
       summaryText,
       summaryModel: result.model,
       summaryPromptVersion: LCM_SUMMARY_PROMPT_VERSION,
-      summaryTokenEstimate: summaryTokens.tokens
+      summaryTokenEstimate: summaryTokens.tokens,
+      summaryStructuredJson: result.structuredSummary,
+      summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
     });
     return {
       nodeId: node.id,

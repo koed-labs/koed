@@ -2355,6 +2355,52 @@ describeDb("memory repository visibility", () => {
     expect(fetched?.summaryText).toBe("Target LCM node summary");
   });
 
+  it("persists structured LCM summary data beside summary text", async () => {
+    const alice = await repo.createUser({
+      email: `alice-structured-lcm-${randomUUID()}@example.com`
+    });
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending placeholder"
+      }
+    );
+    const structured = {
+      summary_text: "Structured summary text",
+      facts: ["The worker returned strict JSON."],
+      unresolved_questions: []
+    };
+
+    await repo.updateLcmNodeSummary({
+      nodeId: node.id,
+      summaryText: "Structured summary text",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v2",
+      summaryTokenEstimate: 17,
+      summaryStructuredJson: structured,
+      summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+    });
+
+    const fetched = await repo.getLcmNodeForSummarization(node.id);
+    const visible = await repo.getVisibleLcmNodeForSummarization(
+      { userId: alice.id },
+      node.id
+    );
+    const graphNode = await repo.getLcmGraphNode({ userId: alice.id }, node.id);
+
+    expect(fetched?.summaryText).toBe("Structured summary text");
+    expect(fetched?.summaryStructuredJson).toEqual(structured);
+    expect(fetched?.summaryStructuredSchemaVersion).toBe(
+      "lcm-structured-summary-v1"
+    );
+    expect(visible?.summaryStructuredJson).toEqual(structured);
+    expect(graphNode?.summaryStructuredJson).toEqual(structured);
+    expect(graphNode?.summaryStructuredSchemaVersion).toBe(
+      "lcm-structured-summary-v1"
+    );
+  });
+
   it("prefers idempotency key matches over source hash matches", async () => {
     const alice = await repo.createUser({
       email: `alice-duplicate-priority-${randomUUID()}@example.com`
