@@ -441,6 +441,73 @@ const CodexSetupModeToggle = ({
   </div>
 );
 
+type AuthGateProps = {
+  setup: SetupStatus | null;
+  email: string;
+  setEmail: (value: string) => void;
+  password: string;
+  setPassword: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  error: string | null;
+};
+
+const AuthGate = ({
+  setup,
+  email,
+  setEmail,
+  password,
+  setPassword,
+  onSubmit,
+  error
+}: AuthGateProps) => {
+  const buttonLabel = setup?.configured ? "Continue" : "Create admin";
+  return (
+    <main className="auth-gate">
+      <div className="auth-gate-inner">
+        <img
+          src="/koed-logo.svg"
+          alt="Koed"
+          className="auth-gate-logo"
+          width={152}
+          height={48}
+        />
+        <section className="auth-card" aria-labelledby="auth-card-title">
+          <h1 id="auth-card-title">Log In or Sign Up</h1>
+          <form onSubmit={onSubmit}>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="Email address"
+              aria-label="Email address"
+              autoComplete="email"
+            />
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Password"
+              aria-label="Password"
+              autoComplete={
+                setup?.configured ? "current-password" : "new-password"
+              }
+            />
+            <button type="submit">{buttonLabel}</button>
+          </form>
+          <p className="auth-card-footnote">
+            This account will have full control over the local service instance.
+          </p>
+          {error ? (
+            <div className="alert auth-card-alert" role="alert">
+              {error}
+            </div>
+          ) : null}
+        </section>
+      </div>
+    </main>
+  );
+};
+
 const App = () => {
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -731,6 +798,20 @@ const App = () => {
     }
   ];
 
+  if (!user) {
+    return (
+      <AuthGate
+        setup={setup}
+        email={email}
+        setEmail={setEmail}
+        password={password}
+        setPassword={setPassword}
+        onSubmit={(event) => void submitAuth(event)}
+        error={error}
+      />
+    );
+  }
+
   return (
     <main>
       <aside className="sidebar">
@@ -845,65 +926,29 @@ const App = () => {
             </section>
 
             <section className="surface action-panel">
-              {!user ? (
+              <h2>Token setup</h2>
+              {tokens.length === 0 ? (
                 <>
-                  <h2>
-                    {setup?.configured ? "Sign in" : "Create local admin"}
-                  </h2>
                   <p>
-                    This account exists only in the self-hosted Postgres
-                    database.
+                    Create a token for Codex recall and automatic capture.
                   </p>
-                  <form onSubmit={(event) => void submitAuth(event)}>
-                    <label>
-                      Email
-                      <input
-                        value={email}
-                        onChange={(event) => setEmail(event.target.value)}
-                        placeholder="you@example.com"
-                      />
-                    </label>
-                    <label>
-                      Password
-                      <input
-                        type="password"
-                        value={password}
-                        onChange={(event) => setPassword(event.target.value)}
-                        placeholder="Minimum 8 characters"
-                      />
-                    </label>
-                    <button>
-                      {setup?.configured ? "Sign in" : "Create admin"}
-                    </button>
+                  <form
+                    className="inline-form"
+                    onSubmit={(event) => void createToken(event)}
+                  >
+                    <input
+                      value={tokenName}
+                      onChange={(event) => setTokenName(event.target.value)}
+                    />
+                    <button>Create token</button>
                   </form>
                 </>
               ) : (
                 <>
-                  <h2>Token setup</h2>
-                  {tokens.length === 0 ? (
-                    <>
-                      <p>
-                        Create a token for Codex recall and automatic capture.
-                      </p>
-                      <form
-                        className="inline-form"
-                        onSubmit={(event) => void createToken(event)}
-                      >
-                        <input
-                          value={tokenName}
-                          onChange={(event) => setTokenName(event.target.value)}
-                        />
-                        <button>Create token</button>
-                      </form>
-                    </>
-                  ) : (
-                    <>
-                      <p>
-                        Token setup is complete. Use the same token for the MCP
-                        Server and Capture Hook below.
-                      </p>
-                    </>
-                  )}
+                  <p>
+                    Token setup is complete. Use the same token for the MCP
+                    Server and Capture Hook below.
+                  </p>
                 </>
               )}
             </section>
