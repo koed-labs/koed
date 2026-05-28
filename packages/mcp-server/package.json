@@ -17,7 +17,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.json --force",
     "bundle": "pnpm run build && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/koed-mcp-bundled.mjs",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "start": "node dist/cli.js",

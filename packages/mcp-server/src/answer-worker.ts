@@ -87,7 +87,7 @@ const memoryAnswerEvidenceSchema = z
     source_id: z.string().min(1).optional(),
     node_id: z.string().min(1).optional(),
     visibility: z.string().min(1).optional(),
-    relevance: z.string().min(1),
+    relevance: z.string().min(1).optional(),
     support: z.string().min(1).optional()
   })
   .passthrough();

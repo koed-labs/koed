@@ -344,6 +344,56 @@ describe("memory answer worker", () => {
     });
   });
 
+  it("accepts planner evidence entries that only include copied source fields", async () => {
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text: JSON.stringify({
+        action: "answer",
+        answer: {
+          ...answerObject("The fourth item was **amber**."),
+          evidence: [
+            {
+              nodeId: "node-1",
+              sourceType: "memory_event",
+              sourceId: "event-1",
+              visibility: "personal",
+              summaryText: "Round 4 sequence: lantern, river, compass, amber."
+            }
+          ]
+        }
+      }),
+      model: `codex:${config.model}:${config.reasoningEffort}`
+    });
+
+    const result = await answerWithMemoryWorker(payload, {
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+        }),
+        cwd: "/tmp"
+      },
+      runner,
+      client: {
+        async search() {
+          return { hits: [], retrieval: { retrievalMode: "semantic_vector" } };
+        },
+        async expand() {
+          throw new Error("expand should not be called");
+        }
+      },
+      retrievalScope: "personal",
+      limit: 10
+    });
+
+    expect(result.markdown).toBe("The fourth item was **amber**.");
+    expect(result.localMemoryWorker).toMatchObject({
+      planningMode: "planned",
+      memoryStatus: "found",
+      usedFallback: false
+    });
+  });
+
   it("can compact explicit detail data without losing the source response", async () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
       text: JSON.stringify({
