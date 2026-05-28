@@ -380,7 +380,9 @@ const main = async () => {
     "Expected backend provider configuration to stay unsupported for cost-safety smoke test",
     access.body
   );
-  console.log(`Authenticated with ${authLabel}; token prefix ${token.slice(0, 12)}`);
+  console.log(
+    `Authenticated with ${authLabel}; token prefix ${token.slice(0, 12)}`
+  );
 
   for (let index = 1; index <= eventCount; index += 1) {
     const content = [

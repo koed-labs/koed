@@ -191,7 +191,7 @@ export const scoreWorkerJsonRun = (
 
       const expectedRelevant =
         benchmarkCase.expected.relevantMemoryFound ??
-        (answer.memory_status === "found");
+        answer.memory_status === "found";
       details.push({
         name: "relevant_memory_found",
         score: answer.relevant_memory_found === expectedRelevant ? 2 : 0,
@@ -209,9 +209,7 @@ export const scoreWorkerJsonRun = (
       score: answer.relevance_explanation.trim().length > 0 ? 1 : 0,
       maxScore: 1,
       reason:
-        answer.relevance_explanation.trim().length > 0
-          ? "present"
-          : "missing"
+        answer.relevance_explanation.trim().length > 0 ? "present" : "missing"
     });
     const minEvidence = benchmarkCase.expected.minEvidenceItems;
     if (minEvidence !== undefined) {
