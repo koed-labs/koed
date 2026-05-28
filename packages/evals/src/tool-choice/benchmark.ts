@@ -116,6 +116,26 @@ const scoreArgument = <T>(
   };
 };
 
+const scoreSearchDomain = (
+  firstCall: ToolChoiceCall | undefined,
+  expectation: ArgumentExpectation<SearchDomain>
+): ScoreDetail => {
+  const actual = argumentValue(firstCall, "search_domain");
+  if (
+    actual === "session" &&
+    typeof argumentValue(firstCall, "session_id") !== "string"
+  ) {
+    return {
+      name: "search_domain",
+      score: 0,
+      maxScore: 3,
+      actual,
+      reason: "session_id missing for session scope"
+    };
+  }
+  return scoreArgument("search_domain", actual, expectation);
+};
+
 export const scoreToolChoiceRun = (
   benchmarkCase: ToolChoiceCase,
   run: ToolChoiceRunInput
@@ -158,11 +178,7 @@ export const scoreToolChoiceRun = (
 
   if (benchmarkCase.expected.searchDomain) {
     details.push(
-      scoreArgument(
-        "search_domain",
-        argumentValue(firstCall, "search_domain"),
-        benchmarkCase.expected.searchDomain
-      )
+      scoreSearchDomain(firstCall, benchmarkCase.expected.searchDomain)
     );
   }
   if (benchmarkCase.expected.responseDetail) {

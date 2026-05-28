@@ -5,6 +5,17 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const logPath = process.env.TOOL_CHOICE_LOG_PATH;
+const fakeMemoryAnswer = (() => {
+  const serialized = process.env.TOOL_CHOICE_FAKE_MEMORY_ANSWER;
+  if (!serialized) {
+    return undefined;
+  }
+  const parsed = JSON.parse(serialized) as {
+    memoryStatus: "found" | "not_found";
+    markdown: string;
+  };
+  return parsed;
+})();
 
 const description =
   process.env.TOOL_CHOICE_MEMORY_DESCRIPTION ??
@@ -43,9 +54,11 @@ server.registerTool(
   },
   async (input) => {
     const serializedInput = JSON.stringify(input).toLowerCase();
-    const memoryStatus = /billing dashboard|codename/.test(serializedInput)
-      ? "not_found"
-      : "found";
+    const memoryStatus =
+      fakeMemoryAnswer?.memoryStatus ??
+      (/billing dashboard|codename/.test(serializedInput)
+        ? "not_found"
+        : "found");
     if (logPath) {
       await appendFile(
         logPath,
@@ -59,9 +72,10 @@ server.registerTool(
 
     const payload = {
       markdown:
-        memoryStatus === "found"
+        fakeMemoryAnswer?.markdown ??
+        (memoryStatus === "found"
           ? "Memory contains relevant prior context for this question."
-          : "No matching memory found.",
+          : "No matching memory found."),
       localMemoryWorker: {
         status: "completed",
         memoryStatus

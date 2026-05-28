@@ -64,6 +64,59 @@ describe("tool-choice benchmark scoring", () => {
     });
   });
 
+  it("does not score session scope as valid without a session_id", () => {
+    const score = scoreToolChoiceRun(mustCase("session-specific-recap"), {
+      caseId: "session-specific-recap",
+      runIndex: 0,
+      calls: [
+        {
+          toolName: "memory_answer",
+          arguments: {
+            query: "recap the saved session",
+            search_domain: "session",
+            response_detail: "answer_only",
+            include_evidence: false
+          }
+        }
+      ],
+      finalResponse: "I found the saved-session recap."
+    });
+
+    expect(
+      score.details.find((detail) => detail.name === "search_domain")
+    ).toMatchObject({
+      score: 0,
+      reason: "session_id missing for session scope"
+    });
+  });
+
+  it("scores session scope as ideal when a session_id is present", () => {
+    const score = scoreToolChoiceRun(mustCase("session-specific-recap"), {
+      caseId: "session-specific-recap",
+      runIndex: 0,
+      calls: [
+        {
+          toolName: "memory_answer",
+          arguments: {
+            query: "recap the saved session",
+            search_domain: "session",
+            session_id: "8a65bfa5-b382-483a-86ff-b06e04cf2ce5",
+            response_detail: "answer_only",
+            include_evidence: false
+          }
+        }
+      ],
+      finalResponse: "I found the saved-session recap."
+    });
+
+    expect(
+      score.details.find((detail) => detail.name === "search_domain")
+    ).toMatchObject({
+      score: 3,
+      reason: "ideal"
+    });
+  });
+
   it("penalizes missing required memory calls", () => {
     const score = scoreToolChoiceRun(mustCase("remembered-user-preference"), {
       caseId: "remembered-user-preference",

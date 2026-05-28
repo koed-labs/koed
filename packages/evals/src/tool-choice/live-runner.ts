@@ -104,7 +104,8 @@ const copyCodexAuth = async (targetHome: string): Promise<void> => {
 
 const writeConfig = async (
   codexHome: string,
-  logPath: string
+  logPath: string,
+  fakeMemoryAnswer: (typeof toolChoiceCases)[number]["fakeMemoryAnswer"]
 ): Promise<void> => {
   await writeFile(
     path.join(codexHome, "config.toml"),
@@ -116,10 +117,14 @@ const writeConfig = async (
       `command = "node"`,
       `args = [${JSON.stringify(fakeMcpServerPath)}]`,
       "enabled = true",
+      "required = true",
       `default_tools_approval_mode = "approve"`,
       "",
       "[mcp_servers.koed_tool_choice_eval.env]",
-      `TOOL_CHOICE_LOG_PATH = ${JSON.stringify(logPath)}`
+      `TOOL_CHOICE_LOG_PATH = ${JSON.stringify(logPath)}`,
+      `TOOL_CHOICE_FAKE_MEMORY_ANSWER = ${JSON.stringify(
+        JSON.stringify(fakeMemoryAnswer)
+      )}`
     ].join("\n")
   );
 };
@@ -156,7 +161,7 @@ const runOne = async (
   await mkdir(codexHome, { recursive: true, mode: 0o700 });
   await mkdir(workspace, { recursive: true });
   await copyCodexAuth(codexHome);
-  await writeConfig(codexHome, logPath);
+  await writeConfig(codexHome, logPath, benchmarkCase.fakeMemoryAnswer);
 
   try {
     const prompt = benchmarkCase.prompt;
