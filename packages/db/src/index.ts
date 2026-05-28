@@ -3796,7 +3796,7 @@ export const createMemorySourceRepository = (
           thread_name,
           query
         )
-        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9)
+        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10)
         returning
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
