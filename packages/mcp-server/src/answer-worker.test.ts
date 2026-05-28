@@ -120,7 +120,9 @@ describe("memory answer worker", () => {
     expect(prompt).toContain("candidates, not proof of relevance");
     expect(prompt).toContain("clearly off-topic");
     expect(prompt).toContain("memory_status=not_found");
-    expect(prompt).toContain("Honor the requested default search domain (global)");
+    expect(prompt).toContain(
+      "Honor the requested default search domain (global)"
+    );
     expect(prompt).toContain('"search_domain":"global"');
   });
 
