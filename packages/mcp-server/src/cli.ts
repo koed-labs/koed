@@ -12,7 +12,9 @@ import {
   defaultAnswerScope,
   defaultConfig,
   exposedTools,
+  memoryAnswerToolDescription,
   memoryAccessCheck,
+  memoryServerInstructions,
   resolveToolExposureConfig
 } from "./index.js";
 import {
@@ -199,10 +201,16 @@ if (command) {
   process.exit(1);
 }
 
-const server = new McpServer({
-  name: "koed-mcp",
-  version: "0.1.0"
-});
+const server = new McpServer(
+  {
+    name: "koed-mcp",
+    title: "Koed Memory",
+    version: "0.1.0"
+  },
+  {
+    instructions: memoryServerInstructions
+  }
+);
 const backgroundLcmSummaryService = startLcmSummaryService(client, {
   serviceConfig: resolveLcmSummaryServiceConfig(process.env),
   workerConfig: resolveLcmSummaryWorkerConfig(process.env)
@@ -236,8 +244,7 @@ server.registerTool(
   "memory_answer",
   {
     title: "Answer from memory",
-    description:
-      "Retrieve memory through local semantic embeddings, then synthesize the final answer through the local MCP memory-answer worker when enabled. Defaults to response_detail=answer_only so normal agent recall receives compact markdown plus localMemoryWorker status metadata. Use response_detail=with_citations when citation/source metadata is needed, and response_detail=with_evidence only for debugging, UI inspection, or retrieval-quality investigation. The backend does not call OpenAI or another model provider; local synthesis uses the user's Codex CLI subscription.",
+    description: memoryAnswerToolDescription,
     inputSchema: {
       query: z.string().min(1).describe("Question to answer from memory."),
       response_detail: memoryAnswerResponseDetailSchema

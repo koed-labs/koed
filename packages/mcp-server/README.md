@@ -61,7 +61,11 @@ node packages/mcp-server/dist/cli.js doctor
 The MCP server exposes one normal recall tool by default:
 
 - `memory_answer`: retrieves memory evidence and asks local Codex to synthesize
-  a compact answer.
+  a compact answer. It is intended for recall from prior conversations,
+  remembered preferences, user-provided facts, project history, decisions, and
+  cross-session context. It defaults to project search, uses session search only
+  for a known captured conversation, and uses global search only for broad
+  cross-project or personal-history recall.
 
 Use the `doctor` command above for setup and health checks without expanding the
 normal agent-facing MCP schema.

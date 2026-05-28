@@ -8,10 +8,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "eval": "tsc -p tsconfig.json && node dist/index.js",
+    "eval:tool-choice": "tsc -p tsconfig.json && node dist/tool-choice/index.js",
+    "eval:tool-choice:live": "tsc -p tsconfig.json && node dist/tool-choice/live-runner.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@koed/core": "workspace:*"
+    "@koed/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
   }
 }

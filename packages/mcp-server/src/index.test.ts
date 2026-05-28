@@ -8,7 +8,9 @@ import {
   diagnosticMemoryTools,
   exposedTools,
   lowLevelMemoryTools,
+  memoryAnswerToolDescription,
   memoryAccessCheck,
+  memoryServerInstructions,
   requiredTools,
   resolveToolExposureConfig
 } from "./index.js";
@@ -103,6 +105,40 @@ describe("MCP tool exposure", () => {
       "memory_search",
       "memory_expand"
     ]);
+  });
+});
+
+describe("MCP memory_answer schema wording", () => {
+  it("keeps the server instructions aligned with recall policy", () => {
+    expect(memoryServerInstructions).toContain("prior conversations");
+    expect(memoryServerInstructions).toContain("previous project decisions");
+    expect(memoryServerInstructions).toContain("remembered preferences");
+    expect(memoryServerInstructions).toContain("user-provided facts");
+    expect(memoryServerInstructions).toContain("Default to project scope");
+    expect(memoryServerInstructions).toContain("Use session scope");
+    expect(memoryServerInstructions).toContain("Use global scope only");
+    expect(memoryServerInstructions).toContain(
+      "Do not keep querying memory after a clear not-found result"
+    );
+  });
+
+  it("keeps the memory_answer tool description concise and scope-explicit", () => {
+    expect(memoryAnswerToolDescription).toContain(
+      "captured Codex conversations"
+    );
+    expect(memoryAnswerToolDescription).toContain(
+      "remembered user preferences"
+    );
+    expect(memoryAnswerToolDescription).toContain("user-provided facts");
+    expect(memoryAnswerToolDescription).toContain(
+      "Default to search_domain=project"
+    );
+    expect(memoryAnswerToolDescription).toContain("search_domain=session");
+    expect(memoryAnswerToolDescription).toContain("search_domain=global only");
+    expect(memoryAnswerToolDescription).toContain(
+      "do not repeat after a clear not-found answer"
+    );
+    expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);
   });
 });
 
