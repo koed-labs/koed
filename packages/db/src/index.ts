@@ -6642,7 +6642,7 @@ export const createMemorySourceRepository = (
                     end,
                     ev.captured_at,
                     msg.captured_at,
-                    me.captured_at
+                    me.created_at
                   ) as created_at,
                   me.embedding_model,
                   me.embedding_dimensions,
