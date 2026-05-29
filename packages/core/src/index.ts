@@ -341,6 +341,7 @@ export interface PersonalEventInput {
   codexTranscriptPath?: string;
   idempotencyKey?: string;
   sourceHash?: string;
+  capturedAt?: string;
 }
 
 export interface SearchMemoryInput {
@@ -453,6 +454,7 @@ export interface MemoryEngineRepository {
       codexTranscriptPath?: string;
       idempotencyKey?: string;
       sourceHash?: string;
+      capturedAt?: string;
     }
   ): Promise<MemoryEventRecord>;
   searchMemoryNodes(
@@ -478,7 +480,12 @@ export interface MemoryEngineRepository {
   ): Promise<CompactionResult>;
   expandMemoryNode(
     nodeId: string,
-    actor: RequesterContext
+    actor: RequesterContext,
+    input?: {
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    }
   ): Promise<ExpandedMemoryNode>;
 }
 
@@ -502,7 +509,8 @@ export const capturePersonalEvent = async (
     captureMethod: event.captureMethod,
     codexTranscriptPath: event.codexTranscriptPath,
     idempotencyKey: event.idempotencyKey,
-    sourceHash: event.sourceHash
+    sourceHash: event.sourceHash,
+    capturedAt: event.capturedAt
   });
 };
 
@@ -558,10 +566,19 @@ export const answerMemory = async (
 
 export const expandMemoryNode = async (
   nodeId: string,
-  requesterContext: RequesterContext & { repository: MemoryEngineRepository }
+  requesterContext: RequesterContext & {
+    repository: MemoryEngineRepository;
+    recentDays?: number;
+    sourceAfter?: string;
+    sourceBefore?: string;
+  }
 ): Promise<ExpandedMemoryNode> => {
   const { repository, ...actor } = requesterContext;
-  return repository.expandMemoryNode(nodeId, actor);
+  return repository.expandMemoryNode(nodeId, actor, {
+    recentDays: requesterContext.recentDays,
+    sourceAfter: requesterContext.sourceAfter,
+    sourceBefore: requesterContext.sourceBefore
+  });
 };
 
 export const scheduleCompaction = async (
@@ -578,8 +595,15 @@ export const createMemoryEngine = (repository: MemoryEngineRepository) => ({
     searchMemory({ ...input, repository }),
   answerMemory: (input: AnswerMemoryInput) =>
     answerMemory({ ...input, repository }),
-  expandMemoryNode: (nodeId: string, requesterContext: RequesterContext) =>
-    expandMemoryNode(nodeId, { ...requesterContext, repository }),
+  expandMemoryNode: (
+    nodeId: string,
+    requesterContext: RequesterContext,
+    input: {
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    } = {}
+  ) => expandMemoryNode(nodeId, { ...requesterContext, ...input, repository }),
   scheduleCompaction: (input: ScheduleCompactionInput) =>
     scheduleCompaction({ ...input, repository })
 });

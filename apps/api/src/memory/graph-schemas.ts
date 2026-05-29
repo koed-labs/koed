@@ -78,3 +78,34 @@ export const graphEventPatchSchema = z.object({
 });
 
 export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
+
+export const expandMemoryNodeQuerySchema = z
+  .object({
+    recent_days: z.coerce.number().int().positive().max(36500).optional(),
+    source_after: z.coerce.date().optional(),
+    source_before: z.coerce.date().optional()
+  })
+  .superRefine((input, context) => {
+    if (
+      input.recent_days !== undefined &&
+      (input.source_after !== undefined || input.source_before !== undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["recent_days"],
+        message:
+          "recent_days cannot be combined with explicit source_after/source_before bounds"
+      });
+    }
+    if (
+      input.source_after !== undefined &&
+      input.source_before !== undefined &&
+      input.source_after.getTime() >= input.source_before.getTime()
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source_after"],
+        message: "source_after must be earlier than source_before"
+      });
+    }
+  });

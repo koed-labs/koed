@@ -928,11 +928,11 @@ describeDb("memory repository visibility", () => {
     }
 
     await pool.query(
-      "update memory_events set created_at = now() - interval '45 days' where id = any($1::uuid[])",
+      "update memory_events set captured_at = now() - interval '45 days', created_at = now() where id = any($1::uuid[])",
       [oldEventIds]
     );
     await pool.query(
-      "update memory_events set created_at = now() - interval '2 days' where id = any($1::uuid[])",
+      "update memory_events set captured_at = now() - interval '2 days', created_at = now() where id = any($1::uuid[])",
       [recentEventIds]
     );
 
@@ -1007,6 +1007,26 @@ describeDb("memory repository visibility", () => {
         })
       ])
     );
+    const expandedRecent = await engine.expandMemoryNode(
+      compacted.rollupNodeId!,
+      { userId: alice.id },
+      { recentDays: 30 }
+    );
+    expect(
+      expandedRecent.sourceItems.some((item) =>
+        item.text?.includes("Recent temporal evidence")
+      )
+    ).toBe(true);
+    expect(
+      expandedRecent.sourceItems.some((item) =>
+        item.text?.includes("Old-only temporal evidence")
+      )
+    ).toBe(false);
+    expect(
+      expandedRecent.sources.some((source) =>
+        source.content.includes("Old-only temporal evidence")
+      )
+    ).toBe(false);
 
     mockEmbeddingQuery();
     const boundedSearch = await engine.searchMemory({

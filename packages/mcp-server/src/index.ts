@@ -255,10 +255,28 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/memory/search", input);
   }
 
-  async expand(nodeId: string): Promise<Record<string, unknown>> {
+  async expand(
+    nodeId: string,
+    input: {
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    } = {}
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (input.recentDays !== undefined) {
+      params.set("recent_days", String(input.recentDays));
+    }
+    if (input.sourceAfter) {
+      params.set("source_after", input.sourceAfter);
+    }
+    if (input.sourceBefore) {
+      params.set("source_before", input.sourceBefore);
+    }
+    const query = params.toString();
     return this.request(
       "GET",
-      `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand`
+      `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand${query ? `?${query}` : ""}`
     );
   }
 

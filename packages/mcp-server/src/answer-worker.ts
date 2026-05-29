@@ -179,7 +179,14 @@ export type CodexAnswerRunner = (
 
 export interface MemoryAnswerRetrievalClient {
   search(input: Record<string, unknown>): Promise<Record<string, unknown>>;
-  expand(nodeId: string): Promise<Record<string, unknown>>;
+  expand(
+    nodeId: string,
+    input?: {
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    }
+  ): Promise<Record<string, unknown>>;
 }
 
 const resolveEnvValue = (
@@ -796,7 +803,11 @@ const runPlannedMemoryAnswer = async (
         state.errors.push("Planner requested expand without nodeId.");
         continue;
       }
-      const expanded = await options.client.expand(action.nodeId);
+      const expanded = await options.client.expand(action.nodeId, {
+        recentDays: options.recentDays,
+        sourceAfter: options.sourceAfter,
+        sourceBefore: options.sourceBefore
+      });
       state.expansions.push(expanded);
     }
   }

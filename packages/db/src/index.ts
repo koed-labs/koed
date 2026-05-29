@@ -422,6 +422,7 @@ type ConversationProjectionRawRow = {
   source_path: string | null;
   source_sequence: number | null;
   event_time: Date | null;
+  observed_at: Date;
   raw_json: unknown;
   raw_text: string | null;
   logical_source_id: string | null;
@@ -3927,7 +3928,7 @@ export const createMemorySourceRepository = (
           pi.event_time, pi.raw_json, pi.raw_text, pi.logical_source_id,
           pi.transport_chunk_index, pi.transport_chunk_count,
           pi.transport_chunk_text, pi.transport_chunk_encoding,
-          pi.source_hash, pi.idempotency_key, pi.metadata,
+          pi.source_hash, pi.idempotency_key, pi.metadata, pi.observed_at,
           pi.session_workspace_id, pi.session_cwd, pi.session_metadata
         from pending_items pi
         join selected_boundaries sb
@@ -4002,6 +4003,12 @@ export const createMemorySourceRepository = (
       const first = items[0]!;
       const model = stringField(first.row.metadata ?? {}, "model");
       const chunks = conversationSemanticUnitChunks(items, unitType, model);
+      const sourceCapturedAt =
+        items
+          .map((item) => item.row.event_time ?? item.row.observed_at)
+          .filter((value): value is Date => value instanceof Date)
+          .sort((left, right) => left.getTime() - right.getTime())[0] ??
+        undefined;
       const sourceActors = uniqueOrderedStrings(
         items.map((item) => item.actorType)
       );
@@ -4072,7 +4079,8 @@ export const createMemorySourceRepository = (
             }),
             codexTranscriptPath: first.row.source_path ?? undefined,
             idempotencyKey: `projection:${unitType}:${unitHash}`,
-            sourceHash: `projection:${unitType}:${contentHash}`
+            sourceHash: `projection:${unitType}:${contentHash}`,
+            capturedAt: sourceCapturedAt?.toISOString()
           }
         );
         if (event.id) {
@@ -4193,11 +4201,11 @@ export const createMemorySourceRepository = (
                 session_id, turn_id, owner_user_id, visibility,
                 role, content, content_json, source_runtime, capture_method,
                 codex_transcript_path, transcript_item_id, idempotency_key,
-                source_hash, token_count
+                source_hash, token_count, captured_at
               )
               values (
                 $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10, $11, $12, $13, $14
+                $8, $9, $10, $11, $12, $13, $14, $15
               )
               on conflict do nothing
               returning id
@@ -4218,7 +4226,8 @@ export const createMemorySourceRepository = (
               row.source_sequence === null ? null : String(row.source_sequence),
               `message:${logicalItem.sourceIdentity}`,
               `message:${logicalItem.sourceHash}`,
-              estimateTokens(content)
+              estimateTokens(content),
+              row.event_time ?? row.observed_at
             ]
           );
           if ((inserted.rowCount ?? 0) > 0) {
@@ -5739,7 +5748,7 @@ export const createMemorySourceRepository = (
             me.owner_user_id,
             me.visibility,
             coalesce(me.payload ->> 'content', '') as text,
-            me.created_at
+            me.captured_at as created_at
           from memory_events me
           where me.invalidated_at is null
         )
@@ -6163,6 +6172,10 @@ export const createMemorySourceRepository = (
     const rawConversationItemIds = rawConversationItemIdsFromMetadata(
       input.metadata
     );
+    const capturedAt = input.capturedAt ? new Date(input.capturedAt) : null;
+    if (capturedAt && Number.isNaN(capturedAt.getTime())) {
+      throw new Error("capturedAt must be a valid timestamp");
+    }
 
     type MemoryEventRow = {
       id: string;
@@ -6195,9 +6208,10 @@ export const createMemorySourceRepository = (
           turn_id,
           idempotency_key,
           source_hash,
-          payload
+          payload,
+          captured_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, coalesce($13::timestamptz, now()))
         on conflict do nothing
         returning id, owner_user_id, visibility, event_type, session_id, turn_id, payload, created_at
       `,
@@ -6213,7 +6227,8 @@ export const createMemorySourceRepository = (
         input.turnId ?? null,
         input.idempotencyKey ?? null,
         input.sourceHash ?? null,
-        payload
+        payload,
+        capturedAt
       ]
     );
 
@@ -6559,9 +6574,9 @@ export const createMemorySourceRepository = (
                       left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null
                       where boundary_mns.memory_node_id = me.memory_node_id
                         and (
-                          coalesce(boundary_ev.created_at, boundary_msg.created_at) is null
-                          or ($12::timestamptz is not null and coalesce(boundary_ev.created_at, boundary_msg.created_at) < $12::timestamptz)
-                          or ($13::timestamptz is not null and coalesce(boundary_ev.created_at, boundary_msg.created_at) >= $13::timestamptz)
+                          coalesce(boundary_ev.captured_at, boundary_msg.captured_at) is null
+                          or ($12::timestamptz is not null and coalesce(boundary_ev.captured_at, boundary_msg.captured_at) < $12::timestamptz)
+                          or ($13::timestamptz is not null and coalesce(boundary_ev.captured_at, boundary_msg.captured_at) >= $13::timestamptz)
                         )
                     )
                     else false
@@ -6582,7 +6597,7 @@ export const createMemorySourceRepository = (
                       from (
                         select
                           coalesce(time_ev.id, time_msg.id) as source_id,
-                          coalesce(time_ev.created_at, time_msg.created_at) as source_created_at,
+                          coalesce(time_ev.captured_at, time_msg.captured_at) as source_created_at,
                           coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
                           nullif(time_ev.payload ->> 'projectName', '') as project_name,
                           coalesce(nullif(time_ev.payload ->> 'projectPath', ''), nullif(time_ev.payload ->> 'workspaceId', ''), nullif(time_msg_session.cwd, '')) as project_path
@@ -6591,11 +6606,11 @@ export const createMemorySourceRepository = (
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
                         left join sessions time_msg_session on time_msg_session.id = time_msg.session_id
                         where time_mns.memory_node_id = me.memory_node_id
-                          and coalesce(time_ev.created_at, time_msg.created_at) is not null
+                          and coalesce(time_ev.captured_at, time_msg.captured_at) is not null
                           and coalesce(time_ev.payload ->> 'content', time_msg.content, '') <> ''
-                          and ($12::timestamptz is null or coalesce(time_ev.created_at, time_msg.created_at) >= $12::timestamptz)
-                          and ($13::timestamptz is null or coalesce(time_ev.created_at, time_msg.created_at) < $13::timestamptz)
-                        order by coalesce(time_ev.created_at, time_msg.created_at) asc, coalesce(time_ev.id, time_msg.id) asc
+                          and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
+                          and ($13::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) < $13::timestamptz)
+                        order by coalesce(time_ev.captured_at, time_msg.captured_at) asc, coalesce(time_ev.id, time_msg.id) asc
                       ) source_row
                     )
                     else null
@@ -6617,7 +6632,7 @@ export const createMemorySourceRepository = (
                   coalesce(
                     case
                       when me.memory_node_id is not null then (
-                        select max(coalesce(source_ev.created_at, source_msg.created_at))
+                        select max(coalesce(source_ev.captured_at, source_msg.captured_at))
                         from memory_node_sources source_mns
                         left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
                         left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
@@ -6625,9 +6640,9 @@ export const createMemorySourceRepository = (
                       )
                       else null
                     end,
-                    ev.created_at,
-                    msg.created_at,
-                    me.created_at
+                    ev.captured_at,
+                    msg.captured_at,
+                    me.captured_at
                   ) as created_at,
                   me.embedding_model,
                   me.embedding_dimensions,
@@ -6700,19 +6715,19 @@ export const createMemorySourceRepository = (
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
                         where time_mns.memory_node_id = me.memory_node_id
-                          and ($12::timestamptz is null or coalesce(time_ev.created_at, time_msg.created_at) >= $12::timestamptz)
-                          and ($13::timestamptz is null or coalesce(time_ev.created_at, time_msg.created_at) < $13::timestamptz)
+                          and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
+                          and ($13::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) < $13::timestamptz)
                       )
                     )
                     or (
                       me.memory_event_id is not null
-                      and ($12::timestamptz is null or ev.created_at >= $12::timestamptz)
-                      and ($13::timestamptz is null or ev.created_at < $13::timestamptz)
+                      and ($12::timestamptz is null or ev.captured_at >= $12::timestamptz)
+                      and ($13::timestamptz is null or ev.captured_at < $13::timestamptz)
                     )
                     or (
                       me.message_id is not null
-                      and ($12::timestamptz is null or msg.created_at >= $12::timestamptz)
-                      and ($13::timestamptz is null or msg.created_at < $13::timestamptz)
+                      and ($12::timestamptz is null or msg.captured_at >= $12::timestamptz)
+                      and ($13::timestamptz is null or msg.captured_at < $13::timestamptz)
                     )
                   )
                   and (
@@ -7050,7 +7065,7 @@ export const createMemorySourceRepository = (
           rawEventType?: string;
           workspaceId?: string;
         };
-        created_at: Date;
+        captured_at: Date;
       }>(
         `
           select
@@ -7060,7 +7075,7 @@ export const createMemorySourceRepository = (
             me.session_id,
             me.turn_id,
             me.payload,
-            me.created_at
+            me.captured_at
           from memory_events me
           where me.invalidated_at is null
             and me.visibility = $1
@@ -7073,7 +7088,7 @@ export const createMemorySourceRepository = (
                 and mn.kind = 'leaf'
                 and mn.invalidated_at is null
             )
-          order by me.created_at asc, me.id asc
+          order by me.captured_at asc, me.id asc
         `,
         [input.visibility, ownerUserId]
       );
@@ -7146,7 +7161,7 @@ export const createMemorySourceRepository = (
           visibility: event.visibility,
           actor: event.actor ?? event.payload.actor,
           turnId: event.turn_id,
-          createdAt: event.created_at.toISOString(),
+          createdAt: event.captured_at.toISOString(),
           text: event.payload.content ?? "",
           payload: lcmSourcePayloadForEvent(event),
           position
@@ -7186,8 +7201,8 @@ export const createMemorySourceRepository = (
             span.length,
             tokenEstimate,
             estimateTokens(summaryText, { model: tokenModel }),
-            span[0]!.created_at,
-            span.at(-1)!.created_at,
+            span[0]!.captured_at,
+            span.at(-1)!.captured_at,
             sourceHash(
               "memory_event",
               span.map((event) => event.id).join(","),
@@ -7381,7 +7396,33 @@ export const createMemorySourceRepository = (
     }
   },
 
-  async expandMemoryNode(nodeId, actor) {
+  async expandMemoryNode(nodeId, actor, input = {}) {
+    const now = new Date();
+    const sourceAfter = input.recentDays
+      ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
+      : input.sourceAfter
+        ? new Date(input.sourceAfter)
+        : null;
+    const sourceBefore = input.sourceBefore
+      ? new Date(input.sourceBefore)
+      : null;
+    if (
+      input.recentDays !== undefined &&
+      (input.sourceAfter !== undefined || input.sourceBefore !== undefined)
+    ) {
+      throw new Error(
+        "recentDays cannot be combined with explicit sourceAfter/sourceBefore bounds"
+      );
+    }
+    if (sourceAfter && Number.isNaN(sourceAfter.getTime())) {
+      throw new Error("sourceAfter must be a valid timestamp");
+    }
+    if (sourceBefore && Number.isNaN(sourceBefore.getTime())) {
+      throw new Error("sourceBefore must be a valid timestamp");
+    }
+    if (sourceAfter && sourceBefore && sourceAfter >= sourceBefore) {
+      throw new Error("sourceAfter must be earlier than sourceBefore");
+    }
     const visibleNode = await pool.query<{
       id: string;
       visibility: Visibility;
@@ -7418,18 +7459,21 @@ export const createMemorySourceRepository = (
         workspaceId?: string;
       };
       created_at: Date;
+      captured_at: Date;
     }>(
       `
-        select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at
+        select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at, me.captured_at
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
         where mns.memory_node_id = $1
           and me.invalidated_at is null
           and me.visibility = 'personal'
           and me.owner_user_id = $2
-        order by me.created_at asc, me.id asc
+          and ($3::timestamptz is null or me.captured_at >= $3::timestamptz)
+          and ($4::timestamptz is null or me.captured_at < $4::timestamptz)
+        order by me.captured_at asc, me.id asc
       `,
-      [nodeId, actor.userId]
+      [nodeId, actor.userId, sourceAfter, sourceBefore]
     );
     const eventSourceItems: LcmSourceItem[] = sources.rows.map(
       (source, position) => ({
@@ -7439,7 +7483,7 @@ export const createMemorySourceRepository = (
         visibility: source.visibility,
         actor: source.payload.actor,
         turnId: source.turn_id,
-        createdAt: source.created_at.toISOString(),
+        createdAt: source.captured_at.toISOString(),
         text: source.payload.content ?? "",
         payload: source.payload,
         position
@@ -7448,17 +7492,34 @@ export const createMemorySourceRepository = (
     const nodeSourceItems = Array.isArray(node.source_items_json)
       ? node.source_items_json
       : [];
+    const sourceItemInWindow = (item: LcmSourceItem): boolean => {
+      if (!sourceAfter && !sourceBefore) {
+        return true;
+      }
+      if (!item.createdAt) {
+        return false;
+      }
+      const itemDate = new Date(item.createdAt);
+      if (Number.isNaN(itemDate.getTime())) {
+        return false;
+      }
+      return (
+        (!sourceAfter || itemDate >= sourceAfter) &&
+        (!sourceBefore || itemDate < sourceBefore)
+      );
+    };
+    const filteredNodeSourceItems = nodeSourceItems.filter(sourceItemInWindow);
 
     return {
       nodeId,
       visibility: node.visibility,
       sourceItems:
-        nodeSourceItems.length > 0 &&
-        nodeSourceItems.some((item) => item.kind === "lcm_child")
-          ? [...nodeSourceItems, ...eventSourceItems]
+        filteredNodeSourceItems.length > 0 &&
+        filteredNodeSourceItems.some((item) => item.kind === "lcm_child")
+          ? [...filteredNodeSourceItems, ...eventSourceItems]
           : eventSourceItems.length > 0
             ? eventSourceItems
-            : nodeSourceItems,
+            : filteredNodeSourceItems,
       sources: sources.rows.map(mapMemoryEvent)
     } satisfies ExpandedMemoryNode;
   }
