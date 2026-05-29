@@ -1597,6 +1597,29 @@ const appServerTokenUsageFromRaw = (
   };
 };
 
+const compactProjectionValue = (value: unknown, maxLength: number): string => {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return truncateDisplayText(text ?? "", maxLength);
+};
+
+const hookToolContent = (
+  raw: Record<string, unknown> | null
+): string | null => {
+  const toolName = raw ? stringField(raw, "tool_name") : null;
+  if (!raw || !toolName) {
+    return null;
+  }
+  return joinProjectionTexts([
+    `Tool result: ${toolName}`,
+    raw.tool_input !== undefined
+      ? `Input:\n${compactProjectionValue(raw.tool_input, 800)}`
+      : "",
+    raw.tool_response !== undefined
+      ? `Output:\n${compactProjectionValue(raw.tool_response, 1200)}`
+      : ""
+  ]);
+};
+
 const conversationItemContent = (row: {
   source_event_type?: string | null;
   source_record_type?: string;
@@ -1619,6 +1642,12 @@ const conversationItemContent = (row: {
     (params && isRecord(params.item) ? params.item : null) ??
     (payload && isRecord(payload.item) ? payload.item : null) ??
     (payload && isRecord(payload) ? payload : null);
+  if (row.source_record_type === "hook_payload") {
+    const hookTool = hookToolContent(raw);
+    if (hookTool) {
+      return hookTool;
+    }
+  }
   if (projectionIsReasoningLabel(label)) {
     if (projectionIsRawReasoningLabel(label)) {
       return null;
@@ -1697,6 +1726,9 @@ const actorFromConversationItem = (row: {
       return stringField(metadata, "threadKind") === "subagent"
         ? "subagent"
         : "agent";
+    }
+    if (typeof raw.tool_name === "string" && raw.tool_name.trim()) {
+      return "tool";
     }
   }
   if (
@@ -1829,7 +1861,8 @@ const projectionIsHookSemanticFallback = (row: {
   }
   return (
     typeof row.raw_json.prompt === "string" ||
-    typeof row.raw_json.last_assistant_message === "string"
+    typeof row.raw_json.last_assistant_message === "string" ||
+    typeof row.raw_json.tool_name === "string"
   );
 };
 
@@ -2246,6 +2279,7 @@ const conversationItemToolName = (
   linkedToolName ??
   stringField(conversationItemToolPayload(raw), "name") ??
   stringField(conversationItemToolPayload(raw), "title") ??
+  stringField(raw, "tool_name") ??
   stringField(raw, "name") ??
   stringField(raw, "method") ??
   "tool";
@@ -2297,6 +2331,9 @@ const conversationItemToolInput = (
   if (raw.input !== undefined) {
     return raw.input;
   }
+  if (raw.tool_input !== undefined) {
+    return raw.tool_input;
+  }
   return raw.toolInput;
 };
 
@@ -2320,6 +2357,9 @@ const conversationItemToolResponse = (
   }
   if (item.content !== undefined) {
     return item.content;
+  }
+  if (raw.tool_response !== undefined) {
+    return raw.tool_response;
   }
   return raw.result ?? raw.toolResponse ?? content;
 };
