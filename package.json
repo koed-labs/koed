@@ -14,7 +14,7 @@
     "eval": "pnpm --filter @koed/evals eval",
     "codex:configure": "node scripts/configure-codex.mjs",
     "codex:verify-capture": "node scripts/verify-codex-capture-hook.mjs",
-    "setup:env": "node scripts/setup-env.mjs",
+    "env:setup": "node scripts/setup-env.mjs",
     "env:sync": "node scripts/sync-app-env-examples.mjs",
     "env:sync:check": "node scripts/sync-app-env-examples.mjs --check",
     "smoke:lcm": "node scripts/lcm-smoke-test.mjs",
