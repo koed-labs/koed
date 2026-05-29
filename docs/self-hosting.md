@@ -5,7 +5,7 @@ Koed Self-Hosted runs API, worker, embedding service, and an optional history-br
 ## Local Run
 
 ```bash
-pnpm setup:env
+pnpm env:setup
 pnpm install
 pnpm build
 docker compose up --build

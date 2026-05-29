@@ -12,10 +12,25 @@ Options:
   --help                Show this help.
 `;
 
-const readFlagValue = (argv, index, flag) => {
+const listUsage = `Usage: pnpm api-token:list --owner-email <email>
+
+Options:
+  --owner-email <email>  Email for the local owner user.
+  --help                Show this help.
+`;
+
+const revokeUsage = `Usage: pnpm api-token:revoke --owner-email <email> --token-id <uuid>
+
+Options:
+  --owner-email <email>  Email for the local owner user.
+  --token-id <uuid>     API token id to revoke.
+  --help                Show this help.
+`;
+
+const readFlagValue = (argv, index, flag, usageText = usage) => {
   const value = argv[index + 1];
   if (!value || value.startsWith("--")) {
-    throw new UsageError(`${flag} requires a value.\n\n${usage}`);
+    throw new UsageError(`${flag} requires a value.\n\n${usageText}`);
   }
   return value;
 };
@@ -71,6 +86,97 @@ export const parseCreateApiTokenArgs = (argv) => {
 };
 
 export const helpText = usage;
+export const listHelpText = listUsage;
+export const revokeHelpText = revokeUsage;
+
+const parseOwnerEmailArgs = (argv, usageText) => {
+  const parsed = {
+    ownerEmail: null,
+    help: false
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") {
+      parsed.help = true;
+      continue;
+    }
+    if (arg === "--owner-email") {
+      parsed.ownerEmail = readFlagValue(argv, index, arg, revokeUsage);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--owner-email=")) {
+      parsed.ownerEmail = arg.slice("--owner-email=".length);
+      continue;
+    }
+    throw new UsageError(`Unknown argument: ${arg}\n\n${usageText}`);
+  }
+
+  if (parsed.help) {
+    return parsed;
+  }
+
+  parsed.ownerEmail = parsed.ownerEmail?.trim().toLowerCase() ?? null;
+  if (!parsed.ownerEmail) {
+    throw new UsageError(`--owner-email is required.\n\n${usageText}`);
+  }
+
+  return parsed;
+};
+
+export const parseListApiTokenArgs = (argv) =>
+  parseOwnerEmailArgs(argv, listUsage);
+
+export const parseRevokeApiTokenArgs = (argv) => {
+  const parsed = {
+    ownerEmail: null,
+    tokenId: null,
+    help: false
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") {
+      parsed.help = true;
+      continue;
+    }
+    if (arg === "--owner-email") {
+      parsed.ownerEmail = readFlagValue(argv, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--owner-email=")) {
+      parsed.ownerEmail = arg.slice("--owner-email=".length);
+      continue;
+    }
+    if (arg === "--token-id") {
+      parsed.tokenId = readFlagValue(argv, index, arg, revokeUsage);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--token-id=")) {
+      parsed.tokenId = arg.slice("--token-id=".length);
+      continue;
+    }
+    throw new UsageError(`Unknown argument: ${arg}\n\n${revokeUsage}`);
+  }
+
+  if (parsed.help) {
+    return parsed;
+  }
+
+  parsed.ownerEmail = parsed.ownerEmail?.trim().toLowerCase() ?? null;
+  parsed.tokenId = parsed.tokenId?.trim() ?? null;
+  if (!parsed.ownerEmail) {
+    throw new UsageError(`--owner-email is required.\n\n${revokeUsage}`);
+  }
+  if (!parsed.tokenId) {
+    throw new UsageError(`--token-id is required.\n\n${revokeUsage}`);
+  }
+
+  return parsed;
+};
 
 const unquoteEnvValue = (value) => {
   const trimmed = value.trim();
@@ -166,6 +272,59 @@ export const createApiTokenBootstrap = async ({
   };
 };
 
+export const listApiTokenBootstrap = async ({ repo, environment, argv }) => {
+  const args = parseListApiTokenArgs(argv);
+  if (args.help) {
+    return { help: true };
+  }
+
+  requireEnv(environment, ["DATABASE_URL"]);
+
+  const owner = await repo.findUserByEmail(args.ownerEmail);
+  if (!owner) {
+    throw new UsageError(`Owner user not found: ${args.ownerEmail}`);
+  }
+
+  return {
+    help: false,
+    owner: {
+      id: owner.id,
+      email: args.ownerEmail
+    },
+    apiTokens: await repo.listApiTokens(owner.id)
+  };
+};
+
+export const revokeApiTokenBootstrap = async ({ repo, environment, argv }) => {
+  const args = parseRevokeApiTokenArgs(argv);
+  if (args.help) {
+    return { help: true };
+  }
+
+  requireEnv(environment, ["DATABASE_URL"]);
+
+  const owner = await repo.findUserByEmail(args.ownerEmail);
+  if (!owner) {
+    throw new UsageError(`Owner user not found: ${args.ownerEmail}`);
+  }
+
+  const revoked = await repo.revokeApiToken(owner.id, args.tokenId);
+  if (!revoked) {
+    throw new UsageError(
+      `API token not found or already revoked: ${args.tokenId}`
+    );
+  }
+
+  return {
+    help: false,
+    owner: {
+      id: owner.id,
+      email: args.ownerEmail
+    },
+    tokenId: args.tokenId
+  };
+};
+
 export const formatCreateApiTokenResult = (result) => {
   if (result.help) {
     return helpText;
@@ -179,4 +338,34 @@ export const formatCreateApiTokenResult = (result) => {
     `Token: ${result.token}`,
     "Store this token now. It is shown only once."
   ].join("\n");
+};
+
+export const formatListApiTokenResult = (result) => {
+  if (result.help) {
+    return listHelpText;
+  }
+  if (result.apiTokens.length === 0) {
+    return `No active Koed API tokens for ${result.owner.email}.`;
+  }
+
+  return [
+    `Active Koed API tokens for ${result.owner.email}:`,
+    ...result.apiTokens.map((token) =>
+      [
+        `- ${token.id}`,
+        `name="${token.name}"`,
+        `prefix=${token.tokenPrefix}`,
+        `created=${token.createdAt}`,
+        `lastUsed=${token.lastUsedAt ?? "never"}`
+      ].join(" ")
+    )
+  ].join("\n");
+};
+
+export const formatRevokeApiTokenResult = (result) => {
+  if (result.help) {
+    return revokeHelpText;
+  }
+
+  return `Revoked Koed API token ${result.tokenId} for ${result.owner.email}.`;
 };

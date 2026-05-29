@@ -7,6 +7,8 @@ public reports.
 
 Koed Self-Hosted uses local operator token bootstrap for AI-client access. `pnpm api-token:create` creates a passwordless local owner user when needed, creates a bearer API token for that user, stores only the token hash and prefix, and prints the full token once.
 
+Operators list and revoke local tokens with `pnpm api-token:list` and `pnpm api-token:revoke`. Browser session registration is disabled by default in deployed environments; use local operator scripts from the deployment checkout instead.
+
 AI-client integrations use bearer API tokens. Store generated API tokens immediately; only token prefixes are listed later.
 
 Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the API or history browser are accessible outside localhost.

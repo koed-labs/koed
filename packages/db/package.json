@@ -15,6 +15,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "api-token:create": "node scripts/create-api-token.mjs",
+    "api-token:list": "node scripts/list-api-tokens.mjs",
+    "api-token:revoke": "node scripts/revoke-api-token.mjs",
     "migrate:up": "node-pg-migrate up --migrations-dir src/migrations --migrations-table schema_migrations",
     "migrate:down": "node-pg-migrate down --migrations-dir src/migrations --migrations-table schema_migrations",
     "test": "vitest run --passWithNoTests",

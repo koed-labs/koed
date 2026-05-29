@@ -1694,6 +1694,48 @@ describe("api health", () => {
 });
 
 describe("account and access flows", () => {
+  it("disables browser session bootstrap by default outside tests", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousLogLevel = process.env.LOG_LEVEL;
+    process.env.NODE_ENV = "production";
+    process.env.LOG_LEVEL = "silent";
+    const app = await buildServer({ repository: createFakeRepository() });
+    try {
+      const setup = await app.inject({
+        method: "POST",
+        url: "/auth/setup",
+        payload: { email: "setup@example.com", password: "password123" }
+      });
+      const register = await app.inject({
+        method: "POST",
+        url: "/auth/register",
+        payload: { email: "register@example.com", password: "password123" }
+      });
+      const setupStatus = await app.inject({
+        method: "GET",
+        url: "/auth/setup-status"
+      });
+
+      expect(setup.statusCode).toBe(410);
+      expect(register.statusCode).toBe(410);
+      expect(jsonBody<{ authMode: string }>(setupStatus).authMode).toBe(
+        "local_operator_token_bootstrap"
+      );
+    } finally {
+      await app.close();
+      if (previousNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = previousNodeEnv;
+      }
+      if (previousLogLevel === undefined) {
+        delete process.env.LOG_LEVEL;
+      } else {
+        process.env.LOG_LEVEL = previousLogLevel;
+      }
+    }
+  });
+
   it("registers a solo user without exposing manual memory-node writes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({

@@ -3,8 +3,12 @@ import { test } from "node:test";
 import {
   createApiTokenBootstrap,
   formatCreateApiTokenResult,
+  formatListApiTokenResult,
+  formatRevokeApiTokenResult,
   hashApiToken,
-  parseCreateApiTokenArgs
+  listApiTokenBootstrap,
+  parseCreateApiTokenArgs,
+  revokeApiTokenBootstrap
 } from "./api-token-bootstrap-lib.mjs";
 
 const deterministicRandomBytes = () => Buffer.alloc(32, 7);
@@ -41,6 +45,21 @@ const createFakeRepo = ({ existingUser = null } = {}) => {
       };
       state.createdTokens.push(token);
       return token;
+    },
+    async listApiTokens(userId) {
+      return state.createdTokens.filter(
+        (token) => token.ownerUserId === userId && !token.revokedAt
+      );
+    },
+    async revokeApiToken(userId, tokenId) {
+      const token = state.createdTokens.find(
+        (item) => item.ownerUserId === userId && item.id === tokenId
+      );
+      if (!token || token.revokedAt) {
+        return false;
+      }
+      token.revokedAt = new Date().toISOString();
+      return true;
     }
   };
 };
@@ -141,4 +160,51 @@ test("prints the full token once without exposing the stored hash", async () => 
     output,
     new RegExp(repo.state.createdTokens[0].tokenHash)
   );
+});
+
+test("lists active tokens for a passwordless owner", async () => {
+  const repo = createFakeRepo({
+    existingUser: { id: "existing-user", email: "local@koed.ai" }
+  });
+  repo.state.createdTokens.push({
+    id: "token-1",
+    ownerUserId: "existing-user",
+    name: "Codex",
+    tokenPrefix: "cmt_example",
+    createdAt: "2026-05-29T00:00:00.000Z",
+    lastUsedAt: null
+  });
+
+  const result = await listApiTokenBootstrap({
+    repo,
+    environment: { DATABASE_URL: "postgres://local" },
+    argv: ["--owner-email", "local@koed.ai"]
+  });
+  const output = formatListApiTokenResult(result);
+
+  assert.match(output, /Active Koed API tokens for local@koed.ai/);
+  assert.match(output, /token-1/);
+  assert.match(output, /prefix=cmt_example/);
+});
+
+test("revokes an active token for a passwordless owner", async () => {
+  const repo = createFakeRepo({
+    existingUser: { id: "existing-user", email: "local@koed.ai" }
+  });
+  repo.state.createdTokens.push({
+    id: "token-1",
+    ownerUserId: "existing-user",
+    name: "Codex",
+    tokenPrefix: "cmt_example"
+  });
+
+  const result = await revokeApiTokenBootstrap({
+    repo,
+    environment: { DATABASE_URL: "postgres://local" },
+    argv: ["--owner-email", "local@koed.ai", "--token-id", "token-1"]
+  });
+  const output = formatRevokeApiTokenResult(result);
+
+  assert.match(output, /Revoked Koed API token token-1/);
+  assert.equal(repo.state.createdTokens[0].revokedAt !== undefined, true);
 });

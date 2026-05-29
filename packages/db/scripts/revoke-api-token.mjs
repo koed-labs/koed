@@ -2,10 +2,10 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  createApiTokenBootstrap,
-  formatCreateApiTokenResult,
-  helpText,
+  formatRevokeApiTokenResult,
   loadRootEnv,
+  revokeApiTokenBootstrap,
+  revokeHelpText,
   UsageError
 } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import { createApiTokenScriptRepo } from "./api-token-repo.mjs";
@@ -22,16 +22,16 @@ try {
     process.argv.slice(2).includes("--help") ||
     process.argv.slice(2).includes("-h")
   ) {
-    process.stdout.write(helpText);
+    process.stdout.write(revokeHelpText);
     process.exit(0);
   }
 
-  const result = await createApiTokenBootstrap({
+  const result = await revokeApiTokenBootstrap({
     repo,
     environment: process.env,
     argv: process.argv.slice(2)
   });
-  console.log(formatCreateApiTokenResult(result));
+  console.log(formatRevokeApiTokenResult(result));
 } catch (error) {
   if (error instanceof UsageError) {
     console.error(error.message);

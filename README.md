@@ -22,7 +22,7 @@ Postgres uses pgvector. Redis backs BullMQ. Koed Self-Hosted relies on the conne
 Create the local environment file, then install and start the service:
 
 ```bash
-pnpm setup:env
+pnpm env:setup
 pnpm install
 pnpm build
 pnpm test
@@ -44,6 +44,13 @@ Create a local API token for your AI client:
 
 ```bash
 pnpm api-token:create --owner-email local@koed.ai --name "Codex"
+```
+
+List or revoke local API tokens with the same owner email:
+
+```bash
+pnpm api-token:list --owner-email local@koed.ai
+pnpm api-token:revoke --owner-email local@koed.ai --token-id <token-id>
 ```
 
 The history browser runs beside it:

@@ -343,26 +343,9 @@ const main = async () => {
   if (token) {
     console.log("Using existing smoke API token.");
   } else {
-    const email = `lcm-smoke-${marker}@example.com`;
-    const password = `local-lcm-smoke-${randomUUID()}`;
-    const registered = await requestJson("/auth/setup", {
-      method: "POST",
-      body: JSON.stringify({
-        email,
-        password,
-        displayName: "LCM Smoke Test"
-      })
-    });
-    const cookie = registered.headers.get("set-cookie")?.split(";")[0];
-    assert(cookie, "Registration did not return a session cookie");
-
-    const tokenResponse = await requestJson("/api-tokens", {
-      method: "POST",
-      headers: { cookie },
-      body: JSON.stringify({ name: `LCM smoke ${marker}` })
-    });
-    token = tokenResponse.body.token;
-    authLabel = `created user ${email}`;
+    throw new Error(
+      "Set MEMORY_API_TOKEN to a Koed API token from `pnpm api-token:create` before running smoke:lcm."
+    );
   }
   assert(
     typeof token === "string" && token.startsWith("cmt_"),

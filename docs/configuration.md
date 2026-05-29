@@ -5,7 +5,7 @@ Use `.env.example` as the canonical self-hosted environment example. It is the s
 For a local deployment, run:
 
 ```bash
-pnpm setup:env
+pnpm env:setup
 ```
 
 This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
@@ -62,7 +62,7 @@ the command preserves existing values and adds any missing keys from
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
 - `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`.
-- `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm setup:env` generates this for Docker Compose deployments.
+- `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm env:setup` generates this for Docker Compose deployments.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
 - `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request. Default `32000`; values above `32000` are clamped by the embedding service.
 - `EMBEDDING_MAX_TEXT_CHARS`: maximum characters accepted for any single embedding or reranking text before model processing.
@@ -75,7 +75,7 @@ the command preserves existing values and adds any missing keys from
 These values are copied into the AI Client configuration and are not consumed automatically by Docker Compose:
 
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
-- `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User.
+- `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP and Capture Hook API calls. Default `60_000`.

@@ -25,7 +25,7 @@ export const registerAuthRoutes = (
     const userCount = await repo.countUsers();
     return {
       configured: userCount > 0,
-      authMode: "first_run_local_admin"
+      authMode: "local_operator_token_bootstrap"
     };
   });
 
@@ -34,6 +34,12 @@ export const registerAuthRoutes = (
     { preHandler: authRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
+      if (!config.publicRegistrationEnabled && !config.test) {
+        return reply.status(410).send({
+          error:
+            "Browser session bootstrap is disabled. Use pnpm api-token:create from the deployment checkout."
+        });
+      }
       if ((await repo.countUsers()) > 0) {
         return reply
           .status(409)
@@ -67,11 +73,10 @@ export const registerAuthRoutes = (
     { preHandler: authRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const userCount = await repo.countUsers();
-      if (userCount > 0 && !config.publicRegistrationEnabled) {
+      if (!config.publicRegistrationEnabled && !config.test) {
         return reply.status(410).send({
           error:
-            "Public registration is disabled in the self-hosted distribution. Use /auth/setup for the first local admin."
+            "Browser session registration is disabled in the self-hosted distribution. Use pnpm api-token:create from the deployment checkout."
         });
       }
 
