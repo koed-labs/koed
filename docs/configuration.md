@@ -58,7 +58,7 @@ the command preserves existing values and adds any missing keys from
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_EVENT_MAX_TOKENS`: maximum tokens per projected semantic Memory Event chunk. Default `32000`; values above `32000` are clamped to the Qwen operational cap.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
-- `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: token threshold for creating LCM placeholders. Default `32000`; values above `32000` are clamped to the Qwen operational cap.
+- `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: semantic `memory_event.content` token threshold for creating LCM placeholders. Default `32000`; values above `32000` are clamped to the Qwen operational cap. Provenance payload JSON is not counted.
 - `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.

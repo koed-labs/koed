@@ -11,7 +11,6 @@ import {
   rawItemBatches,
   rawItemsForCapture,
   rawItemRequestChunks,
-  semanticEventChunks,
   selectCaptureItems,
   shouldReadTranscriptForHook,
   stateScopeKey
@@ -724,34 +723,6 @@ describe("Codex capture hook transcript parsing", () => {
         metadata: { externalSessionId: "session-b" }
       }
     ]);
-  });
-
-  it("splits oversized projected semantic events while preserving order metadata", () => {
-    process.env.MEMORY_EVENT_MAX_TOKENS = "25";
-    try {
-      const chunks = semanticEventChunks(
-        {
-          actor: "agent",
-          eventType: "codex_transcript_agent",
-          content: "Aston Villa and Paul McGrath ".repeat(60),
-          metadata: { transcriptIndex: 4 }
-        },
-        "gpt-5.4-mini"
-      );
-
-      expect(chunks.length).toBeGreaterThan(1);
-      expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual(
-        chunks.map((_, index) => index)
-      );
-      expect(new Set(chunks.map((chunk) => chunk.chunkCount))).toEqual(
-        new Set([chunks.length])
-      );
-      expect(chunks.map((chunk) => chunk.content).join(" ")).toContain(
-        "Paul McGrath"
-      );
-    } finally {
-      delete process.env.MEMORY_EVENT_MAX_TOKENS;
-    }
   });
 
   it("batches raw conversation items under the configured request budget", () => {

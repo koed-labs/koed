@@ -37,7 +37,8 @@ projection endpoint again for deterministic catch-up.
 Codex transcript hooks use `sourceAdapterVersion=codex-transcript-v1` and
 `sourceTransport=hook`. Each transcript line becomes one raw
 `conversation_items` row before selected records are projected into
-`memory_events`.
+`memory_events`. Hooks do not write semantic `memory_events` directly; the raw
+projection endpoint is the only hook-backed path that derives chat memory.
 
 Codex app-server workers use `sourceAdapterVersion=codex-app-server-v1` and
 `sourceTransport=app_server`. Koed records app-server thread/turn calls and
@@ -56,9 +57,19 @@ the projection backlog.
 
 ## Derived Memory Events
 
-`memory_events` are semantic retrieval units, not raw hook fragments. They
-should contain useful user prompts, agent messages, human-readable reasoning
-summaries, tool-call content, and other high-value conversation material.
+`memory_events` are semantic retrieval units, not raw hook fragments. User
+prompts project as standalone `user_turn` units. Agent work projects as ordered
+`agent_turn` units containing agent messages, human-readable reasoning
+summaries, subagent messages, tool-call/tool-result content, and final assistant
+messages that occur after a user prompt until the next user prompt or turn
+boundary. Within an agent turn, projection keeps tool-only spans as `actor=tool`
+semantic events instead of merging them into visible agent prose; this preserves
+tool semantics for retrieval while allowing the explorer to keep tool rendering
+separate from normal assistant messages. A user interruption submitted while the
+agent is running is also a `user_turn` boundary: agent work before the
+interruption and agent work after the interruption become separate semantic
+units.
+
 Telemetry, lifecycle noise, raw reasoning content, encrypted reasoning, and
 rolling model context should remain raw records or metadata unless there is a
 deliberate retrieval reason to project them. Incremental app-server deltas are
@@ -74,8 +85,10 @@ summaries, while `content` / `raw_content` / `AgentReasoningRawContent` /
 reasoning text deltas are raw reasoning and stay raw-only.
 
 Each projected memory event that came from raw source records should link back
-through `memory_event_sources`. The raw source rows remain the audit trail for
-exact Codex payloads and future re-projection.
+through `memory_event_sources`. A turn-bundled semantic event therefore links to
+every raw `conversation_items` row that contributed text to that bundle. The raw
+source rows remain the audit trail for exact Codex payloads and future
+re-projection.
 
 The worker runs a raw-projection catch-up loop so pending or previously failed
 raw rows are eventually projected after restart, outage, or hook deadline
@@ -98,9 +111,20 @@ record.
 Koed's operational embedding and semantic-event cap is 32000 tokens. Runtime
 configuration may lower that value, but values above 32000 are clamped.
 If a projected semantic unit exceeds that cap, split it into ordered chunks and
-link every chunk to the relevant raw source item or items. The initial
-implementation uses simple ordered splitting; more intelligent turn-aware and
-tool-batch-aware chunking can be added later without changing the raw layer.
+link every chunk to the relevant raw source item or items. Projection keeps
+source-item boundaries intact where possible and only splits inside a single raw
+source item when that item alone is over the token cap.
+
+LCM leaves are packed from the same canonical semantic `memory_events` text
+used for embeddings. LCM token thresholds count only `memory_event.content`,
+not raw transcript JSON or provenance payloads. The packer must not overlap or
+re-split semantic events: it may group several small semantic events together,
+but it flushes before adding another event that would cross the leaf token
+threshold. If one semantic event is slightly over the threshold because of
+tokenizer drift or a defensive projection edge case, it remains a single leaf
+source item and the LCM summary worker's larger prompt budget/token-bounded
+fallback handles it. LCM prompts include lightweight anchors such as source id,
+turn id, actor, and creation time, but not bulky metadata payloads.
 
 ## Fresh Reset
 

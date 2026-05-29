@@ -260,19 +260,6 @@ const acquireLocalSummaryLock = (
 const normalizeForPrompt = (text: string): string =>
   text.replace(/\s+/g, " ").trim();
 
-const MAX_SOURCE_PAYLOAD_PROMPT_CHARS = 2_000;
-
-const payloadTextForPrompt = (payload: unknown): string => {
-  if (payload === undefined) {
-    return "";
-  }
-  const normalized = normalizeForPrompt(JSON.stringify(payload));
-  if (normalized.length <= MAX_SOURCE_PAYLOAD_PROMPT_CHARS) {
-    return ` payload:${normalized}`;
-  }
-  return ` payload:${normalized.slice(0, MAX_SOURCE_PAYLOAD_PROMPT_CHARS)}... [payload truncated for prompt; source text remains authoritative]`;
-};
-
 const itemAnchor = (item: LcmSourceItem): string =>
   [
     item.kind,
@@ -296,7 +283,7 @@ const itemText = (item: LcmSourceItem): string => {
         : (item.kind ?? "source");
   return `- [${itemAnchor(item)}] ${label}: ${normalizeForPrompt(
     item.text ?? ""
-  )}${payloadTextForPrompt(item.payload)}`;
+  )}`;
 };
 
 const lcmSummaryJsonShape = () => ({

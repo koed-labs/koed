@@ -74,6 +74,41 @@ describe("LCM summary worker", () => {
     expect(rollupPrompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
   });
 
+  it("keeps payload metadata out of LCM prompts while preserving source anchors", () => {
+    const prompt = buildLcmSummaryPrompt({
+      id: "00000000-0000-4000-8000-000000000041",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 12,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceTable: "memory_events",
+          sourceId: "00000000-0000-4000-8000-000000000042",
+          actor: "agent",
+          turnId: "00000000-0000-4000-8000-000000000043",
+          createdAt: "2026-05-29T00:00:00.000Z",
+          text: "Agent decided to keep LCM boundaries aligned to semantic memory events.",
+          payload: {
+            metadata: {
+              rawTranscriptPayload: "noisy raw metadata ".repeat(500)
+            }
+          }
+        }
+      ]
+    });
+
+    expect(prompt).toContain(
+      "Agent decided to keep LCM boundaries aligned to semantic memory events."
+    );
+    expect(prompt).toContain("source:memory_events");
+    expect(prompt).toContain("turn:00000000-0000-4000-8000-000000000043");
+    expect(prompt).not.toContain("rawTranscriptPayload");
+    expect(prompt).not.toContain("noisy raw metadata");
+  });
+
   it("submits rollup summaries through the same local runner path", async () => {
     const node: LcmSummaryNode = {
       id: "00000000-0000-4000-8000-000000000011",
@@ -266,7 +301,7 @@ describe("LCM summary worker", () => {
     expect(operations).toEqual(["raw", "token", "project", "submit"]);
   });
 
-  it("bounds structured payloads so oversized tool payloads do not block catch-up", async () => {
+  it("ignores oversized source payload metadata so it does not block catch-up", async () => {
     const node: LcmSummaryNode = {
       id: "00000000-0000-4000-8000-000000000001",
       visibility: "personal",
@@ -310,7 +345,10 @@ describe("LCM summary worker", () => {
       limit: 1,
       config,
       runner: async (prompt) => {
-        expect(prompt).toContain("[payload truncated for prompt");
+        expect(prompt).toContain(
+          "A tool call captured a large payload that should not monopolize the prompt."
+        );
+        expect(prompt).not.toContain("large-payload");
         return {
           text: summaryJson("summarized"),
           model: "codex-app-server:test"
