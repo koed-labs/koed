@@ -9,7 +9,6 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `apps/api`: Fastify API for auth, API tokens, capture policy, memory capture, recall, graph inspection, export, and diagnostics.
 - `apps/worker`: BullMQ worker for embedding and memory background jobs.
 - `apps/embedding-service`: local embedding/reranking HTTP service.
-- `apps/console`: local operator console for setup, status, tokens, policy, memory overview, Codex setup, and redacted diagnostics.
 - `apps/history-browser`: wrapper package and Docker integration that fetches and builds the separate `koed-labs/koed-history-browser` frontend.
 - `packages/db`: Postgres repository and migrations.
 - `packages/core`: memory capture, retrieval, answer, and compaction logic.
@@ -38,13 +37,13 @@ running `docker compose up --build`.
 If the default ports are already in use, choose host ports before starting:
 
 ```bash
-API_HOST_PORT=3300 CONSOLE_HOST_PORT=5573 HISTORY_WEB_HOST_PORT=5574 CONSOLE_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=3300 HISTORY_WEB_HOST_PORT=5574 HISTORY_API_BASE_URL=http://localhost:3300 docker compose up --build
 ```
 
-Then open the local console:
+Create a local API token for your AI client:
 
-```text
-http://localhost:5173
+```bash
+pnpm api-token:create --owner-email local@koed.ai --name "Codex"
 ```
 
 The history browser runs beside it:
@@ -53,16 +52,7 @@ The history browser runs beside it:
 http://localhost:5174
 ```
 
-If you changed `CONSOLE_HOST_PORT` or `HISTORY_WEB_HOST_PORT`, open those ports instead.
-
-Use the console setup flow:
-
-1. Create the first local admin user. This account is local to your self-hosted Postgres database.
-2. Create an API token for your AI client.
-3. Run the console smoke test to verify capture, compaction, embedding enqueue, and recall.
-4. Copy the generated MCP Server and Capture Hook setup fields into your local client.
-
-The console can verify Koed and generate exact setup values, but it cannot write into local AI-client configuration files from the browser.
+If you changed `HISTORY_WEB_HOST_PORT`, open that port instead.
 
 ## Configuration
 
@@ -73,7 +63,8 @@ Start from `.env.example`. Important values:
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `EMBEDDING_MODEL_KEY`: local embedding model setting. The embedding service only accepts supported model keys.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token used by the API and worker when calling the private embedding service.
-- `API_CORS_ORIGINS`: include the local console and history-browser origins.
+- `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`.
+- `API_CORS_ORIGINS`: include the local history-browser origin.
 - `GITHUB_TOKEN`: GitHub token used by Docker to fetch the private
   `koed-labs/koed-history-browser` frontend repository.
 - `HISTORY_BROWSER_REPO`, `HISTORY_BROWSER_REF`: optional override for the
@@ -89,15 +80,19 @@ Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, o
 
 Codex is currently the only supported AI client. Other clients will need their own setup guides as they are added.
 
-1. Open the console and create an API token named `Client Integration`.
-2. Run the console smoke test.
-3. Build the MCP server and Capture Hook:
+1. Create an API token named `Client Integration`:
+
+```bash
+pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
+```
+
+2. Build the MCP server and Capture Hook:
 
 ```bash
 pnpm --filter @koed/mcp-server build
 ```
 
-4. In Codex Desktop, add a custom MCP server with the values shown on the console setup page. Typical MCP values are:
+3. In Codex Desktop, add a custom MCP server:
 
 ```text
 Name: koed-selfhost
@@ -105,37 +100,22 @@ Transport: STDIO
 Command: node
 Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
 MEMORY_API_URL: http://localhost:3000
-MEMORY_API_TOKEN: <token from console>
+MEMORY_API_TOKEN: <token from pnpm api-token:create>
 Working directory: /path/to/koed-self-hosted
 ```
 
 If you changed `API_HOST_PORT`, use that port in `MEMORY_API_URL`.
 
-5. Configure the Capture Hook shown on the console setup page with the same `MEMORY_API_URL` and `MEMORY_API_TOKEN`. This is the supported automatic capture path; MCP by itself is recall-only and does not automatically record full conversations.
+4. Configure the Capture Hook with the same `MEMORY_API_URL` and `MEMORY_API_TOKEN`. This is the supported automatic capture path; MCP by itself is recall-only and does not automatically record full conversations.
    Install it for Codex `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop` events.
 
-6. Verify the Capture Hook:
+5. Verify the Capture Hook:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token from console> pnpm codex:verify-capture
+MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token from pnpm api-token:create> pnpm codex:verify-capture
 ```
 
 See [docs/codex-integration.md](docs/codex-integration.md) for MCP and Capture Hook details.
-
-## Local Console
-
-The console is an operator UI, not a marketing site. It includes:
-
-- first-run local admin setup and login;
-- API, Postgres, Redis/BullMQ, embedding service, and worker queue status;
-- embedding/model settings;
-- AI-client setup field generation;
-- API token creation, listing, and revocation;
-- capture policy controls;
-- memory graph overview;
-- built-in smoke test for capture and recall;
-- export/delete/governance entry points through retained API surfaces;
-- copyable, redacted diagnostics.
 
 ## History Browser
 
@@ -150,11 +130,11 @@ GITHUB_TOKEN=<token with access to koed-labs/koed-history-browser>
 pnpm history:dev
 ```
 
-It talks to the same API and accepts the same console-created bearer API tokens.
+It talks to the same API and accepts bearer API tokens created with `pnpm api-token:create`.
 
 ## Security Model
 
-Self-hosted Koed assumes the operator controls the deployment. The API supports first-run local admin creation, cookie login for the console, and bearer API tokens for AI-client integrations. Postgres and Redis should stay on private Docker/internal networks in production deployments. See [docs/security.md](docs/security.md).
+Self-hosted Koed assumes the operator controls the deployment. The API supports bearer API tokens for AI-client integrations. Local operators create tokens with `pnpm api-token:create`, which uses trusted database access and stores only token hashes. Postgres and Redis should stay on private Docker/internal networks in production deployments. See [docs/security.md](docs/security.md).
 
 Report suspected vulnerabilities privately. See [SECURITY.md](SECURITY.md) for
 supported versions, the reporting channel, and guidance on not disclosing user

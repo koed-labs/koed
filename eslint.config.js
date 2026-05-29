@@ -48,7 +48,6 @@ export default tseslint.config(
   {
     files: [
       "apps/api/src/**/*.ts",
-      "apps/console/src/**/*.{ts,tsx}",
       "apps/worker/src/**/*.ts",
       "packages/*/src/**/*.ts"
     ],
@@ -85,19 +84,12 @@ export default tseslint.config(
       "apps/api/**/*.ts",
       "apps/worker/**/*.ts",
       "packages/**/*.ts",
+      "packages/*/scripts/**/*.{js,mjs,cjs}",
       "scripts/**/*.{js,mjs,cjs}"
     ],
     languageOptions: {
       globals: {
         ...globals.node
-      }
-    }
-  },
-  {
-    files: ["apps/console/src/**/*.{ts,tsx}"],
-    languageOptions: {
-      globals: {
-        ...globals.browser
       }
     }
   },

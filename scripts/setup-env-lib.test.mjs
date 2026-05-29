@@ -18,7 +18,7 @@ test("retains compatibility-sensitive values from an existing env", () => {
     "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
     "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
     "GITHUB_TOKEN=replace_with_github_token_that_can_read_history_browser",
-    "MEMORY_API_TOKEN=replace_with_console_created_token"
+    "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create"
   ].join("\n");
   const existing = [
     "API_DATA_ENCRYPTION_KEY=old-data-key",
@@ -51,7 +51,7 @@ test("generates missing generated secrets while preserving non-generated values"
         "API_TOKEN_PEPPER=replace_with_generated_token_pepper",
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
         "GITHUB_TOKEN=replace_with_github_token_that_can_read_history_browser",
-        "MEMORY_API_TOKEN=replace_with_console_created_token"
+        "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create"
       ].join("\n"),
       existing: [
         "GITHUB_TOKEN=existing-github-token",

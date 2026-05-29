@@ -16,7 +16,9 @@ const hookPath =
 const marker = `koed-capture-verify-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
 if (!apiToken) {
-  console.error("Set MEMORY_API_TOKEN to a console-created Koed API token.");
+  console.error(
+    "Set MEMORY_API_TOKEN to a Koed API token from `pnpm api-token:create`."
+  );
   process.exit(1);
 }
 

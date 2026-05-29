@@ -139,33 +139,18 @@ services:
       embedding-service:
         condition: service_healthy
 
-  console:
-    build:
-      context: .
-      dockerfile: apps/console/Dockerfile
-      args:
-        VITE_API_BASE_URL: ${CONSOLE_API_BASE_URL}
-    environment:
-      NODE_ENV: ${CONSOLE_NODE_ENV}
-      WEB_PORT: ${CONSOLE_PORT}
-    ports:
-      - "${CONSOLE_HOST_PORT}:5173"
-    depends_on:
-      api:
-        condition: service_started
-
   history-browser:
     build:
       context: .
       dockerfile: apps/history-browser/Dockerfile
       args:
-        VITE_API_BASE_URL: ${CONSOLE_API_BASE_URL}
+        VITE_API_BASE_URL: ${HISTORY_API_BASE_URL:-http://localhost:3000}
         HISTORY_BROWSER_REPO: ${HISTORY_BROWSER_REPO:-https://github.com/koed-labs/koed-history-browser.git}
         HISTORY_BROWSER_REF: ${HISTORY_BROWSER_REF:-main}
       secrets:
         - github_token
     environment:
-      NODE_ENV: ${CONSOLE_NODE_ENV}
+      NODE_ENV: ${HISTORY_NODE_ENV:-production}
       HISTORY_WEB_PORT: ${HISTORY_WEB_PORT}
     ports:
       - "${HISTORY_WEB_HOST_PORT}:${HISTORY_WEB_PORT}"

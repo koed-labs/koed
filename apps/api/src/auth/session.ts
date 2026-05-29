@@ -119,7 +119,7 @@ export const createAuthHelpers = (
       }
     }
 
-    throw Object.assign(new Error("Console session required"), {
+    throw Object.assign(new Error("Session cookie required"), {
       statusCode: 401
     });
   };

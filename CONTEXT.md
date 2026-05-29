@@ -12,8 +12,8 @@ _Avoid_: Koed Cloud, hosted Koed, open-source Koed
 The person or organization responsible for running a Koed Self-Hosted deployment.
 _Avoid_: Customer, tenant, account
 
-**Operator Console**:
-The local UI used to create API tokens for users and track Koed Self-Hosted system status.
+**Local Operator Scripts**:
+Trusted commands run from the deployment checkout, such as API Token bootstrap.
 _Avoid_: Console, dashboard, admin app
 
 **User**:
@@ -147,7 +147,7 @@ _Avoid_: Capture state, disabled policy, deletion
 ## Relationships
 
 - **Koed Self-Hosted** is operated by one **Operator**
-- An **Operator** may use the **Operator Console** to create user API tokens and inspect system status
+- An **Operator** may use **Local Operator Scripts** to create user API tokens
 - One **Operator** may create one or more **Users**
 - A **User** owns zero or more **API Tokens**
 - An **API Token** allows an AI-client integration to access the owning **User's** **Personal Memory**
@@ -196,7 +196,7 @@ _Avoid_: Capture state, disabled policy, deletion
 ## Flagged Ambiguities
 
 - "fact" sounds like Koed extracts standalone truths; resolved: use **Memory Event** for captured source material and **Memory Node** for summarized retrieval units.
-- "console" can mean terminal output or an AI-client console; resolved: use **Operator Console** for Koed's local management UI.
+- "console" can mean terminal output or an AI-client console; avoid it for Koed operator flows.
 - "AI key" sounds like a model-provider credential; resolved: use **API Token** for Koed access by a user.
 - "ask" in a **Capture Policy** can sound like a backend prompt; resolved: it blocks automatic capture unless an AI client implements the consent step.
 - "visibility" and "scope" are easy to conflate; resolved: **Personal Memory** describes stored memory visibility, while **Retrieval Scope** describes a recall request.

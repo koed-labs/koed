@@ -19,6 +19,7 @@ the command preserves existing values and adds any missing keys from
 - `POSTGRES_USER`: Postgres user used by Docker Compose.
 - `POSTGRES_PASSWORD`: Postgres password. Use a deployment-specific secret.
 - `POSTGRES_HOST_PORT`: host port mapped to the Postgres container.
+- `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`.
 - `API_NODE_ENV`: runtime environment for the API service. Use `production` for deployed compose runs.
 - `API_HOST`: bind host inside the API container.
 - `API_PORT`: API port inside the API container.
@@ -27,7 +28,7 @@ the command preserves existing values and adds any missing keys from
   the structured API log schema and redaction rules.
 - `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current self-hosted build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
-- `API_CORS_ORIGINS`: comma-separated allowed Operator Console origins.
+- `API_CORS_ORIGINS`: comma-separated allowed browser origins, such as the history browser.
 - `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size. Default `4194304`.
 - `API_AUTH_RATE_LIMIT_WINDOW_MS`: auth rate-limit window.
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
@@ -47,10 +48,8 @@ the command preserves existing values and adds any missing keys from
 - `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS`: shorter debounce window for captured event stream updates that drive the open history thread.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
-- `CONSOLE_NODE_ENV`: runtime environment for the Operator Console service.
-- `CONSOLE_PORT`: Operator Console port inside the container.
-- `CONSOLE_HOST_PORT`: host port mapped to the Operator Console container.
-- `CONSOLE_API_BASE_URL`: browser-visible API base URL used when building the Operator Console.
+- `HISTORY_NODE_ENV`: runtime environment for the history browser service.
+- `HISTORY_API_BASE_URL`: browser-visible API base URL used when building the history browser.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
@@ -76,7 +75,7 @@ the command preserves existing values and adds any missing keys from
 These values are copied into the AI Client configuration and are not consumed automatically by Docker Compose:
 
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
-- `MEMORY_API_TOKEN`: API Token created in the Operator Console for the User.
+- `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP and Capture Hook API calls. Default `60_000`.

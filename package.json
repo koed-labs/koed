@@ -7,10 +7,9 @@
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
-    "console:dev": "pnpm --filter @koed/console dev",
-    "console:build": "pnpm --filter @koed/console build",
     "history:dev": "pnpm --filter @koed/history-browser dev",
     "history:build": "pnpm --filter @koed/history-browser build",
+    "api-token:create": "pnpm --filter @koed/db api-token:create",
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
     "eval": "pnpm --filter @koed/evals eval",
     "codex:configure": "node scripts/configure-codex.mjs",

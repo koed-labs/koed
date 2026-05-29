@@ -4,7 +4,11 @@ Codex is currently the only supported AI client for Koed Self-Hosted.
 
 ## API Token
 
-Open the console, create a token named `Client Integration`, and copy it immediately. Full token values are shown once.
+Create a local API token and copy it immediately. Full token values are shown once.
+
+```bash
+pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
+```
 
 ## MCP Server
 
@@ -28,7 +32,7 @@ Environment:
 Working directory: /path/to/koed-self-hosted
 ```
 
-The console setup page generates these MCP values for your checkout. If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
+If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
 
 ## Browser Questions
 
@@ -101,8 +105,7 @@ not a macOS-style or Windows-only path.
 
 ## Verify
 
-Use the console smoke test first. Then verify the local Capture Hook from the
-checkout:
+Verify the local Capture Hook from the checkout:
 
 ```bash
 MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture

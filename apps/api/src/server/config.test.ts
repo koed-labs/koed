@@ -31,7 +31,8 @@ describe("resolveApiServerConfig", () => {
         memoryEventUpdateDebounceMs: 100
       }
     });
-    expect(config.corsOrigins.has("http://localhost:5173")).toBe(true);
+    expect(config.corsOrigins.has("http://localhost:5174")).toBe(true);
+    expect(config.corsOrigins.has("http://localhost:5173")).toBe(false);
   });
 
   it("normalizes configured origins and keeps API_CORS_ORIGINS root-only", () => {

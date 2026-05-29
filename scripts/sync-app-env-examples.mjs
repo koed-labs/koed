@@ -14,7 +14,6 @@ export const appEnvSources = [
     dir: "apps/embedding-service",
     prefix: "EMBEDDING"
   },
-  { label: "Console", dir: "apps/console", prefix: "CONSOLE" },
   {
     label: "History browser",
     dir: "apps/history-browser",
@@ -41,7 +40,6 @@ const rootDirective = (line) => {
 const defaultRootKey = (key, prefix) => {
   const passThroughPrefixes = [
     "API_",
-    "CONSOLE_",
     "HISTORY_",
     "WORKER_",
     "EMBEDDING_",

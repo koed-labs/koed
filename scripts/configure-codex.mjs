@@ -6,7 +6,9 @@ import { dirname, resolve } from "node:path";
 const token =
   process.env.MEMORY_API_TOKEN ?? process.env.CODEX_MEMORY_API_TOKEN;
 if (!token) {
-  console.error("Set MEMORY_API_TOKEN to a console-created Koed API token.");
+  console.error(
+    "Set MEMORY_API_TOKEN to a Koed API token from `pnpm api-token:create`."
+  );
   process.exit(1);
 }
 

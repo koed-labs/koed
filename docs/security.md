@@ -5,15 +5,15 @@ see [../SECURITY.md](../SECURITY.md). Do not disclose captured Memory data,
 database exports, backups, API Tokens, cookies, or private deployment secrets in
 public reports.
 
-Koed Self-Hosted uses first-run local admin setup. After a user exists, public registration is disabled unless `KOED_ALLOW_PUBLIC_REGISTRATION=true` is explicitly set.
+Koed Self-Hosted uses local operator token bootstrap for AI-client access. `pnpm api-token:create` creates a passwordless local owner user when needed, creates a bearer API token for that user, stores only the token hash and prefix, and prints the full token once.
 
-The console uses an HTTP-only session cookie. AI-client integrations use bearer API tokens. Store generated API tokens immediately; only token prefixes are listed later.
+AI-client integrations use bearer API tokens. Store generated API tokens immediately; only token prefixes are listed later.
 
-Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the console/API are accessible outside localhost.
+Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the API or history browser are accessible outside localhost.
 
 Public health probes are intentionally coarse. `/health` and `/ready` do not expose local paths, model details, dependency exception messages, or secret values.
 
-Diagnostics are redacted by design: they report whether secrets are configured, but not their values. Detailed diagnostic endpoints are intended for authenticated Operator Console sessions, not public reverse-proxy exposure.
+Diagnostics are redacted by design: they report whether secrets are configured, but not their values. Detailed diagnostic endpoints are not intended for public reverse-proxy exposure.
 
 The embedding service is an internal backend component. Keep it off public networks. Docker Compose passes `EMBEDDING_SERVICE_TOKEN` to the embedding service, API, and worker so embedding and reranking requests require a shared internal header.
 

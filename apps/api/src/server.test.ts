@@ -1855,7 +1855,7 @@ describe("account and access flows", () => {
     expect(allowedRegister.statusCode).toBe(200);
   });
 
-  it("does not grant API-token access to Operator Console routes", async () => {
+  it("does not grant API-token access to session-only routes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
       method: "POST",

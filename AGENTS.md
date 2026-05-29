@@ -5,7 +5,7 @@
 - Read `CONTEXT.md` before making domain, naming, API, documentation, or user-facing wording changes.
 - Treat `CONTEXT.md` as the glossary and relationship map for Koed Self-Hosted. It is not an implementation spec, roadmap, scratch pad, or changelog.
 - Keep `CONTEXT.md` implementation-free. Add only resolved domain terms, relationships, example dialogue, and flagged ambiguities.
-- Use the canonical terms from `CONTEXT.md`, especially **Operator**, **Operator Console**, **User**, **API Token**, **AI Client**, **MCP Server**, **Capture Hook**, **Supported Capture Hook**, **Memory Answer**, **Evidence Bundle**, **LCM Placeholder**, **LCM Summary**, **Personal Memory**, **Capture Policy**, **Capture State**, **Capture Target**, and **Capture Pause**.
+- Use the canonical terms from `CONTEXT.md`, especially **Operator**, **Local Operator Scripts**, **User**, **API Token**, **AI Client**, **MCP Server**, **Capture Hook**, **Supported Capture Hook**, **Memory Answer**, **Evidence Bundle**, **LCM Placeholder**, **LCM Summary**, **Personal Memory**, **Capture Policy**, **Capture State**, **Capture Target**, and **Capture Pause**.
 - If a requested change conflicts with `CONTEXT.md`, stop and surface the conflict instead of silently inventing new language.
 
 ## Planning And TODOs
