@@ -2340,7 +2340,8 @@ const conversationItemToolInput = (
 const conversationItemToolResponse = (
   raw: Record<string, unknown>,
   toolCall: Record<string, unknown>,
-  content: string | null
+  content: string | null,
+  options: { allowContentFallback?: boolean } = {}
 ): unknown => {
   if (toolCall.kind === "call") {
     return undefined;
@@ -2361,7 +2362,11 @@ const conversationItemToolResponse = (
   if (raw.tool_response !== undefined) {
     return raw.tool_response;
   }
-  return raw.result ?? raw.toolResponse ?? content;
+  return (
+    raw.result ??
+    raw.toolResponse ??
+    (options.allowContentFallback === false ? undefined : content)
+  );
 };
 
 const mapMemoryQuestionShell = (row: {
@@ -4298,7 +4303,12 @@ export const createMemorySourceRepository = (
               row.visibility,
               conversationItemToolName(raw, metadata, toolCall, linkedToolName),
               jsonbParam(conversationItemToolInput(raw, toolCall)),
-              jsonbParam(conversationItemToolResponse(raw, toolCall, content)),
+              jsonbParam(
+                conversationItemToolResponse(raw, toolCall, content, {
+                  allowContentFallback:
+                    row.source_record_type !== "hook_payload"
+                })
+              ),
               stringField(metadata, "status") ?? null,
               row.source_kind === "codex-cli" ? "codex-cli" : "codex",
               captureMethodForConversationItem({

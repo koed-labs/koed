@@ -1379,6 +1379,28 @@ describeDb("memory repository visibility", () => {
             idempotencyKey: `hook-tool-${randomUUID()}`,
             projectionStatus: "pending",
             metadata: { projectName: "Hook Tool Project" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "hook-tool-turn-2",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "PostToolUse",
+            sourceSequence: 2,
+            rawJson: {
+              hook_event_name: "PostToolUse",
+              tool_use_id: "toolu-hook-2",
+              tool_name: "exec_command",
+              tool_input: { cmd: "git status --branch" }
+            },
+            sourceHash: `hook-tool-missing-response-${randomUUID()}`,
+            idempotencyKey: `hook-tool-missing-response-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Hook Tool Project" }
           }
         ]
       }
@@ -1408,6 +1430,7 @@ describeDb("memory repository visibility", () => {
           payload #>> '{metadata,semanticUnitType}' as semantic_unit_type
         from memory_events
         where session_id = $1
+        order by created_at asc, id asc
       `,
       [session.id]
     );
@@ -1420,15 +1443,20 @@ describeDb("memory repository visibility", () => {
         select tool_name, tool_input, tool_response
         from tool_events
         where session_id = $1
+        order by transcript_item_id asc nulls last, id asc
       `,
       [session.id]
     );
 
-    expect(projection.memoryEventsCreated).toBe(1);
-    expect(projection.toolEventsCreated).toBe(1);
-    expect(events.map((event) => event.contentPreview)).toEqual([
-      'Tool result: exec_command Input: {"cmd":"git status --short"} Output: clean'
-    ]);
+    expect(projection.memoryEventsCreated).toBe(2);
+    expect(projection.toolEventsCreated).toBe(2);
+    expect(events.map((event) => event.contentPreview)).toHaveLength(2);
+    expect(events.map((event) => event.contentPreview)).toEqual(
+      expect.arrayContaining([
+        'Tool result: exec_command Input: {"cmd":"git status --short"} Output: clean',
+        'Tool result: exec_command Input: {"cmd":"git status --branch"}'
+      ])
+    );
     expect(memoryEvents.rows).toEqual([
       {
         actor: "tool",
@@ -1440,6 +1468,15 @@ describeDb("memory repository visibility", () => {
           "",
           "Output:\nclean"
         ].join("\n")
+      },
+      {
+        actor: "tool",
+        semantic_unit_type: "agent_turn",
+        content: [
+          "Tool result: exec_command",
+          "",
+          'Input:\n{"cmd":"git status --branch"}'
+        ].join("\n")
       }
     ]);
     expect(toolEvents.rows).toEqual([
@@ -1447,6 +1484,11 @@ describeDb("memory repository visibility", () => {
         tool_name: "exec_command",
         tool_input: { cmd: "git status --short" },
         tool_response: "clean"
+      },
+      {
+        tool_name: "exec_command",
+        tool_input: { cmd: "git status --branch" },
+        tool_response: null
       }
     ]);
   });
