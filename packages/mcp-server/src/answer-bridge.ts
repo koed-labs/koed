@@ -329,6 +329,12 @@ const isRetryableSynthesisFallback = (answer: MemoryAnswerWorkerResponse) =>
   answer.localMemoryWorker.usedFallback === true &&
   answer.localMemoryWorker.skippedReason === "codex_failed";
 
+const retryableSynthesisFailureMessage =
+  "Memory answer synthesis failed. Koed will retry shortly.";
+
+const terminalSynthesisFailureMessage =
+  "Memory answer synthesis failed after retries. Please try again.";
+
 const hasQuestionAttemptsRemaining = (
   question: MemoryQuestionRecord
 ): boolean => (question.attemptCount ?? 0) < questionAnswerMaxAttempts();
@@ -553,15 +559,16 @@ export const answerClaimedMemoryQuestion = async (
       responseDetail: "with_evidence"
     });
     if (isRetryableSynthesisFallback(answer)) {
-      const message =
-        answer.markdown?.trim() ||
-        "Memory answer worker failed before judging retrieved evidence.";
+      const retryable = hasQuestionAttemptsRemaining(question);
+      const message = retryable
+        ? retryableSynthesisFailureMessage
+        : terminalSynthesisFailureMessage;
       const diagnostics = {
         response: answer,
         retrieval: retrievalFromAnswer(answer),
         localMemoryWorker: answer.localMemoryWorker
       };
-      const updated = await (hasQuestionAttemptsRemaining(question)
+      const updated = await (retryable
         ? releaseQuestionForRetry(client, question, message, diagnostics)
         : updateQuestionWithError(client, question, message, diagnostics));
       return {

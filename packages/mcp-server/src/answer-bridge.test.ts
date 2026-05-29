@@ -66,6 +66,12 @@ const json = (
   response.end(JSON.stringify(body));
 };
 
+const retryableSynthesisFailureMessage =
+  "Memory answer synthesis failed. Koed will retry shortly.";
+
+const terminalSynthesisFailureMessage =
+  "Memory answer synthesis failed after retries. Please try again.";
+
 const postJson = async <T>(
   url: string,
   body: Record<string, unknown>
@@ -498,13 +504,14 @@ describe("local memory answer bridge", () => {
         request.method === "PATCH" &&
         request.url === `/v1/memory/questions/${questionId}`
       ) {
-        patches.push(await readJson(request));
+        const patch = await readJson(request);
+        patches.push(patch);
         json(response, 200, {
           question: {
             id: questionId,
             query: "What did we decide?",
             status: "pending",
-            lastErrorMessage: fallbackMarkdown
+            lastErrorMessage: patch.last_error_message ?? null
           }
         });
         return;
@@ -543,20 +550,21 @@ describe("local memory answer bridge", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: fallbackMarkdown,
+      error: retryableSynthesisFailureMessage,
       question: { id: questionId, status: "pending" }
     });
     expect(patches).toHaveLength(1);
     expect(patches[0]).toMatchObject({
       status: "pending",
       attempt_count: 1,
-      last_error_message: fallbackMarkdown,
+      last_error_message: retryableSynthesisFailureMessage,
       local_memory_worker: {
         usedFallback: true,
         skippedReason: "codex_failed"
       },
       retrieval: { mode: "leaf_search" }
     });
+    expect(patches[0]?.last_error_message).not.toContain("Evidence bundle");
     expect(patches[0]).not.toHaveProperty("answer_markdown");
     expect(patches[0]).not.toHaveProperty("evidence");
     expect(patches[0]).not.toHaveProperty("citations");
@@ -601,13 +609,14 @@ describe("local memory answer bridge", () => {
         request.method === "PATCH" &&
         request.url === `/v1/memory/questions/${questionId}`
       ) {
-        patches.push(await readJson(request));
+        const patch = await readJson(request);
+        patches.push(patch);
         json(response, 200, {
           question: {
             id: questionId,
             query: "What did we decide?",
             status: "error",
-            errorMessage: fallbackMarkdown
+            errorMessage: patch.error_message ?? null
           }
         });
         return;
@@ -647,22 +656,23 @@ describe("local memory answer bridge", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: fallbackMarkdown,
+      error: terminalSynthesisFailureMessage,
       question: {
         id: questionId,
         status: "error",
-        errorMessage: fallbackMarkdown
+        errorMessage: terminalSynthesisFailureMessage
       }
     });
     expect(patches[0]).toMatchObject({
       status: "error",
       attempt_count: 1,
-      error_message: fallbackMarkdown,
+      error_message: terminalSynthesisFailureMessage,
       local_memory_worker: {
         usedFallback: true,
         skippedReason: "codex_failed"
       }
     });
+    expect(patches[0]?.error_message).not.toContain("Evidence bundle");
     expect(patches[0]).not.toHaveProperty("answer_markdown");
   });
 
@@ -1010,7 +1020,7 @@ describe("local memory answer bridge", () => {
     expect(patches[0]).toMatchObject({
       status: "pending",
       attempt_count: 1,
-      last_error_message: fallbackMarkdown,
+      last_error_message: retryableSynthesisFailureMessage,
       local_memory_worker: {
         usedFallback: true,
         skippedReason: "codex_failed"
