@@ -271,6 +271,7 @@ describeDb("memory repository visibility", () => {
           memory_node_children,
           memory_node_sources,
           memory_event_sources,
+          workflow_token_usage_source_references,
           workflow_token_usage,
           memory_nodes,
           memory_events,
@@ -2725,7 +2726,7 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow("Turn not found or not visible");
   });
 
-  it("rejects token usage linked to sessions, turns, or raw items outside caller scope", async () => {
+  it("rejects token usage linked to sources outside caller scope", async () => {
     const workspaceId = randomUUID();
     const alice = await repo.createUser({
       email: `alice-token-scope-${randomUUID()}@example.com`
@@ -2800,6 +2801,144 @@ describeDb("memory repository visibility", () => {
         }
       )
     ).rejects.toThrow("Conversation item not found or not visible");
+
+    const bobQuestion = await repo.createMemoryQuestion(
+      { userId: bob.id },
+      {
+        query: "What did we decide?",
+        searchDomain: "global"
+      }
+    );
+    const bobNode = await repo.createMemoryNode(
+      { userId: bob.id },
+      {
+        visibility: "personal",
+        summaryText: "Bob private LCM node",
+        captureMethod: "mcp"
+      }
+    );
+    const bobEvent = await repo.createMemoryEvent(
+      { userId: bob.id },
+      {
+        workspaceId: "bob-workspace",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "Bob private event",
+        idempotencyKey: `bob-event-${randomUUID()}`,
+        sourceHash: `bob-event-${randomUUID()}`
+      }
+    );
+    const bobMessage = await pool.query<{ id: string }>(
+      `
+        insert into messages (
+          session_id, turn_id, owner_user_id, visibility, role, content,
+          source_runtime, capture_method
+        )
+        values ($1, $2, $3, 'personal', 'user', 'Bob private message', 'codex', 'hook')
+        returning id
+      `,
+      [bobSession.id, bobRawItem!.turnId, bob.id]
+    );
+    const bobTool = await pool.query<{ id: string }>(
+      `
+        insert into tool_events (
+          session_id, turn_id, owner_user_id, visibility, tool_name,
+          source_runtime, capture_method
+        )
+        values ($1, $2, $3, 'personal', 'Bash', 'codex', 'hook')
+        returning id
+      `,
+      [bobSession.id, bobRawItem!.turnId, bob.id]
+    );
+
+    for (const reference of [
+      { type: "question" as const, id: bobQuestion.id },
+      { type: "lcm_node" as const, id: bobNode.id },
+      { type: "message" as const, id: bobMessage.rows[0]!.id },
+      { type: "tool_event" as const, id: bobTool.rows[0]!.id },
+      { type: "memory_event" as const, id: bobEvent.id }
+    ]) {
+      await expect(
+        repo.recordWorkflowTokenUsage(
+          { userId: alice.id },
+          {
+            workflowType: "memory_question",
+            sourceReferences: [reference],
+            totalTokens: 1
+          }
+        )
+      ).rejects.toThrow(
+        `${reference.type} source reference not found or not visible`
+      );
+    }
+  });
+
+  it("stores validated token usage source references", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-source-references-${randomUUID()}@example.com`
+    });
+    const question = await repo.createMemoryQuestion(
+      { userId: alice.id },
+      {
+        query: "What did we decide?",
+        searchDomain: "global"
+      }
+    );
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Alice LCM node",
+        captureMethod: "mcp"
+      }
+    );
+    const event = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: "alice-workspace",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "Alice private event",
+        idempotencyKey: `alice-event-${randomUUID()}`,
+        sourceHash: `alice-event-${randomUUID()}`
+      }
+    );
+    const usage = await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "memory_question",
+        workflowId: question.id,
+        questionId: question.id,
+        answerJobId: question.id,
+        lcmNodeId: node.id,
+        memoryEventId: event.id,
+        totalTokens: 3,
+        idempotencyKey: `source-refs-${randomUUID()}`
+      }
+    );
+    const references = await pool.query<{
+      source_type: string;
+      source_id: string;
+    }>(
+      `
+        select source_type, source_id
+        from workflow_token_usage_source_references
+        where workflow_token_usage_id = $1
+        order by source_type
+      `,
+      [usage.id]
+    );
+
+    expect(references.rows).toEqual([
+      { source_type: "answer_job", source_id: question.id },
+      { source_type: "lcm_node", source_id: node.id },
+      { source_type: "memory_event", source_id: event.id },
+      { source_type: "question", source_id: question.id }
+    ]);
   });
 
   it("reprojects pending raw conversation items into messages, semantic events, and token usage", async () => {

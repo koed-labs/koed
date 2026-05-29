@@ -16,3 +16,16 @@ create index if not exists workflow_token_usage_attribution_idx
 create index if not exists workflow_token_usage_connector_idx
   on workflow_token_usage(connector_client, observed_at)
   where connector_client is not null;
+
+create table if not exists workflow_token_usage_source_references (
+  workflow_token_usage_id uuid not null references workflow_token_usage(id) on delete cascade,
+  source_type text not null,
+  source_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (workflow_token_usage_id, source_type, source_id),
+  constraint workflow_token_usage_source_references_type_check
+    check (source_type in ('question', 'answer_job', 'lcm_node', 'message', 'tool_event', 'memory_event'))
+);
+
+create index if not exists workflow_token_usage_source_references_lookup_idx
+  on workflow_token_usage_source_references(source_type, source_id);

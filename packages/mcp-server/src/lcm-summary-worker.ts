@@ -661,6 +661,7 @@ const persistLcmAppServerEvents = async (
     await client.recordTokenUsage({
       workflowType: "lcm_summary",
       workflowId: node.id,
+      lcmNodeId: node.id,
       conversationItemId: tokenConversationItemId,
       sourceRuntime: "codex",
       sourceKind: "codex",

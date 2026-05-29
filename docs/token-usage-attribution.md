@@ -29,12 +29,12 @@ Source-link validation is enforced before insert for optional `sessionId`,
 caller and, when multiple links are present, must belong to the same linked
 session/turn boundary.
 
-Question IDs, Memory Answer job IDs, LCM node IDs, message IDs, tool-event IDs,
-and memory-event IDs remain attribution metadata in this self-hosted build. They
-are deliberately not first-class foreign keys on `workflow_token_usage` yet
-because several of those objects are diagnostic, transient, or produced by
-different projection stages. Durable source validation is anchored on the raw
-conversation/session/turn boundary instead.
+Additional attribution links use the typed
+`workflow_token_usage_source_references` table. `question`, `lcm_node`,
+`message`, `tool_event`, and `memory_event` references are validated against the
+caller's personal visibility before insert. `answer_job` references are local
+Koed worker job identities and must match the usage row's `workflow_id`; they do
+not point at a separate backend synthesis table in this self-hosted build.
 
 Idempotency is scoped to the owning user. Personal rows are unique by
 `(owner_user_id, idempotency_key)`.
@@ -45,7 +45,9 @@ Because this table already owns durable usage persistence, KOE-145 evolves
 ## Attribution Fields
 
 `usage_source` identifies where the count came from, for example `app_server`,
-`transcript`, `connector_native`, or `local_estimate`.
+`transcript`, `connector_native`, or `local_estimate`. The
+`/v1/memory/token-usage` API accepts these attribution fields directly so
+connectors can distinguish native provider usage from local estimates.
 
 `usage_accuracy` identifies whether the count is `provider_reported`,
 `provider_replayed`, `provider_partial`, or `local_estimate`.
@@ -81,13 +83,14 @@ conversation rows use `workflow_type=main_agent_turn`; subagent rows use
 `workflow_type=subagent_turn` and preserve parent thread/session metadata when
 available.
 
-Planned Memory Answers preserve every successful app-server execution in
+Planned Memory Answers preserve every app-server execution that reports token
+usage in
 `localMemoryWorker.appServerExecutions`. Browser Questions and MCP
 `memory_answer` calls persist each execution as a separate provider-reported
-turn-delta row, so planner/search/final steps are not collapsed into only the
-final answer turn. Failed retry attempts are persisted only when the Codex
-app-server runner returns provider usage for that attempt; attempts that fail
-before provider usage is observable are not fabricated as spend.
+turn-delta row, so planner/search/final steps and retry attempts are not
+collapsed into only the final answer turn. Failed retry attempts are persisted
+when Codex emits provider usage before the failure; attempts that fail before
+provider usage is observable are not fabricated as spend.
 
 Rows with `usage_kind=cumulative_snapshot` are useful for diagnostics and model
 context visibility, but must not be summed as spend.

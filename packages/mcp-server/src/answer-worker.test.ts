@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  CodexAppServerTurnError,
+  type CodexThreadTokenUsage
+} from "./codex-app-server-runner.js";
+import {
   MEMORY_ANSWER_PROMPT_VERSION,
   MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
   answerWithMemoryWorker,
@@ -11,6 +15,15 @@ import {
   type MemoryAnswerPayload,
   type MemoryAnswerRetrievalClient
 } from "./answer-worker.js";
+
+const tokenUsage = (totalTokens: number): CodexThreadTokenUsage => ({
+  last: {
+    totalTokens,
+    inputTokens: totalTokens - 1,
+    outputTokens: 1
+  },
+  modelContextWindow: 1000
+});
 
 const answerObject = (
   answer_markdown: string,
@@ -681,6 +694,59 @@ describe("memory answer worker", () => {
       usedFallback: false
     });
     expect(result.localMemoryWorker.promptTokenEstimate).toBeGreaterThan(0);
+  });
+
+  it("preserves usage-bearing failed retry attempts", async () => {
+    const calls: number[] = [];
+    const runner: CodexAnswerRunner = async (_prompt, config, timeoutMs) => {
+      calls.push(timeoutMs);
+      if (calls.length === 1) {
+        throw new CodexAppServerTurnError("first attempt failed", {
+          model: `codex:${config.model}:${config.reasoningEffort}`,
+          tokenUsage: tokenUsage(5),
+          threadId: "thread-failed",
+          turnId: "turn-failed"
+        });
+      }
+      return {
+        text: answerJson("Second attempt answered from memory. [personal]"),
+        model: `codex:${config.model}:${config.reasoningEffort}`,
+        tokenUsage: tokenUsage(7),
+        threadId: "thread-success",
+        turnId: "turn-success"
+      };
+    };
+
+    const result = await answerWithMemoryWorker(payload, {
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "2",
+          MEMORY_ANSWER_PLANNING_MODE: "single_pass"
+        }),
+        cwd: "/tmp"
+      },
+      runner
+    });
+
+    expect(calls).toEqual([1000, 2000]);
+    expect(result.localMemoryWorker.appServerExecutions).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        attemptIndex: 1,
+        tokenUsage: tokenUsage(5),
+        threadId: "thread-failed",
+        turnId: "turn-failed"
+      }),
+      expect.objectContaining({
+        status: "succeeded",
+        attemptIndex: 2,
+        tokenUsage: tokenUsage(7),
+        threadId: "thread-success",
+        turnId: "turn-success"
+      })
+    ]);
   });
 
   it("returns compact answer-only output by default", async () => {

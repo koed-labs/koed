@@ -551,6 +551,7 @@ const persistAnswerAppServerEvents = async (
     await client.recordTokenUsage({
       workflowType: "memory_question",
       workflowId: question.id,
+      questionId: question.id,
       sessionId: question.sessionId ?? undefined,
       conversationItemId: tokenConversationItemId,
       sourceRuntime: "codex",
@@ -576,11 +577,14 @@ const persistAnswerAppServerEvents = async (
         searchDomain: question.searchDomain,
         stepIndex: execution.stepIndex,
         stepKind: execution.stepKind,
+        attemptIndex: execution.attemptIndex,
+        executionStatus: execution.status ?? "succeeded",
+        errorMessage: execution.errorMessage,
         executionIndex
       },
       idempotencyKey: tokenConversationItemId
         ? `token:${tokenConversationItemId}:last`
-        : `memory-question:${question.id}:token:${execution.stepIndex}:last`
+        : `memory-question:${question.id}:token:${execution.stepIndex}:${execution.attemptIndex ?? executionIndex}:last`
     });
   }
   await projectRawConversationItems(

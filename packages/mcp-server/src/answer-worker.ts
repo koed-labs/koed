@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
+  CodexAppServerTurnError,
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
   type CodexAppServerRawEvent,
@@ -55,6 +56,9 @@ export interface MemoryAnswerWorkerStatus {
 export interface MemoryAnswerAppServerExecution {
   stepIndex: number;
   stepKind: "planner" | "final";
+  attemptIndex?: number;
+  status?: "succeeded" | "failed";
+  errorMessage?: string;
   model: string;
   tokenUsage?: CodexThreadTokenUsage;
   threadId?: string;
@@ -877,7 +881,12 @@ export const buildPlannedMemoryAnswerPrompt = (
 const runCodexWithRetries = async (
   prompt: string,
   config: MemoryAnswerWorkerConfig,
-  runner: CodexAnswerRunner
+  runner: CodexAnswerRunner,
+  attempts: MemoryAnswerAppServerExecution[],
+  step: {
+    stepIndex: number;
+    stepKind: "planner" | "final";
+  }
 ): Promise<{
   text: string;
   model: string;
@@ -892,13 +901,58 @@ const runCodexWithRetries = async (
       if (result.text.trim().length === 0) {
         throw new Error("Codex memory answer produced empty output");
       }
+      attempts.push({
+        ...step,
+        attemptIndex: attempt,
+        status: "succeeded",
+        model: result.model,
+        tokenUsage: result.tokenUsage,
+        threadId: result.threadId,
+        turnId: result.turnId,
+        rawEvents: result.rawEvents
+      });
       return result;
-    } catch {
+    } catch (error) {
+      if (error instanceof CodexAppServerTurnError && error.tokenUsage?.last) {
+        attempts.push({
+          ...step,
+          attemptIndex: attempt,
+          status: "failed",
+          errorMessage: error.message,
+          model: error.model,
+          tokenUsage: error.tokenUsage,
+          threadId: error.threadId,
+          turnId: error.turnId,
+          rawEvents: error.rawEvents
+        });
+      }
       // Retry with a longer timeout, then let the caller preserve fallback evidence.
     }
   }
 
-  throw new Error("Codex memory answer failed after retry attempts");
+  throw Object.assign(
+    new Error("Codex memory answer failed after retry attempts"),
+    {
+      appServerExecutions: attempts
+    }
+  );
+};
+
+const appServerExecutionsFromError = (
+  error: unknown
+): MemoryAnswerAppServerExecution[] | undefined => {
+  if (
+    error &&
+    typeof error === "object" &&
+    "appServerExecutions" in error &&
+    Array.isArray(
+      (error as { appServerExecutions?: unknown }).appServerExecutions
+    )
+  ) {
+    return (error as { appServerExecutions: MemoryAnswerAppServerExecution[] })
+      .appServerExecutions;
+  }
+  return undefined;
 };
 
 const runPlannedMemoryAnswer = async (
@@ -963,16 +1017,16 @@ const runPlannedMemoryAnswer = async (
       model: options.config.model
     });
     totalPromptTokens += promptTokens.tokens;
-    const result = await runCodexWithRetries(prompt, options.config, runner);
-    appServerExecutions.push({
-      stepIndex: step,
-      stepKind: "planner",
-      model: result.model,
-      tokenUsage: result.tokenUsage,
-      threadId: result.threadId,
-      turnId: result.turnId,
-      rawEvents: result.rawEvents
-    });
+    const result = await runCodexWithRetries(
+      prompt,
+      options.config,
+      runner,
+      appServerExecutions,
+      {
+        stepIndex: step,
+        stepKind: "planner"
+      }
+    );
     let action: ParsedPlannerAction;
     try {
       action = parsePlannerAction(result.text);
@@ -1231,17 +1285,13 @@ const runPlannedMemoryAnswer = async (
   const finalResult = await runCodexWithRetries(
     finalPrompt,
     options.config,
-    runner
+    runner,
+    appServerExecutions,
+    {
+      stepIndex: maxSteps,
+      stepKind: "final"
+    }
   );
-  appServerExecutions.push({
-    stepIndex: maxSteps,
-    stepKind: "final",
-    model: finalResult.model,
-    tokenUsage: finalResult.tokenUsage,
-    threadId: finalResult.threadId,
-    turnId: finalResult.turnId,
-    rawEvents: finalResult.rawEvents
-  });
   const finalAction = parsePlannerAction(finalResult.text);
   if (finalAction.action !== "answer") {
     throw new Error("Planner did not return a final answer");
@@ -1497,9 +1547,10 @@ export const answerWithMemoryWorker = async (
         },
         responseDetail
       );
-    } catch {
+    } catch (error) {
       const prompt = buildMemoryAnswerPrompt(payload);
       const promptTokens = countTokensForModel(prompt, { model: config.model });
+      const appServerExecutions = appServerExecutionsFromError(error);
       return compactMemoryAnswerPayload(
         {
           ...payload,
@@ -1516,6 +1567,7 @@ export const answerWithMemoryWorker = async (
             promptTokenEstimate: promptTokens.tokens,
             tokenizerEncoding: promptTokens.encoding,
             tokenizerModelMatched: promptTokens.exactModelMatch,
+            appServerExecutions,
             usedFallback: true,
             skippedReason: "codex_failed"
           }
@@ -1527,43 +1579,52 @@ export const answerWithMemoryWorker = async (
 
   const prompt = buildMemoryAnswerPrompt(initialPayload);
   const promptTokens = countTokensForModel(prompt, { model: config.model });
-  for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
-    try {
-      const result = await runner(prompt, config, config.timeoutMs * attempt);
-      const structuredAnswer = parseStructuredMemoryAnswer(
-        JSON.parse(stripJsonFence(result.text))
-      );
-      const markdown = structuredAnswer.answer_markdown.trim();
-      if (markdown.length === 0) {
-        throw new Error("Codex memory answer produced empty output");
+  const appServerExecutions: MemoryAnswerAppServerExecution[] = [];
+  try {
+    const result = await runCodexWithRetries(
+      prompt,
+      config,
+      runner,
+      appServerExecutions,
+      {
+        stepIndex: 0,
+        stepKind: "final"
       }
-      return compactMemoryAnswerPayload(
-        {
-          ...initialPayload,
-          markdown,
-          structuredAnswer,
-          localMemoryWorker: {
-            provider: config.provider,
-            promptVersion,
-            jobId,
-            model: result.model,
-            planningMode: "single_pass",
-            promptTokenEstimate: promptTokens.tokens,
-            tokenizerEncoding: promptTokens.encoding,
-            tokenizerModelMatched: promptTokens.exactModelMatch,
-            memoryStatus: structuredAnswer.memory_status,
-            tokenUsage: result.tokenUsage,
-            appServerThreadId: result.threadId,
-            appServerTurnId: result.turnId,
-            appServerEvents: result.rawEvents,
-            usedFallback: false
-          }
-        },
-        responseDetail
-      );
-    } catch {
-      // Retry with a longer timeout, then preserve the evidence fallback.
+    );
+    const structuredAnswer = parseStructuredMemoryAnswer(
+      JSON.parse(stripJsonFence(result.text))
+    );
+    const markdown = structuredAnswer.answer_markdown.trim();
+    if (markdown.length === 0) {
+      throw new Error("Codex memory answer produced empty output");
     }
+    return compactMemoryAnswerPayload(
+      {
+        ...initialPayload,
+        markdown,
+        structuredAnswer,
+        localMemoryWorker: {
+          provider: config.provider,
+          promptVersion,
+          jobId,
+          model: result.model,
+          planningMode: "single_pass",
+          promptTokenEstimate: promptTokens.tokens,
+          tokenizerEncoding: promptTokens.encoding,
+          tokenizerModelMatched: promptTokens.exactModelMatch,
+          memoryStatus: structuredAnswer.memory_status,
+          tokenUsage: result.tokenUsage,
+          appServerThreadId: result.threadId,
+          appServerTurnId: result.turnId,
+          appServerEvents: result.rawEvents,
+          appServerExecutions,
+          usedFallback: false
+        }
+      },
+      responseDetail
+    );
+  } catch {
+    // Preserve the evidence fallback after retries.
   }
 
   return compactMemoryAnswerPayload(
@@ -1579,6 +1640,8 @@ export const answerWithMemoryWorker = async (
         promptTokenEstimate: promptTokens.tokens,
         tokenizerEncoding: promptTokens.encoding,
         tokenizerModelMatched: promptTokens.exactModelMatch,
+        appServerExecutions:
+          appServerExecutions.length > 0 ? appServerExecutions : undefined,
         usedFallback: true,
         skippedReason: "codex_failed"
       }

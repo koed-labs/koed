@@ -478,6 +478,13 @@ export interface WorkflowTokenUsageInput {
   sessionId?: string;
   turnId?: string;
   conversationItemId?: string;
+  questionId?: string;
+  answerJobId?: string;
+  lcmNodeId?: string;
+  messageId?: string;
+  toolEventId?: string;
+  memoryEventId?: string;
+  sourceReferences?: WorkflowTokenUsageSourceReference[];
   sourceRuntime?: SourceRuntime;
   sourceKind?: string;
   sourceAdapterVersion?: string;
@@ -502,6 +509,19 @@ export interface WorkflowTokenUsageInput {
   metadata?: Record<string, unknown>;
   idempotencyKey?: string;
   sourceHash?: string;
+}
+
+export type WorkflowTokenUsageSourceReferenceType =
+  | "question"
+  | "answer_job"
+  | "lcm_node"
+  | "message"
+  | "tool_event"
+  | "memory_event";
+
+export interface WorkflowTokenUsageSourceReference {
+  type: WorkflowTokenUsageSourceReferenceType;
+  id: string;
 }
 
 type ConversationProjectionInput = {
@@ -3194,6 +3214,95 @@ const validateWorkflowTokenUsageSources = async (
   }
 };
 
+const workflowTokenUsageSourceReferences = (
+  usage: WorkflowTokenUsageInput
+): WorkflowTokenUsageSourceReference[] => {
+  const references: WorkflowTokenUsageSourceReference[] = [
+    ...(usage.sourceReferences ?? [])
+  ];
+  const add = (
+    type: WorkflowTokenUsageSourceReferenceType,
+    id: string | undefined
+  ) => {
+    if (id) {
+      references.push({ type, id });
+    }
+  };
+  add("question", usage.questionId);
+  add("answer_job", usage.answerJobId);
+  add("lcm_node", usage.lcmNodeId);
+  add("message", usage.messageId);
+  add("tool_event", usage.toolEventId);
+  add("memory_event", usage.memoryEventId);
+
+  const unique = new Map<string, WorkflowTokenUsageSourceReference>();
+  for (const reference of references) {
+    unique.set(`${reference.type}:${reference.id}`, reference);
+  }
+  return [...unique.values()];
+};
+
+const validateUuidSourceReference = (
+  reference: WorkflowTokenUsageSourceReference
+) => {
+  if (!uuidPattern.test(reference.id)) {
+    throw new Error(`Invalid ${reference.type} source reference id`);
+  }
+};
+
+const validateWorkflowTokenUsageSourceReferences = async (
+  pool: pg.Pool,
+  input: {
+    ownerUserId: string | null;
+    visibility: Visibility;
+    usage: WorkflowTokenUsageInput;
+    references: WorkflowTokenUsageSourceReference[];
+  }
+): Promise<void> => {
+  for (const reference of input.references) {
+    if (reference.type === "answer_job") {
+      if (input.usage.workflowId !== reference.id) {
+        throw new Error(
+          "Answer job source reference must match workflowId for local answer jobs"
+        );
+      }
+      continue;
+    }
+
+    validateUuidSourceReference(reference);
+    const tableByType: Record<
+      Exclude<WorkflowTokenUsageSourceReferenceType, "answer_job">,
+      string
+    > = {
+      question: "memory_questions",
+      lcm_node: "memory_nodes",
+      message: "messages",
+      tool_event: "tool_events",
+      memory_event: "memory_events"
+    };
+    const table = tableByType[reference.type];
+    const invalidationFilter =
+      reference.type === "question" ? "" : "and invalidated_at is null";
+    const found = await pool.query<{ id: string }>(
+      `
+        select id
+        from ${table}
+        where id = $1
+          and visibility = $2::visibility_scope
+          and owner_user_id = $3
+          ${invalidationFilter}
+        limit 1
+      `,
+      [reference.id, input.visibility, input.ownerUserId]
+    );
+    if (found.rowCount === 0) {
+      throw new Error(
+        `${reference.type} source reference not found or not visible`
+      );
+    }
+  }
+};
+
 const embedTexts = async (
   texts: string[]
 ): Promise<{ model: string; dimensions: number; vectors: number[][] }> => {
@@ -3936,10 +4045,17 @@ export const createMemorySourceRepository = (
   async recordWorkflowTokenUsage(actor, input) {
     const visibility = input.visibility ?? "personal";
     const ownerUserId = actor.userId;
+    const sourceReferences = workflowTokenUsageSourceReferences(input);
     await validateWorkflowTokenUsageSources(pool, {
       ownerUserId,
       visibility,
       usage: input
+    });
+    await validateWorkflowTokenUsageSourceReferences(pool, {
+      ownerUserId,
+      visibility,
+      usage: input,
+      references: sourceReferences
     });
     const idempotencyKey =
       input.idempotencyKey ??
@@ -3951,6 +4067,7 @@ export const createMemorySourceRepository = (
             sessionId: input.sessionId,
             turnId: input.turnId,
             conversationItemId: input.conversationItemId,
+            sourceReferences,
             usageScope: input.usageScope ?? "last",
             usageSource: input.usageSource ?? "app_server",
             usageAccuracy: input.usageAccuracy ?? "provider_reported",
@@ -4028,7 +4145,7 @@ export const createMemorySourceRepository = (
           $1, $2, $3, $4, $5, $6, $7, $8,
           $9, $10, $11, $12, $13, $14, $15, $16,
           $17, $18, $19, $20, $21, $22, $23, $24,
-          $25, $26, $27, $28, $29, $30, $31, $32
+          $25, $26, $27, $28, $29, $30, $31
         )
         on conflict do nothing
         returning
@@ -4104,6 +4221,29 @@ export const createMemorySourceRepository = (
           "Duplicate token usage conflicts with data outside caller visibility"
         ),
         { statusCode: 409 }
+      );
+    }
+    if (sourceReferences.length > 0) {
+      await pool.query(
+        `
+          insert into workflow_token_usage_source_references (
+            workflow_token_usage_id,
+            source_type,
+            source_id
+          )
+          select $1::uuid, ref.source_type, ref.source_id
+          from jsonb_to_recordset($2::jsonb) as ref(source_type text, source_id text)
+          on conflict do nothing
+        `,
+        [
+          row.id,
+          JSON.stringify(
+            sourceReferences.map((reference) => ({
+              source_type: reference.type,
+              source_id: reference.id
+            }))
+          )
+        ]
       );
     }
     return mapWorkflowTokenUsage(row);

@@ -352,6 +352,7 @@ server.registerTool(
           await client.recordTokenUsage({
             workflowType: "mcp_memory_answer",
             workflowId: answer.localMemoryWorker.jobId,
+            answerJobId: answer.localMemoryWorker.jobId,
             sessionId: input.session_id,
             sourceRuntime: "codex",
             sourceKind: "codex",
@@ -376,9 +377,12 @@ server.registerTool(
               workspaceId: workspace_id,
               stepIndex: execution.stepIndex,
               stepKind: execution.stepKind,
+              attemptIndex: execution.attemptIndex,
+              executionStatus: execution.status ?? "succeeded",
+              errorMessage: execution.errorMessage,
               executionIndex
             },
-            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${execution.stepIndex}:last`
+            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${execution.stepIndex}:${execution.attemptIndex ?? executionIndex}:last`
           });
         })
       );
