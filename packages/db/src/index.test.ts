@@ -947,7 +947,9 @@ describeDb("memory repository visibility", () => {
       `
         select mns.memory_node_id
         from memory_node_sources mns
+        join memory_nodes mn on mn.id = mns.memory_node_id
         where mns.memory_event_id = $1
+          and mn.kind = 'leaf'
         limit 1
       `,
       [oldEventIds[0]]
@@ -956,7 +958,9 @@ describeDb("memory repository visibility", () => {
       `
         select mns.memory_node_id
         from memory_node_sources mns
+        join memory_nodes mn on mn.id = mns.memory_node_id
         where mns.memory_event_id = $1
+          and mn.kind = 'leaf'
         limit 1
       `,
       [recentEventIds[0]]
@@ -979,9 +983,14 @@ describeDb("memory repository visibility", () => {
     expect(resultNodeIds).not.toContain(oldLeafId);
     expect(
       recentSearch.results.some((result) =>
-        result.summaryText.includes("Old-only temporal evidence")
+        result.summaryText.includes("Recent temporal evidence")
       )
     ).toBe(true);
+    expect(
+      recentSearch.results.some((result) =>
+        result.summaryText.includes("Old-only temporal evidence")
+      )
+    ).toBe(false);
     expect(recentSearch.metadata.temporalFilter).toMatchObject({
       recentDays: 30
     });
@@ -1027,6 +1036,90 @@ describeDb("memory repository visibility", () => {
       oldLeafId
     );
     expect(unboundedSearch.metadata.temporalFilter).toBeUndefined();
+  });
+
+  it("caps rollup evidence so scoped leaves are not crowded out", async () => {
+    const alice = await repo.createUser({
+      email: `alice-rollup-cap-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+
+    for (let index = 1; index <= 12; index += 1) {
+      const event = await captureUserEvent(engine, alice.id, {
+        workspaceId: "workspace-rollup-cap",
+        content: `Rollup cap source ${index}: scoped leaf detail ${index}.`,
+        metadata: { index }
+      });
+      const leaf = await repo.createMemoryNode(
+        { userId: alice.id },
+        {
+          visibility: "personal",
+          summaryText: `Scoped leaf detail ${index}.`,
+          captureMethod: "mcp",
+          sourceRuntime: "codex",
+          sourceHash: `leaf-rollup-cap-${index}-${randomUUID()}`
+        }
+      );
+      const rollup = await repo.createMemoryNode(
+        { userId: alice.id },
+        {
+          visibility: "personal",
+          summaryText: `Broad rollup route ${index}.`,
+          captureMethod: "mcp",
+          sourceRuntime: "codex",
+          sourceHash: `rollup-cap-${index}-${randomUUID()}`
+        }
+      );
+      await pool.query(
+        "update memory_nodes set kind = 'rollup', depth = 1 where id = $1",
+        [rollup.id]
+      );
+      await pool.query(
+        `
+          insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+          values ($1, $2, 0), ($3, $2, 0)
+        `,
+        [leaf.id, event.id, rollup.id]
+      );
+      await pool.query(
+        `
+          insert into memory_node_children (parent_memory_node_id, child_memory_node_id, child_order)
+          values ($1, $2, 0)
+        `,
+        [rollup.id, leaf.id]
+      );
+    }
+
+    await embedPendingSources();
+    mockEmbeddingQuery();
+
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "rollup cap scoped leaf detail",
+      scope: "personal",
+      limit: 10
+    });
+
+    const rollupResults = search.results.filter(
+      (result) => result.retrievalStage === "rollup_search"
+    );
+    const scopedLeafResults = search.results.filter(
+      (result) => result.retrievalStage === "scoped_leaf_search"
+    );
+    expect(rollupResults.length).toBeLessThanOrEqual(5);
+    expect(scopedLeafResults.length).toBeGreaterThan(0);
+    expect(search.metadata.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "rollup_search",
+          candidateCount: 12
+        }),
+        expect.objectContaining({
+          name: "scoped_leaf_search",
+          used: true
+        })
+      ])
+    );
   });
 
   it("does not mix sessions when creating LCM leaves or rollups", async () => {

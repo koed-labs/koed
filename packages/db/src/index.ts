@@ -6333,6 +6333,13 @@ export const createMemorySourceRepository = (
       source_id: string;
       retrieval_stage: RetrievalStageName;
       parent_node_ids: string[] | null;
+      has_out_of_window_sources: boolean;
+      filtered_source_items: Array<{
+        createdAt?: string;
+        text?: string;
+        projectName?: string | null;
+        projectPath?: string | null;
+      }> | null;
       visibility: Visibility;
       summary_text: string;
       rerank_text: string | null;
@@ -6405,6 +6412,35 @@ export const createMemorySourceRepository = (
       process.env.MEMORY_RAG_RAW_FALLBACK_ENABLED?.trim().toLowerCase() !==
       "false";
     const vectorRows: VectorRow[] = [];
+    const filteredNodeSourceText = (
+      items: VectorRow["filtered_source_items"]
+    ): string | null => {
+      if (!Array.isArray(items) || items.length === 0) {
+        return null;
+      }
+      const lines = items
+        .map((item) => {
+          const text = presentMemoryText(item.text ?? "", {
+            project_name: item.projectName ?? null,
+            project_path: item.projectPath ?? null
+          });
+          if (!text || text === "Captured memory.") {
+            return null;
+          }
+          return item.createdAt ? `[${item.createdAt}] ${text}` : text;
+        })
+        .filter((line): line is string => Boolean(line));
+      return lines.length > 0 ? lines.join("\n") : null;
+    };
+    const selectStageRowsForEvidence = (
+      stage: RetrievalStageName,
+      rows: VectorRow[]
+    ): VectorRow[] => {
+      if (stage === "rollup_search") {
+        return rows.slice(0, rollupResultLimit);
+      }
+      return rows;
+    };
 
     const rerankStageRows = async (
       stage: RetrievalStageName,
@@ -6513,6 +6549,57 @@ export const createMemorySourceRepository = (
                     ),
                     array[]::text[]
                   ) as parent_node_ids,
+                  case
+                    when me.memory_node_id is not null
+                      and ($12::timestamptz is not null or $13::timestamptz is not null)
+                    then exists (
+                      select 1
+                      from memory_node_sources boundary_mns
+                      left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null
+                      left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null
+                      where boundary_mns.memory_node_id = me.memory_node_id
+                        and (
+                          coalesce(boundary_ev.created_at, boundary_msg.created_at) is null
+                          or ($12::timestamptz is not null and coalesce(boundary_ev.created_at, boundary_msg.created_at) < $12::timestamptz)
+                          or ($13::timestamptz is not null and coalesce(boundary_ev.created_at, boundary_msg.created_at) >= $13::timestamptz)
+                        )
+                    )
+                    else false
+                  end as has_out_of_window_sources,
+                  case
+                    when me.memory_node_id is not null
+                      and ($12::timestamptz is not null or $13::timestamptz is not null)
+                    then (
+                      select json_agg(
+                        json_build_object(
+                          'createdAt', to_char(source_row.source_created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                          'text', source_row.source_text,
+                          'projectName', source_row.project_name,
+                          'projectPath', source_row.project_path
+                        )
+                        order by source_row.source_created_at asc, source_row.source_id asc
+                      )
+                      from (
+                        select
+                          coalesce(time_ev.id, time_msg.id) as source_id,
+                          coalesce(time_ev.created_at, time_msg.created_at) as source_created_at,
+                          coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
+                          nullif(time_ev.payload ->> 'projectName', '') as project_name,
+                          coalesce(nullif(time_ev.payload ->> 'projectPath', ''), nullif(time_ev.payload ->> 'workspaceId', ''), nullif(time_msg_session.cwd, '')) as project_path
+                        from memory_node_sources time_mns
+                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null
+                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
+                        left join sessions time_msg_session on time_msg_session.id = time_msg.session_id
+                        where time_mns.memory_node_id = me.memory_node_id
+                          and coalesce(time_ev.created_at, time_msg.created_at) is not null
+                          and coalesce(time_ev.payload ->> 'content', time_msg.content, '') <> ''
+                          and ($12::timestamptz is null or coalesce(time_ev.created_at, time_msg.created_at) >= $12::timestamptz)
+                          and ($13::timestamptz is null or coalesce(time_ev.created_at, time_msg.created_at) < $13::timestamptz)
+                        order by coalesce(time_ev.created_at, time_msg.created_at) asc, coalesce(time_ev.id, time_msg.id) asc
+                      ) source_row
+                    )
+                    else null
+                  end as filtered_source_items,
                   me.visibility,
                   coalesce(me.source_text, mn.summary_text, ev.payload ->> 'content', msg.content, '') as summary_text,
                   case
@@ -6695,7 +6782,19 @@ export const createMemorySourceRepository = (
               parentNodeIds
             ]
           );
-          const reranked = await rerankStageRows(stage, vectorResult.rows);
+          const rows = vectorResult.rows.map((row) => {
+            const filteredSummary = row.has_out_of_window_sources
+              ? filteredNodeSourceText(row.filtered_source_items)
+              : null;
+            return filteredSummary
+              ? {
+                  ...row,
+                  summary_text: filteredSummary,
+                  rerank_text: filteredSummary
+                }
+              : row;
+          });
+          const reranked = await rerankStageRows(stage, rows);
           return {
             name: stage,
             rows: reranked.rows,
@@ -6744,7 +6843,11 @@ export const createMemorySourceRepository = (
                 parentNodeIds: selectedRollupIds
               } satisfies StageResult);
         const stages = [rollups, leaves, fresh, rawFallback, scopedLeaves];
-        vectorRows.push(...stages.flatMap((stage) => stage.rows));
+        vectorRows.push(
+          ...stages.flatMap((stage) =>
+            selectStageRowsForEvidence(stage.name, stage.rows)
+          )
+        );
         const anyReranked = stages.some((stage) => stage.reranked);
         const rerankingErrors = stages
           .map((stage) => stage.rerankingError)
