@@ -87,9 +87,7 @@ describe("resolveApiServerConfig", () => {
       KOED_HOST_HOOK_CONFIG_PATH: "/absolute/path/to/home/.koed/config.json"
     });
 
-    expect(config.hostCheckoutPath).toBe(
-      "/absolute/path/to/koed-self-hosted"
-    );
+    expect(config.hostCheckoutPath).toBe("/absolute/path/to/koed-self-hosted");
     expect(config.hostHookConfigPath).toBe(
       "/absolute/path/to/home/.koed/config.json"
     );

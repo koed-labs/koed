@@ -1714,7 +1714,8 @@ describe("api health", () => {
 
   it("keeps public status probes coarse and requires auth for details", async () => {
     process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
-    process.env.KOED_HOST_HOOK_CONFIG_PATH = "/sensitive/home/.koed/config.json";
+    process.env.KOED_HOST_HOOK_CONFIG_PATH =
+      "/sensitive/home/.koed/config.json";
     const app = await buildServer({ repository: createFakeRepository() });
     const ready = await app.inject({ method: "GET", url: "/ready" });
     const details = await app.inject({ method: "GET", url: "/health/details" });

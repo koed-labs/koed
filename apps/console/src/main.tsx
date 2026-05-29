@@ -182,7 +182,14 @@ const EnvVarGroup = ({
             <div className="env-var-pair">
               <div>
                 <span>
-                  Name <span className={`env-var-badge ${status}`}>{status === "required" ? "Required" : status === "defaulted" ? "Defaulted" : "Optional"}</span>
+                  Name{" "}
+                  <span className={`env-var-badge ${status}`}>
+                    {status === "required"
+                      ? "Required"
+                      : status === "defaulted"
+                        ? "Defaulted"
+                        : "Optional"}
+                  </span>
                 </span>
                 <div className="inline-copy-value">
                   <code>{key}</code>
@@ -258,18 +265,14 @@ const StatusDot = ({ status }: { status: string }) => {
   return <span className={`status-dot ${tone}`}>{status}</span>;
 };
 
-const JsonBlock = ({
-  value,
-  title
-}: {
-  value: unknown;
-  title?: string;
-}) => (
+const JsonBlock = ({ value, title }: { value: unknown; title?: string }) => (
   <div className="code-card">
     <div className="code-card-header">
       <strong>{title ?? "Configuration block"}</strong>
       <CopyButton
-        value={typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+        value={
+          typeof value === "string" ? value : JSON.stringify(value, null, 2)
+        }
         className="secondary"
       />
     </div>
@@ -397,7 +400,10 @@ ${hookBlocks}
 
 const defaultMemoryApiUrl = "http://localhost:3000";
 
-const codexMcpEnvItems = (apiUrl: string, token: string): ReadonlyArray<EnvVarItem> => [
+const codexMcpEnvItems = (
+  apiUrl: string,
+  token: string
+): ReadonlyArray<EnvVarItem> => [
   {
     key: "MEMORY_API_URL",
     value: apiUrl,
@@ -1033,9 +1039,7 @@ const App = () => {
               <h2>Token setup</h2>
               {tokens.length === 0 ? (
                 <>
-                  <p>
-                    Create a token for Codex recall and automatic capture.
-                  </p>
+                  <p>Create a token for Codex recall and automatic capture.</p>
                   <form
                     className="inline-form"
                     onSubmit={(event) => void createToken(event)}
@@ -1095,9 +1099,7 @@ const App = () => {
                         value={`${nodeCommand} ${mcpArg}`}
                       />
                       <EmptyConfigSection title="Arguments" />
-                      <EnvVarGroup
-                        items={mcpEnvItems}
-                      />
+                      <EnvVarGroup items={mcpEnvItems} />
                       <EmptyConfigSection
                         title="Environment variable passthrough"
                         tone="neutral"
@@ -1112,8 +1114,8 @@ const App = () => {
                   <div className="manual-config-group">
                     <h3>Capture Hook</h3>
                     <p>
-                      Codex does not expose hook editing in the MCP settings
-                      UI. Add the Koed hook entries directly in
+                      Codex does not expose hook editing in the MCP settings UI.
+                      Add the Koed hook entries directly in
                       <code> ~/.codex/config.toml</code>.
                     </p>
                     <div className="codex-setup-stack compact-stack">
@@ -1121,8 +1123,9 @@ const App = () => {
                         <div>
                           <strong>Hooks live in config.toml</strong>
                           <p>
-                            Open Codex settings, click <strong>Configuration</strong>,
-                            then <strong>Open config.toml</strong>.
+                            Open Codex settings, click{" "}
+                            <strong>Configuration</strong>, then{" "}
+                            <strong>Open config.toml</strong>.
                           </p>
                         </div>
                         <a className="button-link" href="codex://settings">
@@ -1142,15 +1145,19 @@ const App = () => {
                     <div>
                       <strong>config.toml in Codex</strong>
                       <p>
-                        Open Codex settings, click <strong>Configuration</strong>,
-                        then <strong>Open config.toml</strong>.
+                        Open Codex settings, click{" "}
+                        <strong>Configuration</strong>, then{" "}
+                        <strong>Open config.toml</strong>.
                       </p>
                     </div>
                     <a className="button-link" href="codex://settings">
                       Open Codex settings
                     </a>
                   </div>
-                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
+                  <JsonBlock
+                    title="~/.codex/config.toml"
+                    value={codexTomlBlock}
+                  />
                   <div className="codex-callout">
                     <div>
                       <strong>Trust hooks in Codex</strong>
@@ -1247,16 +1254,16 @@ const App = () => {
                   </div>
                   <div className="manual-config-group">
                     <h3>MCP server</h3>
-                    <p>Name server <code>koed-selfhost</code>.</p>
+                    <p>
+                      Name server <code>koed-selfhost</code>.
+                    </p>
                     <div className="field-grid">
                       <ManualConfigValueSection
                         title="Command to launch"
                         value={`${nodeCommand} ${mcpArg}`}
                       />
                       <EmptyConfigSection title="Arguments" />
-                      <EnvVarGroup
-                        items={mcpEnvItems}
-                      />
+                      <EnvVarGroup items={mcpEnvItems} />
                       <EmptyConfigSection
                         title="Environment variable passthrough"
                         tone="neutral"
@@ -1274,15 +1281,19 @@ const App = () => {
                     <div>
                       <strong>config.toml in Codex</strong>
                       <p>
-                        Open Codex settings, click <strong>Configuration</strong>,
-                        then <strong>Open config.toml</strong>.
+                        Open Codex settings, click{" "}
+                        <strong>Configuration</strong>, then{" "}
+                        <strong>Open config.toml</strong>.
                       </p>
                     </div>
                     <a className="button-link" href="codex://settings">
                       Open Codex settings
                     </a>
                   </div>
-                  <JsonBlock title="~/.codex/config.toml" value={codexTomlBlock} />
+                  <JsonBlock
+                    title="~/.codex/config.toml"
+                    value={codexTomlBlock}
+                  />
                   <div className="codex-callout">
                     <div>
                       <strong>Trust hooks in Codex</strong>

@@ -37,8 +37,7 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
 
 const markerStart = "# >>> koed-self-hosted";
 const markerEnd = "# <<< koed-self-hosted";
-const shellEscapeDoubleQuoted = (value) =>
-  value.replace(/([\\"$`])/g, "\\$1");
+const shellEscapeDoubleQuoted = (value) => value.replace(/([\\"$`])/g, "\\$1");
 const shellDoubleQuoted = (value) => `"${shellEscapeDoubleQuoted(value)}"`;
 const hookEnvAssignments = [
   `MEMORY_API_URL=${shellDoubleQuoted(apiUrl)}`,
