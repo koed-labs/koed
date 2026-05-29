@@ -144,22 +144,6 @@ const CopyButton = ({
   );
 };
 
-const FieldCopy = ({
-  label,
-  value,
-  masked = false
-}: {
-  label: string;
-  value: string;
-  masked?: boolean;
-}) => (
-  <div className="copy-field">
-    <span>{label}</span>
-    <code>{masked ? value.replace(/^(.{8}).+(.{4})$/, "$1...$2") : value}</code>
-    <CopyButton value={value} className="ghost" />
-  </div>
-);
-
 const EnvVarGroup = ({
   items,
   maskedKeys = []
