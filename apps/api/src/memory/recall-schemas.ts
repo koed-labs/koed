@@ -11,7 +11,10 @@ export const searchMemorySchema = z
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
     workspace_id: z.string().min(1).optional(),
-    limit: z.coerce.number().int().positive().max(50).default(10)
+    limit: z.coerce.number().int().positive().max(50).default(10),
+    recent_days: z.coerce.number().int().positive().max(36500).optional(),
+    source_after: z.coerce.date().optional(),
+    source_before: z.coerce.date().optional()
   })
   .superRefine((input, context) => {
     if (input.search_domain === "session" && !input.session_id) {
@@ -26,6 +29,28 @@ export const searchMemorySchema = z
         code: z.ZodIssueCode.custom,
         path: ["workspace_id"],
         message: "workspace_id is required when search_domain is project"
+      });
+    }
+    if (
+      input.recent_days !== undefined &&
+      (input.source_after !== undefined || input.source_before !== undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["recent_days"],
+        message:
+          "recent_days cannot be combined with explicit source_after/source_before bounds"
+      });
+    }
+    if (
+      input.source_after !== undefined &&
+      input.source_before !== undefined &&
+      input.source_after.getTime() >= input.source_before.getTime()
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["source_after"],
+        message: "source_after must be earlier than source_before"
       });
     }
   });

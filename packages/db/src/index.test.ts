@@ -213,6 +213,23 @@ describeDb("memory repository visibility", () => {
     }
   };
 
+  const mockEmbeddingQuery = () => {
+    const dimensions = 1024;
+    const vector = Array.from({ length: dimensions }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+          dimensions,
+          vectors: [vector]
+        }),
+        { status: 200 }
+      )
+    );
+  };
+
   beforeAll(async () => {
     process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
     process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = "6000";
@@ -884,6 +901,132 @@ describeDb("memory repository visibility", () => {
     );
     expect(expanded.sources.map((source) => source.content)).toHaveLength(10);
     expect(expanded.sources[0]?.content).toMatch(/^Rollup source /);
+  });
+
+  it("filters hierarchical retrieval by source event time and only uses raw fallback when needed", async () => {
+    const alice = await repo.createUser({
+      email: `alice-recent-rag-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+
+    const oldEventIds: string[] = [];
+    const recentEventIds: string[] = [];
+    for (let index = 1; index <= 10; index += 1) {
+      const event = await captureUserEvent(engine, alice.id, {
+        workspaceId: "workspace-recent-rag",
+        content:
+          index <= 5
+            ? `Old-only temporal evidence ${index}.`
+            : `Recent temporal evidence ${index}.`,
+        metadata: { index }
+      });
+      if (index <= 5) {
+        oldEventIds.push(event.id);
+      } else {
+        recentEventIds.push(event.id);
+      }
+    }
+
+    await pool.query(
+      "update memory_events set created_at = now() - interval '45 days' where id = any($1::uuid[])",
+      [oldEventIds]
+    );
+    await pool.query(
+      "update memory_events set created_at = now() - interval '2 days' where id = any($1::uuid[])",
+      [recentEventIds]
+    );
+
+    const compacted = await engine.scheduleCompaction({
+      requesterContext: { userId: alice.id },
+      visibility: "personal"
+    });
+    expect(compacted.rollupNodeId).not.toBeNull();
+    await embedPendingSources();
+
+    const oldLeaf = await pool.query<{ memory_node_id: string }>(
+      `
+        select mns.memory_node_id
+        from memory_node_sources mns
+        where mns.memory_event_id = $1
+        limit 1
+      `,
+      [oldEventIds[0]]
+    );
+    const recentLeaf = await pool.query<{ memory_node_id: string }>(
+      `
+        select mns.memory_node_id
+        from memory_node_sources mns
+        where mns.memory_event_id = $1
+        limit 1
+      `,
+      [recentEventIds[0]]
+    );
+    const oldLeafId = oldLeaf.rows[0]!.memory_node_id;
+    const recentLeafId = recentLeaf.rows[0]!.memory_node_id;
+
+    mockEmbeddingQuery();
+    const recentSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "temporal evidence",
+      scope: "personal",
+      recentDays: 30,
+      limit: 10
+    });
+
+    const resultNodeIds = recentSearch.results.map((result) => result.nodeId);
+    expect(resultNodeIds).toContain(compacted.rollupNodeId);
+    expect(resultNodeIds).toContain(recentLeafId);
+    expect(resultNodeIds).not.toContain(oldLeafId);
+    expect(
+      recentSearch.results.some((result) =>
+        result.summaryText.includes("Old-only temporal evidence")
+      )
+    ).toBe(true);
+    expect(recentSearch.metadata.temporalFilter).toMatchObject({
+      recentDays: 30
+    });
+    expect(recentSearch.metadata.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "rollup_search",
+          used: true,
+          temporalFilterApplied: true
+        }),
+        expect.objectContaining({
+          name: "raw_fallback_search",
+          ran: true
+        })
+      ])
+    );
+
+    mockEmbeddingQuery();
+    const boundedSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "temporal evidence",
+      scope: "personal",
+      sourceAfter: new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000
+      ).toISOString(),
+      limit: 1
+    });
+    expect(boundedSearch.results[0]?.retrievalStage).toBe("rollup_search");
+    expect(
+      boundedSearch.metadata.stages?.find(
+        (stage) => stage.name === "raw_fallback_search"
+      )
+    ).toMatchObject({ ran: true, used: false, selectedCount: 0 });
+
+    mockEmbeddingQuery();
+    const unboundedSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "temporal evidence",
+      scope: "personal",
+      limit: 10
+    });
+    expect(unboundedSearch.results.map((result) => result.nodeId)).toContain(
+      oldLeafId
+    );
+    expect(unboundedSearch.metadata.temporalFilter).toBeUndefined();
   });
 
   it("does not mix sessions when creating LCM leaves or rollups", async () => {

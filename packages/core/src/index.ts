@@ -268,6 +268,23 @@ export interface RetrievalMetadata {
   rerankingEnabled?: boolean;
   rerankingUnavailable?: boolean;
   rerankingError?: string;
+  temporalFilter?: {
+    recentDays?: number;
+    sourceAfter?: string;
+    sourceBefore?: string;
+  };
+  stages?: Array<{
+    name: string;
+    ran: boolean;
+    used: boolean;
+    candidateCount: number;
+    selectedCount: number;
+    durationMs: number;
+    parallelGroup?: string;
+    temporalFilterApplied?: boolean;
+    reranked?: boolean;
+    parentNodeIds?: string[];
+  }>;
 }
 
 export interface MemoryEngine {
@@ -334,6 +351,9 @@ export interface SearchMemoryInput {
   sessionId?: string;
   workspaceId?: string;
   limit?: number;
+  recentDays?: number;
+  sourceAfter?: string;
+  sourceBefore?: string;
 }
 
 export type AnswerMemoryInput = SearchMemoryInput;
@@ -363,6 +383,8 @@ export interface MemorySearchResult {
   sourceId?: string;
   sourceChunkIndex?: number;
   sourceChunkCount?: number;
+  retrievalStage?: string;
+  parentNodeIds?: string[];
   visibility: Visibility;
   summaryText: string;
   lcmNodeSummaryStatus?: "pending" | "summarized";
@@ -374,6 +396,8 @@ export interface MemorySearchResult {
     sourceId?: string;
     sourceChunkIndex?: number;
     sourceChunkCount?: number;
+    retrievalStage?: string;
+    parentNodeIds?: string[];
     visibility: Visibility;
   };
 }
@@ -440,6 +464,9 @@ export interface MemoryEngineRepository {
       sessionId?: string;
       workspaceId?: string;
       limit?: number;
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
     }
   ): Promise<{
     results: MemorySearchResult[];

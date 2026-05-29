@@ -315,6 +315,9 @@ interface PlanningSearchRecord {
   searchDomain: string;
   sessionId?: string;
   workspaceId?: string;
+  recentDays?: number;
+  sourceAfter?: string;
+  sourceBefore?: string;
   limit: number;
   hitCount: number;
 }
@@ -325,6 +328,9 @@ interface MemoryAnswerPlanningState {
   searchDomain: string;
   sessionId?: string;
   workspaceId?: string;
+  recentDays?: number;
+  sourceAfter?: string;
+  sourceBefore?: string;
   limit: number;
   evidence: unknown[];
   citations: unknown[];
@@ -536,6 +542,7 @@ export const buildPlannedMemoryAnswerPrompt = (
     "- Return only one JSON object and no prose outside JSON.",
     "- Use only memory evidence supplied in this loop; do not use outside knowledge.",
     `- Honor the requested default search domain (${state.searchDomain}) for follow-up searches unless the current evidence clearly shows that a different boundary is needed.`,
+    "- Honor the initial source time window for follow-up searches. Do not broaden recent_days/source date bounds inside this worker.",
     "- Use search_domain=project only when a workspace_id is available.",
     "- Use search_domain=session only when a backend session_id is available.",
     "- Use search_domain=global only for deliberately cross-project/cross-session questions.",
@@ -577,6 +584,9 @@ export const buildPlannedMemoryAnswerPrompt = (
     `Default search domain: ${state.searchDomain}`,
     state.workspaceId ? `Default workspace_id: ${state.workspaceId}` : "",
     state.sessionId ? `Default session_id: ${state.sessionId}` : "",
+    state.recentDays ? `Default recent_days: ${state.recentDays}` : "",
+    state.sourceAfter ? `Default source_after: ${state.sourceAfter}` : "",
+    state.sourceBefore ? `Default source_before: ${state.sourceBefore}` : "",
     `Default limit: ${state.limit}`,
     "",
     "Current memory state JSON:",
@@ -631,6 +641,9 @@ const runPlannedMemoryAnswer = async (
     searchDomain: string;
     sessionId?: string;
     workspaceId?: string;
+    recentDays?: number;
+    sourceAfter?: string;
+    sourceBefore?: string;
     limit: number;
   }
 ): Promise<{
@@ -656,6 +669,9 @@ const runPlannedMemoryAnswer = async (
     searchDomain: options.searchDomain,
     sessionId: options.sessionId,
     workspaceId: options.workspaceId,
+    recentDays: options.recentDays,
+    sourceAfter: options.sourceAfter,
+    sourceBefore: options.sourceBefore,
     limit: options.limit,
     evidence: evidenceItems(payload),
     citations: citationsFromPayload(payload),
@@ -744,6 +760,9 @@ const runPlannedMemoryAnswer = async (
         search_domain: searchDomain,
         session_id: sessionId,
         workspace_id: workspaceId,
+        recent_days: options.recentDays,
+        source_after: options.sourceAfter,
+        source_before: options.sourceBefore,
         limit
       });
       const hits = hitsFromSearch(searchResult);
@@ -759,6 +778,9 @@ const runPlannedMemoryAnswer = async (
         searchDomain,
         sessionId,
         workspaceId,
+        recentDays: options.recentDays,
+        sourceAfter: options.sourceAfter,
+        sourceBefore: options.sourceBefore,
         limit,
         hitCount: hits.length
       });
@@ -866,6 +888,9 @@ export const answerWithMemoryWorker = async (
     searchDomain?: string;
     sessionId?: string;
     workspaceId?: string;
+    recentDays?: number;
+    sourceAfter?: string;
+    sourceBefore?: string;
     limit?: number;
     responseDetail?: MemoryAnswerResponseDetail;
   } = {}
@@ -926,6 +951,9 @@ export const answerWithMemoryWorker = async (
         searchDomain: options.searchDomain ?? "project",
         sessionId: options.sessionId,
         workspaceId: options.workspaceId,
+        recentDays: options.recentDays,
+        sourceAfter: options.sourceAfter,
+        sourceBefore: options.sourceBefore,
         limit: options.limit ?? 10
       });
       return compactMemoryAnswerPayload(

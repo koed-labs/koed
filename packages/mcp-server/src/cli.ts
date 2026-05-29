@@ -267,6 +267,29 @@ server.registerTool(
       session_id: uuidSchema
         .optional()
         .describe("Backend session UUID for session search."),
+      recent_days: z
+        .number()
+        .int()
+        .positive()
+        .max(36500)
+        .optional()
+        .describe(
+          "Optional recency window in days over source memory-event timestamps. For example, 30 searches only memory whose underlying source events are within the last 30 days. Leave blank for full-history recall."
+        ),
+      source_after: z
+        .string()
+        .datetime()
+        .optional()
+        .describe(
+          "Optional ISO timestamp lower bound over source memory-event timestamps. Do not combine with recent_days."
+        ),
+      source_before: z
+        .string()
+        .datetime()
+        .optional()
+        .describe(
+          "Optional ISO timestamp upper bound over source memory-event timestamps. Do not combine with recent_days."
+        ),
       limit: z.number().int().positive().max(50).default(10),
       include_evidence: z
         .boolean()
@@ -295,6 +318,9 @@ server.registerTool(
         searchDomain: input.search_domain,
         workspaceId: workspace_id,
         sessionId: input.session_id,
+        recentDays: input.recent_days,
+        sourceAfter: input.source_after,
+        sourceBefore: input.source_before,
         limit: input.limit,
         responseDetail: include_evidence ? "with_evidence" : response_detail
       })
@@ -314,6 +340,9 @@ if (toolExposure.exposeLowLevelMemoryTools) {
         search_domain: searchDomainSchema.default("project"),
         workspace_id: z.string().min(1).optional(),
         session_id: uuidSchema.optional(),
+        recent_days: z.number().int().positive().max(36500).optional(),
+        source_after: z.string().datetime().optional(),
+        source_before: z.string().datetime().optional(),
         limit: z.number().int().positive().max(50).default(10)
       }
     },

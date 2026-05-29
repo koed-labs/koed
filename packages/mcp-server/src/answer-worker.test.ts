@@ -427,6 +427,89 @@ describe("memory answer worker", () => {
     expect(searches[0]?.workspace_id).toBeUndefined();
   });
 
+  it("preserves caller time bounds on planned follow-up searches", async () => {
+    const searches: Record<string, unknown>[] = [];
+    const runner: CodexAnswerRunner = async (_prompt, config) => {
+      if (searches.length === 0) {
+        return {
+          text: JSON.stringify({
+            action: "search",
+            query: "recent deployment discussion",
+            limit: 3
+          }),
+          model: `codex:${config.model}:${config.reasoningEffort}`
+        };
+      }
+      return {
+        text: JSON.stringify({
+          action: "answer",
+          answer: answerObject("The recent deployment discussion was found.")
+        }),
+        model: `codex:${config.model}:${config.reasoningEffort}`
+      };
+    };
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        searches.push(input);
+        return {
+          hits: [
+            {
+              nodeId: "node-recent",
+              visibility: "personal",
+              summaryText: "Recent deployment discussion.",
+              citation: { nodeId: "node-recent", visibility: "personal" }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    await answerWithMemoryWorker(
+      {
+        markdown: "No matching memory found.",
+        evidenceBundle: {
+          query: "What did we decide about deployment recently?",
+          evidence: [],
+          retrieval: { retrievalMode: "semantic_vector" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "2"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "project",
+        workspaceId: "/repo/koed",
+        recentDays: 14,
+        limit: 10
+      }
+    );
+
+    expect(searches[0]).toMatchObject({
+      query: "recent deployment discussion",
+      retrieval_scope: "personal",
+      search_domain: "project",
+      workspace_id: "/repo/koed",
+      recent_days: 14,
+      limit: 3
+    });
+    expect(searches[0]?.source_after).toBeUndefined();
+    expect(searches[0]?.source_before).toBeUndefined();
+  });
+
   it("accepts planner evidence entries that only include copied source fields", async () => {
     const runner: CodexAnswerRunner = async (_prompt, config) => ({
       text: JSON.stringify({

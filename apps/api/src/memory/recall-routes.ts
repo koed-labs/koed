@@ -28,7 +28,10 @@ export const registerRecallRoutes = (
         searchDomain: input.search_domain,
         sessionId: input.session_id,
         workspaceId: input.workspace_id,
-        limit: input.limit
+        limit: input.limit,
+        recentDays: input.recent_days,
+        sourceAfter: input.source_after?.toISOString(),
+        sourceBefore: input.source_before?.toISOString()
       });
 
       return {
@@ -69,7 +72,10 @@ export const registerRecallRoutes = (
         searchDomain: input.search_domain,
         sessionId: input.session_id,
         workspaceId: input.workspace_id,
-        limit: input.limit
+        limit: input.limit,
+        recentDays: input.recent_days,
+        sourceAfter: input.source_after?.toISOString(),
+        sourceBefore: input.source_before?.toISOString()
       });
       const expandedNodeIds = [
         ...new Set(
