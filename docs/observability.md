@@ -55,3 +55,20 @@ Operational events use namespaced `event.name` values:
 Use the database `audit_events` table for durable operator/audit history such
 as token lifecycle changes, login outcomes, policy changes, and destructive
 memory actions. Operational logs are for debugging and monitoring.
+
+## Embedding Service Logs
+
+The embedding service writes structured JSON logs with
+`schema_version: "embedding_service_log_v1"` and
+`service: "koed-embedding-service"`. Configure verbosity with
+`EMBEDDING_LOG_LEVEL` in the root environment, which maps to service-local
+`LOG_LEVEL`.
+
+`info` logs cover model load lifecycle, embed/rerank completion, failures, and
+reranker lazy-load lifecycle. `debug` logs add scheduler snapshots, chunk counts,
+token counts, embedding batch sizes, fallback-to-single-chunk embedding, and
+reranker score counts.
+
+Embedding logs must not include input text, query text, document text, chunks,
+vectors, API tokens, full headers, cookies, request bodies, or raw exception
+traces.

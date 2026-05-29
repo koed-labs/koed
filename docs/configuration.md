@@ -63,6 +63,7 @@ the command preserves existing values and adds any missing keys from
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
 - `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm env:setup` generates this for Docker Compose deployments.
+- `EMBEDDING_LOG_LEVEL`: embedding service structured JSON log level. Default `info`; use `debug` for scheduler, chunking, batching, and reranker scoring details.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
 - `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request. Default `32000`; values above `32000` are clamped by the embedding service.
 - `EMBEDDING_MAX_TEXT_CHARS`: maximum characters accepted for any single embedding or reranking text before model processing.

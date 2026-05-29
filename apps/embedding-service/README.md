@@ -49,4 +49,17 @@ Unknown non-empty keys fail service startup. Supported keys:
 
 Runtime dependencies are pinned in `requirements.txt`. Development-only tooling belongs in `requirements-dev.txt`; it intentionally does not install the native runtime model stack.
 
+## Observability
+
+The service writes structured JSON operational logs with
+`schema_version: "embedding_service_log_v1"` and
+`service: "koed-embedding-service"`. Set `LOG_LEVEL=debug` for scheduler,
+chunking, batching, and reranker scoring details. Logs intentionally avoid input
+text, chunks, vectors, request bodies, tokens, and full headers.
+
+The current llama-cpp-python embedding path accepts a `LLAMA_N_BATCH` sized
+batch internally. `EMBEDDING_MAX_TOKENS` may be larger than `LLAMA_N_BATCH`; this
+cleanup documents that risk but does not change existing long-input embedding
+semantics.
+
 If `pip install -r requirements.txt` reports a wheel checksum error such as `Bad CRC-32`, remove the local venv and rerun the runtime install with `--no-cache-dir` so pip downloads a fresh wheel instead of reusing a corrupt cached archive.

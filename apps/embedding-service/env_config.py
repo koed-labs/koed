@@ -82,6 +82,7 @@ class EmbeddingServiceEnv:
     reranker_model: str | None
     reranker_batch_limit: int
     embedding_service_token: str
+    log_level: str
 
     @property
     def reranker_enabled(self) -> bool:
@@ -133,4 +134,5 @@ def resolve_env() -> EmbeddingServiceEnv:
         reranker_model=reranker_config.model if reranker_config else None,
         reranker_batch_limit=int_env("RERANKER_BATCH_LIMIT", 100),
         embedding_service_token=os.getenv("EMBEDDING_SERVICE_TOKEN", "").strip(),
+        log_level=os.getenv("LOG_LEVEL", "info").strip() or "info",
     )

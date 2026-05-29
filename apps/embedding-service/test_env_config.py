@@ -27,6 +27,7 @@ class EnvConfigTest(unittest.TestCase):
                 "LLAMA_N_CTX": "4096",
                 "EMBEDDING_MAX_TOKENS": "",
                 "EMBEDDING_SERVICE_TOKEN": " token ",
+                "LOG_LEVEL": "debug",
             },
             clear=True,
         ):
@@ -42,6 +43,7 @@ class EnvConfigTest(unittest.TestCase):
         self.assertIsNone(config.reranker_key)
         self.assertIsNone(config.reranker_model)
         self.assertEqual(config.embedding_service_token, "token")
+        self.assertEqual(config.log_level, "debug")
 
     def test_resolve_env_rejects_unknown_model_key(self) -> None:
         with patch.dict(os.environ, {"MODEL_KEY": "unsupported"}, clear=True):

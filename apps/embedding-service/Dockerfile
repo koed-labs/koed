@@ -19,8 +19,14 @@ RUN apt-get update \
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app.py /app/app.py
+COPY auth.py /app/auth.py
 COPY env_config.py /app/env_config.py
+COPY logging_config.py /app/logging_config.py
 COPY priority_scheduler.py /app/priority_scheduler.py
+COPY runtime.py /app/runtime.py
+COPY schemas.py /app/schemas.py
+COPY settings.py /app/settings.py
+COPY vectors.py /app/vectors.py
 
 EXPOSE 8000
 
