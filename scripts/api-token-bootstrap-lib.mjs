@@ -102,7 +102,7 @@ const parseOwnerEmailArgs = (argv, usageText) => {
       continue;
     }
     if (arg === "--owner-email") {
-      parsed.ownerEmail = readFlagValue(argv, index, arg, revokeUsage);
+      parsed.ownerEmail = readFlagValue(argv, index, arg, usageText);
       index += 1;
       continue;
     }

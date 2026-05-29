@@ -8,6 +8,7 @@ import {
   hashApiToken,
   listApiTokenBootstrap,
   parseCreateApiTokenArgs,
+  parseListApiTokenArgs,
   revokeApiTokenBootstrap
 } from "./api-token-bootstrap-lib.mjs";
 
@@ -71,6 +72,21 @@ test("parses required owner email and default token name", () => {
       ownerEmail: "user@example.com",
       name: "Client Integration",
       help: false
+    }
+  );
+});
+
+test("list owner email missing value reports list usage", () => {
+  assert.throws(
+    () => parseListApiTokenArgs(["--owner-email"]),
+    (error) => {
+      assert.match(error.message, /--owner-email requires a value/);
+      assert.match(
+        error.message,
+        /Usage: pnpm api-token:list --owner-email <email>/
+      );
+      assert.doesNotMatch(error.message, /--token-id/);
+      return true;
     }
   );
 });
