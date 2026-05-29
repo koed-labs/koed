@@ -1167,3 +1167,39 @@ td:first-child {
     padding: 24px;
   }
 }
+
+.auth-gate-loading .auth-loading-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow:
+    0 1px 0 rgba(15, 23, 42, 0.04),
+    0 12px 36px rgba(15, 23, 42, 0.1);
+  color: #475569;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.auth-loading-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(11, 18, 32, 0.15);
+  border-top-color: #0b1220;
+  animation: auth-loading-spin 720ms linear infinite;
+}
+
+@keyframes auth-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-loading-spinner {
+    animation-duration: 2s;
+  }
+}

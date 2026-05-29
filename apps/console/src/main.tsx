@@ -613,6 +613,7 @@ const App = () => {
     useState<CodexSetupMode>("configToml");
   const [activeSection, setActiveSection] = useState("setup");
   const [error, setError] = useState<string | null>(null);
+  const [bootstrapped, setBootstrapped] = useState(false);
 
   const components = status?.components as
     | Record<string, Record<string, unknown>>
@@ -662,7 +663,8 @@ const App = () => {
   useEffect(() => {
     refreshPublic()
       .then(refreshPrivate)
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setBootstrapped(true));
   }, []);
 
   useEffect(() => {
@@ -873,6 +875,31 @@ const App = () => {
       done: memoryVerified
     }
   ];
+
+  if (!bootstrapped) {
+    return (
+      <main
+        className="auth-gate auth-gate-loading"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <div className="auth-gate-inner">
+          <img
+            src="/koed-logo.svg"
+            alt="Koed"
+            className="auth-gate-logo"
+            width={152}
+            height={48}
+          />
+          <div className="auth-loading-card">
+            <span className="auth-loading-spinner" aria-hidden="true" />
+            <span className="auth-loading-label">Loading…</span>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (!user) {
     return (
