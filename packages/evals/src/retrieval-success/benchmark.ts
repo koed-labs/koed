@@ -106,6 +106,40 @@ const addStage = (stages: Set<RetrievalStage>, value: unknown): void => {
   }
 };
 
+const stageFromRecord = (
+  record: Record<string, unknown>
+): RetrievalStage | null =>
+  maybeStage(record.retrievalStage) ??
+  maybeStage(record.retrieval_stage) ??
+  maybeStage(record.stage) ??
+  maybeStage(record.name);
+
+const countableSelectedStage = (
+  stage: RetrievalStage,
+  record: Record<string, unknown>
+): boolean => {
+  if (stage === "score_scan") {
+    return record.ran !== false;
+  }
+  if (typeof record.used === "boolean") {
+    return record.used;
+  }
+  if (typeof record.selectedCount === "number") {
+    return record.selectedCount > 0;
+  }
+  if (typeof record.selected_count === "number") {
+    return record.selected_count > 0;
+  }
+  return !(
+    "ran" in record ||
+    "used" in record ||
+    "selectedCount" in record ||
+    "selected_count" in record ||
+    "candidateCount" in record ||
+    "candidate_count" in record
+  );
+};
+
 const collectStagesFromValue = (
   value: unknown,
   stages: Set<RetrievalStage>
@@ -121,10 +155,10 @@ const collectStagesFromValue = (
   }
 
   const record = value as Record<string, unknown>;
-  addStage(stages, record.retrievalStage);
-  addStage(stages, record.retrieval_stage);
-  addStage(stages, record.stage);
-  addStage(stages, record.name);
+  const stage = stageFromRecord(record);
+  if (stage && countableSelectedStage(stage, record)) {
+    stages.add(stage);
+  }
   if (Array.isArray(record.stages)) {
     collectStagesFromValue(record.stages, stages);
   }
@@ -138,7 +172,10 @@ export const retrievalStagesUsed = (
 ): RetrievalStage[] => {
   const stages = new Set<RetrievalStage>();
   for (const search of run.searches ?? []) {
-    addStage(stages, search.retrievalStage ?? search.stage);
+    const stage = maybeStage(search.retrievalStage ?? search.stage);
+    if (stage === "score_scan") {
+      addStage(stages, stage);
+    }
   }
   for (const evidence of run.evidence) {
     addStage(stages, evidence.retrievalStage);

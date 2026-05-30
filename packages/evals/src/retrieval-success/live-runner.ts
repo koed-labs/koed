@@ -75,17 +75,18 @@ const usage = [
 
 const quoteIdent = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 
-const databaseUrlWithName = (baseUrl: string, databaseName: string): string => {
+export const databaseUrlWithName = (
+  baseUrl: string,
+  databaseName: string
+): string => {
   const url = new URL(baseUrl);
   url.pathname = `/${databaseName}`;
-  url.search = "";
   return url.toString();
 };
 
-const maintenanceDatabaseUrl = (baseUrl: string): string => {
+export const maintenanceDatabaseUrl = (baseUrl: string): string => {
   const url = new URL(baseUrl);
   url.pathname = "/postgres";
-  url.search = "";
   return url.toString();
 };
 
@@ -387,6 +388,7 @@ const seedCase = async (
       }
     );
     seedEventIds.set(seed.id, backingEvent.id);
+    sourceIdAliases.set(backingEvent.id, seed.id);
 
     const node = await repo.createMemoryNode(
       { userId: user.id },

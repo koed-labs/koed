@@ -7,7 +7,11 @@ import {
   scoreRetrievalSuccessRun,
   type RetrievalSuccessRunInput
 } from "./benchmark.js";
-import { deterministicEmbeddingVector } from "./live-runner.js";
+import {
+  databaseUrlWithName,
+  deterministicEmbeddingVector,
+  maintenanceDatabaseUrl
+} from "./live-runner.js";
 
 const caseById = new Map(retrievalSuccessCases.map((item) => [item.id, item]));
 
@@ -174,11 +178,11 @@ describe("retrieval-success benchmark scoring", () => {
       retrievals: [
         {
           stages: [
-            { name: "rollup_search" },
+            { name: "rollup_search", selectedCount: 1 },
             {
               retrievals: [
-                { retrieval_stage: "scoped_leaf_search" },
-                { stage: "raw_fallback_search" }
+                { retrieval_stage: "scoped_leaf_search", used: true },
+                { stage: "raw_fallback_search", selected_count: 1 }
               ]
             }
           ]
@@ -191,6 +195,49 @@ describe("retrieval-success benchmark scoring", () => {
       "scoped_leaf_search",
       "raw_fallback_search"
     ]);
+  });
+
+  it("does not count retrieval stages that ran but selected no evidence", () => {
+    const benchmarkCase = mustCase("rollup-to-scoped-leaf-decision");
+    const score = scoreRetrievalSuccessRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      answer: {
+        memoryStatus: "found",
+        answerMarkdown: "We chose token limits to reduce noisy giant chunks."
+      },
+      evidence: [
+        {
+          sourceId: "turn-boundary-project-rollup",
+          retrievalStage: "rollup_search"
+        }
+      ],
+      searches: [
+        { retrievalStage: "score_scan" },
+        { retrievalStage: "scoped_leaf_search" }
+      ],
+      retrievals: [
+        {
+          stages: [
+            { name: "score_scan", ran: true, used: false, selectedCount: 0 },
+            { name: "rollup_search", ran: true, used: true, selectedCount: 1 },
+            {
+              name: "scoped_leaf_search",
+              ran: true,
+              used: false,
+              selectedCount: 0
+            }
+          ]
+        }
+      ]
+    });
+
+    expect(score.retrievalStagesUsed).toEqual(["score_scan", "rollup_search"]);
+    expect(
+      score.details.find(
+        (detail) => detail.name === "stage_required:scoped_leaf_search"
+      )
+    ).toMatchObject({ score: 0, reason: "missing" });
   });
 });
 
@@ -205,5 +252,17 @@ describe("retrieval-success live benchmark helpers", () => {
     expect(first).toHaveLength(1024);
     expect(first).toEqual(second);
     expect(norm).toBeCloseTo(1, 8);
+  });
+
+  it("preserves required Postgres URL query parameters for temporary DB URLs", () => {
+    const baseUrl =
+      "postgres://koed:secret@example.test:5432/koed?sslmode=require&connect_timeout=10";
+
+    expect(databaseUrlWithName(baseUrl, "koed_eval")).toBe(
+      "postgres://koed:secret@example.test:5432/koed_eval?sslmode=require&connect_timeout=10"
+    );
+    expect(maintenanceDatabaseUrl(baseUrl)).toBe(
+      "postgres://koed:secret@example.test:5432/postgres?sslmode=require&connect_timeout=10"
+    );
   });
 });
