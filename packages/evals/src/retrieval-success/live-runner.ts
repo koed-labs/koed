@@ -118,7 +118,7 @@ const createTemporaryDatabase = async (
         await pool.query(
           `drop database if exists ${quoteIdent(databaseName)} with (force)`
         );
-      } catch (error) {
+      } catch {
         await pool.query(`drop database if exists ${quoteIdent(databaseName)}`);
       } finally {
         await pool.end();
@@ -236,31 +236,40 @@ const readRequestBody = async (
 
 const startDeterministicEmbeddingServer =
   async (): Promise<DeterministicEmbeddingServer> => {
-    const server = createServer(async (request, response) => {
-      if (request.method !== "POST" || request.url !== "/embed") {
-        response.writeHead(404, { "content-type": "application/json" });
-        response.end(JSON.stringify({ detail: "not found" }));
-        return;
-      }
-      if (request.headers["x-koed-embedding-token"] !== EMBEDDING_TOKEN) {
-        response.writeHead(401, { "content-type": "application/json" });
-        response.end(JSON.stringify({ detail: "invalid embedding token" }));
-        return;
-      }
-      const body = JSON.parse(await readRequestBody(request)) as {
-        texts?: unknown;
-      };
-      const texts = Array.isArray(body.texts)
-        ? body.texts.map((text) => String(text))
-        : [];
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          model: EMBEDDING_MODEL,
-          dimensions: EMBEDDING_DIMENSIONS,
-          vectors: texts.map(deterministicEmbeddingVector)
-        })
-      );
+    const server = createServer((request, response) => {
+      void (async () => {
+        if (request.method !== "POST" || request.url !== "/embed") {
+          response.writeHead(404, { "content-type": "application/json" });
+          response.end(JSON.stringify({ detail: "not found" }));
+          return;
+        }
+        if (request.headers["x-koed-embedding-token"] !== EMBEDDING_TOKEN) {
+          response.writeHead(401, { "content-type": "application/json" });
+          response.end(JSON.stringify({ detail: "invalid embedding token" }));
+          return;
+        }
+        const body = JSON.parse(await readRequestBody(request)) as {
+          texts?: unknown;
+        };
+        const texts = Array.isArray(body.texts)
+          ? body.texts.map((text) => String(text))
+          : [];
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            model: EMBEDDING_MODEL,
+            dimensions: EMBEDDING_DIMENSIONS,
+            vectors: texts.map(deterministicEmbeddingVector)
+          })
+        );
+      })().catch((error: unknown) => {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            detail: error instanceof Error ? error.message : "embedding error"
+          })
+        );
+      });
     });
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve)
