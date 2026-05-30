@@ -482,6 +482,9 @@ export interface MemoryEngineRepository {
     nodeId: string,
     actor: RequesterContext,
     input?: {
+      searchDomain?: MemorySearchDomain;
+      sessionId?: string;
+      workspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -568,6 +571,9 @@ export const expandMemoryNode = async (
   nodeId: string,
   requesterContext: RequesterContext & {
     repository: MemoryEngineRepository;
+    searchDomain?: MemorySearchDomain;
+    sessionId?: string;
+    workspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -575,6 +581,9 @@ export const expandMemoryNode = async (
 ): Promise<ExpandedMemoryNode> => {
   const { repository, ...actor } = requesterContext;
   return repository.expandMemoryNode(nodeId, actor, {
+    searchDomain: requesterContext.searchDomain,
+    sessionId: requesterContext.sessionId,
+    workspaceId: requesterContext.workspaceId,
     recentDays: requesterContext.recentDays,
     sourceAfter: requesterContext.sourceAfter,
     sourceBefore: requesterContext.sourceBefore
@@ -599,6 +608,9 @@ export const createMemoryEngine = (repository: MemoryEngineRepository) => ({
     nodeId: string,
     requesterContext: RequesterContext,
     input: {
+      searchDomain?: MemorySearchDomain;
+      sessionId?: string;
+      workspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;

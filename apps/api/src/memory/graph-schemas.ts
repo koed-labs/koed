@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
+import { searchDomainSchema } from "./retrieval-schemas.js";
 
 export const memoryBrowserQuerySchema = z.object({
   query: z.string().min(1).optional(),
@@ -81,11 +82,28 @@ export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
 
 export const expandMemoryNodeQuerySchema = z
   .object({
+    search_domain: searchDomainSchema.default("global"),
+    session_id: z.string().uuid().optional(),
+    workspace_id: z.string().min(1).optional(),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),
     source_before: z.coerce.date().optional()
   })
   .superRefine((input, context) => {
+    if (input.search_domain === "session" && !input.session_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["session_id"],
+        message: "session_id is required when search_domain is session"
+      });
+    }
+    if (input.search_domain === "project" && !input.workspace_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workspace_id"],
+        message: "workspace_id is required when search_domain is project"
+      });
+    }
     if (
       input.recent_days !== undefined &&
       (input.source_after !== undefined || input.source_before !== undefined)

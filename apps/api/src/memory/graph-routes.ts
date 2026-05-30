@@ -328,6 +328,9 @@ export const registerGraphRoutes = (
           userId: user.id
         },
         {
+          searchDomain: query.search_domain,
+          sessionId: query.session_id,
+          workspaceId: query.workspace_id,
           recentDays: query.recent_days,
           sourceAfter: query.source_after?.toISOString(),
           sourceBefore: query.source_before?.toISOString()

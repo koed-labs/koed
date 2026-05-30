@@ -258,12 +258,24 @@ export class MemoryApiClient {
   async expand(
     nodeId: string,
     input: {
+      searchDomain?: string;
+      sessionId?: string;
+      workspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
     } = {}
   ): Promise<Record<string, unknown>> {
     const params = new URLSearchParams();
+    if (input.searchDomain) {
+      params.set("search_domain", input.searchDomain);
+    }
+    if (input.sessionId) {
+      params.set("session_id", input.sessionId);
+    }
+    if (input.workspaceId) {
+      params.set("workspace_id", input.workspaceId);
+    }
     if (input.recentDays !== undefined) {
       params.set("recent_days", String(input.recentDays));
     }

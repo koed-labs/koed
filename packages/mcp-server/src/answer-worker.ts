@@ -182,6 +182,9 @@ export interface MemoryAnswerRetrievalClient {
   expand(
     nodeId: string,
     input?: {
+      searchDomain?: string;
+      sessionId?: string;
+      workspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -803,7 +806,14 @@ const runPlannedMemoryAnswer = async (
         state.errors.push("Planner requested expand without nodeId.");
         continue;
       }
+      const { searchDomain, sessionId, workspaceId } = plannerSearchDomain(
+        action,
+        options
+      );
       const expanded = await options.client.expand(action.nodeId, {
+        searchDomain,
+        sessionId,
+        workspaceId,
         recentDays: options.recentDays,
         sourceAfter: options.sourceAfter,
         sourceBefore: options.sourceBefore

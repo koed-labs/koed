@@ -6566,24 +6566,52 @@ export const createMemorySourceRepository = (
                   ) as parent_node_ids,
                   case
                     when me.memory_node_id is not null
-                      and ($12::timestamptz is not null or $13::timestamptz is not null)
+                      and (
+                        $8::text <> 'global'
+                        or $12::timestamptz is not null
+                        or $13::timestamptz is not null
+                      )
                     then exists (
                       select 1
                       from memory_node_sources boundary_mns
                       left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null
                       left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null
+                      left join sessions boundary_msg_session on boundary_msg_session.id = boundary_msg.session_id
                       where boundary_mns.memory_node_id = me.memory_node_id
-                        and (
-                          coalesce(boundary_ev.captured_at, boundary_msg.captured_at) is null
-                          or ($12::timestamptz is not null and coalesce(boundary_ev.captured_at, boundary_msg.captured_at) < $12::timestamptz)
-                          or ($13::timestamptz is not null and coalesce(boundary_ev.captured_at, boundary_msg.captured_at) >= $13::timestamptz)
+                        and not (
+                          (
+                            $8::text = 'global'
+                            or (
+                              $8::text = 'session'
+                              and (boundary_ev.session_id = $9::uuid or boundary_msg.session_id = $9::uuid)
+                            )
+                            or (
+                              $8::text = 'project'
+                              and (
+                                boundary_ev.payload ->> 'workspaceId' = $10
+                                or boundary_msg_session.cwd = $10
+                              )
+                            )
+                          )
+                          and (
+                            ($12::timestamptz is null and $13::timestamptz is null)
+                            or (
+                              coalesce(boundary_ev.captured_at, boundary_msg.captured_at) is not null
+                              and ($12::timestamptz is null or coalesce(boundary_ev.captured_at, boundary_msg.captured_at) >= $12::timestamptz)
+                              and ($13::timestamptz is null or coalesce(boundary_ev.captured_at, boundary_msg.captured_at) < $13::timestamptz)
+                            )
+                          )
                         )
                     )
                     else false
                   end as has_out_of_window_sources,
                   case
                     when me.memory_node_id is not null
-                      and ($12::timestamptz is not null or $13::timestamptz is not null)
+                      and (
+                        $8::text <> 'global'
+                        or $12::timestamptz is not null
+                        or $13::timestamptz is not null
+                      )
                     then (
                       select json_agg(
                         json_build_object(
@@ -6606,7 +6634,24 @@ export const createMemorySourceRepository = (
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
                         left join sessions time_msg_session on time_msg_session.id = time_msg.session_id
                         where time_mns.memory_node_id = me.memory_node_id
-                          and coalesce(time_ev.captured_at, time_msg.captured_at) is not null
+                          and (
+                            $8::text = 'global'
+                            or (
+                              $8::text = 'session'
+                              and (time_ev.session_id = $9::uuid or time_msg.session_id = $9::uuid)
+                            )
+                            or (
+                              $8::text = 'project'
+                              and (
+                                time_ev.payload ->> 'workspaceId' = $10
+                                or time_msg_session.cwd = $10
+                              )
+                            )
+                          )
+                          and (
+                            ($12::timestamptz is null and $13::timestamptz is null)
+                            or coalesce(time_ev.captured_at, time_msg.captured_at) is not null
+                          )
                           and coalesce(time_ev.payload ->> 'content', time_msg.content, '') <> ''
                           and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
                           and ($13::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) < $13::timestamptz)
@@ -6728,6 +6773,39 @@ export const createMemorySourceRepository = (
                       me.message_id is not null
                       and ($12::timestamptz is null or msg.captured_at >= $12::timestamptz)
                       and ($13::timestamptz is null or msg.captured_at < $13::timestamptz)
+                    )
+                  )
+                  and (
+                    me.memory_node_id is null
+                    or exists (
+                      select 1
+                      from memory_node_sources source_mns
+                      left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
+                      left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
+                      left join sessions source_msg_session on source_msg_session.id = source_msg.session_id
+                      where source_mns.memory_node_id = me.memory_node_id
+                        and (
+                          $8::text = 'global'
+                          or (
+                            $8::text = 'session'
+                            and (source_ev.session_id = $9::uuid or source_msg.session_id = $9::uuid)
+                          )
+                          or (
+                            $8::text = 'project'
+                            and (
+                              source_ev.payload ->> 'workspaceId' = $10
+                              or source_msg_session.cwd = $10
+                            )
+                          )
+                        )
+                        and (
+                          ($12::timestamptz is null and $13::timestamptz is null)
+                          or (
+                            coalesce(source_ev.captured_at, source_msg.captured_at) is not null
+                            and ($12::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) >= $12::timestamptz)
+                            and ($13::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) < $13::timestamptz)
+                          )
+                        )
                     )
                   )
                   and (
@@ -7397,6 +7475,13 @@ export const createMemorySourceRepository = (
   },
 
   async expandMemoryNode(nodeId, actor, input = {}) {
+    const searchDomain = input.searchDomain ?? "global";
+    if (searchDomain === "session" && !input.sessionId) {
+      throw new Error("Session-scoped memory expansion requires sessionId");
+    }
+    if (searchDomain === "project" && !input.workspaceId) {
+      throw new Error("Project-scoped memory expansion requires workspaceId");
+    }
     const now = new Date();
     const sourceAfter = input.recentDays
       ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
@@ -7471,9 +7556,22 @@ export const createMemorySourceRepository = (
           and me.owner_user_id = $2
           and ($3::timestamptz is null or me.captured_at >= $3::timestamptz)
           and ($4::timestamptz is null or me.captured_at < $4::timestamptz)
+          and (
+            $5::text = 'global'
+            or ($5::text = 'session' and me.session_id = $6::uuid)
+            or ($5::text = 'project' and me.payload ->> 'workspaceId' = $7)
+          )
         order by me.captured_at asc, me.id asc
       `,
-      [nodeId, actor.userId, sourceAfter, sourceBefore]
+      [
+        nodeId,
+        actor.userId,
+        sourceAfter,
+        sourceBefore,
+        searchDomain,
+        input.sessionId ?? null,
+        input.workspaceId ?? null
+      ]
     );
     const eventSourceItems: LcmSourceItem[] = sources.rows.map(
       (source, position) => ({
@@ -7508,7 +7606,31 @@ export const createMemorySourceRepository = (
         (!sourceBefore || itemDate < sourceBefore)
       );
     };
-    const filteredNodeSourceItems = nodeSourceItems.filter(sourceItemInWindow);
+    const sourceItemInBoundary = (item: LcmSourceItem): boolean => {
+      if (searchDomain === "global") {
+        return true;
+      }
+      if (item.kind === "lcm_child") {
+        return false;
+      }
+      const payload =
+        item.payload && typeof item.payload === "object"
+          ? (item.payload as Record<string, unknown>)
+          : {};
+      if (searchDomain === "session") {
+        return (
+          typeof input.sessionId === "string" &&
+          payload.sessionId === input.sessionId
+        );
+      }
+      return (
+        typeof input.workspaceId === "string" &&
+        payload.workspaceId === input.workspaceId
+      );
+    };
+    const filteredNodeSourceItems = nodeSourceItems.filter(
+      (item) => sourceItemInWindow(item) && sourceItemInBoundary(item)
+    );
 
     return {
       nodeId,

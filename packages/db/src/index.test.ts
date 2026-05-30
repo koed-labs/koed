@@ -1058,6 +1058,224 @@ describeDb("memory repository visibility", () => {
     expect(unboundedSearch.metadata.temporalFilter).toBeUndefined();
   });
 
+  it("requires the same node source to satisfy project and temporal filters", async () => {
+    const alice = await repo.createUser({
+      email: `alice-project-boundary-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const projectA = `workspace-project-a-${randomUUID()}`;
+    const projectB = `workspace-project-b-${randomUUID()}`;
+
+    const oldProjectA = await captureUserEvent(engine, alice.id, {
+      workspaceId: projectA,
+      content: "Boundary correlation project A old only.",
+      metadata: { project: "a", age: "old" }
+    });
+    const recentProjectB = await captureUserEvent(engine, alice.id, {
+      workspaceId: projectB,
+      content: "Boundary correlation project B recent only.",
+      metadata: { project: "b", age: "recent" }
+    });
+    const recentProjectA = await captureUserEvent(engine, alice.id, {
+      workspaceId: projectA,
+      content: "Boundary correlation project A recent valid.",
+      metadata: { project: "a", age: "recent" }
+    });
+
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '45 days', created_at = now() where id = $1",
+      [oldProjectA.id]
+    );
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '2 days', created_at = now() where id = any($1::uuid[])",
+      [[recentProjectB.id, recentProjectA.id]]
+    );
+
+    const mixedNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "Mixed project boundary node: project A old plus project B recent.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `mixed-project-boundary-${randomUUID()}`
+      }
+    );
+    const validNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Valid project boundary node: project A recent valid.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `valid-project-boundary-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0), ($1, $3, 1), ($4, $5, 0)
+      `,
+      [
+        mixedNode.id,
+        oldProjectA.id,
+        recentProjectB.id,
+        validNode.id,
+        recentProjectA.id
+      ]
+    );
+
+    await embedPendingSources();
+    mockEmbeddingQuery();
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "boundary correlation project",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: projectA,
+      recentDays: 30,
+      limit: 10
+    });
+
+    expect(search.results.map((result) => result.nodeId)).toContain(
+      validNode.id
+    );
+    expect(search.results.map((result) => result.nodeId)).not.toContain(
+      mixedNode.id
+    );
+
+    const expanded = await engine.expandMemoryNode(
+      mixedNode.id,
+      { userId: alice.id },
+      { searchDomain: "project", workspaceId: projectA, recentDays: 30 }
+    );
+    expect(expanded.sources).toHaveLength(0);
+    expect(
+      expanded.sourceItems.some((item) =>
+        item.text?.includes("Boundary correlation")
+      )
+    ).toBe(false);
+  });
+
+  it("requires the same node source to satisfy session and temporal filters", async () => {
+    const alice = await repo.createUser({
+      email: `alice-session-boundary-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-session-boundary-${randomUUID()}`;
+    const sessionA = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `session-a-${randomUUID()}`,
+        idempotencyKey: `session-a-${randomUUID()}`
+      }
+    );
+    const sessionB = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `session-b-${randomUUID()}`,
+        idempotencyKey: `session-b-${randomUUID()}`
+      }
+    );
+
+    const oldSessionA = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      sessionId: sessionA.id,
+      content: "Boundary correlation session A old only.",
+      metadata: { session: "a", age: "old" }
+    });
+    const recentSessionB = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      sessionId: sessionB.id,
+      content: "Boundary correlation session B recent only.",
+      metadata: { session: "b", age: "recent" }
+    });
+    const recentSessionA = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      sessionId: sessionA.id,
+      content: "Boundary correlation session A recent valid.",
+      metadata: { session: "a", age: "recent" }
+    });
+
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '45 days', created_at = now() where id = $1",
+      [oldSessionA.id]
+    );
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '2 days', created_at = now() where id = any($1::uuid[])",
+      [[recentSessionB.id, recentSessionA.id]]
+    );
+
+    const mixedNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "Mixed session boundary node: session A old plus session B recent.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `mixed-session-boundary-${randomUUID()}`
+      }
+    );
+    const validNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Valid session boundary node: session A recent valid.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `valid-session-boundary-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0), ($1, $3, 1), ($4, $5, 0)
+      `,
+      [
+        mixedNode.id,
+        oldSessionA.id,
+        recentSessionB.id,
+        validNode.id,
+        recentSessionA.id
+      ]
+    );
+
+    await embedPendingSources();
+    mockEmbeddingQuery();
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "boundary correlation session",
+      scope: "personal",
+      searchDomain: "session",
+      sessionId: sessionA.id,
+      recentDays: 30,
+      limit: 10
+    });
+
+    expect(search.results.map((result) => result.nodeId)).toContain(
+      validNode.id
+    );
+    expect(search.results.map((result) => result.nodeId)).not.toContain(
+      mixedNode.id
+    );
+
+    const expanded = await engine.expandMemoryNode(
+      mixedNode.id,
+      { userId: alice.id },
+      { searchDomain: "session", sessionId: sessionA.id, recentDays: 30 }
+    );
+    expect(expanded.sources).toHaveLength(0);
+    expect(
+      expanded.sourceItems.some((item) =>
+        item.text?.includes("Boundary correlation")
+      )
+    ).toBe(false);
+  });
+
   it("caps rollup evidence so scoped leaves are not crowded out", async () => {
     const alice = await repo.createUser({
       email: `alice-rollup-cap-${randomUUID()}@example.com`
