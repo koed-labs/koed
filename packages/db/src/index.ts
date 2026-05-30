@@ -2536,6 +2536,11 @@ const positiveIntEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const nonNegativeFloatEnv = (name: string, fallback: number): number => {
+  const parsed = Number.parseFloat(process.env[name] ?? "");
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 const QWEN_OPERATIONAL_MAX_TOKENS = 32_000;
 
 const positiveIntEnvCapped = (
@@ -6391,7 +6396,8 @@ export const createMemorySourceRepository = (
       | "scoped_leaf_search"
       | "leaf_search"
       | "fresh_pending_search"
-      | "raw_fallback_search";
+      | "raw_fallback_search"
+      | "lexical_search";
     type VectorRow = {
       id: string;
       source_type: "memory_node" | "memory_event" | "message";
@@ -6434,14 +6440,16 @@ export const createMemorySourceRepository = (
       scoped_leaf_search: 4,
       leaf_search: 3,
       fresh_pending_search: 2,
-      raw_fallback_search: 1
+      raw_fallback_search: 1,
+      lexical_search: 2
     };
     const stageWeight: Record<RetrievalStageName, number> = {
       rollup_search: 1.1,
       scoped_leaf_search: 1.05,
       leaf_search: 1,
       fresh_pending_search: 0.95,
-      raw_fallback_search: 0.7
+      raw_fallback_search: 0.7,
+      lexical_search: 1.2
     };
     const stageCandidateLimit = (name: string, fallback: number): number =>
       positiveIntEnv(name, fallback);
@@ -6465,6 +6473,10 @@ export const createMemorySourceRepository = (
       "MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT",
       Math.max(requestedLimit, 20)
     );
+    const lexicalCandidateLimit = stageCandidateLimit(
+      "MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT",
+      Math.max(requestedLimit, 20)
+    );
     const rollupResultLimit = stageCandidateLimit(
       "MEMORY_RAG_ROLLUP_RESULT_LIMIT",
       Math.max(1, Math.min(requestedLimit, 5))
@@ -6476,6 +6488,36 @@ export const createMemorySourceRepository = (
     const rawFallbackEnabled =
       process.env.MEMORY_RAG_RAW_FALLBACK_ENABLED?.trim().toLowerCase() !==
       "false";
+    const scoreThresholds: Record<RetrievalStageName, number> = {
+      rollup_search: nonNegativeFloatEnv("MEMORY_RAG_ROLLUP_MIN_SCORE", 0),
+      scoped_leaf_search: nonNegativeFloatEnv(
+        "MEMORY_RAG_SCOPED_LEAF_MIN_SCORE",
+        nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0)
+      ),
+      leaf_search: nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0),
+      fresh_pending_search: nonNegativeFloatEnv(
+        "MEMORY_RAG_FRESH_EVENT_MIN_SCORE",
+        0
+      ),
+      raw_fallback_search: nonNegativeFloatEnv(
+        "MEMORY_RAG_RAW_FALLBACK_MIN_SCORE",
+        0
+      ),
+      lexical_search: 0
+    };
+    const stageMaxAllowed: Record<RetrievalStageName, number> = {
+      rollup_search: rollupCandidateLimit,
+      scoped_leaf_search: scopedLeafCandidateLimit,
+      leaf_search: leafCandidateLimit,
+      fresh_pending_search: freshCandidateLimit,
+      raw_fallback_search: rawCandidateLimit,
+      lexical_search: lexicalCandidateLimit
+    };
+    const requestedStage =
+      input.retrievalStage && input.retrievalStage !== "score_scan"
+        ? input.retrievalStage
+        : null;
+    const scanOnly = input.retrievalStage === "score_scan";
     const vectorRows: VectorRow[] = [];
     const filteredNodeSourceText = (
       items: VectorRow["filtered_source_items"]
@@ -6501,10 +6543,322 @@ export const createMemorySourceRepository = (
       stage: RetrievalStageName,
       rows: VectorRow[]
     ): VectorRow[] => {
-      if (stage === "rollup_search") {
+      if (stage === "rollup_search" && !requestedStage) {
         return rows.slice(0, rollupResultLimit);
       }
       return rows;
+    };
+    const lexicalStopWords = new Set([
+      "about",
+      "after",
+      "again",
+      "answer",
+      "before",
+      "being",
+      "could",
+      "does",
+      "from",
+      "have",
+      "into",
+      "that",
+      "their",
+      "there",
+      "these",
+      "this",
+      "what",
+      "when",
+      "where",
+      "which",
+      "while",
+      "with",
+      "would"
+    ]);
+    const lexicalTerms = (query: string): string[] => {
+      const quoted = [...query.matchAll(/"([^"]+)"/g)]
+        .map((match) => match[1]?.trim())
+        .filter((term): term is string => Boolean(term && term.length >= 2));
+      const words = query
+        .toLowerCase()
+        .split(/[^a-z0-9_'-]+/i)
+        .map((term) => term.trim())
+        .filter((term) => term.length >= 3 && !lexicalStopWords.has(term));
+      const terms = [...new Set([...quoted, ...words])]
+        .filter(Boolean)
+        .slice(0, 16);
+      return terms.length > 0 ? terms : [query.trim()].filter(Boolean);
+    };
+    const runLexicalStage = async (): Promise<StageResult> => {
+      const started = Date.now();
+      const terms = lexicalTerms(input.query);
+      if (terms.length === 0) {
+        return {
+          name: "lexical_search",
+          rows: [],
+          durationMs: Date.now() - started,
+          reranked: false,
+          rerankedCount: 0,
+          parentNodeIds: []
+        };
+      }
+      const patterns = terms.map((term) => `%${term.toLowerCase()}%`);
+      const exact = input.query.trim().toLowerCase();
+      const result = await pool.query<VectorRow>(
+        `
+          with lexical_sources as (
+            select
+              mn.id,
+              'memory_node'::text as source_type,
+              mn.id as source_id,
+              coalesce(
+                (
+                  select array_agg(parent.parent_memory_node_id::text order by parent.parent_memory_node_id::text)
+                  from memory_node_children parent
+                  where parent.child_memory_node_id = mn.id
+                ),
+                array[]::text[]
+              ) as parent_node_ids,
+              mn.visibility,
+              case
+                when not lexical_boundaries.use_filtered_sources
+                then node_text.full_text
+                else coalesce(filtered_sources.filtered_source_text, '')
+              end as summary_text,
+              lexical_boundaries.use_filtered_sources as has_out_of_window_sources,
+              case
+                when lexical_boundaries.use_filtered_sources
+                then filtered_sources.filtered_source_items
+                else null::json
+              end as filtered_source_items,
+              coalesce(mn.summary_model, '') as lcm_summary_model,
+              mn.summary_model is null as lcm_summary_pending,
+              mn.created_at,
+              0.15::double precision as source_rank
+            from memory_nodes mn
+            cross join lateral (
+              select not (
+                $5::text = 'global'
+                and $8::timestamptz is null
+                and $9::timestamptz is null
+              ) as use_filtered_sources
+            ) lexical_boundaries
+            cross join lateral (
+              select case
+                when mn.body_text is null
+                  or btrim(mn.body_text) = ''
+                  or btrim(mn.body_text) = btrim(mn.summary_text)
+                then btrim(mn.summary_text)
+                else btrim(mn.summary_text || E'\n' || mn.body_text)
+              end as full_text
+            ) node_text
+            left join lateral (
+              select
+                string_agg(source_row.source_text, E'\n' order by source_row.source_created_at asc, source_row.source_id asc) as filtered_source_text,
+                json_agg(
+                  json_build_object(
+                    'createdAt', to_char(source_row.source_created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                    'text', source_row.source_text,
+                    'projectName', source_row.project_name,
+                    'projectPath', source_row.project_path
+                  )
+                  order by source_row.source_created_at asc, source_row.source_id asc
+                ) as filtered_source_items
+              from (
+                select
+                  coalesce(source_ev.id, source_msg.id) as source_id,
+                  coalesce(source_ev.captured_at, source_msg.captured_at) as source_created_at,
+                  coalesce(source_ev.payload ->> 'content', source_msg.content, '') as source_text,
+                  nullif(source_ev.payload ->> 'projectName', '') as project_name,
+                  coalesce(nullif(source_ev.payload ->> 'projectPath', ''), nullif(source_ev.payload ->> 'workspaceId', ''), nullif(source_msg_session.cwd, '')) as project_path
+                from memory_node_sources source_mns
+                left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
+                left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
+                left join sessions source_msg_session on source_msg_session.id = source_msg.session_id
+                where source_mns.memory_node_id = mn.id
+                  and (
+                    $5::text = 'global'
+                    or (
+                      $5::text = 'session'
+                      and (source_ev.session_id = $6::uuid or source_msg.session_id = $6::uuid)
+                    )
+                    or (
+                      $5::text = 'project'
+                      and (
+                        source_ev.payload ->> 'workspaceId' = $7
+                        or source_msg_session.cwd = $7
+                      )
+                    )
+                  )
+                  and coalesce(source_ev.payload ->> 'content', source_msg.content, '') <> ''
+                  and (
+                    ($8::timestamptz is null and $9::timestamptz is null)
+                    or coalesce(source_ev.captured_at, source_msg.captured_at) is not null
+                  )
+                  and ($8::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) >= $8::timestamptz)
+                  and ($9::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) < $9::timestamptz)
+              ) source_row
+            ) filtered_sources on true
+            where mn.invalidated_at is null
+              and mn.visibility = 'personal'
+              and mn.owner_user_id = $1
+              and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
+              and lower(
+                case
+                  when not lexical_boundaries.use_filtered_sources
+                  then node_text.full_text
+                  else coalesce(filtered_sources.filtered_source_text, '')
+                end
+              ) like any($3::text[])
+              and (
+                not lexical_boundaries.use_filtered_sources
+                or filtered_sources.filtered_source_text is not null
+              )
+
+            union all
+
+            select
+              me.id,
+              'memory_event'::text as source_type,
+              me.id as source_id,
+              array[]::text[] as parent_node_ids,
+              me.visibility,
+              coalesce(me.payload ->> 'content', '') as summary_text,
+              false as has_out_of_window_sources,
+              null::json as filtered_source_items,
+              null as lcm_summary_model,
+              false as lcm_summary_pending,
+              me.captured_at as created_at,
+              case
+                when coalesce(me.payload ->> 'actor', '') = 'tool' then -0.25
+                when coalesce(me.payload ->> 'actor', '') in ('agent', 'assistant', 'subagent') then 0.2
+                else 0.05
+              end::double precision as source_rank
+            from memory_events me
+            where me.invalidated_at is null
+              and me.visibility = 'personal'
+              and me.owner_user_id = $1
+              and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
+              and lower(coalesce(me.payload ->> 'content', '')) like any($3::text[])
+              and (
+                $5::text = 'global'
+                or (
+                  $5::text = 'session'
+                  and me.session_id = $6::uuid
+                )
+                or (
+                  $5::text = 'project'
+                  and me.payload ->> 'workspaceId' = $7
+                )
+              )
+              and ($8::timestamptz is null or me.captured_at >= $8::timestamptz)
+              and ($9::timestamptz is null or me.captured_at < $9::timestamptz)
+
+            union all
+
+            select
+              msg.id,
+              'message'::text as source_type,
+              msg.id as source_id,
+              array[]::text[] as parent_node_ids,
+              msg.visibility,
+              msg.content as summary_text,
+              false as has_out_of_window_sources,
+              null::json as filtered_source_items,
+              null as lcm_summary_model,
+              false as lcm_summary_pending,
+              msg.captured_at as created_at,
+              case
+                when msg.role = 'tool' then -0.25
+                else 0.05
+              end::double precision as source_rank
+            from messages msg
+            left join sessions msg_session on msg_session.id = msg.session_id
+            where msg.invalidated_at is null
+              and msg.visibility = 'personal'
+              and msg.owner_user_id = $1
+              and ($2::visibility_scope is null or msg.visibility = $2::visibility_scope)
+              and lower(msg.content) like any($3::text[])
+              and (
+                $5::text = 'global'
+                or (
+                  $5::text = 'session'
+                  and msg.session_id = $6::uuid
+                )
+                or (
+                  $5::text = 'project'
+                  and msg_session.cwd = $7
+                )
+              )
+              and ($8::timestamptz is null or msg.captured_at >= $8::timestamptz)
+              and ($9::timestamptz is null or msg.captured_at < $9::timestamptz)
+          )
+          , scored as (
+            select
+              lexical_sources.*,
+              (
+                select count(*)::double precision
+                from unnest($3::text[]) as term(pattern)
+                where lower(summary_text) like term.pattern
+              ) as matched_terms
+            from lexical_sources
+            where btrim(summary_text) <> ''
+          )
+          select
+            id,
+            source_type::text,
+            source_id,
+            'lexical_search'::text as retrieval_stage,
+            parent_node_ids,
+            coalesce(has_out_of_window_sources, false) as has_out_of_window_sources,
+            filtered_source_items,
+            visibility,
+            summary_text,
+            summary_text as rerank_text,
+            nullif(lcm_summary_model, '') as lcm_summary_model,
+            lcm_summary_pending,
+            (
+              matched_terms
+              / greatest(array_length($3::text[], 1), 1)::double precision
+              + case
+                  when $4 <> '' and lower(summary_text) like '%' || $4 || '%'
+                  then 0.05
+                  else 0
+                end
+              + source_rank
+              + least(length(summary_text), 12000)::double precision / 120000
+            ) as score,
+            created_at,
+            $10::text as embedding_model,
+            $11::int as embedding_dimensions,
+            0 as source_chunk_index,
+            1 as source_chunk_count
+          from scored
+          where matched_terms > 0
+          order by score desc, matched_terms desc, created_at desc, source_id
+          limit $12
+        `,
+        [
+          actor.userId,
+          visibility,
+          patterns,
+          exact,
+          searchDomain,
+          input.sessionId ?? null,
+          input.workspaceId ?? null,
+          sourceAfter,
+          sourceBefore,
+          localEmbeddingModel(),
+          localEmbeddingDimensions(),
+          lexicalCandidateLimit
+        ]
+      );
+      return {
+        name: "lexical_search",
+        rows: result.rows,
+        durationMs: Date.now() - started,
+        reranked: false,
+        rerankedCount: 0,
+        parentNodeIds: []
+      };
     };
 
     const rerankStageRows = async (
@@ -6584,18 +6938,21 @@ export const createMemorySourceRepository = (
     };
 
     try {
-      const embedded = await embedTexts([input.query]);
-      if (embedded.vectors[0]) {
-        const queryVector = embedded.vectors[0];
-        const embeddingTable = embeddingTableForDimensions(embedded.dimensions);
-        const runStage = async (
-          stage: RetrievalStageName,
-          limit: number,
-          parentNodeIds: string[] = []
-        ): Promise<StageResult> => {
-          const started = Date.now();
-          const vectorResult = await pool.query<VectorRow>(
-            `
+      if (requestedStage !== "lexical_search") {
+        const embedded = await embedTexts([input.query]);
+        if (embedded.vectors[0]) {
+          const queryVector = embedded.vectors[0];
+          const embeddingTable = embeddingTableForDimensions(
+            embedded.dimensions
+          );
+          const runStage = async (
+            stage: RetrievalStageName,
+            limit: number,
+            parentNodeIds: string[] = []
+          ): Promise<StageResult> => {
+            const started = Date.now();
+            const vectorResult = await pool.query<VectorRow>(
+              `
               with candidates as (
                 select
                   coalesce(mns.memory_node_id, me.memory_node_id, me.memory_event_id, me.message_id) as id,
@@ -6875,6 +7232,7 @@ export const createMemorySourceRepository = (
                     or (
                       $11::text = 'fresh_pending_search'
                       and me.memory_node_id is null
+                      and coalesce(ev.payload ->> 'actor', msg.role, '') <> 'tool'
                       and (
                         (
                           me.memory_event_id is not null
@@ -6900,7 +7258,11 @@ export const createMemorySourceRepository = (
                         )
                       )
                     )
-                    or ($11::text = 'raw_fallback_search' and me.memory_node_id is null)
+                    or (
+                      $11::text = 'raw_fallback_search'
+                      and me.memory_node_id is null
+                      and coalesce(ev.payload ->> 'actor', msg.role, '') <> 'tool'
+                    )
                   )
               )
               select *
@@ -6908,134 +7270,205 @@ export const createMemorySourceRepository = (
               order by score desc, created_at desc, source_id
               limit $4
             `,
-            [
-              actor.userId,
-              visibility,
-              vectorLiteral(queryVector),
-              limit,
-              embedded.model,
-              embedded.dimensions,
-              localEmbeddingVersion(),
-              searchDomain,
-              input.sessionId ?? null,
-              input.workspaceId ?? null,
-              stage,
-              sourceAfter,
-              sourceBefore,
+              [
+                actor.userId,
+                visibility,
+                vectorLiteral(queryVector),
+                limit,
+                embedded.model,
+                embedded.dimensions,
+                localEmbeddingVersion(),
+                searchDomain,
+                input.sessionId ?? null,
+                input.workspaceId ?? null,
+                stage,
+                sourceAfter,
+                sourceBefore,
+                parentNodeIds
+              ]
+            );
+            const rows = vectorResult.rows.map((row) => {
+              const filteredSummary = row.has_out_of_window_sources
+                ? filteredNodeSourceText(row.filtered_source_items)
+                : null;
+              return filteredSummary
+                ? {
+                    ...row,
+                    summary_text: filteredSummary,
+                    rerank_text: filteredSummary
+                  }
+                : row;
+            });
+            const reranked = await rerankStageRows(stage, rows);
+            return {
+              name: stage,
+              rows: reranked.rows,
+              durationMs: Date.now() - started,
+              reranked: reranked.reranked,
+              rerankedCount: reranked.rerankedCount,
+              rerankerModel: reranked.rerankerModel,
+              rerankingUnavailable: reranked.rerankingUnavailable,
+              rerankingError: reranked.rerankingError,
               parentNodeIds
-            ]
-          );
-          const rows = vectorResult.rows.map((row) => {
-            const filteredSummary = row.has_out_of_window_sources
-              ? filteredNodeSourceText(row.filtered_source_items)
-              : null;
-            return filteredSummary
-              ? {
-                  ...row,
-                  summary_text: filteredSummary,
-                  rerank_text: filteredSummary
-                }
-              : row;
-          });
-          const reranked = await rerankStageRows(stage, rows);
-          return {
-            name: stage,
-            rows: reranked.rows,
-            durationMs: Date.now() - started,
-            reranked: reranked.reranked,
-            rerankedCount: reranked.rerankedCount,
-            rerankerModel: reranked.rerankerModel,
-            rerankingUnavailable: reranked.rerankingUnavailable,
-            rerankingError: reranked.rerankingError,
-            parentNodeIds
+            };
           };
-        };
 
-        const skippedRawFallback: StageResult = {
-          name: "raw_fallback_search",
-          rows: [],
-          durationMs: 0,
-          reranked: false,
-          rerankedCount: 0,
-          parentNodeIds: []
-        };
-        const [rollups, leaves, fresh, rawFallback] = await Promise.all([
-          runStage("rollup_search", rollupCandidateLimit),
-          runStage("leaf_search", leafCandidateLimit),
-          runStage("fresh_pending_search", freshCandidateLimit),
-          rawFallbackEnabled
-            ? runStage("raw_fallback_search", rawCandidateLimit)
-            : Promise.resolve(skippedRawFallback)
-        ]);
-        const selectedRollupIds = rollups.rows
-          .slice(0, rollupResultLimit)
-          .map((row) => row.source_id);
-        const scopedLeaves =
-          selectedRollupIds.length > 0
-            ? await runStage(
-                "scoped_leaf_search",
-                scopedLeafCandidateLimit,
-                selectedRollupIds
+          const skippedRawFallback: StageResult = {
+            name: "raw_fallback_search",
+            rows: [],
+            durationMs: 0,
+            reranked: false,
+            rerankedCount: 0,
+            parentNodeIds: []
+          };
+          const emptyStage = (
+            name: RetrievalStageName,
+            parentNodeIds: string[] = []
+          ): StageResult => ({
+            name,
+            rows: [],
+            durationMs: 0,
+            reranked: false,
+            rerankedCount: 0,
+            parentNodeIds
+          });
+          const runScopedLeaves = async (
+            parentNodeIds: string[]
+          ): Promise<StageResult> =>
+            parentNodeIds.length > 0
+              ? runStage(
+                  "scoped_leaf_search",
+                  scopedLeafCandidateLimit,
+                  parentNodeIds
+                )
+              : emptyStage("scoped_leaf_search", parentNodeIds);
+          const runRequestedSemanticStage = async (): Promise<
+            StageResult[]
+          > => {
+            if (!requestedStage) {
+              return [];
+            }
+            if (requestedStage === "rollup_search") {
+              return [await runStage("rollup_search", rollupCandidateLimit)];
+            }
+            if (requestedStage === "leaf_search") {
+              return [await runStage("leaf_search", leafCandidateLimit)];
+            }
+            if (requestedStage === "fresh_pending_search") {
+              return [
+                await runStage("fresh_pending_search", freshCandidateLimit)
+              ];
+            }
+            if (requestedStage === "raw_fallback_search") {
+              return [
+                rawFallbackEnabled
+                  ? await runStage("raw_fallback_search", rawCandidateLimit)
+                  : skippedRawFallback
+              ];
+            }
+            return [
+              await runScopedLeaves(
+                input.parentNodeIds && input.parentNodeIds.length > 0
+                  ? input.parentNodeIds
+                  : []
               )
-            : ({
-                name: "scoped_leaf_search",
-                rows: [],
-                durationMs: 0,
-                reranked: false,
-                rerankedCount: 0,
-                parentNodeIds: selectedRollupIds
-              } satisfies StageResult);
-        const stages = [rollups, leaves, fresh, rawFallback, scopedLeaves];
-        vectorRows.push(
-          ...stages.flatMap((stage) =>
-            selectStageRowsForEvidence(stage.name, stage.rows)
-          )
-        );
-        const anyReranked = stages.some((stage) => stage.reranked);
-        const rerankingErrors = stages
-          .map((stage) => stage.rerankingError)
-          .filter((value): value is string => Boolean(value));
-        embeddingMetadata = defaultRetrievalMetadata({
-          retrievalMode: anyReranked
-            ? "semantic_vector_reranked"
-            : "semantic_vector",
-          vectorHitsCount: vectorRows.length,
-          vectorCandidateCount: vectorRows.length,
-          embeddingModel: embedded.model,
-          embeddingDimensions: embedded.dimensions,
-          rerankedCount: stages.reduce(
-            (sum, stage) => sum + stage.rerankedCount,
-            0
-          ),
-          rerankerModel:
-            stages.find((stage) => stage.rerankerModel)?.rerankerModel ?? null,
-          rerankingEnabled: shouldRerank,
-          rerankingUnavailable:
-            shouldRerank && stages.some((stage) => stage.rerankingUnavailable),
-          rerankingError:
-            rerankingErrors.length > 0 ? rerankingErrors.join("; ") : undefined,
-          temporalFilter
-        });
-        stageDiagnostics.push(
-          ...stages.map((stage) => ({
-            name: stage.name,
-            ran:
-              stage.name !== "raw_fallback_search" || rawFallbackEnabled
-                ? true
-                : false,
-            used: false,
-            candidateCount: stage.rows.length,
-            selectedCount: 0,
-            durationMs: stage.durationMs,
-            parallelGroup:
-              stage.name === "scoped_leaf_search"
-                ? "post_rollup"
-                : "initial_candidates",
-            temporalFilterApplied: Boolean(temporalFilter),
-            reranked: stage.reranked,
-            parentNodeIds: stage.parentNodeIds
-          }))
-        );
+            ];
+          };
+          const runDefaultSemanticStages = async (): Promise<StageResult[]> => {
+            const [rollups, leaves, fresh, rawFallback] = await Promise.all([
+              runStage("rollup_search", rollupCandidateLimit),
+              runStage("leaf_search", leafCandidateLimit),
+              runStage("fresh_pending_search", freshCandidateLimit),
+              rawFallbackEnabled
+                ? runStage("raw_fallback_search", rawCandidateLimit)
+                : Promise.resolve(skippedRawFallback)
+            ]);
+            const selectedRollupIds =
+              input.parentNodeIds && input.parentNodeIds.length > 0
+                ? input.parentNodeIds
+                : rollups.rows
+                    .slice(0, rollupResultLimit)
+                    .map((row) => row.source_id);
+            const scopedLeaves = await runScopedLeaves(selectedRollupIds);
+            return [rollups, leaves, fresh, rawFallback, scopedLeaves];
+          };
+          const stages = requestedStage
+            ? await runRequestedSemanticStage()
+            : await runDefaultSemanticStages();
+          if (stages.length > 0) {
+            vectorRows.push(
+              ...stages.flatMap((stage) =>
+                stage.rows.filter(
+                  (row) => Number(row.score) >= scoreThresholds[stage.name]
+                )
+              )
+            );
+            const anyReranked = stages.some((stage) => stage.reranked);
+            const rerankingErrors = stages
+              .map((stage) => stage.rerankingError)
+              .filter((value): value is string => Boolean(value));
+            embeddingMetadata = defaultRetrievalMetadata({
+              retrievalMode: anyReranked
+                ? "semantic_vector_reranked"
+                : "semantic_vector",
+              vectorHitsCount: vectorRows.length,
+              vectorCandidateCount: vectorRows.length,
+              embeddingModel: embedded.model,
+              embeddingDimensions: embedded.dimensions,
+              rerankedCount: stages.reduce(
+                (sum, stage) => sum + stage.rerankedCount,
+                0
+              ),
+              rerankerModel:
+                stages.find((stage) => stage.rerankerModel)?.rerankerModel ??
+                null,
+              rerankingEnabled: shouldRerank,
+              rerankingUnavailable:
+                shouldRerank &&
+                stages.some((stage) => stage.rerankingUnavailable),
+              rerankingError:
+                rerankingErrors.length > 0
+                  ? rerankingErrors.join("; ")
+                  : undefined,
+              temporalFilter
+            });
+            stageDiagnostics.push(
+              ...stages.map((stage) => ({
+                name: stage.name,
+                ran:
+                  stage.name !== "raw_fallback_search" || rawFallbackEnabled
+                    ? true
+                    : false,
+                used: false,
+                candidateCount: stage.rows.length,
+                selectedCount: 0,
+                durationMs: stage.durationMs,
+                parallelGroup:
+                  stage.name === "scoped_leaf_search"
+                    ? "post_rollup"
+                    : "initial_candidates",
+                temporalFilterApplied: Boolean(temporalFilter),
+                reranked: stage.reranked,
+                parentNodeIds: stage.parentNodeIds,
+                topScore: stage.rows[0]?.score,
+                scoreThreshold: scoreThresholds[stage.name],
+                countAboveThreshold: stage.rows.filter(
+                  (row) => Number(row.score) >= scoreThresholds[stage.name]
+                ).length,
+                maxAllowed: stageMaxAllowed[stage.name],
+                rejectedCount: stage.rows.filter(
+                  (row) => Number(row.score) < scoreThresholds[stage.name]
+                ).length,
+                candidateIds: stage.rows
+                  .filter(
+                    (row) => Number(row.score) >= scoreThresholds[stage.name]
+                  )
+                  .slice(0, stageMaxAllowed[stage.name])
+                  .map((row) => row.source_id)
+              }))
+            );
+          }
+        }
       }
     } catch (error) {
       console.warn(
@@ -7043,6 +7476,34 @@ export const createMemorySourceRepository = (
           error instanceof Error ? error.message : String(error)
         }`
       );
+    }
+    if (requestedStage === "lexical_search") {
+      const lexical = await runLexicalStage();
+      vectorRows.push(
+        ...lexical.rows.filter(
+          (row) => Number(row.score) >= scoreThresholds.lexical_search
+        )
+      );
+      stageDiagnostics.push({
+        name: lexical.name,
+        ran: true,
+        used: false,
+        candidateCount: lexical.rows.length,
+        selectedCount: 0,
+        durationMs: lexical.durationMs,
+        parallelGroup: "lexical_candidates",
+        temporalFilterApplied: Boolean(temporalFilter),
+        reranked: false,
+        parentNodeIds: [],
+        topScore: lexical.rows[0]?.score,
+        scoreThreshold: scoreThresholds.lexical_search,
+        countAboveThreshold: lexical.rows.length,
+        maxAllowed: stageMaxAllowed.lexical_search,
+        rejectedCount: 0,
+        candidateIds: lexical.rows
+          .slice(0, stageMaxAllowed.lexical_search)
+          .map((row) => row.source_id)
+      });
     }
 
     const merged = new Map<
@@ -7117,16 +7578,86 @@ export const createMemorySourceRepository = (
 
     const rowsByStage = (stage: RetrievalStageName): VectorRow[] =>
       vectorRows.filter((row) => row.retrieval_stage === stage);
+    const requestedStageDiagnostics = requestedStage
+      ? stageDiagnostics.find((stage) => stage.name === requestedStage)
+      : undefined;
+    if (requestedStage && input.strictLimit) {
+      const maxAllowed =
+        requestedStageDiagnostics?.maxAllowed ??
+        stageMaxAllowed[requestedStage];
+      const countAboveThreshold =
+        requestedStageDiagnostics?.countAboveThreshold ??
+        rowsByStage(requestedStage).length;
+      if (requestedLimit > maxAllowed) {
+        throw Object.assign(
+          new Error(
+            `Requested ${requestedLimit} ${requestedStage} candidates but the configured stage maximum is ${maxAllowed}`
+          ),
+          {
+            statusCode: 400,
+            payload: {
+              error: "limit_exceeds_stage_max",
+              stage: requestedStage,
+              requested: requestedLimit,
+              maxAllowed
+            }
+          }
+        );
+      }
+      if (requestedLimit > countAboveThreshold) {
+        throw Object.assign(
+          new Error(
+            `Requested ${requestedLimit} ${requestedStage} candidates but only ${countAboveThreshold} are above threshold`
+          ),
+          {
+            statusCode: 400,
+            payload: {
+              error: "limit_exceeds_available_candidates",
+              stage: requestedStage,
+              requested: requestedLimit,
+              countAboveThreshold,
+              maxAllowed
+            }
+          }
+        );
+      }
+    }
+    if (scanOnly) {
+      return {
+        results: [],
+        metadata: {
+          ...embeddingMetadata,
+          vectorHitsCount: 0,
+          textHitsCount: 0,
+          vectorCandidateCount: vectorRows.length,
+          stages: stageDiagnostics.map((stage) => ({
+            ...stage,
+            used: false,
+            selectedCount: 0
+          }))
+        }
+      };
+    }
     for (const row of [
-      ...rowsByStage("rollup_search"),
+      ...selectStageRowsForEvidence(
+        "rollup_search",
+        rowsByStage("rollup_search")
+      ),
       ...rowsByStage("scoped_leaf_search"),
       ...rowsByStage("leaf_search"),
-      ...rowsByStage("fresh_pending_search")
+      ...rowsByStage("fresh_pending_search"),
+      ...rowsByStage("lexical_search")
     ]) {
-      addRow(row, stageWeight[row.retrieval_stage]);
+      if (!requestedStage || row.retrieval_stage === requestedStage) {
+        addRow(row, stageWeight[row.retrieval_stage]);
+      }
     }
 
-    if (merged.size < requestedLimit) {
+    if (!requestedStage && merged.size < requestedLimit) {
+      for (const row of rowsByStage("raw_fallback_search")) {
+        addRow(row, stageWeight.raw_fallback_search);
+      }
+    } else if (requestedStage === "raw_fallback_search") {
       for (const row of rowsByStage("raw_fallback_search")) {
         addRow(row, stageWeight.raw_fallback_search);
       }

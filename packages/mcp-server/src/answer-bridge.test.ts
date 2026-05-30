@@ -679,13 +679,12 @@ describe("local memory answer bridge", () => {
   it("marks non-retryable API failures as explicit question errors", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];
+    answerWithMemoryWorker.mockRejectedValue(
+      Object.assign(new Error("Unsupported question shape"), { status: 400 })
+    );
     const apiUrl = await createServer(async (request, response) => {
       if (request.url === "/v1/access/check") {
         json(response, 200, { ok: true, canWritePersonal: true });
-        return;
-      }
-      if (request.url === "/v1/memory/answer") {
-        json(response, 400, { error: "Unsupported question shape" });
         return;
       }
       if (

@@ -306,11 +306,16 @@ server.registerTool(
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
-    const evidence = await client.answer({
-      ...answerInput,
-      retrieval_scope,
-      workspace_id
-    });
+    const evidence = {
+      markdown: "",
+      evidenceBundle: {
+        query: answerInput.query,
+        instructions:
+          "Use the local memory planner to gather and judge evidence before answering.",
+        evidence: [],
+        retrieval: { mode: "planner_controlled_initial" }
+      }
+    };
     return jsonResponse(
       await answerWithMemoryWorker(evidence, {
         client,

@@ -284,6 +284,13 @@ export interface RetrievalMetadata {
     temporalFilterApplied?: boolean;
     reranked?: boolean;
     parentNodeIds?: string[];
+    topScore?: number;
+    scoreThreshold?: number;
+    countAboveThreshold?: number;
+    maxAllowed?: number;
+    rejectedCount?: number;
+    candidateIds?: string[];
+    error?: string;
   }>;
 }
 
@@ -355,6 +362,16 @@ export interface SearchMemoryInput {
   recentDays?: number;
   sourceAfter?: string;
   sourceBefore?: string;
+  retrievalStage?:
+    | "score_scan"
+    | "rollup_search"
+    | "scoped_leaf_search"
+    | "leaf_search"
+    | "fresh_pending_search"
+    | "raw_fallback_search"
+    | "lexical_search";
+  parentNodeIds?: string[];
+  strictLimit?: boolean;
 }
 
 export type AnswerMemoryInput = SearchMemoryInput;
@@ -469,6 +486,9 @@ export interface MemoryEngineRepository {
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
+      retrievalStage?: SearchMemoryInput["retrievalStage"];
+      parentNodeIds?: string[];
+      strictLimit?: boolean;
     }
   ): Promise<{
     results: MemorySearchResult[];

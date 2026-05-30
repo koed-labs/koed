@@ -31,7 +31,10 @@ export const registerRecallRoutes = (
         limit: input.limit,
         recentDays: input.recent_days,
         sourceAfter: input.source_after?.toISOString(),
-        sourceBefore: input.source_before?.toISOString()
+        sourceBefore: input.source_before?.toISOString(),
+        retrievalStage: input.retrieval_stage,
+        parentNodeIds: input.parent_node_ids,
+        strictLimit: input.strict_limit
       });
 
       return {
@@ -75,7 +78,10 @@ export const registerRecallRoutes = (
         limit: input.limit,
         recentDays: input.recent_days,
         sourceAfter: input.source_after?.toISOString(),
-        sourceBefore: input.source_before?.toISOString()
+        sourceBefore: input.source_before?.toISOString(),
+        retrievalStage: input.retrieval_stage,
+        parentNodeIds: input.parent_node_ids,
+        strictLimit: input.strict_limit
       });
       const expandedNodeIds = [
         ...new Set(

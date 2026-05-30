@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { queryBooleanSchema } from "./common-schemas.js";
 import {
   retrievalScopeSchema,
   searchDomainSchema
@@ -14,7 +15,20 @@ export const searchMemorySchema = z
     limit: z.coerce.number().int().positive().max(50).default(10),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),
-    source_before: z.coerce.date().optional()
+    source_before: z.coerce.date().optional(),
+    retrieval_stage: z
+      .enum([
+        "score_scan",
+        "rollup_search",
+        "scoped_leaf_search",
+        "leaf_search",
+        "fresh_pending_search",
+        "raw_fallback_search",
+        "lexical_search"
+      ])
+      .optional(),
+    parent_node_ids: z.array(z.string().uuid()).max(20).optional(),
+    strict_limit: queryBooleanSchema.optional()
   })
   .superRefine((input, context) => {
     if (input.search_domain === "session" && !input.session_id) {

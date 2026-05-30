@@ -2154,6 +2154,76 @@ describe("account and access flows", () => {
     ).toContain("concise changelog");
   });
 
+  it("forwards staged retrieval controls through MCP recall endpoints", async () => {
+    const repository = createFakeRepository();
+    const recallInputs: Array<Record<string, unknown>> = [];
+    const originalSearchMemoryNodes =
+      repository.searchMemoryNodes.bind(repository);
+    repository.searchMemoryNodes = async (actor, input) => {
+      recallInputs.push(input as Record<string, unknown>);
+      return originalSearchMemoryNodes(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "staged-retrieval@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const token = jsonBody<TokenResponse>(createdToken).token;
+    const parentNodeId = randomUUID();
+
+    const search = await app.inject({
+      method: "POST",
+      url: "/v1/memory/search",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        retrieval_stage: "lexical_search",
+        parent_node_ids: [parentNodeId],
+        strict_limit: "false",
+        limit: 2
+      }
+    });
+    const answer = await app.inject({
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers: { cookie },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        retrieval_stage: "score_scan",
+        strict_limit: true,
+        limit: 1
+      }
+    });
+    await app.close();
+
+    expect(search.statusCode).toBe(200);
+    expect(answer.statusCode).toBe(200);
+    expect(recallInputs[0]).toMatchObject({
+      retrievalStage: "lexical_search",
+      parentNodeIds: [parentNodeId],
+      strictLimit: false,
+      limit: 2
+    });
+    expect(recallInputs[1]).toMatchObject({
+      retrievalStage: "score_scan",
+      strictLimit: true,
+      limit: 1
+    });
+  });
+
   it("rejects unsupported capture policy visibility for API-token setup", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),

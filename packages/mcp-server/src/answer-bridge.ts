@@ -350,6 +350,19 @@ const isRetryableBridgeError = (error: unknown): boolean => {
       error.status >= 500
     );
   }
+  const status =
+    error && typeof error === "object" && "status" in error
+      ? (error as { status?: unknown }).status
+      : undefined;
+  if (typeof status === "number") {
+    return (
+      status === 408 ||
+      status === 409 ||
+      status === 425 ||
+      status === 429 ||
+      status >= 500
+    );
+  }
   return true;
 };
 
@@ -541,14 +554,16 @@ export const answerClaimedMemoryQuestion = async (
     options.fallbackRetrievalScope ?? "personal"
   );
   try {
-    const evidence = await client.answer({
-      query: question.query,
-      retrieval_scope: retrievalScope,
-      search_domain: searchDomain,
-      workspace_id: question.workspaceId ?? undefined,
-      session_id: question.sessionId ?? undefined,
-      limit: options.limit ?? 10
-    });
+    const evidence = {
+      markdown: "",
+      evidenceBundle: {
+        query: question.query,
+        instructions:
+          "Use the local memory planner to gather and judge evidence before answering.",
+        evidence: [],
+        retrieval: { mode: "planner_controlled_initial" }
+      }
+    };
     const answer = await answerWithMemoryWorker(evidence, {
       client,
       retrievalScope,

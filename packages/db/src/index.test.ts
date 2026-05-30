@@ -181,6 +181,7 @@ describeDb("memory repository visibility", () => {
       workspaceId: string;
       content: string;
       sessionId?: string;
+      actor?: "user" | "assistant" | "agent" | "subagent" | "tool" | "system";
       visibility?: "personal";
       metadata?: Record<string, unknown>;
     }
@@ -189,7 +190,7 @@ describeDb("memory repository visibility", () => {
       requesterContext: { userId },
       workspaceId: input.workspaceId,
       sessionId: input.sessionId,
-      actor: "user",
+      actor: input.actor ?? "user",
       eventType: "user_prompt",
       content: input.content,
       visibility: input.visibility,
@@ -1276,6 +1277,279 @@ describeDb("memory repository visibility", () => {
     ).toBe(false);
   });
 
+  it("retrieves full lexical evidence from unembedded fresh memory only when lexical is requested", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lexical-fresh-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-lexical-fresh-${randomUUID()}`;
+    const filler = Array.from(
+      { length: 260 },
+      (_, index) => `The quiet lamp story filler passage ${index}.`
+    ).join(" ");
+    const story = [
+      filler,
+      "Only at the end did the keeper of the lamp reveal her name: Seraphina."
+    ].join(" ");
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: story,
+      metadata: { kind: "long-story-tail-name" }
+    });
+
+    const embeddingFetch = mockEmbeddingQuery();
+    const scan = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "Who was the keeper of the lamp named Seraphina?",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "score_scan",
+      limit: 1
+    });
+    const lexicalStage = scan.metadata.stages?.find(
+      (stage) => stage.name === "lexical_search"
+    );
+    expect(scan.results).toHaveLength(0);
+    expect(lexicalStage).toBeUndefined();
+
+    embeddingFetch.mockClear();
+    const lexical = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "Seraphina",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "lexical_search",
+      strictLimit: true,
+      limit: 1
+    });
+    expect(lexical.results).toHaveLength(1);
+    expect(lexical.results[0]?.sourceType).toBe("memory_event");
+    expect(lexical.results[0]?.sourceId).toBe(event.id);
+    expect(lexical.results[0]?.summaryText).toContain("Seraphina");
+    expect(embeddingFetch).not.toHaveBeenCalled();
+
+    await expect(
+      engine.searchMemory({
+        requesterContext: { userId: alice.id },
+        query: "Seraphina",
+        scope: "personal",
+        searchDomain: "project",
+        workspaceId,
+        retrievalStage: "lexical_search",
+        strictLimit: true,
+        limit: 2
+      })
+    ).rejects.toThrow("above threshold");
+  });
+
+  it("ranks original lexical story evidence above later question and tool echoes", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lexical-echo-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-lexical-echo-${randomUUID()}`;
+    const query =
+      "What was the name of the keeper of the lamp in the story about the city by the sea?";
+    const story = [
+      "At dawn, the city woke without bells.",
+      "The keeper of the lamp watched the sea and kept the city visible.",
+      "The story ended by revealing the keeper's name.",
+      "Her name was Mara."
+    ].join(" ");
+    const storyEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "agent",
+      content: story,
+      metadata: { kind: "story-source" }
+    });
+    await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: `This question failed before: "${query}"`,
+      metadata: { kind: "question-echo" }
+    });
+    await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "tool",
+      content: `Tool output from diagnostics repeated the prompt: ${query}`,
+      metadata: { kind: "tool-echo" }
+    });
+
+    const lexical = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query,
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "lexical_search",
+      strictLimit: true,
+      limit: 3
+    });
+
+    expect(lexical.results[0]).toMatchObject({
+      sourceType: "memory_event",
+      sourceId: storyEvent.id,
+      retrievalStage: "lexical_search"
+    });
+    expect(lexical.results[0]?.summaryText).toContain("Her name was Mara.");
+  });
+
+  it("filters lexical node evidence to the requested project boundary", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lexical-boundary-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const inScopeWorkspaceId = `workspace-lexical-in-${randomUUID()}`;
+    const outOfScopeWorkspaceId = `workspace-lexical-out-${randomUUID()}`;
+    const inScopeEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId: inScopeWorkspaceId,
+      content: "Project alpha visible banana context.",
+      metadata: { kind: "in-scope-source" }
+    });
+    const outOfScopeEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId: outOfScopeWorkspaceId,
+      content: "Project beta secret moonbase context.",
+      metadata: { kind: "out-of-scope-source" }
+    });
+    const mixedNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "Mixed summary mentions visible banana and secret moonbase context.",
+        bodyText:
+          "Mixed body also mentions visible banana and secret moonbase context.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `lexical-boundary-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0), ($1, $3, 1)
+      `,
+      [mixedNode.id, inScopeEvent.id, outOfScopeEvent.id]
+    );
+
+    const outOfScopeSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "secret moonbase",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: inScopeWorkspaceId,
+      retrievalStage: "lexical_search",
+      limit: 1
+    });
+    expect(
+      outOfScopeSearch.results.some(
+        (result) => result.sourceId === mixedNode.id
+      )
+    ).toBe(false);
+    expect(JSON.stringify(outOfScopeSearch.results)).not.toContain(
+      "secret moonbase"
+    );
+
+    const inScopeSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "visible banana",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: inScopeWorkspaceId,
+      retrievalStage: "lexical_search",
+      limit: 5
+    });
+    const nodeResult = inScopeSearch.results.find(
+      (result) => result.sourceId === mixedNode.id
+    );
+    expect(nodeResult?.summaryText).toContain("visible banana");
+    expect(nodeResult?.summaryText).not.toContain("secret moonbase");
+  });
+
+  it("can inspect fresh embedded memory events before LCM nodes exist", async () => {
+    const alice = await repo.createUser({
+      email: `alice-fresh-event-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-fresh-event-${randomUUID()}`;
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content:
+        "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
+      metadata: { kind: "fresh-unsummarized" }
+    });
+    await embedPendingSources();
+    mockEmbeddingQuery();
+
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "lamp keeper Seraphina",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "fresh_pending_search",
+      strictLimit: true,
+      limit: 1
+    });
+
+    expect(search.results).toHaveLength(1);
+    expect(search.results[0]).toMatchObject({
+      sourceType: "memory_event",
+      sourceId: event.id,
+      retrievalStage: "fresh_pending_search"
+    });
+    expect(search.results[0]?.summaryText).toContain("Seraphina");
+  });
+
+  it("keeps generic raw and fresh fallback evidence focused on non-tool memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-non-tool-fallback-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-non-tool-fallback-${randomUUID()}`;
+    const agentEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "agent",
+      content:
+        "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
+      metadata: { kind: "story-source" }
+    });
+    await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "tool",
+      content:
+        "Tool output repeated diagnostics saying the lamp keeper is Seraphina.",
+      metadata: { kind: "tool-diagnostic-echo" }
+    });
+    await embedPendingSources();
+    mockEmbeddingQuery();
+
+    for (const stage of [
+      "fresh_pending_search",
+      "raw_fallback_search"
+    ] as const) {
+      const search = await engine.searchMemory({
+        requesterContext: { userId: alice.id },
+        query: "lamp keeper Seraphina",
+        scope: "personal",
+        searchDomain: "project",
+        workspaceId,
+        retrievalStage: stage,
+        strictLimit: true,
+        limit: 1
+      });
+
+      expect(search.results).toHaveLength(1);
+      expect(search.results[0]).toMatchObject({
+        sourceType: "memory_event",
+        sourceId: agentEvent.id,
+        retrievalStage: stage
+      });
+      expect(search.results[0]?.summaryText).toContain("story memory");
+    }
+  });
+
   it("caps rollup evidence so scoped leaves are not crowded out", async () => {
     const alice = await repo.createUser({
       email: `alice-rollup-cap-${randomUUID()}@example.com`
@@ -1358,6 +1632,21 @@ describeDb("memory repository visibility", () => {
         })
       ])
     );
+
+    const explicitRollupSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "rollup cap scoped leaf detail",
+      scope: "personal",
+      retrievalStage: "rollup_search",
+      strictLimit: true,
+      limit: 10
+    });
+    expect(explicitRollupSearch.results).toHaveLength(10);
+    expect(
+      explicitRollupSearch.results.every(
+        (result) => result.retrievalStage === "rollup_search"
+      )
+    ).toBe(true);
   });
 
   it("does not mix sessions when creating LCM leaves or rollups", async () => {
