@@ -145,6 +145,9 @@ importers:
       '@koed/core':
         specifier: workspace:*
         version: link:../core
+      '@koed/db':
+        specifier: workspace:*
+        version: link:../db
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)

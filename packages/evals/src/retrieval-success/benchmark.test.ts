@@ -7,6 +7,7 @@ import {
   scoreRetrievalSuccessRun,
   type RetrievalSuccessRunInput
 } from "./benchmark.js";
+import { deterministicEmbeddingVector } from "./live-runner.js";
 
 const caseById = new Map(retrievalSuccessCases.map((item) => [item.id, item]));
 
@@ -190,5 +191,19 @@ describe("retrieval-success benchmark scoring", () => {
       "scoped_leaf_search",
       "raw_fallback_search"
     ]);
+  });
+});
+
+describe("retrieval-success live benchmark helpers", () => {
+  it("uses deterministic normalized embeddings for temporary DB runs", () => {
+    const first = deterministicEmbeddingVector("Aston Villa memory answer");
+    const second = deterministicEmbeddingVector("Aston Villa memory answer");
+    const norm = Math.sqrt(
+      first.reduce((sum, value) => sum + value * value, 0)
+    );
+
+    expect(first).toHaveLength(1024);
+    expect(first).toEqual(second);
+    expect(norm).toBeCloseTo(1, 8);
   });
 });
