@@ -1,0 +1,194 @@
+import { describe, expect, it } from "vitest";
+import { retrievalSuccessCases, type RetrievalSuccessCase } from "./cases.js";
+import {
+  idealRetrievalSuccessRun,
+  retrievalStagesUsed,
+  runDeterministicRetrievalSuccessBenchmark,
+  scoreRetrievalSuccessRun,
+  type RetrievalSuccessRunInput
+} from "./benchmark.js";
+
+const caseById = new Map(retrievalSuccessCases.map((item) => [item.id, item]));
+
+const mustCase = (id: string): RetrievalSuccessCase => {
+  const benchmarkCase = caseById.get(id);
+  if (!benchmarkCase) {
+    throw new Error(`Missing benchmark case ${id}`);
+  }
+  return benchmarkCase;
+};
+
+describe("retrieval-success benchmark cases", () => {
+  it("covers the retrieval behaviours KOE-167 is meant to protect", () => {
+    expect(retrievalSuccessCases).toHaveLength(7);
+    expect(
+      retrievalSuccessCases.every(
+        (benchmarkCase) =>
+          benchmarkCase.runs === 5 &&
+          benchmarkCase.boundaryProfile === "post-koe-166-defaults"
+      )
+    ).toBe(true);
+
+    const requiredStages = new Set(
+      retrievalSuccessCases.flatMap(
+        (benchmarkCase) => benchmarkCase.expected.requiredStages ?? []
+      )
+    );
+    expect(requiredStages).toEqual(
+      new Set([
+        "score_scan",
+        "rollup_search",
+        "scoped_leaf_search",
+        "leaf_search",
+        "fresh_pending_search",
+        "lexical_search"
+      ])
+    );
+
+    expect(
+      retrievalSuccessCases.some(
+        (benchmarkCase) => benchmarkCase.expected.temporal?.recentDays === 30
+      )
+    ).toBe(true);
+    expect(
+      retrievalSuccessCases.some(
+        (benchmarkCase) =>
+          benchmarkCase.expected.lexical?.expectation === "forbidden"
+      )
+    ).toBe(true);
+    expect(
+      retrievalSuccessCases.some(
+        (benchmarkCase) =>
+          benchmarkCase.expected.lexical?.expectation === "required"
+      )
+    ).toBe(true);
+  });
+});
+
+describe("retrieval-success benchmark scoring", () => {
+  it("scores deterministic ideal runs at full marks", () => {
+    const summary = runDeterministicRetrievalSuccessBenchmark();
+
+    expect(summary.runs).toHaveLength(
+      retrievalSuccessCases.reduce(
+        (count, benchmarkCase) => count + benchmarkCase.runs,
+        0
+      )
+    );
+    expect(summary.totalScore).toBe(summary.maxScore);
+    expect(summary.averageScoreRatio).toBe(1);
+    expect(summary.answerCorrectRate).toBe(1);
+    expect(summary.evidenceRelevantRate).toBe(1);
+    expect(summary.irrelevantEvidenceLeakRate).toBe(0);
+  });
+
+  it("penalizes irrelevant evidence leaks from noisy tool output", () => {
+    const benchmarkCase = mustCase("fresh-tail-story-detail");
+    const score = scoreRetrievalSuccessRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      answer: {
+        memoryStatus: "found",
+        answerMarkdown: "The keeper was Tamar."
+      },
+      evidence: [
+        {
+          sourceId: "fresh-story-lamp-keeper",
+          retrievalStage: "fresh_pending_search"
+        },
+        {
+          sourceId: "fresh-story-tool-echo",
+          retrievalStage: "raw_fallback_search"
+        }
+      ],
+      searches: [
+        { retrievalStage: "score_scan" },
+        { retrievalStage: "fresh_pending_search" }
+      ]
+    });
+
+    expect(score.irrelevantEvidenceLeaked).toBe(true);
+    expect(
+      score.details.find(
+        (detail) => detail.name === "evidence_forbidden:fresh-story-tool-echo"
+      )
+    ).toMatchObject({ score: 0, reason: "irrelevant evidence leaked" });
+  });
+
+  it("flags unjustified lexical fallback on semantic story recall", () => {
+    const benchmarkCase = mustCase(
+      "semantic-question-avoid-lexical-repeated-terms"
+    );
+    const score = scoreRetrievalSuccessRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      answer: {
+        memoryStatus: "found",
+        answerMarkdown: "The apprentice was Celandine."
+      },
+      evidence: [
+        {
+          sourceId: "event-recipe-apprentice",
+          retrievalStage: "fresh_pending_search"
+        },
+        {
+          sourceId: "event-recipe-echo",
+          retrievalStage: "lexical_search"
+        }
+      ],
+      searches: [
+        { retrievalStage: "score_scan" },
+        { retrievalStage: "lexical_search" }
+      ]
+    });
+
+    expect(score.lexicalUsed).toBe(true);
+    expect(score.lexicalJustified).toBe(false);
+    expect(
+      score.details.find((detail) => detail.name === "lexical_behavior")
+    ).toMatchObject({ score: 0 });
+  });
+
+  it("rewards lexical lookup for exact filenames", () => {
+    const benchmarkCase = mustCase("lexical-exact-filename");
+    const score = scoreRetrievalSuccessRun(
+      benchmarkCase,
+      idealRetrievalSuccessRun(benchmarkCase)
+    );
+
+    expect(score.lexicalUsed).toBe(true);
+    expect(score.lexicalJustified).toBe(true);
+    expect(score.score).toBe(score.maxScore);
+  });
+
+  it("extracts retrieval stages from nested retrieval metadata", () => {
+    const run: RetrievalSuccessRunInput = {
+      caseId: "nested",
+      runIndex: 0,
+      answer: {
+        memoryStatus: "found",
+        answerMarkdown: ""
+      },
+      evidence: [],
+      retrievals: [
+        {
+          stages: [
+            { name: "rollup_search" },
+            {
+              retrievals: [
+                { retrieval_stage: "scoped_leaf_search" },
+                { stage: "raw_fallback_search" }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+
+    expect(retrievalStagesUsed(run)).toEqual([
+      "rollup_search",
+      "scoped_leaf_search",
+      "raw_fallback_search"
+    ]);
+  });
+});
