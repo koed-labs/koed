@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from env_config import bool_env, int_env, resolve_env
+from env_config import QWEN_OPERATIONAL_MAX_TOKENS, bool_env, int_env, resolve_env
 
 
 class EnvConfigTest(unittest.TestCase):
@@ -42,6 +42,42 @@ class EnvConfigTest(unittest.TestCase):
         self.assertIsNone(config.reranker_key)
         self.assertIsNone(config.reranker_model)
         self.assertEqual(config.embedding_service_token, "token")
+
+    def test_resolve_env_defaults_embedding_max_tokens_to_operational_chunk_size(self) -> None:
+        with patch.dict(os.environ, {"EMBEDDING_MAX_TOKENS": ""}, clear=True):
+            config = resolve_env()
+
+        self.assertEqual(config.llama_n_ctx, 32000)
+        self.assertEqual(config.embedding_max_tokens, 4096)
+
+    def test_resolve_env_caps_embedding_max_tokens_to_qwen_limit(self) -> None:
+        above_qwen_limit = str(QWEN_OPERATIONAL_MAX_TOKENS + 1)
+        with patch.dict(
+            os.environ,
+            {
+                "LLAMA_N_CTX": above_qwen_limit,
+                "EMBEDDING_MAX_TOKENS": above_qwen_limit,
+            },
+            clear=True,
+        ):
+            config = resolve_env()
+
+        self.assertEqual(config.llama_n_ctx, QWEN_OPERATIONAL_MAX_TOKENS)
+        self.assertEqual(config.embedding_max_tokens, QWEN_OPERATIONAL_MAX_TOKENS)
+
+    def test_resolve_env_caps_embedding_max_tokens_to_context(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "LLAMA_N_CTX": "2048",
+                "EMBEDDING_MAX_TOKENS": "4096",
+            },
+            clear=True,
+        ):
+            config = resolve_env()
+
+        self.assertEqual(config.llama_n_ctx, 2048)
+        self.assertEqual(config.embedding_max_tokens, 2048)
 
     def test_resolve_env_rejects_unknown_model_key(self) -> None:
         with patch.dict(os.environ, {"MODEL_KEY": "unsupported"}, clear=True):

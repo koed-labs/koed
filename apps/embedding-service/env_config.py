@@ -41,6 +41,7 @@ SUPPORTED_RERANKER_MODELS: dict[str, SupportedRerankerModel] = {
 }
 
 DEFAULT_EMBEDDING_MODEL_KEY = "qwen3-0.6b"
+DEFAULT_EMBEDDING_MAX_TOKENS = 4096
 QWEN_OPERATIONAL_MAX_TOKENS = 32000
 
 
@@ -121,8 +122,9 @@ def resolve_env() -> EmbeddingServiceEnv:
         batch_limit=int_env("EMBEDDING_BATCH_LIMIT", 16),
         llama_n_ctx=llama_n_ctx,
         embedding_max_tokens=min(
-            int_env("EMBEDDING_MAX_TOKENS", llama_n_ctx),
+            int_env("EMBEDDING_MAX_TOKENS", DEFAULT_EMBEDDING_MAX_TOKENS),
             QWEN_OPERATIONAL_MAX_TOKENS,
+            llama_n_ctx,
         ),
         embedding_max_text_chars=int_env("EMBEDDING_MAX_TEXT_CHARS", 200000),
         embedding_max_request_chars=int_env("EMBEDDING_MAX_REQUEST_CHARS", 1000000),

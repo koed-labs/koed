@@ -108,8 +108,9 @@ record.
 
 ## Token Bounds
 
-Koed's operational embedding and semantic-event cap is 32000 tokens. Runtime
-configuration may lower that value, but values above 32000 are clamped.
+Koed's operational Qwen cap is 32000 tokens. Runtime configuration defaults
+semantic Memory Event chunks to 2048 tokens and embedding requests to 4096
+tokens. Values above 32000 are clamped.
 If a projected semantic unit exceeds that cap, split it into ordered chunks and
 link every chunk to the relevant raw source item or items. Projection keeps
 source-item boundaries intact where possible and only splits inside a single raw

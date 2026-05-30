@@ -1916,8 +1916,7 @@ const projectionMaxTokens = (): number =>
   Math.min(
     Math.max(
       Number.parseInt(process.env.MEMORY_EVENT_MAX_TOKENS ?? "", 10) ||
-        Number.parseInt(process.env.EMBEDDING_MAX_TOKENS ?? "", 10) ||
-        QWEN_OPERATIONAL_MAX_TOKENS,
+        DEFAULT_MEMORY_EVENT_MAX_TOKENS,
       1
     ),
     QWEN_OPERATIONAL_MAX_TOKENS
@@ -1979,7 +1978,7 @@ const loadLogicalConversationProjectionItem = async (
         ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
         ci.transport_chunk_index, ci.transport_chunk_count,
         ci.transport_chunk_text, ci.transport_chunk_encoding,
-        ci.source_hash, ci.idempotency_key, ci.metadata,
+        ci.source_hash, ci.idempotency_key, ci.metadata, ci.observed_at,
         s.workspace_id as session_workspace_id,
         s.cwd as session_cwd,
         s.metadata as session_metadata
@@ -2541,6 +2540,7 @@ const nonNegativeFloatEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
+const DEFAULT_MEMORY_EVENT_MAX_TOKENS = 2_048;
 const QWEN_OPERATIONAL_MAX_TOKENS = 32_000;
 
 const positiveIntEnvCapped = (

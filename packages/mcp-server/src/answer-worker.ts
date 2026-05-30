@@ -9,6 +9,8 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
+// Prompt-state JSON is bounded as a transport/context guard, not as a semantic
+// chunking limit.
 const DEFAULT_ANSWER_PROMPT_STATE_MAX_CHARS = 200_000;
 export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v2";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";

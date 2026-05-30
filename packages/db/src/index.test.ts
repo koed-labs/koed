@@ -26,6 +26,8 @@ const originalLeafEventThreshold = process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
 const originalLeafTokenThreshold = process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD;
 const originalFreshEventTail = process.env.MEMORY_LCM_FRESH_EVENT_TAIL;
 const originalDepthOneFanout = process.env.MEMORY_LCM_DEPTH1_FANOUT;
+const originalMemoryEventMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
 
 const describeDb = runDbTests ? describe : describe.skip;
 
@@ -305,6 +307,16 @@ describeDb("memory repository visibility", () => {
       delete process.env.MEMORY_LCM_DEPTH1_FANOUT;
     } else {
       process.env.MEMORY_LCM_DEPTH1_FANOUT = originalDepthOneFanout;
+    }
+    if (originalMemoryEventMaxTokens === undefined) {
+      delete process.env.MEMORY_EVENT_MAX_TOKENS;
+    } else {
+      process.env.MEMORY_EVENT_MAX_TOKENS = originalMemoryEventMaxTokens;
+    }
+    if (originalEmbeddingMaxTokens === undefined) {
+      delete process.env.EMBEDDING_MAX_TOKENS;
+    } else {
+      process.env.EMBEDDING_MAX_TOKENS = originalEmbeddingMaxTokens;
     }
     await pool?.end();
   });
@@ -3694,6 +3706,82 @@ describeDb("memory repository visibility", () => {
         delete process.env.MEMORY_EVENT_MAX_TOKENS;
       } else {
         process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+    }
+  });
+
+  it("defaults semantic projection chunks below the Qwen operational cap", async () => {
+    const previousMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+    const previousEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
+    delete process.env.MEMORY_EVENT_MAX_TOKENS;
+    delete process.env.EMBEDDING_MAX_TOKENS;
+    try {
+      const alice = await repo.createUser({
+        email: `alice-projection-default-chunk-${randomUUID()}@example.com`
+      });
+      const session = await repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          externalSessionId: `projection-default-chunk-session-${randomUUID()}`,
+          sourceRuntime: "codex",
+          idempotencyKey: `projection-default-chunk-session-${randomUUID()}`
+        }
+      );
+      const text = `Agent analysis: ${"default semantic split boundary ".repeat(2600)}`;
+      const sourceHash = `projection-default-chunk-${randomUUID()}`;
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              externalTurnId: "default-chunk-turn",
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
+              sourceSequence: 0,
+              rawJson: {
+                method: "item/completed",
+                params: {
+                  item: {
+                    type: "agentMessage",
+                    text
+                  }
+                }
+              },
+              rawText: text,
+              sourceHash,
+              idempotencyKey: sourceHash,
+              metadata: { transcriptType: "agent_message" }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const events = await pool.query<{ content: string }>(
+        "select payload ->> 'content' as content from memory_events order by created_at asc"
+      );
+
+      expect(projection.memoryEventsCreated).toBeGreaterThan(1);
+      expect(events.rows.map((row) => row.content).join(" ")).toContain(
+        "default semantic split boundary"
+      );
+    } finally {
+      if (previousMaxTokens === undefined) {
+        delete process.env.MEMORY_EVENT_MAX_TOKENS;
+      } else {
+        process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+      if (previousEmbeddingMaxTokens === undefined) {
+        delete process.env.EMBEDDING_MAX_TOKENS;
+      } else {
+        process.env.EMBEDDING_MAX_TOKENS = previousEmbeddingMaxTokens;
       }
     }
   });
