@@ -6,9 +6,6 @@ from threading import Lock
 from typing import Any
 
 from fastapi import HTTPException
-from huggingface_hub import hf_hub_download
-from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
-from qwen3_embed import TextCrossEncoder
 
 from logging_config import error_type, event, logger
 from priority_scheduler import EmbeddingPriorityScheduler, normalize_embedding_priority
@@ -16,8 +13,8 @@ from schemas import EmbeddedChunk, EmbedResponse, RerankResponse
 from settings import config
 from vectors import extract_embedding_vectors, normalize_vectors
 
-model: Llama | None = None
-reranker: TextCrossEncoder | None = None
+model: Any | None = None
+reranker: Any | None = None
 model_lock = Lock()
 reranker_lock = Lock()
 embedding_scheduler = EmbeddingPriorityScheduler()
@@ -51,6 +48,9 @@ def suppress_native_stderr(enabled: bool) -> Iterator[None]:
 
 def load_embedding_model() -> None:
     global model
+    from huggingface_hub import hf_hub_download
+    from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
+
     logger.info(
         "embedding model load started",
         extra={
@@ -329,7 +329,7 @@ def embed_texts(texts: list[str], requested_priority: str | None) -> EmbedRespon
     )
 
 
-def get_reranker() -> TextCrossEncoder:
+def get_reranker() -> Any:
     global reranker
     if not config.reranker_enabled:
         raise HTTPException(status_code=404, detail="reranker is disabled")
@@ -346,6 +346,8 @@ def get_reranker() -> TextCrossEncoder:
                     },
                 )
                 try:
+                    from qwen3_embed import TextCrossEncoder
+
                     reranker = TextCrossEncoder(config.reranker_model)
                 except Exception as error:
                     logger.error(
