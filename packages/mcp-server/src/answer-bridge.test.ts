@@ -269,6 +269,57 @@ describe("local memory answer bridge", () => {
             }
           }
         ],
+        appServerExecutions: [
+          {
+            stepIndex: 0,
+            stepKind: "final",
+            model: "codex-app-server:test",
+            threadId: "thread-question-test",
+            turnId: "turn-question-test",
+            tokenUsage: {
+              modelContextWindow: 32000,
+              last: {
+                inputTokens: 10,
+                cachedInputTokens: 2,
+                outputTokens: 3,
+                reasoningOutputTokens: 1,
+                totalTokens: 13
+              },
+              total: {
+                inputTokens: 10,
+                cachedInputTokens: 2,
+                outputTokens: 3,
+                reasoningOutputTokens: 1,
+                totalTokens: 13
+              }
+            },
+            rawEvents: [
+              {
+                method: "turn/completed",
+                observedAt: "2026-05-27T00:00:00.000Z",
+                params: { threadId: "thread-question-test" }
+              },
+              {
+                method: "thread/tokenUsage/updated",
+                observedAt: "2026-05-27T00:00:01.000Z",
+                params: {
+                  threadId: "thread-question-test",
+                  turnId: "turn-question-test",
+                  tokenUsage: {
+                    modelContextWindow: 32000,
+                    last: {
+                      inputTokens: 10,
+                      cachedInputTokens: 2,
+                      outputTokens: 3,
+                      reasoningOutputTokens: 1,
+                      totalTokens: 13
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
         tokenUsage: {
           modelContextWindow: 32000,
           last: {
@@ -316,12 +367,33 @@ describe("local memory answer bridge", () => {
     ).toBeUndefined();
     expect(
       (
+        patches[0]?.local_memory_worker as {
+          appServerExecutions?: Array<{ rawEvents?: unknown }>;
+        }
+      ).appServerExecutions?.[0]?.rawEvents
+    ).toBeUndefined();
+    expect(
+      (
         (
           patches[0]?.response as {
-            localMemoryWorker?: { appServerEvents?: unknown };
+            localMemoryWorker?: {
+              appServerEvents?: unknown;
+              appServerExecutions?: Array<{ rawEvents?: unknown }>;
+            };
           }
         ).localMemoryWorker ?? {}
       ).appServerEvents
+    ).toBeUndefined();
+    expect(
+      (
+        (
+          patches[0]?.response as {
+            localMemoryWorker?: {
+              appServerExecutions?: Array<{ rawEvents?: unknown }>;
+            };
+          }
+        ).localMemoryWorker ?? {}
+      ).appServerExecutions?.[0]?.rawEvents
     ).toBeUndefined();
     expect(rawItemRequests).toHaveLength(1);
     expect(rawItemRequests[0]).toMatchObject({

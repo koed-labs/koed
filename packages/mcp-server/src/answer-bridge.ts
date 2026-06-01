@@ -418,8 +418,12 @@ const stripAppServerEvents = <T>(value: T): T => {
   if (Array.isArray(value)) {
     return value.map(stripAppServerEvents) as T;
   }
-  const { appServerEvents, ...rest } = value as Record<string, unknown>;
+  const { appServerEvents, rawEvents, ...rest } = value as Record<
+    string,
+    unknown
+  >;
   void appServerEvents;
+  void rawEvents;
   return Object.fromEntries(
     Object.entries(rest).map(([key, entry]) => [
       key,
