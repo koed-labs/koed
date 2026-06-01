@@ -52,6 +52,7 @@ export const graphNodesQuerySchema = graphQuerySchema.extend({
 export const graphEventsQuerySchema = graphQuerySchema
   .extend({
     cursorTimestamp: z.string().datetime({ offset: true }).optional(),
+    cursorSourceSequence: z.coerce.number().int().nonnegative().optional(),
     cursorId: z.string().uuid().optional(),
     includeContent: queryBooleanSchema.default(false),
     includeRaw: queryBooleanSchema.default(false)

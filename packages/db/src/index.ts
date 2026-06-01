@@ -241,6 +241,10 @@ export interface LcmGraphEvent {
   threadId: string | null;
   threadName: string | null;
   timestamp: string;
+  sourceEventTime: string | null;
+  sourceSequence: number | null;
+  capturedAt: string;
+  createdAt: string;
   visibility: Visibility;
   invalidatedAt: string | null;
   invalidationReason: string | null;
@@ -464,6 +468,8 @@ type ConversationSemanticProjectionChunk = {
   sourceIds: string[];
   sourceIdentities: string[];
   sourceHashes: string[];
+  sourceEventTime: Date | null;
+  sourceSequence: number | null;
 };
 
 type ConversationSemanticProjectionGroup = {
@@ -852,6 +858,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       projectId?: string;
       threadId?: string;
       cursorTimestamp?: string;
+      cursorSourceSequence?: number;
       cursorId?: string;
       includeInvalidated?: boolean;
       includeContent?: boolean;
@@ -1366,7 +1373,10 @@ const mapLcmGraphEvent = (row: {
   session_id: string | null;
   thread_id: string | null;
   thread_name: string | null;
+  source_event_time: Date | null;
+  source_sequence: number | string | null;
   captured_at: Date;
+  created_at: Date;
   visibility: Visibility;
   invalidated_at: Date | null;
   invalidation_reason: string | null;
@@ -1377,6 +1387,13 @@ const mapLcmGraphEvent = (row: {
   includeRaw?: boolean;
 }): LcmGraphEvent => {
   const content = row.content ?? "";
+  const sourceSequence =
+    row.source_sequence === null
+      ? null
+      : typeof row.source_sequence === "number"
+        ? row.source_sequence
+        : Number.parseInt(row.source_sequence, 10);
+  const timestamp = (row.source_event_time ?? row.captured_at).toISOString();
   return {
     id: row.id,
     actor: row.actor,
@@ -1391,7 +1408,11 @@ const mapLcmGraphEvent = (row: {
     sessionId: row.session_id,
     threadId: row.thread_id,
     threadName: row.thread_name,
-    timestamp: row.captured_at.toISOString(),
+    timestamp,
+    sourceEventTime: row.source_event_time?.toISOString() ?? null,
+    sourceSequence: Number.isFinite(sourceSequence) ? sourceSequence : null,
+    capturedAt: row.captured_at.toISOString(),
+    createdAt: row.created_at.toISOString(),
     visibility: row.visibility,
     invalidatedAt: row.invalidated_at?.toISOString() ?? null,
     invalidationReason: row.invalidation_reason,
@@ -2318,6 +2339,8 @@ const conversationSemanticUnitChunks = (
     sourceIds: string[];
     sourceIdentity: string;
     sourceHash: string;
+    sourceEventTime: Date | null;
+    sourceSequence: number | null;
   };
 
   const maxTokens = projectionMaxTokens();
@@ -2342,7 +2365,21 @@ const conversationSemanticUnitChunks = (
       ),
       sourceHashes: uniqueOrderedStrings(
         pendingSegments.map((segment) => segment.sourceHash)
-      )
+      ),
+      sourceEventTime:
+        pendingSegments
+          .map((segment) => segment.sourceEventTime)
+          .filter((value): value is Date => value instanceof Date)
+          .sort((left, right) => left.getTime() - right.getTime())[0] ?? null,
+      sourceSequence: (() => {
+        const minSourceSequence = pendingSegments
+          .map((segment) => segment.sourceSequence)
+          .filter((value): value is number => typeof value === "number")
+          .sort((left, right) => left - right)[0];
+        return typeof minSourceSequence === "number"
+          ? minSourceSequence * 1_000_000
+          : null;
+      })()
     });
     pendingSegments = [];
     pendingTokens = 0;
@@ -2353,7 +2390,9 @@ const conversationSemanticUnitChunks = (
       content: item.content,
       sourceIds: item.sourceIds,
       sourceIdentity: item.sourceIdentity,
-      sourceHash: item.sourceHash
+      sourceHash: item.sourceHash,
+      sourceEventTime: item.row.event_time,
+      sourceSequence: item.row.source_sequence
     };
     const segmentTokens = estimateTokens(segment.content, {
       model: model ?? "gpt-5.4-mini"
@@ -2367,7 +2406,12 @@ const conversationSemanticUnitChunks = (
           content: split.content,
           sourceIds: segment.sourceIds,
           sourceIdentities: [segment.sourceIdentity],
-          sourceHashes: [segment.sourceHash]
+          sourceHashes: [segment.sourceHash],
+          sourceEventTime: segment.sourceEventTime,
+          sourceSequence:
+            typeof segment.sourceSequence === "number"
+              ? segment.sourceSequence * 1_000_000 + split.chunkIndex
+              : split.chunkIndex
         });
       }
       continue;
@@ -2393,7 +2437,9 @@ const conversationSemanticUnitChunks = (
             content: "",
             sourceIds: [],
             sourceIdentities: [],
-            sourceHashes: []
+            sourceHashes: [],
+            sourceEventTime: null,
+            sourceSequence: null
           }
         ];
 
@@ -4564,7 +4610,9 @@ export const createMemorySourceRepository = (
             codexTranscriptPath: first.row.source_path ?? undefined,
             idempotencyKey: `projection:${unitType}:${unitHash}`,
             sourceHash: `projection:${unitType}:${contentHash}`,
-            capturedAt: sourceCapturedAt?.toISOString()
+            capturedAt: sourceCapturedAt?.toISOString(),
+            sourceEventTime: chunk.sourceEventTime?.toISOString(),
+            sourceSequence: chunk.sourceSequence ?? undefined
           }
         );
         if (event.id) {
@@ -5944,7 +5992,10 @@ export const createMemorySourceRepository = (
             s.id::text as session_id,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            me.source_event_time,
+            me.source_sequence,
             me.captured_at,
+            me.created_at,
             me.visibility,
             me.invalidated_at,
             me.invalidation_reason,
@@ -5964,17 +6015,21 @@ export const createMemorySourceRepository = (
             and ($7::text is null or me.payload ->> 'content' ilike '%' || $7 || '%' or me.id::text = $7)
             and (
               $8::timestamptz is null
-              or me.captured_at < $8::timestamptz
+              or coalesce(me.source_event_time, me.captured_at) < $8::timestamptz
               or (
-                $9::uuid is not null
-                and me.captured_at = $8::timestamptz
-                and me.id < $9::uuid
+                coalesce(me.source_event_time, me.captured_at) = $8::timestamptz
+                and (
+                  ($9::bigint is null and me.source_sequence is null and $10::uuid is not null and me.id < $10::uuid)
+                  or ($9::bigint is not null and me.source_sequence is not null and me.source_sequence < $9::bigint)
+                  or ($9::bigint is not null and me.source_sequence = $9::bigint and $10::uuid is not null and me.id < $10::uuid)
+                  or ($9::bigint is not null and me.source_sequence is null)
+                )
               )
             )
             and me.visibility = 'personal'
             and me.owner_user_id = $1
-          order by me.captured_at desc, me.id desc
-          limit $10
+          order by coalesce(me.source_event_time, me.captured_at) desc, me.source_sequence desc nulls last, me.id desc
+          limit $11
         )
         select
           ve.*,
@@ -5985,7 +6040,7 @@ export const createMemorySourceRepository = (
           from memory_node_sources mns
           where mns.memory_event_id = ve.id
         ) linked_node_ids on true
-        order by ve.captured_at desc, ve.id desc
+        order by coalesce(ve.source_event_time, ve.captured_at) desc, ve.source_sequence desc nulls last, ve.id desc
 	      `,
       [
         actor.userId,
@@ -5996,6 +6051,7 @@ export const createMemorySourceRepository = (
         input.eventId ?? null,
         input.query?.trim() || null,
         input.cursorTimestamp ?? null,
+        input.cursorSourceSequence ?? null,
         input.cursorId ?? null,
         limit
       ]
@@ -6048,6 +6104,8 @@ export const createMemorySourceRepository = (
               s.metadata ->> 'parentSessionId'
             ) as parent_session_id,
             me.captured_at,
+            coalesce(me.source_event_time, me.captured_at) as order_at,
+            me.source_sequence,
             me.invalidated_at,
             me.payload ->> 'content' as content
           from memory_events me
@@ -6087,6 +6145,8 @@ export const createMemorySourceRepository = (
             coalesce(s.metadata ->> 'parentThreadId', s.metadata ->> 'parentExternalSessionId') as parent_thread_id,
             s.metadata ->> 'parentSessionId' as parent_session_id,
             s.created_at as captured_at,
+            s.created_at as order_at,
+            null::bigint as source_sequence,
             s.invalidated_at,
             null::text as content
           from sessions s
@@ -6106,21 +6166,21 @@ export const createMemorySourceRepository = (
         ranked_threads as (
           select
             project_id,
-            (array_agg(project_name order by captured_at desc, id desc))[1] as project_name,
-            (array_agg(project_path order by captured_at desc, id desc))[1] as project_path,
+            (array_agg(project_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_name,
+            (array_agg(project_path order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_path,
             thread_id,
-            (array_agg(thread_name order by captured_at desc, id desc))[1] as thread_name,
-            (array_agg(session_id order by captured_at desc, id desc) filter (where session_id is not null))[1] as session_id,
-            (array_agg(thread_kind order by captured_at desc, id desc))[1] as thread_kind,
-            (array_agg(parent_thread_id order by captured_at desc, id desc) filter (where parent_thread_id is not null))[1] as parent_thread_id,
-            (array_agg(parent_session_id order by captured_at desc, id desc) filter (where parent_session_id is not null))[1] as parent_session_id,
+            (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
+            (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
+            (array_agg(thread_kind order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_kind,
+            (array_agg(parent_thread_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where parent_thread_id is not null))[1] as parent_thread_id,
+            (array_agg(parent_session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where parent_session_id is not null))[1] as parent_session_id,
             count(*) filter (where row_kind = 'event')::text as event_count,
             count(*) filter (where row_kind = 'event' and invalidated_at is not null)::text as invalidated_count,
-            max(captured_at) as latest_at,
-            coalesce((array_agg(content order by captured_at desc, id desc) filter (where content is not null))[1], '') as sample
+            max(order_at) as latest_at,
+            coalesce((array_agg(content order by order_at desc, source_sequence desc nulls last, id desc) filter (where content is not null))[1], '') as sample
           from visible_thread_rows
           group by project_id, thread_id
-          order by max(captured_at) desc, thread_id desc
+          order by max(order_at) desc, thread_id desc
           limit $7
         )
         select *
@@ -6732,6 +6792,12 @@ export const createMemorySourceRepository = (
     if (capturedAt && Number.isNaN(capturedAt.getTime())) {
       throw new Error("capturedAt must be a valid timestamp");
     }
+    const sourceEventTime = input.sourceEventTime
+      ? new Date(input.sourceEventTime)
+      : null;
+    if (sourceEventTime && Number.isNaN(sourceEventTime.getTime())) {
+      throw new Error("sourceEventTime must be a valid timestamp");
+    }
 
     type MemoryEventRow = {
       id: string;
@@ -6765,9 +6831,11 @@ export const createMemorySourceRepository = (
           idempotency_key,
           source_hash,
           payload,
-          captured_at
+          captured_at,
+          source_event_time,
+          source_sequence
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, coalesce($13::timestamptz, now()))
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, coalesce($13::timestamptz, now()), $14, $15)
         on conflict do nothing
         returning id, owner_user_id, visibility, event_type, session_id, turn_id, payload, created_at
       `,
@@ -6784,7 +6852,9 @@ export const createMemorySourceRepository = (
         input.idempotencyKey ?? null,
         input.sourceHash ?? null,
         payload,
-        capturedAt
+        capturedAt,
+        sourceEventTime,
+        input.sourceSequence ?? null
       ]
     );
 

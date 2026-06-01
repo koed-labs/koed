@@ -2107,6 +2107,138 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("exposes transcript source chronology for projected graph events", async () => {
+    const alice = await repo.createUser({
+      email: `alice-source-chronology-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Source Chronology Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `source-chronology-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `source-chronology-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "source-chronology-turn",
+            sourceRecordType: "response_item",
+            sourceEventType: "message",
+            sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: "Older source prompt"
+              }
+            },
+            rawText: "Older source prompt",
+            sourceHash: `source-chronology-prompt-${randomUUID()}`,
+            idempotencyKey: `source-chronology-prompt-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Source Chronology Project" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "source-chronology-turn",
+            sourceRecordType: "response_item",
+            sourceEventType: "message",
+            sourceSequence: 2,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "assistant",
+                content: "Older source reply"
+              }
+            },
+            rawText: "Older source reply",
+            sourceHash: `source-chronology-reply-${randomUUID()}`,
+            idempotencyKey: `source-chronology-reply-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Source Chronology Project" }
+          }
+        ]
+      }
+    );
+
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const firstPage = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 1
+      }
+    );
+    const secondPage = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 1,
+        cursorTimestamp: firstPage[0]!.timestamp,
+        cursorSourceSequence: firstPage[0]!.sourceSequence ?? undefined,
+        cursorId: firstPage[0]!.id
+      }
+    );
+    const threadIndex = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 10
+      }
+    );
+
+    expect(firstPage[0]).toMatchObject({
+      contentPreview: "Older source reply",
+      sourceEventTime: "2026-04-01T12:00:00.000Z",
+      sourceSequence: 2_000_000,
+      timestamp: "2026-04-01T12:00:00.000Z"
+    });
+    expect(secondPage[0]).toMatchObject({
+      contentPreview: "Older source prompt",
+      sourceEventTime: "2026-04-01T12:00:00.000Z",
+      sourceSequence: 1_000_000
+    });
+    expect(firstPage[0]!.createdAt).not.toBe(firstPage[0]!.timestamp);
+    expect(threadIndex[0]?.threads[0]).toMatchObject({
+      latestAt: "2026-04-01T12:00:00.000Z",
+      sample: "Older source reply"
+    });
+  });
+
   it("projects hook-only tool payloads into semantic memory and tool events", async () => {
     const alice = await repo.createUser({
       email: `alice-hook-tool-fallback-${randomUUID()}@example.com`

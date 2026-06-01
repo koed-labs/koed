@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildRawTranscriptConversationItems,
   captureTranscriptPathForPayload,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
@@ -51,6 +52,35 @@ describe("Codex capture hook transcript parsing", () => {
         "user-2"
       )
     );
+  });
+
+  it("carries transcript event time into raw conversation items", () => {
+    const items = buildRawTranscriptConversationItems({
+      records: [
+        {
+          type: "response_item",
+          timestamp: "2026-05-01T10:00:00.000Z",
+          payload: {
+            id: "msg-1",
+            type: "message",
+            role: "user",
+            content: "Older transcript prompt"
+          }
+        }
+      ],
+      effectiveContext: effectiveCaptureContext({
+        hook_event_name: "Stop",
+        cwd: "/repo",
+        session_id: "session-1"
+      }),
+      payload: { hook_event_name: "Stop", cwd: "/repo", session_id: "s" }
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      eventTime: "2026-05-01T10:00:00.000Z",
+      sourceSequence: 0
+    });
   });
 
   it("checkpoints an existing transcript on first contact instead of replaying history", () => {
@@ -765,6 +795,7 @@ describe("Codex capture hook transcript parsing", () => {
         sourceRecordType: "event_msg",
         sourceEventType: "tool_output",
         sourceSequence: 42,
+        eventTime: "2026-05-01T10:00:00.000Z",
         rawJson: { payload: "x".repeat(2_000) },
         rawText: "large tool output ".repeat(500),
         sourceHash: "large-source",
@@ -777,6 +808,9 @@ describe("Codex capture hook transcript parsing", () => {
       expect(chunks.length).toBeGreaterThan(1);
       expect(new Set(chunks.map((chunk) => chunk.sourceSequence))).toEqual(
         new Set([42])
+      );
+      expect(new Set(chunks.map((chunk) => chunk.eventTime))).toEqual(
+        new Set(["2026-05-01T10:00:00.000Z"])
       );
       expect(chunks[0]?.metadata).toMatchObject({
         sourceItemHash: "large-source",
