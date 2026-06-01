@@ -54,6 +54,8 @@ Environment:
   MEMORY_CODEX_APP_SERVER_BINARY=codex
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
   MEMORY_LOG_LEVEL=info
+  MEMORY_LOG_FILE=/absolute/path/to/koed-mcp.log
+  MEMORY_LOG_DESTINATION=file
 ```
 
 Run a quick health check from the package:
@@ -134,7 +136,9 @@ MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS=3
 The MCP server and answer bridge emit pino JSON logs to stderr so stdout remains
 reserved for MCP stdio traffic. Supported levels are `trace`, `debug`, `info`,
 `warn`, `error`, `fatal`, and `silent`. Configure this with
-`MEMORY_LOG_LEVEL`.
+`MEMORY_LOG_LEVEL`. To write logs to disk, set `MEMORY_LOG_FILE`; when a file
+path is set and `MEMORY_LOG_DESTINATION` is blank, logs go to the file. Set
+`MEMORY_LOG_DESTINATION=both` to mirror logs to stderr and the file.
 
 Check the bridge:
 

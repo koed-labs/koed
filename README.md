@@ -83,6 +83,10 @@ Start from `.env.example`. Important values:
 - `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: local Codex summary prompt budget.
 - `MEMORY_LOG_LEVEL`: JSON log level for the local MCP server and answer bridge
   (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent`).
+- `MEMORY_LOG_FILE`: optional log file for MCP server, answer bridge, capture
+  hook, and local summary workers. Leave blank to log to stderr.
+- `MEMORY_LOG_DESTINATION`: optional `stderr`, `file`, or `both`. If
+  `MEMORY_LOG_FILE` is set and this is blank, logs go to the file.
 
 Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis and backend LLM provider configuration are unsupported in this self-hosted build.
 

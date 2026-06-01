@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
 import pino, {
   type DestinationStream,
   type Logger,
@@ -15,6 +18,8 @@ export type McpLogLevel =
   | "fatal"
   | "silent";
 
+export type McpLogDestination = "stderr" | "file" | "both";
+
 const validLogLevels = new Set<McpLogLevel>([
   "trace",
   "debug",
@@ -24,6 +29,17 @@ const validLogLevels = new Set<McpLogLevel>([
   "fatal",
   "silent"
 ]);
+
+const validLogDestinations = new Set<McpLogDestination>([
+  "stderr",
+  "file",
+  "both"
+]);
+
+export interface McpLogDestinationConfig {
+  destination: McpLogDestination;
+  filePath?: string;
+}
 
 export const resolveMcpLogLevel = (
   environment: NodeJS.ProcessEnv = process.env
@@ -37,6 +53,59 @@ export const resolveMcpLogLevel = (
   return validLogLevels.has(configured as McpLogLevel)
     ? (configured as McpLogLevel)
     : "info";
+};
+
+const expandLogFilePath = (value: string): string => {
+  const expanded = value.startsWith("~/")
+    ? `${homedir()}${value.slice(1)}`
+    : value;
+  return resolve(expanded);
+};
+
+export const resolveMcpLogDestinationConfig = (
+  environment: NodeJS.ProcessEnv = process.env
+): McpLogDestinationConfig => {
+  const configuredDestination =
+    environment.MEMORY_LOG_DESTINATION?.trim().toLowerCase();
+  const configuredFilePath = environment.MEMORY_LOG_FILE?.trim();
+  const filePath = configuredFilePath
+    ? expandLogFilePath(configuredFilePath)
+    : undefined;
+  const destination = validLogDestinations.has(
+    configuredDestination as McpLogDestination
+  )
+    ? (configuredDestination as McpLogDestination)
+    : filePath
+      ? "file"
+      : "stderr";
+
+  if ((destination === "file" || destination === "both") && !filePath) {
+    return { destination: "stderr" };
+  }
+
+  return {
+    destination,
+    ...(filePath ? { filePath } : {})
+  };
+};
+
+const createMcpLogDestination = (
+  config: McpLogDestinationConfig
+): DestinationStream => {
+  if (config.destination === "stderr" || !config.filePath) {
+    return pino.destination(2);
+  }
+
+  mkdirSync(dirname(config.filePath), { recursive: true });
+  const fileDestination = pino.destination(config.filePath);
+  if (config.destination === "file") {
+    return fileDestination;
+  }
+
+  return pino.multistream([
+    { stream: pino.destination(2) },
+    { stream: fileDestination }
+  ]) as unknown as DestinationStream;
 };
 
 export const createMcpLogger = (
@@ -68,7 +137,11 @@ export const createMcpLogger = (
     timestamp: pino.stdTimeFunctions.isoTime
   };
 
-  return pino(loggerOptions, options.destination ?? pino.destination(2));
+  return pino(
+    loggerOptions,
+    options.destination ??
+      createMcpLogDestination(resolveMcpLogDestinationConfig(environment))
+  );
 };
 
 export const logger = createMcpLogger("koed-mcp-server");
