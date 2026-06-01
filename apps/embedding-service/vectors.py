@@ -11,9 +11,7 @@ def normalize_vector(vector: list[float]) -> list[float]:
 
 
 def _float_vector(value: Any) -> list[float]:
-    if not isinstance(value, list) or not all(
-        isinstance(item, int | float) for item in value
-    ):
+    if not isinstance(value, list) or not all(isinstance(item, int | float) for item in value):
         raise ValueError("model returned an invalid embedding vector")
     return [float(item) for item in value]
 

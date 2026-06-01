@@ -12,9 +12,7 @@ from settings import config
 SCHEMA_VERSION = "embedding_service_log_v1"
 SERVICE_NAME = "koed-embedding-service"
 
-_request_context: ContextVar[dict[str, Any] | None] = ContextVar(
-    "request_context", default=None
-)
+_request_context: ContextVar[dict[str, Any] | None] = ContextVar("request_context", default=None)
 _request_id_pattern = re.compile(r"^[A-Za-z0-9._~:-]{1,128}$")
 _traceparent_pattern = re.compile(
     r"^[\da-f]{2}-([\da-f]{32})-([\da-f]{16})-[\da-f]{2}$",

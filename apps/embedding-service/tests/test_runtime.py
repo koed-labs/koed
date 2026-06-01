@@ -22,10 +22,7 @@ class FakeEmbeddingModel:
         self.create_embedding_inputs.append(value)
         values = value if isinstance(value, list) else [value]
         return {
-            "data": [
-                {"embedding": [float(index + 1), 1.0, 0.0]}
-                for index, _ in enumerate(values)
-            ]
+            "data": [{"embedding": [float(index + 1), 1.0, 0.0]} for index, _ in enumerate(values)]
         }
 
 
