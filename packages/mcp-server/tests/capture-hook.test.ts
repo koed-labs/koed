@@ -15,7 +15,7 @@ import {
   selectCaptureItems,
   shouldReadTranscriptForHook,
   stateScopeKey
-} from "./capture-hook.js";
+} from "../src/capture-hook.js";
 
 describe("Codex capture hook transcript parsing", () => {
   it("keeps transcript checkpoints stable when the API token changes", () => {

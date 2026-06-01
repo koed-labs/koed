@@ -77,7 +77,7 @@ const bridgeRequestContext = (
   if (existing) {
     return existing;
   }
-  let path = request.url;
+  let path: string | undefined;
   let queryKeys: string[] = [];
   try {
     const parsed = new URL(request.url ?? "/", "http://koed.local");

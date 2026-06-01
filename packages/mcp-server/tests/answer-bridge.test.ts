@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const answerWithMemoryWorker = vi.fn();
 
-vi.mock("./answer-worker.js", () => ({
+vi.mock("../src/answer-worker.js", () => ({
   answerWithMemoryWorker
 }));
 
@@ -340,7 +340,7 @@ describe("local memory answer bridge", () => {
         model: "codex-app-server:test"
       }
     });
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{ ok: boolean; question: { id: string } }>(
@@ -443,7 +443,7 @@ describe("local memory answer bridge", () => {
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const missingQuery = await postRaw(
@@ -509,7 +509,7 @@ describe("local memory answer bridge", () => {
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
     answerWithMemoryWorker.mockRejectedValue(new Error("Codex unavailable"));
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -607,7 +607,7 @@ describe("local memory answer bridge", () => {
         skippedReason: "codex_failed"
       }
     });
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -713,7 +713,7 @@ describe("local memory answer bridge", () => {
         skippedReason: "codex_failed"
       }
     });
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -795,7 +795,7 @@ describe("local memory answer bridge", () => {
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -880,7 +880,7 @@ describe("local memory answer bridge", () => {
         skippedReason: "no_evidence"
       }
     });
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{ ok: boolean }>(
@@ -957,9 +957,9 @@ describe("local memory answer bridge", () => {
       citations: [],
       localMemoryWorker: { status: "ok" }
     });
-    const { MemoryApiClient, defaultConfig } = await import("./index.js");
+    const { MemoryApiClient, defaultConfig } = await import("../src/index.js");
     const { startPendingQuestionAnswerService } =
-      await import("./answer-bridge.js");
+      await import("../src/answer-bridge.js");
     const service = startPendingQuestionAnswerService(
       new MemoryApiClient(defaultConfig()),
       {
@@ -1062,9 +1062,9 @@ describe("local memory answer bridge", () => {
           usedFallback: false
         }
       });
-    const { MemoryApiClient, defaultConfig } = await import("./index.js");
+    const { MemoryApiClient, defaultConfig } = await import("../src/index.js");
     const { startPendingQuestionAnswerService } =
-      await import("./answer-bridge.js");
+      await import("../src/answer-bridge.js");
     const service = startPendingQuestionAnswerService(
       new MemoryApiClient(defaultConfig()),
       {
@@ -1160,7 +1160,7 @@ describe("local memory answer bridge", () => {
       citations: [],
       localMemoryWorker: { status: "ok" }
     });
-    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     await postJson(`${bridgeUrl}/v1/memory/answer-local`, {
@@ -1198,9 +1198,9 @@ describe("local memory answer bridge", () => {
     };
     const exit = vi.fn();
     const clearTimeoutFn = vi.fn();
-    const setTimeoutFn = vi.fn(() => timer);
+    const setTimeoutFn = vi.fn(() => timer) as unknown as typeof setTimeout;
     const { installAnswerBridgeShutdownHandlers } =
-      await import("./answer-bridge.js");
+      await import("../src/answer-bridge.js");
 
     installAnswerBridgeShutdownHandlers(server as unknown as http.Server, {
       clearTimeoutFn,
@@ -1244,14 +1244,14 @@ describe("local memory answer bridge", () => {
     };
     const exit = vi.fn();
     const { installAnswerBridgeShutdownHandlers } =
-      await import("./answer-bridge.js");
+      await import("../src/answer-bridge.js");
 
     installAnswerBridgeShutdownHandlers(server as unknown as http.Server, {
       exit,
       forceCloseDelayMs: 25,
       log: log as never,
       processLike,
-      setTimeoutFn: vi.fn(() => timer)
+      setTimeoutFn: vi.fn(() => timer) as unknown as typeof setTimeout
     });
 
     listeners.get("SIGTERM")?.();

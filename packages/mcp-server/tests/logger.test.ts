@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveMcpLogLevel } from "./logger.js";
+import { resolveMcpLogLevel } from "../src/logger.js";
 
 describe("MCP logger", () => {
   it("uses MEMORY_LOG_LEVEL", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rawConversationItemBatches } from "./raw-conversation-items.js";
+import { rawConversationItemBatches } from "../src/raw-conversation-items.js";
 
 const requestBytes = (items: Record<string, unknown>[]): number =>
   Buffer.byteLength(JSON.stringify({ items }), "utf8");

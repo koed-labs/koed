@@ -90,10 +90,10 @@ Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, o
 
 Codex is currently the only supported AI client. Other clients will need their own setup guides as they are added.
 
-1. Create an API token named `Client Integration`:
+1. Create an API:
 
 ```bash
-pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
+pnpm api-token:create --owner-email local@koed.ai --name "<name>"
 ```
 
 2. Build the MCP server and Capture Hook:

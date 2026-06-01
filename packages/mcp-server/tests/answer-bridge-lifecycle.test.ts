@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type http from "node:http";
 import { describe, expect, it, vi } from "vitest";
-import { startAnswerBridgeWithRetry } from "./answer-bridge-lifecycle.js";
+import { startAnswerBridgeWithRetry } from "../src/answer-bridge-lifecycle.js";
 
 class FakeServer extends EventEmitter {
   close = vi.fn();

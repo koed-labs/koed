@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CodexAppServerTurnError,
   type CodexThreadTokenUsage
-} from "./codex-app-server-runner.js";
+} from "../src/codex-app-server-runner.js";
 import {
   MEMORY_ANSWER_PROMPT_VERSION,
   MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
@@ -14,7 +14,7 @@ import {
   type CodexAnswerRunner,
   type MemoryAnswerPayload,
   type MemoryAnswerRetrievalClient
-} from "./answer-worker.js";
+} from "../src/answer-worker.js";
 
 const tokenUsage = (totalTokens: number): CodexThreadTokenUsage => ({
   last: {

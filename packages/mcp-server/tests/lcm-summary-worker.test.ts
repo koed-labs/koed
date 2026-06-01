@@ -8,8 +8,8 @@ import {
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
   type LcmSummaryNode
-} from "./lcm-summary-worker.js";
-import { CodexAppServerTurnError } from "./codex-app-server-runner.js";
+} from "../src/lcm-summary-worker.js";
+import { CodexAppServerTurnError } from "../src/codex-app-server-runner.js";
 
 const tempDirs: string[] = [];
 

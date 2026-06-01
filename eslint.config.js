@@ -66,7 +66,9 @@ export default tseslint.config(
     files: [
       "apps/api/src/server.test.ts",
       "packages/*/src/**/*.test.ts",
-      "packages/*/src/**/*.spec.ts"
+      "packages/*/src/**/*.spec.ts",
+      "packages/*/tests/**/*.test.ts",
+      "packages/*/tests/**/*.spec.ts"
     ],
     rules: {
       "@typescript-eslint/no-unsafe-argument": "error",

@@ -13,24 +13,24 @@ import {
   memoryServerInstructions,
   requiredTools,
   resolveToolExposureConfig
-} from "./index.js";
+} from "../src/index.js";
 import {
   MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
   answerWithMemoryWorker,
   compactMemoryAnswerPayload,
   resolveMemoryAnswerWorkerConfig,
   type CodexAnswerRunner
-} from "./answer-worker.js";
+} from "../src/answer-worker.js";
 import {
   resolveLcmSummaryServiceConfig,
   startLcmSummaryService
-} from "./lcm-summary-service.js";
+} from "../src/lcm-summary-service.js";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
   type LcmSummaryNode
-} from "./lcm-summary-worker.js";
+} from "../src/lcm-summary-worker.js";
 
 const servers: http.Server[] = [];
 
