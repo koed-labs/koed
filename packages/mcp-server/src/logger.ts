@@ -29,7 +29,6 @@ export const resolveMcpLogLevel = (
   environment: NodeJS.ProcessEnv = process.env
 ): McpLogLevel => {
   const configured = (
-    environment.LOG_LEVEL ??
     environment.MEMORY_LOG_LEVEL ??
     (environment.NODE_ENV === "test" ? "silent" : "info")
   )
