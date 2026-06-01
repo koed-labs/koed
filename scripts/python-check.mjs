@@ -46,7 +46,7 @@ try {
   run(
     "python unit tests apps/embedding-service",
     path.join(venvDir, "bin", "python"),
-    ["-m", "unittest", "discover"]
+    ["-m", "unittest", "discover", "-s", "tests", "-t", "."]
   );
   run("mypy apps/embedding-service", mypy, [
     "app.py",
