@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  CodexAppServerTurnError,
+  type CodexThreadTokenUsage
+} from "./codex-app-server-runner.js";
+import {
   MEMORY_ANSWER_PROMPT_VERSION,
   MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
   answerWithMemoryWorker,
@@ -11,6 +15,15 @@ import {
   type MemoryAnswerPayload,
   type MemoryAnswerRetrievalClient
 } from "./answer-worker.js";
+
+const tokenUsage = (totalTokens: number): CodexThreadTokenUsage => ({
+  last: {
+    totalTokens,
+    inputTokens: totalTokens - 1,
+    outputTokens: 1
+  },
+  modelContextWindow: 1000
+});
 
 const answerObject = (
   answer_markdown: string,
@@ -124,6 +137,524 @@ describe("memory answer worker", () => {
       "Honor the requested default search domain (global)"
     );
     expect(prompt).toContain('"search_domain":"global"');
+    expect(prompt).toContain("Start with scan");
+    expect(prompt).toContain("lexical_search");
+    expect(prompt).toContain("countAboveThreshold");
+  });
+
+  it("keeps large inspected evidence bodies visible in the planner prompt", () => {
+    const marker = "KOE165SERAPHINA_VISIBLE_TAIL";
+    const largeEvidence = `${"archive corridor ".repeat(3000)}${marker}`;
+    const prompt = buildPlannedMemoryAnswerPrompt(
+      {
+        query: `Who was named ${marker}?`,
+        retrievalScope: "personal",
+        searchDomain: "project",
+        workspaceId: "workspace-large-evidence",
+        limit: 10,
+        evidence: [
+          {
+            nodeId: "event-1",
+            sourceType: "memory_event",
+            retrievalStage: "lexical_search",
+            summaryText: largeEvidence
+          }
+        ],
+        citations: [],
+        retrievals: [],
+        searches: [],
+        expansions: [],
+        errors: []
+      },
+      resolveMemoryAnswerWorkerConfig({ MEMORY_ANSWER_PROVIDER: "codex" })
+    );
+
+    expect(prompt).toContain(marker);
+    expect(prompt).not.toContain('"truncated": true');
+  });
+
+  it("plans scan, stage search, and returns only curated evidence", async () => {
+    const outputs = [
+      JSON.stringify({ action: "lookup", query: "Aston Villa" }),
+      JSON.stringify({ action: "scan", query: "Aston Villa" }),
+      JSON.stringify({
+        action: "answer",
+        answer: answerObject(
+          "I should not answer before inspecting evidence.",
+          "insufficient"
+        )
+      }),
+      JSON.stringify({
+        action: "search",
+        stage: "lexical_search",
+        query: "Aston Villa",
+        limit: 1
+      }),
+      JSON.stringify({
+        action: "answer",
+        answer: answerObject(
+          "Yes, you discussed Aston Villa. [1 personal]",
+          "found"
+        )
+      })
+    ];
+    const runner: CodexAnswerRunner = async () => ({
+      text:
+        outputs.shift() ??
+        answerJson("No matching memory evidence found.", "not_found"),
+      model: "codex:test"
+    });
+    const searches: Record<string, unknown>[] = [];
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        searches.push(input);
+        if (input.retrieval_stage === "score_scan") {
+          return {
+            hits: [],
+            retrieval: {
+              stages: [
+                {
+                  name: "lexical_search",
+                  topScore: 1,
+                  countAboveThreshold: 1,
+                  maxAllowed: 10
+                },
+                {
+                  name: "rollup_search",
+                  topScore: 0,
+                  countAboveThreshold: 0,
+                  maxAllowed: 10
+                }
+              ]
+            }
+          };
+        }
+        return {
+          hits: [
+            {
+              nodeId: "event-1",
+              sourceType: "memory_event",
+              sourceId: "event-1",
+              retrievalStage: "lexical_search",
+              visibility: "personal",
+              summaryText: "The user discussed Aston Villa.",
+              citation: {
+                nodeId: "event-1",
+                sourceType: "memory_event",
+                sourceId: "event-1",
+                retrievalStage: "lexical_search",
+                visibility: "personal"
+              }
+            },
+            {
+              nodeId: "event-2",
+              sourceType: "memory_event",
+              sourceId: "event-2",
+              retrievalStage: "lexical_search",
+              visibility: "personal",
+              summaryText: "Unrelated football memory.",
+              citation: {
+                nodeId: "event-2",
+                sourceType: "memory_event",
+                sourceId: "event-2",
+                retrievalStage: "lexical_search",
+                visibility: "personal"
+              }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    const result = await answerWithMemoryWorker(
+      {
+        evidenceBundle: {
+          query: "Have we talked about Aston Villa before?",
+          evidence: [],
+          retrieval: { mode: "planner_controlled_initial" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "global",
+        limit: 10,
+        responseDetail: "with_evidence"
+      }
+    );
+
+    expect(searches.map((search) => search.retrieval_stage)).toEqual([
+      "score_scan",
+      "lexical_search"
+    ]);
+    expect(searches[1]).toMatchObject({
+      strict_limit: true,
+      limit: 1
+    });
+    expect(result.markdown).toContain("Aston Villa");
+    expect(result.evidence).toHaveLength(1);
+    expect(JSON.stringify(result.evidence)).toContain("Aston Villa");
+    expect(JSON.stringify(result.evidence)).not.toContain(
+      "Unrelated football memory"
+    );
+  });
+
+  it("curates selected evidence by source identity when no evidence index is returned", async () => {
+    const outputs = [
+      JSON.stringify({ action: "scan", query: "lighthouse story" }),
+      JSON.stringify({
+        action: "search",
+        stage: "leaf_search",
+        query: "lighthouse story",
+        limit: 2
+      }),
+      JSON.stringify({
+        action: "answer",
+        answer: {
+          ...answerObject("The relevant source says the old lady was Elara."),
+          evidence: [
+            {
+              node_id: "leaf-relevant",
+              source_id: "leaf-relevant",
+              source_type: "memory_node",
+              visibility: "personal",
+              relevance: "directly supports the answer"
+            }
+          ]
+        }
+      })
+    ];
+    const runner: CodexAnswerRunner = async () => ({
+      text:
+        outputs.shift() ??
+        answerJson("No matching memory evidence found.", "not_found"),
+      model: "codex:test"
+    });
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        if (input.retrieval_stage === "score_scan") {
+          return {
+            hits: [],
+            retrieval: {
+              stages: [
+                {
+                  name: "leaf_search",
+                  topScore: 0.8,
+                  countAboveThreshold: 2,
+                  maxAllowed: 10
+                }
+              ]
+            }
+          };
+        }
+        return {
+          hits: [
+            {
+              nodeId: "leaf-noise",
+              sourceType: "memory_node",
+              sourceId: "leaf-noise",
+              retrievalStage: "leaf_search",
+              visibility: "personal",
+              summaryText: "Unrelated candidate text.",
+              citation: {
+                nodeId: "leaf-noise",
+                sourceType: "memory_node",
+                sourceId: "leaf-noise",
+                retrievalStage: "leaf_search",
+                visibility: "personal"
+              }
+            },
+            {
+              nodeId: "leaf-relevant",
+              sourceType: "memory_node",
+              sourceId: "leaf-relevant",
+              retrievalStage: "leaf_search",
+              visibility: "personal",
+              summaryText: "The old lady in the lighthouse story was Elara.",
+              citation: {
+                nodeId: "leaf-relevant",
+                sourceType: "memory_node",
+                sourceId: "leaf-relevant",
+                retrievalStage: "leaf_search",
+                visibility: "personal"
+              }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    const result = await answerWithMemoryWorker(
+      {
+        evidenceBundle: {
+          query: "What was the name of the old lady?",
+          evidence: [],
+          retrieval: { mode: "planner_controlled_initial" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "global",
+        limit: 10,
+        responseDetail: "with_evidence"
+      }
+    );
+
+    expect(result.evidence).toHaveLength(1);
+    expect(JSON.stringify(result.evidence)).toContain("Elara");
+    expect(JSON.stringify(result.evidence)).not.toContain("Unrelated");
+  });
+
+  it("rejects found answers that do not select resolvable evidence", async () => {
+    const outputs = [
+      JSON.stringify({ action: "scan", query: "lighthouse story" }),
+      JSON.stringify({
+        action: "search",
+        stage: "leaf_search",
+        query: "lighthouse story",
+        limit: 1
+      }),
+      JSON.stringify({
+        action: "answer",
+        answer: {
+          ...answerObject("Unsupported answer."),
+          evidence: [
+            {
+              node_id: "missing-node",
+              source_id: "missing-source",
+              relevance: "does not match inspected evidence"
+            }
+          ]
+        }
+      }),
+      JSON.stringify({
+        action: "answer",
+        answer: answerObject(
+          "Insufficient matching memory evidence found.",
+          "insufficient"
+        )
+      })
+    ];
+    const runner: CodexAnswerRunner = async () => ({
+      text:
+        outputs.shift() ??
+        answerJson("No matching memory evidence found.", "not_found"),
+      model: "codex:test"
+    });
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        if (input.retrieval_stage === "score_scan") {
+          return {
+            hits: [],
+            retrieval: {
+              stages: [
+                {
+                  name: "leaf_search",
+                  topScore: 0.8,
+                  countAboveThreshold: 1,
+                  maxAllowed: 10
+                }
+              ]
+            }
+          };
+        }
+        return {
+          hits: [
+            {
+              nodeId: "leaf-real",
+              sourceType: "memory_node",
+              sourceId: "leaf-real",
+              retrievalStage: "leaf_search",
+              visibility: "personal",
+              summaryText: "A real inspected candidate.",
+              citation: {
+                nodeId: "leaf-real",
+                sourceType: "memory_node",
+                sourceId: "leaf-real",
+                retrievalStage: "leaf_search",
+                visibility: "personal"
+              }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    const result = await answerWithMemoryWorker(
+      {
+        evidenceBundle: {
+          query: "What was the lighthouse story answer?",
+          evidence: [],
+          retrieval: { mode: "planner_controlled_initial" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "3"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "global",
+        limit: 10,
+        responseDetail: "with_evidence"
+      }
+    );
+
+    expect(result.localMemoryWorker.memoryStatus).toBe("insufficient");
+    expect(result.evidence).toHaveLength(0);
+    expect(result.markdown).toContain("Insufficient");
+  });
+
+  it("requires a semantic search before lexical fallback when semantic candidates are available", async () => {
+    const outputs = [
+      JSON.stringify({ action: "scan", query: "keeper of the lamp" }),
+      JSON.stringify({
+        action: "search",
+        stage: "lexical_search",
+        query: "keeper of the lamp",
+        limit: 1
+      }),
+      JSON.stringify({
+        action: "search",
+        stage: "leaf_search",
+        query: "keeper of the lamp",
+        limit: 1
+      }),
+      JSON.stringify({
+        action: "answer",
+        answer: answerObject("The relevant memory says Mara. [1 personal]")
+      })
+    ];
+    const runner: CodexAnswerRunner = async () => ({
+      text:
+        outputs.shift() ??
+        answerJson("No matching memory evidence found.", "not_found"),
+      model: "codex:test"
+    });
+    const searches: Record<string, unknown>[] = [];
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        searches.push(input);
+        if (input.retrieval_stage === "score_scan") {
+          return {
+            hits: [],
+            retrieval: {
+              stages: [
+                {
+                  name: "leaf_search",
+                  topScore: 0.71,
+                  countAboveThreshold: 1,
+                  maxAllowed: 10
+                },
+                {
+                  name: "lexical_search",
+                  topScore: 1,
+                  countAboveThreshold: 1,
+                  maxAllowed: 10
+                }
+              ]
+            }
+          };
+        }
+        return {
+          hits: [
+            {
+              nodeId: "leaf-1",
+              sourceType: "memory_node",
+              sourceId: "leaf-1",
+              retrievalStage: "leaf_search",
+              visibility: "personal",
+              summaryText: "The keeper of the lamp was Mara.",
+              citation: {
+                nodeId: "leaf-1",
+                sourceType: "memory_node",
+                sourceId: "leaf-1",
+                retrievalStage: "leaf_search",
+                visibility: "personal"
+              }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    const result = await answerWithMemoryWorker(
+      {
+        evidenceBundle: {
+          query: "What was the name of the keeper of the lamp?",
+          evidence: [],
+          retrieval: { mode: "planner_controlled_initial" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "global",
+        limit: 10,
+        responseDetail: "with_evidence"
+      }
+    );
+
+    expect(searches.map((search) => search.retrieval_stage)).toEqual([
+      "score_scan",
+      "leaf_search"
+    ]);
+    expect(result.markdown).toContain("Mara");
   });
 
   it("uses the configured Codex runner by default", async () => {
@@ -163,6 +694,59 @@ describe("memory answer worker", () => {
       usedFallback: false
     });
     expect(result.localMemoryWorker.promptTokenEstimate).toBeGreaterThan(0);
+  });
+
+  it("preserves usage-bearing failed retry attempts", async () => {
+    const calls: number[] = [];
+    const runner: CodexAnswerRunner = async (_prompt, config, timeoutMs) => {
+      calls.push(timeoutMs);
+      if (calls.length === 1) {
+        throw new CodexAppServerTurnError("first attempt failed", {
+          model: `codex:${config.model}:${config.reasoningEffort}`,
+          tokenUsage: tokenUsage(5),
+          threadId: "thread-failed",
+          turnId: "turn-failed"
+        });
+      }
+      return {
+        text: answerJson("Second attempt answered from memory. [personal]"),
+        model: `codex:${config.model}:${config.reasoningEffort}`,
+        tokenUsage: tokenUsage(7),
+        threadId: "thread-success",
+        turnId: "turn-success"
+      };
+    };
+
+    const result = await answerWithMemoryWorker(payload, {
+      config: {
+        ...resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_TIMEOUT_MS: "1000",
+          MEMORY_ANSWER_MAX_ATTEMPTS: "2",
+          MEMORY_ANSWER_PLANNING_MODE: "single_pass"
+        }),
+        cwd: "/tmp"
+      },
+      runner
+    });
+
+    expect(calls).toEqual([1000, 2000]);
+    expect(result.localMemoryWorker.appServerExecutions).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        attemptIndex: 1,
+        tokenUsage: tokenUsage(5),
+        threadId: "thread-failed",
+        turnId: "turn-failed"
+      }),
+      expect.objectContaining({
+        status: "succeeded",
+        attemptIndex: 2,
+        tokenUsage: tokenUsage(7),
+        threadId: "thread-success",
+        turnId: "turn-success"
+      })
+    ]);
   });
 
   it("returns compact answer-only output by default", async () => {
@@ -266,7 +850,12 @@ describe("memory answer worker", () => {
             query: "memory cost decision local Codex Gemini embeddings",
             limit: 5
           }),
-          model: `codex:${config.model}:${config.reasoningEffort}`
+          model: `codex:${config.model}:${config.reasoningEffort}`,
+          threadId: "planner-thread-1",
+          turnId: "planner-turn-1",
+          tokenUsage: {
+            last: { inputTokens: 10, outputTokens: 2, totalTokens: 12 }
+          }
         };
       }
       return {
@@ -276,7 +865,12 @@ describe("memory answer worker", () => {
             "We decided embeddings can use Gemini, while answer synthesis should stay on the user's local Codex subscription. [personal]"
           )
         }),
-        model: `codex:${config.model}:${config.reasoningEffort}`
+        model: `codex:${config.model}:${config.reasoningEffort}`,
+        threadId: "planner-thread-2",
+        turnId: "planner-turn-2",
+        tokenUsage: {
+          last: { inputTokens: 20, outputTokens: 4, totalTokens: 24 }
+        }
       };
     };
     const client: MemoryAnswerRetrievalClient = {
@@ -323,21 +917,19 @@ describe("memory answer worker", () => {
       responseDetail: "with_evidence"
     });
 
-    expect(searches).toEqual([
-      {
-        query: "memory cost decision local Codex Gemini embeddings",
-        retrieval_scope: "personal",
-        search_domain: "project",
-        workspace_id: undefined,
-        session_id: undefined,
-        limit: 5
-      }
-    ]);
+    expect(searches).toHaveLength(1);
+    expect(searches[0]).toMatchObject({
+      query: "memory cost decision local Codex Gemini embeddings",
+      retrieval_scope: "personal",
+      search_domain: "project",
+      workspace_id: undefined,
+      session_id: undefined,
+      limit: 5
+    });
     expect(result.markdown).toContain("local Codex subscription");
-    expect(result.evidence).toHaveLength(2);
+    expect(result.evidence).toHaveLength(1);
     expect(result.citations).toEqual([
-      { nodeId: "node-1", visibility: "personal" },
-      { nodeId: "node-2", visibility: "personal" }
+      { nodeId: "node-1", visibility: "personal" }
     ]);
     expect(result.localMemoryWorker).toMatchObject({
       planningMode: "planned",
@@ -346,6 +938,26 @@ describe("memory answer worker", () => {
       memoryStatus: "found",
       usedFallback: false
     });
+    expect(result.localMemoryWorker.appServerExecutions).toEqual([
+      expect.objectContaining({
+        stepIndex: 0,
+        stepKind: "planner",
+        threadId: "planner-thread-1",
+        turnId: "planner-turn-1",
+        tokenUsage: {
+          last: { inputTokens: 10, outputTokens: 2, totalTokens: 12 }
+        }
+      }),
+      expect.objectContaining({
+        stepIndex: 1,
+        stepKind: "planner",
+        threadId: "planner-thread-2",
+        turnId: "planner-turn-2",
+        tokenUsage: {
+          last: { inputTokens: 20, outputTokens: 4, totalTokens: 24 }
+        }
+      })
+    ]);
   });
 
   it("does not narrow a global planner follow-up to project without a workspace", async () => {
@@ -425,6 +1037,89 @@ describe("memory answer worker", () => {
       search_domain: "global"
     });
     expect(searches[0]?.workspace_id).toBeUndefined();
+  });
+
+  it("preserves caller time bounds on planned follow-up searches", async () => {
+    const searches: Record<string, unknown>[] = [];
+    const runner: CodexAnswerRunner = async (_prompt, config) => {
+      if (searches.length === 0) {
+        return {
+          text: JSON.stringify({
+            action: "search",
+            query: "recent deployment discussion",
+            limit: 3
+          }),
+          model: `codex:${config.model}:${config.reasoningEffort}`
+        };
+      }
+      return {
+        text: JSON.stringify({
+          action: "answer",
+          answer: answerObject("The recent deployment discussion was found.")
+        }),
+        model: `codex:${config.model}:${config.reasoningEffort}`
+      };
+    };
+    const client: MemoryAnswerRetrievalClient = {
+      async search(input) {
+        searches.push(input);
+        return {
+          hits: [
+            {
+              nodeId: "node-recent",
+              visibility: "personal",
+              summaryText: "Recent deployment discussion.",
+              citation: { nodeId: "node-recent", visibility: "personal" }
+            }
+          ],
+          retrieval: { retrievalMode: "semantic_vector" }
+        };
+      },
+      async expand() {
+        throw new Error("expand should not be called");
+      }
+    };
+
+    await answerWithMemoryWorker(
+      {
+        markdown: "No matching memory found.",
+        evidenceBundle: {
+          query: "What did we decide about deployment recently?",
+          evidence: [],
+          retrieval: { retrievalMode: "semantic_vector" }
+        },
+        citations: []
+      },
+      {
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "2"
+          }),
+          cwd: "/tmp"
+        },
+        runner,
+        client,
+        retrievalScope: "personal",
+        searchDomain: "project",
+        workspaceId: "/repo/koed",
+        recentDays: 14,
+        limit: 10
+      }
+    );
+
+    expect(searches[0]).toMatchObject({
+      query: "recent deployment discussion",
+      retrieval_scope: "personal",
+      search_domain: "project",
+      workspace_id: "/repo/koed",
+      recent_days: 14,
+      limit: 3
+    });
+    expect(searches[0]?.source_after).toBeUndefined();
+    expect(searches[0]?.source_before).toBeUndefined();
   });
 
   it("accepts planner evidence entries that only include copied source fields", async () => {
@@ -519,14 +1214,20 @@ describe("memory answer worker", () => {
   });
 
   it("can report that no matching memory evidence was found", async () => {
-    const runner: CodexAnswerRunner = async (_prompt, config) => ({
-      text: JSON.stringify({
+    const outputs = [
+      JSON.stringify({ action: "scan", query: "Aston Villa" }),
+      JSON.stringify({
         action: "answer",
         answer: answerObject(
           "No matching memory evidence found for Aston Villa.",
           "not_found"
         )
-      }),
+      })
+    ];
+    const runner: CodexAnswerRunner = async (_prompt, config) => ({
+      text:
+        outputs.shift() ??
+        answerJson("No matching memory evidence found.", "not_found"),
       model: `codex:${config.model}:${config.reasoningEffort}`
     });
     const client: MemoryAnswerRetrievalClient = {
@@ -569,7 +1270,7 @@ describe("memory answer worker", () => {
     expect(result.localMemoryWorker).toMatchObject({
       planningMode: "planned",
       memoryStatus: "not_found",
-      searchCount: 0,
+      searchCount: 1,
       usedFallback: false
     });
   });
@@ -589,6 +1290,84 @@ describe("memory answer worker", () => {
       model: null,
       usedFallback: true,
       skippedReason: "disabled"
+    });
+  });
+
+  it("preserves backend retrieval before single-pass answer synthesis", async () => {
+    let answerCalls = 0;
+    const retrievedPayload = {
+      ...payload,
+      markdown: "Retrieved evidence fallback.",
+      evidenceBundle: {
+        ...payload.evidenceBundle,
+        query: "What did we decide about memory costs?"
+      }
+    } satisfies MemoryAnswerPayload;
+    const client: MemoryAnswerRetrievalClient = {
+      async answer(input) {
+        answerCalls += 1;
+        expect(input).toMatchObject({
+          query: "What did we decide about memory costs?",
+          retrieval_scope: "personal",
+          search_domain: "project",
+          workspace_id: "/repo/koed",
+          limit: 7
+        });
+        return retrievedPayload;
+      },
+      async search() {
+        throw new Error("single-pass mode should not use planner search");
+      },
+      async expand() {
+        throw new Error("single-pass mode should not use planner expand");
+      }
+    };
+    const runner: CodexAnswerRunner = async (prompt, config) => {
+      expect(prompt).toContain("Gemini embeddings are acceptable");
+      return {
+        text: answerJson(
+          "Single-pass synthesis used the retrieved evidence. [personal]"
+        ),
+        model: `codex:${config.model}:${config.reasoningEffort}`
+      };
+    };
+
+    const result = await answerWithMemoryWorker(
+      {
+        markdown: "",
+        evidenceBundle: {
+          query: "What did we decide about memory costs?",
+          evidence: [],
+          retrieval: { mode: "planner_controlled_initial" }
+        }
+      },
+      {
+        client,
+        runner,
+        retrievalScope: "personal",
+        searchDomain: "project",
+        workspaceId: "/repo/koed",
+        limit: 7,
+        config: {
+          ...resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_PLANNING_MODE: "single_pass",
+            MEMORY_ANSWER_TIMEOUT_MS: "1000",
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1"
+          }),
+          cwd: "/tmp"
+        }
+      }
+    );
+
+    expect(answerCalls).toBe(1);
+    expect(result.markdown).toBe(
+      "Single-pass synthesis used the retrieved evidence. [personal]"
+    );
+    expect(result.retrieval.evidenceCount).toBe(1);
+    expect(result.localMemoryWorker).toMatchObject({
+      planningMode: "single_pass",
+      usedFallback: false
     });
   });
 

@@ -8,14 +8,18 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "eval": "tsc -p tsconfig.json && node dist/index.js",
+    "eval:memory-recall:live": "tsc -p tsconfig.json && node dist/memory-recall/live-runner.js",
     "eval:tool-choice": "tsc -p tsconfig.json && node dist/tool-choice/index.js",
     "eval:tool-choice:live": "tsc -p tsconfig.json && node dist/tool-choice/live-runner.js",
+    "eval:retrieval-success": "tsc -p tsconfig.json && node dist/retrieval-success/index.js",
+    "eval:retrieval-success:live": "tsc -p tsconfig.json && node dist/retrieval-success/live-runner.js",
     "eval:workers": "tsc -p tsconfig.json && node dist/worker-json/index.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@koed/core": "workspace:*",
+    "@koed/db": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
   }

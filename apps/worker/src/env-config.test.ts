@@ -47,6 +47,19 @@ describe("resolveWorkerEnv", () => {
     ).toThrow("Unsupported reranker model key");
   });
 
+  it("validates the documented root reranker key alias", () => {
+    expect(() =>
+      resolveWorkerEnv({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
+      })
+    ).not.toThrow();
+    expect(() =>
+      resolveWorkerEnv({
+        EMBEDDING_RERANKER_KEY: "unsupported"
+      })
+    ).toThrow("Unsupported reranker model key");
+  });
+
   it("requires production service configuration", () => {
     expect(() => resolveWorkerEnv({ NODE_ENV: "production" })).toThrow(
       "DATABASE_URL, REDIS_URL, DATA_ENCRYPTION_KEY, EMBEDDING_SERVICE_URL, EMBEDDING_SERVICE_TOKEN, EMBEDDING_MODEL"

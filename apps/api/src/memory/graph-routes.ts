@@ -9,6 +9,7 @@ import {
   graphEventsQuerySchema,
   graphNodesQuerySchema,
   graphQuerySchema,
+  expandMemoryNodeQuerySchema,
   memoryBrowserQuerySchema,
   memoryClusterQuerySchema,
   nodeIdParamsSchema,
@@ -320,9 +321,21 @@ export const registerGraphRoutes = (
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const params = nodeIdParamsSchema.parse(request.params);
-      const expanded = await repo.expandMemoryNode(params.nodeId, {
-        userId: user.id
-      });
+      const query = expandMemoryNodeQuerySchema.parse(request.query);
+      const expanded = await repo.expandMemoryNode(
+        params.nodeId,
+        {
+          userId: user.id
+        },
+        {
+          searchDomain: query.search_domain,
+          sessionId: query.session_id,
+          workspaceId: query.workspace_id,
+          recentDays: query.recent_days,
+          sourceAfter: query.source_after?.toISOString(),
+          sourceBefore: query.source_before?.toISOString()
+        }
+      );
 
       return { expanded };
     }

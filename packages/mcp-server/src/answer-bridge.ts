@@ -350,6 +350,19 @@ const isRetryableBridgeError = (error: unknown): boolean => {
       error.status >= 500
     );
   }
+  const status =
+    error && typeof error === "object" && "status" in error
+      ? (error as { status?: unknown }).status
+      : undefined;
+  if (typeof status === "number") {
+    return (
+      status === 408 ||
+      status === 409 ||
+      status === 425 ||
+      status === 429 ||
+      status >= 500
+    );
+  }
   return true;
 };
 
@@ -437,34 +450,59 @@ const persistAnswerAppServerEvents = async (
       appServerThreadId?: string;
       appServerTurnId?: string;
     };
-  const events = worker.appServerEvents ?? [];
-  if (events.length === 0) {
+  const executions =
+    worker.appServerExecutions && worker.appServerExecutions.length > 0
+      ? worker.appServerExecutions
+      : [
+          {
+            stepIndex: 0,
+            stepKind: "final" as const,
+            model: worker.model ?? "codex-app-server",
+            tokenUsage: worker.tokenUsage,
+            threadId: worker.appServerThreadId,
+            turnId: worker.appServerTurnId,
+            rawEvents: worker.appServerEvents
+          }
+        ];
+  const eventEntries = executions.flatMap((execution, executionIndex) =>
+    (execution.rawEvents ?? []).map((event, eventIndex) => ({
+      execution,
+      executionIndex,
+      event,
+      eventIndex,
+      sourceSequence: executionIndex * 1000 + eventIndex
+    }))
+  );
+  if (eventEntries.length === 0) {
     return;
   }
-  const items = events.map((event, index) => {
+  const items = eventEntries.map((entry) => {
     const sourceHash = hash({
       workflow: "memory_question",
       questionId: question.id,
-      threadId: worker.appServerThreadId,
-      turnId: worker.appServerTurnId,
-      index,
-      method: event.method,
-      params: event.params,
-      result: event.result
+      threadId: entry.execution.threadId,
+      turnId: entry.execution.turnId,
+      executionIndex: entry.executionIndex,
+      stepIndex: entry.execution.stepIndex,
+      stepKind: entry.execution.stepKind,
+      eventIndex: entry.eventIndex,
+      method: entry.event.method,
+      params: entry.event.params,
+      result: entry.event.result
     });
     return {
       sourceKind: "codex",
       sourceAdapterVersion: "codex-app-server-v1",
       sourceTransport: "app_server",
-      externalSessionId: worker.appServerThreadId,
-      externalThreadId: worker.appServerThreadId,
-      externalTurnId: worker.appServerTurnId,
+      externalSessionId: entry.execution.threadId,
+      externalThreadId: entry.execution.threadId,
+      externalTurnId: entry.execution.turnId,
       sourceRecordType: "app_server_notification",
-      sourceEventType: event.method,
-      sourceSequence: index,
-      eventTime: event.observedAt,
-      rawJson: event,
-      rawText: rawTextFromAppServerEvent(event),
+      sourceEventType: entry.event.method,
+      sourceSequence: entry.sourceSequence,
+      eventTime: entry.event.observedAt,
+      rawJson: entry.event,
+      rawText: rawTextFromAppServerEvent(entry.event),
       sourceHash,
       idempotencyKey: sourceHash,
       projectionStatus: "raw_only",
@@ -474,7 +512,10 @@ const persistAnswerAppServerEvents = async (
         questionId: question.id,
         searchDomain: question.searchDomain,
         workspaceId: question.workspaceId,
-        sessionId: question.sessionId
+        sessionId: question.sessionId,
+        stepIndex: entry.execution.stepIndex,
+        stepKind: entry.execution.stepKind,
+        executionIndex: entry.executionIndex
       }
     };
   });
@@ -483,26 +524,44 @@ const persistAnswerAppServerEvents = async (
     items,
     `memory question ${question.id}`
   );
-  const tokenUsage = worker.tokenUsage;
-  const lastUsage = tokenUsage?.last;
-  const tokenConversationItem = persisted.find((item) => {
-    const record = asRecord(item);
-    return record.sourceEventType === "thread/tokenUsage/updated";
-  });
-  const tokenConversationItemId =
-    typeof tokenConversationItem?.id === "string"
-      ? tokenConversationItem.id
-      : undefined;
-  if (lastUsage) {
+  for (const [executionIndex, execution] of executions.entries()) {
+    const tokenUsage = execution.tokenUsage;
+    const lastUsage = tokenUsage?.last;
+    if (!lastUsage) {
+      continue;
+    }
+    const tokenSourceSequence = eventEntries.find(
+      (entry) =>
+        entry.executionIndex === executionIndex &&
+        entry.event.method === "thread/tokenUsage/updated"
+    )?.sourceSequence;
+    const tokenConversationItem = persisted.find((item) => {
+      const record = asRecord(item);
+      return (
+        record.sourceEventType === "thread/tokenUsage/updated" &&
+        (tokenSourceSequence === undefined ||
+          typeof record.sourceSequence !== "number" ||
+          record.sourceSequence === tokenSourceSequence)
+      );
+    });
+    const tokenConversationItemId =
+      typeof tokenConversationItem?.id === "string"
+        ? tokenConversationItem.id
+        : undefined;
     await client.recordTokenUsage({
       workflowType: "memory_question",
       workflowId: question.id,
+      questionId: question.id,
       sessionId: question.sessionId ?? undefined,
       conversationItemId: tokenConversationItemId,
       sourceRuntime: "codex",
       sourceKind: "codex",
       sourceAdapterVersion: "codex-app-server-v1",
-      model: worker.model ?? null,
+      usageSource: "app_server",
+      usageAccuracy: "provider_reported",
+      usageKind: "turn_delta",
+      connectorClient: "codex",
+      model: execution.model ?? worker.model ?? null,
       modelContextWindow: tokenUsage.modelContextWindow ?? null,
       inputTokens: lastUsage.inputTokens ?? null,
       cachedInputTokens: lastUsage.cachedInputTokens ?? null,
@@ -513,11 +572,19 @@ const persistAnswerAppServerEvents = async (
       metadata: {
         appServerThreadId: worker.appServerThreadId,
         appServerTurnId: worker.appServerTurnId,
-        searchDomain: question.searchDomain
+        executionThreadId: execution.threadId,
+        executionTurnId: execution.turnId,
+        searchDomain: question.searchDomain,
+        stepIndex: execution.stepIndex,
+        stepKind: execution.stepKind,
+        attemptIndex: execution.attemptIndex,
+        executionStatus: execution.status ?? "succeeded",
+        errorMessage: execution.errorMessage,
+        executionIndex
       },
       idempotencyKey: tokenConversationItemId
         ? `token:${tokenConversationItemId}:last`
-        : `memory-question:${question.id}:token:last`
+        : `memory-question:${question.id}:token:${execution.stepIndex}:${execution.attemptIndex ?? executionIndex}:last`
     });
   }
   await projectRawConversationItems(
@@ -541,14 +608,16 @@ export const answerClaimedMemoryQuestion = async (
     options.fallbackRetrievalScope ?? "personal"
   );
   try {
-    const evidence = await client.answer({
-      query: question.query,
-      retrieval_scope: retrievalScope,
-      search_domain: searchDomain,
-      workspace_id: question.workspaceId ?? undefined,
-      session_id: question.sessionId ?? undefined,
-      limit: options.limit ?? 10
-    });
+    const evidence = {
+      markdown: "",
+      evidenceBundle: {
+        query: question.query,
+        instructions:
+          "Use the local memory planner to gather and judge evidence before answering.",
+        evidence: [],
+        retrieval: { mode: "planner_controlled_initial" }
+      }
+    };
     const answer = await answerWithMemoryWorker(evidence, {
       client,
       retrievalScope,

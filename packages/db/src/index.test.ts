@@ -16,6 +16,7 @@ import { createMemoryEngine } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
+  localRerankingEnabled,
   presentMemoryText,
   type MemorySourceRepository
 } from "./index.js";
@@ -26,10 +27,33 @@ const originalLeafEventThreshold = process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD;
 const originalLeafTokenThreshold = process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD;
 const originalFreshEventTail = process.env.MEMORY_LCM_FRESH_EVENT_TAIL;
 const originalDepthOneFanout = process.env.MEMORY_LCM_DEPTH1_FANOUT;
+const originalMemoryEventMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
 
 const describeDb = runDbTests ? describe : describe.skip;
 
 describe("memory presentation helpers", () => {
+  it("keeps reranking disabled by default and honors the documented root key", () => {
+    expect(localRerankingEnabled({})).toBe(false);
+    expect(
+      localRerankingEnabled({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
+      })
+    ).toBe(true);
+    expect(
+      localRerankingEnabled({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: ""
+      })
+    ).toBe(false);
+    expect(
+      localRerankingEnabled({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: "qwen3-reranker-0.6b"
+      })
+    ).toBe(true);
+  });
+
   const provenance = {
     project_name: "/Users/jacobo/Coding/koed",
     project_path: "/Users/jacobo/Coding/koed"
@@ -181,6 +205,7 @@ describeDb("memory repository visibility", () => {
       workspaceId: string;
       content: string;
       sessionId?: string;
+      actor?: "user" | "assistant" | "agent" | "subagent" | "tool" | "system";
       visibility?: "personal";
       metadata?: Record<string, unknown>;
     }
@@ -189,7 +214,7 @@ describeDb("memory repository visibility", () => {
       requesterContext: { userId },
       workspaceId: input.workspaceId,
       sessionId: input.sessionId,
-      actor: "user",
+      actor: input.actor ?? "user",
       eventType: "user_prompt",
       content: input.content,
       visibility: input.visibility,
@@ -211,6 +236,23 @@ describeDb("memory repository visibility", () => {
         vector
       });
     }
+  };
+
+  const mockEmbeddingQuery = () => {
+    const dimensions = 1024;
+    const vector = Array.from({ length: dimensions }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+          dimensions,
+          vectors: [vector]
+        }),
+        { status: 200 }
+      )
+    );
   };
 
   beforeAll(async () => {
@@ -251,6 +293,7 @@ describeDb("memory repository visibility", () => {
           memory_node_children,
           memory_node_sources,
           memory_event_sources,
+          workflow_token_usage_source_references,
           workflow_token_usage,
           memory_nodes,
           memory_events,
@@ -287,6 +330,16 @@ describeDb("memory repository visibility", () => {
       delete process.env.MEMORY_LCM_DEPTH1_FANOUT;
     } else {
       process.env.MEMORY_LCM_DEPTH1_FANOUT = originalDepthOneFanout;
+    }
+    if (originalMemoryEventMaxTokens === undefined) {
+      delete process.env.MEMORY_EVENT_MAX_TOKENS;
+    } else {
+      process.env.MEMORY_EVENT_MAX_TOKENS = originalMemoryEventMaxTokens;
+    }
+    if (originalEmbeddingMaxTokens === undefined) {
+      delete process.env.EMBEDDING_MAX_TOKENS;
+    } else {
+      process.env.EMBEDDING_MAX_TOKENS = originalEmbeddingMaxTokens;
     }
     await pool?.end();
   });
@@ -886,6 +939,751 @@ describeDb("memory repository visibility", () => {
     expect(expanded.sources[0]?.content).toMatch(/^Rollup source /);
   });
 
+  it("filters hierarchical retrieval by source event time and only uses raw fallback when needed", async () => {
+    const alice = await repo.createUser({
+      email: `alice-recent-rag-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+
+    const oldEventIds: string[] = [];
+    const recentEventIds: string[] = [];
+    for (let index = 1; index <= 10; index += 1) {
+      const event = await captureUserEvent(engine, alice.id, {
+        workspaceId: "workspace-recent-rag",
+        content:
+          index <= 5
+            ? `Old-only temporal evidence ${index}.`
+            : `Recent temporal evidence ${index}.`,
+        metadata: { index }
+      });
+      if (index <= 5) {
+        oldEventIds.push(event.id);
+      } else {
+        recentEventIds.push(event.id);
+      }
+    }
+
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '45 days', created_at = now() where id = any($1::uuid[])",
+      [oldEventIds]
+    );
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '2 days', created_at = now() where id = any($1::uuid[])",
+      [recentEventIds]
+    );
+
+    const compacted = await engine.scheduleCompaction({
+      requesterContext: { userId: alice.id },
+      visibility: "personal"
+    });
+    expect(compacted.rollupNodeId).not.toBeNull();
+    await embedPendingSources();
+
+    const oldLeaf = await pool.query<{ memory_node_id: string }>(
+      `
+        select mns.memory_node_id
+        from memory_node_sources mns
+        join memory_nodes mn on mn.id = mns.memory_node_id
+        where mns.memory_event_id = $1
+          and mn.kind = 'leaf'
+        limit 1
+      `,
+      [oldEventIds[0]]
+    );
+    const recentLeaf = await pool.query<{ memory_node_id: string }>(
+      `
+        select mns.memory_node_id
+        from memory_node_sources mns
+        join memory_nodes mn on mn.id = mns.memory_node_id
+        where mns.memory_event_id = $1
+          and mn.kind = 'leaf'
+        limit 1
+      `,
+      [recentEventIds[0]]
+    );
+    const oldLeafId = oldLeaf.rows[0]!.memory_node_id;
+    const recentLeafId = recentLeaf.rows[0]!.memory_node_id;
+
+    mockEmbeddingQuery();
+    const recentSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "temporal evidence",
+      scope: "personal",
+      recentDays: 30,
+      limit: 10
+    });
+
+    const resultNodeIds = recentSearch.results.map((result) => result.nodeId);
+    expect(resultNodeIds).toContain(compacted.rollupNodeId);
+    expect(resultNodeIds).toContain(recentLeafId);
+    expect(resultNodeIds).not.toContain(oldLeafId);
+    expect(
+      recentSearch.results.some((result) =>
+        result.summaryText.includes("Recent temporal evidence")
+      )
+    ).toBe(true);
+    expect(
+      recentSearch.results.some((result) =>
+        result.summaryText.includes("Old-only temporal evidence")
+      )
+    ).toBe(false);
+    expect(recentSearch.metadata.temporalFilter).toMatchObject({
+      recentDays: 30
+    });
+    expect(recentSearch.metadata.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "rollup_search",
+          used: true,
+          temporalFilterApplied: true
+        }),
+        expect.objectContaining({
+          name: "raw_fallback_search",
+          ran: true
+        })
+      ])
+    );
+    const expandedRecent = await engine.expandMemoryNode(
+      compacted.rollupNodeId!,
+      { userId: alice.id },
+      { recentDays: 30 }
+    );
+    expect(
+      expandedRecent.sourceItems.some((item) =>
+        item.text?.includes("Recent temporal evidence")
+      )
+    ).toBe(true);
+    expect(
+      expandedRecent.sourceItems.some((item) =>
+        item.text?.includes("Old-only temporal evidence")
+      )
+    ).toBe(false);
+    expect(
+      expandedRecent.sources.some((source) =>
+        source.content.includes("Old-only temporal evidence")
+      )
+    ).toBe(false);
+
+    mockEmbeddingQuery();
+    const boundedSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "temporal evidence",
+      scope: "personal",
+      sourceAfter: new Date(
+        Date.now() - 30 * 24 * 60 * 60 * 1000
+      ).toISOString(),
+      limit: 1
+    });
+    expect(boundedSearch.results[0]?.retrievalStage).toBe("rollup_search");
+    expect(
+      boundedSearch.metadata.stages?.find(
+        (stage) => stage.name === "raw_fallback_search"
+      )
+    ).toMatchObject({ ran: true, used: false, selectedCount: 0 });
+
+    mockEmbeddingQuery();
+    const unboundedSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "temporal evidence",
+      scope: "personal",
+      limit: 10
+    });
+    expect(unboundedSearch.results.map((result) => result.nodeId)).toContain(
+      oldLeafId
+    );
+    expect(unboundedSearch.metadata.temporalFilter).toBeUndefined();
+  });
+
+  it("requires the same node source to satisfy project and temporal filters", async () => {
+    const alice = await repo.createUser({
+      email: `alice-project-boundary-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const projectA = `workspace-project-a-${randomUUID()}`;
+    const projectB = `workspace-project-b-${randomUUID()}`;
+
+    const oldProjectA = await captureUserEvent(engine, alice.id, {
+      workspaceId: projectA,
+      content: "Boundary correlation project A old only.",
+      metadata: { project: "a", age: "old" }
+    });
+    const recentProjectB = await captureUserEvent(engine, alice.id, {
+      workspaceId: projectB,
+      content: "Boundary correlation project B recent only.",
+      metadata: { project: "b", age: "recent" }
+    });
+    const recentProjectA = await captureUserEvent(engine, alice.id, {
+      workspaceId: projectA,
+      content: "Boundary correlation project A recent valid.",
+      metadata: { project: "a", age: "recent" }
+    });
+
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '45 days', created_at = now() where id = $1",
+      [oldProjectA.id]
+    );
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '2 days', created_at = now() where id = any($1::uuid[])",
+      [[recentProjectB.id, recentProjectA.id]]
+    );
+
+    const mixedNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "Mixed project boundary node: project A old plus project B recent.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `mixed-project-boundary-${randomUUID()}`
+      }
+    );
+    const validNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Valid project boundary node: project A recent valid.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `valid-project-boundary-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0), ($1, $3, 1), ($4, $5, 0)
+      `,
+      [
+        mixedNode.id,
+        oldProjectA.id,
+        recentProjectB.id,
+        validNode.id,
+        recentProjectA.id
+      ]
+    );
+
+    await embedPendingSources();
+    mockEmbeddingQuery();
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "boundary correlation project",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: projectA,
+      recentDays: 30,
+      limit: 10
+    });
+
+    expect(search.results.map((result) => result.nodeId)).toContain(
+      validNode.id
+    );
+    expect(search.results.map((result) => result.nodeId)).not.toContain(
+      mixedNode.id
+    );
+
+    const expanded = await engine.expandMemoryNode(
+      mixedNode.id,
+      { userId: alice.id },
+      { searchDomain: "project", workspaceId: projectA, recentDays: 30 }
+    );
+    expect(expanded.sources).toHaveLength(0);
+    expect(
+      expanded.sourceItems.some((item) =>
+        item.text?.includes("Boundary correlation")
+      )
+    ).toBe(false);
+  });
+
+  it("requires the same node source to satisfy session and temporal filters", async () => {
+    const alice = await repo.createUser({
+      email: `alice-session-boundary-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-session-boundary-${randomUUID()}`;
+    const sessionA = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `session-a-${randomUUID()}`,
+        idempotencyKey: `session-a-${randomUUID()}`
+      }
+    );
+    const sessionB = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `session-b-${randomUUID()}`,
+        idempotencyKey: `session-b-${randomUUID()}`
+      }
+    );
+
+    const oldSessionA = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      sessionId: sessionA.id,
+      content: "Boundary correlation session A old only.",
+      metadata: { session: "a", age: "old" }
+    });
+    const recentSessionB = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      sessionId: sessionB.id,
+      content: "Boundary correlation session B recent only.",
+      metadata: { session: "b", age: "recent" }
+    });
+    const recentSessionA = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      sessionId: sessionA.id,
+      content: "Boundary correlation session A recent valid.",
+      metadata: { session: "a", age: "recent" }
+    });
+
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '45 days', created_at = now() where id = $1",
+      [oldSessionA.id]
+    );
+    await pool.query(
+      "update memory_events set captured_at = now() - interval '2 days', created_at = now() where id = any($1::uuid[])",
+      [[recentSessionB.id, recentSessionA.id]]
+    );
+
+    const mixedNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "Mixed session boundary node: session A old plus session B recent.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `mixed-session-boundary-${randomUUID()}`
+      }
+    );
+    const validNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Valid session boundary node: session A recent valid.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `valid-session-boundary-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0), ($1, $3, 1), ($4, $5, 0)
+      `,
+      [
+        mixedNode.id,
+        oldSessionA.id,
+        recentSessionB.id,
+        validNode.id,
+        recentSessionA.id
+      ]
+    );
+
+    await embedPendingSources();
+    mockEmbeddingQuery();
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "boundary correlation session",
+      scope: "personal",
+      searchDomain: "session",
+      sessionId: sessionA.id,
+      recentDays: 30,
+      limit: 10
+    });
+
+    expect(search.results.map((result) => result.nodeId)).toContain(
+      validNode.id
+    );
+    expect(search.results.map((result) => result.nodeId)).not.toContain(
+      mixedNode.id
+    );
+
+    const expanded = await engine.expandMemoryNode(
+      mixedNode.id,
+      { userId: alice.id },
+      { searchDomain: "session", sessionId: sessionA.id, recentDays: 30 }
+    );
+    expect(expanded.sources).toHaveLength(0);
+    expect(
+      expanded.sourceItems.some((item) =>
+        item.text?.includes("Boundary correlation")
+      )
+    ).toBe(false);
+  });
+
+  it("retrieves full lexical evidence from unembedded fresh memory only when lexical is requested", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lexical-fresh-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-lexical-fresh-${randomUUID()}`;
+    const filler = Array.from(
+      { length: 260 },
+      (_, index) => `The quiet lamp story filler passage ${index}.`
+    ).join(" ");
+    const story = [
+      filler,
+      "Only at the end did the keeper of the lamp reveal her name: Seraphina."
+    ].join(" ");
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: story,
+      metadata: { kind: "long-story-tail-name" }
+    });
+
+    const embeddingFetch = mockEmbeddingQuery();
+    const scan = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "Who was the keeper of the lamp named Seraphina?",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "score_scan",
+      limit: 1
+    });
+    const lexicalStage = scan.metadata.stages?.find(
+      (stage) => stage.name === "lexical_search"
+    );
+    expect(scan.results).toHaveLength(0);
+    expect(lexicalStage).toBeUndefined();
+
+    embeddingFetch.mockClear();
+    const lexical = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "Seraphina",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "lexical_search",
+      strictLimit: true,
+      limit: 1
+    });
+    expect(lexical.results).toHaveLength(1);
+    expect(lexical.results[0]?.sourceType).toBe("memory_event");
+    expect(lexical.results[0]?.sourceId).toBe(event.id);
+    expect(lexical.results[0]?.summaryText).toContain("Seraphina");
+    expect(embeddingFetch).not.toHaveBeenCalled();
+
+    await expect(
+      engine.searchMemory({
+        requesterContext: { userId: alice.id },
+        query: "Seraphina",
+        scope: "personal",
+        searchDomain: "project",
+        workspaceId,
+        retrievalStage: "lexical_search",
+        strictLimit: true,
+        limit: 2
+      })
+    ).rejects.toThrow("above threshold");
+  });
+
+  it("ranks original lexical story evidence above later question and tool echoes", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lexical-echo-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-lexical-echo-${randomUUID()}`;
+    const query =
+      "What was the name of the keeper of the lamp in the story about the city by the sea?";
+    const story = [
+      "At dawn, the city woke without bells.",
+      "The keeper of the lamp watched the sea and kept the city visible.",
+      "The story ended by revealing the keeper's name.",
+      "Her name was Mara."
+    ].join(" ");
+    const storyEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "agent",
+      content: story,
+      metadata: { kind: "story-source" }
+    });
+    await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: `This question failed before: "${query}"`,
+      metadata: { kind: "question-echo" }
+    });
+    await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "tool",
+      content: `Tool output from diagnostics repeated the prompt: ${query}`,
+      metadata: { kind: "tool-echo" }
+    });
+
+    const lexical = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query,
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "lexical_search",
+      strictLimit: true,
+      limit: 3
+    });
+
+    expect(lexical.results[0]).toMatchObject({
+      sourceType: "memory_event",
+      sourceId: storyEvent.id,
+      retrievalStage: "lexical_search"
+    });
+    expect(lexical.results[0]?.summaryText).toContain("Her name was Mara.");
+  });
+
+  it("filters lexical node evidence to the requested project boundary", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lexical-boundary-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const inScopeWorkspaceId = `workspace-lexical-in-${randomUUID()}`;
+    const outOfScopeWorkspaceId = `workspace-lexical-out-${randomUUID()}`;
+    const inScopeEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId: inScopeWorkspaceId,
+      content: "Project alpha visible banana context.",
+      metadata: { kind: "in-scope-source" }
+    });
+    const outOfScopeEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId: outOfScopeWorkspaceId,
+      content: "Project beta secret moonbase context.",
+      metadata: { kind: "out-of-scope-source" }
+    });
+    const mixedNode = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "Mixed summary mentions visible banana and secret moonbase context.",
+        bodyText:
+          "Mixed body also mentions visible banana and secret moonbase context.",
+        captureMethod: "mcp",
+        sourceRuntime: "codex",
+        sourceHash: `lexical-boundary-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0), ($1, $3, 1)
+      `,
+      [mixedNode.id, inScopeEvent.id, outOfScopeEvent.id]
+    );
+
+    const outOfScopeSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "secret moonbase",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: inScopeWorkspaceId,
+      retrievalStage: "lexical_search",
+      limit: 1
+    });
+    expect(
+      outOfScopeSearch.results.some(
+        (result) => result.sourceId === mixedNode.id
+      )
+    ).toBe(false);
+    expect(JSON.stringify(outOfScopeSearch.results)).not.toContain(
+      "secret moonbase"
+    );
+
+    const inScopeSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "visible banana",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: inScopeWorkspaceId,
+      retrievalStage: "lexical_search",
+      limit: 5
+    });
+    const nodeResult = inScopeSearch.results.find(
+      (result) => result.sourceId === mixedNode.id
+    );
+    expect(nodeResult?.summaryText).toContain("visible banana");
+    expect(nodeResult?.summaryText).not.toContain("secret moonbase");
+  });
+
+  it("can inspect fresh embedded memory events before LCM nodes exist", async () => {
+    const alice = await repo.createUser({
+      email: `alice-fresh-event-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-fresh-event-${randomUUID()}`;
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content:
+        "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
+      metadata: { kind: "fresh-unsummarized" }
+    });
+    await embedPendingSources();
+    mockEmbeddingQuery();
+
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "lamp keeper Seraphina",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "fresh_pending_search",
+      strictLimit: true,
+      limit: 1
+    });
+
+    expect(search.results).toHaveLength(1);
+    expect(search.results[0]).toMatchObject({
+      sourceType: "memory_event",
+      sourceId: event.id,
+      retrievalStage: "fresh_pending_search"
+    });
+    expect(search.results[0]?.summaryText).toContain("Seraphina");
+  });
+
+  it("keeps generic raw and fresh fallback evidence focused on non-tool memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-non-tool-fallback-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-non-tool-fallback-${randomUUID()}`;
+    const agentEvent = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "agent",
+      content:
+        "Fresh unsummarized story memory says the lamp keeper is Seraphina.",
+      metadata: { kind: "story-source" }
+    });
+    await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      actor: "tool",
+      content:
+        "Tool output repeated diagnostics saying the lamp keeper is Seraphina.",
+      metadata: { kind: "tool-diagnostic-echo" }
+    });
+    await embedPendingSources();
+    mockEmbeddingQuery();
+
+    for (const stage of [
+      "fresh_pending_search",
+      "raw_fallback_search"
+    ] as const) {
+      const search = await engine.searchMemory({
+        requesterContext: { userId: alice.id },
+        query: "lamp keeper Seraphina",
+        scope: "personal",
+        searchDomain: "project",
+        workspaceId,
+        retrievalStage: stage,
+        strictLimit: true,
+        limit: 1
+      });
+
+      expect(search.results).toHaveLength(1);
+      expect(search.results[0]).toMatchObject({
+        sourceType: "memory_event",
+        sourceId: agentEvent.id,
+        retrievalStage: stage
+      });
+      expect(search.results[0]?.summaryText).toContain("story memory");
+    }
+  });
+
+  it("caps rollup evidence so scoped leaves are not crowded out", async () => {
+    const alice = await repo.createUser({
+      email: `alice-rollup-cap-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+
+    for (let index = 1; index <= 12; index += 1) {
+      const event = await captureUserEvent(engine, alice.id, {
+        workspaceId: "workspace-rollup-cap",
+        content: `Rollup cap source ${index}: scoped leaf detail ${index}.`,
+        metadata: { index }
+      });
+      const leaf = await repo.createMemoryNode(
+        { userId: alice.id },
+        {
+          visibility: "personal",
+          summaryText: `Scoped leaf detail ${index}.`,
+          captureMethod: "mcp",
+          sourceRuntime: "codex",
+          sourceHash: `leaf-rollup-cap-${index}-${randomUUID()}`
+        }
+      );
+      const rollup = await repo.createMemoryNode(
+        { userId: alice.id },
+        {
+          visibility: "personal",
+          summaryText: `Broad rollup route ${index}.`,
+          captureMethod: "mcp",
+          sourceRuntime: "codex",
+          sourceHash: `rollup-cap-${index}-${randomUUID()}`
+        }
+      );
+      await pool.query(
+        "update memory_nodes set kind = 'rollup', depth = 1 where id = $1",
+        [rollup.id]
+      );
+      await pool.query(
+        `
+          insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+          values ($1, $2, 0), ($3, $2, 0)
+        `,
+        [leaf.id, event.id, rollup.id]
+      );
+      await pool.query(
+        `
+          insert into memory_node_children (parent_memory_node_id, child_memory_node_id, child_order)
+          values ($1, $2, 0)
+        `,
+        [rollup.id, leaf.id]
+      );
+    }
+
+    await embedPendingSources();
+    mockEmbeddingQuery();
+
+    const search = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "rollup cap scoped leaf detail",
+      scope: "personal",
+      limit: 10
+    });
+
+    const rollupResults = search.results.filter(
+      (result) => result.retrievalStage === "rollup_search"
+    );
+    const scopedLeafResults = search.results.filter(
+      (result) => result.retrievalStage === "scoped_leaf_search"
+    );
+    expect(rollupResults.length).toBeLessThanOrEqual(5);
+    expect(scopedLeafResults.length).toBeGreaterThan(0);
+    expect(search.metadata.stages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "rollup_search",
+          candidateCount: 12
+        }),
+        expect.objectContaining({
+          name: "scoped_leaf_search",
+          used: true
+        })
+      ])
+    );
+
+    const explicitRollupSearch = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "rollup cap scoped leaf detail",
+      scope: "personal",
+      retrievalStage: "rollup_search",
+      strictLimit: true,
+      limit: 10
+    });
+    expect(explicitRollupSearch.results).toHaveLength(10);
+    expect(
+      explicitRollupSearch.results.every(
+        (result) => result.retrievalStage === "rollup_search"
+      )
+    ).toBe(true);
+  });
+
   it("does not mix sessions when creating LCM leaves or rollups", async () => {
     const alice = await repo.createUser({
       email: `alice-session-lcm-${randomUUID()}@example.com`
@@ -1329,6 +2127,149 @@ describeDb("memory repository visibility", () => {
       "Hook-only assistant reply should be retained.",
       "Hook-only prompt should be retained."
     ]);
+  });
+
+  it("exposes transcript source chronology for projected graph events", async () => {
+    const alice = await repo.createUser({
+      email: `alice-source-chronology-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Source Chronology Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `source-chronology-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `source-chronology-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "source-chronology-turn",
+            sourceRecordType: "response_item",
+            sourceEventType: "message",
+            sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: "Older source prompt"
+              }
+            },
+            rawText: "Older source prompt",
+            sourceHash: `source-chronology-prompt-${randomUUID()}`,
+            idempotencyKey: `source-chronology-prompt-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Source Chronology Project" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "source-chronology-turn",
+            sourceRecordType: "response_item",
+            sourceEventType: "message",
+            sourceSequence: 2,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "assistant",
+                content: "Older source reply"
+              }
+            },
+            rawText: "Older source reply",
+            sourceHash: `source-chronology-reply-${randomUUID()}`,
+            idempotencyKey: `source-chronology-reply-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Source Chronology Project" }
+          }
+        ]
+      }
+    );
+
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const firstPage = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 1
+      }
+    );
+    const secondPage = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 1,
+        cursorTimestamp: firstPage[0]!.timestamp,
+        cursorSourceSequence: firstPage[0]!.sourceSequence ?? undefined,
+        cursorId: firstPage[0]!.id
+      }
+    );
+    const legacyCursorPage = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 1,
+        cursorTimestamp: firstPage[0]!.timestamp,
+        cursorId: firstPage[0]!.id
+      }
+    );
+    const threadIndex = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 10
+      }
+    );
+
+    expect(firstPage[0]).toMatchObject({
+      contentPreview: "Older source reply",
+      sourceEventTime: "2026-04-01T12:00:00.000Z",
+      sourceSequence: 2_000_000,
+      timestamp: "2026-04-01T12:00:00.000Z"
+    });
+    expect(secondPage[0]).toMatchObject({
+      contentPreview: "Older source prompt",
+      sourceEventTime: "2026-04-01T12:00:00.000Z",
+      sourceSequence: 1_000_000
+    });
+    expect(legacyCursorPage[0]?.id).toBe(secondPage[0]!.id);
+    expect(firstPage[0]!.createdAt).not.toBe(firstPage[0]!.timestamp);
+    expect(threadIndex[0]?.threads[0]).toMatchObject({
+      latestAt: "2026-04-01T12:00:00.000Z",
+      sample: "Older source reply"
+    });
   });
 
   it("projects hook-only tool payloads into semantic memory and tool events", async () => {
@@ -1950,7 +2891,7 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow("Turn not found or not visible");
   });
 
-  it("rejects token usage linked to sessions, turns, or raw items outside caller scope", async () => {
+  it("rejects token usage linked to sources outside caller scope", async () => {
     const workspaceId = randomUUID();
     const alice = await repo.createUser({
       email: `alice-token-scope-${randomUUID()}@example.com`
@@ -2025,6 +2966,144 @@ describeDb("memory repository visibility", () => {
         }
       )
     ).rejects.toThrow("Conversation item not found or not visible");
+
+    const bobQuestion = await repo.createMemoryQuestion(
+      { userId: bob.id },
+      {
+        query: "What did we decide?",
+        searchDomain: "global"
+      }
+    );
+    const bobNode = await repo.createMemoryNode(
+      { userId: bob.id },
+      {
+        visibility: "personal",
+        summaryText: "Bob private LCM node",
+        captureMethod: "mcp"
+      }
+    );
+    const bobEvent = await repo.createMemoryEvent(
+      { userId: bob.id },
+      {
+        workspaceId: "bob-workspace",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "Bob private event",
+        idempotencyKey: `bob-event-${randomUUID()}`,
+        sourceHash: `bob-event-${randomUUID()}`
+      }
+    );
+    const bobMessage = await pool.query<{ id: string }>(
+      `
+        insert into messages (
+          session_id, turn_id, owner_user_id, visibility, role, content,
+          source_runtime, capture_method
+        )
+        values ($1, $2, $3, 'personal', 'user', 'Bob private message', 'codex', 'hook')
+        returning id
+      `,
+      [bobSession.id, bobRawItem!.turnId, bob.id]
+    );
+    const bobTool = await pool.query<{ id: string }>(
+      `
+        insert into tool_events (
+          session_id, turn_id, owner_user_id, visibility, tool_name,
+          source_runtime, capture_method
+        )
+        values ($1, $2, $3, 'personal', 'Bash', 'codex', 'hook')
+        returning id
+      `,
+      [bobSession.id, bobRawItem!.turnId, bob.id]
+    );
+
+    for (const reference of [
+      { type: "question" as const, id: bobQuestion.id },
+      { type: "lcm_node" as const, id: bobNode.id },
+      { type: "message" as const, id: bobMessage.rows[0]!.id },
+      { type: "tool_event" as const, id: bobTool.rows[0]!.id },
+      { type: "memory_event" as const, id: bobEvent.id }
+    ]) {
+      await expect(
+        repo.recordWorkflowTokenUsage(
+          { userId: alice.id },
+          {
+            workflowType: "memory_question",
+            sourceReferences: [reference],
+            totalTokens: 1
+          }
+        )
+      ).rejects.toThrow(
+        `${reference.type} source reference not found or not visible`
+      );
+    }
+  });
+
+  it("stores validated token usage source references", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-source-references-${randomUUID()}@example.com`
+    });
+    const question = await repo.createMemoryQuestion(
+      { userId: alice.id },
+      {
+        query: "What did we decide?",
+        searchDomain: "global"
+      }
+    );
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Alice LCM node",
+        captureMethod: "mcp"
+      }
+    );
+    const event = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: "alice-workspace",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "Alice private event",
+        idempotencyKey: `alice-event-${randomUUID()}`,
+        sourceHash: `alice-event-${randomUUID()}`
+      }
+    );
+    const usage = await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "memory_question",
+        workflowId: question.id,
+        questionId: question.id,
+        answerJobId: question.id,
+        lcmNodeId: node.id,
+        memoryEventId: event.id,
+        totalTokens: 3,
+        idempotencyKey: `source-refs-${randomUUID()}`
+      }
+    );
+    const references = await pool.query<{
+      source_type: string;
+      source_id: string;
+    }>(
+      `
+        select source_type, source_id
+        from workflow_token_usage_source_references
+        where workflow_token_usage_id = $1
+        order by source_type
+      `,
+      [usage.id]
+    );
+
+    expect(references.rows).toEqual([
+      { source_type: "answer_job", source_id: question.id },
+      { source_type: "lcm_node", source_id: node.id },
+      { source_type: "memory_event", source_id: event.id },
+      { source_type: "question", source_id: question.id }
+    ]);
   });
 
   it("reprojects pending raw conversation items into messages, semantic events, and token usage", async () => {
@@ -2148,9 +3227,12 @@ describeDb("memory repository visibility", () => {
     const usage = await pool.query<{
       workflow_type: string;
       workflow_id: string | null;
+      usage_source: string;
+      usage_accuracy: string;
+      usage_kind: string;
       total_tokens: number | null;
     }>(
-      "select workflow_type, workflow_id, total_tokens from workflow_token_usage"
+      "select workflow_type, workflow_id, usage_source, usage_accuracy, usage_kind, total_tokens from workflow_token_usage"
     );
     const statuses = await pool.query<{
       projection_status: string;
@@ -2174,6 +3256,9 @@ describeDb("memory repository visibility", () => {
       {
         workflow_type: "memory_question",
         workflow_id: "question-1",
+        usage_source: "app_server",
+        usage_accuracy: "provider_reported",
+        usage_kind: "turn_delta",
         total_tokens: 7
       }
     ]);
@@ -2202,6 +3287,261 @@ describeDb("memory repository visibility", () => {
     expect(
       embeddable.some((source) => source.sourceType === "memory_event")
     ).toBe(true);
+  });
+
+  it("projects Codex transcript token_count rows into token usage without semantic memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-count-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Transcript Token Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `token-count-session-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey: `token-count-session-${randomUUID()}`,
+        metadata: {
+          workspaceId,
+          threadKind: "subagent",
+          parentThreadId: "parent-thread",
+          parentSessionId: "parent-session"
+        }
+      }
+    );
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "token-count-turn",
+            sourceRecordType: "token_count",
+            sourceEventType: "token_count",
+            sourcePath: "/tmp/codex/transcript.jsonl",
+            sourceSequence: 9,
+            rawJson: {
+              type: "token_count",
+              input_tokens: 11,
+              cached_input_tokens: 3,
+              output_tokens: 7,
+              reasoning_output_tokens: 5,
+              total_tokens: 26,
+              model: "gpt-5-codex"
+            },
+            sourceHash: `raw-token-count-${randomUUID()}`,
+            idempotencyKey: `raw-token-count-${randomUUID()}`,
+            metadata: {
+              threadKind: "subagent",
+              parentThreadId: "parent-thread",
+              parentSessionId: "parent-session"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const usage = await pool.query<{
+      workflow_type: string;
+      workflow_id: string | null;
+      conversation_item_id: string | null;
+      usage_source: string;
+      usage_accuracy: string;
+      usage_kind: string;
+      connector_client: string | null;
+      model: string | null;
+      input_tokens: number | null;
+      cached_input_tokens: number | null;
+      output_tokens: number | null;
+      reasoning_output_tokens: number | null;
+      total_tokens: number | null;
+      metadata: Record<string, unknown>;
+    }>(
+      `
+        select
+          workflow_type, workflow_id, conversation_item_id, usage_source,
+          usage_accuracy, usage_kind, connector_client, model, input_tokens,
+          cached_input_tokens, output_tokens, reasoning_output_tokens,
+          total_tokens, metadata
+        from workflow_token_usage
+      `
+    );
+    const events = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_events"
+    );
+
+    expect(projection.tokenUsageRowsCreated).toBe(1);
+    expect(projection.memoryEventsCreated).toBe(0);
+    expect(events.rows[0]?.count).toBe("0");
+    expect(usage.rows).toEqual([
+      expect.objectContaining({
+        workflow_type: "subagent_turn",
+        workflow_id: rawItem?.turnId,
+        conversation_item_id: rawItem?.id,
+        usage_source: "transcript",
+        usage_accuracy: "provider_reported",
+        usage_kind: "turn_delta",
+        connector_client: "codex",
+        model: "gpt-5-codex",
+        input_tokens: 11,
+        cached_input_tokens: 3,
+        output_tokens: 7,
+        reasoning_output_tokens: 5,
+        total_tokens: 26
+      })
+    ]);
+    expect(usage.rows[0]?.metadata).toMatchObject({
+      threadKind: "subagent",
+      parentThreadId: "parent-thread",
+      parentSessionId: "parent-session",
+      transcriptPath: "/tmp/codex/transcript.jsonl",
+      sourceLineNumber: 9
+    });
+  });
+
+  it("uses input plus output as transcript total fallback", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-count-fallback-${randomUUID()}@example.com`
+    });
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            sourceRecordType: "token_count",
+            sourceEventType: "token_count",
+            rawJson: {
+              type: "token_count",
+              input_tokens: 11,
+              cached_input_tokens: 3,
+              output_tokens: 7,
+              reasoning_output_tokens: 5
+            },
+            sourceHash: `raw-token-count-fallback-${randomUUID()}`,
+            idempotencyKey: `raw-token-count-fallback-${randomUUID()}`
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const usage = await pool.query<{ total_tokens: number | null }>(
+      "select total_tokens from workflow_token_usage where conversation_item_id = $1",
+      [rawItem?.id]
+    );
+
+    expect(projection.tokenUsageRowsCreated).toBe(1);
+    expect(usage.rows[0]?.total_tokens).toBe(18);
+  });
+
+  it("keeps estimate rows out of spend rollups unless requested", async () => {
+    const alice = await repo.createUser({
+      email: `alice-token-rollup-${randomUUID()}@example.com`
+    });
+
+    await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "memory_question",
+        workflowId: "question-provider",
+        usageSource: "app_server",
+        usageAccuracy: "provider_reported",
+        usageKind: "turn_delta",
+        connectorClient: "codex",
+        model: "gpt-5-codex",
+        inputTokens: 4,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        totalTokens: 6,
+        metadata: { appServerThreadId: "thread-provider" },
+        idempotencyKey: `provider-${randomUUID()}`
+      }
+    );
+    const estimate = await repo.recordWorkflowTokenUsage(
+      { userId: alice.id },
+      {
+        workflowType: "memory_question",
+        workflowId: "question-estimate",
+        usageSource: "local_estimate",
+        usageAccuracy: "local_estimate",
+        usageKind: "estimate",
+        connectorClient: "codex",
+        tokenizerPackage: "js-tiktoken",
+        tokenizerEncoding: "o200k_base",
+        tokenizerModel: "gpt-5-codex",
+        tokenizerExactModelMatch: true,
+        tokenizerHeuristicFallback: false,
+        tokenizerVersion: "test",
+        model: "gpt-5-codex",
+        inputTokens: 70,
+        outputTokens: 30,
+        totalTokens: 100,
+        metadata: { executionThreadId: "thread-estimate" },
+        idempotencyKey: `estimate-${randomUUID()}`
+      }
+    );
+
+    const spendOnly = await repo.listWorkflowTokenUsageRollups(
+      { userId: alice.id },
+      { groupBy: ["workflow"], includeEstimates: false }
+    );
+    const estimateAware = await repo.listWorkflowTokenUsageRollups(
+      { userId: alice.id },
+      { groupBy: ["workflow"], includeEstimates: true }
+    );
+    const threadRollup = await repo.listWorkflowTokenUsageRollups(
+      { userId: alice.id },
+      { groupBy: ["thread"], includeEstimates: true }
+    );
+
+    expect(estimate.tokenizerPackage).toBe("js-tiktoken");
+    expect(estimate.tokenizerEncoding).toBe("o200k_base");
+    expect(estimate.tokenizerExactModelMatch).toBe(true);
+    expect(estimate.tokenizerHeuristicFallback).toBe(false);
+    expect(spendOnly).toEqual([
+      expect.objectContaining({
+        group: { workflow: "memory_question" },
+        rowCount: 1,
+        totalTokens: 6
+      })
+    ]);
+    expect(estimateAware).toEqual([
+      expect.objectContaining({
+        group: { workflow: "memory_question" },
+        rowCount: 2,
+        totalTokens: 106
+      })
+    ]);
+    expect(threadRollup).toEqual([
+      expect.objectContaining({
+        group: { thread: "thread-estimate" },
+        totalTokens: 100
+      }),
+      expect.objectContaining({
+        group: { thread: "thread-provider" },
+        totalTokens: 6
+      })
+    ]);
   });
 
   it("does not automatically reproject stale projection-version rows", async () => {
@@ -2931,6 +4271,82 @@ describeDb("memory repository visibility", () => {
         delete process.env.MEMORY_EVENT_MAX_TOKENS;
       } else {
         process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+    }
+  });
+
+  it("defaults semantic projection chunks below the Qwen operational cap", async () => {
+    const previousMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+    const previousEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
+    delete process.env.MEMORY_EVENT_MAX_TOKENS;
+    delete process.env.EMBEDDING_MAX_TOKENS;
+    try {
+      const alice = await repo.createUser({
+        email: `alice-projection-default-chunk-${randomUUID()}@example.com`
+      });
+      const session = await repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          externalSessionId: `projection-default-chunk-session-${randomUUID()}`,
+          sourceRuntime: "codex",
+          idempotencyKey: `projection-default-chunk-session-${randomUUID()}`
+        }
+      );
+      const text = `Agent analysis: ${"default semantic split boundary ".repeat(2600)}`;
+      const sourceHash = `projection-default-chunk-${randomUUID()}`;
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              externalTurnId: "default-chunk-turn",
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
+              sourceSequence: 0,
+              rawJson: {
+                method: "item/completed",
+                params: {
+                  item: {
+                    type: "agentMessage",
+                    text
+                  }
+                }
+              },
+              rawText: text,
+              sourceHash,
+              idempotencyKey: sourceHash,
+              metadata: { transcriptType: "agent_message" }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const events = await pool.query<{ content: string }>(
+        "select payload ->> 'content' as content from memory_events order by created_at asc"
+      );
+
+      expect(projection.memoryEventsCreated).toBeGreaterThan(1);
+      expect(events.rows.map((row) => row.content).join(" ")).toContain(
+        "default semantic split boundary"
+      );
+    } finally {
+      if (previousMaxTokens === undefined) {
+        delete process.env.MEMORY_EVENT_MAX_TOKENS;
+      } else {
+        process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+      if (previousEmbeddingMaxTokens === undefined) {
+        delete process.env.EMBEDDING_MAX_TOKENS;
+      } else {
+        process.env.EMBEDDING_MAX_TOKENS = previousEmbeddingMaxTokens;
       }
     }
   });

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CodexAppServerTurnError,
   resolveCodexAppServerBinary,
   runCodexAppServerTurn
 } from "./codex-app-server-runner.js";
@@ -130,7 +131,7 @@ describe("Codex app-server runner", () => {
           baseInstructions: "Return the answer.",
           developerInstructions: ""
         },
-        1000
+        3000
       );
 
       expect(result).toMatchObject({
@@ -179,7 +180,7 @@ describe("Codex app-server runner", () => {
           baseInstructions: "Return the answer.",
           developerInstructions: ""
         },
-        1000
+        3000
       );
 
       expect(result.text).toBe("app-server answer");
@@ -216,7 +217,7 @@ describe("Codex app-server runner", () => {
             baseInstructions: "Return the answer.",
             developerInstructions: ""
           },
-          1000
+          3000
         )
       ).rejects.toThrow("malformed JSON");
     } finally {
@@ -251,9 +252,58 @@ describe("Codex app-server runner", () => {
             baseInstructions: "Return the answer.",
             developerInstructions: ""
           },
-          1000
+          3000
         )
       ).rejects.toThrow("interrupted");
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves observed token usage on failed turns", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-failed-usage-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+
+    try {
+      let error: unknown;
+      try {
+        await runCodexAppServerTurn(
+          "Prompt text",
+          {
+            appServerBinary: writeFakeAppServer(tempDirectory, {
+              turnStatus: "failed"
+            }),
+            model: "gpt-5.4-mini",
+            reasoningEffort: "low",
+            cwd: tempDirectory,
+            env: {
+              ...process.env,
+              CODEX_HOME: realCodexHome,
+              FAKE_REAL_CODEX_HOME: realCodexHome
+            },
+            clientName: "koed-test",
+            baseInstructions: "Return the answer.",
+            developerInstructions: ""
+          },
+          3000
+        );
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(CodexAppServerTurnError);
+      expect((error as CodexAppServerTurnError).tokenUsage?.last).toMatchObject(
+        {
+          totalTokens: 3,
+          inputTokens: 2,
+          outputTokens: 1
+        }
+      );
+      expect((error as CodexAppServerTurnError).threadId).toBe("thread-test");
+      expect((error as CodexAppServerTurnError).turnId).toBe("turn-test");
     } finally {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }

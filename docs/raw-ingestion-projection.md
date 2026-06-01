@@ -100,16 +100,20 @@ derived answer or summary.
 
 ## Token Usage
 
-`workflow_token_usage` stores local Codex app-server token counts by workflow,
-model, session/turn, and raw `conversation_items` source where available. This
-keeps token attribution separate from retrieval text while allowing future
+`workflow_token_usage` stores token attribution by workflow, model,
+session/turn, and raw `conversation_items` source where available. It also marks
+the usage source, accuracy, and kind so provider-reported turn deltas can be
+kept distinct from cumulative snapshots and local estimates. This keeps token
+attribution separate from retrieval text while allowing future
 pricing/benchmarking by workflow, model, Question, LCM summary, and source raw
-record.
+record. See `docs/token-usage-attribution.md` for the current attribution
+boundary.
 
 ## Token Bounds
 
-Koed's operational embedding and semantic-event cap is 32000 tokens. Runtime
-configuration may lower that value, but values above 32000 are clamped.
+Koed's operational Qwen cap is 32000 tokens. Runtime configuration defaults
+semantic Memory Event chunks to 2048 tokens and embedding requests to 4096
+tokens. Values above 32000 are clamped.
 If a projected semantic unit exceeds that cap, split it into ordered chunks and
 link every chunk to the relevant raw source item or items. Projection keeps
 source-item boundaries intact where possible and only splits inside a single raw

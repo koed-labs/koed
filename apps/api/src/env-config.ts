@@ -1,7 +1,11 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
-import { requireEnv, resolveSupportedRerankerModelConfig } from "@koed/shared";
+import {
+  requireEnv,
+  resolveRerankerKeyFromEnv,
+  resolveSupportedRerankerModelConfig
+} from "@koed/shared";
 
 export interface ApiEnvConfig {
   host: string;
@@ -29,7 +33,7 @@ export const resolveApiEnv = (
   environment: NodeJS.ProcessEnv = process.env
 ): ApiEnvConfig => {
   const nodeEnv = environment.NODE_ENV ?? "development";
-  resolveSupportedRerankerModelConfig(environment.RERANKER_KEY);
+  resolveSupportedRerankerModelConfig(resolveRerankerKeyFromEnv(environment));
   if (nodeEnv === "production") {
     requireEnv(
       [

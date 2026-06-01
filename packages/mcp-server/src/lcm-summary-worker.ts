@@ -5,6 +5,7 @@ import path from "node:path";
 import { chunkTextForModel, countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
+  CodexAppServerTurnError,
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
   type CodexAppServerRawEvent,
@@ -82,6 +83,9 @@ type LcmSummaryPromptResult = {
   threadId?: string;
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
+  attemptIndex?: number;
+  status?: "succeeded" | "failed";
+  errorMessage?: string;
 };
 
 const structuredLcmSummarySchema = z
@@ -543,20 +547,38 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
 const runPromptWithRetries = async (
   prompt: string,
   config: LcmSummaryWorkerConfig,
-  runner: CodexLcmSummaryRunner
+  runner: CodexLcmSummaryRunner,
+  promptResults?: LcmSummaryPromptResult[]
 ): Promise<LcmSummaryPromptResult> => {
   let lastError: unknown;
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
     try {
       const result = await runner(prompt, config, config.timeoutMs * attempt);
       const structuredSummary = parseStructuredLcmSummary(result.text);
-      return {
+      const succeeded = {
         ...result,
         text: structuredSummary.summary_text.trim(),
-        structuredSummary
+        structuredSummary,
+        attemptIndex: attempt,
+        status: "succeeded" as const
       };
+      promptResults?.push(succeeded);
+      return succeeded;
     } catch (error) {
       lastError = error;
+      if (error instanceof CodexAppServerTurnError && error.tokenUsage?.last) {
+        promptResults?.push({
+          text: "",
+          model: error.model,
+          tokenUsage: error.tokenUsage,
+          threadId: error.threadId,
+          turnId: error.turnId,
+          rawEvents: error.rawEvents,
+          attemptIndex: attempt,
+          status: "failed",
+          errorMessage: error.message
+        });
+      }
       if (attempt < config.maxAttempts && config.retryDelayMs > 0) {
         await sleep(config.retryDelayMs * 2 ** (attempt - 1));
       }
@@ -639,7 +661,10 @@ const persistLcmAppServerEvents = async (
         nodeId: node.id,
         callIndex,
         kind: node.kind,
-        depth: node.depth
+        depth: node.depth,
+        attemptIndex: result.attemptIndex,
+        executionStatus: result.status ?? "succeeded",
+        errorMessage: result.errorMessage
       }
     };
   });
@@ -661,10 +686,15 @@ const persistLcmAppServerEvents = async (
     await client.recordTokenUsage({
       workflowType: "lcm_summary",
       workflowId: node.id,
+      lcmNodeId: node.id,
       conversationItemId: tokenConversationItemId,
       sourceRuntime: "codex",
       sourceKind: "codex",
       sourceAdapterVersion: "codex-app-server-v1",
+      usageSource: "app_server",
+      usageAccuracy: "provider_reported",
+      usageKind: "turn_delta",
+      connectorClient: "codex",
       model: result.model,
       modelContextWindow: result.tokenUsage?.modelContextWindow ?? null,
       inputTokens: lastUsage.inputTokens ?? null,
@@ -678,7 +708,10 @@ const persistLcmAppServerEvents = async (
         turnId: result.turnId,
         callIndex,
         kind: node.kind,
-        depth: node.depth
+        depth: node.depth,
+        attemptIndex: result.attemptIndex,
+        executionStatus: result.status ?? "succeeded",
+        errorMessage: result.errorMessage
       },
       idempotencyKey: tokenConversationItemId
         ? `token:${tokenConversationItemId}:last`
@@ -731,8 +764,12 @@ const reduceShardSummaries = async (
     stats.promptTokenSum += tokens;
     stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
     stats.promptCallCount += 1;
-    const result = await runPromptWithRetries(prompt, config, runner);
-    promptResults.push(result);
+    const result = await runPromptWithRetries(
+      prompt,
+      config,
+      runner,
+      promptResults
+    );
     nextSummaries.push(result);
   }
 
@@ -783,8 +820,12 @@ const summarizeNode = async (
       stats.promptTokenSum += tokens;
       stats.maxPromptTokens = Math.max(stats.maxPromptTokens, tokens);
       stats.promptCallCount += 1;
-      const result = await runPromptWithRetries(entry.prompt, config, runner);
-      promptResults.push(result);
+      const result = await runPromptWithRetries(
+        entry.prompt,
+        config,
+        runner,
+        promptResults
+      );
       shardSummaries.push(result);
     }
     const result =

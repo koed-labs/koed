@@ -45,6 +45,33 @@ export interface CodexAppServerRunResult {
   rawEvents?: CodexAppServerRawEvent[];
 }
 
+export class CodexAppServerTurnError extends Error {
+  readonly model: string;
+  readonly tokenUsage?: CodexThreadTokenUsage;
+  readonly threadId?: string;
+  readonly turnId?: string;
+  readonly rawEvents?: CodexAppServerRawEvent[];
+
+  constructor(
+    message: string,
+    options: {
+      model: string;
+      tokenUsage?: CodexThreadTokenUsage;
+      threadId?: string;
+      turnId?: string;
+      rawEvents?: CodexAppServerRawEvent[];
+    }
+  ) {
+    super(message);
+    this.name = "CodexAppServerTurnError";
+    this.model = options.model;
+    this.tokenUsage = options.tokenUsage;
+    this.threadId = options.threadId;
+    this.turnId = options.turnId;
+    this.rawEvents = options.rawEvents;
+  }
+}
+
 interface JsonRpcMessage {
   id?: number;
   method?: string;
@@ -471,10 +498,24 @@ class CodexAppServerClient {
       return;
     }
     if (state.error) {
-      this.turnWaiter.reject(state.error);
+      this.turnWaiter.reject(
+        new CodexAppServerTurnError(state.error.message, {
+          model: "codex-app-server",
+          tokenUsage: state.tokenUsage,
+          threadId,
+          turnId,
+          rawEvents: this.getRawEvents()
+        })
+      );
     } else if (state.text.trim().length === 0) {
       this.turnWaiter.reject(
-        new Error("Codex app-server produced empty output")
+        new CodexAppServerTurnError("Codex app-server produced empty output", {
+          model: "codex-app-server",
+          tokenUsage: state.tokenUsage,
+          threadId,
+          turnId,
+          rawEvents: this.getRawEvents()
+        })
       );
     } else {
       this.turnWaiter.resolve({

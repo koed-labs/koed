@@ -3,6 +3,7 @@ import type { ApiRouteContext } from "../server/context.js";
 import {
   createConversationItemsSchema,
   projectConversationItemsSchema,
+  tokenUsageRollupQuerySchema,
   tokenUsageSchema
 } from "./raw-conversation-schemas.js";
 
@@ -14,7 +15,10 @@ export const registerRawConversationRoutes = (
     requireRepository,
     auth: { authenticateApiToken },
     capture: { scheduleProjectedMemoryEventProcessing },
-    rateLimit: { memoryWrite: memoryWriteRateLimit }
+    rateLimit: {
+      memoryRead: memoryReadRateLimit,
+      memoryWrite: memoryWriteRateLimit
+    }
   } = context;
 
   app.post(
@@ -61,6 +65,28 @@ export const registerRawConversationRoutes = (
       );
 
       return { tokenUsage };
+    }
+  );
+
+  app.get(
+    "/v1/memory/token-usage/rollups",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const query = tokenUsageRollupQuerySchema.parse(request.query);
+
+      return {
+        rollups: await repo.listWorkflowTokenUsageRollups(
+          { userId: user.id },
+          {
+            groupBy: query.group_by,
+            includeEstimates: query.include_estimates,
+            from: query.from,
+            to: query.to
+          }
+        )
+      };
     }
   );
 

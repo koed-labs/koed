@@ -40,15 +40,60 @@ export const createConversationItemsSchema = z.object({
   items: z.array(conversationItemSchema).min(1).max(1000)
 });
 
+const tokenUsageSourceReferenceSchema = z.object({
+  type: z.enum([
+    "question",
+    "answer_job",
+    "lcm_node",
+    "message",
+    "tool_event",
+    "memory_event"
+  ]),
+  id: z.string().min(1)
+});
+
 export const tokenUsageSchema = z.object({
   workflowType: z.string().min(1),
   workflowId: z.string().min(1).optional(),
   sessionId: z.string().uuid().optional(),
   turnId: z.string().uuid().optional(),
   conversationItemId: z.string().uuid().optional(),
+  questionId: z.string().uuid().optional(),
+  answerJobId: z.string().min(1).optional(),
+  lcmNodeId: z.string().uuid().optional(),
+  messageId: z.string().uuid().optional(),
+  toolEventId: z.string().uuid().optional(),
+  memoryEventId: z.string().uuid().optional(),
+  sourceReferences: z.array(tokenUsageSourceReferenceSchema).max(20).optional(),
   sourceRuntime: z.enum(["codex", "codex-cli"]).optional(),
   sourceKind: z.string().min(1).optional(),
   sourceAdapterVersion: z.string().min(1).optional(),
+  usageSource: z
+    .enum(["app_server", "transcript", "connector_native", "local_estimate"])
+    .optional(),
+  usageAccuracy: z
+    .enum([
+      "provider_reported",
+      "provider_replayed",
+      "provider_partial",
+      "local_estimate"
+    ])
+    .optional(),
+  usageKind: z
+    .enum([
+      "turn_delta",
+      "cumulative_snapshot",
+      "estimate",
+      "structural_chunk_count"
+    ])
+    .optional(),
+  connectorClient: z.string().min(1).optional(),
+  tokenizerPackage: z.string().min(1).optional(),
+  tokenizerEncoding: z.string().min(1).optional(),
+  tokenizerModel: z.string().min(1).optional(),
+  tokenizerExactModelMatch: z.boolean().nullable().optional(),
+  tokenizerHeuristicFallback: z.boolean().nullable().optional(),
+  tokenizerVersion: z.string().min(1).optional(),
   model: z.string().min(1).nullable().optional(),
   modelContextWindow: z.number().int().nonnegative().nullable().optional(),
   inputTokens: z.number().int().nonnegative().nullable().optional(),
@@ -60,6 +105,43 @@ export const tokenUsageSchema = z.object({
   metadata: metadataSchema.optional(),
   idempotencyKey: z.string().min(1).optional(),
   sourceHash: z.string().min(1).optional()
+});
+
+const booleanQuerySchema = z
+  .enum(["true", "false"])
+  .transform((value) => value === "true");
+
+export const tokenUsageRollupQuerySchema = z.object({
+  group_by: z
+    .string()
+    .optional()
+    .transform((value) =>
+      value
+        ? value
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : undefined
+    )
+    .pipe(
+      z
+        .array(
+          z.enum([
+            "workflow",
+            "model",
+            "owner",
+            "project",
+            "thread",
+            "connector",
+            "accuracy",
+            "date"
+          ])
+        )
+        .optional()
+    ),
+  include_estimates: booleanQuerySchema.optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional()
 });
 
 export const projectConversationItemsSchema = z.object({

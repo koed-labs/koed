@@ -4,6 +4,7 @@ from settings import config
 
 
 def validate_text_limits(values: list[str], field_name: str) -> None:
+    # Character limits are request safety guards. Semantic chunking is token-based.
     total_chars = 0
     for index, value in enumerate(values):
         char_count = len(value)

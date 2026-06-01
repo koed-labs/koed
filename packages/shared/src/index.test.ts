@@ -3,6 +3,7 @@ import {
   configFlagEnabled,
   createHealth,
   requireEnv,
+  resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig
 } from "./index.js";
@@ -67,5 +68,33 @@ describe("resolveSupportedRerankerModelConfig", () => {
     expect(() => resolveSupportedRerankerModelConfig("unknown")).toThrow(
       "Unsupported reranker model key"
     );
+  });
+});
+
+describe("resolveRerankerKeyFromEnv", () => {
+  it("uses the documented root reranker key when the app-local key is absent", () => {
+    expect(
+      resolveRerankerKeyFromEnv({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
+      })
+    ).toBe("qwen3-reranker-0.6b");
+  });
+
+  it("lets the app-local reranker key override the generated root key", () => {
+    expect(
+      resolveRerankerKeyFromEnv({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: "app-local"
+      })
+    ).toBe("app-local");
+  });
+
+  it("lets a blank app-local reranker key disable a generated root key", () => {
+    expect(
+      resolveRerankerKeyFromEnv({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: ""
+      })
+    ).toBe("");
   });
 });

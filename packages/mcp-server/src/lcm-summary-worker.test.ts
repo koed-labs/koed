@@ -9,6 +9,7 @@ import {
   summarizePendingLcmNodes,
   type LcmSummaryNode
 } from "./lcm-summary-worker.js";
+import { CodexAppServerTurnError } from "./codex-app-server-runner.js";
 
 const tempDirs: string[] = [];
 
@@ -299,6 +300,162 @@ describe("LCM summary worker", () => {
       })
     ]);
     expect(operations).toEqual(["raw", "token", "project", "submit"]);
+  });
+
+  it("persists usage-bearing failed LCM retry attempts separately", async () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000061",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "leaf placeholder",
+      sourceTokenEstimate: 200,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceTable: "memory_events",
+          sourceId: "00000000-0000-4000-8000-000000000062",
+          text: "The retry path should preserve token telemetry."
+        }
+      ]
+    };
+    const submitted: unknown[] = [];
+    const tokenUsageRequests: unknown[] = [];
+    let rawCallIndex = 0;
+    const client = {
+      async listPendingLcmSummaries() {
+        return submitted.length === 0 ? { nodes: [node] } : { nodes: [] };
+      },
+      async createConversationItems(input: unknown) {
+        rawCallIndex += 1;
+        const items = (
+          input as { items?: Array<{ sourceEventType?: string }> }
+        ).items?.map((item, itemIndex) => ({
+          id:
+            item.sourceEventType === "thread/tokenUsage/updated"
+              ? `00000000-0000-4000-8000-00000000007${rawCallIndex}`
+              : `00000000-0000-4000-8000-00000000008${itemIndex}`,
+          sourceEventType: item.sourceEventType
+        }));
+        return { items: items ?? [] };
+      },
+      async recordTokenUsage(input: unknown) {
+        tokenUsageRequests.push(input);
+        return { tokenUsage: { id: "token-usage-test" } };
+      },
+      async projectConversationItems() {
+        return {
+          projection: {
+            rawItemsScanned: 1,
+            rawItemsProjected: 1,
+            messagesCreated: 0,
+            toolEventsCreated: 0,
+            memoryEventsCreated: 0,
+            tokenUsageRowsCreated: 0
+          }
+        };
+      },
+      async submitLcmSummary(_nodeId: string, input: unknown) {
+        submitted.push(input);
+        return { ok: true };
+      }
+    };
+    const config = resolveLcmSummaryWorkerConfig(
+      {
+        MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+      },
+      {
+        maxAttempts: 2,
+        retryDelayMs: 0
+      }
+    );
+    let calls = 0;
+
+    const result = await summarizePendingLcmNodes(client as never, {
+      limit: 1,
+      config,
+      runner: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new CodexAppServerTurnError("first summary attempt failed", {
+            model: "codex-app-server:test",
+            threadId: "thread-lcm-failed",
+            turnId: "turn-lcm-failed",
+            rawEvents: [
+              {
+                method: "thread/tokenUsage/updated",
+                observedAt: "2026-05-27T00:00:00.000Z",
+                params: { threadId: "thread-lcm-failed" }
+              }
+            ],
+            tokenUsage: {
+              modelContextWindow: 32000,
+              last: {
+                inputTokens: 12,
+                cachedInputTokens: 2,
+                outputTokens: 1,
+                reasoningOutputTokens: 1,
+                totalTokens: 13
+              }
+            }
+          });
+        }
+        return {
+          text: summaryJson("retry summarized"),
+          model: "codex-app-server:test",
+          threadId: "thread-lcm-success",
+          turnId: "turn-lcm-success",
+          rawEvents: [
+            {
+              method: "thread/tokenUsage/updated",
+              observedAt: "2026-05-27T00:00:01.000Z",
+              params: { threadId: "thread-lcm-success" }
+            }
+          ],
+          tokenUsage: {
+            modelContextWindow: 32000,
+            last: {
+              inputTokens: 18,
+              cachedInputTokens: 3,
+              outputTokens: 5,
+              reasoningOutputTokens: 1,
+              totalTokens: 23
+            }
+          }
+        };
+      }
+    });
+
+    expect(result.submittedCount).toBe(1);
+    expect(submitted[0]).toMatchObject({ summaryText: "retry summarized" });
+    expect(tokenUsageRequests).toHaveLength(2);
+    const failedUsage = tokenUsageRequests[0] as {
+      workflowType?: string;
+      workflowId?: string;
+      totalTokens?: number;
+      metadata?: Record<string, unknown>;
+    };
+    const succeededUsage = tokenUsageRequests[1] as {
+      workflowType?: string;
+      workflowId?: string;
+      totalTokens?: number;
+      metadata?: Record<string, unknown>;
+    };
+    expect(failedUsage.workflowType).toBe("lcm_summary");
+    expect(failedUsage.workflowId).toBe(node.id);
+    expect(failedUsage.totalTokens).toBe(13);
+    expect(failedUsage.metadata).toMatchObject({
+      attemptIndex: 1,
+      executionStatus: "failed",
+      errorMessage: "first summary attempt failed"
+    });
+    expect(succeededUsage.workflowType).toBe("lcm_summary");
+    expect(succeededUsage.workflowId).toBe(node.id);
+    expect(succeededUsage.totalTokens).toBe(23);
+    expect(succeededUsage.metadata).toMatchObject({
+      attemptIndex: 2,
+      executionStatus: "succeeded"
+    });
   });
 
   it("ignores oversized source payload metadata so it does not block catch-up", async () => {

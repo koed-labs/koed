@@ -1087,6 +1087,52 @@ const rawEventType = (record: unknown): string | undefined => {
   );
 };
 
+const parseRawEventTime = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const millis = value > 10_000_000_000 ? value : value * 1000;
+    const parsed = new Date(millis);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return undefined;
+};
+
+const rawEventTime = (record: unknown): string | undefined => {
+  if (!isRecord(record)) {
+    return undefined;
+  }
+  const payload = isRecord(record.payload) ? record.payload : undefined;
+  const item = isRecord(payload?.item) ? payload.item : undefined;
+  const message = isRecord(item?.message)
+    ? item.message
+    : isRecord(payload?.message)
+      ? payload.message
+      : isRecord(record.message)
+        ? record.message
+        : undefined;
+  for (const source of [item, payload, message, record]) {
+    if (!source) {
+      continue;
+    }
+    const eventTime =
+      parseRawEventTime(source.timestamp) ??
+      parseRawEventTime(source.time) ??
+      parseRawEventTime(source.created_at) ??
+      parseRawEventTime(source.createdAt);
+    if (eventTime) {
+      return eventTime;
+    }
+  }
+  return undefined;
+};
+
 const rawExternalItemId = (record: unknown): string | undefined => {
   const payload = rawRecordPayload(record);
   return (
@@ -1115,7 +1161,7 @@ const sourceHashForRawRecord = (input: {
   record: unknown;
 }): string => hash(input);
 
-const buildRawTranscriptConversationItems = (input: {
+export const buildRawTranscriptConversationItems = (input: {
   records: unknown[];
   indexOffset?: number;
   sessionId?: string;
@@ -1161,6 +1207,7 @@ const buildRawTranscriptConversationItems = (input: {
       sourcePath: input.transcriptPath,
       sourceLineNumber: sourceSequence,
       sourceSequence,
+      eventTime: rawEventTime(record),
       rawJson: record,
       rawText: parsedItem?.content ?? rawText(record),
       sourceHash,

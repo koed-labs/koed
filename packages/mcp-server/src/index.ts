@@ -89,10 +89,10 @@ export interface ToolExposureConfig {
 export const defaultTools = ["memory_answer"] as const;
 
 export const memoryServerInstructions =
-  "Koed memory retrieves and answers from the user's captured Codex history. Use Koed memory when the user asks about prior conversations, previous project decisions, remembered preferences, user-provided facts, earlier setup/debugging work, saved sessions, or whether something was discussed before. Default to project scope for project history, project decisions, setup choices, and repo-specific context. Use session scope for a specific saved conversation/thread, exact-session recap, or a question that names this session when a backend session_id is available. Use global scope only for cross-project, anywhere, broad personal-history, or not-sure-which-project questions. Make at most one memory_answer call per distinct topic unless the first result is clearly incomplete, the user asks for source detail, or the answer needs a different scope. Do not keep querying memory after a clear not-found result. Even if something seems familiar from current context, use Koed memory to verify prior decisions, exact recaps, or remembered preferences when the relevant detail may have been compacted, summarized, or omitted. Do not use Koed memory for public facts, current visible context, generic coding knowledge, or tasks answerable from files/messages already provided.";
+  "Koed memory retrieves and answers from the user's captured Codex history. Use Koed memory when the user asks about prior conversations, previous project decisions, remembered preferences, user-provided facts, earlier setup/debugging work, saved sessions, or whether something was discussed before. Default to project scope for project history, project decisions, setup choices, and repo-specific context. Use session scope for a specific saved conversation/thread, exact-session recap, or a question that names this session when a backend session_id is available. Use global scope only for cross-project, anywhere, broad personal-history, or not-sure-which-project questions. When the user asks for a time-bounded memory answer such as last week, recently, or the last 30 days, pass recent_days or explicit source date bounds to memory_answer; omit time bounds for full-history recall. Make at most one memory_answer call per distinct topic unless the first result is clearly incomplete, the user asks for source detail, or the answer needs a different scope. Do not keep querying memory after a clear not-found result. Even if something seems familiar from current context, use Koed memory to verify prior decisions, exact recaps, or remembered preferences when the relevant detail may have been compacted, summarized, or omitted. Do not use Koed memory for public facts, current visible context, generic coding knowledge, or tasks answerable from files/messages already provided.";
 
 export const memoryAnswerToolDescription =
-  "Answer a question from Koed memory: captured Codex conversations, saved sessions, project history, prior decisions, remembered user preferences, user-provided facts, setup/debugging work, and past discussions. Call this tool for recall-style requests such as 'what did we decide', 'remind me', 'previously', 'ever discussed', 'do I usually', 'in that session', or 'look back'. Do not call it for public facts, current visible context, generic programming knowledge, or direct file-editing tasks. Use one concise query per distinct topic and do not repeat after a clear not-found answer. Default to search_domain=project for current workspace/project history; use search_domain=session for a known saved conversation/thread, and search_domain=global only for broad cross-project/personal-history recall. Defaults to response_detail=answer_only; use with_citations only when the user asks to verify sources, and with_evidence only for debugging or UI inspection.";
+  "Answer from Koed memory: captured Codex conversations, saved sessions, project history, prior decisions, remembered user preferences, user-provided facts, setup/debugging work, and past discussions. Call for recall requests like 'what did we decide', 'remind me', 'previously', 'ever discussed', 'do I usually', 'in that session', or 'look back'. Do not call for public facts, current visible context, generic programming knowledge, or direct file-editing tasks. Use one concise query per topic and do not repeat after a clear not-found answer. Default to search_domain=project for current workspace/project history; use search_domain=session for a known saved conversation/thread, and search_domain=global only for broad cross-project recall. Use recent_days or source date bounds only when the user implies a time window; leave blank for full history. Defaults to response_detail=answer_only; use with_citations for sources and with_evidence only for debugging/UI inspection.";
 
 export const diagnosticMemoryTools = ["memory_access_check"] as const;
 
@@ -255,10 +255,40 @@ export class MemoryApiClient {
     return this.request("POST", "/v1/memory/search", input);
   }
 
-  async expand(nodeId: string): Promise<Record<string, unknown>> {
+  async expand(
+    nodeId: string,
+    input: {
+      searchDomain?: string;
+      sessionId?: string;
+      workspaceId?: string;
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    } = {}
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (input.searchDomain) {
+      params.set("search_domain", input.searchDomain);
+    }
+    if (input.sessionId) {
+      params.set("session_id", input.sessionId);
+    }
+    if (input.workspaceId) {
+      params.set("workspace_id", input.workspaceId);
+    }
+    if (input.recentDays !== undefined) {
+      params.set("recent_days", String(input.recentDays));
+    }
+    if (input.sourceAfter) {
+      params.set("source_after", input.sourceAfter);
+    }
+    if (input.sourceBefore) {
+      params.set("source_before", input.sourceBefore);
+    }
+    const query = params.toString();
     return this.request(
       "GET",
-      `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand`
+      `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand${query ? `?${query}` : ""}`
     );
   }
 

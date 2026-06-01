@@ -267,6 +267,29 @@ server.registerTool(
       session_id: uuidSchema
         .optional()
         .describe("Backend session UUID for session search."),
+      recent_days: z
+        .number()
+        .int()
+        .positive()
+        .max(36500)
+        .optional()
+        .describe(
+          "Optional recency window in days over source memory-event timestamps. For example, 30 searches only memory whose underlying source events are within the last 30 days. Leave blank for full-history recall."
+        ),
+      source_after: z
+        .string()
+        .datetime()
+        .optional()
+        .describe(
+          "Optional ISO timestamp lower bound over source memory-event timestamps. Do not combine with recent_days."
+        ),
+      source_before: z
+        .string()
+        .datetime()
+        .optional()
+        .describe(
+          "Optional ISO timestamp upper bound over source memory-event timestamps. Do not combine with recent_days."
+        ),
       limit: z.number().int().positive().max(50).default(10),
       include_evidence: z
         .boolean()
@@ -283,22 +306,94 @@ server.registerTool(
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
-    const evidence = await client.answer({
-      ...answerInput,
-      retrieval_scope,
-      workspace_id
+    const evidence = {
+      markdown: "",
+      evidenceBundle: {
+        query: answerInput.query,
+        instructions:
+          "Use the local memory planner to gather and judge evidence before answering.",
+        evidence: [],
+        retrieval: { mode: "planner_controlled_initial" }
+      }
+    };
+    const answer = await answerWithMemoryWorker(evidence, {
+      client,
+      retrievalScope: retrieval_scope,
+      searchDomain: input.search_domain,
+      workspaceId: workspace_id,
+      sessionId: input.session_id,
+      recentDays: input.recent_days,
+      sourceAfter: input.source_after,
+      sourceBefore: input.source_before,
+      limit: input.limit,
+      responseDetail: include_evidence ? "with_evidence" : response_detail
     });
-    return jsonResponse(
-      await answerWithMemoryWorker(evidence, {
-        client,
-        retrievalScope: retrieval_scope,
-        searchDomain: input.search_domain,
-        workspaceId: workspace_id,
-        sessionId: input.session_id,
-        limit: input.limit,
-        responseDetail: include_evidence ? "with_evidence" : response_detail
-      })
-    );
+    const executions =
+      answer.localMemoryWorker.appServerExecutions &&
+      answer.localMemoryWorker.appServerExecutions.length > 0
+        ? answer.localMemoryWorker.appServerExecutions
+        : [
+            {
+              stepIndex: 0,
+              stepKind: "final" as const,
+              model: answer.localMemoryWorker.model ?? "codex-app-server",
+              tokenUsage: answer.localMemoryWorker.tokenUsage,
+              threadId: answer.localMemoryWorker.appServerThreadId,
+              turnId: answer.localMemoryWorker.appServerTurnId
+            }
+          ];
+    try {
+      await Promise.all(
+        executions.map(async (execution, executionIndex) => {
+          const lastUsage = execution.tokenUsage?.last;
+          if (!lastUsage) {
+            return;
+          }
+          await client.recordTokenUsage({
+            workflowType: "mcp_memory_answer",
+            workflowId: answer.localMemoryWorker.jobId,
+            answerJobId: answer.localMemoryWorker.jobId,
+            sessionId: input.session_id,
+            sourceRuntime: "codex",
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            usageSource: "app_server",
+            usageAccuracy: "provider_reported",
+            usageKind: "turn_delta",
+            connectorClient: "codex",
+            model: execution.model,
+            modelContextWindow:
+              execution.tokenUsage?.modelContextWindow ?? null,
+            inputTokens: lastUsage.inputTokens ?? null,
+            cachedInputTokens: lastUsage.cachedInputTokens ?? null,
+            outputTokens: lastUsage.outputTokens ?? null,
+            reasoningOutputTokens: lastUsage.reasoningOutputTokens ?? null,
+            totalTokens: lastUsage.totalTokens ?? null,
+            usageScope: "last",
+            metadata: {
+              appServerThreadId: execution.threadId,
+              appServerTurnId: execution.turnId,
+              searchDomain: input.search_domain,
+              workspaceId: workspace_id,
+              stepIndex: execution.stepIndex,
+              stepKind: execution.stepKind,
+              attemptIndex: execution.attemptIndex,
+              executionStatus: execution.status ?? "succeeded",
+              errorMessage: execution.errorMessage,
+              executionIndex
+            },
+            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${execution.stepIndex}:${execution.attemptIndex ?? executionIndex}:last`
+          });
+        })
+      );
+    } catch (error) {
+      console.error(
+        `koed memory_answer token telemetry skipped: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    return jsonResponse(answer);
   }
 );
 
@@ -314,6 +409,9 @@ if (toolExposure.exposeLowLevelMemoryTools) {
         search_domain: searchDomainSchema.default("project"),
         workspace_id: z.string().min(1).optional(),
         session_id: uuidSchema.optional(),
+        recent_days: z.number().int().positive().max(36500).optional(),
+        source_after: z.string().datetime().optional(),
+        source_before: z.string().datetime().optional(),
         limit: z.number().int().positive().max(50).default(10)
       }
     },

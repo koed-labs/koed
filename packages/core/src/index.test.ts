@@ -219,6 +219,35 @@ describe("provider-neutral memory engine", () => {
     expect(event.ownerUserId).toBe("alice");
   });
 
+  it("forwards source chronology when capturing personal events", async () => {
+    let capturedInput:
+      | Parameters<MemoryEngineRepository["createMemoryEvent"]>[1]
+      | undefined;
+    const repository = createFakeRepository();
+    const createMemoryEvent = repository.createMemoryEvent.bind(repository);
+    repository.createMemoryEvent = async (actor, input) => {
+      capturedInput = input;
+      return createMemoryEvent(actor, input);
+    };
+    const engine = createMemoryEngine(repository);
+
+    await engine.capturePersonalEvent({
+      requesterContext: { userId: "alice" },
+      workspaceId: "workspace-1",
+      actor: "assistant",
+      eventType: "message",
+      content: "Alice prefers concise summaries.",
+      sourceEventTime: "2026-05-01T10:00:00.000Z",
+      sourceSequence: 42
+    });
+
+    expect(capturedInput).toMatchObject({
+      capturedAt: undefined,
+      sourceEventTime: "2026-05-01T10:00:00.000Z",
+      sourceSequence: 42
+    });
+  });
+
   it("creates LCM leaves and rollups for the requesting user", async () => {
     const repository = createFakeRepository();
     const engine = createMemoryEngine(repository);
