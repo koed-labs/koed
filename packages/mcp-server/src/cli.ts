@@ -25,6 +25,7 @@ import {
   resolveLcmSummaryServiceConfig,
   startLcmSummaryService
 } from "./lcm-summary-service.js";
+import { logger } from "./logger.js";
 
 const parseArgs = (
   args: string[]
@@ -197,7 +198,7 @@ if (command === "lcm-summarize") {
 }
 
 if (command) {
-  console.error(`Unknown command: ${command}`);
+  logger.error({ command }, "unknown koed MCP command");
   process.exit(1);
 }
 
@@ -216,6 +217,15 @@ const backgroundLcmSummaryService = startLcmSummaryService(client, {
   workerConfig: resolveLcmSummaryWorkerConfig(process.env)
 });
 const answerBridgeHandle = startAnswerBridgeWithRetry();
+logger.info(
+  {
+    apiUrl: client.config.apiUrl,
+    tools: exposedTools(toolExposure),
+    bridgeEnabled:
+      process.env.MEMORY_ANSWER_BRIDGE_ENABLED?.trim().toLowerCase() !== "false"
+  },
+  "koed MCP server starting"
+);
 
 if (toolExposure.exposeDiagnosticMemoryTools) {
   server.registerTool(
@@ -300,6 +310,22 @@ server.registerTool(
     }
   },
   async (input) => {
+    logger.info(
+      {
+        searchDomain: input.search_domain,
+        responseDetail: input.include_evidence
+          ? "with_evidence"
+          : input.response_detail,
+        hasWorkspaceId: Boolean(input.workspace_id),
+        hasSessionId: Boolean(input.session_id),
+        hasRecentDays: input.recent_days !== undefined,
+        hasSourceAfter: input.source_after !== undefined,
+        hasSourceBefore: input.source_before !== undefined,
+        limit: input.limit,
+        queryLength: input.query.length
+      },
+      "memory_answer tool call started"
+    );
     const { include_evidence, response_detail, ...answerInput } = input;
     const retrieval_scope = defaultAnswerScope(await client.accessCheck());
     const workspace_id =
@@ -328,6 +354,16 @@ server.registerTool(
       limit: input.limit,
       responseDetail: include_evidence ? "with_evidence" : response_detail
     });
+    logger.info(
+      {
+        jobId: answer.localMemoryWorker.jobId,
+        memoryStatus: answer.localMemoryWorker.memoryStatus,
+        usedFallback: answer.localMemoryWorker.usedFallback,
+        skippedReason: answer.localMemoryWorker.skippedReason,
+        markdownLength: answer.markdown?.length ?? 0
+      },
+      "memory_answer tool call completed"
+    );
     const executions =
       answer.localMemoryWorker.appServerExecutions &&
       answer.localMemoryWorker.appServerExecutions.length > 0
@@ -387,10 +423,12 @@ server.registerTool(
         })
       );
     } catch (error) {
-      console.error(
-        `koed memory_answer token telemetry skipped: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+      logger.warn(
+        {
+          err: error,
+          jobId: answer.localMemoryWorker.jobId
+        },
+        "koed memory_answer token telemetry skipped"
       );
     }
     return jsonResponse(answer);
@@ -449,6 +487,7 @@ const cleanup = () => {
     return;
   }
   cleanedUp = true;
+  logger.info("koed MCP server shutting down");
   answerBridgeHandle.close();
   backgroundLcmSummaryService?.stop();
 };
@@ -464,3 +503,4 @@ process.once("SIGTERM", () => {
 process.once("exit", cleanup);
 
 await server.connect(transport);
+logger.info("koed MCP server connected");

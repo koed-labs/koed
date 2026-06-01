@@ -1101,4 +1101,92 @@ describe("local memory answer bridge", () => {
       { question_id: questionId, limit: 1, lease_seconds: 300 }
     ]);
   });
+
+  it("closes the standalone bridge cleanly on SIGINT", async () => {
+    const listeners = new Map<string, () => void>();
+    const processLike = {
+      once: vi.fn((signal: "SIGINT" | "SIGTERM", listener: () => void) => {
+        listeners.set(signal, listener);
+      })
+    };
+    const timer = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => callback()),
+      closeAllConnections: vi.fn(),
+      closeIdleConnections: vi.fn()
+    };
+    const log = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      info: vi.fn(),
+      level: "info",
+      trace: vi.fn(),
+      warn: vi.fn()
+    };
+    const exit = vi.fn();
+    const clearTimeoutFn = vi.fn();
+    const setTimeoutFn = vi.fn(() => timer);
+    const { installAnswerBridgeShutdownHandlers } =
+      await import("./answer-bridge.js");
+
+    installAnswerBridgeShutdownHandlers(server as unknown as http.Server, {
+      clearTimeoutFn,
+      exit,
+      forceCloseDelayMs: 25,
+      log: log as never,
+      processLike,
+      setTimeoutFn
+    });
+
+    listeners.get("SIGINT")?.();
+
+    expect(server.close).toHaveBeenCalledTimes(1);
+    expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
+    expect(server.closeAllConnections).not.toHaveBeenCalled();
+    expect(clearTimeoutFn).toHaveBeenCalledWith(timer);
+    expect(exit).toHaveBeenCalledWith(130);
+  });
+
+  it("forces the standalone bridge closed on a repeated shutdown signal", async () => {
+    const listeners = new Map<string, () => void>();
+    const processLike = {
+      once: vi.fn((signal: "SIGINT" | "SIGTERM", listener: () => void) => {
+        listeners.set(signal, listener);
+      })
+    };
+    const timer = { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    const server = {
+      close: vi.fn(),
+      closeAllConnections: vi.fn(),
+      closeIdleConnections: vi.fn()
+    };
+    const log = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      info: vi.fn(),
+      level: "info",
+      trace: vi.fn(),
+      warn: vi.fn()
+    };
+    const exit = vi.fn();
+    const { installAnswerBridgeShutdownHandlers } =
+      await import("./answer-bridge.js");
+
+    installAnswerBridgeShutdownHandlers(server as unknown as http.Server, {
+      exit,
+      forceCloseDelayMs: 25,
+      log: log as never,
+      processLike,
+      setTimeoutFn: vi.fn(() => timer)
+    });
+
+    listeners.get("SIGTERM")?.();
+    listeners.get("SIGTERM")?.();
+
+    expect(server.close).toHaveBeenCalledTimes(1);
+    expect(server.closeAllConnections).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(143);
+  });
 });

@@ -4,6 +4,7 @@ import {
   host as defaultAnswerBridgeHost,
   parseAnswerBridgePort
 } from "./answer-bridge.js";
+import { answerBridgeLogger } from "./logger.js";
 
 export const DEFAULT_ANSWER_BRIDGE_RETRY_DELAY_MS = 1000;
 
@@ -20,7 +21,12 @@ interface AnswerBridgeLifecycleOptions {
   createServer?: () => http.Server;
   enabled?: boolean;
   host?: string;
-  log?: Pick<Console, "error">;
+  log?: {
+    debug: (...args: unknown[]) => void;
+    error: (...args: unknown[]) => void;
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+  };
   portValue?: string;
   retryDelayMs?: number;
   setTimeoutFn?: SetTimeoutFn;
@@ -43,9 +49,10 @@ export const startAnswerBridgeWithRetry = (
   const enabled =
     options.enabled ??
     process.env.MEMORY_ANSWER_BRIDGE_ENABLED?.trim().toLowerCase() !== "false";
-  const log = options.log ?? console;
+  const log = options.log ?? answerBridgeLogger;
 
   if (!enabled) {
+    log.info("memory answer bridge disabled by configuration");
     return { close() {} };
   }
 
@@ -53,8 +60,12 @@ export const startAnswerBridgeWithRetry = (
     options.portValue ?? process.env.MEMORY_ANSWER_BRIDGE_PORT
   );
   if (!configuredPort) {
-    log.error(
-      `Koed memory answer bridge disabled: MEMORY_ANSWER_BRIDGE_PORT must be an integer from 1 to 65535 (received "${options.portValue ?? process.env.MEMORY_ANSWER_BRIDGE_PORT}").`
+    log.warn(
+      {
+        configuredPort:
+          options.portValue ?? process.env.MEMORY_ANSWER_BRIDGE_PORT
+      },
+      "memory answer bridge disabled due to invalid port"
     );
     return { close() {} };
   }
@@ -84,12 +95,25 @@ export const startAnswerBridgeWithRetry = (
     if (closed) {
       return;
     }
+    log.debug(
+      {
+        host,
+        port: configuredPort
+      },
+      "binding memory answer bridge"
+    );
     const nextServer = createServer();
     server = nextServer;
     nextServer.once("error", (error: NodeJS.ErrnoException) => {
       if (error.code === "EADDRINUSE") {
-        log.error(
-          `Koed memory answer bridge port ${configuredPort} is already in use; retrying in ${retryDelayMs}ms.`
+        log.warn(
+          {
+            err: error,
+            host,
+            port: configuredPort,
+            retryDelayMs
+          },
+          "memory answer bridge port already in use; retrying"
         );
         nextServer.close();
         if (server === nextServer) {
@@ -98,11 +122,23 @@ export const startAnswerBridgeWithRetry = (
         scheduleRetry();
         return;
       }
-      log.error(`Koed memory answer bridge failed: ${error.message}`);
+      log.error(
+        {
+          err: error,
+          host,
+          port: configuredPort
+        },
+        "memory answer bridge failed"
+      );
     });
     nextServer.once("listening", () => {
-      log.error(
-        `Koed memory answer bridge listening on http://${host}:${configuredPort}`
+      log.info(
+        {
+          host,
+          port: configuredPort,
+          url: `http://${host}:${configuredPort}`
+        },
+        "memory answer bridge listening"
       );
     });
     nextServer.listen(configuredPort, host);

@@ -29,6 +29,7 @@
     "@koed/core": "workspace:*",
     "@koed/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "pino": "^10.3.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

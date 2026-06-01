@@ -32,6 +32,10 @@ node packages/mcp-server/dist/answer-bridge.js
 node packages/mcp-server/dist/capture-hook.js
 ```
 
+When the standalone answer bridge is run through `pnpm answer-bridge` or
+`node packages/mcp-server/dist/answer-bridge.js`, `Ctrl-C` gracefully closes the
+HTTP server and background question worker before exiting.
+
 ## MCP Setup
 
 Configure Codex with a custom stdio MCP server:
@@ -46,6 +50,7 @@ Environment:
   MEMORY_API_TOKEN=<koed-api-token>
   MEMORY_CODEX_APP_SERVER_BINARY=codex
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
+  LOG_LEVEL=info
 ```
 
 Run a quick health check from the package:
@@ -115,12 +120,18 @@ process for normal operation:
 Useful bridge settings:
 
 ```bash
+LOG_LEVEL=debug
 MEMORY_ANSWER_BRIDGE_ENABLED=true
 MEMORY_ANSWER_BRIDGE_HOST=0.0.0.0
 MEMORY_ANSWER_BRIDGE_PORT=3210
 MEMORY_ANSWER_BRIDGE_CORS_ORIGINS=http://localhost:5174,http://127.0.0.1:5174
 MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS=3
 ```
+
+The MCP server and answer bridge emit pino JSON logs to stderr so stdout remains
+reserved for MCP stdio traffic. Supported levels are `trace`, `debug`, `info`,
+`warn`, `error`, `fatal`, and `silent`. `LOG_LEVEL` matches the API server
+setting; `MEMORY_LOG_LEVEL` can be used as an MCP-specific fallback.
 
 Check the bridge:
 

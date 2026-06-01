@@ -81,6 +81,8 @@ Start from `.env.example`. Important values:
   `MEMORY_LCM_FRESH_EVENT_TAIL`, `MEMORY_LCM_DEPTH1_FANOUT`: LCM placeholder
   cadence controls for Codex capture traffic.
 - `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: local Codex summary prompt budget.
+- `LOG_LEVEL`: JSON log level for the local MCP server and answer bridge
+  (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent`).
 
 Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis and backend LLM provider configuration are unsupported in this self-hosted build.
 
