@@ -294,7 +294,7 @@ const startDeterministicEmbeddingServer =
     };
   };
 
-const withTemporaryEmbeddingEnv = <T>(
+export const withTemporaryEmbeddingEnv = <T>(
   embeddingUrl: string,
   callback: () => Promise<T>
 ): Promise<T> => {
@@ -302,11 +302,13 @@ const withTemporaryEmbeddingEnv = <T>(
     EMBEDDING_SERVICE_URL: process.env.EMBEDDING_SERVICE_URL,
     EMBEDDING_SERVICE_TOKEN: process.env.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
+    EMBEDDING_RERANKER_KEY: process.env.EMBEDDING_RERANKER_KEY,
     RERANKER_KEY: process.env.RERANKER_KEY
   };
   process.env.EMBEDDING_SERVICE_URL = embeddingUrl;
   process.env.EMBEDDING_SERVICE_TOKEN = EMBEDDING_TOKEN;
   process.env.EMBEDDING_MODEL = EMBEDDING_MODEL;
+  delete process.env.EMBEDDING_RERANKER_KEY;
   delete process.env.RERANKER_KEY;
 
   return callback().finally(() => {

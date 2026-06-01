@@ -45,7 +45,7 @@ describe("memory presentation helpers", () => {
         EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
         RERANKER_KEY: ""
       })
-    ).toBe(true);
+    ).toBe(false);
     expect(
       localRerankingEnabled({
         EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",

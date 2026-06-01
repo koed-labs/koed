@@ -124,6 +124,6 @@ export const resolveRerankerKeyFromEnv = (environment: {
   EMBEDDING_RERANKER_KEY?: string;
   RERANKER_KEY?: string;
 }): string | undefined =>
-  environment.RERANKER_KEY?.trim()
+  Object.prototype.hasOwnProperty.call(environment, "RERANKER_KEY")
     ? environment.RERANKER_KEY
     : environment.EMBEDDING_RERANKER_KEY;

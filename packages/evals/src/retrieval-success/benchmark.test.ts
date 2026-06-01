@@ -10,7 +10,8 @@ import {
 import {
   databaseUrlWithName,
   deterministicEmbeddingVector,
-  maintenanceDatabaseUrl
+  maintenanceDatabaseUrl,
+  withTemporaryEmbeddingEnv
 } from "./live-runner.js";
 
 const caseById = new Map(retrievalSuccessCases.map((item) => [item.id, item]));
@@ -264,5 +265,48 @@ describe("retrieval-success live benchmark helpers", () => {
     expect(maintenanceDatabaseUrl(baseUrl)).toBe(
       "postgres://koed:secret@example.test:5432/postgres?sslmode=require&connect_timeout=10"
     );
+  });
+
+  it("isolates reranker env aliases while running against the deterministic server", async () => {
+    const previous = {
+      EMBEDDING_SERVICE_URL: process.env.EMBEDDING_SERVICE_URL,
+      EMBEDDING_SERVICE_TOKEN: process.env.EMBEDDING_SERVICE_TOKEN,
+      EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
+      EMBEDDING_RERANKER_KEY: process.env.EMBEDDING_RERANKER_KEY,
+      RERANKER_KEY: process.env.RERANKER_KEY
+    };
+    process.env.EMBEDDING_SERVICE_URL = "http://original.test";
+    process.env.EMBEDDING_SERVICE_TOKEN = "original-token";
+    process.env.EMBEDDING_MODEL = "original-model";
+    process.env.EMBEDDING_RERANKER_KEY = "qwen3-reranker-0.6b";
+    process.env.RERANKER_KEY = "qwen3-reranker-0.6b";
+
+    try {
+      await withTemporaryEmbeddingEnv("http://deterministic.test", async () => {
+        expect(process.env.EMBEDDING_SERVICE_URL).toBe(
+          "http://deterministic.test"
+        );
+        expect(process.env.EMBEDDING_SERVICE_TOKEN).toBe(
+          "koed-retrieval-success-eval"
+        );
+        expect(process.env.EMBEDDING_MODEL).toBe("qwen3-0.6b");
+        expect(process.env.EMBEDDING_RERANKER_KEY).toBeUndefined();
+        expect(process.env.RERANKER_KEY).toBeUndefined();
+      });
+
+      expect(process.env.EMBEDDING_SERVICE_URL).toBe("http://original.test");
+      expect(process.env.EMBEDDING_SERVICE_TOKEN).toBe("original-token");
+      expect(process.env.EMBEDDING_MODEL).toBe("original-model");
+      expect(process.env.EMBEDDING_RERANKER_KEY).toBe("qwen3-reranker-0.6b");
+      expect(process.env.RERANKER_KEY).toBe("qwen3-reranker-0.6b");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 });

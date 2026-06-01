@@ -88,4 +88,13 @@ describe("resolveRerankerKeyFromEnv", () => {
       })
     ).toBe("app-local");
   });
+
+  it("lets a blank app-local reranker key disable a generated root key", () => {
+    expect(
+      resolveRerankerKeyFromEnv({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: ""
+      })
+    ).toBe("");
+  });
 });
