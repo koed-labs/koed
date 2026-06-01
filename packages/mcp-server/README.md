@@ -34,7 +34,10 @@ node packages/mcp-server/dist/capture-hook.js
 
 When the standalone answer bridge is run through `pnpm answer-bridge` or
 `node packages/mcp-server/dist/answer-bridge.js`, `Ctrl-C` gracefully closes the
-HTTP server and background question worker before exiting.
+HTTP server and background question worker before exiting. If the configured
+port is already owned by another Koed answer bridge, standalone startup checks
+`/health`, logs the existing service, and exits successfully instead of
+crashing on the port conflict.
 
 ## MCP Setup
 

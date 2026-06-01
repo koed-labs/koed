@@ -43,6 +43,7 @@ const allowedOrigins = new Set(
     .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean)
 );
+const answerBridgeStartedAt = new Date().toISOString();
 
 interface BridgeRequestContext {
   id: string;
@@ -131,6 +132,18 @@ const logBridgeResponse = (
   );
 };
 
+const healthProbeHost = (value: string): string => {
+  if (value === "0.0.0.0" || value === "::") {
+    return "127.0.0.1";
+  }
+  return value.includes(":") && !value.startsWith("[") ? `[${value}]` : value;
+};
+
+export const answerBridgeHealthUrl = (
+  bridgeHost: string,
+  bridgePort: number
+): string => `http://${healthProbeHost(bridgeHost)}:${bridgePort}/health`;
+
 const requestSchema = z
   .object({
     query: z.string().min(1),
@@ -205,6 +218,23 @@ interface AnswerBridgeShutdownOptions {
     once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
   };
   setTimeoutFn?: typeof setTimeout;
+}
+
+interface StandaloneAnswerBridgeOptions {
+  createServer?: typeof createAnswerBridgeServer;
+  exit?: (code: number) => void;
+  fetchFn?: typeof fetch;
+  host?: string;
+  installShutdownHandlers?: typeof installAnswerBridgeShutdownHandlers;
+  log?: typeof answerBridgeLogger;
+  port?: number | null;
+}
+
+interface ExistingAnswerBridgeProbeResult {
+  ok: boolean;
+  healthUrl: string;
+  payload?: Record<string, unknown>;
+  error?: string;
 }
 
 const answerLocalLeaseSeconds = () =>
@@ -1117,7 +1147,10 @@ export const createAnswerBridgeServer = (options?: {
           sendJson(request, response, 200, {
             ok: true,
             service: "koed-memory-answer-bridge",
-            apiUrl: defaultConfig().apiUrl
+            apiUrl: defaultConfig().apiUrl,
+            pid: process.pid,
+            startedAt: answerBridgeStartedAt,
+            backgroundServiceRunning: Boolean(backgroundService)
           });
           return;
         }
@@ -1244,29 +1277,120 @@ export const installAnswerBridgeShutdownHandlers = (
   processLike.once("SIGTERM", () => shutdown("SIGTERM", 143));
 };
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const configuredPort = parseAnswerBridgePort(
-    process.env.MEMORY_ANSWER_BRIDGE_PORT
-  );
+export const probeExistingAnswerBridge = async (
+  bridgeHost: string,
+  bridgePort: number,
+  fetchFn: typeof fetch = fetch
+): Promise<ExistingAnswerBridgeProbeResult> => {
+  const healthUrl = answerBridgeHealthUrl(bridgeHost, bridgePort);
+  try {
+    const response = await fetchFn(healthUrl);
+    const payload = (await response.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    return {
+      ok:
+        response.ok &&
+        payload.ok === true &&
+        payload.service === "koed-memory-answer-bridge",
+      healthUrl,
+      payload
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      healthUrl,
+      error: errorMessage(error)
+    };
+  }
+};
+
+export const startStandaloneAnswerBridge = (
+  options: StandaloneAnswerBridgeOptions = {}
+): http.Server | null => {
+  const log = options.log ?? answerBridgeLogger;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const configuredPort =
+    options.port ?? parseAnswerBridgePort(process.env.MEMORY_ANSWER_BRIDGE_PORT);
   if (!configuredPort) {
-    answerBridgeLogger.error(
+    log.error(
       {
         configuredPort: process.env.MEMORY_ANSWER_BRIDGE_PORT
       },
       "invalid MEMORY_ANSWER_BRIDGE_PORT; expected an integer from 1 to 65535"
     );
-    process.exit(1);
+    exit(1);
+    return null;
   }
-  const server = createAnswerBridgeServer();
-  installAnswerBridgeShutdownHandlers(server);
-  server.listen(configuredPort, host, () => {
-    answerBridgeLogger.info(
+
+  const bridgeHost = options.host ?? host;
+  const createServer = options.createServer ?? createAnswerBridgeServer;
+  const installShutdownHandlers =
+    options.installShutdownHandlers ?? installAnswerBridgeShutdownHandlers;
+  const server = createServer();
+  installShutdownHandlers(server);
+  server.once("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EADDRINUSE") {
+      log.error(
+        {
+          err: error,
+          host: bridgeHost,
+          port: configuredPort
+        },
+        "memory answer bridge failed"
+      );
+      exit(1);
+      return;
+    }
+
+    void (async () => {
+      const existing = await probeExistingAnswerBridge(
+        bridgeHost,
+        configuredPort,
+        options.fetchFn
+      );
+      if (existing.ok) {
+        log.info(
+          {
+            host: bridgeHost,
+            port: configuredPort,
+            healthUrl: existing.healthUrl,
+            apiUrl: existing.payload?.apiUrl
+          },
+          "memory answer bridge already running; using existing service"
+        );
+        exit(0);
+        return;
+      }
+
+      log.error(
+        {
+          err: error,
+          host: bridgeHost,
+          port: configuredPort,
+          healthUrl: existing.healthUrl,
+          existingService: existing.payload?.service,
+          probeError: existing.error
+        },
+        "memory answer bridge port already in use by an incompatible service"
+      );
+      exit(1);
+    })();
+  });
+  server.listen(configuredPort, bridgeHost, () => {
+    log.info(
       {
-        host,
+        host: bridgeHost,
         port: configuredPort,
-        url: `http://${host}:${configuredPort}`
+        url: `http://${bridgeHost}:${configuredPort}`
       },
       "memory answer bridge listening"
     );
   });
+  return server;
+};
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  startStandaloneAnswerBridge();
 }

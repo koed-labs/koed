@@ -1,5 +1,6 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const answerWithMemoryWorker = vi.fn();
@@ -55,6 +56,10 @@ const readJson = async (request: http.IncomingMessage) => {
     string,
     unknown
   >;
+};
+
+const waitForAsyncHandlers = async () => {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 };
 
 const json = (
@@ -1174,6 +1179,116 @@ describe("local memory answer bridge", () => {
     ]);
   });
 
+  it("exits successfully when standalone startup finds an existing Koed bridge", async () => {
+    const server = Object.assign(new EventEmitter(), {
+      listen: vi.fn(),
+      close: vi.fn()
+    }) as unknown as http.Server & EventEmitter;
+    const exit = vi.fn();
+    const log = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      info: vi.fn(),
+      level: "info",
+      trace: vi.fn(),
+      warn: vi.fn()
+    };
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        service: "koed-memory-answer-bridge",
+        apiUrl: "http://localhost:3000"
+      })
+    })) as unknown as typeof fetch;
+    const { startStandaloneAnswerBridge } = await import(
+      "../src/answer-bridge.js"
+    );
+
+    startStandaloneAnswerBridge({
+      createServer: () => server,
+      exit,
+      fetchFn,
+      host: "0.0.0.0",
+      installShutdownHandlers: vi.fn(),
+      log: log as never,
+      port: 3210
+    });
+    server.emit(
+      "error",
+      Object.assign(new Error("busy"), { code: "EADDRINUSE" })
+    );
+    await waitForAsyncHandlers();
+
+    expect(server.listen).toHaveBeenCalledWith(
+      3210,
+      "0.0.0.0",
+      expect.any(Function)
+    );
+    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3210/health");
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        healthUrl: "http://127.0.0.1:3210/health",
+        apiUrl: "http://localhost:3000"
+      }),
+      "memory answer bridge already running; using existing service"
+    );
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it("fails standalone startup when the occupied port is not a Koed bridge", async () => {
+    const server = Object.assign(new EventEmitter(), {
+      listen: vi.fn(),
+      close: vi.fn()
+    }) as unknown as http.Server & EventEmitter;
+    const exit = vi.fn();
+    const log = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      info: vi.fn(),
+      level: "info",
+      trace: vi.fn(),
+      warn: vi.fn()
+    };
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        service: "something-else"
+      })
+    })) as unknown as typeof fetch;
+    const { startStandaloneAnswerBridge } = await import(
+      "../src/answer-bridge.js"
+    );
+
+    startStandaloneAnswerBridge({
+      createServer: () => server,
+      exit,
+      fetchFn,
+      host: "127.0.0.1",
+      installShutdownHandlers: vi.fn(),
+      log: log as never,
+      port: 3211
+    });
+    server.emit(
+      "error",
+      Object.assign(new Error("busy"), { code: "EADDRINUSE" })
+    );
+    await waitForAsyncHandlers();
+
+    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3211/health");
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        healthUrl: "http://127.0.0.1:3211/health",
+        existingService: "something-else"
+      }),
+      "memory answer bridge port already in use by an incompatible service"
+    );
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it("closes the standalone bridge cleanly on SIGINT", async () => {
     const listeners = new Map<string, () => void>();
     const processLike = {
@@ -1217,7 +1332,7 @@ describe("local memory answer bridge", () => {
     expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
     expect(server.closeAllConnections).not.toHaveBeenCalled();
     expect(clearTimeoutFn).toHaveBeenCalledWith(timer);
-    expect(exit).toHaveBeenCalledWith(130);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 
   it("forces the standalone bridge closed on a repeated shutdown signal", async () => {
@@ -1259,6 +1374,6 @@ describe("local memory answer bridge", () => {
 
     expect(server.close).toHaveBeenCalledTimes(1);
     expect(server.closeAllConnections).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(143);
+    expect(exit).toHaveBeenCalledWith(0);
   });
 });
