@@ -1,3 +1,4 @@
+import { resolveRerankerKeyFromEnv } from "@koed/shared";
 import type { RateLimitName, RateLimitPolicy } from "../infra/rate-limit.js";
 import { parseCsv } from "./utils.js";
 
@@ -186,6 +187,6 @@ export const resolveApiServerConfig = (
       )
     },
     embeddingModel: optionalEnv(environment.EMBEDDING_MODEL),
-    rerankerKey: optionalEnv(environment.RERANKER_KEY)
+    rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment))
   };
 };

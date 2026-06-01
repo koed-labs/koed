@@ -69,6 +69,7 @@ Start from `.env.example`. Important values:
 - `API_DATA_ENCRYPTION_KEY`: reserved 32-byte base64 key for encrypted server-side fields. In the current self-hosted build, memory payloads remain plaintext at the application layer in Postgres and must be protected with deployment-level database, volume, backup, and access controls.
 - `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
 - `EMBEDDING_MODEL_KEY`: local embedding model setting. The embedding service only accepts supported model keys.
+- `EMBEDDING_RERANKER_KEY`: optional local reranker model key. Leave blank to keep reranking disabled; Docker Compose maps this to the app-local `RERANKER_KEY`.
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token used by the API and worker when calling the private embedding service.
 - `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`.
 - `API_CORS_ORIGINS`: include the local history-browser origin.

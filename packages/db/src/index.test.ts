@@ -16,6 +16,7 @@ import { createMemoryEngine } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
+  localRerankingEnabled,
   presentMemoryText,
   type MemorySourceRepository
 } from "./index.js";
@@ -32,6 +33,27 @@ const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
 const describeDb = runDbTests ? describe : describe.skip;
 
 describe("memory presentation helpers", () => {
+  it("keeps reranking disabled by default and honors the documented root key", () => {
+    expect(localRerankingEnabled({})).toBe(false);
+    expect(
+      localRerankingEnabled({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
+      })
+    ).toBe(true);
+    expect(
+      localRerankingEnabled({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: ""
+      })
+    ).toBe(true);
+    expect(
+      localRerankingEnabled({
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        RERANKER_KEY: "qwen3-reranker-0.6b"
+      })
+    ).toBe(true);
+  });
+
   const provenance = {
     project_name: "/Users/jacobo/Coding/koed",
     project_path: "/Users/jacobo/Coding/koed"

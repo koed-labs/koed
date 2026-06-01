@@ -17,6 +17,7 @@ import type {
 } from "@koed/core";
 import {
   env,
+  resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig
 } from "@koed/shared";
@@ -2698,8 +2699,14 @@ const localEmbeddingDimensions = (): number =>
 const localEmbeddingVersion = (): string =>
   resolveSupportedEmbeddingModelConfig(process.env.EMBEDDING_MODEL).key;
 
-const rerankingEnabled = (): boolean =>
-  resolveSupportedRerankerModelConfig(process.env.RERANKER_KEY) !== null;
+export const localRerankingEnabled = (
+  environment: NodeJS.ProcessEnv = process.env
+): boolean =>
+  resolveSupportedRerankerModelConfig(
+    resolveRerankerKeyFromEnv(environment)
+  ) !== null;
+
+const rerankingEnabled = (): boolean => localRerankingEnabled();
 
 const sourceHash = (
   sourceType: EmbeddableSourceType,

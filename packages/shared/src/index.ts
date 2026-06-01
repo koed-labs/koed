@@ -119,3 +119,11 @@ export const resolveSupportedRerankerModelConfig = (
   }
   return config;
 };
+
+export const resolveRerankerKeyFromEnv = (environment: {
+  EMBEDDING_RERANKER_KEY?: string;
+  RERANKER_KEY?: string;
+}): string | undefined =>
+  environment.RERANKER_KEY?.trim()
+    ? environment.RERANKER_KEY
+    : environment.EMBEDDING_RERANKER_KEY;

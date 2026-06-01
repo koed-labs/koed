@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import {
   requireEnv,
+  resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig
 } from "@koed/shared";
@@ -30,7 +31,7 @@ export const resolveWorkerEnv = (
   const embeddingModel = resolveSupportedEmbeddingModelConfig(
     environment.EMBEDDING_MODEL
   );
-  resolveSupportedRerankerModelConfig(environment.RERANKER_KEY);
+  resolveSupportedRerankerModelConfig(resolveRerankerKeyFromEnv(environment));
   if (nodeEnv === "production") {
     requireEnv(
       [
