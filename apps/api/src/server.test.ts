@@ -984,6 +984,10 @@ const createFakeRepository = (): MemorySourceRepository => {
                 ? event.metadata.threadName
                 : null,
             timestamp: event.createdAt,
+            sourceEventTime: null,
+            sourceSequence: null,
+            capturedAt: event.createdAt,
+            createdAt: event.createdAt,
             visibility: event.visibility,
             invalidatedAt: invalidatedEvents.has(event.id)
               ? new Date().toISOString()
