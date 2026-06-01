@@ -1312,7 +1312,8 @@ export const startStandaloneAnswerBridge = (
   const log = options.log ?? answerBridgeLogger;
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const configuredPort =
-    options.port ?? parseAnswerBridgePort(process.env.MEMORY_ANSWER_BRIDGE_PORT);
+    options.port ??
+    parseAnswerBridgePort(process.env.MEMORY_ANSWER_BRIDGE_PORT);
   if (!configuredPort) {
     log.error(
       {

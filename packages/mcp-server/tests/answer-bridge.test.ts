@@ -345,7 +345,8 @@ describe("local memory answer bridge", () => {
         model: "codex-app-server:test"
       }
     });
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{ ok: boolean; question: { id: string } }>(
@@ -448,7 +449,8 @@ describe("local memory answer bridge", () => {
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const missingQuery = await postRaw(
@@ -514,7 +516,8 @@ describe("local memory answer bridge", () => {
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
     answerWithMemoryWorker.mockRejectedValue(new Error("Codex unavailable"));
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -612,7 +615,8 @@ describe("local memory answer bridge", () => {
         skippedReason: "codex_failed"
       }
     });
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -718,7 +722,8 @@ describe("local memory answer bridge", () => {
         skippedReason: "codex_failed"
       }
     });
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -800,7 +805,8 @@ describe("local memory answer bridge", () => {
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{
@@ -885,7 +891,8 @@ describe("local memory answer bridge", () => {
         skippedReason: "no_evidence"
       }
     });
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const result = await postJson<{ ok: boolean }>(
@@ -1165,7 +1172,8 @@ describe("local memory answer bridge", () => {
       citations: [],
       localMemoryWorker: { status: "ok" }
     });
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     await postJson(`${bridgeUrl}/v1/memory/answer-local`, {
@@ -1202,9 +1210,8 @@ describe("local memory answer bridge", () => {
         apiUrl: "http://localhost:3000"
       })
     })) as unknown as typeof fetch;
-    const { startStandaloneAnswerBridge } = await import(
-      "../src/answer-bridge.js"
-    );
+    const { startStandaloneAnswerBridge } =
+      await import("../src/answer-bridge.js");
 
     startStandaloneAnswerBridge({
       createServer: () => server,
@@ -1259,9 +1266,8 @@ describe("local memory answer bridge", () => {
         service: "something-else"
       })
     })) as unknown as typeof fetch;
-    const { startStandaloneAnswerBridge } = await import(
-      "../src/answer-bridge.js"
-    );
+    const { startStandaloneAnswerBridge } =
+      await import("../src/answer-bridge.js");
 
     startStandaloneAnswerBridge({
       createServer: () => server,
@@ -1332,7 +1338,7 @@ describe("local memory answer bridge", () => {
     expect(server.closeIdleConnections).toHaveBeenCalledTimes(1);
     expect(server.closeAllConnections).not.toHaveBeenCalled();
     expect(clearTimeoutFn).toHaveBeenCalledWith(timer);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(130);
   });
 
   it("forces the standalone bridge closed on a repeated shutdown signal", async () => {
@@ -1374,6 +1380,6 @@ describe("local memory answer bridge", () => {
 
     expect(server.close).toHaveBeenCalledTimes(1);
     expect(server.closeAllConnections).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(143);
   });
 });
