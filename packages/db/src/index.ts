@@ -5954,7 +5954,20 @@ export const createMemorySourceRepository = (
     const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
     const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
       `
-        with visible_events as (
+        with cursor_order as (
+          select coalesce(
+            $9::bigint,
+            (
+              select cursor_event.source_sequence
+              from memory_events cursor_event
+              where cursor_event.id = $10::uuid
+                and cursor_event.visibility = 'personal'
+                and cursor_event.owner_user_id = $1
+              limit 1
+            )
+          ) as source_sequence
+        ),
+        visible_events as (
           select
             me.id,
             case
@@ -6002,6 +6015,7 @@ export const createMemorySourceRepository = (
             me.payload ->> 'content' as content,
             coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata
           from memory_events me
+          cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
@@ -6019,10 +6033,27 @@ export const createMemorySourceRepository = (
               or (
                 coalesce(me.source_event_time, me.captured_at) = $8::timestamptz
                 and (
-                  ($9::bigint is null and me.source_sequence is null and $10::uuid is not null and me.id < $10::uuid)
-                  or ($9::bigint is not null and me.source_sequence is not null and me.source_sequence < $9::bigint)
-                  or ($9::bigint is not null and me.source_sequence = $9::bigint and $10::uuid is not null and me.id < $10::uuid)
-                  or ($9::bigint is not null and me.source_sequence is null)
+                  (
+                    co.source_sequence is null
+                    and me.source_sequence is null
+                    and $10::uuid is not null
+                    and me.id < $10::uuid
+                  )
+                  or (
+                    co.source_sequence is not null
+                    and me.source_sequence is not null
+                    and me.source_sequence < co.source_sequence
+                  )
+                  or (
+                    co.source_sequence is not null
+                    and me.source_sequence = co.source_sequence
+                    and $10::uuid is not null
+                    and me.id < $10::uuid
+                  )
+                  or (
+                    co.source_sequence is not null
+                    and me.source_sequence is null
+                  )
                 )
               )
             )
@@ -6103,6 +6134,7 @@ export const createMemorySourceRepository = (
               me.payload #>> '{metadata,parentSessionId}',
               s.metadata ->> 'parentSessionId'
             ) as parent_session_id,
+            coalesce(me.source_event_time, me.captured_at) as event_order_at,
             me.captured_at,
             coalesce(me.source_event_time, me.captured_at) as order_at,
             me.source_sequence,
@@ -6144,6 +6176,7 @@ export const createMemorySourceRepository = (
             end as thread_kind,
             coalesce(s.metadata ->> 'parentThreadId', s.metadata ->> 'parentExternalSessionId') as parent_thread_id,
             s.metadata ->> 'parentSessionId' as parent_session_id,
+            null::timestamptz as event_order_at,
             s.created_at as captured_at,
             s.created_at as order_at,
             null::bigint as source_sequence,
@@ -6176,11 +6209,17 @@ export const createMemorySourceRepository = (
             (array_agg(parent_session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where parent_session_id is not null))[1] as parent_session_id,
             count(*) filter (where row_kind = 'event')::text as event_count,
             count(*) filter (where row_kind = 'event' and invalidated_at is not null)::text as invalidated_count,
-            max(order_at) as latest_at,
+            coalesce(
+              max(event_order_at) filter (where row_kind = 'event'),
+              max(order_at)
+            ) as latest_at,
             coalesce((array_agg(content order by order_at desc, source_sequence desc nulls last, id desc) filter (where content is not null))[1], '') as sample
           from visible_thread_rows
           group by project_id, thread_id
-          order by max(order_at) desc, thread_id desc
+          order by coalesce(
+            max(event_order_at) filter (where row_kind = 'event'),
+            max(order_at)
+          ) desc, thread_id desc
           limit $7
         )
         select *

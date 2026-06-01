@@ -537,7 +537,9 @@ export const capturePersonalEvent = async (
     codexTranscriptPath: event.codexTranscriptPath,
     idempotencyKey: event.idempotencyKey,
     sourceHash: event.sourceHash,
-    capturedAt: event.capturedAt
+    capturedAt: event.capturedAt,
+    sourceEventTime: event.sourceEventTime,
+    sourceSequence: event.sourceSequence
   });
 };
 

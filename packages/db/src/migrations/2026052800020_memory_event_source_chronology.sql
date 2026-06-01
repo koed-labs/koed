@@ -10,8 +10,16 @@ from (
   select
     mes.memory_event_id,
     min(ci.event_time) filter (where ci.event_time is not null) as source_event_time,
-    min(ci.source_sequence)::bigint filter (where ci.source_sequence is not null) as source_sequence
+    min(
+      ci.source_sequence::bigint * 1000000
+      + case
+        when me_existing.payload #>> '{metadata,sourceChunkIndex}' ~ '^[0-9]+$'
+          then (me_existing.payload #>> '{metadata,sourceChunkIndex}')::bigint
+        else 0
+      end
+    ) filter (where ci.source_sequence is not null) as source_sequence
   from memory_event_sources mes
+  join memory_events me_existing on me_existing.id = mes.memory_event_id
   join conversation_items ci on ci.id = mes.conversation_item_id
   group by mes.memory_event_id
 ) source_bounds

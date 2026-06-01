@@ -2212,6 +2212,16 @@ describeDb("memory repository visibility", () => {
         cursorId: firstPage[0]!.id
       }
     );
+    const legacyCursorPage = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      {
+        projectId: workspaceId,
+        threadId: session.externalSessionId ?? undefined,
+        limit: 1,
+        cursorTimestamp: firstPage[0]!.timestamp,
+        cursorId: firstPage[0]!.id
+      }
+    );
     const threadIndex = await repo.listLcmGraphThreads(
       { userId: alice.id },
       {
@@ -2232,6 +2242,7 @@ describeDb("memory repository visibility", () => {
       sourceEventTime: "2026-04-01T12:00:00.000Z",
       sourceSequence: 1_000_000
     });
+    expect(legacyCursorPage[0]?.id).toBe(secondPage[0]!.id);
     expect(firstPage[0]!.createdAt).not.toBe(firstPage[0]!.timestamp);
     expect(threadIndex[0]?.threads[0]).toMatchObject({
       latestAt: "2026-04-01T12:00:00.000Z",
