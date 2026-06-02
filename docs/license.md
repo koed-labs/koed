@@ -1,13 +1,16 @@
 # License Guidance
 
-No final license has been selected. Legal review is required before public release.
+Koed Self-Hosted is source-available under the
+[PolyForm Noncommercial License 1.0.0](../LICENSE).
 
-Because Koed will also have a SaaS version and the self-hosted distribution should not be used to compete with it, avoid permissive licenses such as MIT, Apache-2.0, or BSD for this distribution unless the business decision changes.
+PolyForm Noncommercial allows non-commercial use, modification, and distribution
+while requiring separate written permission for commercial use. This fits the
+current product boundary because Koed will also have a SaaS version and the
+self-hosted distribution should not be used for commercial reuse, resale, hosted
+competing services, or other business use without Koed's permission.
 
-Recommended candidates:
+Do not call Koed Self-Hosted open source unless the license changes to an
+OSI-approved license. Describe it as source-available and non-commercial.
 
-- PolyForm Noncommercial: strongest off-the-shelf fit for non-commercial source-available access.
-- Business Source License-style terms: useful if Koed wants a change date or delayed conversion model.
-- Custom source-available non-commercial license: useful if anti-SaaS, anti-resale, and anti-competition terms need to be explicit.
-
-Do not call Koed Self-Hosted open source unless the final license is OSI-approved. Until then, describe it as source-available and non-commercial.
+Before public release, counsel should review the final license posture and any
+commercial licensing path that Koed wants to offer.

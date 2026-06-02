@@ -170,17 +170,16 @@ pnpm --filter @koed/db migrate:up
 
 See [docs/backup-restore.md](docs/backup-restore.md) and [docs/upgrades.md](docs/upgrades.md).
 
-## License Status
+## License
 
-No final license has been selected. This repository should be treated as source-available and non-commercial pending legal review. Commercial reuse, resale, hosted competing services, or other business use is not permitted until a final license is chosen and published.
+Koed Self-Hosted is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). Commercial reuse, resale,
+hosted competing services, or other commercial use requires separate written
+permission from Koed.
 
-License candidates to evaluate:
-
-- PolyForm Noncommercial License: clear non-commercial source-available baseline.
-- Business Source License-style terms: useful if a delayed conversion or change-date model is desired.
-- Custom source-available non-commercial license: best fit if Koed needs explicit anti-competition and SaaS-hosting restrictions.
-
-See [LICENSE_PENDING.md](LICENSE_PENDING.md) and [docs/license.md](docs/license.md). Do not describe this distribution as OSI-approved open source unless the final license is OSI-approved.
+See [docs/license.md](docs/license.md). Do not describe this distribution as
+OSI-approved open source because PolyForm Noncommercial is not an OSI-approved
+open-source license.
 
 ## More Docs
 
