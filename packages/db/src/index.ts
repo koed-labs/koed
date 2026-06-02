@@ -17,9 +17,11 @@ import type {
 } from "@koed/core";
 import {
   env,
+  metadataWithNulSanitization,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig
+  resolveSupportedRerankerModelConfig,
+  sanitizeNulCharacters
 } from "@koed/shared";
 
 const { Pool } = pg;
@@ -1113,6 +1115,89 @@ const truncateDisplayText = (value: string, maxLength = 280): string => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const sanitizeConversationItemForStorage = (
+  item: ConversationItemInput
+): ConversationItemInput => {
+  const rawJson = sanitizeNulCharacters(item.rawJson);
+  const rawText = sanitizeNulCharacters(item.rawText);
+  const metadata = sanitizeNulCharacters(item.metadata ?? {});
+  const sourceKind = sanitizeNulCharacters(item.sourceKind);
+  const sourceAdapterVersion = sanitizeNulCharacters(item.sourceAdapterVersion);
+  const sourceTransport = sanitizeNulCharacters(item.sourceTransport);
+  const externalSessionId = sanitizeNulCharacters(item.externalSessionId);
+  const externalThreadId = sanitizeNulCharacters(item.externalThreadId);
+  const externalTurnId = sanitizeNulCharacters(item.externalTurnId);
+  const externalItemId = sanitizeNulCharacters(item.externalItemId);
+  const parentExternalItemId = sanitizeNulCharacters(item.parentExternalItemId);
+  const sourceRecordType = sanitizeNulCharacters(item.sourceRecordType);
+  const sourceEventType = sanitizeNulCharacters(item.sourceEventType);
+  const sourcePath = sanitizeNulCharacters(item.sourcePath);
+  const logicalSourceId = sanitizeNulCharacters(item.logicalSourceId);
+  const transportChunkText = sanitizeNulCharacters(item.transportChunkText);
+  const transportChunkEncoding = sanitizeNulCharacters(
+    item.transportChunkEncoding
+  );
+  const sourceHash = sanitizeNulCharacters(item.sourceHash);
+  const idempotencyKey = sanitizeNulCharacters(item.idempotencyKey);
+  const projectionStatus = sanitizeNulCharacters(item.projectionStatus);
+  const projectionVersion = sanitizeNulCharacters(item.projectionVersion);
+  const projectionError = sanitizeNulCharacters(item.projectionError);
+  const replacementCount =
+    rawJson.replacementCount +
+    rawText.replacementCount +
+    metadata.replacementCount +
+    sourceKind.replacementCount +
+    sourceAdapterVersion.replacementCount +
+    sourceTransport.replacementCount +
+    externalSessionId.replacementCount +
+    externalThreadId.replacementCount +
+    externalTurnId.replacementCount +
+    externalItemId.replacementCount +
+    parentExternalItemId.replacementCount +
+    sourceRecordType.replacementCount +
+    sourceEventType.replacementCount +
+    sourcePath.replacementCount +
+    logicalSourceId.replacementCount +
+    transportChunkText.replacementCount +
+    transportChunkEncoding.replacementCount +
+    sourceHash.replacementCount +
+    idempotencyKey.replacementCount +
+    projectionStatus.replacementCount +
+    projectionVersion.replacementCount +
+    projectionError.replacementCount;
+
+  return {
+    ...item,
+    sourceKind: sourceKind.value as string,
+    sourceAdapterVersion: sourceAdapterVersion.value as string,
+    sourceTransport: sourceTransport.value as string,
+    externalSessionId: externalSessionId.value as string | undefined,
+    externalThreadId: externalThreadId.value as string | undefined,
+    externalTurnId: externalTurnId.value as string | undefined,
+    externalItemId: externalItemId.value as string | undefined,
+    parentExternalItemId: parentExternalItemId.value as string | undefined,
+    sourceRecordType: sourceRecordType.value as string,
+    sourceEventType: sourceEventType.value as string | undefined,
+    sourcePath: sourcePath.value as string | undefined,
+    rawJson: rawJson.value,
+    rawText: rawText.value as string | undefined,
+    logicalSourceId: logicalSourceId.value as string | undefined,
+    transportChunkText: transportChunkText.value as string | undefined,
+    transportChunkEncoding: transportChunkEncoding.value as string | undefined,
+    sourceHash: sourceHash.value as string,
+    idempotencyKey: idempotencyKey.value as string,
+    projectionStatus: projectionStatus.value as
+      | ConversationItemInput["projectionStatus"]
+      | undefined,
+    projectionVersion: projectionVersion.value as string | undefined,
+    projectionError: projectionError.value as string | undefined,
+    metadata: metadataWithNulSanitization(
+      metadata.value as Record<string, unknown>,
+      replacementCount
+    )
+  };
+};
 
 const jsonbParam = (value: unknown): string | null =>
   value === undefined || value === null ? null : JSON.stringify(value);
@@ -2283,15 +2368,24 @@ const loadLogicalConversationProjectionItem = async (
     .map((chunk) => chunk.transport_chunk_text ?? "")
     .join("");
   const decoded = decodeTransportChunkEnvelope(envelope, encoding);
+  const decodedRawJson = sanitizeNulCharacters(decoded.rawJson);
+  const decodedRawText = sanitizeNulCharacters(decoded.rawText);
+  const decodedMetadata = metadataWithNulSanitization(
+    row.metadata ?? {},
+    [decodedRawJson.replacementCount, decodedRawText.replacementCount].reduce(
+      (sum, count) => sum + count,
+      0
+    )
+  );
   const representative =
     sorted.find((chunk) => chunk.transport_chunk_index === 0) ?? row;
 
   return {
     row: {
       ...representative,
-      raw_json: decoded.rawJson,
-      raw_text: decoded.rawText,
-      metadata: row.metadata,
+      raw_json: decodedRawJson.value,
+      raw_text: decodedRawText.value as string | null,
+      metadata: decodedMetadata,
       source_hash: row.logical_source_id
     },
     sourceIds: sorted.map((chunk) => chunk.id),
@@ -3978,7 +4072,8 @@ export const createMemorySourceRepository = (
 
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
-    for (const item of input.items) {
+    for (const inputItem of input.items) {
+      const item = sanitizeConversationItemForStorage(inputItem);
       const visibility = item.visibility ?? "personal";
       const ownerUserId = actor.userId;
       if (item.sessionId) {

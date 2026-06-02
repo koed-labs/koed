@@ -1,40 +1,73 @@
 import { z } from "zod";
+import {
+  metadataWithNulSanitization,
+  sanitizeNulCharacters
+} from "@koed/shared";
 import { metadataSchema } from "./common-schemas.js";
 
 const rawVisibilitySchema = z.literal("personal");
 
-const conversationItemSchema = z.object({
-  visibility: rawVisibilitySchema.optional(),
-  sessionId: z.string().uuid().optional(),
-  turnId: z.string().uuid().optional(),
-  sourceKind: z.string().min(1),
-  sourceAdapterVersion: z.string().min(1),
-  sourceTransport: z.string().min(1),
-  externalSessionId: z.string().min(1).optional(),
-  externalThreadId: z.string().min(1).optional(),
-  externalTurnId: z.string().min(1).optional(),
-  externalItemId: z.string().min(1).optional(),
-  parentExternalItemId: z.string().min(1).optional(),
-  sourceRecordType: z.string().min(1),
-  sourceEventType: z.string().min(1).optional(),
-  sourcePath: z.string().min(1).optional(),
-  sourceLineNumber: z.number().int().nonnegative().optional(),
-  sourceSequence: z.number().int().nonnegative().optional(),
-  eventTime: z.string().datetime({ offset: true }).optional(),
-  rawJson: z.unknown(),
-  rawText: z.string().optional(),
-  logicalSourceId: z.string().min(1).optional(),
-  transportChunkIndex: z.number().int().nonnegative().optional(),
-  transportChunkCount: z.number().int().positive().optional(),
-  transportChunkText: z.string().optional(),
-  transportChunkEncoding: z.string().min(1).optional(),
-  sourceHash: z.string().min(1),
-  idempotencyKey: z.string().min(1),
-  projectionStatus: z.string().min(1).optional(),
-  projectionVersion: z.string().min(1).optional(),
-  projectionError: z.string().optional(),
-  metadata: metadataSchema
-});
+const conversationItemSchema = z
+  .object({
+    visibility: rawVisibilitySchema.optional(),
+    sessionId: z.string().uuid().optional(),
+    turnId: z.string().uuid().optional(),
+    sourceKind: z.string().min(1),
+    sourceAdapterVersion: z.string().min(1),
+    sourceTransport: z.string().min(1),
+    externalSessionId: z.string().min(1).optional(),
+    externalThreadId: z.string().min(1).optional(),
+    externalTurnId: z.string().min(1).optional(),
+    externalItemId: z.string().min(1).optional(),
+    parentExternalItemId: z.string().min(1).optional(),
+    sourceRecordType: z.string().min(1),
+    sourceEventType: z.string().min(1).optional(),
+    sourcePath: z.string().min(1).optional(),
+    sourceLineNumber: z.number().int().nonnegative().optional(),
+    sourceSequence: z.number().int().nonnegative().optional(),
+    eventTime: z.string().datetime({ offset: true }).optional(),
+    rawJson: z.unknown(),
+    rawText: z.string().optional(),
+    logicalSourceId: z.string().min(1).optional(),
+    transportChunkIndex: z.number().int().nonnegative().optional(),
+    transportChunkCount: z.number().int().positive().optional(),
+    transportChunkText: z.string().optional(),
+    transportChunkEncoding: z.string().min(1).optional(),
+    sourceHash: z.string().min(1),
+    idempotencyKey: z.string().min(1),
+    projectionStatus: z.string().min(1).optional(),
+    projectionVersion: z.string().min(1).optional(),
+    projectionError: z.string().optional(),
+    metadata: metadataSchema
+  })
+  .transform((item) => {
+    const rawJson = sanitizeNulCharacters(item.rawJson);
+    const rawText = sanitizeNulCharacters(item.rawText);
+    const transportChunkText = sanitizeNulCharacters(item.transportChunkText);
+    const projectionError = sanitizeNulCharacters(item.projectionError);
+    const sourcePath = sanitizeNulCharacters(item.sourcePath);
+    const metadata = sanitizeNulCharacters(item.metadata);
+    const replacementCount =
+      rawJson.replacementCount +
+      rawText.replacementCount +
+      transportChunkText.replacementCount +
+      projectionError.replacementCount +
+      sourcePath.replacementCount +
+      metadata.replacementCount;
+
+    return {
+      ...item,
+      rawJson: rawJson.value,
+      rawText: rawText.value as string | undefined,
+      transportChunkText: transportChunkText.value as string | undefined,
+      projectionError: projectionError.value as string | undefined,
+      sourcePath: sourcePath.value as string | undefined,
+      metadata: metadataWithNulSanitization(
+        metadata.value as Record<string, unknown>,
+        replacementCount
+      )
+    };
+  });
 
 export const createConversationItemsSchema = z.object({
   items: z.array(conversationItemSchema).min(1).max(1000)

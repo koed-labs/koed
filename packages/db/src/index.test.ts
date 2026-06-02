@@ -2779,6 +2779,169 @@ describeDb("memory repository visibility", () => {
     expect(bobRawItem?.id).not.toBe(rawItem?.id);
   });
 
+  it("sanitizes NUL characters in raw conversation items before storage and projection", async () => {
+    const alice = await repo.createUser({
+      email: `alice-raw-nul-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Raw NUL Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `nul-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `nul-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const idempotencyKey = `nul-raw-${randomUUID()}`;
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "nul-turn",
+            externalItemId: "nul-item",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourcePath: `/tmp/a${"\u0000"}b.jsonl`,
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: `The captured text is a${"\u0000"}b.`
+                },
+                nested: [{ value: `nested-${"\u0000"}value` }]
+              }
+            },
+            rawText: `Raw text a${"\u0000"}b`,
+            sourceHash: `source-${idempotencyKey}`,
+            idempotencyKey,
+            projectionStatus: "pending",
+            metadata: {
+              workspaceId,
+              transcriptType: "agent_message",
+              label: `metadata a${"\u0000"}b`,
+              nested: { [`key${"\u0000"}name`]: `value${"\u0000"}text` }
+            }
+          }
+        ]
+      }
+    );
+    const [duplicateRawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            rawJson: { duplicate: true },
+            sourceHash: `other-source-${idempotencyKey}`,
+            idempotencyKey
+          }
+        ]
+      }
+    );
+    const transportIdempotencyKey = `nul-transport-text-${randomUUID()}`;
+    const [transportTextItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            rawJson: { transportChunk: true },
+            logicalSourceId: `logical-${transportIdempotencyKey}`,
+            transportChunkIndex: 0,
+            transportChunkCount: 1,
+            transportChunkText: `Transport a${"\u0000"}b`,
+            transportChunkEncoding: "test-plain-text",
+            sourceHash: `source-${transportIdempotencyKey}`,
+            idempotencyKey: transportIdempotencyKey,
+            projectionStatus: "projected"
+          }
+        ]
+      }
+    );
+    const stored = await pool.query<{
+      raw_json_text: string;
+      raw_payload_text: string | null;
+      raw_text: string | null;
+      source_path: string | null;
+      metadata: Record<string, unknown>;
+    }>(
+      `
+        select
+          raw_json::text as raw_json_text,
+          raw_json #>> '{params,item,text}' as raw_payload_text,
+          raw_text,
+          source_path,
+          metadata
+        from conversation_items
+        where id = $1
+      `,
+      [rawItem!.id]
+    );
+    const storedTransport = await pool.query<{
+      transport_chunk_text: string | null;
+      metadata: Record<string, unknown>;
+    }>(
+      "select transport_chunk_text, metadata from conversation_items where id = $1",
+      [transportTextItem!.id]
+    );
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const event = await pool.query<{
+      content: string;
+      metadata: Record<string, unknown>;
+    }>(
+      "select payload ->> 'content' as content, payload -> 'metadata' as metadata from memory_events limit 1"
+    );
+
+    expect(rawItem?.id).toBeTruthy();
+    expect(duplicateRawItem?.id).toBe(rawItem?.id);
+    expect(stored.rows[0]?.raw_payload_text).toBe("The captured text is a�b.");
+    expect(stored.rows[0]?.raw_text).toBe("Raw text a�b");
+    expect(stored.rows[0]?.source_path).toBe("/tmp/a�b.jsonl");
+    expect(JSON.stringify(stored.rows[0]?.metadata)).toContain(
+      '"replacementCount":7'
+    );
+    expect(storedTransport.rows[0]?.transport_chunk_text).toBe("Transport a�b");
+    expect(JSON.stringify(storedTransport.rows[0]?.metadata)).toContain(
+      '"replacementCount":1'
+    );
+    expect(JSON.stringify(stored.rows[0])).not.toContain("\u0000");
+    expect(JSON.stringify(stored.rows[0])).not.toContain("\\u0000");
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(event.rows[0]?.content).toBe("Raw text a�b");
+    expect(event.rows[0]?.content).not.toContain("\\u0000");
+    expect(JSON.stringify(event.rows[0]?.metadata)).toContain(
+      '"replacementCount":7'
+    );
+  });
+
   it("does not link memory events to raw source rows outside caller ownership", async () => {
     const workspaceId = randomUUID();
     const alice = await repo.createUser({
@@ -4571,6 +4734,99 @@ describeDb("memory repository visibility", () => {
         projection_version: "conversation-projection-v3"
       }
     ]);
+  });
+
+  it("sanitizes NUL characters after decoding transport chunk envelopes", async () => {
+    const alice = await repo.createUser({
+      email: `alice-nul-transport-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'NUL Transport Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `nul-transport-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `nul-transport-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const logicalSourceId = `nul-transport-logical-${randomUUID()}`;
+    const reconstructedText = `Chunked decoded text is c${"\u0000"}d.`;
+    const envelope = JSON.stringify({
+      rawJson: {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "agentMessage",
+            text: reconstructedText
+          }
+        }
+      },
+      rawText: reconstructedText
+    });
+    const midpoint = Math.floor(envelope.length / 2);
+    const chunks = [envelope.slice(0, midpoint), envelope.slice(midpoint)];
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: chunks.map((chunk, index) => ({
+          sessionId: session.id,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-app-server-v1",
+          sourceTransport: "app_server",
+          externalTurnId: "turn-nul-transport",
+          sourceRecordType: "app_server_notification",
+          sourceEventType: "item/completed",
+          sourceSequence: 120 + index,
+          rawJson: {
+            transportChunk: true,
+            sourceItemHash: logicalSourceId,
+            chunkIndex: index,
+            chunkCount: chunks.length
+          },
+          logicalSourceId,
+          transportChunkIndex: index,
+          transportChunkCount: chunks.length,
+          transportChunkText: chunk,
+          transportChunkEncoding: "conversation-item-json-v1",
+          sourceHash: `${logicalSourceId}-chunk-${index}`,
+          idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+          metadata: {
+            workspaceId,
+            transcriptType: "agent_message",
+            sourceItemHash: logicalSourceId,
+            sourceChunkIndex: index,
+            sourceChunkCount: chunks.length
+          }
+        }))
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const events = await pool.query<{ content: string; metadata: unknown }>(
+      "select payload ->> 'content' as content, payload -> 'metadata' as metadata from memory_events order by created_at asc"
+    );
+
+    expect(projection.rawItemsProjected).toBe(2);
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(events.rows[0]?.content).toBe("Chunked decoded text is c�d.");
+    expect(events.rows[0]?.content).not.toContain("\u0000");
+    expect(events.rows[0]?.content).not.toContain("\\u0000");
+    expect(JSON.stringify(events.rows[0]?.metadata)).toContain(
+      '"replacementCount":2'
+    );
   });
 
   it("keeps projected app-server threads under the canonical session project", async () => {

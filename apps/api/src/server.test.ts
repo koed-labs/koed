@@ -2246,6 +2246,90 @@ describe("account and access flows", () => {
     ).toContain("concise changelog");
   });
 
+  it("sanitizes NUL characters before forwarding raw conversation item ingestion", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    const forwardedInputs: Array<Record<string, unknown>> = [];
+    repository.createConversationItems = async (actor, input) => {
+      forwardedInputs.push(input as Record<string, unknown>);
+      const encodedInput = JSON.stringify(input);
+      if (encodedInput.includes("\u0000") || encodedInput.includes("\\u0000")) {
+        throw new Error("Repository received unsanitized NUL");
+      }
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "nul-raw-ingestion@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const token = jsonBody<TokenResponse>(createdToken).token;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        items: [
+          {
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourcePath: `/tmp/a${"\u0000"}b.jsonl`,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: `Raw API text a${"\u0000"}b`
+                }
+              }
+            },
+            rawText: `Raw text a${"\u0000"}b`,
+            transportChunkText: `Transport text a${"\u0000"}b`,
+            sourceHash: "nul-api-source-hash",
+            idempotencyKey: "nul-api-idempotency-key",
+            metadata: { label: `metadata a${"\u0000"}b` }
+          }
+        ]
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    const forwardedItem = (
+      forwardedInputs[0]?.items as Array<{
+        rawJson: { params: { item: { text: string } } };
+        rawText: string;
+        transportChunkText: string;
+        sourcePath: string;
+        metadata: Record<string, unknown>;
+      }>
+    )?.[0];
+    expect(forwardedItem?.rawJson.params.item.text).toBe("Raw API text a�b");
+    expect(forwardedItem?.rawText).toBe("Raw text a�b");
+    expect(forwardedItem?.transportChunkText).toBe("Transport text a�b");
+    expect(forwardedItem?.sourcePath).toBe("/tmp/a�b.jsonl");
+    expect(JSON.stringify(forwardedItem?.metadata)).toContain(
+      '"replacementCount":5'
+    );
+    expect(JSON.stringify(forwardedItem)).not.toContain("\\u0000");
+  });
+
   it("forwards staged retrieval controls through MCP recall endpoints", async () => {
     const repository = createFakeRepository();
     const recallInputs: Array<Record<string, unknown>> = [];
