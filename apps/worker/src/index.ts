@@ -6,10 +6,16 @@ import {
   type EmbeddableSourceRecord
 } from "@koed/db";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
+import { createWorkerLogger } from "./logging.js";
 
 loadWorkerEnv();
 
 const workerEnv = resolveWorkerEnv();
+const logger = createWorkerLogger({
+  nodeEnv: workerEnv.nodeEnv,
+  logLevel: workerEnv.logLevel,
+  logDestination: workerEnv.logDestination
+});
 
 const connection = {
   url: workerEnv.redisUrl,
@@ -18,7 +24,9 @@ const connection = {
 
 const queueNames = ["memory-embed", "lcm-compact", "lcm-embed"];
 
-const pool = process.env.DATABASE_URL ? createDbPool() : null;
+const pool = workerEnv.databaseUrl
+  ? createDbPool({ connectionString: workerEnv.databaseUrl })
+  : null;
 const repository = pool ? createMemorySourceRepository(pool) : null;
 const lcmEmbedQueue = new Queue("lcm-embed", { connection });
 
@@ -36,20 +44,12 @@ const stringValue = (value: unknown, fallback = ""): string =>
     ? String(value)
     : fallback;
 
-const positiveIntEnv = (name: string, fallback: number): number => {
-  const parsed = Number.parseInt(process.env[name] ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
 const isTransientError = (error: unknown): boolean =>
   error instanceof TypeError ||
   (typeof error === "object" &&
     error !== null &&
     "transient" in error &&
     error.transient === true);
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
 
 const embeddingVersion = (): string => workerEnv.embeddingVersion;
 
@@ -58,9 +58,10 @@ const embeddingServiceUrl = (): string => workerEnv.embeddingServiceUrl;
 const embeddingDimensions = (): number => workerEnv.embeddingDimensions;
 
 const embeddingServiceHeaders = (): Record<string, string> => {
-  const token = process.env.EMBEDDING_SERVICE_TOKEN?.trim();
   return {
-    ...(token ? { "x-koed-embedding-token": token } : {}),
+    ...(workerEnv.embeddingServiceToken
+      ? { "x-koed-embedding-token": workerEnv.embeddingServiceToken }
+      : {}),
     "x-koed-embedding-priority": "background"
   };
 };
@@ -236,50 +237,128 @@ const handleJob = async (queueName: string, data: Record<string, unknown>) => {
   return { ok: true };
 };
 
-const workers = queueNames.map(
-  (queueName) =>
-    new Worker(
-      queueName,
-      async (job) => {
-        try {
-          return await handleJob(
-            queueName,
-            job.data as Record<string, unknown>
+const workers = queueNames.map((queueName) => {
+  const worker = new Worker(
+    queueName,
+    async (job) => {
+      try {
+        return await handleJob(queueName, job.data as Record<string, unknown>);
+      } catch (error) {
+        if (isTransientError(error)) {
+          logger.warn(
+            {
+              event: {
+                name: "worker.job.transient_failure",
+                category: "job"
+              },
+              queue: { name: queueName },
+              job: {
+                id: String(job.id ?? "unknown"),
+                name: job.name,
+                attempts_made: job.attemptsMade
+              },
+              err: error
+            },
+            "worker job transient failure; BullMQ will retry"
           );
-        } catch (error) {
-          if (isTransientError(error)) {
-            console.warn(
-              `Transient processing failure in ${queueName} job ${job.id ?? "unknown"}: ${errorMessage(error)}; BullMQ will retry.`
-            );
-          }
-          throw error;
+        }
+        throw error;
+      }
+    },
+    {
+      connection,
+      lockDuration: 10 * 60 * 1000,
+      settings: {
+        backoffStrategy: (_attemptsMade, _type, error) =>
+          isTransientError(error) ? 5_000 : 0
+      }
+    }
+  );
+
+  worker.on("completed", (job) => {
+    logger.info(
+      {
+        event: {
+          name: "worker.job.completed",
+          category: "job"
+        },
+        queue: { name: queueName },
+        job: {
+          id: String(job.id ?? "unknown"),
+          name: job.name,
+          attempts_made: job.attemptsMade
         }
       },
+      "worker job completed"
+    );
+  });
+
+  worker.on("failed", (job, error) => {
+    logger.error(
       {
-        connection,
-        lockDuration: 10 * 60 * 1000,
-        settings: {
-          backoffStrategy: (_attemptsMade, _type, error) =>
-            isTransientError(error) ? 5_000 : 0
-        }
-      }
-    )
+        event: {
+          name: "worker.job.failed",
+          category: "job"
+        },
+        queue: { name: queueName },
+        job: job
+          ? {
+              id: String(job.id ?? "unknown"),
+              name: job.name,
+              attempts_made: job.attemptsMade
+            }
+          : undefined,
+        err: error
+      },
+      "worker job failed"
+    );
+  });
+
+  worker.on("stalled", (jobId) => {
+    logger.warn(
+      {
+        event: {
+          name: "worker.job.stalled",
+          category: "job"
+        },
+        queue: { name: queueName },
+        job: { id: String(jobId) }
+      },
+      "worker job stalled"
+    );
+  });
+
+  worker.on("error", (error) => {
+    logger.error(
+      {
+        event: {
+          name: "worker.queue.error",
+          category: "queue"
+        },
+        queue: { name: queueName },
+        err: error
+      },
+      "worker queue error"
+    );
+  });
+
+  return worker;
+});
+
+logger.info(
+  {
+    event: {
+      name: "worker.started",
+      category: "lifecycle"
+    },
+    queues: queueNames
+  },
+  "worker listening on queues"
 );
 
-console.log(`Worker listening on queues: ${queueNames.join(", ")}`);
-
-const rawProjectionIntervalMs = positiveIntEnv(
-  "MEMORY_RAW_PROJECTION_INTERVAL_MS",
-  5_000
-);
-const rawProjectionBatchLimit = positiveIntEnv(
-  "MEMORY_RAW_PROJECTION_BATCH_LIMIT",
-  1000
-);
-const rawProjectionActorLimit = positiveIntEnv(
-  "MEMORY_RAW_PROJECTION_ACTOR_LIMIT",
-  10
-);
+const rawProjectionIntervalMs = workerEnv.rawProjectionIntervalMs;
+const rawProjectionBatchLimit = workerEnv.rawProjectionBatchLimit;
+const rawProjectionActorLimit = workerEnv.rawProjectionActorLimit;
 let rawProjectionRunning = false;
 
 const runRawProjectionCatchup = async () => {
@@ -322,15 +401,31 @@ const runRawProjectionCatchup = async () => {
       projected += result.rawItemsProjected;
     }
     if (scanned > 0) {
-      console.log(
-        `Raw conversation projection catch-up scanned ${scanned}, projected ${projected}.`
+      logger.info(
+        {
+          event: {
+            name: "worker.raw_projection.catchup.completed",
+            category: "projection"
+          },
+          projection: {
+            actors: actors.length,
+            scanned,
+            projected
+          }
+        },
+        "raw conversation projection catch-up completed"
       );
     }
   } catch (error) {
-    console.warn(
-      `Raw conversation projection catch-up failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
+    logger.warn(
+      {
+        event: {
+          name: "worker.raw_projection.catchup.failed",
+          category: "projection"
+        },
+        err: error
+      },
+      "raw conversation projection catch-up failed"
     );
   } finally {
     rawProjectionRunning = false;
@@ -344,10 +439,28 @@ const rawProjectionTimer = setInterval(
 void runRawProjectionCatchup();
 
 const shutdown = async () => {
+  logger.info(
+    {
+      event: {
+        name: "worker.shutting_down",
+        category: "lifecycle"
+      }
+    },
+    "worker shutting down"
+  );
   clearInterval(rawProjectionTimer);
   await Promise.all(workers.map((worker) => worker.close()));
   await lcmEmbedQueue.close();
   await pool?.end();
+  logger.info(
+    {
+      event: {
+        name: "worker.stopped",
+        category: "lifecycle"
+      }
+    },
+    "worker stopped"
+  );
   process.exit(0);
 };
 

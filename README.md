@@ -81,6 +81,12 @@ Start from `.env.example`. Important values:
   `MEMORY_LCM_FRESH_EVENT_TAIL`, `MEMORY_LCM_DEPTH1_FANOUT`: LCM placeholder
   cadence controls for Codex capture traffic.
 - `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: local Codex summary prompt budget.
+- `WORKER_LOG_LEVEL`: JSON log level for the worker (`trace`, `debug`, `info`,
+  `warn`, `error`, `fatal`, or `silent`).
+- `WORKER_LOG_FILE`: optional log file for worker logs. Leave blank to log to
+  stderr.
+- `WORKER_LOG_DESTINATION`: optional `stderr`, `file`, or `both`. If
+  `WORKER_LOG_FILE` is set and this is blank, logs go to the file.
 - `MEMORY_LOG_LEVEL`: JSON log level for the local MCP server and answer bridge
   (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent`).
 - `MEMORY_LOG_FILE`: optional log file for MCP server and answer bridge logs.

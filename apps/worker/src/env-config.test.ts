@@ -9,6 +9,11 @@ describe("resolveWorkerEnv", () => {
       embeddingServiceUrl: "http://embedding-service:8000",
       embeddingDimensions: 1024,
       embeddingVersion: "qwen3-0.6b",
+      rawProjectionIntervalMs: 5000,
+      rawProjectionBatchLimit: 1000,
+      rawProjectionActorLimit: 10,
+      logLevel: "info",
+      logDestination: { destination: "stderr" },
       nodeEnv: "development",
       production: false
     });
@@ -20,14 +25,31 @@ describe("resolveWorkerEnv", () => {
         DATABASE_URL: "postgres://local",
         REDIS_URL: "redis://local:6379",
         EMBEDDING_SERVICE_URL: "http://localhost:8000",
+        EMBEDDING_SERVICE_TOKEN: " worker-token ",
+        MEMORY_RAW_PROJECTION_INTERVAL_MS: "3000",
+        MEMORY_RAW_PROJECTION_BATCH_LIMIT: "50",
+        MEMORY_RAW_PROJECTION_ACTOR_LIMIT: "4",
+        WORKER_LOG_LEVEL: "debug",
+        WORKER_LOG_DESTINATION: "both",
+        WORKER_LOG_FILE: "/tmp/koed-worker.log",
         EMBEDDING_MODEL: "qwen3-0.6b"
       })
     ).toMatchObject({
       redisUrl: "redis://local:6379",
+      databaseUrl: "postgres://local",
       databaseConfigured: true,
       embeddingServiceUrl: "http://localhost:8000",
+      embeddingServiceToken: "worker-token",
       embeddingDimensions: 1024,
-      embeddingVersion: "qwen3-0.6b"
+      embeddingVersion: "qwen3-0.6b",
+      rawProjectionIntervalMs: 3000,
+      rawProjectionBatchLimit: 50,
+      rawProjectionActorLimit: 4,
+      logLevel: "debug",
+      logDestination: {
+        destination: "both",
+        filePath: "/tmp/koed-worker.log"
+      }
     });
   });
 

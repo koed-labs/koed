@@ -19,7 +19,8 @@
     "@koed/shared": "workspace:*",
     "bullmq": "^5.76.9",
     "dotenv": "^17.2.3",
-    "ioredis": "^5.10.1"
+    "ioredis": "^5.10.1",
+    "pino": "^10.3.1"
   },
   "devDependencies": {
     "tsx": "^4.22.1"
