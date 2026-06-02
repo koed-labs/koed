@@ -49,6 +49,79 @@ const truthyConfigValues = new Set(["1", "true", "yes", "on"]);
 export const configFlagEnabled = (value: string | undefined): boolean =>
   value ? truthyConfigValues.has(value.trim().toLowerCase()) : false;
 
+const NUL_CHARACTER = "\u0000";
+export const NUL_DISPLAY_REPLACEMENT = "\uFFFD";
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Reflect.getPrototypeOf(value as object);
+  return prototype === Object.prototype || prototype === null;
+};
+
+export const sanitizeNulCharacters = (
+  value: unknown
+): { value: unknown; replacementCount: number } => {
+  if (typeof value === "string") {
+    const replacementCount = value.split(NUL_CHARACTER).length - 1;
+    return {
+      value:
+        replacementCount > 0
+          ? value.replaceAll(NUL_CHARACTER, NUL_DISPLAY_REPLACEMENT)
+          : value,
+      replacementCount
+    };
+  }
+
+  if (Array.isArray(value)) {
+    let replacementCount = 0;
+    const sanitized = value.map((item) => {
+      const result = sanitizeNulCharacters(item);
+      replacementCount += result.replacementCount;
+      return result.value;
+    });
+    return { value: sanitized, replacementCount };
+  }
+
+  if (isPlainRecord(value)) {
+    let replacementCount = 0;
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(value)) {
+      const sanitizedKey = sanitizeNulCharacters(key);
+      const sanitizedField = sanitizeNulCharacters(field);
+      replacementCount +=
+        sanitizedKey.replacementCount + sanitizedField.replacementCount;
+      sanitized[String(sanitizedKey.value)] = sanitizedField.value;
+    }
+    return { value: sanitized, replacementCount };
+  }
+
+  return { value, replacementCount: 0 };
+};
+
+export const metadataWithNulSanitization = (
+  metadata: Record<string, unknown>,
+  replacementCount: number
+): Record<string, unknown> => {
+  if (replacementCount === 0) {
+    return metadata;
+  }
+  const existingKoed = isPlainRecord(metadata.koedSanitization)
+    ? metadata.koedSanitization
+    : {};
+  return {
+    ...metadata,
+    koedSanitization: {
+      ...existingKoed,
+      nulCharacters: {
+        replacement: "U+FFFD",
+        replacementCount
+      }
+    }
+  };
+};
+
 export interface SupportedEmbeddingModelConfig {
   key: string;
   dimensions: number;

@@ -148,6 +148,11 @@ MEMORY_ANSWER_BRIDGE_HOST=0.0.0.0
 MEMORY_ANSWER_BRIDGE_PORT=3210
 MEMORY_ANSWER_BRIDGE_CORS_ORIGINS=http://localhost:5174,http://127.0.0.1:5174
 MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS=3
+MEMORY_MANUAL_ANSWER_PROVIDER=codex
+MEMORY_MANUAL_ANSWER_MODEL=
+MEMORY_MANUAL_ANSWER_REASONING_EFFORT=
+MEMORY_MANUAL_ANSWER_TIMEOUT_MS=
+MEMORY_MANUAL_ANSWER_MAX_ATTEMPTS=
 ```
 
 The MCP server and answer bridge emit pino JSON logs to stderr so stdout remains
@@ -168,6 +173,33 @@ If questions remain pending with `localMemoryWorker.skippedReason=codex_failed`,
 first check that the process owning port `3210` can resolve `codex` or that
 `MEMORY_CODEX_APP_SERVER_BINARY` points at the correct binary. Prefer the
 MCP-owned bridge; avoid running a second standalone bridge on the same port.
+
+Explorer manual Memory Question settings inherit `MEMORY_ANSWER_*` unless
+`MEMORY_MANUAL_ANSWER_*` or a per-question Explorer selection overrides them.
+The bridge stores per-question settings on the pending question row before
+claiming it, so retries and background catch-up keep the same Codex model and
+reasoning choices. The available model and reasoning selectors are read from
+Codex app-server `model/list`. Unsupported local providers fail validation;
+there is no backend LLM fallback.
+
+LCM Summary synthesis has separate settings so Operators can choose a different
+Codex model or reasoning effort for summarization:
+
+```bash
+MEMORY_LCM_SUMMARY_PROVIDER=codex
+MEMORY_LCM_SUMMARY_MODEL=gpt-5.4-mini
+MEMORY_LCM_SUMMARY_REASONING_EFFORT=medium
+MEMORY_LCM_SUMMARY_TIMEOUT_MS=120000
+MEMORY_LCM_SUMMARY_MAX_ATTEMPTS=2
+MEMORY_LCM_SUMMARY_RETRY_DELAY_MS=2000
+MEMORY_LCM_SUMMARY_CONCURRENCY=1
+MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
+```
+
+MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempts can
+also be edited from the Explorer Settings panel. These API user settings take
+precedence over `.env`; `.env` remains the bootstrap/default source for fresh
+installs.
 
 ## Capture Hook
 

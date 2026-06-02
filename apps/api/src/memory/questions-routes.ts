@@ -62,7 +62,8 @@ export const registerQuestionRoutes = (
           projectPath: input.project_path,
           sessionId: input.session_id,
           threadId: input.thread_id,
-          threadName: input.thread_name
+          threadName: input.thread_name,
+          localMemoryWorkerConfig: input.local_memory_worker_config
         }
       );
       return { question };

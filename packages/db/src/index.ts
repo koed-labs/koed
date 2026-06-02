@@ -17,9 +17,11 @@ import type {
 } from "@koed/core";
 import {
   env,
+  metadataWithNulSanitization,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig
+  resolveSupportedRerankerModelConfig,
+  sanitizeNulCharacters
 } from "@koed/shared";
 
 const { Pool } = pg;
@@ -46,6 +48,9 @@ export type CapturePolicyTarget = "global" | "project" | "thread";
 export type MemoryQuestionStatus = "pending" | "answered" | "error";
 export type MemoryQuestionSearchDomain = "global" | "project" | "session";
 export type MemoryQuestionRetrievalScope = "personal";
+export type LocalMemoryAgentSettingsFlowKey =
+  | "mcp_memory_answer"
+  | "lcm_summary";
 
 export interface ActorContext {
   userId: string;
@@ -636,7 +641,20 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
   citations: unknown[] | null;
   retrieval: Record<string, unknown> | null;
   localMemoryWorker: Record<string, unknown> | null;
+  localMemoryWorkerConfig: Record<string, unknown> | null;
   response: Record<string, unknown> | null;
+}
+
+export interface LocalMemoryAgentSettingRecord {
+  ownerUserId: string;
+  flowKey: LocalMemoryAgentSettingsFlowKey;
+  provider: "codex";
+  model: string;
+  reasoningEffort: string;
+  timeoutMs: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface MemorySourceRepository extends MemoryEngineRepository {
@@ -709,6 +727,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       sessionId?: string;
       threadId?: string;
       threadName?: string;
+      localMemoryWorkerConfig?: Record<string, unknown>;
     }
   ): Promise<MemoryQuestionDetailRecord>;
   listMemoryQuestions(
@@ -735,6 +754,20 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     actor: ActorContext,
     questionId: string
   ): Promise<MemoryQuestionDetailRecord | null>;
+  listLocalMemoryAgentSettings(
+    actor: ActorContext
+  ): Promise<LocalMemoryAgentSettingRecord[]>;
+  upsertLocalMemoryAgentSetting(
+    actor: ActorContext,
+    input: {
+      flowKey: LocalMemoryAgentSettingsFlowKey;
+      provider: "codex";
+      model: string;
+      reasoningEffort: string;
+      timeoutMs: number;
+      maxAttempts: number;
+    }
+  ): Promise<LocalMemoryAgentSettingRecord>;
   updateMemoryQuestion(
     actor: ActorContext,
     questionId: string,
@@ -1082,6 +1115,89 @@ const truncateDisplayText = (value: string, maxLength = 280): string => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const sanitizeConversationItemForStorage = (
+  item: ConversationItemInput
+): ConversationItemInput => {
+  const rawJson = sanitizeNulCharacters(item.rawJson);
+  const rawText = sanitizeNulCharacters(item.rawText);
+  const metadata = sanitizeNulCharacters(item.metadata ?? {});
+  const sourceKind = sanitizeNulCharacters(item.sourceKind);
+  const sourceAdapterVersion = sanitizeNulCharacters(item.sourceAdapterVersion);
+  const sourceTransport = sanitizeNulCharacters(item.sourceTransport);
+  const externalSessionId = sanitizeNulCharacters(item.externalSessionId);
+  const externalThreadId = sanitizeNulCharacters(item.externalThreadId);
+  const externalTurnId = sanitizeNulCharacters(item.externalTurnId);
+  const externalItemId = sanitizeNulCharacters(item.externalItemId);
+  const parentExternalItemId = sanitizeNulCharacters(item.parentExternalItemId);
+  const sourceRecordType = sanitizeNulCharacters(item.sourceRecordType);
+  const sourceEventType = sanitizeNulCharacters(item.sourceEventType);
+  const sourcePath = sanitizeNulCharacters(item.sourcePath);
+  const logicalSourceId = sanitizeNulCharacters(item.logicalSourceId);
+  const transportChunkText = sanitizeNulCharacters(item.transportChunkText);
+  const transportChunkEncoding = sanitizeNulCharacters(
+    item.transportChunkEncoding
+  );
+  const sourceHash = sanitizeNulCharacters(item.sourceHash);
+  const idempotencyKey = sanitizeNulCharacters(item.idempotencyKey);
+  const projectionStatus = sanitizeNulCharacters(item.projectionStatus);
+  const projectionVersion = sanitizeNulCharacters(item.projectionVersion);
+  const projectionError = sanitizeNulCharacters(item.projectionError);
+  const replacementCount =
+    rawJson.replacementCount +
+    rawText.replacementCount +
+    metadata.replacementCount +
+    sourceKind.replacementCount +
+    sourceAdapterVersion.replacementCount +
+    sourceTransport.replacementCount +
+    externalSessionId.replacementCount +
+    externalThreadId.replacementCount +
+    externalTurnId.replacementCount +
+    externalItemId.replacementCount +
+    parentExternalItemId.replacementCount +
+    sourceRecordType.replacementCount +
+    sourceEventType.replacementCount +
+    sourcePath.replacementCount +
+    logicalSourceId.replacementCount +
+    transportChunkText.replacementCount +
+    transportChunkEncoding.replacementCount +
+    sourceHash.replacementCount +
+    idempotencyKey.replacementCount +
+    projectionStatus.replacementCount +
+    projectionVersion.replacementCount +
+    projectionError.replacementCount;
+
+  return {
+    ...item,
+    sourceKind: sourceKind.value as string,
+    sourceAdapterVersion: sourceAdapterVersion.value as string,
+    sourceTransport: sourceTransport.value as string,
+    externalSessionId: externalSessionId.value as string | undefined,
+    externalThreadId: externalThreadId.value as string | undefined,
+    externalTurnId: externalTurnId.value as string | undefined,
+    externalItemId: externalItemId.value as string | undefined,
+    parentExternalItemId: parentExternalItemId.value as string | undefined,
+    sourceRecordType: sourceRecordType.value as string,
+    sourceEventType: sourceEventType.value as string | undefined,
+    sourcePath: sourcePath.value as string | undefined,
+    rawJson: rawJson.value,
+    rawText: rawText.value as string | undefined,
+    logicalSourceId: logicalSourceId.value as string | undefined,
+    transportChunkText: transportChunkText.value as string | undefined,
+    transportChunkEncoding: transportChunkEncoding.value as string | undefined,
+    sourceHash: sourceHash.value as string,
+    idempotencyKey: idempotencyKey.value as string,
+    projectionStatus: projectionStatus.value as
+      | ConversationItemInput["projectionStatus"]
+      | undefined,
+    projectionVersion: projectionVersion.value as string | undefined,
+    projectionError: projectionError.value as string | undefined,
+    metadata: metadataWithNulSanitization(
+      metadata.value as Record<string, unknown>,
+      replacementCount
+    )
+  };
+};
 
 const jsonbParam = (value: unknown): string | null =>
   value === undefined || value === null ? null : JSON.stringify(value);
@@ -2252,15 +2368,24 @@ const loadLogicalConversationProjectionItem = async (
     .map((chunk) => chunk.transport_chunk_text ?? "")
     .join("");
   const decoded = decodeTransportChunkEnvelope(envelope, encoding);
+  const decodedRawJson = sanitizeNulCharacters(decoded.rawJson);
+  const decodedRawText = sanitizeNulCharacters(decoded.rawText);
+  const decodedMetadata = metadataWithNulSanitization(
+    row.metadata ?? {},
+    [decodedRawJson.replacementCount, decodedRawText.replacementCount].reduce(
+      (sum, count) => sum + count,
+      0
+    )
+  );
   const representative =
     sorted.find((chunk) => chunk.transport_chunk_index === 0) ?? row;
 
   return {
     row: {
       ...representative,
-      raw_json: decoded.rawJson,
-      raw_text: decoded.rawText,
-      metadata: row.metadata,
+      raw_json: decodedRawJson.value,
+      raw_text: decodedRawText.value as string | null,
+      metadata: decodedMetadata,
       source_hash: row.logical_source_id
     },
     sourceIds: sorted.map((chunk) => chunk.id),
@@ -2673,6 +2798,7 @@ const mapMemoryQuestionDetail = (
     citations: unknown[] | null;
     retrieval: Record<string, unknown> | null;
     local_memory_worker: Record<string, unknown> | null;
+    local_memory_worker_config: Record<string, unknown> | null;
     response: Record<string, unknown> | null;
   }
 ): MemoryQuestionDetailRecord => ({
@@ -2682,7 +2808,30 @@ const mapMemoryQuestionDetail = (
   citations: row.citations,
   retrieval: row.retrieval,
   localMemoryWorker: row.local_memory_worker,
+  localMemoryWorkerConfig: row.local_memory_worker_config,
   response: row.response
+});
+
+const mapLocalMemoryAgentSetting = (row: {
+  owner_user_id: string;
+  flow_key: LocalMemoryAgentSettingsFlowKey;
+  provider: "codex";
+  model: string;
+  reasoning_effort: string;
+  timeout_ms: number | string;
+  max_attempts: number | string;
+  created_at: Date;
+  updated_at: Date;
+}): LocalMemoryAgentSettingRecord => ({
+  ownerUserId: row.owner_user_id,
+  flowKey: row.flow_key,
+  provider: row.provider,
+  model: row.model,
+  reasoningEffort: row.reasoning_effort,
+  timeoutMs: Number(row.timeout_ms),
+  maxAttempts: Number(row.max_attempts),
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString()
 });
 
 const mapUser = (row: {
@@ -3923,7 +4072,8 @@ export const createMemorySourceRepository = (
 
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
-    for (const item of input.items) {
+    for (const inputItem of input.items) {
+      const item = sanitizeConversationItemForStorage(inputItem);
       const visibility = item.visibility ?? "personal";
       const ownerUserId = actor.userId;
       if (item.sessionId) {
@@ -4972,16 +5122,18 @@ export const createMemorySourceRepository = (
           session_id,
           thread_id,
           thread_name,
-          query
+          query,
+          local_memory_worker_config
         )
-        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         returning
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, response, status,
-          created_at, updated_at, answered_at, processing_started_at,
-          processing_lease_until, attempt_count, last_error_message,
+          citations, retrieval, local_memory_worker, local_memory_worker_config,
+          response, status, created_at, updated_at, answered_at,
+          processing_started_at, processing_lease_until, attempt_count,
+          last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
       `,
       [
@@ -4994,7 +5146,10 @@ export const createMemorySourceRepository = (
         input.sessionId ?? null,
         input.threadId ?? null,
         input.threadName ?? null,
-        input.query
+        input.query,
+        input.localMemoryWorkerConfig
+          ? JSON.stringify(input.localMemoryWorkerConfig)
+          : null
       ]
     );
 
@@ -5090,8 +5245,9 @@ export const createMemorySourceRepository = (
           question.session_id, question.thread_id, question.thread_name,
           question.query, question.answer_markdown, question.error_message,
           question.evidence, question.citations, question.retrieval,
-          question.local_memory_worker, question.response, question.status,
-          question.created_at, question.updated_at, question.answered_at,
+          question.local_memory_worker, question.local_memory_worker_config,
+          question.response, question.status, question.created_at,
+          question.updated_at, question.answered_at,
           question.processing_started_at, question.processing_lease_until,
           question.attempt_count, question.last_error_message,
           jsonb_array_length(coalesce(question.evidence, '[]'::jsonb)) as evidence_count
@@ -5111,7 +5267,8 @@ export const createMemorySourceRepository = (
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, response, status,
+          citations, retrieval, local_memory_worker, local_memory_worker_config,
+          response, status,
           created_at, updated_at, answered_at, processing_started_at,
           processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
@@ -5125,6 +5282,58 @@ export const createMemorySourceRepository = (
     );
 
     return result.rows[0] ? mapMemoryQuestionDetail(result.rows[0]) : null;
+  },
+
+  async listLocalMemoryAgentSettings(actor) {
+    const result = await pool.query<
+      Parameters<typeof mapLocalMemoryAgentSetting>[0]
+    >(
+      `
+        select
+          owner_user_id, flow_key, provider, model, reasoning_effort,
+          timeout_ms, max_attempts, created_at, updated_at
+        from local_memory_agent_settings
+        where owner_user_id = $1
+        order by flow_key asc
+      `,
+      [actor.userId]
+    );
+    return result.rows.map(mapLocalMemoryAgentSetting);
+  },
+
+  async upsertLocalMemoryAgentSetting(actor, input) {
+    const result = await pool.query<
+      Parameters<typeof mapLocalMemoryAgentSetting>[0]
+    >(
+      `
+        insert into local_memory_agent_settings (
+          owner_user_id, flow_key, provider, model, reasoning_effort,
+          timeout_ms, max_attempts
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (owner_user_id, flow_key)
+        do update set
+          provider = excluded.provider,
+          model = excluded.model,
+          reasoning_effort = excluded.reasoning_effort,
+          timeout_ms = excluded.timeout_ms,
+          max_attempts = excluded.max_attempts,
+          updated_at = now()
+        returning
+          owner_user_id, flow_key, provider, model, reasoning_effort,
+          timeout_ms, max_attempts, created_at, updated_at
+      `,
+      [
+        actor.userId,
+        input.flowKey,
+        input.provider,
+        input.model,
+        input.reasoningEffort,
+        input.timeoutMs,
+        input.maxAttempts
+      ]
+    );
+    return mapLocalMemoryAgentSetting(result.rows[0]!);
   },
 
   async updateMemoryQuestion(actor, questionId, input) {
@@ -5169,7 +5378,8 @@ export const createMemorySourceRepository = (
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, response, status,
+          citations, retrieval, local_memory_worker, local_memory_worker_config,
+          response, status,
           created_at, updated_at, answered_at, processing_started_at,
           processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count

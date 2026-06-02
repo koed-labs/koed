@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   configFlagEnabled,
   createHealth,
+  metadataWithNulSanitization,
   requireEnv,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig
+  resolveSupportedRerankerModelConfig,
+  sanitizeNulCharacters
 } from "./index.js";
 
 describe("createHealth", () => {
@@ -33,6 +35,35 @@ describe("requireEnv", () => {
     expect(() =>
       requireEnv(["DATABASE_URL"], { DATABASE_URL: "postgres://db" })
     ).not.toThrow();
+  });
+});
+
+describe("sanitizeNulCharacters", () => {
+  it("replaces NUL characters in nested values and object keys", () => {
+    const result = sanitizeNulCharacters({
+      plain: `a${"\u0000"}b`,
+      nested: [{ [`key${"\u0000"}name`]: `value${"\u0000"}text` }]
+    });
+
+    expect(result.replacementCount).toBe(3);
+    expect(result.value).toEqual({
+      plain: "a�b",
+      nested: [{ "key�name": "value�text" }]
+    });
+  });
+});
+
+describe("metadataWithNulSanitization", () => {
+  it("adds an explicit NUL sanitization marker without dropping metadata", () => {
+    expect(metadataWithNulSanitization({ workflow: "capture" }, 2)).toEqual({
+      workflow: "capture",
+      koedSanitization: {
+        nulCharacters: {
+          replacement: "U+FFFD",
+          replacementCount: 2
+        }
+      }
+    });
   });
 });
 

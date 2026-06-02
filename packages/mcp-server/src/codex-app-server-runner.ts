@@ -25,6 +25,22 @@ export interface CodexAppServerRawEvent {
   observedAt: string;
 }
 
+export interface CodexAppServerReasoningEffortOption {
+  reasoningEffort: string;
+  description?: string;
+}
+
+export interface CodexAppServerModelOption {
+  id: string;
+  model: string;
+  label: string;
+  description?: string;
+  hidden: boolean;
+  isDefault: boolean;
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts: CodexAppServerReasoningEffortOption[];
+}
+
 export interface CodexAppServerRunConfig {
   appServerBinary: string;
   model: string;
@@ -276,6 +292,22 @@ class CodexAppServerClient {
       }
     });
     this.notify("initialized");
+  }
+
+  async listModels(
+    includeHidden = false,
+    cursor?: string | null
+  ): Promise<unknown> {
+    const response = await this.request("model/list", {
+      includeHidden,
+      ...(cursor ? { cursor } : {})
+    });
+    this.recordRawEvent(
+      "model/list",
+      { includeHidden, ...(cursor ? { cursor } : {}) },
+      response.result
+    );
+    return response.result;
   }
 
   async startThread(config: CodexAppServerRunConfig): Promise<string> {
@@ -639,6 +671,151 @@ export const runCodexAppServerTurn = async (
       });
     }
     throw error;
+  } finally {
+    clearTimeout(timeout);
+    client.close();
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
+  }
+};
+
+const normalizeReasoningEfforts = (
+  value: unknown
+): CodexAppServerReasoningEffortOption[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      const record = asRecord(entry);
+      const effort = record.reasoningEffort;
+      if (typeof effort !== "string" || effort.trim().length === 0) {
+        return null;
+      }
+      return {
+        reasoningEffort: effort,
+        ...(typeof record.description === "string"
+          ? { description: record.description }
+          : {})
+      };
+    })
+    .filter(
+      (entry): entry is CodexAppServerReasoningEffortOption => entry !== null
+    );
+};
+
+const normalizeModelList = (payload: unknown): CodexAppServerModelOption[] => {
+  const data = asRecord(payload).data;
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  return data
+    .map((entry) => {
+      const record = asRecord(entry);
+      const id = record.id;
+      const model = record.model;
+      if (typeof id !== "string" || typeof model !== "string") {
+        return null;
+      }
+      return {
+        id,
+        model,
+        label:
+          typeof record.displayName === "string" ? record.displayName : model,
+        ...(typeof record.description === "string"
+          ? { description: record.description }
+          : {}),
+        hidden: record.hidden === true,
+        isDefault: record.isDefault === true,
+        ...(typeof record.defaultReasoningEffort === "string"
+          ? { defaultReasoningEffort: record.defaultReasoningEffort }
+          : {}),
+        supportedReasoningEfforts: normalizeReasoningEfforts(
+          record.supportedReasoningEfforts
+        )
+      };
+    })
+    .filter((entry): entry is CodexAppServerModelOption => entry !== null);
+};
+
+const nextModelListCursor = (payload: unknown): string | null => {
+  const nextCursor = asRecord(payload).nextCursor;
+  return typeof nextCursor === "string" && nextCursor.trim().length > 0
+    ? nextCursor
+    : null;
+};
+
+export const listCodexAppServerModels = async (
+  input: {
+    appServerBinary: string;
+    model: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    includeHidden?: boolean;
+    clientName?: string;
+  },
+  timeoutMs = 5000
+): Promise<CodexAppServerModelOption[]> => {
+  const isolatedHome = createIsolatedCodexHome(input.env, input.model);
+  const env = {
+    ...input.env,
+    CODEX_HOME: isolatedHome
+  };
+  const client = new CodexAppServerClient(
+    input.appServerBinary,
+    input.cwd,
+    env
+  );
+  const timeout = setTimeout(() => client.close(), timeoutMs);
+  try {
+    await client.initialize(input.clientName ?? "koed-settings-model-list");
+    const models: CodexAppServerModelOption[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      if (cursor) {
+        seenCursors.add(cursor);
+      }
+      const payload = await client.listModels(input.includeHidden, cursor);
+      models.push(...normalizeModelList(payload));
+      cursor = nextModelListCursor(payload);
+    } while (cursor && !seenCursors.has(cursor));
+    return models;
+  } finally {
+    clearTimeout(timeout);
+    client.close();
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
+  }
+};
+
+export const checkCodexAppServerAvailability = async (
+  input: {
+    appServerBinary: string;
+    model: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    clientName?: string;
+  },
+  timeoutMs = 3000
+): Promise<{ available: boolean; error?: string }> => {
+  const isolatedHome = createIsolatedCodexHome(input.env, input.model);
+  const env = {
+    ...input.env,
+    CODEX_HOME: isolatedHome
+  };
+  const client = new CodexAppServerClient(
+    input.appServerBinary,
+    input.cwd,
+    env
+  );
+  const timeout = setTimeout(() => client.close(), timeoutMs);
+  try {
+    await client.initialize(input.clientName ?? "koed-settings-check");
+    return { available: true };
+  } catch (error) {
+    return {
+      available: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
   } finally {
     clearTimeout(timeout);
     client.close();
