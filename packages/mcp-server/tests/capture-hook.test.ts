@@ -2,11 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { MemoryApiError } from "../src/index.js";
 import {
   buildRawTranscriptConversationItems,
   captureTranscriptPathForPayload,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
+  isRetryableTranscriptCatchupError,
+  parseForegroundTranscriptFileRecords,
   parseTranscriptFileRecords,
   parseTranscriptText,
   rawItemBatches,
@@ -14,10 +17,54 @@ import {
   rawItemRequestChunks,
   selectCaptureItems,
   shouldReadTranscriptForHook,
-  stateScopeKey
+  stateScopeKey,
+  transcriptCatchupRetryDelayMs
 } from "../src/capture-hook.js";
 
 describe("Codex capture hook transcript parsing", () => {
+  it("retries only transient transcript catch-up API failures", () => {
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("Could not reach memory API")
+      )
+    ).toBe(true);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("server restart", { status: 503 })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("rate limited", { status: 429 })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("bad token", { status: 401 })
+      )
+    ).toBe(false);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("capture forbidden", { status: 403 })
+      )
+    ).toBe(false);
+  });
+
+  it("bounds transcript catch-up retry backoff", () => {
+    process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS = "100";
+    process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS = "450";
+    try {
+      expect(transcriptCatchupRetryDelayMs(0)).toBe(100);
+      expect(transcriptCatchupRetryDelayMs(1)).toBe(200);
+      expect(transcriptCatchupRetryDelayMs(2)).toBe(400);
+      expect(transcriptCatchupRetryDelayMs(3)).toBe(450);
+      expect(transcriptCatchupRetryDelayMs(100)).toBe(450);
+    } finally {
+      delete process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS;
+      delete process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS;
+    }
+  });
+
   it("keeps transcript checkpoints stable when the API token changes", () => {
     const workspaceId = "/home/mark/code/koed/koed-self-hosted";
 
@@ -81,6 +128,90 @@ describe("Codex capture hook transcript parsing", () => {
       eventTime: "2026-05-01T10:00:00.000Z",
       sourceSequence: 0
     });
+  });
+
+  it("uses stable raw transcript idempotency across foreground and catch-up offsets", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "agent_message",
+          message
+        }
+      })}\n`;
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        line("first checkpoint line"),
+        line("same duplicate message"),
+        line("same duplicate message")
+      ].join("")
+    );
+    const firstLineBytes = Buffer.byteLength(line("first checkpoint line"));
+    const context = effectiveCaptureContext({
+      hook_event_name: "PostToolUse",
+      cwd: "/repo",
+      session_id: "session-1"
+    });
+    const payload = {
+      hook_event_name: "PostToolUse" as const,
+      cwd: "/repo",
+      session_id: "session-1"
+    };
+
+    try {
+      const state = {
+        seen: {},
+        rawSeen: {},
+        transcriptOffsets: {
+          [`scope:${transcriptPath}`]: {
+            offset: firstLineBytes,
+            lineCount: 1,
+            size: firstLineBytes
+          }
+        }
+      };
+      const foreground = parseForegroundTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        foregroundMaxBytes: Buffer.byteLength(line("same duplicate message"))
+      });
+      const catchup = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const foregroundItems = buildRawTranscriptConversationItems({
+        records: foreground.records,
+        indexOffset: foreground.indexOffset,
+        effectiveContext: context,
+        transcriptPath,
+        payload
+      });
+      const catchupItems = buildRawTranscriptConversationItems({
+        records: catchup.records,
+        indexOffset: catchup.indexOffset,
+        effectiveContext: context,
+        transcriptPath,
+        payload
+      });
+
+      expect(foregroundItems).toHaveLength(1);
+      expect(catchupItems).toHaveLength(2);
+      expect(catchupItems[0]!.idempotencyKey).not.toBe(
+        catchupItems[1]!.idempotencyKey
+      );
+      expect(foregroundItems[0]!.idempotencyKey).toBe(
+        catchupItems[1]!.idempotencyKey
+      );
+      expect(foregroundItems[0]!.sourceSequence).toBeLessThan(10);
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
   });
 
   it("checkpoints an existing transcript on first contact instead of replaying history", () => {
@@ -229,6 +360,81 @@ describe("Codex capture hook transcript parsing", () => {
       expect(result.checkpoint?.offset).toBeLessThan(size);
     } finally {
       delete process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES;
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("lets foreground hooks read the latest tail while leaving backlog checkpointing to background catch-up", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "agent_message", message }
+      })}\n`;
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        line("first backlog message"),
+        line("second backlog message"),
+        line("third backlog message"),
+        line("latest foreground message")
+      ].join("")
+    );
+    const firstLineBytes = Buffer.byteLength(line("first backlog message"));
+
+    try {
+      const result = parseForegroundTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: {
+              offset: firstLineBytes,
+              lineCount: 1,
+              size: firstLineBytes
+            }
+          }
+        },
+        stateScope: "scope",
+        foregroundMaxBytes: Buffer.byteLength(line("latest foreground message"))
+      });
+
+      expect(result.backgroundCatchupNeeded).toBe(true);
+      expect(result.checkpoint).toBeUndefined();
+      expect(JSON.stringify(result.records)).toContain(
+        "latest foreground message"
+      );
+      expect(JSON.stringify(result.records)).not.toContain(
+        "second backlog message"
+      );
+
+      const background = parseTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: {
+              offset: firstLineBytes,
+              lineCount: 1,
+              size: firstLineBytes
+            }
+          }
+        },
+        stateScope: "scope",
+        maxBytes: Buffer.byteLength(line("second backlog message"))
+      });
+
+      expect(JSON.stringify(background.records)).toContain(
+        "second backlog message"
+      );
+      expect(JSON.stringify(background.records)).not.toContain(
+        "latest foreground message"
+      );
+      expect(background.checkpoint?.offset).toBeGreaterThan(firstLineBytes);
+    } finally {
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });

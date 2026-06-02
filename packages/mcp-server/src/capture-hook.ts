@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  MemoryApiError,
   MemoryApiClient,
   type McpServerConfig,
   defaultConfig
@@ -91,13 +92,24 @@ type CaptureHookConfig = McpServerConfig & {
   capturePausedUntil?: string | null;
 };
 
-const parseArgs = (args: string[]): { configPath?: string } => {
-  const parsed: { configPath?: string } = {};
+const parseArgs = (
+  args: string[]
+): { configPath?: string; catchUp?: boolean; payloadBase64?: string } => {
+  const parsed: {
+    configPath?: string;
+    catchUp?: boolean;
+    payloadBase64?: string;
+  } = {};
 
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (value === "--config") {
       parsed.configPath = args[index + 1];
+      index += 1;
+    } else if (value === "--catch-up") {
+      parsed.catchUp = true;
+    } else if (value === "--payload-base64") {
+      parsed.payloadBase64 = args[index + 1];
       index += 1;
     }
   }
@@ -145,6 +157,37 @@ const readStdin = async (): Promise<string> => {
 const hash = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+const transcriptRecordPositionSymbol = Symbol("koedTranscriptRecordPosition");
+
+const attachTranscriptRecordPosition = (
+  record: unknown,
+  byteOffset: number
+): unknown => {
+  if (record && typeof record === "object") {
+    Object.defineProperty(record, transcriptRecordPositionSymbol, {
+      value: byteOffset,
+      enumerable: false,
+      configurable: false
+    });
+  }
+  return record;
+};
+
+const transcriptRecordPosition = (record: unknown): number | undefined => {
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+  const value = (record as { [transcriptRecordPositionSymbol]?: unknown })[
+    transcriptRecordPositionSymbol
+  ];
+  return typeof value === "number" && Number.isSafeInteger(value)
+    ? value
+    : undefined;
+};
+
+const safeSourceSequence = (value: number): number =>
+  Math.max(0, Math.min(value, 2_000_000_000));
+
 const positiveIntEnv = (name: string, fallback: number): number => {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -153,8 +196,26 @@ const positiveIntEnv = (name: string, fallback: number): number => {
 const hookTranscriptTailBytes = (): number =>
   positiveIntEnv("MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES", 1_000_000);
 
+const foregroundTranscriptTailBytes = (): number =>
+  positiveIntEnv("MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES", 128_000);
+
 const hookDeadlineMs = (): number =>
   positiveIntEnv("MEMORY_HOOK_DEADLINE_MS", 8_500);
+
+const transcriptCatchupPassDeadlineMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_PASS_DEADLINE_MS", 60_000);
+
+const transcriptCatchupMaxRuntimeMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_MAX_RUNTIME_MS", 5 * 60_000);
+
+const transcriptCatchupLockTtlMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_LOCK_TTL_MS", 10 * 60_000);
+
+const transcriptCatchupRetryInitialDelayMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS", 1_000);
+
+const transcriptCatchupRetryMaxDelayMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS", 30_000);
 
 const rawIngestBatchBytes = (): number =>
   positiveIntEnv("MEMORY_RAW_INGEST_BATCH_BYTES", 180_000);
@@ -338,6 +399,11 @@ const projectConversationItemsBatched = async (
 
 const hookTriggersLcmSummary = (): boolean =>
   (process.env.MEMORY_HOOK_TRIGGER_LCM_SUMMARY ?? "true")
+    .trim()
+    .toLowerCase() !== "false";
+
+const hookTriggersTranscriptCatchup = (): boolean =>
+  (process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP ?? "true")
     .trim()
     .toLowerCase() !== "false";
 
@@ -914,6 +980,39 @@ const parseTranscriptRecordsText = (text: string): unknown[] => {
   return records;
 };
 
+const parseTranscriptLineRecords = (
+  lines: string[],
+  absoluteStartOffset: number
+): unknown[] => {
+  const records: unknown[] = [];
+  let relativeOffset = 0;
+  for (const line of lines) {
+    const lineOffset = absoluteStartOffset + relativeOffset;
+    relativeOffset += Buffer.byteLength(`${line}\n`, "utf8");
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      const parsedArray = asUnknownArray(parsed);
+      if (parsedArray) {
+        for (const item of parsedArray) {
+          records.push(attachTranscriptRecordPosition(item, lineOffset));
+        }
+      } else if (isRecord(parsed) && asUnknownArray(parsed.items)) {
+        for (const item of asUnknownArray(parsed.items)!) {
+          records.push(attachTranscriptRecordPosition(item, lineOffset));
+        }
+      } else {
+        records.push(attachTranscriptRecordPosition(parsed, lineOffset));
+      }
+    } catch {
+      continue;
+    }
+  }
+  return records;
+};
+
 export const parseTranscriptRecords = (
   records: unknown[],
   indexOffset = 0
@@ -988,10 +1087,19 @@ const splitCompleteTranscriptLines = (
 const transcriptStateKey = (scope: string, transcriptPath: string): string =>
   scopedStateKey(scope, transcriptPath);
 
+type TranscriptFileRead = {
+  records: unknown[];
+  indexOffset: number;
+  checkpoint?: { key: string; offset: number; lineCount: number; size: number };
+  backgroundCatchupNeeded: boolean;
+  backlogBytes: number;
+};
+
 export const parseTranscriptFileRecords = (input: {
   transcriptPath?: string;
   state: CaptureState;
   stateScope: string;
+  maxBytes?: number;
 }): {
   records: unknown[];
   indexOffset: number;
@@ -1005,7 +1113,7 @@ export const parseTranscriptFileRecords = (input: {
   const stat = fs.statSync(transcriptPath);
   const key = transcriptStateKey(input.stateScope, transcriptPath);
   const prior = input.state.transcriptOffsets?.[key];
-  const maxBytes = hookTranscriptTailBytes();
+  const maxBytes = input.maxBytes ?? hookTranscriptTailBytes();
   const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
   if (!hasUsableCheckpoint && stat.size > 0) {
     return {
@@ -1049,7 +1157,7 @@ export const parseTranscriptFileRecords = (input: {
     end >= stat.size
   );
   return {
-    records: parseTranscriptRecordsText(lines.join("\n")),
+    records: parseTranscriptLineRecords(lines, start),
     indexOffset,
     checkpoint: {
       key,
@@ -1057,6 +1165,84 @@ export const parseTranscriptFileRecords = (input: {
       lineCount: indexOffset + lines.length,
       size: stat.size
     }
+  };
+};
+
+export const parseForegroundTranscriptFileRecords = (input: {
+  transcriptPath?: string;
+  state: CaptureState;
+  stateScope: string;
+  foregroundMaxBytes?: number;
+}): {
+  records: unknown[];
+  indexOffset: number;
+  checkpoint?: { key: string; offset: number; lineCount: number; size: number };
+  backgroundCatchupNeeded: boolean;
+  backlogBytes: number;
+} => {
+  const { transcriptPath } = input;
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    return {
+      records: [],
+      indexOffset: 0,
+      backgroundCatchupNeeded: false,
+      backlogBytes: 0
+    };
+  }
+
+  const stat = fs.statSync(transcriptPath);
+  const key = transcriptStateKey(input.stateScope, transcriptPath);
+  const prior = input.state.transcriptOffsets?.[key];
+  const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
+  const maxBytes = input.foregroundMaxBytes ?? foregroundTranscriptTailBytes();
+  if (!hasUsableCheckpoint) {
+    const sequential = parseTranscriptFileRecords({
+      transcriptPath,
+      state: input.state,
+      stateScope: input.stateScope,
+      maxBytes
+    });
+    return {
+      ...sequential,
+      backgroundCatchupNeeded: false,
+      backlogBytes: 0
+    };
+  }
+
+  const checkpointOffset = Math.max(0, prior!.offset);
+  const backlogBytes = Math.max(0, stat.size - checkpointOffset);
+  if (backlogBytes <= maxBytes) {
+    const sequential = parseTranscriptFileRecords({
+      transcriptPath,
+      state: input.state,
+      stateScope: input.stateScope,
+      maxBytes
+    });
+    return {
+      ...sequential,
+      backgroundCatchupNeeded: false,
+      backlogBytes
+    };
+  }
+
+  const start = Math.max(checkpointOffset, stat.size - maxBytes);
+  const buffer = Buffer.allocUnsafe(stat.size - start);
+  const fd = fs.openSync(transcriptPath, "r");
+  try {
+    fs.readSync(fd, buffer, 0, buffer.length, start);
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const { lines } = splitCompleteTranscriptLines(buffer.toString("utf8"), true);
+  return {
+    records: parseTranscriptLineRecords(lines, start),
+    // While backlog exists, this is a bounded temporary line-based ordering
+    // value. Raw idempotency uses the private transcript byte position, so
+    // background catch-up will no-op these same lines once it reaches the tail.
+    indexOffset: prior!.lineCount,
+    backgroundCatchupNeeded: true,
+    backlogBytes
   };
 };
 
@@ -1159,7 +1345,18 @@ const sourceHashForRawRecord = (input: {
   transcriptPath?: string;
   index: number;
   record: unknown;
-}): string => hash(input);
+}): string =>
+  hash({
+    externalSessionId: input.externalSessionId,
+    transcriptPath: input.transcriptPath,
+    recordIdentity: rawExternalItemId(input.record) ??
+      transcriptRecordPosition(input.record) ?? {
+        eventType: rawEventType(input.record),
+        eventTime: rawEventTime(input.record),
+        rawText: rawText(input.record),
+        record: input.record
+      }
+  });
 
 export const buildRawTranscriptConversationItems = (input: {
   records: unknown[];
@@ -1182,7 +1379,7 @@ export const buildRawTranscriptConversationItems = (input: {
   };
 
   return input.records.map((record, index) => {
-    const sourceSequence = index + (input.indexOffset ?? 0);
+    const sourceSequence = safeSourceSequence(index + (input.indexOffset ?? 0));
     const sourceHash = sourceHashForRawRecord({
       externalSessionId: input.effectiveContext.externalSessionId,
       transcriptPath: input.transcriptPath,
@@ -1443,34 +1640,241 @@ const triggerDetachedLocalMemoryProcessing = (configPath?: string): void => {
   child.unref();
 };
 
-const main = async () => {
-  const { configPath } = parseArgs(process.argv.slice(2));
-  const stdin = await readStdin();
-  const payload = JSON.parse(stdin || "{}") as HookPayload;
-  const config = loadConfig(configPath);
-  if (config.captureEnabled === false) {
-    console.error("koed capture hook skipped because capture is paused");
-    return;
-  }
-  if (pausedUntilActive(config.capturePausedUntil)) {
-    console.error("koed capture hook skipped because local pause is active");
+const triggerDetachedTranscriptCatchup = (
+  configPath: string | undefined,
+  payload: HookPayload
+): void => {
+  if (!hookTriggersTranscriptCatchup()) {
     return;
   }
 
+  const catchupPayload: HookPayload = {
+    hook_event_name: payload.hook_event_name,
+    session_id: payload.session_id,
+    agent_id: payload.agent_id,
+    agent_type: payload.agent_type,
+    transcript_path: payload.transcript_path,
+    agent_transcript_path: payload.agent_transcript_path,
+    cwd: payload.cwd,
+    model: payload.model
+  };
+  const scriptPath = fileURLToPath(import.meta.url);
+  const args = [
+    scriptPath,
+    "--catch-up",
+    ...(configPath ? ["--config", configPath] : []),
+    "--payload-base64",
+    Buffer.from(JSON.stringify(catchupPayload), "utf8").toString("base64url")
+  ];
+  const child = spawn(process.execPath, args, {
+    cwd: process.cwd(),
+    env: process.env,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true
+  });
+  child.unref();
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const catchupLockPath = (input: {
+  stateScope: string;
+  transcriptPath: string;
+}): string =>
+  path.join(
+    os.homedir(),
+    ".koed",
+    "capture-catchup-locks",
+    `${hash(input)}.lock`
+  );
+
+const processIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const acquireCatchupLock = (input: {
+  stateScope: string;
+  transcriptPath: string;
+}): { release: () => void; heartbeat: () => void } | null => {
+  const lockPath = catchupLockPath(input);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const tryCreate = (): {
+    release: () => void;
+    heartbeat: () => void;
+  } | null => {
+    try {
+      const fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(
+        fd,
+        JSON.stringify({
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          transcriptPath: input.transcriptPath
+        })
+      );
+      fs.closeSync(fd);
+      return {
+        release() {
+          try {
+            fs.rmSync(lockPath, { force: true });
+          } catch {
+            // best effort cleanup only
+          }
+        },
+        heartbeat() {
+          try {
+            const now = new Date();
+            fs.utimesSync(lockPath, now, now);
+          } catch {
+            // best effort heartbeat only
+          }
+        }
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const release = tryCreate();
+  if (release) {
+    return release;
+  }
+
+  try {
+    const stat = fs.statSync(lockPath);
+    const lock = JSON.parse(fs.readFileSync(lockPath, "utf8")) as {
+      pid?: number;
+    };
+    const staleByAge = Date.now() - stat.mtimeMs > transcriptCatchupLockTtlMs();
+    const staleByPid =
+      typeof lock.pid === "number" && !processIsAlive(lock.pid);
+    if (staleByAge || staleByPid) {
+      fs.rmSync(lockPath, { force: true });
+      return tryCreate();
+    }
+  } catch {
+    return tryCreate();
+  }
+
+  return null;
+};
+
+const payloadFromBase64 = (value?: string): HookPayload | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(value, "base64url").toString("utf8")
+    ) as unknown;
+    return isRecord(parsed) ? (parsed as HookPayload) : null;
+  } catch {
+    return null;
+  }
+};
+
+const capturePassDeadlineAtMs = (mode: "foreground" | "catchup"): number =>
+  Date.now() +
+  (mode === "catchup" ? transcriptCatchupPassDeadlineMs() : hookDeadlineMs());
+
+export const isRetryableTranscriptCatchupError = (error: unknown): boolean => {
+  if (error instanceof MemoryApiError) {
+    return (
+      error.status === undefined ||
+      error.status === 408 ||
+      error.status === 429 ||
+      error.status >= 500
+    );
+  }
+  return error instanceof TypeError;
+};
+
+export const transcriptCatchupRetryDelayMs = (attempt: number): number => {
+  const baseDelay = transcriptCatchupRetryInitialDelayMs();
+  const maxDelay = transcriptCatchupRetryMaxDelayMs();
+  const exponent = Math.max(0, Math.min(attempt, 8));
+  return Math.min(maxDelay, baseDelay * 2 ** exponent);
+};
+
+const sleepUntilCatchupStop = async (
+  delayMs: number,
+  stopAt: number
+): Promise<boolean> => {
+  const remaining = stopAt - Date.now();
+  if (remaining <= 0) {
+    return false;
+  }
+  await sleep(Math.min(delayMs, remaining));
+  return Date.now() < stopAt;
+};
+
+const runCapturePass = async (input: {
+  configPath?: string;
+  payload: HookPayload;
+  mode: "foreground" | "catchup";
+}): Promise<{
+  rawItemsStored: number;
+  transcriptBacklogRemaining: boolean;
+  transcriptCheckpointAdvanced: boolean;
+}> => {
+  const { configPath, payload, mode } = input;
+  const config = loadConfig(configPath);
+  if (config.captureEnabled === false) {
+    console.error("koed capture hook skipped because capture is paused");
+    return {
+      rawItemsStored: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    };
+  }
+  if (pausedUntilActive(config.capturePausedUntil)) {
+    console.error("koed capture hook skipped because local pause is active");
+    return {
+      rawItemsStored: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    };
+  }
+
   const client = new MemoryApiClient(config);
-  const deadlineAtMs = Date.now() + hookDeadlineMs();
+  const deadlineAtMs = capturePassDeadlineAtMs(mode);
   const workspaceId = payload.cwd ?? "default";
   const access = await client.accessCheck();
   const stateScope = stateScopeKey(config, workspaceId, access.user.id);
   const captureTranscriptPath = captureTranscriptPathForPayload(payload);
   const state = loadState();
-  const transcriptFile = shouldReadTranscriptForHook(payload)
-    ? parseTranscriptFileRecords({
-        transcriptPath: captureTranscriptPath,
-        state,
-        stateScope
-      })
-    : { records: [], indexOffset: 0 };
+  const transcriptFile: TranscriptFileRead = shouldReadTranscriptForHook(
+    payload
+  )
+    ? mode === "foreground"
+      ? parseForegroundTranscriptFileRecords({
+          transcriptPath: captureTranscriptPath,
+          state,
+          stateScope
+        })
+      : {
+          ...parseTranscriptFileRecords({
+            transcriptPath: captureTranscriptPath,
+            state,
+            stateScope,
+            maxBytes: hookTranscriptTailBytes()
+          }),
+          backgroundCatchupNeeded: false,
+          backlogBytes: 0
+        }
+    : {
+        records: [],
+        indexOffset: 0,
+        backgroundCatchupNeeded: false,
+        backlogBytes: 0
+      };
   const transcriptRecords = transcriptFile.records;
   const transcriptSessionMetadata =
     extractTranscriptSessionMetadata(transcriptRecords);
@@ -1494,7 +1898,11 @@ const main = async () => {
     console.error(
       `koed capture hook skipped by ${policy?.source ?? "default"} policy`
     );
-    return;
+    return {
+      rawItemsStored: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    };
   }
   const session =
     effectiveContext.externalSessionId || captureTranscriptPath
@@ -1524,7 +1932,11 @@ const main = async () => {
     console.error(
       "koed capture hook skipped because session policy disabled capture"
     );
-    return;
+    return {
+      rawItemsStored: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    };
   }
 
   const rawItemsRequest =
@@ -1537,13 +1949,15 @@ const main = async () => {
           transcriptPath: captureTranscriptPath,
           payload
         })
-      : [
-          buildRawHookConversationItem({
-            sessionId: session?.session?.id,
-            effectiveContext,
-            payload
-          })
-        ];
+      : mode === "foreground"
+        ? [
+            buildRawHookConversationItem({
+              sessionId: session?.session?.id,
+              effectiveContext,
+              payload
+            })
+          ]
+        : [];
   const rawItemsToSend = rawItemsForCapture(
     rawItemsRequest,
     scopedRawSeen(state.rawSeen, stateScope, rawItemsRequest),
@@ -1577,7 +1991,12 @@ const main = async () => {
     );
   }
 
-  if (transcriptFile.checkpoint && rawItemsResult.completed) {
+  let transcriptCheckpointAdvanced = false;
+  if (
+    transcriptFile.checkpoint &&
+    rawItemsResult.completed &&
+    projectionCompleted
+  ) {
     state.transcriptOffsets = {
       ...(state.transcriptOffsets ?? {}),
       [transcriptFile.checkpoint.key]: {
@@ -1586,20 +2005,145 @@ const main = async () => {
         size: transcriptFile.checkpoint.size
       }
     };
+    transcriptCheckpointAdvanced = true;
   } else if (transcriptFile.checkpoint) {
     console.error(
       "koed capture hook left transcript checkpoint unchanged so unread events can retry"
     );
   }
   saveState(state);
-  if (rawItemsResponse.length > 0) {
+  if (rawItemsResponse.length > 0 && mode === "foreground") {
     triggerDetachedLocalMemoryProcessing(configPath);
+  }
+  if (
+    mode === "foreground" &&
+    "backgroundCatchupNeeded" in transcriptFile &&
+    transcriptFile.backgroundCatchupNeeded
+  ) {
+    triggerDetachedTranscriptCatchup(configPath, payload);
   }
   console.error(
     `koed capture hook stored ${rawItemsResponse.length} raw conversation item(s)${
       projectionCompleted ? " and projected them" : ""
     }`
   );
+  return {
+    rawItemsStored: rawItemsResponse.length,
+    transcriptBacklogRemaining: Boolean(
+      ("backgroundCatchupNeeded" in transcriptFile &&
+        transcriptFile.backgroundCatchupNeeded) ||
+      (transcriptFile.checkpoint &&
+        transcriptFile.checkpoint.offset < transcriptFile.checkpoint.size)
+    ),
+    transcriptCheckpointAdvanced
+  };
+};
+
+const runTranscriptCatchup = async (
+  configPath: string | undefined,
+  payload: HookPayload
+): Promise<void> => {
+  const config = loadConfig(configPath);
+  const client = new MemoryApiClient(config);
+  const workspaceId = payload.cwd ?? "default";
+  const transcriptPath = captureTranscriptPathForPayload(payload);
+  if (!transcriptPath) {
+    return;
+  }
+  const stopAt = Date.now() + transcriptCatchupMaxRuntimeMs();
+  let access: Awaited<ReturnType<MemoryApiClient["accessCheck"]>> | undefined;
+  let accessRetryAttempt = 0;
+  while (Date.now() < stopAt) {
+    try {
+      access = await client.accessCheck();
+      break;
+    } catch (error) {
+      if (!isRetryableTranscriptCatchupError(error)) {
+        throw error;
+      }
+      const delayMs = transcriptCatchupRetryDelayMs(accessRetryAttempt);
+      accessRetryAttempt += 1;
+      console.error(
+        `koed transcript catch-up waiting ${delayMs}ms for memory API to recover: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      if (!(await sleepUntilCatchupStop(delayMs, stopAt))) {
+        return;
+      }
+    }
+  }
+  if (!access) {
+    return;
+  }
+  const stateScope = stateScopeKey(config, workspaceId, access.user.id);
+  const lock = acquireCatchupLock({ stateScope, transcriptPath });
+  if (!lock) {
+    return;
+  }
+
+  let passRetryAttempt = 0;
+  try {
+    while (Date.now() < stopAt) {
+      lock.heartbeat();
+      let result: Awaited<ReturnType<typeof runCapturePass>>;
+      try {
+        result = await runCapturePass({
+          configPath,
+          payload,
+          mode: "catchup"
+        });
+        passRetryAttempt = 0;
+      } catch (error) {
+        if (!isRetryableTranscriptCatchupError(error)) {
+          throw error;
+        }
+        const delayMs = transcriptCatchupRetryDelayMs(passRetryAttempt);
+        passRetryAttempt += 1;
+        console.error(
+          `koed transcript catch-up retrying after transient memory API failure in ${delayMs}ms: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        lock.heartbeat();
+        if (!(await sleepUntilCatchupStop(delayMs, stopAt))) {
+          break;
+        }
+        continue;
+      }
+      if (!result.transcriptBacklogRemaining) {
+        break;
+      }
+      if (!result.transcriptCheckpointAdvanced && result.rawItemsStored === 0) {
+        break;
+      }
+      lock.heartbeat();
+      if (!(await sleepUntilCatchupStop(100, stopAt))) {
+        break;
+      }
+    }
+  } finally {
+    lock.release();
+  }
+};
+
+const main = async () => {
+  const { configPath, catchUp, payloadBase64 } = parseArgs(
+    process.argv.slice(2)
+  );
+  const payload = catchUp
+    ? payloadFromBase64(payloadBase64)
+    : (JSON.parse((await readStdin()) || "{}") as HookPayload);
+  if (!payload) {
+    throw new Error("Invalid catch-up payload");
+  }
+
+  if (catchUp) {
+    await runTranscriptCatchup(configPath, payload);
+    return;
+  }
+
+  await runCapturePass({ configPath, payload, mode: "foreground" });
 };
 
 if (
