@@ -4910,11 +4910,9 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
-    await repo.updateCapturedSessionTitle(
-      { userId: alice.id },
-      session.id,
-      { title: "Manual Rename Wins" }
-    );
+    await repo.updateCapturedSessionTitle({ userId: alice.id }, session.id, {
+      title: "Manual Rename Wins"
+    });
 
     const upserted = await repo.createCapturedSession(
       { userId: alice.id },
