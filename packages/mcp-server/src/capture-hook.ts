@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  MemoryApiError,
   MemoryApiClient,
   type McpServerConfig,
   defaultConfig
@@ -209,6 +210,12 @@ const transcriptCatchupMaxRuntimeMs = (): number =>
 
 const transcriptCatchupLockTtlMs = (): number =>
   positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_LOCK_TTL_MS", 10 * 60_000);
+
+const transcriptCatchupRetryInitialDelayMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS", 1_000);
+
+const transcriptCatchupRetryMaxDelayMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS", 30_000);
 
 const rawIngestBatchBytes = (): number =>
   positiveIntEnv("MEMORY_RAW_INGEST_BATCH_BYTES", 180_000);
@@ -1695,10 +1702,13 @@ const processIsAlive = (pid: number): boolean => {
 const acquireCatchupLock = (input: {
   stateScope: string;
   transcriptPath: string;
-}): (() => void) | null => {
+}): { release: () => void; heartbeat: () => void } | null => {
   const lockPath = catchupLockPath(input);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  const tryCreate = (): (() => void) | null => {
+  const tryCreate = (): {
+    release: () => void;
+    heartbeat: () => void;
+  } | null => {
     try {
       const fd = fs.openSync(lockPath, "wx", 0o600);
       fs.writeFileSync(
@@ -1710,11 +1720,21 @@ const acquireCatchupLock = (input: {
         })
       );
       fs.closeSync(fd);
-      return () => {
-        try {
-          fs.rmSync(lockPath, { force: true });
-        } catch {
-          // best effort cleanup only
+      return {
+        release() {
+          try {
+            fs.rmSync(lockPath, { force: true });
+          } catch {
+            // best effort cleanup only
+          }
+        },
+        heartbeat() {
+          try {
+            const now = new Date();
+            fs.utimesSync(lockPath, now, now);
+          } catch {
+            // best effort heartbeat only
+          }
         }
       };
     } catch {
@@ -1763,6 +1783,37 @@ const payloadFromBase64 = (value?: string): HookPayload | null => {
 const capturePassDeadlineAtMs = (mode: "foreground" | "catchup"): number =>
   Date.now() +
   (mode === "catchup" ? transcriptCatchupPassDeadlineMs() : hookDeadlineMs());
+
+export const isRetryableTranscriptCatchupError = (error: unknown): boolean => {
+  if (error instanceof MemoryApiError) {
+    return (
+      error.status === undefined ||
+      error.status === 408 ||
+      error.status === 429 ||
+      error.status >= 500
+    );
+  }
+  return error instanceof TypeError;
+};
+
+export const transcriptCatchupRetryDelayMs = (attempt: number): number => {
+  const baseDelay = transcriptCatchupRetryInitialDelayMs();
+  const maxDelay = transcriptCatchupRetryMaxDelayMs();
+  const exponent = Math.max(0, Math.min(attempt, 8));
+  return Math.min(maxDelay, baseDelay * 2 ** exponent);
+};
+
+const sleepUntilCatchupStop = async (
+  delayMs: number,
+  stopAt: number
+): Promise<boolean> => {
+  const remaining = stopAt - Date.now();
+  if (remaining <= 0) {
+    return false;
+  }
+  await sleep(Math.min(delayMs, remaining));
+  return Date.now() < stopAt;
+};
 
 const runCapturePass = async (input: {
   configPath?: string;
@@ -1995,35 +2046,84 @@ const runTranscriptCatchup = async (
   const config = loadConfig(configPath);
   const client = new MemoryApiClient(config);
   const workspaceId = payload.cwd ?? "default";
-  const access = await client.accessCheck();
-  const stateScope = stateScopeKey(config, workspaceId, access.user.id);
   const transcriptPath = captureTranscriptPathForPayload(payload);
   if (!transcriptPath) {
     return;
   }
-  const releaseLock = acquireCatchupLock({ stateScope, transcriptPath });
-  if (!releaseLock) {
+  const stopAt = Date.now() + transcriptCatchupMaxRuntimeMs();
+  let access: Awaited<ReturnType<MemoryApiClient["accessCheck"]>> | undefined;
+  let accessRetryAttempt = 0;
+  while (Date.now() < stopAt) {
+    try {
+      access = await client.accessCheck();
+      break;
+    } catch (error) {
+      if (!isRetryableTranscriptCatchupError(error)) {
+        throw error;
+      }
+      const delayMs = transcriptCatchupRetryDelayMs(accessRetryAttempt);
+      accessRetryAttempt += 1;
+      console.error(
+        `koed transcript catch-up waiting ${delayMs}ms for memory API to recover: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      if (!(await sleepUntilCatchupStop(delayMs, stopAt))) {
+        return;
+      }
+    }
+  }
+  if (!access) {
+    return;
+  }
+  const stateScope = stateScopeKey(config, workspaceId, access.user.id);
+  const lock = acquireCatchupLock({ stateScope, transcriptPath });
+  if (!lock) {
     return;
   }
 
-  const stopAt = Date.now() + transcriptCatchupMaxRuntimeMs();
+  let passRetryAttempt = 0;
   try {
     while (Date.now() < stopAt) {
-      const result = await runCapturePass({
-        configPath,
-        payload,
-        mode: "catchup"
-      });
+      lock.heartbeat();
+      let result: Awaited<ReturnType<typeof runCapturePass>>;
+      try {
+        result = await runCapturePass({
+          configPath,
+          payload,
+          mode: "catchup"
+        });
+        passRetryAttempt = 0;
+      } catch (error) {
+        if (!isRetryableTranscriptCatchupError(error)) {
+          throw error;
+        }
+        const delayMs = transcriptCatchupRetryDelayMs(passRetryAttempt);
+        passRetryAttempt += 1;
+        console.error(
+          `koed transcript catch-up retrying after transient memory API failure in ${delayMs}ms: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+        lock.heartbeat();
+        if (!(await sleepUntilCatchupStop(delayMs, stopAt))) {
+          break;
+        }
+        continue;
+      }
       if (!result.transcriptBacklogRemaining) {
         break;
       }
       if (!result.transcriptCheckpointAdvanced && result.rawItemsStored === 0) {
         break;
       }
-      await sleep(100);
+      lock.heartbeat();
+      if (!(await sleepUntilCatchupStop(100, stopAt))) {
+        break;
+      }
     }
   } finally {
-    releaseLock();
+    lock.release();
   }
 };
 

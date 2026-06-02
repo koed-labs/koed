@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { MemoryApiError } from "../src/index.js";
 import {
   buildRawTranscriptConversationItems,
   captureTranscriptPathForPayload,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
+  isRetryableTranscriptCatchupError,
   parseForegroundTranscriptFileRecords,
   parseTranscriptFileRecords,
   parseTranscriptText,
@@ -15,10 +17,54 @@ import {
   rawItemRequestChunks,
   selectCaptureItems,
   shouldReadTranscriptForHook,
-  stateScopeKey
+  stateScopeKey,
+  transcriptCatchupRetryDelayMs
 } from "../src/capture-hook.js";
 
 describe("Codex capture hook transcript parsing", () => {
+  it("retries only transient transcript catch-up API failures", () => {
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("Could not reach memory API")
+      )
+    ).toBe(true);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("server restart", { status: 503 })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("rate limited", { status: 429 })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("bad token", { status: 401 })
+      )
+    ).toBe(false);
+    expect(
+      isRetryableTranscriptCatchupError(
+        new MemoryApiError("capture forbidden", { status: 403 })
+      )
+    ).toBe(false);
+  });
+
+  it("bounds transcript catch-up retry backoff", () => {
+    process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS = "100";
+    process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS = "450";
+    try {
+      expect(transcriptCatchupRetryDelayMs(0)).toBe(100);
+      expect(transcriptCatchupRetryDelayMs(1)).toBe(200);
+      expect(transcriptCatchupRetryDelayMs(2)).toBe(400);
+      expect(transcriptCatchupRetryDelayMs(3)).toBe(450);
+      expect(transcriptCatchupRetryDelayMs(100)).toBe(450);
+    } finally {
+      delete process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS;
+      delete process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS;
+    }
+  });
+
   it("keeps transcript checkpoints stable when the API token changes", () => {
     const workspaceId = "/home/mark/code/koed/koed-self-hosted";
 
