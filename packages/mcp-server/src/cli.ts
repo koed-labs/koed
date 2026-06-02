@@ -27,6 +27,7 @@ import {
   summarizePendingLcmNodes
 } from "./lcm-summary-worker.js";
 import {
+  resolvePersistedLcmSummaryWorkerConfig,
   resolveLcmSummaryServiceConfig,
   startLcmSummaryService
 } from "./lcm-summary-service.js";
@@ -183,14 +184,18 @@ if (command === "process-local-memory") {
     await sleep(delayMs);
   }
   const serviceConfig = resolveLcmSummaryServiceConfig(process.env);
-  const summaryConfig = resolveLcmSummaryWorkerConfig(process.env, {
-    model: cliOptions.model,
-    reasoningEffort: cliOptions["reasoning-effort"],
-    timeoutMs: positiveIntOption("timeout-ms"),
-    maxAttempts: positiveIntOption("max-attempts"),
-    retryDelayMs: positiveIntOption("retry-delay-ms"),
-    concurrency: positiveIntOption("concurrency")
-  });
+  const summaryConfig = await resolvePersistedLcmSummaryWorkerConfig(
+    client,
+    process.env,
+    {
+      model: cliOptions.model,
+      reasoningEffort: cliOptions["reasoning-effort"],
+      timeoutMs: positiveIntOption("timeout-ms"),
+      maxAttempts: positiveIntOption("max-attempts"),
+      retryDelayMs: positiveIntOption("retry-delay-ms"),
+      concurrency: positiveIntOption("concurrency")
+    }
+  );
   const sessionTitles = await generatePendingSessionTitles(client, {
     limit: positiveIntOption("title-limit") ?? serviceConfig.titleBatchLimit,
     minUserEvents:

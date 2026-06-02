@@ -22,6 +22,8 @@ import {
   type CodexAnswerRunner
 } from "../src/answer-worker.js";
 import {
+  resolveLcmSummaryWorkerConfigFromSettings,
+  resolvePersistedLcmSummaryWorkerConfig,
   resolveLcmSummaryServiceConfig,
   startLcmSummaryService
 } from "../src/lcm-summary-service.js";
@@ -360,6 +362,103 @@ describe("LCM summary background service", () => {
       batchLimit: 2,
       titleBatchLimit: 5,
       titleMinUserEvents: 3
+    });
+  });
+
+  it("applies persisted LCM summary settings before env fallback for local memory processing", () => {
+    const config = resolveLcmSummaryWorkerConfigFromSettings(
+      {
+        MEMORY_LCM_SUMMARY_MODEL: "gpt-env-fallback",
+        MEMORY_LCM_SUMMARY_REASONING_EFFORT: "medium",
+        MEMORY_LCM_SUMMARY_TIMEOUT_MS: "60000",
+        MEMORY_LCM_SUMMARY_MAX_ATTEMPTS: "2"
+      } as NodeJS.ProcessEnv,
+      [
+        {
+          ownerUserId: "user-1",
+          flowKey: "lcm_summary",
+          provider: "codex",
+          model: "gpt-persisted",
+          reasoningEffort: "high",
+          timeoutMs: 122_000,
+          maxAttempts: 4,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    );
+
+    expect(config).toMatchObject({
+      model: "gpt-persisted",
+      reasoningEffort: "high",
+      timeoutMs: 122_000,
+      maxAttempts: 4
+    });
+  });
+
+  it("keeps explicit local memory CLI overrides ahead of persisted settings", () => {
+    const config = resolveLcmSummaryWorkerConfigFromSettings(
+      {
+        MEMORY_LCM_SUMMARY_MODEL: "gpt-env-fallback",
+        MEMORY_LCM_SUMMARY_REASONING_EFFORT: "medium"
+      } as NodeJS.ProcessEnv,
+      [
+        {
+          ownerUserId: "user-1",
+          flowKey: "lcm_summary",
+          provider: "codex",
+          model: "gpt-persisted",
+          reasoningEffort: "high",
+          timeoutMs: 122_000,
+          maxAttempts: 4,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ],
+      {
+        model: "gpt-cli",
+        reasoningEffort: "low",
+        retryDelayMs: 17
+      }
+    );
+
+    expect(config).toMatchObject({
+      model: "gpt-cli",
+      reasoningEffort: "low",
+      timeoutMs: 122_000,
+      maxAttempts: 4,
+      retryDelayMs: 17
+    });
+  });
+
+  it("falls back to env config when no persisted LCM settings exist", async () => {
+    const fallback = resolveLcmSummaryWorkerConfig(
+      {},
+      {
+        model: "gpt-startup-fallback",
+        reasoningEffort: "medium",
+        timeoutMs: 60_000,
+        maxAttempts: 2
+      }
+    );
+    const client = {
+      async listLocalMemoryAgentSettings() {
+        return { settings: [] };
+      }
+    };
+
+    await expect(
+      resolvePersistedLcmSummaryWorkerConfig(
+        client as never,
+        {} as NodeJS.ProcessEnv,
+        {},
+        fallback
+      )
+    ).resolves.toMatchObject({
+      model: "gpt-startup-fallback",
+      reasoningEffort: "medium",
+      timeoutMs: 60_000,
+      maxAttempts: 2
     });
   });
 

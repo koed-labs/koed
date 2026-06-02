@@ -1,4 +1,5 @@
 import {
+  type LocalMemoryAgentSettingRecord,
   localMemoryAgentSettingFor,
   type MemoryApiClient,
   workerOverridesFromLocalMemorySetting
@@ -62,6 +63,68 @@ const positiveIntEnv = (
 ): number => {
   const parsed = Number.parseInt(envValue(env, name) ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+export type LcmSummaryWorkerConfigOverrides = Partial<
+  Pick<
+    LcmSummaryWorkerConfig,
+    | "provider"
+    | "model"
+    | "reasoningEffort"
+    | "timeoutMs"
+    | "maxAttempts"
+    | "retryDelayMs"
+    | "concurrency"
+    | "maxPromptTokens"
+    | "appServerBinary"
+    | "cwd"
+  >
+>;
+
+const definedWorkerOverrides = (
+  overrides: LcmSummaryWorkerConfigOverrides = {}
+): LcmSummaryWorkerConfigOverrides =>
+  Object.fromEntries(
+    Object.entries(overrides).filter(([, value]) => value !== undefined)
+  ) as LcmSummaryWorkerConfigOverrides;
+
+export const resolveLcmSummaryWorkerConfigFromSettings = (
+  env: NodeJS.ProcessEnv,
+  settings: LocalMemoryAgentSettingRecord[],
+  overrides: LcmSummaryWorkerConfigOverrides = {}
+): LcmSummaryWorkerConfig => {
+  const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
+    localMemoryAgentSettingFor(settings, "lcm_summary")
+  );
+  return resolveLcmSummaryWorkerConfig(env, {
+    ...(persistedWorkerOverrides ?? {}),
+    ...definedWorkerOverrides(overrides)
+  });
+};
+
+export const resolvePersistedLcmSummaryWorkerConfig = async (
+  client: Pick<MemoryApiClient, "listLocalMemoryAgentSettings">,
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: LcmSummaryWorkerConfigOverrides = {},
+  fallbackConfig?: LcmSummaryWorkerConfig
+): Promise<LcmSummaryWorkerConfig> => {
+  const settings = await client
+    .listLocalMemoryAgentSettings()
+    .then((response) => response.settings)
+    .catch(() => []);
+  const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
+    localMemoryAgentSettingFor(settings, "lcm_summary")
+  );
+  if (persistedWorkerOverrides) {
+    return resolveLcmSummaryWorkerConfig(env, {
+      ...persistedWorkerOverrides,
+      ...definedWorkerOverrides(overrides)
+    });
+  }
+  if (!Object.values(overrides).some((value) => value !== undefined)) {
+    return fallbackConfig ?? resolveLcmSummaryWorkerConfig(env);
+  }
+  return resolveLcmSummaryWorkerConfig(env, overrides);
 };
 
 export const resolveLcmSummaryServiceConfig = (
@@ -166,19 +229,14 @@ export const startLcmSummaryService = (
     void reason;
     lastRunAt = new Date().toISOString();
     try {
-      const persistedSettings = await client
-        .listLocalMemoryAgentSettings()
-        .then((response) => response.settings)
-        .catch(() => []);
-      const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
-        localMemoryAgentSettingFor(persistedSettings, "lcm_summary")
-      );
       const currentWorkerConfig =
         runOptions.workerConfig ??
-        (persistedWorkerOverrides
-          ? resolveLcmSummaryWorkerConfig(process.env, persistedWorkerOverrides)
-          : (fallbackWorkerConfig ??
-            resolveLcmSummaryWorkerConfig(process.env)));
+        (await resolvePersistedLcmSummaryWorkerConfig(
+          client,
+          process.env,
+          {},
+          fallbackWorkerConfig
+        ));
       const sessionTitles = await generatePendingSessionTitles(client, {
         limit: serviceConfig.titleBatchLimit,
         minUserEvents: serviceConfig.titleMinUserEvents,
