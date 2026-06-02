@@ -125,6 +125,7 @@ type GraphThreadIndexResponse = {
     threads: Array<{
       id: string;
       name: string;
+      sessionId: string | null;
       projectId: string;
       projectName: string;
       eventCount: number;
@@ -270,6 +271,143 @@ const createFakeRepository = (): MemorySourceRepository => {
       };
       capturedSessions.set(id, record);
       return record;
+    },
+    async updateCapturedSessionTitle(actor, sessionId, input) {
+      const session = capturedSessions.get(sessionId);
+      const title = input.title.replace(/\s+/g, " ").trim();
+      if (
+        !session ||
+        !title ||
+        session.ownerUserId !== actor.userId ||
+        session.visibility !== "personal"
+      ) {
+        return null;
+      }
+      const nextSession: CapturedSessionRecord = {
+        ...session,
+        metadata: {
+          ...session.metadata,
+          threadName: title,
+          threadNameSource: "manual",
+          threadNameEditedAt: new Date().toISOString()
+        }
+      };
+      capturedSessions.set(sessionId, nextSession);
+      return nextSession;
+    },
+    async listCapturedSessionsNeedingTitles(actor, input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
+      const minUserEvents = Math.min(
+        Math.max(input.minUserEvents ?? 3, 1),
+        50
+      );
+      const candidates = [...capturedSessions.values()]
+        .filter((session) => {
+          if (
+            session.ownerUserId !== actor.userId ||
+            session.visibility !== "personal"
+          ) {
+            return false;
+          }
+          if (session.metadata.threadNameSource === "manual") {
+            return false;
+          }
+          const title =
+            typeof session.metadata.threadName === "string"
+              ? session.metadata.threadName.trim()
+              : "";
+          return (
+            !title ||
+            title === session.id ||
+            title === session.externalSessionId ||
+            session.metadata.threadNameSource === "provisional"
+          );
+        })
+        .map((session) => {
+          const sessionEvents = events.filter(
+            (event) =>
+              event.sessionId === session.id &&
+              event.ownerUserId === actor.userId &&
+              event.visibility === "personal"
+          );
+          const userEventCount = sessionEvents.filter(
+            (event) => event.actor === "user"
+          ).length;
+          return { session, sessionEvents, userEventCount };
+        })
+        .filter((candidate) => candidate.userEventCount >= minUserEvents)
+        .slice(0, limit);
+
+      return candidates.map(({ session, sessionEvents, userEventCount }) => ({
+        id: session.id,
+        externalSessionId: session.externalSessionId,
+        projectName:
+          typeof session.metadata.projectName === "string"
+            ? session.metadata.projectName
+            : session.cwd,
+        projectPath:
+          typeof session.metadata.projectPath === "string"
+            ? session.metadata.projectPath
+            : session.cwd,
+        currentTitle:
+          typeof session.metadata.threadName === "string"
+            ? session.metadata.threadName
+            : null,
+        eventCount: userEventCount,
+        sourceItems: sessionEvents
+          .filter(
+            (event) =>
+              (event.actor === "user" || event.actor === "assistant") &&
+              event.content.trim()
+          )
+          .slice(0, 8)
+          .map((event) => ({
+            id: event.id,
+            actor: event.actor,
+            content: event.content,
+            capturedAt: event.createdAt
+          }))
+      }));
+    },
+    async updateCapturedSessionGeneratedTitle(actor, sessionId, input) {
+      const session = capturedSessions.get(sessionId);
+      const title = input.title.replace(/\s+/g, " ").trim();
+      if (
+        !session ||
+        !title ||
+        session.ownerUserId !== actor.userId ||
+        session.visibility !== "personal" ||
+        session.metadata.threadNameSource === "manual"
+      ) {
+        return null;
+      }
+      const existingTitle =
+        typeof session.metadata.threadName === "string"
+          ? session.metadata.threadName.trim()
+          : "";
+      if (
+        existingTitle &&
+        existingTitle !== session.id &&
+        existingTitle !== session.externalSessionId &&
+        !["generated", "lcm", "provisional"].includes(
+          typeof session.metadata.threadNameSource === "string"
+            ? session.metadata.threadNameSource
+            : ""
+        )
+      ) {
+        return null;
+      }
+      const nextSession: CapturedSessionRecord = {
+        ...session,
+        metadata: {
+          ...session.metadata,
+          threadName: title,
+          threadNameSource: input.source,
+          threadNameGeneratedAt: new Date().toISOString()
+        }
+      };
+      capturedSessions.set(sessionId, nextSession);
+      return nextSession;
     },
     async createConversationItems(_actor, input) {
       return input.items.map((item, index) => ({
@@ -3048,6 +3186,157 @@ describe("account and access flows", () => {
     expect(
       jsonBody<GraphEventsResponse>(selectedThreadEvents).events
     ).toHaveLength(1);
+  });
+
+  it("renames captured session titles in the graph thread index", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "session-title@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const sessionResponse = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers,
+      payload: {
+        externalSessionId: "thread-title-a",
+        cwd: "/work/title-repo",
+        metadata: {
+          projectName: "Title Repo",
+          threadName: "thread-title-a"
+        }
+      }
+    });
+    const session = jsonBody<SessionResponse>(sessionResponse).session;
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/graph/sessions/${session.id}/title`,
+      headers: { cookie },
+      payload: { title: "Redis Projection Followup" }
+    });
+    const threads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?includeInvalidated=false",
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(renamed.statusCode).toBe(200);
+    expect(jsonBody<SessionResponse>(renamed).session).toMatchObject({
+      id: session.id
+    });
+    expect(
+      jsonBody<GraphThreadIndexResponse>(threads).projects
+        .flatMap((project) => project.threads)
+        .find((thread) => thread.sessionId === session.id)
+    ).toMatchObject({
+      id: "thread-title-a",
+      name: "Redis Projection Followup"
+    });
+  });
+
+  it("lists and accepts local generated session titles", async () => {
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "generated-session-title@example.com",
+        password: "password123"
+      }
+    });
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const sessionResponse = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers,
+      payload: {
+        externalSessionId: "thread-generated-title",
+        cwd: "/work/title-repo",
+        metadata: { threadName: "thread-generated-title" }
+      }
+    });
+    const session = jsonBody<SessionResponse>(sessionResponse).session;
+    for (const content of [
+      "Can we add early generated titles for history browser chats?",
+      "Can those generated titles avoid waiting for LCM summaries?",
+      "Please make manual renames keep winning over generated names."
+    ]) {
+      await app.inject({
+        method: "POST",
+        url: `/v1/sessions/${session.id}/events`,
+        headers,
+        payload: {
+          actor: "user",
+          eventType: "user_prompt",
+          content,
+          metadata: {}
+        }
+      });
+    }
+
+    const pending = await app.inject({
+      method: "GET",
+      url: "/v1/memory/session-titles/pending?min_user_events=3",
+      headers
+    });
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/v1/memory/session-titles/${session.id}`,
+      headers,
+      payload: {
+        title: "History Browser Titles",
+        titleModel: "codex-app-server:test",
+        titlePromptVersion: "session-title-codex-json-v1"
+      }
+    });
+    const pendingAfterSubmit = await app.inject({
+      method: "GET",
+      url: "/v1/memory/session-titles/pending?min_user_events=3",
+      headers
+    });
+    await app.close();
+
+    expect(pending.statusCode).toBe(200);
+    expect(jsonBody<{ sessions: Array<{ id: string }> }>(pending).sessions).toEqual([
+      expect.objectContaining({ id: session.id })
+    ]);
+    expect(submitted.statusCode).toBe(200);
+    expect(jsonBody<{ title: string }>(submitted).title).toBe(
+      "History Browser Titles"
+    );
+    expect(
+      jsonBody<{ sessions: Array<{ id: string }> }>(pendingAfterSubmit)
+        .sessions
+    ).toHaveLength(0);
   });
 
   it("keeps captured session shells for child threads and exposes parent linkage", async () => {

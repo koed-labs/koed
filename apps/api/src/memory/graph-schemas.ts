@@ -79,6 +79,14 @@ export const graphEventPatchSchema = z.object({
   invalidated: z.boolean().optional()
 });
 
+export const graphSessionParamsSchema = z.object({
+  sessionId: z.string().uuid()
+});
+
+export const graphSessionTitlePatchSchema = z.object({
+  title: z.string().trim().min(1).max(120)
+});
+
 export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
 
 export const expandMemoryNodeQuerySchema = z

@@ -130,6 +130,8 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     pushDelayMs: number;
     intervalMs: number;
     batchLimit: number;
+    titleBatchLimit: number;
+    titleMinUserEvents: number;
   };
   localLcmSummaryDiagnostics: {
     running: boolean;
@@ -393,6 +395,37 @@ export class MemoryApiClient {
     return this.request(
       "GET",
       `/v1/memory/lcm/summaries/pending${query ? `?${query}` : ""}`
+    );
+  }
+
+  async listPendingSessionTitles(
+    input: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (typeof input.limit === "string" || typeof input.limit === "number") {
+      params.set("limit", String(input.limit));
+    }
+    if (
+      typeof input.minUserEvents === "string" ||
+      typeof input.minUserEvents === "number"
+    ) {
+      params.set("min_user_events", String(input.minUserEvents));
+    }
+    const query = params.toString();
+    return this.request(
+      "GET",
+      `/v1/memory/session-titles/pending${query ? `?${query}` : ""}`
+    );
+  }
+
+  async submitSessionTitle(
+    sessionId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      `/v1/memory/session-titles/${encodeURIComponent(sessionId)}`,
+      input
     );
   }
 

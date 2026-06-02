@@ -30,6 +30,7 @@ import {
   resolveLcmSummaryServiceConfig,
   startLcmSummaryService
 } from "./lcm-summary-service.js";
+import { generatePendingSessionTitles } from "./session-title-worker.js";
 import { logger } from "./logger.js";
 
 const parseArgs = (
@@ -181,6 +182,7 @@ if (command === "lcm-summarize") {
   if (delayMs) {
     await sleep(delayMs);
   }
+  const serviceConfig = resolveLcmSummaryServiceConfig(process.env);
   const summaryConfig = resolveLcmSummaryWorkerConfig(process.env, {
     model: cliOptions.model,
     reasoningEffort: cliOptions["reasoning-effort"],
@@ -189,12 +191,23 @@ if (command === "lcm-summarize") {
     retryDelayMs: positiveIntOption("retry-delay-ms"),
     concurrency: positiveIntOption("concurrency")
   });
+  const sessionTitles = await generatePendingSessionTitles(client, {
+    limit: positiveIntOption("title-limit") ?? serviceConfig.titleBatchLimit,
+    minUserEvents:
+      positiveIntOption("title-min-user-events") ??
+      serviceConfig.titleMinUserEvents,
+    config: summaryConfig
+  });
+  const lcmSummaries = await summarizePendingLcmNodes(client, {
+    limit: positiveIntOption("limit"),
+    config: summaryConfig
+  });
   console.log(
     JSON.stringify(
-      await summarizePendingLcmNodes(client, {
-        limit: positiveIntOption("limit"),
-        config: summaryConfig
-      }),
+      {
+        sessionTitles,
+        lcmSummaries
+      },
       null,
       2
     )

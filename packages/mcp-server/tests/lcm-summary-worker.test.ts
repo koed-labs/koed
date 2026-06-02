@@ -28,6 +28,7 @@ const tempLockPath = async (): Promise<string> => {
 const summaryJson = (summary_text: string) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    title: "Structured LCM Details",
     summary_text,
     user_requests: [],
     decisions: [],
@@ -63,6 +64,7 @@ describe("LCM summary worker", () => {
     for (const mode of ["summary", "partial", "reduce"] as const) {
       const prompt = buildLcmSummaryPrompt(node, mode);
       expect(prompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
+      expect(prompt).toContain('"title"');
       expect(prompt).toContain('"summary_text"');
       expect(prompt).toContain('"user_requests"');
       expect(prompt).toContain('"decisions"');

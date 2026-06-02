@@ -55,6 +55,7 @@ const memoryAnswerObject = (answer_markdown: string) => ({
 const lcmSummaryJson = (summary_text: string) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+    title: "Captured Memory Summary",
     summary_text,
     user_requests: [],
     decisions: [],
@@ -356,7 +357,9 @@ describe("LCM summary background service", () => {
       initialDelayMs: 30_000,
       pushDelayMs: 10_000,
       intervalMs: 1_800_000,
-      batchLimit: 2
+      batchLimit: 2,
+      titleBatchLimit: 5,
+      titleMinUserEvents: 3
     });
   });
 
@@ -369,6 +372,9 @@ describe("LCM summary background service", () => {
       async listLocalMemoryAgentSettings() {
         return { settings: [] };
       },
+      async listPendingSessionTitles() {
+        return { sessions: [] };
+      },
       async listPendingLcmSummaries() {
         await pending;
         return { nodes: [] };
@@ -380,7 +386,9 @@ describe("LCM summary background service", () => {
         initialDelayMs: 60_000,
         pushDelayMs: 10_000,
         intervalMs: 60_000,
-        batchLimit: 2
+        batchLimit: 2,
+        titleBatchLimit: 5,
+        titleMinUserEvents: 3
       }
     });
 
@@ -415,6 +423,9 @@ describe("LCM summary background service", () => {
           ]
         };
       },
+      async listPendingSessionTitles() {
+        return { sessions: [] };
+      },
       async listPendingLcmSummaries() {
         return { nodes: [] };
       }
@@ -425,7 +436,9 @@ describe("LCM summary background service", () => {
         initialDelayMs: 60_000,
         pushDelayMs: 10_000,
         intervalMs: 60_000,
-        batchLimit: 2
+        batchLimit: 2,
+        titleBatchLimit: 5,
+        titleMinUserEvents: 3
       },
       workerConfig: resolveLcmSummaryWorkerConfig(
         {},
@@ -441,11 +454,13 @@ describe("LCM summary background service", () => {
     expect(service).not.toBeNull();
     const result = await service!.trigger("test");
     expect(result.result).toMatchObject({
-      config: {
-        model: "gpt-5.4-persisted",
-        reasoningEffort: "xhigh",
-        timeoutMs: 123_000,
-        maxAttempts: 4
+      lcmSummaries: {
+        config: {
+          model: "gpt-5.4-persisted",
+          reasoningEffort: "xhigh",
+          timeoutMs: 123_000,
+          maxAttempts: 4
+        }
       }
     });
     service!.stop();

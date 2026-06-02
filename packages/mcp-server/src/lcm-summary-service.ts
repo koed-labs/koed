@@ -8,12 +8,15 @@ import {
   summarizePendingLcmNodes,
   type LcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
+import { generatePendingSessionTitles } from "./session-title-worker.js";
 
 export interface LcmSummaryServiceConfig {
   initialDelayMs: number;
   pushDelayMs: number;
   intervalMs: number;
   batchLimit: number;
+  titleBatchLimit: number;
+  titleMinUserEvents: number;
 }
 
 export interface LcmSummaryServiceHandle {
@@ -79,7 +82,17 @@ export const resolveLcmSummaryServiceConfig = (
     "MEMORY_LCM_BACKGROUND_INTERVAL_MS",
     1_800_000
   ),
-  batchLimit: positiveIntEnv(env, "MEMORY_LCM_BACKGROUND_BATCH_LIMIT", 2)
+  batchLimit: positiveIntEnv(env, "MEMORY_LCM_BACKGROUND_BATCH_LIMIT", 2),
+  titleBatchLimit: positiveIntEnv(
+    env,
+    "MEMORY_SESSION_TITLE_BACKGROUND_BATCH_LIMIT",
+    5
+  ),
+  titleMinUserEvents: positiveIntEnv(
+    env,
+    "MEMORY_SESSION_TITLE_MIN_USER_EVENTS",
+    3
+  )
 });
 
 export const startLcmSummaryService = (
@@ -166,10 +179,19 @@ export const startLcmSummaryService = (
           ? resolveLcmSummaryWorkerConfig(process.env, persistedWorkerOverrides)
           : (fallbackWorkerConfig ??
             resolveLcmSummaryWorkerConfig(process.env)));
-      lastResult = await summarizePendingLcmNodes(client, {
+      const sessionTitles = await generatePendingSessionTitles(client, {
+        limit: serviceConfig.titleBatchLimit,
+        minUserEvents: serviceConfig.titleMinUserEvents,
+        config: currentWorkerConfig
+      });
+      const lcmSummaries = await summarizePendingLcmNodes(client, {
         limit: runOptions.limit ?? serviceConfig.batchLimit,
         config: currentWorkerConfig
       });
+      lastResult = {
+        sessionTitles,
+        lcmSummaries
+      };
       lastError = null;
       lastSuccessAt = new Date().toISOString();
       return { ran: true, result: lastResult };

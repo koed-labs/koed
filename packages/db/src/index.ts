@@ -363,6 +363,21 @@ export interface CapturedSessionRecord {
   createdAt: string;
 }
 
+export interface CapturedSessionTitleCandidate {
+  id: string;
+  externalSessionId: string | null;
+  projectName: string | null;
+  projectPath: string | null;
+  currentTitle: string | null;
+  eventCount: number;
+  sourceItems: Array<{
+    id: string;
+    actor: MemoryActor;
+    content: string;
+    capturedAt: string;
+  }>;
+}
+
 export interface ConversationItemInput {
   visibility?: Visibility;
   sessionId?: string;
@@ -911,6 +926,20 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       limit?: number;
     }
   ): Promise<LcmGraphProjectThreads[]>;
+  updateCapturedSessionTitle(
+    actor: ActorContext,
+    sessionId: string,
+    input: { title: string }
+  ): Promise<CapturedSessionRecord | null>;
+  listCapturedSessionsNeedingTitles(
+    actor: ActorContext,
+    input?: { limit?: number; minUserEvents?: number }
+  ): Promise<CapturedSessionTitleCandidate[]>;
+  updateCapturedSessionGeneratedTitle(
+    actor: ActorContext,
+    sessionId: string,
+    input: { title: string; source: "generated" | "lcm" | "provisional" }
+  ): Promise<CapturedSessionRecord | null>;
   getLcmGraphEvent(
     actor: ActorContext,
     eventId: string,
@@ -1595,6 +1624,29 @@ const mapCapturedSession = (row: {
   cwd: row.cwd,
   metadata: row.metadata ?? {},
   createdAt: row.created_at.toISOString()
+});
+
+const mapCapturedSessionTitleCandidate = (row: {
+  id: string;
+  external_session_id: string | null;
+  project_name: string | null;
+  project_path: string | null;
+  current_title: string | null;
+  event_count: string | number;
+  source_items: Array<{
+    id: string;
+    actor: MemoryActor;
+    content: string;
+    capturedAt: string;
+  }> | null;
+}): CapturedSessionTitleCandidate => ({
+  id: row.id,
+  externalSessionId: row.external_session_id,
+  projectName: row.project_name,
+  projectPath: row.project_path,
+  currentTitle: row.current_title,
+  eventCount: Number(row.event_count),
+  sourceItems: row.source_items ?? []
 });
 
 const mapConversationItem = (row: {
@@ -3060,6 +3112,125 @@ const lcmSessionKeyForSourceItem = (item: LcmSourceItem): string | null => {
     : null;
 };
 
+const normalizeSessionTitle = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, 120) : null;
+};
+
+const deriveProvisionalSessionTitle = (
+  actor: MemoryActor,
+  content: string,
+  metadata: Record<string, unknown> | undefined
+): string | null => {
+  if (actor !== "user") {
+    return null;
+  }
+  const presented = presentMemoryText(content, {
+    project_name: getStringField(metadata ?? {}, "projectName"),
+    project_path: getStringField(metadata ?? {}, "projectPath")
+  });
+  if (
+    !presented ||
+    presented === "Captured memory." ||
+    /^Development activity captured in\b/.test(presented)
+  ) {
+    return null;
+  }
+  const cleaned = presented
+    .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s*#+\s*/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(?:can|could|would)\s+you\s+(?:please\s+)?/i, "")
+    .replace(/^please\s+/i, "")
+    .replace(/^help\s+(?:me|us)\s+/i, "")
+    .trim();
+  if (cleaned.length < 8 || looksLikeToolPayloadText(cleaned)) {
+    return null;
+  }
+  const firstClause =
+    cleaned.match(/^(.{12,90}?)(?:[.!?\n]|$)/)?.[1]?.trim() ?? cleaned;
+  return normalizeSessionTitle(firstClause);
+};
+
+const applyProvisionalCapturedSessionTitle = async (
+  pool: pg.Pool,
+  input: {
+    ownerUserId: string;
+    sessionId: string | null;
+    actor: MemoryActor;
+    content: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  if (!input.sessionId) {
+    return;
+  }
+  const title = deriveProvisionalSessionTitle(
+    input.actor,
+    input.content,
+    input.metadata
+  );
+  if (!title) {
+    return;
+  }
+  await pool.query(
+    `
+      update sessions
+      set
+        metadata = metadata || jsonb_build_object(
+          'threadName', $3::text,
+          'threadNameSource', 'provisional',
+          'threadNameGeneratedAt', now()
+        ),
+        updated_at = now()
+      where id = $2
+        and owner_user_id = $1
+        and visibility = 'personal'
+        and invalidated_at is null
+        and coalesce(metadata ->> 'threadNameSource', '') <> 'manual'
+        and (
+          metadata ->> 'threadName' is null
+          or btrim(metadata ->> 'threadName') = ''
+          or metadata ->> 'threadName' = coalesce(external_session_id, '')
+          or metadata ->> 'threadName' = id::text
+        )
+    `,
+    [input.ownerUserId, input.sessionId, title]
+  );
+};
+
+const lcmSourceItemSessionId = (item: LcmSourceItem): string | null => {
+  const payload =
+    item.payload && typeof item.payload === "object"
+      ? (item.payload as { sessionId?: unknown })
+      : null;
+  return typeof payload?.sessionId === "string" && payload.sessionId
+    ? payload.sessionId
+    : null;
+};
+
+const singleSessionIdForLcmTitle = (
+  kind: "leaf" | "rollup",
+  sourceItems: LcmSourceItem[]
+): string | null => {
+  if (kind !== "leaf") {
+    return null;
+  }
+  const sessionIds = new Set(
+    sourceItems
+      .map(lcmSourceItemSessionId)
+      .filter((sessionId): sessionId is string => Boolean(sessionId))
+  );
+  return sessionIds.size === 1 ? [...sessionIds][0]! : null;
+};
+
 const lcmSessionKeyForNodeRow = (row: {
   id: string;
   source_items_json: LcmSourceItem[];
@@ -4068,6 +4239,164 @@ export const createMemorySourceRepository = (
     );
 
     return mapCapturedSession(result.rows[0]!);
+  },
+
+  async updateCapturedSessionTitle(actor, sessionId, input) {
+    const title = normalizeSessionTitle(input.title);
+    if (!title) {
+      return null;
+    }
+    const result = await pool.query<{
+      id: string;
+      owner_user_id: string | null;
+      visibility: Visibility;
+      external_session_id: string | null;
+      workspace_id: string | null;
+      source_runtime: SourceRuntime;
+      capture_method: CaptureMethod;
+      model: string | null;
+      cwd: string | null;
+      metadata: Record<string, unknown> | null;
+      created_at: Date;
+    }>(
+      `
+        update sessions
+        set
+          metadata = metadata || jsonb_build_object(
+            'threadName', $3::text,
+            'threadNameSource', 'manual',
+            'threadNameEditedAt', now()
+          ),
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+      `,
+      [actor.userId, sessionId, title]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  async listCapturedSessionsNeedingTitles(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
+    const minUserEvents = Math.min(
+      Math.max(input.minUserEvents ?? 3, 1),
+      50
+    );
+    const result = await pool.query<
+      Parameters<typeof mapCapturedSessionTitleCandidate>[0]
+    >(
+      `
+        with eligible_sessions as (
+          select
+            s.id,
+            s.external_session_id,
+            coalesce(s.metadata ->> 'projectName', s.cwd, s.workspace_id::text) as project_name,
+            coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
+            s.metadata ->> 'threadName' as current_title,
+            count(me.id) filter (where me.payload ->> 'actor' = 'user')::text as event_count,
+            max(coalesce(me.source_event_time, me.captured_at)) as latest_event_at
+          from sessions s
+          join memory_events me on me.session_id = s.id
+          where s.invalidated_at is null
+            and s.visibility = 'personal'
+            and s.owner_user_id = $1
+            and me.invalidated_at is null
+            and me.visibility = 'personal'
+            and me.owner_user_id = $1
+            and coalesce(s.metadata ->> 'threadNameSource', '') <> 'manual'
+            and (
+              s.metadata ->> 'threadName' is null
+              or btrim(s.metadata ->> 'threadName') = ''
+              or s.metadata ->> 'threadName' = coalesce(s.external_session_id, '')
+              or s.metadata ->> 'threadName' = s.id::text
+              or s.metadata ->> 'threadNameSource' = 'provisional'
+            )
+          group by s.id
+          having count(me.id) filter (where me.payload ->> 'actor' = 'user') >= $2
+          order by max(coalesce(me.source_event_time, me.captured_at)) desc, s.id desc
+          limit $3
+        )
+        select
+          es.*,
+          coalesce(source_items.source_items, '[]'::jsonb) as source_items
+        from eligible_sessions es
+        left join lateral (
+          select jsonb_agg(
+            jsonb_build_object(
+              'id', item.id,
+              'actor', item.payload ->> 'actor',
+              'content', item.payload ->> 'content',
+              'capturedAt', item.captured_at
+            )
+            order by item.captured_at asc, item.id asc
+          ) as source_items
+          from (
+            select me.id, me.payload, me.captured_at
+            from memory_events me
+            where me.session_id = es.id
+              and me.invalidated_at is null
+              and me.visibility = 'personal'
+              and me.owner_user_id = $1
+              and me.payload ->> 'actor' in ('user', 'assistant')
+              and coalesce(me.payload ->> 'content', '') <> ''
+            order by me.captured_at asc, me.id asc
+            limit 8
+          ) item
+        ) source_items on true
+        order by es.latest_event_at desc, es.id desc
+      `,
+      [actor.userId, minUserEvents, limit]
+    );
+    return result.rows.map(mapCapturedSessionTitleCandidate);
+  },
+
+  async updateCapturedSessionGeneratedTitle(actor, sessionId, input) {
+    const title = normalizeSessionTitle(input.title);
+    if (!title) {
+      return null;
+    }
+    const result = await pool.query<{
+      id: string;
+      owner_user_id: string | null;
+      visibility: Visibility;
+      external_session_id: string | null;
+      workspace_id: string | null;
+      source_runtime: SourceRuntime;
+      capture_method: CaptureMethod;
+      model: string | null;
+      cwd: string | null;
+      metadata: Record<string, unknown> | null;
+      created_at: Date;
+    }>(
+      `
+        update sessions
+        set
+          metadata = metadata || jsonb_build_object(
+            'threadName', $3::text,
+            'threadNameSource', $4::text,
+            'threadNameGeneratedAt', now()
+          ),
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+          and coalesce(metadata ->> 'threadNameSource', '') <> 'manual'
+          and (
+            metadata ->> 'threadName' is null
+            or btrim(metadata ->> 'threadName') = ''
+            or metadata ->> 'threadName' = coalesce(external_session_id, '')
+            or metadata ->> 'threadName' = id::text
+            or metadata ->> 'threadNameSource' in ('generated', 'lcm', 'provisional')
+          )
+        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+      `,
+      [actor.userId, sessionId, title, input.source]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
 
   async createConversationItems(actor, input) {
@@ -5700,7 +6029,7 @@ export const createMemorySourceRepository = (
             case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end
           ) as project_path,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
-          coalesce(ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name
+          coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name
         from memory_nodes mn
         left join lateral (
           select mns.memory_event_id
@@ -5999,7 +6328,7 @@ export const createMemorySourceRepository = (
           ) as project_path,
           s.id::text as session_id,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
-          coalesce(ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
+          coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
           count(me.id)::text as embedding_count
         from memory_nodes mn
         left join lateral (
@@ -6221,7 +6550,7 @@ export const createMemorySourceRepository = (
             ) as project_path,
             s.id::text as session_id,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
-            coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.source_event_time,
             me.source_sequence,
             me.captured_at,
@@ -6334,7 +6663,7 @@ export const createMemorySourceRepository = (
               case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end
             ) as project_path,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
-            coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
+            coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
             case
               when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
@@ -6372,7 +6701,7 @@ export const createMemorySourceRepository = (
               $6::text is null
               or me.payload ->> 'content' ilike '%' || $6 || '%'
               or me.id::text = $6
-              or coalesce(me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
+              or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
               or coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
             )
             and me.visibility = 'personal'
@@ -6832,9 +7161,15 @@ export const createMemorySourceRepository = (
     const client = await pool.connect();
     try {
       await client.query("begin");
-      const current = await client.query<{ summary_text: string }>(
+      const current = await client.query<{
+        owner_user_id: string | null;
+        visibility: Visibility;
+        kind: "leaf" | "rollup";
+        summary_text: string;
+        source_items_json: LcmSourceItem[] | null;
+      }>(
         `
-          select summary_text
+          select owner_user_id, visibility, kind, summary_text, source_items_json
           from memory_nodes
           where id = $1
             and invalidated_at is null
@@ -6843,11 +7178,12 @@ export const createMemorySourceRepository = (
         `,
         [input.nodeId]
       );
-      const previousSummary = current.rows[0]?.summary_text;
-      if (previousSummary === undefined) {
+      const currentNode = current.rows[0];
+      if (!currentNode) {
         await client.query("commit");
         return;
       }
+      const previousSummary = currentNode.summary_text;
 
       await client.query(
         `
@@ -6887,6 +7223,52 @@ export const createMemorySourceRepository = (
               and invalidated_at is null
           `,
           [input.nodeId]
+        );
+      }
+
+      const generatedTitle = normalizeSessionTitle(
+        input.summaryStructuredJson?.title
+      );
+      const sourceItems = Array.isArray(currentNode.source_items_json)
+        ? currentNode.source_items_json
+        : [];
+      const generatedTitleSessionId = generatedTitle
+        ? singleSessionIdForLcmTitle(currentNode.kind, sourceItems)
+        : null;
+      if (
+        generatedTitle &&
+        generatedTitleSessionId &&
+        currentNode.owner_user_id
+      ) {
+        await client.query(
+          `
+            update sessions
+            set
+              metadata = metadata || jsonb_build_object(
+                'threadName', $4::text,
+                'threadNameSource', 'lcm',
+                'threadNameGeneratedAt', now()
+              ),
+              updated_at = now()
+            where id = $1
+              and owner_user_id = $2
+              and visibility = $3
+              and invalidated_at is null
+              and coalesce(metadata ->> 'threadNameSource', '') <> 'manual'
+              and (
+                metadata ->> 'threadName' is null
+                or btrim(metadata ->> 'threadName') = ''
+                or metadata ->> 'threadName' = coalesce(external_session_id, '')
+                or metadata ->> 'threadName' = id::text
+                or metadata ->> 'threadNameSource' in ('generated', 'lcm', 'provisional')
+              )
+          `,
+          [
+            generatedTitleSessionId,
+            currentNode.owner_user_id,
+            currentNode.visibility,
+            generatedTitle
+          ]
         );
       }
 
@@ -7121,6 +7503,13 @@ export const createMemorySourceRepository = (
         insertedRow.id,
         rawConversationItemIds
       );
+      await applyProvisionalCapturedSessionTitle(pool, {
+        ownerUserId,
+        sessionId: insertedRow.session_id,
+        actor: input.actor,
+        content: input.content,
+        metadata: input.metadata
+      });
       return mapMemoryEvent(insertedRow);
     }
 

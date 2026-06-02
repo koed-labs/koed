@@ -7,6 +7,8 @@ import {
   graphEventParamsSchema,
   graphEventPatchSchema,
   graphEventsQuerySchema,
+  graphSessionParamsSchema,
+  graphSessionTitlePatchSchema,
   graphNodesQuerySchema,
   graphQuerySchema,
   expandMemoryNodeQuerySchema,
@@ -219,6 +221,27 @@ export const registerGraphRoutes = (
         : reply
             .status(404)
             .send({ error: "Captured event not found or not visible" });
+    }
+  );
+
+  app.patch(
+    "/v1/memory/graph/sessions/:sessionId/title",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const params = graphSessionParamsSchema.parse(request.params);
+      const input = graphSessionTitlePatchSchema.parse(request.body);
+      const session = await repo.updateCapturedSessionTitle(
+        { userId: user.id },
+        params.sessionId,
+        input
+      );
+      return session
+        ? { session }
+        : reply
+            .status(404)
+            .send({ error: "Captured session not found or not visible" });
     }
   );
 

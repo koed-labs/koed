@@ -92,6 +92,7 @@ type LcmSummaryPromptResult = {
 const structuredLcmSummarySchema = z
   .object({
     schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
+    title: z.string().min(1).max(120),
     summary_text: z.string().min(1),
     user_requests: z.array(z.string()).default([]),
     decisions: z.array(z.string()).default([]),
@@ -293,6 +294,7 @@ const itemText = (item: LcmSourceItem): string => {
 
 const lcmSummaryJsonShape = () => ({
   schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  title: "Short human-readable conversation title.",
   summary_text: "Compact information-dense summary for retrieval.",
   user_requests: ["durable user request or preference"],
   decisions: ["decision and rationale when present"],
@@ -321,6 +323,7 @@ export const buildLcmSummaryPrompt = (
           "",
           "Requirements:",
           "- Preserve durable decisions, facts, implementation details, exact identifiers, and open threads from this shard.",
+          "- Set title to a short 3-7 word label for this memory span, without UUIDs or generic words like chat/session.",
           "- Keep provenance hints such as node IDs, source spans, turn IDs, and chunk indexes when useful.",
           "- Do not add anything that is not supported by this shard.",
           "- Return only one JSON object matching the required schema; no prose outside JSON."
@@ -332,6 +335,7 @@ export const buildLcmSummaryPrompt = (
             "",
             "Requirements:",
             "- Preserve durable decisions, facts, implementation details, exact identifiers, and open threads.",
+            "- Set title to a short 3-7 word label for the combined memory, without UUIDs or generic words like chat/session.",
             "- Keep provenance hints such as node IDs, source spans, turn IDs, and chunk indexes when useful.",
             "- Do not add anything that is not supported by the shard summaries.",
             "- Return only one JSON object matching the required schema; no prose outside JSON."
@@ -343,6 +347,7 @@ export const buildLcmSummaryPrompt = (
               "",
               "Requirements:",
               "- Preserve durable decisions, facts, implementation details, exact identifiers, and open threads.",
+              "- Set title to a short 3-7 word label for the rolled-up memory, without UUIDs or generic words like chat/session.",
               "- Keep provenance hints such as node IDs, source spans, and turn IDs when useful.",
               "- Do not add anything that is not supported by the child summaries.",
               "- Return only one JSON object matching the required schema; no prose outside JSON."
@@ -353,6 +358,7 @@ export const buildLcmSummaryPrompt = (
               "",
               "Requirements:",
               "- Preserve concrete user requests, decisions, facts, filenames, commands, model names, tool outcomes, errors, and unresolved questions.",
+              "- Set title to a short 3-7 word label for the conversation span, without UUIDs or generic words like chat/session.",
               "- Mention source items in the same order they occurred when they affect meaning.",
               "- Do not invent details. If a source item is ambiguous, say so compactly.",
               "- Write a compact but information-dense summary for future agent retrieval.",
