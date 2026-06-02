@@ -450,7 +450,7 @@ const main = async () => {
     "packages/mcp-server/dist/cli.js",
     "--config",
     configPath,
-    "lcm-summarize",
+    "process-local-memory",
     "--limit",
     "10",
     "--model",
@@ -460,11 +460,11 @@ const main = async () => {
   ]);
   const summaryRun = JSON.parse(summaryOutput);
   assert(
-    summaryRun.submittedCount >= 3,
-    "Local MCP summariser did not submit all expected LCM summaries",
+    summaryRun.lcmSummaries?.submittedCount >= 3,
+    "Local MCP processing did not submit all expected LCM summaries",
     summaryRun
   );
-  console.log("Local MCP summariser result:");
+  console.log("Local MCP memory processing result:");
   console.log(JSON.stringify(summaryRun, null, 2));
 
   const state = await waitForLocalSummaries();

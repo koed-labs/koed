@@ -177,7 +177,7 @@ if (command === "doctor") {
   }
 }
 
-if (command === "lcm-summarize") {
+if (command === "process-local-memory") {
   const delayMs = positiveIntOption("delay-ms");
   if (delayMs) {
     await sleep(delayMs);

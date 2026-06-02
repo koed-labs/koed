@@ -2,8 +2,8 @@
 
 The MCP server is Koed Self-Hosted's local Codex integration. It gives Codex
 tools for memory recall, starts local background workers for answer synthesis
-and LCM summaries, and provides the capture hook binary used by Codex lifecycle
-hooks.
+captured-session titles, and LCM summaries, and provides the capture hook binary
+used by Codex lifecycle hooks.
 
 The backend stores memory, graph data, questions, and retrieval evidence. This
 package runs on the user's machine and uses Codex app-server mode for local
@@ -250,12 +250,13 @@ pnpm --filter @koed/mcp-server test
 pnpm --filter @koed/mcp-server typecheck
 ```
 
-Run one LCM summary pass:
+Run one local memory processing pass. This generates pending captured-session
+titles, then submits pending LCM summaries:
 
 ```bash
 MEMORY_API_URL=http://localhost:3000 \
 MEMORY_API_TOKEN=<koed-api-token> \
-node packages/mcp-server/dist/cli.js lcm-summarize --limit 2
+node packages/mcp-server/dist/cli.js process-local-memory --limit 2
 ```
 
 ## Key Files
@@ -266,8 +267,10 @@ node packages/mcp-server/dist/cli.js lcm-summarize --limit 2
 - `src/answer-bridge.ts`: local HTTP bridge for browser questions.
 - `src/answer-bridge-lifecycle.ts`: bridge startup/retry behavior from MCP.
 - `src/capture-hook.ts`: Codex lifecycle capture hook.
+- `src/session-title-worker.ts`: local Codex title generation for captured
+  sessions.
 - `src/lcm-summary-worker.ts`: local Codex summarization for pending LCM nodes.
-- `src/lcm-summary-service.ts`: background summary service lifecycle.
+- `src/lcm-summary-service.ts`: background local memory processing lifecycle.
 
 ## Troubleshooting
 

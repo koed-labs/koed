@@ -131,7 +131,8 @@ such as `memory_access_check`, `memory_search`, and `memory_expand` require
 explicit development/operator environment flags and are not part of the normal
 agent-facing surface.
 
-LCM summaries are processed by the MCP-local background service through Codex
-app-server mode. If that local service is delayed or fails, Koed still returns
-pending placeholders as degraded evidence and reports the backlog through
-diagnostics instead of marking the backend unhealthy.
+Captured-session titles and LCM summaries are processed by the MCP-local
+background service through Codex app-server mode. If that local service is
+delayed or fails, Koed still returns pending placeholders as degraded evidence
+and reports the backlog through diagnostics instead of marking the backend
+unhealthy.

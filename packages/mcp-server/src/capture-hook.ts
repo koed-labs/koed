@@ -1415,7 +1415,7 @@ const scopedRawSeen = (
       .map((item) => [item.sourceHash, true])
   );
 
-const triggerDetachedLcmSummary = (configPath?: string): void => {
+const triggerDetachedLocalMemoryProcessing = (configPath?: string): void => {
   if (!hookTriggersLcmSummary()) {
     return;
   }
@@ -1426,7 +1426,7 @@ const triggerDetachedLcmSummary = (configPath?: string): void => {
   );
   const args = [
     cliPath,
-    "lcm-summarize",
+    "process-local-memory",
     ...(configPath ? ["--config", configPath] : []),
     "--limit",
     String(hookLcmSummaryLimit()),
@@ -1593,7 +1593,7 @@ const main = async () => {
   }
   saveState(state);
   if (rawItemsResponse.length > 0) {
-    triggerDetachedLcmSummary(configPath);
+    triggerDetachedLocalMemoryProcessing(configPath);
   }
   console.error(
     `koed capture hook stored ${rawItemsResponse.length} raw conversation item(s)${

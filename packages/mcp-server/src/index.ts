@@ -605,7 +605,7 @@ export const memoryAccessCheck = async (
           "MCP recall is personal-only in this build. search_domain controls the search boundary (session, project, or global).",
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval planning to the local memory-answer worker.",
           "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
-          "LCM summarisation is local-only: backend workers create pending LCM nodes, while the MCP background LCM summary service runs Codex on the user's machine and submits summaries back for embedding.",
+          "Local memory processing: backend workers create pending title and LCM summary work, while the MCP background service runs Codex on the user's machine and submits results back for storage and embedding.",
           "When answering from memory, cite each source."
         ]
       : []
