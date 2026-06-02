@@ -390,17 +390,27 @@ describe("local memory answer bridge", () => {
       await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
-    const result = await postJson<{ ok: boolean; question: { id: string } }>(
-      `${bridgeUrl}/v1/memory/answer-local`,
-      {
-        question_id: questionId,
-        query: "What did we decide?",
-        search_domain: "project",
-        workspace_id: "project-1"
-      }
-    );
+    const result = await postJson<{
+      ok: boolean;
+      question: { id: string };
+      answer?: {
+        localMemoryWorker?: {
+          appServerEvents?: unknown;
+          appServerExecutions?: Array<{ rawEvents?: unknown }>;
+        };
+      };
+    }>(`${bridgeUrl}/v1/memory/answer-local`, {
+      question_id: questionId,
+      query: "What did we decide?",
+      search_domain: "project",
+      workspace_id: "project-1"
+    });
 
     expect(result).toMatchObject({ ok: true, question: { id: questionId } });
+    expect(result.answer?.localMemoryWorker?.appServerEvents).toBeUndefined();
+    expect(
+      result.answer?.localMemoryWorker?.appServerExecutions?.[0]?.rawEvents
+    ).toBeUndefined();
     expect(answerWithMemoryWorker.mock.calls[0]?.[1]).toMatchObject({
       config: {
         provider: "codex",

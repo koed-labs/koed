@@ -1104,7 +1104,7 @@ export const answerClaimedMemoryQuestion = async (
     return {
       ok: true,
       question: questionFromResponse(updated),
-      answer
+      answer: stripAppServerEvents(answer)
     };
   } catch (error) {
     const message = errorMessage(error);
