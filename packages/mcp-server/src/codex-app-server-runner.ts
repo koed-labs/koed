@@ -645,3 +645,39 @@ export const runCodexAppServerTurn = async (
     fs.rmSync(isolatedHome, { recursive: true, force: true });
   }
 };
+
+export const checkCodexAppServerAvailability = async (
+  input: {
+    appServerBinary: string;
+    model: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    clientName?: string;
+  },
+  timeoutMs = 3000
+): Promise<{ available: boolean; error?: string }> => {
+  const isolatedHome = createIsolatedCodexHome(input.env, input.model);
+  const env = {
+    ...input.env,
+    CODEX_HOME: isolatedHome
+  };
+  const client = new CodexAppServerClient(
+    input.appServerBinary,
+    input.cwd,
+    env
+  );
+  const timeout = setTimeout(() => client.close(), timeoutMs);
+  try {
+    await client.initialize(input.clientName ?? "koed-settings-check");
+    return { available: true };
+  } catch (error) {
+    return {
+      available: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    clearTimeout(timeout);
+    client.close();
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
+  }
+};

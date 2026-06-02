@@ -1795,7 +1795,14 @@ describeDb("memory repository visibility", () => {
         projectPath: "/tmp/question-project",
         sessionId: session.id,
         threadId: "thread-1",
-        threadName: "Question Thread"
+        threadName: "Question Thread",
+        localMemoryWorkerConfig: {
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+          timeoutMs: 150000,
+          maxAttempts: 4
+        }
       }
     );
 
@@ -1815,7 +1822,14 @@ describeDb("memory repository visibility", () => {
     expect(claimed[0]).toMatchObject({
       id: created.id,
       status: "pending",
-      attemptCount: 1
+      attemptCount: 1,
+      localMemoryWorkerConfig: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        timeoutMs: 150000,
+        maxAttempts: 4
+      }
     });
     expect(claimed[0]?.processingStartedAt).toBeTruthy();
     expect(claimed[0]?.processingLeaseUntil).toBeTruthy();
@@ -1914,6 +1928,29 @@ describeDb("memory repository visibility", () => {
       created.id
     );
     const hidden = await repo.getMemoryQuestion({ userId: bob.id }, created.id);
+    expect(updated).toMatchObject({
+      id: created.id,
+      status: "answered",
+      localMemoryWorkerConfig: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        timeoutMs: 150000,
+        maxAttempts: 4
+      }
+    });
+    expect(detail).toMatchObject({
+      id: created.id,
+      answerMarkdown: "Memory questions are persisted separately.",
+      localMemoryWorkerConfig: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        timeoutMs: 150000,
+        maxAttempts: 4
+      },
+      evidenceCount: 1
+    });
     const slowCreated = await repo.createMemoryQuestion(
       { userId: alice.id },
       {

@@ -636,6 +636,7 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
   citations: unknown[] | null;
   retrieval: Record<string, unknown> | null;
   localMemoryWorker: Record<string, unknown> | null;
+  localMemoryWorkerConfig: Record<string, unknown> | null;
   response: Record<string, unknown> | null;
 }
 
@@ -709,6 +710,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       sessionId?: string;
       threadId?: string;
       threadName?: string;
+      localMemoryWorkerConfig?: Record<string, unknown>;
     }
   ): Promise<MemoryQuestionDetailRecord>;
   listMemoryQuestions(
@@ -2673,6 +2675,7 @@ const mapMemoryQuestionDetail = (
     citations: unknown[] | null;
     retrieval: Record<string, unknown> | null;
     local_memory_worker: Record<string, unknown> | null;
+    local_memory_worker_config: Record<string, unknown> | null;
     response: Record<string, unknown> | null;
   }
 ): MemoryQuestionDetailRecord => ({
@@ -2682,6 +2685,7 @@ const mapMemoryQuestionDetail = (
   citations: row.citations,
   retrieval: row.retrieval,
   localMemoryWorker: row.local_memory_worker,
+  localMemoryWorkerConfig: row.local_memory_worker_config,
   response: row.response
 });
 
@@ -4972,16 +4976,18 @@ export const createMemorySourceRepository = (
           session_id,
           thread_id,
           thread_name,
-          query
+          query,
+          local_memory_worker_config
         )
-        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        values ($1, 'personal', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         returning
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, response, status,
-          created_at, updated_at, answered_at, processing_started_at,
-          processing_lease_until, attempt_count, last_error_message,
+          citations, retrieval, local_memory_worker, local_memory_worker_config,
+          response, status, created_at, updated_at, answered_at,
+          processing_started_at, processing_lease_until, attempt_count,
+          last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
       `,
       [
@@ -4994,7 +5000,10 @@ export const createMemorySourceRepository = (
         input.sessionId ?? null,
         input.threadId ?? null,
         input.threadName ?? null,
-        input.query
+        input.query,
+        input.localMemoryWorkerConfig
+          ? JSON.stringify(input.localMemoryWorkerConfig)
+          : null
       ]
     );
 
@@ -5090,8 +5099,9 @@ export const createMemorySourceRepository = (
           question.session_id, question.thread_id, question.thread_name,
           question.query, question.answer_markdown, question.error_message,
           question.evidence, question.citations, question.retrieval,
-          question.local_memory_worker, question.response, question.status,
-          question.created_at, question.updated_at, question.answered_at,
+          question.local_memory_worker, question.local_memory_worker_config,
+          question.response, question.status, question.created_at,
+          question.updated_at, question.answered_at,
           question.processing_started_at, question.processing_lease_until,
           question.attempt_count, question.last_error_message,
           jsonb_array_length(coalesce(question.evidence, '[]'::jsonb)) as evidence_count
@@ -5111,7 +5121,8 @@ export const createMemorySourceRepository = (
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, response, status,
+          citations, retrieval, local_memory_worker, local_memory_worker_config,
+          response, status,
           created_at, updated_at, answered_at, processing_started_at,
           processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
@@ -5169,7 +5180,8 @@ export const createMemorySourceRepository = (
           id, owner_user_id, visibility, retrieval_scope, search_domain,
           workspace_id, project_name, project_path, session_id, thread_id,
           thread_name, query, answer_markdown, error_message, evidence,
-          citations, retrieval, local_memory_worker, response, status,
+          citations, retrieval, local_memory_worker, local_memory_worker_config,
+          response, status,
           created_at, updated_at, answered_at, processing_started_at,
           processing_lease_until, attempt_count, last_error_message,
           jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count

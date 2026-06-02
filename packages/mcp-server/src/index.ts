@@ -1,4 +1,7 @@
-import { resolveMemoryAnswerWorkerConfig } from "./answer-worker.js";
+import {
+  resolveManualMemoryAnswerWorkerConfig,
+  resolveMemoryAnswerWorkerConfig
+} from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
 import {
@@ -50,16 +53,33 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     provider: string;
     model: string;
     reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
     planningMode: "planned" | "single_pass";
     maxSearches: number;
     maxExpansions: number;
     appServerBinary: string;
     defaultResponseDetail: "answer_only";
   };
+  localManualMemoryAnswerWorker: {
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
+    planningMode: "planned" | "single_pass";
+    maxSearches: number;
+    maxExpansions: number;
+    appServerBinary: string;
+    configuredFrom: "explorer_question_or_env";
+  };
   localLcmSummaryWorker: {
     provider: string;
     model: string;
     reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
+    retryDelayMs: number;
     concurrency: number;
     maxPromptTokens: number;
     appServerBinary: string;
@@ -397,6 +417,7 @@ export const memoryAccessCheck = async (
 ): Promise<MemoryAccessCheckResult> => {
   const access = await client.accessCheck();
   const answerWorker = resolveMemoryAnswerWorkerConfig();
+  const manualAnswerWorker = resolveManualMemoryAnswerWorkerConfig();
   const lcmSummaryWorker = resolveLcmSummaryWorkerConfig();
   const lcmSummaryService = resolveLcmSummaryServiceConfig();
   const toolExposure = resolveToolExposureConfig();
@@ -433,16 +454,33 @@ export const memoryAccessCheck = async (
       provider: answerWorker.provider,
       model: answerWorker.model,
       reasoningEffort: answerWorker.reasoningEffort,
+      timeoutMs: answerWorker.timeoutMs,
+      maxAttempts: answerWorker.maxAttempts,
       planningMode: answerWorker.planningMode,
       maxSearches: answerWorker.maxSearches,
       maxExpansions: answerWorker.maxExpansions,
       appServerBinary: answerWorker.appServerBinary,
       defaultResponseDetail: "answer_only"
     },
+    localManualMemoryAnswerWorker: {
+      provider: manualAnswerWorker.provider,
+      model: manualAnswerWorker.model,
+      reasoningEffort: manualAnswerWorker.reasoningEffort,
+      timeoutMs: manualAnswerWorker.timeoutMs,
+      maxAttempts: manualAnswerWorker.maxAttempts,
+      planningMode: manualAnswerWorker.planningMode,
+      maxSearches: manualAnswerWorker.maxSearches,
+      maxExpansions: manualAnswerWorker.maxExpansions,
+      appServerBinary: manualAnswerWorker.appServerBinary,
+      configuredFrom: "explorer_question_or_env"
+    },
     localLcmSummaryWorker: {
       provider: lcmSummaryWorker.provider,
       model: lcmSummaryWorker.model,
       reasoningEffort: lcmSummaryWorker.reasoningEffort,
+      timeoutMs: lcmSummaryWorker.timeoutMs,
+      maxAttempts: lcmSummaryWorker.maxAttempts,
+      retryDelayMs: lcmSummaryWorker.retryDelayMs,
       concurrency: lcmSummaryWorker.concurrency,
       maxPromptTokens: lcmSummaryWorker.maxPromptTokens,
       appServerBinary: lcmSummaryWorker.appServerBinary

@@ -366,6 +366,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         citations: null,
         retrieval: null,
         localMemoryWorker: null,
+        localMemoryWorkerConfig: input.localMemoryWorkerConfig ?? null,
         response: null,
         status: "pending",
         createdAt: now,
@@ -3308,7 +3309,14 @@ describe("account and access flows", () => {
         workspace_id: "project-1",
         project_name: "Koed",
         thread_id: "thread-1",
-        thread_name: "Explorer"
+        thread_name: "Explorer",
+        local_memory_worker_config: {
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoning_effort: "medium",
+          timeout_ms: 150000,
+          max_attempts: 4
+        }
       }
     });
     const questionId = jsonBody<MemoryQuestionResponse>(created).question.id;
@@ -3364,6 +3372,15 @@ describe("account and access flows", () => {
     expect(
       jsonBody<MemoryQuestionResponse>(created).question.retrievalScope
     ).toBe("personal");
+    expect(
+      jsonBody<MemoryQuestionResponse>(created).question.localMemoryWorkerConfig
+    ).toEqual({
+      provider: "codex",
+      model: "gpt-5.4",
+      reasoning_effort: "medium",
+      timeout_ms: 150000,
+      max_attempts: 4
+    });
     expect(claimed.statusCode).toBe(200);
     expect(jsonBody<MemoryQuestionsResponse>(claimed).questions).toHaveLength(
       1
@@ -3386,6 +3403,13 @@ describe("account and access flows", () => {
       id: questionId,
       answerMarkdown: "Use the documented read and write limits.",
       evidenceCount: 1,
+      localMemoryWorkerConfig: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "medium",
+        timeout_ms: 150000,
+        max_attempts: 4
+      },
       searchDomain: "project",
       workspaceId: "project-1"
     });

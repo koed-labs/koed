@@ -5,14 +5,20 @@ import http from "node:http";
 import { z } from "zod";
 import {
   answerWithMemoryWorker,
+  resolveManualMemoryAnswerWorkerConfig,
+  resolveMemoryAnswerModelOptions,
+  resolveMemoryAnswerWorkerConfig,
+  type ManualMemoryAnswerWorkerOverrides,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
+import { checkCodexAppServerAvailability } from "./codex-app-server-runner.js";
 import {
   defaultAnswerScope,
   defaultConfig,
   MemoryApiClient,
   MemoryApiError
 } from "./index.js";
+import { resolveLcmSummaryWorkerConfig } from "./lcm-summary-worker.js";
 import {
   persistRawConversationItems,
   projectRawConversationItems
@@ -55,7 +61,19 @@ const requestSchema = z
     session_id: z.string().uuid().optional(),
     thread_id: z.string().min(1).optional(),
     thread_name: z.string().min(1).optional(),
-    limit: z.coerce.number().int().positive().max(50).default(10)
+    limit: z.coerce.number().int().positive().max(50).default(10),
+    local_memory_worker_config: z
+      .object({
+        provider: z.literal("codex").optional(),
+        model: z.string().trim().min(1).optional(),
+        reasoning_effort: z
+          .enum(["minimal", "low", "medium", "high"])
+          .optional(),
+        timeout_ms: z.coerce.number().int().min(1000).max(600000).optional(),
+        max_attempts: z.coerce.number().int().min(1).max(25).optional()
+      })
+      .strict()
+      .optional()
   })
   .superRefine((input, context) => {
     if (input.search_domain === "session" && !input.session_id) {
@@ -86,6 +104,7 @@ interface MemoryQuestionRecord {
   workspaceId?: string | null;
   sessionId?: string | null;
   status?: MemoryQuestionStatus | string;
+  localMemoryWorkerConfig?: Record<string, unknown> | null;
   response?: Record<string, unknown> | null;
   errorMessage?: string | null;
 }
@@ -336,8 +355,9 @@ const terminalSynthesisFailureMessage =
   "Memory answer synthesis failed after retries. Please try again.";
 
 const hasQuestionAttemptsRemaining = (
-  question: MemoryQuestionRecord
-): boolean => (question.attemptCount ?? 0) < questionAnswerMaxAttempts();
+  question: MemoryQuestionRecord,
+  maxAttempts = questionAnswerMaxAttempts()
+): boolean => (question.attemptCount ?? 0) < maxAttempts;
 
 const isRetryableBridgeError = (error: unknown): boolean => {
   if (error instanceof MemoryApiError) {
@@ -375,6 +395,130 @@ const normalizeRetrievalScope = (
   value: MemoryQuestionRecord["retrievalScope"],
   fallback: string
 ): string => (value === "personal" ? value : fallback);
+
+const workerOverridesFromConfig = (
+  value: unknown
+): ManualMemoryAnswerWorkerOverrides => {
+  const record =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  return {
+    ...(typeof record.provider === "string"
+      ? { provider: record.provider }
+      : {}),
+    ...(typeof record.model === "string" ? { model: record.model } : {}),
+    ...(typeof record.reasoningEffort === "string"
+      ? { reasoningEffort: record.reasoningEffort }
+      : typeof record.reasoning_effort === "string"
+        ? { reasoningEffort: record.reasoning_effort }
+        : {}),
+    ...(typeof record.timeoutMs === "number"
+      ? { timeoutMs: record.timeoutMs }
+      : typeof record.timeout_ms === "number"
+        ? { timeoutMs: record.timeout_ms }
+        : {}),
+    ...(typeof record.maxAttempts === "number"
+      ? { maxAttempts: record.maxAttempts }
+      : typeof record.max_attempts === "number"
+        ? { maxAttempts: record.max_attempts }
+        : {})
+  };
+};
+
+const storedWorkerConfigFromInput = (
+  input: z.infer<typeof requestSchema>["local_memory_worker_config"]
+): Record<string, unknown> | undefined => {
+  if (!input) {
+    return undefined;
+  }
+  return {
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.reasoning_effort
+      ? { reasoning_effort: input.reasoning_effort }
+      : {}),
+    ...(input.timeout_ms ? { timeout_ms: input.timeout_ms } : {}),
+    ...(input.max_attempts ? { max_attempts: input.max_attempts } : {})
+  };
+};
+
+const publicMemoryAnswerConfig = (
+  config: ReturnType<typeof resolveMemoryAnswerWorkerConfig>
+) => ({
+  provider: config.provider,
+  model: config.model,
+  reasoningEffort: config.reasoningEffort,
+  timeoutMs: config.timeoutMs,
+  maxAttempts: config.maxAttempts,
+  planningMode: config.planningMode,
+  maxSearches: config.maxSearches,
+  maxExpansions: config.maxExpansions,
+  appServerBinary: config.appServerBinary
+});
+
+const publicLcmSummaryConfig = (
+  config: ReturnType<typeof resolveLcmSummaryWorkerConfig>
+) => ({
+  provider: config.provider,
+  model: config.model,
+  reasoningEffort: config.reasoningEffort,
+  timeoutMs: config.timeoutMs,
+  maxAttempts: config.maxAttempts,
+  retryDelayMs: config.retryDelayMs,
+  concurrency: config.concurrency,
+  maxPromptTokens: config.maxPromptTokens,
+  appServerBinary: config.appServerBinary
+});
+
+export const localMemoryAgentSettings = async (
+  env: NodeJS.ProcessEnv = process.env
+) => {
+  const mcpMemoryAnswer = resolveMemoryAnswerWorkerConfig(env);
+  const manualMemoryAnswer = resolveManualMemoryAnswerWorkerConfig(env);
+  const lcmSummary = resolveLcmSummaryWorkerConfig(env);
+  const codexAvailability =
+    manualMemoryAnswer.provider === "codex"
+      ? await checkCodexAppServerAvailability({
+          appServerBinary: manualMemoryAnswer.appServerBinary,
+          model: manualMemoryAnswer.model,
+          cwd: manualMemoryAnswer.cwd,
+          env: manualMemoryAnswer.env
+        })
+      : {
+          available: false,
+          error: `Unsupported local AI Client provider: ${manualMemoryAnswer.provider}`
+        };
+
+  return {
+    aiClients: [
+      {
+        id: "codex",
+        label: "Codex",
+        status: codexAvailability.available ? "ready" : "unavailable",
+        error: codexAvailability.error ?? null
+      }
+    ],
+    flows: {
+      mcpMemoryAnswer: publicMemoryAnswerConfig(mcpMemoryAnswer),
+      manualMemoryAnswer: {
+        ...publicMemoryAnswerConfig(manualMemoryAnswer),
+        modelOptions: resolveMemoryAnswerModelOptions(env)
+      },
+      lcmSummary: publicLcmSummaryConfig(lcmSummary)
+    },
+    precedence: {
+      mcpMemoryAnswer: ["MEMORY_ANSWER_*", "code defaults"],
+      manualMemoryAnswer: [
+        "Explorer per-question selection",
+        "MEMORY_MANUAL_ANSWER_*",
+        "MEMORY_ANSWER_*",
+        "code defaults"
+      ],
+      lcmSummary: ["MEMORY_LCM_SUMMARY_*", "code defaults"]
+    }
+  };
+};
 
 const updateQuestionWithAnswer = async (
   client: MemoryApiClient,
@@ -607,6 +751,10 @@ export const answerClaimedMemoryQuestion = async (
     question.retrievalScope,
     options.fallbackRetrievalScope ?? "personal"
   );
+  const workerConfig = resolveManualMemoryAnswerWorkerConfig(
+    process.env,
+    workerOverridesFromConfig(question.localMemoryWorkerConfig)
+  );
   try {
     const evidence = {
       markdown: "",
@@ -619,6 +767,7 @@ export const answerClaimedMemoryQuestion = async (
       }
     };
     const answer = await answerWithMemoryWorker(evidence, {
+      config: workerConfig,
       client,
       retrievalScope,
       searchDomain,
@@ -628,7 +777,10 @@ export const answerClaimedMemoryQuestion = async (
       responseDetail: "with_evidence"
     });
     if (isRetryableSynthesisFallback(answer)) {
-      const retryable = hasQuestionAttemptsRemaining(question);
+      const retryable = hasQuestionAttemptsRemaining(
+        question,
+        workerConfig.maxAttempts
+      );
       const message = retryable
         ? retryableSynthesisFailureMessage
         : terminalSynthesisFailureMessage;
@@ -663,7 +815,8 @@ export const answerClaimedMemoryQuestion = async (
   } catch (error) {
     const message = errorMessage(error);
     const retryable =
-      hasQuestionAttemptsRemaining(question) && isRetryableBridgeError(error);
+      hasQuestionAttemptsRemaining(question, workerConfig.maxAttempts) &&
+      isRetryableBridgeError(error);
     const updated = await (
       retryable
         ? releaseQuestionForRetry(client, question, message)
@@ -816,7 +969,10 @@ export const handleAnswerLocal = async (
         project_path: input.project_path,
         session_id: input.session_id,
         thread_id: input.thread_id,
-        thread_name: input.thread_name
+        thread_name: input.thread_name,
+        local_memory_worker_config: storedWorkerConfigFromInput(
+          input.local_memory_worker_config
+        )
       })
     );
 
@@ -879,6 +1035,28 @@ export const createAnswerBridgeServer = (options?: {
             ok: true,
             service: "koed-memory-answer-bridge",
             apiUrl: defaultConfig().apiUrl
+          });
+          return;
+        }
+
+        if (
+          request.method === "GET" &&
+          request.url === "/v1/memory/local-agent-settings"
+        ) {
+          const token = bearerToken(request);
+          if (!token) {
+            sendJson(request, response, 401, {
+              error: "Bearer API token required"
+            });
+            return;
+          }
+          await new MemoryApiClient({
+            ...defaultConfig(),
+            apiToken: token
+          }).accessCheck();
+          sendJson(request, response, 200, {
+            ok: true,
+            ...(await localMemoryAgentSettings())
           });
           return;
         }
