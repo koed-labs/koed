@@ -4281,10 +4281,7 @@ export const createMemorySourceRepository = (
 
   async listCapturedSessionsNeedingTitles(actor, input = {}) {
     const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
-    const minUserEvents = Math.min(
-      Math.max(input.minUserEvents ?? 3, 1),
-      50
-    );
+    const minUserEvents = Math.min(Math.max(input.minUserEvents ?? 3, 1), 50);
     const result = await pool.query<
       Parameters<typeof mapCapturedSessionTitleCandidate>[0]
     >(

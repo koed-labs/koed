@@ -297,10 +297,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     },
     async listCapturedSessionsNeedingTitles(actor, input = {}) {
       const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
-      const minUserEvents = Math.min(
-        Math.max(input.minUserEvents ?? 3, 1),
-        50
-      );
+      const minUserEvents = Math.min(Math.max(input.minUserEvents ?? 3, 1), 50);
       const candidates = [...capturedSessions.values()]
         .filter((session) => {
           if (
@@ -3243,8 +3240,8 @@ describe("account and access flows", () => {
       id: session.id
     });
     expect(
-      jsonBody<GraphThreadIndexResponse>(threads).projects
-        .flatMap((project) => project.threads)
+      jsonBody<GraphThreadIndexResponse>(threads)
+        .projects.flatMap((project) => project.threads)
         .find((thread) => thread.sessionId === session.id)
     ).toMatchObject({
       id: "thread-title-a",
@@ -3326,16 +3323,15 @@ describe("account and access flows", () => {
     await app.close();
 
     expect(pending.statusCode).toBe(200);
-    expect(jsonBody<{ sessions: Array<{ id: string }> }>(pending).sessions).toEqual([
-      expect.objectContaining({ id: session.id })
-    ]);
+    expect(
+      jsonBody<{ sessions: Array<{ id: string }> }>(pending).sessions
+    ).toEqual([expect.objectContaining({ id: session.id })]);
     expect(submitted.statusCode).toBe(200);
     expect(jsonBody<{ title: string }>(submitted).title).toBe(
       "History Browser Titles"
     );
     expect(
-      jsonBody<{ sessions: Array<{ id: string }> }>(pendingAfterSubmit)
-        .sessions
+      jsonBody<{ sessions: Array<{ id: string }> }>(pendingAfterSubmit).sessions
     ).toHaveLength(0);
   });
 
