@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 import { createDbPool, createMemorySourceRepository } from "@koed/db";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
+import type { EmbeddingQueueJobData } from "./job-workflows.js";
 
 loadWorkerEnv();
 
@@ -10,7 +11,7 @@ const batchSize = Number.parseInt(
   process.env.EMBEDDING_BACKFILL_BATCH ?? "500",
   10
 );
-const queue = new Queue("memory-embed", {
+const queue = new Queue<EmbeddingQueueJobData>("memory-embed", {
   connection: {
     url: workerEnv.redisUrl,
     maxRetriesPerRequest: null
