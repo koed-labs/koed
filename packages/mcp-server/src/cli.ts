@@ -4,7 +4,10 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { answerWithMemoryWorker } from "./answer-worker.js";
+import {
+  answerWithMemoryWorker,
+  resolveMemoryAnswerWorkerConfig
+} from "./answer-worker.js";
 import { startAnswerBridgeWithRetry } from "./answer-bridge-lifecycle.js";
 import {
   MemoryApiClient,
@@ -12,9 +15,11 @@ import {
   defaultAnswerScope,
   defaultConfig,
   exposedTools,
+  localMemoryAgentSettingFor,
   memoryAnswerToolDescription,
   memoryAccessCheck,
   memoryServerInstructions,
+  workerOverridesFromLocalMemorySetting,
   resolveToolExposureConfig
 } from "./index.js";
 import {
@@ -302,6 +307,16 @@ server.registerTool(
   async (input) => {
     const { include_evidence, response_detail, ...answerInput } = input;
     const retrieval_scope = defaultAnswerScope(await client.accessCheck());
+    const localAgentSettings = await client
+      .listLocalMemoryAgentSettings()
+      .then((response) => response.settings)
+      .catch(() => []);
+    const workerConfig = resolveMemoryAnswerWorkerConfig(
+      process.env,
+      workerOverridesFromLocalMemorySetting(
+        localMemoryAgentSettingFor(localAgentSettings, "mcp_memory_answer")
+      )
+    );
     const workspace_id =
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
@@ -317,6 +332,7 @@ server.registerTool(
       }
     };
     const answer = await answerWithMemoryWorker(evidence, {
+      config: workerConfig,
       client,
       retrievalScope: retrieval_scope,
       searchDomain: input.search_domain,

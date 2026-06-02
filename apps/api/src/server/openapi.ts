@@ -22,6 +22,8 @@ const openApiEndpoints: Array<[string, string]> = [
   ["PATCH", "/v1/memory/graph/events/{eventId}"],
   ["DELETE", "/v1/memory/graph/events/{eventId}"],
   ["GET", "/v1/memory/export"],
+  ["GET", "/v1/memory/local-agent-settings"],
+  ["PUT", "/v1/memory/local-agent-settings/{flowKey}"],
   ["GET", "/v1/memory/questions"],
   ["POST", "/v1/memory/questions"],
   ["POST", "/v1/memory/questions/claim-pending"],

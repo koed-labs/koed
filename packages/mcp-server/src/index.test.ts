@@ -366,6 +366,9 @@ describe("LCM summary background service", () => {
       releasePending = resolve;
     });
     const fakeClient = {
+      async listLocalMemoryAgentSettings() {
+        return { settings: [] };
+      },
       async listPendingLcmSummaries() {
         await pending;
         return { nodes: [] };
@@ -390,6 +393,61 @@ describe("LCM summary background service", () => {
     });
     releasePending();
     expect(await firstRun).toMatchObject({ ran: true });
+    service!.stop();
+  });
+
+  it("applies persisted LCM summary settings before startup env fallback", async () => {
+    const fakeClient = {
+      async listLocalMemoryAgentSettings() {
+        return {
+          settings: [
+            {
+              ownerUserId: "user-1",
+              flowKey: "lcm_summary",
+              provider: "codex",
+              model: "gpt-5.4-persisted",
+              reasoningEffort: "xhigh",
+              timeoutMs: 123_000,
+              maxAttempts: 4,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }
+          ]
+        };
+      },
+      async listPendingLcmSummaries() {
+        return { nodes: [] };
+      }
+    } as unknown as MemoryApiClient;
+
+    const service = startLcmSummaryService(fakeClient, {
+      serviceConfig: {
+        initialDelayMs: 60_000,
+        pushDelayMs: 10_000,
+        intervalMs: 60_000,
+        batchLimit: 2
+      },
+      workerConfig: resolveLcmSummaryWorkerConfig(
+        {},
+        {
+          model: "gpt-5.4-env-fallback",
+          reasoningEffort: "medium",
+          timeoutMs: 60_000,
+          maxAttempts: 2
+        }
+      )
+    });
+
+    expect(service).not.toBeNull();
+    const result = await service!.trigger("test");
+    expect(result.result).toMatchObject({
+      config: {
+        model: "gpt-5.4-persisted",
+        reasoningEffort: "xhigh",
+        timeoutMs: 123_000,
+        maxAttempts: 4
+      }
+    });
     service!.stop();
   });
 
@@ -418,6 +476,9 @@ describe("LCM summary background service", () => {
     const submissions: Record<string, unknown>[] = [];
     let listed = false;
     const fakeClient = {
+      async listLocalMemoryAgentSettings() {
+        return { settings: [] };
+      },
       async listPendingLcmSummaries() {
         if (listed) {
           return { nodes: [] };

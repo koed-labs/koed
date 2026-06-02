@@ -17,6 +17,47 @@ export interface McpServerConfig {
   requestTimeoutMs?: number;
 }
 
+export type LocalMemoryAgentFlowKey = "mcp_memory_answer" | "lcm_summary";
+
+export interface LocalMemoryAgentSettingRecord {
+  ownerUserId: string;
+  flowKey: LocalMemoryAgentFlowKey;
+  provider: "codex";
+  model: string;
+  reasoningEffort: string;
+  timeoutMs: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const localMemoryAgentSettingFor = (
+  settings: LocalMemoryAgentSettingRecord[],
+  flowKey: LocalMemoryAgentFlowKey
+): LocalMemoryAgentSettingRecord | undefined =>
+  settings.find((setting) => setting.flowKey === flowKey);
+
+export const workerOverridesFromLocalMemorySetting = (
+  setting: LocalMemoryAgentSettingRecord | undefined
+):
+  | {
+      provider: "codex";
+      model: string;
+      reasoningEffort: string;
+      timeoutMs: number;
+      maxAttempts: number;
+    }
+  | undefined =>
+  setting
+    ? {
+        provider: setting.provider,
+        model: setting.model,
+        reasoningEffort: setting.reasoningEffort,
+        timeoutMs: setting.timeoutMs,
+        maxAttempts: setting.maxAttempts
+      }
+    : undefined;
+
 export interface AccessCheckResult {
   ok: boolean;
   auth: "bearer_api_token";
@@ -269,6 +310,35 @@ export class MemoryApiClient {
     );
   }
 
+  async listLocalMemoryAgentSettings(): Promise<{
+    settings: LocalMemoryAgentSettingRecord[];
+  }> {
+    return this.request("GET", "/v1/memory/local-agent-settings");
+  }
+
+  async upsertLocalMemoryAgentSetting(
+    flowKey: LocalMemoryAgentFlowKey,
+    input: {
+      provider: "codex";
+      model: string;
+      reasoningEffort: string;
+      timeoutMs: number;
+      maxAttempts: number;
+    }
+  ): Promise<{ setting: LocalMemoryAgentSettingRecord }> {
+    return this.request(
+      "PUT",
+      `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`,
+      {
+        provider: input.provider,
+        model: input.model,
+        reasoning_effort: input.reasoningEffort,
+        timeout_ms: input.timeoutMs,
+        max_attempts: input.maxAttempts
+      }
+    );
+  }
+
   async search(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
@@ -342,7 +412,7 @@ export class MemoryApiClient {
   }
 
   private async request<T>(
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT",
     path: string,
     body?: unknown
   ): Promise<T> {

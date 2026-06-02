@@ -106,7 +106,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_MANUAL_ANSWER_REASONING_EFFORT`: default reasoning effort for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_REASONING_EFFORT`.
 - `MEMORY_MANUAL_ANSWER_TIMEOUT_MS`: default timeout for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_TIMEOUT_MS`.
 - `MEMORY_MANUAL_ANSWER_MAX_ATTEMPTS`: default retry attempts for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_MAX_ATTEMPTS`.
-- `MEMORY_MANUAL_ANSWER_MODEL_OPTIONS`: comma-separated Codex model options shown in the Explorer manual Memory Question selector.
+- Manual Memory Question model and reasoning options are read from Codex app-server `model/list`; `.env` only provides the initial default selection.
 - `MEMORY_QUESTION_ANSWER_MAX_ATTEMPTS`: bridge-level retry cap for older pending question rows without per-question max attempts.
 - `MEMORY_QUESTION_ANSWER_LOCAL_LEASE_SECONDS`: short renewable lease used when the local bridge claims a pending manual Memory Question.
 - `MEMORY_LCM_SUMMARY_PROVIDER`: AI Client provider for LCM Summary synthesis. Default and only supported value: `codex`.
@@ -126,7 +126,9 @@ Configure Codex to run the Supported Capture Hook for `SessionStart`, `UserPromp
 
 Koed Self-Hosted relies on the connected AI Client for Synthesis; backend LLM provider configuration and server-side synthesis are unsupported in this build.
 The MCP-local LCM Summary Service is enabled by default in this build. Failures are reported as diagnostics and pending summaries remain searchable as degraded evidence.
-Manual Memory Question settings selected in the Explorer are stored on the question row so retry and background catch-up use the same model, reasoning effort, timeout, and attempts. If Codex app-server cannot be started, local Synthesis fails visibly instead of falling back to a backend LLM path.
+MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempt settings can be edited in the Explorer Settings panel. The API stores those user settings and the local MCP/bridge reads them at execution time. `.env` values are bootstrap defaults only; precedence is API user setting, then `.env`, then code default.
+
+Manual Memory Question settings selected in the Explorer composer are stored on the question row so retry and background catch-up use the same model, reasoning effort, timeout, and attempts. If Codex app-server cannot be started, local Synthesis fails visibly instead of falling back to a backend LLM path.
 
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
 for a future AI-client approval flow and is not an implemented backend prompt.

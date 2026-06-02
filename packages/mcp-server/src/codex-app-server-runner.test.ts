@@ -6,6 +6,7 @@ import {
   CodexAppServerTurnError,
   koedAppServerMinimalContextConfig,
   koedAppServerWorkerDeveloperInstructions,
+  listCodexAppServerModels,
   resolveCodexAppServerBinary,
   runCodexAppServerTurn
 } from "./codex-app-server-runner.js";
@@ -14,6 +15,10 @@ const writeFakeAppServer = (
   directory: string,
   options: {
     malformedStdout?: string;
+    modelPages?: Array<{
+      expectedCursor?: string | null;
+      response: Record<string, unknown>;
+    }>;
     turnStatus?: "completed" | "failed" | "interrupted";
   } = {}
 ): string => {
@@ -67,9 +72,11 @@ for (const expectedLine of [
 const lineReader = readline.createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 const malformedStdout = ${JSON.stringify(options.malformedStdout ?? "")};
+const modelPages = ${JSON.stringify(options.modelPages ?? [])};
 const turnStatus = ${JSON.stringify(options.turnStatus ?? "completed")};
 let threadId = "thread-test";
 let turnId = "turn-test";
+let modelListCalls = 0;
 
 lineReader.on("line", (line) => {
   if (!line.trim()) return;
@@ -83,6 +90,24 @@ lineReader.on("line", (line) => {
     return;
   }
   if (message.method === "initialized") {
+    return;
+  }
+  if (message.method === "model/list") {
+    const page = modelPages[modelListCalls];
+    if (!page) {
+      console.error("unexpected model/list call " + modelListCalls);
+      process.exit(49);
+    }
+    if (page.expectedCursor === null && "cursor" in message.params) {
+      console.error("expected no cursor on model/list call " + modelListCalls);
+      process.exit(50);
+    }
+    if (typeof page.expectedCursor === "string" && message.params.cursor !== page.expectedCursor) {
+      console.error("expected cursor " + page.expectedCursor + " on model/list call " + modelListCalls + ", got " + JSON.stringify(message.params.cursor));
+      process.exit(51);
+    }
+    modelListCalls += 1;
+    send({ id: message.id, result: page.response });
     return;
   }
   if (message.method === "thread/start") {
@@ -149,6 +174,92 @@ describe("Codex app-server runner", () => {
     expect(koedAppServerWorkerDeveloperInstructions).toContain(
       "Return only the JSON shape requested by the task prompt"
     );
+  });
+
+  it("pages through Codex app-server model/list results", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-model-list-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+
+    try {
+      const models = await listCodexAppServerModels(
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            modelPages: [
+              {
+                expectedCursor: null,
+                response: {
+                  data: [
+                    {
+                      id: "model-a",
+                      model: "gpt-5.4-mini",
+                      displayName: "GPT-5.4 mini",
+                      hidden: false,
+                      isDefault: true,
+                      defaultReasoningEffort: "medium",
+                      supportedReasoningEfforts: [
+                        {
+                          reasoningEffort: "medium",
+                          description: "Medium"
+                        }
+                      ]
+                    }
+                  ],
+                  nextCursor: "page-2"
+                }
+              },
+              {
+                expectedCursor: "page-2",
+                response: {
+                  data: [
+                    {
+                      id: "model-b",
+                      model: "gpt-5.4",
+                      displayName: "GPT-5.4",
+                      hidden: false,
+                      isDefault: false,
+                      defaultReasoningEffort: "high",
+                      supportedReasoningEfforts: [
+                        {
+                          reasoningEffort: "high",
+                          description: "High"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }),
+          model: "gpt-5.4-mini",
+          cwd: tempDirectory,
+          env: {
+            ...process.env,
+            CODEX_HOME: realCodexHome,
+            FAKE_REAL_CODEX_HOME: realCodexHome
+          }
+        },
+        3000
+      );
+
+      expect(models.map((model) => model.model)).toEqual([
+        "gpt-5.4-mini",
+        "gpt-5.4"
+      ]);
+      expect(models[0]).toMatchObject({
+        label: "GPT-5.4 mini",
+        isDefault: true,
+        defaultReasoningEffort: "medium"
+      });
+      expect(models[1]).toMatchObject({
+        label: "GPT-5.4",
+        defaultReasoningEffort: "high"
+      });
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
   });
 
   it("runs a turn through app-server stdio without using codex exec", async () => {

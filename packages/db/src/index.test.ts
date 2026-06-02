@@ -3077,6 +3077,66 @@ describeDb("memory repository visibility", () => {
     }
   });
 
+  it("persists local memory agent settings per user and flow", async () => {
+    const alice = await repo.createUser({
+      email: `alice-local-agent-settings-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-local-agent-settings-${randomUUID()}@example.com`
+    });
+
+    const created = await repo.upsertLocalMemoryAgentSetting(
+      { userId: alice.id },
+      {
+        flowKey: "mcp_memory_answer",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        timeoutMs: 180000,
+        maxAttempts: 3
+      }
+    );
+    const updated = await repo.upsertLocalMemoryAgentSetting(
+      { userId: alice.id },
+      {
+        flowKey: "mcp_memory_answer",
+        provider: "codex",
+        model: "gpt-5.4-mini",
+        reasoningEffort: "medium",
+        timeoutMs: 120000,
+        maxAttempts: 2
+      }
+    );
+    await repo.upsertLocalMemoryAgentSetting(
+      { userId: alice.id },
+      {
+        flowKey: "lcm_summary",
+        provider: "codex",
+        model: "gpt-5.4-mini",
+        reasoningEffort: "low",
+        timeoutMs: 90000,
+        maxAttempts: 4
+      }
+    );
+
+    expect(created.flowKey).toBe("mcp_memory_answer");
+    expect(updated).toMatchObject({
+      ownerUserId: alice.id,
+      flowKey: "mcp_memory_answer",
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      reasoningEffort: "medium",
+      timeoutMs: 120000,
+      maxAttempts: 2
+    });
+    expect(
+      await repo.listLocalMemoryAgentSettings({ userId: alice.id })
+    ).toHaveLength(2);
+    expect(await repo.listLocalMemoryAgentSettings({ userId: bob.id })).toEqual(
+      []
+    );
+  });
+
   it("stores validated token usage source references", async () => {
     const alice = await repo.createUser({
       email: `alice-token-source-references-${randomUUID()}@example.com`

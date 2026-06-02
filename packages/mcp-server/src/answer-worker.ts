@@ -41,12 +41,6 @@ export interface ManualMemoryAnswerWorkerOverrides {
   maxAttempts?: number;
 }
 
-export interface LocalMemoryAgentModelOption {
-  provider: "codex";
-  model: string;
-  label: string;
-}
-
 export interface MemoryAnswerWorkerStatus {
   provider: string;
   promptVersion: string;
@@ -262,46 +256,39 @@ const parsePositiveInteger = (
   );
 };
 
-const splitModelOptions = (value: string | undefined): string[] =>
-  (value ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-
-export const resolveMemoryAnswerModelOptions = (
-  env: NodeJS.ProcessEnv = process.env
-): LocalMemoryAgentModelOption[] => {
-  const configured = splitModelOptions(
-    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_MODEL_OPTIONS")
-  );
-  const defaults = [
-    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_MODEL"),
-    resolveEnvValue(env, "MEMORY_ANSWER_MODEL"),
-    "gpt-5.4-mini"
-  ].filter((model): model is string => Boolean(model));
-  return [...new Set([...configured, ...defaults])].map((model) => ({
-    provider: "codex",
-    model,
-    label: model
-  }));
-};
-
 export const resolveMemoryAnswerWorkerConfig = (
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: Partial<
+    Pick<
+      MemoryAnswerWorkerConfig,
+      "provider" | "model" | "reasoningEffort" | "timeoutMs" | "maxAttempts"
+    >
+  > = {}
 ): MemoryAnswerWorkerConfig => {
   return {
     provider:
+      overrides.provider ??
       resolveEnvValue(env, "MEMORY_ANSWER_PROVIDER")?.toLowerCase() ??
       CODEX_ANSWER_PROVIDER,
-    model: resolveEnvValue(env, "MEMORY_ANSWER_MODEL") ?? "gpt-5.4-mini",
+    model:
+      overrides.model ??
+      resolveEnvValue(env, "MEMORY_ANSWER_MODEL") ??
+      "gpt-5.4-mini",
     reasoningEffort:
-      resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ?? "high",
-    timeoutMs: integerEnv(
-      env,
-      "MEMORY_ANSWER_TIMEOUT_MS",
-      DEFAULT_ANSWER_TIMEOUT_MS
+      overrides.reasoningEffort ??
+      resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ??
+      "high",
+    timeoutMs: parsePositiveInteger(
+      overrides.timeoutMs ?? resolveEnvValue(env, "MEMORY_ANSWER_TIMEOUT_MS"),
+      DEFAULT_ANSWER_TIMEOUT_MS,
+      { min: 1000, max: 600000 }
     ),
-    maxAttempts: Math.max(1, integerEnv(env, "MEMORY_ANSWER_MAX_ATTEMPTS", 2)),
+    maxAttempts: parsePositiveInteger(
+      overrides.maxAttempts ??
+        resolveEnvValue(env, "MEMORY_ANSWER_MAX_ATTEMPTS"),
+      2,
+      { min: 1, max: 25 }
+    ),
     planningMode:
       resolveEnvValue(env, "MEMORY_ANSWER_PLANNING_MODE") === "single_pass"
         ? "single_pass"

@@ -46,6 +46,9 @@ export type CapturePolicyTarget = "global" | "project" | "thread";
 export type MemoryQuestionStatus = "pending" | "answered" | "error";
 export type MemoryQuestionSearchDomain = "global" | "project" | "session";
 export type MemoryQuestionRetrievalScope = "personal";
+export type LocalMemoryAgentSettingsFlowKey =
+  | "mcp_memory_answer"
+  | "lcm_summary";
 
 export interface ActorContext {
   userId: string;
@@ -640,6 +643,18 @@ export interface MemoryQuestionDetailRecord extends MemoryQuestionShellRecord {
   response: Record<string, unknown> | null;
 }
 
+export interface LocalMemoryAgentSettingRecord {
+  ownerUserId: string;
+  flowKey: LocalMemoryAgentSettingsFlowKey;
+  provider: "codex";
+  model: string;
+  reasoningEffort: string;
+  timeoutMs: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface MemorySourceRepository extends MemoryEngineRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
@@ -737,6 +752,20 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     actor: ActorContext,
     questionId: string
   ): Promise<MemoryQuestionDetailRecord | null>;
+  listLocalMemoryAgentSettings(
+    actor: ActorContext
+  ): Promise<LocalMemoryAgentSettingRecord[]>;
+  upsertLocalMemoryAgentSetting(
+    actor: ActorContext,
+    input: {
+      flowKey: LocalMemoryAgentSettingsFlowKey;
+      provider: "codex";
+      model: string;
+      reasoningEffort: string;
+      timeoutMs: number;
+      maxAttempts: number;
+    }
+  ): Promise<LocalMemoryAgentSettingRecord>;
   updateMemoryQuestion(
     actor: ActorContext,
     questionId: string,
@@ -2687,6 +2716,28 @@ const mapMemoryQuestionDetail = (
   localMemoryWorker: row.local_memory_worker,
   localMemoryWorkerConfig: row.local_memory_worker_config,
   response: row.response
+});
+
+const mapLocalMemoryAgentSetting = (row: {
+  owner_user_id: string;
+  flow_key: LocalMemoryAgentSettingsFlowKey;
+  provider: "codex";
+  model: string;
+  reasoning_effort: string;
+  timeout_ms: number | string;
+  max_attempts: number | string;
+  created_at: Date;
+  updated_at: Date;
+}): LocalMemoryAgentSettingRecord => ({
+  ownerUserId: row.owner_user_id,
+  flowKey: row.flow_key,
+  provider: row.provider,
+  model: row.model,
+  reasoningEffort: row.reasoning_effort,
+  timeoutMs: Number(row.timeout_ms),
+  maxAttempts: Number(row.max_attempts),
+  createdAt: row.created_at.toISOString(),
+  updatedAt: row.updated_at.toISOString()
 });
 
 const mapUser = (row: {
@@ -5136,6 +5187,58 @@ export const createMemorySourceRepository = (
     );
 
     return result.rows[0] ? mapMemoryQuestionDetail(result.rows[0]) : null;
+  },
+
+  async listLocalMemoryAgentSettings(actor) {
+    const result = await pool.query<
+      Parameters<typeof mapLocalMemoryAgentSetting>[0]
+    >(
+      `
+        select
+          owner_user_id, flow_key, provider, model, reasoning_effort,
+          timeout_ms, max_attempts, created_at, updated_at
+        from local_memory_agent_settings
+        where owner_user_id = $1
+        order by flow_key asc
+      `,
+      [actor.userId]
+    );
+    return result.rows.map(mapLocalMemoryAgentSetting);
+  },
+
+  async upsertLocalMemoryAgentSetting(actor, input) {
+    const result = await pool.query<
+      Parameters<typeof mapLocalMemoryAgentSetting>[0]
+    >(
+      `
+        insert into local_memory_agent_settings (
+          owner_user_id, flow_key, provider, model, reasoning_effort,
+          timeout_ms, max_attempts
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (owner_user_id, flow_key)
+        do update set
+          provider = excluded.provider,
+          model = excluded.model,
+          reasoning_effort = excluded.reasoning_effort,
+          timeout_ms = excluded.timeout_ms,
+          max_attempts = excluded.max_attempts,
+          updated_at = now()
+        returning
+          owner_user_id, flow_key, provider, model, reasoning_effort,
+          timeout_ms, max_attempts, created_at, updated_at
+      `,
+      [
+        actor.userId,
+        input.flowKey,
+        input.provider,
+        input.model,
+        input.reasoningEffort,
+        input.timeoutMs,
+        input.maxAttempts
+      ]
+    );
+    return mapLocalMemoryAgentSetting(result.rows[0]!);
   },
 
   async updateMemoryQuestion(actor, questionId, input) {

@@ -6,17 +6,22 @@ import { z } from "zod";
 import {
   answerWithMemoryWorker,
   resolveManualMemoryAnswerWorkerConfig,
-  resolveMemoryAnswerModelOptions,
   resolveMemoryAnswerWorkerConfig,
   type ManualMemoryAnswerWorkerOverrides,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
-import { checkCodexAppServerAvailability } from "./codex-app-server-runner.js";
+import {
+  checkCodexAppServerAvailability,
+  listCodexAppServerModels,
+  type CodexAppServerModelOption
+} from "./codex-app-server-runner.js";
 import {
   defaultAnswerScope,
   defaultConfig,
+  localMemoryAgentSettingFor,
   MemoryApiClient,
-  MemoryApiError
+  MemoryApiError,
+  workerOverridesFromLocalMemorySetting
 } from "./index.js";
 import { resolveLcmSummaryWorkerConfig } from "./lcm-summary-worker.js";
 import {
@@ -66,9 +71,7 @@ const requestSchema = z
       .object({
         provider: z.literal("codex").optional(),
         model: z.string().trim().min(1).optional(),
-        reasoning_effort: z
-          .enum(["minimal", "low", "medium", "high"])
-          .optional(),
+        reasoning_effort: z.string().trim().min(1).optional(),
         timeout_ms: z.coerce.number().int().min(1000).max(600000).optional(),
         max_attempts: z.coerce.number().int().min(1).max(25).optional()
       })
@@ -471,24 +474,90 @@ const publicLcmSummaryConfig = (
   appServerBinary: config.appServerBinary
 });
 
-export const localMemoryAgentSettings = async (
-  env: NodeJS.ProcessEnv = process.env
+const publicModelOptions = (
+  models: CodexAppServerModelOption[],
+  fallbackModel: string
 ) => {
-  const mcpMemoryAnswer = resolveMemoryAnswerWorkerConfig(env);
+  const visible = models.filter((model) => !model.hidden);
+  const options = visible.length > 0 ? visible : models;
+  const mapped = options.map((model) => ({
+    provider: "codex" as const,
+    id: model.id,
+    model: model.model,
+    label: model.label,
+    description: model.description ?? null,
+    isDefault: model.isDefault,
+    defaultReasoningEffort: model.defaultReasoningEffort ?? null,
+    supportedReasoningEfforts: model.supportedReasoningEfforts
+  }));
+  if (!mapped.some((option) => option.model === fallbackModel)) {
+    mapped.push({
+      provider: "codex" as const,
+      id: fallbackModel,
+      model: fallbackModel,
+      label: fallbackModel,
+      description: null,
+      isDefault: mapped.length === 0,
+      defaultReasoningEffort: null,
+      supportedReasoningEfforts: []
+    });
+  }
+  return mapped;
+};
+
+export const localMemoryAgentSettings = async (
+  env: NodeJS.ProcessEnv = process.env,
+  client?: MemoryApiClient
+) => {
+  const storedSettings = client
+    ? (await client.listLocalMemoryAgentSettings()).settings
+    : [];
+  const mcpMemoryAnswer = resolveMemoryAnswerWorkerConfig(
+    env,
+    workerOverridesFromLocalMemorySetting(
+      localMemoryAgentSettingFor(storedSettings, "mcp_memory_answer")
+    )
+  );
   const manualMemoryAnswer = resolveManualMemoryAnswerWorkerConfig(env);
-  const lcmSummary = resolveLcmSummaryWorkerConfig(env);
+  const lcmSummary = resolveLcmSummaryWorkerConfig(
+    env,
+    workerOverridesFromLocalMemorySetting(
+      localMemoryAgentSettingFor(storedSettings, "lcm_summary")
+    )
+  );
+  const representativeCodexConfig = manualMemoryAnswer;
+  let modelListError: string | null = null;
   const codexAvailability =
-    manualMemoryAnswer.provider === "codex"
+    representativeCodexConfig.provider === "codex"
       ? await checkCodexAppServerAvailability({
-          appServerBinary: manualMemoryAnswer.appServerBinary,
-          model: manualMemoryAnswer.model,
-          cwd: manualMemoryAnswer.cwd,
-          env: manualMemoryAnswer.env
+          appServerBinary: representativeCodexConfig.appServerBinary,
+          model: representativeCodexConfig.model,
+          cwd: representativeCodexConfig.cwd,
+          env: representativeCodexConfig.env
         })
       : {
           available: false,
-          error: `Unsupported local AI Client provider: ${manualMemoryAnswer.provider}`
+          error: `Unsupported local AI Client provider: ${representativeCodexConfig.provider}`
         };
+  let modelOptions: ReturnType<typeof publicModelOptions>;
+  if (codexAvailability.available) {
+    try {
+      modelOptions = publicModelOptions(
+        await listCodexAppServerModels({
+          appServerBinary: representativeCodexConfig.appServerBinary,
+          model: representativeCodexConfig.model,
+          cwd: representativeCodexConfig.cwd,
+          env: representativeCodexConfig.env
+        }),
+        representativeCodexConfig.model
+      );
+    } catch (error) {
+      modelListError = error instanceof Error ? error.message : String(error);
+      modelOptions = publicModelOptions([], representativeCodexConfig.model);
+    }
+  } else {
+    modelOptions = publicModelOptions([], representativeCodexConfig.model);
+  }
 
   return {
     aiClients: [
@@ -496,26 +565,37 @@ export const localMemoryAgentSettings = async (
         id: "codex",
         label: "Codex",
         status: codexAvailability.available ? "ready" : "unavailable",
-        error: codexAvailability.error ?? null
+        error: codexAvailability.error ?? modelListError ?? null
       }
     ],
+    modelOptions,
+    modelListError,
     flows: {
-      mcpMemoryAnswer: publicMemoryAnswerConfig(mcpMemoryAnswer),
-      manualMemoryAnswer: {
-        ...publicMemoryAnswerConfig(manualMemoryAnswer),
-        modelOptions: resolveMemoryAnswerModelOptions(env)
+      mcpMemoryAnswer: {
+        ...publicMemoryAnswerConfig(mcpMemoryAnswer),
+        source: localMemoryAgentSettingFor(storedSettings, "mcp_memory_answer")
+          ? "db"
+          : "env"
       },
-      lcmSummary: publicLcmSummaryConfig(lcmSummary)
+      manualMemoryAnswer: {
+        ...publicMemoryAnswerConfig(manualMemoryAnswer)
+      },
+      lcmSummary: {
+        ...publicLcmSummaryConfig(lcmSummary),
+        source: localMemoryAgentSettingFor(storedSettings, "lcm_summary")
+          ? "db"
+          : "env"
+      }
     },
     precedence: {
-      mcpMemoryAnswer: ["MEMORY_ANSWER_*", "code defaults"],
+      mcpMemoryAnswer: ["API user setting", "MEMORY_ANSWER_*", "code defaults"],
       manualMemoryAnswer: [
         "Explorer per-question selection",
         "MEMORY_MANUAL_ANSWER_*",
         "MEMORY_ANSWER_*",
         "code defaults"
       ],
-      lcmSummary: ["MEMORY_LCM_SUMMARY_*", "code defaults"]
+      lcmSummary: ["API user setting", "MEMORY_LCM_SUMMARY_*", "code defaults"]
     }
   };
 };
@@ -777,10 +857,7 @@ export const answerClaimedMemoryQuestion = async (
       responseDetail: "with_evidence"
     });
     if (isRetryableSynthesisFallback(answer)) {
-      const retryable = hasQuestionAttemptsRemaining(
-        question,
-        workerConfig.maxAttempts
-      );
+      const retryable = hasQuestionAttemptsRemaining(question);
       const message = retryable
         ? retryableSynthesisFailureMessage
         : terminalSynthesisFailureMessage;
@@ -815,8 +892,7 @@ export const answerClaimedMemoryQuestion = async (
   } catch (error) {
     const message = errorMessage(error);
     const retryable =
-      hasQuestionAttemptsRemaining(question, workerConfig.maxAttempts) &&
-      isRetryableBridgeError(error);
+      hasQuestionAttemptsRemaining(question) && isRetryableBridgeError(error);
     const updated = await (
       retryable
         ? releaseQuestionForRetry(client, question, message)
@@ -1050,13 +1126,14 @@ export const createAnswerBridgeServer = (options?: {
             });
             return;
           }
-          await new MemoryApiClient({
+          const client = new MemoryApiClient({
             ...defaultConfig(),
             apiToken: token
-          }).accessCheck();
+          });
+          await client.accessCheck();
           sendJson(request, response, 200, {
             ok: true,
-            ...(await localMemoryAgentSettings())
+            ...(await localMemoryAgentSettings(process.env, client))
           });
           return;
         }

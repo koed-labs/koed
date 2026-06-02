@@ -8,7 +8,7 @@ export const memoryQuestionWorkerConfigSchema = z
   .object({
     provider: z.literal("codex").optional(),
     model: z.string().trim().min(1).optional(),
-    reasoning_effort: z.enum(["minimal", "low", "medium", "high"]).optional(),
+    reasoning_effort: z.string().trim().min(1).optional(),
     timeout_ms: z.coerce.number().int().min(1000).max(600000).optional(),
     max_attempts: z.coerce.number().int().min(1).max(25).optional()
   })
