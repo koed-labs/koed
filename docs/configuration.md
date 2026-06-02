@@ -81,7 +81,12 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP and Capture Hook API calls. Default `60_000`.
 - `MEMORY_HOOK_DEADLINE_MS`: soft deadline used by Capture Hooks to stop optional work before Codex kills the hook process. Default `8500`.
-- `MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES`: maximum appended Codex transcript bytes inspected by PostToolUse, Stop, and SubagentStop hooks per run. The hook checkpoints transcript offsets and resumes unread bytes on the next invocation. Default `1000000`.
+- `MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES`: maximum sequential Codex transcript bytes processed by one background catch-up pass. The hook checkpoints transcript offsets only after raw rows are stored durably. Default `1000000`.
+- `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES`: maximum latest Codex transcript bytes inspected by a foreground PostToolUse, Stop, or SubagentStop hook when a resumed transcript has a larger unread backlog. This keeps new messages visible while background catch-up drains older unread rows. Default `128000`.
+- `MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP`: when `true`, foreground hooks start a detached local transcript catch-up process when unread transcript backlog remains. Default `true`.
+- `MEMORY_TRANSCRIPT_CATCHUP_PASS_DEADLINE_MS`: soft deadline for one background transcript catch-up API pass. Default `60000`.
+- `MEMORY_TRANSCRIPT_CATCHUP_MAX_RUNTIME_MS`: maximum runtime for one detached transcript catch-up process before the next hook may resume it. Default `300000`.
+- `MEMORY_TRANSCRIPT_CATCHUP_LOCK_TTL_MS`: stale lock age for detached transcript catch-up workers. Default `600000`.
 - `MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS`: when `true`, exposes diagnostic MCP tools such as `memory_access_check`. Default `false`; use the MCP `doctor` CLI command for normal setup checks.
 - `MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS`: when `true`, exposes low-level diagnostic MCP retrieval tools such as `memory_search` and `memory_expand`. Default `false`; normal recall should use `memory_answer`.
 - `MEMORY_HOOK_TRIGGER_LCM_SUMMARY`: when `true`, the Capture Hook starts local LCM summary processing after capture.
