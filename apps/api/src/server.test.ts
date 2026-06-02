@@ -327,15 +327,15 @@ const createFakeRepository = (): MemorySourceRepository => {
               event.ownerUserId === actor.userId &&
               event.visibility === "personal"
           );
-          const userEventCount = sessionEvents.filter(
-            (event) => event.actor === "user"
+          const titleEventCount = sessionEvents.filter(
+            (event) => event.actor === "user" || event.actor === "agent"
           ).length;
-          return { session, sessionEvents, userEventCount };
+          return { session, sessionEvents, titleEventCount };
         })
-        .filter((candidate) => candidate.userEventCount >= minUserEvents)
+        .filter((candidate) => candidate.titleEventCount >= minUserEvents)
         .slice(0, limit);
 
-      return candidates.map(({ session, sessionEvents, userEventCount }) => ({
+      return candidates.map(({ session, sessionEvents, titleEventCount }) => ({
         id: session.id,
         externalSessionId: session.externalSessionId,
         projectName:
@@ -350,11 +350,14 @@ const createFakeRepository = (): MemorySourceRepository => {
           typeof session.metadata.threadName === "string"
             ? session.metadata.threadName
             : null,
-        eventCount: userEventCount,
+        eventCount: titleEventCount,
         sourceItems: sessionEvents
           .filter(
             (event) =>
-              (event.actor === "user" || event.actor === "assistant") &&
+              (event.actor === "user" ||
+                event.actor === "assistant" ||
+                event.actor === "agent" ||
+                event.actor === "subagent") &&
               event.content.trim()
           )
           .slice(0, 8)

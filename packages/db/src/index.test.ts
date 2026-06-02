@@ -4893,6 +4893,115 @@ describeDb("memory repository visibility", () => {
     expect(projects[0]?.threads).toHaveLength(1);
   });
 
+  it("preserves manual session titles across idempotent capture upserts", async () => {
+    const alice = await repo.createUser({
+      email: `alice-manual-title-upsert-${randomUUID()}@example.com`
+    });
+    const idempotencyKey = `manual-title-session-${randomUUID()}`;
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `manual-title-thread-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey,
+        metadata: {
+          threadName: "Original Hook Title",
+          threadNameSource: "provisional"
+        }
+      }
+    );
+    await repo.updateCapturedSessionTitle(
+      { userId: alice.id },
+      session.id,
+      { title: "Manual Rename Wins" }
+    );
+
+    const upserted = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: session.externalSessionId ?? undefined,
+        sourceRuntime: "codex-cli",
+        idempotencyKey,
+        metadata: {
+          threadName: "Original Hook Title",
+          threadNameSource: "provisional",
+          projectName: "Updated Project"
+        }
+      }
+    );
+
+    expect(upserted.id).toBe(session.id);
+    expect(upserted.metadata).toMatchObject({
+      projectName: "Updated Project",
+      threadName: "Manual Rename Wins",
+      threadNameSource: "manual"
+    });
+  });
+
+  it("uses capture-hook subagent actors for generated title eligibility", async () => {
+    const alice = await repo.createUser({
+      email: `alice-subagent-title-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `subagent-title-thread-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey: `subagent-title-session-${randomUUID()}`,
+        metadata: {
+          threadName: "subagent-title-thread",
+          threadNameSource: "provisional",
+          threadKind: "subagent"
+        }
+      }
+    );
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId,
+        sessionId: session.id,
+        actor: "agent",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "Please inspect the session rename implementation.",
+        idempotencyKey: `subagent-title-agent-${randomUUID()}`,
+        sourceHash: `subagent-title-agent-${randomUUID()}`
+      }
+    );
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId,
+        sessionId: session.id,
+        actor: "subagent",
+        eventType: "captured",
+        rawEventType: "message",
+        visibility: "personal",
+        content: "The implementation should cover manual title precedence.",
+        idempotencyKey: `subagent-title-reply-${randomUUID()}`,
+        sourceHash: `subagent-title-reply-${randomUUID()}`
+      }
+    );
+
+    const candidates = await repo.listCapturedSessionsNeedingTitles(
+      { userId: alice.id },
+      { minUserEvents: 1, limit: 5 }
+    );
+    const candidate = candidates.find((item) => item.id === session.id);
+
+    expect(candidate).toMatchObject({
+      id: session.id,
+      eventCount: 1
+    });
+    expect(candidate?.sourceItems.map((item) => item.actor)).toEqual([
+      "agent",
+      "subagent"
+    ]);
+  });
+
   it("stores concrete parent session linkage for subagent sessions", async () => {
     const alice = await repo.createUser({
       email: `alice-subagent-parent-${randomUUID()}@example.com`

@@ -226,7 +226,7 @@ export const lcmSummaryLockState = (
   }
 };
 
-const acquireLocalSummaryLock = (
+export const acquireLocalSummaryLock = (
   env: NodeJS.ProcessEnv,
   staleMs: number
 ): (() => void) | null => {

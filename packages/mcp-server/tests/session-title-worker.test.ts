@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { MemoryApiClient } from "../src/index.js";
 import {
   SESSION_TITLE_PROMPT_VERSION,
@@ -6,6 +9,20 @@ import {
   generatePendingSessionTitles,
   type SessionTitleCandidate
 } from "../src/session-title-worker.js";
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    tempDirs.splice(0).map((directory) => rm(directory, { recursive: true }))
+  );
+});
+
+const tempLockPath = async (): Promise<string> => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "koed-title-test-"));
+  tempDirs.push(directory);
+  return path.join(directory, "lcm-summary.lock");
+};
 
 const candidate: SessionTitleCandidate = {
   id: "00000000-0000-4000-8000-000000000101",
@@ -41,6 +58,23 @@ describe("session title worker", () => {
     expect(prompt).toContain(candidate.id);
   });
 
+  it("bounds large source excerpts before building the title prompt", () => {
+    const prompt = buildSessionTitlePrompt({
+      ...candidate,
+      sourceItems: [
+        {
+          ...candidate.sourceItems[0]!,
+          content: `start ${"large paste ".repeat(2_000)} end`
+        }
+      ]
+    });
+
+    expect(prompt).toContain("start large paste");
+    expect(prompt).toContain("[truncated]");
+    expect(prompt).not.toContain(" end");
+    expect(prompt.length).toBeLessThan(2_000);
+  });
+
   it("submits generated titles for pending sessions", async () => {
     const submitted: unknown[] = [];
     const client = {
@@ -71,7 +105,10 @@ describe("session title worker", () => {
         maxPromptTokens: 1000,
         appServerBinary: "codex",
         cwd: process.cwd(),
-        env: process.env
+        env: {
+          ...process.env,
+          MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+        }
       },
       runner: async () => ({
         title: "History Browser Titles",
@@ -96,5 +133,44 @@ describe("session title worker", () => {
         }
       }
     ]);
+  });
+
+  it("skips title generation while another local memory worker holds the lock", async () => {
+    const lockPath = await tempLockPath();
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid }));
+    let listed = false;
+    const client = {
+      async listPendingSessionTitles() {
+        listed = true;
+        return { sessions: [candidate] };
+      }
+    } as unknown as MemoryApiClient;
+
+    const result = await generatePendingSessionTitles(client, {
+      limit: 1,
+      config: {
+        provider: "codex",
+        model: "codex-app-server:test",
+        reasoningEffort: "low",
+        timeoutMs: 1,
+        maxAttempts: 1,
+        retryDelayMs: 0,
+        concurrency: 1,
+        maxPromptTokens: 1000,
+        appServerBinary: "codex",
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          MEMORY_LCM_SUMMARY_LOCK_PATH: lockPath
+        }
+      }
+    });
+
+    expect(listed).toBe(false);
+    expect(result).toMatchObject({
+      processedCount: 0,
+      submittedCount: 0,
+      skippedReason: "already_running"
+    });
   });
 });

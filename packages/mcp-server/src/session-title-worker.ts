@@ -8,11 +8,13 @@ import {
 } from "./codex-app-server-runner.js";
 import type { MemoryApiClient } from "./index.js";
 import {
+  acquireLocalSummaryLock,
   resolveLcmSummaryWorkerConfig,
   type LcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
 
 export const SESSION_TITLE_PROMPT_VERSION = "session-title-codex-json-v1";
+const MAX_SESSION_TITLE_EXCERPT_CHARS = 1_200;
 
 export interface SessionTitleCandidate {
   id: string;
@@ -74,11 +76,19 @@ const parseSessionTitle = (text: string): string => {
   return normalizeTitle(parsed.title);
 };
 
+const boundedExcerpt = (content: string): string => {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (normalized.length <= MAX_SESSION_TITLE_EXCERPT_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_SESSION_TITLE_EXCERPT_CHARS).trim()} ... [truncated]`;
+};
+
 const sourceItemsForPrompt = (session: SessionTitleCandidate): string =>
   session.sourceItems
     .map((item, index) => {
       const actor = item.actor || "unknown";
-      const content = item.content.replace(/\s+/g, " ").trim();
+      const content = boundedExcerpt(item.content);
       return `${index + 1}. ${actor}: ${content}`;
     })
     .join("\n");
@@ -102,7 +112,7 @@ export const buildSessionTitlePrompt = (
     `- external_session_id: ${session.externalSessionId ?? "none"}`,
     `- current_title: ${session.currentTitle ?? "none"}`,
     `- project: ${session.projectName ?? session.projectPath ?? "unknown"}`,
-    `- user_event_count: ${session.eventCount}`,
+    `- title_event_count: ${session.eventCount}`,
     "",
     "Conversation excerpts:",
     sourceItemsForPrompt(session),
@@ -241,35 +251,66 @@ export const generatePendingSessionTitles = async (
 
   const requestedLimit = options.limit ?? 5;
   const minUserEvents = options.minUserEvents ?? 3;
-  const pending = (await client.listPendingSessionTitles({
-    limit: requestedLimit,
-    minUserEvents
-  })) as { sessions?: SessionTitleCandidate[] };
-  const sessions = pending.sessions ?? [];
-  const runner = options.runner ?? runCodexAppServerSessionTitle;
-  const results = await runWithConcurrency(
-    sessions,
-    config.concurrency,
-    (session) => generateSessionTitle(client, session, config, runner)
+  const releaseLock = acquireLocalSummaryLock(
+    config.env,
+    Math.max(config.timeoutMs * config.maxAttempts * requestedLimit, 1_800_000)
   );
+  if (!releaseLock) {
+    return {
+      requestedLimit,
+      minUserEvents,
+      processedCount: 0,
+      submittedCount: 0,
+      failedCount: 0,
+      skippedReason: "already_running",
+      localOnly: true,
+      config: {
+        provider: config.provider,
+        model: config.model,
+        reasoningEffort: config.reasoningEffort,
+        timeoutMs: config.timeoutMs,
+        maxAttempts: config.maxAttempts,
+        retryDelayMs: config.retryDelayMs,
+        concurrency: config.concurrency,
+        appServerBinary: config.appServerBinary
+      },
+      results: []
+    };
+  }
 
-  return {
-    requestedLimit,
-    minUserEvents,
-    processedCount: results.length,
-    submittedCount: results.filter((result) => result.submitted).length,
-    failedCount: results.filter((result) => !result.submitted).length,
-    localOnly: true,
-    config: {
-      provider: config.provider,
-      model: config.model,
-      reasoningEffort: config.reasoningEffort,
-      timeoutMs: config.timeoutMs,
-      maxAttempts: config.maxAttempts,
-      retryDelayMs: config.retryDelayMs,
-      concurrency: config.concurrency,
-      appServerBinary: config.appServerBinary
-    },
-    results
-  };
+  try {
+    const pending = (await client.listPendingSessionTitles({
+      limit: requestedLimit,
+      minUserEvents
+    })) as { sessions?: SessionTitleCandidate[] };
+    const sessions = pending.sessions ?? [];
+    const runner = options.runner ?? runCodexAppServerSessionTitle;
+    const results = await runWithConcurrency(
+      sessions,
+      config.concurrency,
+      (session) => generateSessionTitle(client, session, config, runner)
+    );
+
+    return {
+      requestedLimit,
+      minUserEvents,
+      processedCount: results.length,
+      submittedCount: results.filter((result) => result.submitted).length,
+      failedCount: results.filter((result) => !result.submitted).length,
+      localOnly: true,
+      config: {
+        provider: config.provider,
+        model: config.model,
+        reasoningEffort: config.reasoningEffort,
+        timeoutMs: config.timeoutMs,
+        maxAttempts: config.maxAttempts,
+        retryDelayMs: config.retryDelayMs,
+        concurrency: config.concurrency,
+        appServerBinary: config.appServerBinary
+      },
+      results
+    };
+  } finally {
+    releaseLock();
+  }
 };

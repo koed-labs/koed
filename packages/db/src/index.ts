@@ -4188,7 +4188,18 @@ export const createMemorySourceRepository = (
         where idempotency_key is not null
         do update set
           updated_at = now(),
-          metadata = sessions.metadata || excluded.metadata,
+          metadata =
+            sessions.metadata ||
+            excluded.metadata ||
+            case
+              when sessions.metadata ->> 'threadNameSource' = 'manual'
+              then jsonb_strip_nulls(jsonb_build_object(
+                'threadName', sessions.metadata ->> 'threadName',
+                'threadNameSource', sessions.metadata ->> 'threadNameSource',
+                'threadNameEditedAt', sessions.metadata ->> 'threadNameEditedAt'
+              ))
+              else '{}'::jsonb
+            end,
           parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
           source_metadata = sessions.source_metadata || excluded.source_metadata
         returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
@@ -4293,7 +4304,7 @@ export const createMemorySourceRepository = (
             coalesce(s.metadata ->> 'projectName', s.cwd, s.workspace_id::text) as project_name,
             coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
             s.metadata ->> 'threadName' as current_title,
-            count(me.id) filter (where me.payload ->> 'actor' = 'user')::text as event_count,
+            count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent'))::text as event_count,
             max(coalesce(me.source_event_time, me.captured_at)) as latest_event_at
           from sessions s
           join memory_events me on me.session_id = s.id
@@ -4310,9 +4321,9 @@ export const createMemorySourceRepository = (
               or s.metadata ->> 'threadName' = coalesce(s.external_session_id, '')
               or s.metadata ->> 'threadName' = s.id::text
               or s.metadata ->> 'threadNameSource' = 'provisional'
-            )
+          )
           group by s.id
-          having count(me.id) filter (where me.payload ->> 'actor' = 'user') >= $2
+          having count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent')) >= $2
           order by max(coalesce(me.source_event_time, me.captured_at)) desc, s.id desc
           limit $3
         )
@@ -4337,7 +4348,7 @@ export const createMemorySourceRepository = (
               and me.invalidated_at is null
               and me.visibility = 'personal'
               and me.owner_user_id = $1
-              and me.payload ->> 'actor' in ('user', 'assistant')
+              and me.payload ->> 'actor' in ('user', 'assistant', 'agent', 'subagent')
               and coalesce(me.payload ->> 'content', '') <> ''
             order by me.captured_at asc, me.id asc
             limit 8
