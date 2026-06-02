@@ -1,4 +1,7 @@
-import { resolveMemoryAnswerWorkerConfig } from "./answer-worker.js";
+import {
+  resolveManualMemoryAnswerWorkerConfig,
+  resolveMemoryAnswerWorkerConfig
+} from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
 import {
@@ -13,6 +16,47 @@ export interface McpServerConfig {
   apiToken?: string;
   requestTimeoutMs?: number;
 }
+
+export type LocalMemoryAgentFlowKey = "mcp_memory_answer" | "lcm_summary";
+
+export interface LocalMemoryAgentSettingRecord {
+  ownerUserId: string;
+  flowKey: LocalMemoryAgentFlowKey;
+  provider: "codex";
+  model: string;
+  reasoningEffort: string;
+  timeoutMs: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const localMemoryAgentSettingFor = (
+  settings: LocalMemoryAgentSettingRecord[],
+  flowKey: LocalMemoryAgentFlowKey
+): LocalMemoryAgentSettingRecord | undefined =>
+  settings.find((setting) => setting.flowKey === flowKey);
+
+export const workerOverridesFromLocalMemorySetting = (
+  setting: LocalMemoryAgentSettingRecord | undefined
+):
+  | {
+      provider: "codex";
+      model: string;
+      reasoningEffort: string;
+      timeoutMs: number;
+      maxAttempts: number;
+    }
+  | undefined =>
+  setting
+    ? {
+        provider: setting.provider,
+        model: setting.model,
+        reasoningEffort: setting.reasoningEffort,
+        timeoutMs: setting.timeoutMs,
+        maxAttempts: setting.maxAttempts
+      }
+    : undefined;
 
 export interface AccessCheckResult {
   ok: boolean;
@@ -50,16 +94,33 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     provider: string;
     model: string;
     reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
     planningMode: "planned" | "single_pass";
     maxSearches: number;
     maxExpansions: number;
     appServerBinary: string;
     defaultResponseDetail: "answer_only";
   };
+  localManualMemoryAnswerWorker: {
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
+    planningMode: "planned" | "single_pass";
+    maxSearches: number;
+    maxExpansions: number;
+    appServerBinary: string;
+    configuredFrom: "explorer_question_or_env";
+  };
   localLcmSummaryWorker: {
     provider: string;
     model: string;
     reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
+    retryDelayMs: number;
     concurrency: number;
     maxPromptTokens: number;
     appServerBinary: string;
@@ -249,6 +310,35 @@ export class MemoryApiClient {
     );
   }
 
+  async listLocalMemoryAgentSettings(): Promise<{
+    settings: LocalMemoryAgentSettingRecord[];
+  }> {
+    return this.request("GET", "/v1/memory/local-agent-settings");
+  }
+
+  async upsertLocalMemoryAgentSetting(
+    flowKey: LocalMemoryAgentFlowKey,
+    input: {
+      provider: "codex";
+      model: string;
+      reasoningEffort: string;
+      timeoutMs: number;
+      maxAttempts: number;
+    }
+  ): Promise<{ setting: LocalMemoryAgentSettingRecord }> {
+    return this.request(
+      "PUT",
+      `/v1/memory/local-agent-settings/${encodeURIComponent(flowKey)}`,
+      {
+        provider: input.provider,
+        model: input.model,
+        reasoning_effort: input.reasoningEffort,
+        timeout_ms: input.timeoutMs,
+        max_attempts: input.maxAttempts
+      }
+    );
+  }
+
   async search(
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
@@ -322,7 +412,7 @@ export class MemoryApiClient {
   }
 
   private async request<T>(
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT",
     path: string,
     body?: unknown
   ): Promise<T> {
@@ -397,6 +487,7 @@ export const memoryAccessCheck = async (
 ): Promise<MemoryAccessCheckResult> => {
   const access = await client.accessCheck();
   const answerWorker = resolveMemoryAnswerWorkerConfig();
+  const manualAnswerWorker = resolveManualMemoryAnswerWorkerConfig();
   const lcmSummaryWorker = resolveLcmSummaryWorkerConfig();
   const lcmSummaryService = resolveLcmSummaryServiceConfig();
   const toolExposure = resolveToolExposureConfig();
@@ -433,16 +524,33 @@ export const memoryAccessCheck = async (
       provider: answerWorker.provider,
       model: answerWorker.model,
       reasoningEffort: answerWorker.reasoningEffort,
+      timeoutMs: answerWorker.timeoutMs,
+      maxAttempts: answerWorker.maxAttempts,
       planningMode: answerWorker.planningMode,
       maxSearches: answerWorker.maxSearches,
       maxExpansions: answerWorker.maxExpansions,
       appServerBinary: answerWorker.appServerBinary,
       defaultResponseDetail: "answer_only"
     },
+    localManualMemoryAnswerWorker: {
+      provider: manualAnswerWorker.provider,
+      model: manualAnswerWorker.model,
+      reasoningEffort: manualAnswerWorker.reasoningEffort,
+      timeoutMs: manualAnswerWorker.timeoutMs,
+      maxAttempts: manualAnswerWorker.maxAttempts,
+      planningMode: manualAnswerWorker.planningMode,
+      maxSearches: manualAnswerWorker.maxSearches,
+      maxExpansions: manualAnswerWorker.maxExpansions,
+      appServerBinary: manualAnswerWorker.appServerBinary,
+      configuredFrom: "explorer_question_or_env"
+    },
     localLcmSummaryWorker: {
       provider: lcmSummaryWorker.provider,
       model: lcmSummaryWorker.model,
       reasoningEffort: lcmSummaryWorker.reasoningEffort,
+      timeoutMs: lcmSummaryWorker.timeoutMs,
+      maxAttempts: lcmSummaryWorker.maxAttempts,
+      retryDelayMs: lcmSummaryWorker.retryDelayMs,
       concurrency: lcmSummaryWorker.concurrency,
       maxPromptTokens: lcmSummaryWorker.maxPromptTokens,
       appServerBinary: lcmSummaryWorker.appServerBinary

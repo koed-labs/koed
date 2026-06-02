@@ -12,6 +12,7 @@ import type {
   CapturedSessionRecord,
   CreateMemoryNodeInput,
   CreateUserInput,
+  LocalMemoryAgentSettingRecord,
   MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
@@ -175,6 +176,10 @@ const createFakeRepository = (): MemorySourceRepository => {
   const invalidatedEvents = new Set<string>();
   const summaryCorrections = new Map<string, string>();
   const memoryQuestions = new Map<string, MemoryQuestionDetailRecord>();
+  const localMemoryAgentSettings = new Map<
+    string,
+    LocalMemoryAgentSettingRecord
+  >();
 
   return {
     health: async () => true,
@@ -366,6 +371,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         citations: null,
         retrieval: null,
         localMemoryWorker: null,
+        localMemoryWorkerConfig: input.localMemoryWorkerConfig ?? null,
         response: null,
         status: "pending",
         createdAt: now,
@@ -447,6 +453,29 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getMemoryQuestion(actor, questionId) {
       const question = memoryQuestions.get(questionId);
       return question?.ownerUserId === actor.userId ? question : null;
+    },
+    async listLocalMemoryAgentSettings(actor) {
+      return [...localMemoryAgentSettings.values()]
+        .filter((setting) => setting.ownerUserId === actor.userId)
+        .sort((left, right) => left.flowKey.localeCompare(right.flowKey));
+    },
+    async upsertLocalMemoryAgentSetting(actor, input) {
+      const key = `${actor.userId}:${input.flowKey}`;
+      const existing = localMemoryAgentSettings.get(key);
+      const now = new Date().toISOString();
+      const record: LocalMemoryAgentSettingRecord = {
+        ownerUserId: actor.userId,
+        flowKey: input.flowKey,
+        provider: input.provider,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        timeoutMs: input.timeoutMs,
+        maxAttempts: input.maxAttempts,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      };
+      localMemoryAgentSettings.set(key, record);
+      return record;
     },
     async updateMemoryQuestion(actor, questionId, input) {
       const question = memoryQuestions.get(questionId);
@@ -1565,9 +1594,9 @@ describe("api health", () => {
     expect(provided.headers["x-request-id"]).toBe("operator-request-1");
   });
 
-  it("allows browser PATCH preflight requests", async () => {
+  it("allows browser write preflight requests", async () => {
     const app = await buildServer();
-    const response = await app.inject({
+    const patchResponse = await app.inject({
       method: "OPTIONS",
       url: "/v1/memory/questions/00000000-0000-4000-8000-000000000000",
       headers: {
@@ -1575,10 +1604,24 @@ describe("api health", () => {
         "access-control-request-method": "PATCH"
       }
     });
+    const putResponse = await app.inject({
+      method: "OPTIONS",
+      url: "/v1/memory/local-agent-settings/mcp_memory_answer",
+      headers: {
+        origin: "http://localhost:5174",
+        "access-control-request-method": "PUT"
+      }
+    });
     await app.close();
 
-    expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
+    expect(patchResponse.statusCode).toBe(204);
+    expect(putResponse.statusCode).toBe(204);
+    expect(patchResponse.headers["access-control-allow-methods"]).toContain(
+      "PATCH"
+    );
+    expect(putResponse.headers["access-control-allow-methods"]).toContain(
+      "PUT"
+    );
   });
 
   it("keeps public status probes coarse and requires auth for details", async () => {
@@ -3308,7 +3351,14 @@ describe("account and access flows", () => {
         workspace_id: "project-1",
         project_name: "Koed",
         thread_id: "thread-1",
-        thread_name: "Explorer"
+        thread_name: "Explorer",
+        local_memory_worker_config: {
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoning_effort: "medium",
+          timeout_ms: 150000,
+          max_attempts: 4
+        }
       }
     });
     const questionId = jsonBody<MemoryQuestionResponse>(created).question.id;
@@ -3364,6 +3414,15 @@ describe("account and access flows", () => {
     expect(
       jsonBody<MemoryQuestionResponse>(created).question.retrievalScope
     ).toBe("personal");
+    expect(
+      jsonBody<MemoryQuestionResponse>(created).question.localMemoryWorkerConfig
+    ).toEqual({
+      provider: "codex",
+      model: "gpt-5.4",
+      reasoning_effort: "medium",
+      timeout_ms: 150000,
+      max_attempts: 4
+    });
     expect(claimed.statusCode).toBe(200);
     expect(jsonBody<MemoryQuestionsResponse>(claimed).questions).toHaveLength(
       1
@@ -3386,6 +3445,13 @@ describe("account and access flows", () => {
       id: questionId,
       answerMarkdown: "Use the documented read and write limits.",
       evidenceCount: 1,
+      localMemoryWorkerConfig: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "medium",
+        timeout_ms: 150000,
+        max_attempts: 4
+      },
       searchDomain: "project",
       workspaceId: "project-1"
     });
@@ -3472,6 +3538,76 @@ describe("account and access flows", () => {
         1,
       lastErrorMessage: null
     });
+  });
+
+  it("persists local memory agent settings through API tokens", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "local-agent-settings@example.com",
+        password: "password123"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+
+    const savedMcp = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/mcp_memory_answer",
+      headers,
+      payload: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "high",
+        timeout_ms: 180000,
+        max_attempts: 3
+      }
+    });
+    const savedLcm = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/lcm_summary",
+      headers,
+      payload: {
+        provider: "codex",
+        model: "gpt-5.4-mini",
+        reasoning_effort: "medium",
+        timeout_ms: 120000,
+        max_attempts: 2
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/memory/local-agent-settings",
+      headers
+    });
+    await app.close();
+
+    expect(savedMcp.statusCode).toBe(200);
+    expect(savedLcm.statusCode).toBe(200);
+    expect(listed.statusCode).toBe(200);
+    expect(
+      jsonBody<{ settings: LocalMemoryAgentSettingRecord[] }>(listed).settings
+    ).toEqual([
+      expect.objectContaining({
+        flowKey: "lcm_summary",
+        model: "gpt-5.4-mini",
+        reasoningEffort: "medium"
+      }),
+      expect.objectContaining({
+        flowKey: "mcp_memory_answer",
+        model: "gpt-5.4",
+        reasoningEffort: "high"
+      })
+    ]);
   });
 
   it("rejects unsupported retrieval scope for persisted questions", async () => {

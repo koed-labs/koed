@@ -4,9 +4,18 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const answerWithMemoryWorker = vi.fn();
+const checkCodexAppServerAvailability = vi.fn();
+const listCodexAppServerModels = vi.fn();
 
-vi.mock("../src/answer-worker.js", () => ({
+vi.mock("../src/answer-worker.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/answer-worker.js")>()),
   answerWithMemoryWorker
+}));
+
+vi.mock("../src/codex-app-server-runner.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/codex-app-server-runner.js")>()),
+  checkCodexAppServerAvailability,
+  listCodexAppServerModels
 }));
 
 const servers: http.Server[] = [];
@@ -82,6 +91,16 @@ const json = (
   response.end(JSON.stringify(body));
 };
 
+type LocalMemoryAgentSettingsResponse = {
+  aiClients: unknown;
+  modelOptions: unknown;
+  flows: {
+    manualMemoryAnswer: Record<string, unknown>;
+    mcpMemoryAnswer: Record<string, unknown>;
+    lcmSummary: Record<string, unknown>;
+  };
+};
+
 const retryableSynthesisFailureMessage =
   "Memory answer synthesis failed. Koed will retry shortly.";
 
@@ -126,6 +145,8 @@ afterEach(async () => {
   vi.resetModules();
   vi.unstubAllEnvs();
   answerWithMemoryWorker.mockReset();
+  checkCodexAppServerAvailability.mockReset();
+  listCodexAppServerModels.mockReset();
   await Promise.all(
     servers
       .splice(0)
@@ -173,6 +194,13 @@ describe("local memory answer bridge", () => {
               retrievalScope: "personal",
               searchDomain: "project",
               workspaceId: "project-1",
+              localMemoryWorkerConfig: {
+                provider: "codex",
+                model: "gpt-5.4",
+                reasoningEffort: "medium",
+                timeoutMs: 90000,
+                maxAttempts: 4
+              },
               status: "pending"
             }
           ]
@@ -371,6 +399,15 @@ describe("local memory answer bridge", () => {
     );
 
     expect(result).toMatchObject({ ok: true, question: { id: questionId } });
+    expect(answerWithMemoryWorker.mock.calls[0]?.[1]).toMatchObject({
+      config: {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "medium",
+        timeoutMs: 90000,
+        maxAttempts: 4
+      }
+    });
     expect(patches).toHaveLength(1);
     expect(patches[0]).toMatchObject({
       status: "answered",
@@ -478,6 +515,299 @@ describe("local memory answer bridge", () => {
     expect(malformedJson.status).toBe(400);
   });
 
+  it("reports effective local agent settings and Codex availability", async () => {
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.url?.startsWith("/v1/memory/local-agent-settings")) {
+        json(response, 200, {
+          settings: [
+            {
+              flowKey: "mcp_memory_answer",
+              provider: "codex",
+              model: "gpt-5.4",
+              reasoningEffort: "high",
+              timeoutMs: 180000,
+              maxAttempts: 3
+            },
+            {
+              flowKey: "lcm_summary",
+              provider: "codex",
+              model: "gpt-5.4-mini-lcm",
+              reasoningEffort: "low",
+              timeoutMs: 90000,
+              maxAttempts: 4
+            }
+          ]
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    vi.stubEnv("MEMORY_ANSWER_MODEL", "gpt-5.4-mini");
+    vi.stubEnv("MEMORY_MANUAL_ANSWER_MODEL", "gpt-5.4");
+    vi.stubEnv("MEMORY_MANUAL_ANSWER_REASONING_EFFORT", "medium");
+    vi.stubEnv("MEMORY_LCM_SUMMARY_MODEL", "gpt-5.4-mini-lcm");
+    checkCodexAppServerAvailability.mockResolvedValue({ available: true });
+    listCodexAppServerModels.mockResolvedValue([
+      {
+        id: "gpt-5.4",
+        model: "gpt-5.4",
+        label: "GPT-5.4",
+        hidden: false,
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "minimal", description: "Minimal" },
+          { reasoningEffort: "high", description: "High" }
+        ]
+      },
+      {
+        id: "gpt-5.4-mini",
+        model: "gpt-5.4-mini",
+        label: "GPT-5.4 mini",
+        hidden: false,
+        isDefault: false,
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "medium", description: "Medium" }
+        ]
+      }
+    ]);
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    const response = await fetch(
+      `${bridgeUrl}/v1/memory/local-agent-settings`,
+      {
+        headers: { authorization: "Bearer cmt_test" }
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as LocalMemoryAgentSettingsResponse;
+    expect(body.aiClients).toEqual([
+      { id: "codex", label: "Codex", status: "ready", error: null }
+    ]);
+    expect(body.modelOptions).toEqual([
+      expect.objectContaining({
+        model: "gpt-5.4",
+        label: "GPT-5.4",
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "minimal", description: "Minimal" },
+          { reasoningEffort: "high", description: "High" }
+        ]
+      }),
+      expect.objectContaining({
+        model: "gpt-5.4-mini",
+        label: "GPT-5.4 mini",
+        defaultReasoningEffort: "medium"
+      })
+    ]);
+    expect(body.flows.manualMemoryAnswer).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.4",
+      reasoningEffort: "medium"
+    });
+    expect(body.flows.mcpMemoryAnswer).toMatchObject({
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      timeoutMs: 180000,
+      maxAttempts: 3,
+      source: "db"
+    });
+    expect(body.flows.lcmSummary).toMatchObject({
+      model: "gpt-5.4-mini-lcm",
+      reasoningEffort: "low",
+      timeoutMs: 90000,
+      maxAttempts: 4,
+      source: "db"
+    });
+  });
+
+  it("allows credentialed browser preflight for local agent settings", async () => {
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const bridgeUrl = await listenServer(
+      createAnswerBridgeServer({ startBackgroundService: false })
+    );
+
+    const response = await fetch(
+      `${bridgeUrl}/v1/memory/local-agent-settings/mcp_memory_answer`,
+      {
+        method: "OPTIONS",
+        headers: {
+          origin: "http://localhost:5174",
+          "access-control-request-method": "PUT",
+          "access-control-request-headers": "authorization, content-type"
+        }
+      }
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:5174"
+    );
+    expect(response.headers.get("access-control-allow-credentials")).toBe(
+      "true"
+    );
+    expect(response.headers.get("access-control-allow-methods")).toContain(
+      "PUT"
+    );
+  });
+
+  it("persists local agent settings through the bridge", async () => {
+    const updates: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (
+        request.method === "PUT" &&
+        request.url === "/v1/memory/local-agent-settings/mcp_memory_answer"
+      ) {
+        expect(request.headers.authorization).toBe("Bearer cmt_test");
+        updates.push(await readJson(request));
+        json(response, 200, {
+          setting: {
+            flowKey: "mcp_memory_answer",
+            provider: "codex",
+            model: "gpt-5.4",
+            reasoningEffort: "xhigh",
+            timeoutMs: 150000,
+            maxAttempts: 5
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const bridgeUrl = await listenServer(
+      createAnswerBridgeServer({ startBackgroundService: false })
+    );
+
+    const response = await fetch(
+      `${bridgeUrl}/v1/memory/local-agent-settings/mcp_memory_answer`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer cmt_test",
+          "content-type": "application/json",
+          origin: "http://localhost:5174"
+        },
+        body: JSON.stringify({
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoning_effort: "xhigh",
+          timeout_ms: 150000,
+          max_attempts: 5
+        })
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:5174"
+    );
+    expect(response.headers.get("access-control-allow-credentials")).toBe(
+      "true"
+    );
+    expect(await response.json()).toEqual({
+      ok: true,
+      setting: {
+        flowKey: "mcp_memory_answer",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        timeoutMs: 150000,
+        maxAttempts: 5
+      }
+    });
+    expect(updates).toEqual([
+      {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "xhigh",
+        timeout_ms: 150000,
+        max_attempts: 5
+      }
+    ]);
+  });
+
+  it("persists per-question worker settings when the bridge creates the question", async () => {
+    const questionId = randomUUID();
+    const createdQuestions: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (request.url === "/v1/access/check") {
+        json(response, 200, { ok: true, canWritePersonal: true });
+        return;
+      }
+      if (request.method === "POST" && request.url === "/v1/memory/questions") {
+        createdQuestions.push(await readJson(request));
+        json(response, 200, { question: { id: questionId } });
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        request.url === "/v1/memory/questions/claim-pending"
+      ) {
+        json(response, 200, { questions: [] });
+        return;
+      }
+      if (
+        request.method === "GET" &&
+        request.url === `/v1/memory/questions/${questionId}`
+      ) {
+        json(response, 200, {
+          question: {
+            id: questionId,
+            query: "What did we decide?",
+            status: "pending"
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const bridgeUrl = await listenServer(createAnswerBridgeServer());
+
+    await fetch(`${bridgeUrl}/v1/memory/answer-local`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer cmt_test",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        query: "What did we decide?",
+        search_domain: "global",
+        local_memory_worker_config: {
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoning_effort: "xhigh",
+          timeout_ms: 150000,
+          max_attempts: 5
+        }
+      })
+    });
+
+    expect(createdQuestions).toEqual([
+      expect.objectContaining({
+        query: "What did we decide?",
+        local_memory_worker_config: {
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoning_effort: "xhigh",
+          timeout_ms: 150000,
+          max_attempts: 5
+        }
+      })
+    ]);
+  });
+
   it("releases the question for retry when local synthesis throws", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];
@@ -502,7 +832,14 @@ describe("local memory answer bridge", () => {
               query: "What did we decide?",
               retrievalScope: "personal",
               searchDomain: "global",
-              status: "pending"
+              status: "pending",
+              localMemoryWorkerConfig: {
+                provider: "codex",
+                model: "gpt-5.4",
+                reasoning_effort: "high",
+                timeout_ms: 150000,
+                max_attempts: 1
+              }
             }
           ]
         });

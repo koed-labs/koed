@@ -34,6 +34,7 @@ import {
   graphUpdateActionForPayload,
   registerCaptureRoutes,
   registerGraphRoutes,
+  registerLocalAgentSettingsRoutes,
   registerLcmRoutes,
   registerQuestionRoutes,
   registerRawConversationRoutes,
@@ -205,7 +206,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       }
       callback(null, false);
     },
-    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     preflight: true,
     credentials: true
   });
@@ -389,6 +390,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerCaptureRoutes(app, routeContext);
   registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);
+  registerLocalAgentSettingsRoutes(app, routeContext);
   registerQuestionRoutes(app, routeContext);
   registerLcmRoutes(app, routeContext);
   registerGraphRoutes(app, routeContext);

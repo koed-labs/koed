@@ -5,14 +5,26 @@ import http from "node:http";
 import { z } from "zod";
 import {
   answerWithMemoryWorker,
+  resolveManualMemoryAnswerWorkerConfig,
+  resolveMemoryAnswerWorkerConfig,
+  type ManualMemoryAnswerWorkerOverrides,
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
 import {
+  checkCodexAppServerAvailability,
+  listCodexAppServerModels,
+  type CodexAppServerModelOption
+} from "./codex-app-server-runner.js";
+import {
   defaultAnswerScope,
   defaultConfig,
+  localMemoryAgentSettingFor,
+  type LocalMemoryAgentFlowKey,
   MemoryApiClient,
-  MemoryApiError
+  MemoryApiError,
+  workerOverridesFromLocalMemorySetting
 } from "./index.js";
+import { resolveLcmSummaryWorkerConfig } from "./lcm-summary-worker.js";
 import {
   persistRawConversationItems,
   projectRawConversationItems
@@ -157,7 +169,17 @@ const requestSchema = z
     session_id: z.string().uuid().optional(),
     thread_id: z.string().min(1).optional(),
     thread_name: z.string().min(1).optional(),
-    limit: z.coerce.number().int().positive().max(50).default(10)
+    limit: z.coerce.number().int().positive().max(50).default(10),
+    local_memory_worker_config: z
+      .object({
+        provider: z.literal("codex").optional(),
+        model: z.string().trim().min(1).optional(),
+        reasoning_effort: z.string().trim().min(1).optional(),
+        timeout_ms: z.coerce.number().int().min(1000).max(600000).optional(),
+        max_attempts: z.coerce.number().int().min(1).max(25).optional()
+      })
+      .strict()
+      .optional()
   })
   .superRefine((input, context) => {
     if (input.search_domain === "session" && !input.session_id) {
@@ -176,6 +198,16 @@ const requestSchema = z
     }
   });
 
+const localMemoryAgentSettingsUpdateSchema = z
+  .object({
+    provider: z.literal("codex").default("codex"),
+    model: z.string().trim().min(1),
+    reasoning_effort: z.string().trim().min(1),
+    timeout_ms: z.coerce.number().int().min(1000).max(600000),
+    max_attempts: z.coerce.number().int().min(1).max(25)
+  })
+  .strict();
+
 type JsonBody = Record<string, unknown>;
 type MemoryQuestionStatus = "pending" | "answered" | "error";
 
@@ -188,6 +220,7 @@ interface MemoryQuestionRecord {
   workspaceId?: string | null;
   sessionId?: string | null;
   status?: MemoryQuestionStatus | string;
+  localMemoryWorkerConfig?: Record<string, unknown> | null;
   response?: Record<string, unknown> | null;
   errorMessage?: string | null;
 }
@@ -264,12 +297,16 @@ const applyCors = (
   const origin = request.headers.origin?.replace(/\/+$/, "");
   if (origin && allowedOrigins.has(origin)) {
     response.setHeader("access-control-allow-origin", origin);
+    response.setHeader("access-control-allow-credentials", "true");
     response.setHeader("vary", "origin");
     response.setHeader(
       "access-control-allow-headers",
       "authorization, content-type"
     );
-    response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+    response.setHeader(
+      "access-control-allow-methods",
+      "GET, POST, PUT, OPTIONS"
+    );
   }
 };
 
@@ -307,6 +344,32 @@ const bearerToken = (request: http.IncomingMessage): string | null => {
   }
   const token = header.slice("Bearer ".length).trim();
   return token || null;
+};
+
+const localMemoryAgentSettingsFlowKeyFromUrl = (
+  url: string | undefined
+): LocalMemoryAgentFlowKey | null => {
+  if (!url) {
+    return null;
+  }
+  const pathname = new URL(url, "http://localhost").pathname;
+  const prefix = "/v1/memory/local-agent-settings/";
+  if (!pathname.startsWith(prefix)) {
+    return null;
+  }
+  const encodedFlowKey = pathname.slice(prefix.length);
+  if (!encodedFlowKey || encodedFlowKey.includes("/")) {
+    return null;
+  }
+  try {
+    const flowKey = decodeURIComponent(encodedFlowKey);
+    if (flowKey === "mcp_memory_answer" || flowKey === "lcm_summary") {
+      return flowKey;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 };
 
 const errorMessage = (error: unknown): string => {
@@ -475,8 +538,9 @@ const terminalSynthesisFailureMessage =
   "Memory answer synthesis failed after retries. Please try again.";
 
 const hasQuestionAttemptsRemaining = (
-  question: MemoryQuestionRecord
-): boolean => (question.attemptCount ?? 0) < questionAnswerMaxAttempts();
+  question: MemoryQuestionRecord,
+  maxAttempts = questionAnswerMaxAttempts()
+): boolean => (question.attemptCount ?? 0) < maxAttempts;
 
 const isRetryableBridgeError = (error: unknown): boolean => {
   if (error instanceof MemoryApiError) {
@@ -514,6 +578,207 @@ const normalizeRetrievalScope = (
   value: MemoryQuestionRecord["retrievalScope"],
   fallback: string
 ): string => (value === "personal" ? value : fallback);
+
+const workerOverridesFromConfig = (
+  value: unknown
+): ManualMemoryAnswerWorkerOverrides => {
+  const record =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  return {
+    ...(typeof record.provider === "string"
+      ? { provider: record.provider }
+      : {}),
+    ...(typeof record.model === "string" ? { model: record.model } : {}),
+    ...(typeof record.reasoningEffort === "string"
+      ? { reasoningEffort: record.reasoningEffort }
+      : typeof record.reasoning_effort === "string"
+        ? { reasoningEffort: record.reasoning_effort }
+        : {}),
+    ...(typeof record.timeoutMs === "number"
+      ? { timeoutMs: record.timeoutMs }
+      : typeof record.timeout_ms === "number"
+        ? { timeoutMs: record.timeout_ms }
+        : {}),
+    ...(typeof record.maxAttempts === "number"
+      ? { maxAttempts: record.maxAttempts }
+      : typeof record.max_attempts === "number"
+        ? { maxAttempts: record.max_attempts }
+        : {})
+  };
+};
+
+const storedWorkerConfigFromInput = (
+  input: z.infer<typeof requestSchema>["local_memory_worker_config"]
+): Record<string, unknown> | undefined => {
+  if (!input) {
+    return undefined;
+  }
+  return {
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.reasoning_effort
+      ? { reasoning_effort: input.reasoning_effort }
+      : {}),
+    ...(input.timeout_ms ? { timeout_ms: input.timeout_ms } : {}),
+    ...(input.max_attempts ? { max_attempts: input.max_attempts } : {})
+  };
+};
+
+const publicMemoryAnswerConfig = (
+  config: ReturnType<typeof resolveMemoryAnswerWorkerConfig>
+) => ({
+  provider: config.provider,
+  model: config.model,
+  reasoningEffort: config.reasoningEffort,
+  timeoutMs: config.timeoutMs,
+  maxAttempts: config.maxAttempts,
+  planningMode: config.planningMode,
+  maxSearches: config.maxSearches,
+  maxExpansions: config.maxExpansions,
+  appServerBinary: config.appServerBinary
+});
+
+const publicLcmSummaryConfig = (
+  config: ReturnType<typeof resolveLcmSummaryWorkerConfig>
+) => ({
+  provider: config.provider,
+  model: config.model,
+  reasoningEffort: config.reasoningEffort,
+  timeoutMs: config.timeoutMs,
+  maxAttempts: config.maxAttempts,
+  retryDelayMs: config.retryDelayMs,
+  concurrency: config.concurrency,
+  maxPromptTokens: config.maxPromptTokens,
+  appServerBinary: config.appServerBinary
+});
+
+const publicModelOptions = (
+  models: CodexAppServerModelOption[],
+  fallbackModel: string
+) => {
+  const visible = models.filter((model) => !model.hidden);
+  const options = visible.length > 0 ? visible : models;
+  const mapped = options.map((model) => ({
+    provider: "codex" as const,
+    id: model.id,
+    model: model.model,
+    label: model.label,
+    description: model.description ?? null,
+    isDefault: model.isDefault,
+    defaultReasoningEffort: model.defaultReasoningEffort ?? null,
+    supportedReasoningEfforts: model.supportedReasoningEfforts
+  }));
+  if (!mapped.some((option) => option.model === fallbackModel)) {
+    mapped.push({
+      provider: "codex" as const,
+      id: fallbackModel,
+      model: fallbackModel,
+      label: fallbackModel,
+      description: null,
+      isDefault: mapped.length === 0,
+      defaultReasoningEffort: null,
+      supportedReasoningEfforts: []
+    });
+  }
+  return mapped;
+};
+
+export const localMemoryAgentSettings = async (
+  env: NodeJS.ProcessEnv = process.env,
+  client?: MemoryApiClient
+) => {
+  const storedSettings = client
+    ? (await client.listLocalMemoryAgentSettings()).settings
+    : [];
+  const mcpMemoryAnswer = resolveMemoryAnswerWorkerConfig(
+    env,
+    workerOverridesFromLocalMemorySetting(
+      localMemoryAgentSettingFor(storedSettings, "mcp_memory_answer")
+    )
+  );
+  const manualMemoryAnswer = resolveManualMemoryAnswerWorkerConfig(env);
+  const lcmSummary = resolveLcmSummaryWorkerConfig(
+    env,
+    workerOverridesFromLocalMemorySetting(
+      localMemoryAgentSettingFor(storedSettings, "lcm_summary")
+    )
+  );
+  const representativeCodexConfig = manualMemoryAnswer;
+  let modelListError: string | null = null;
+  const codexAvailability =
+    representativeCodexConfig.provider === "codex"
+      ? await checkCodexAppServerAvailability({
+          appServerBinary: representativeCodexConfig.appServerBinary,
+          model: representativeCodexConfig.model,
+          cwd: representativeCodexConfig.cwd,
+          env: representativeCodexConfig.env
+        })
+      : {
+          available: false,
+          error: `Unsupported local AI Client provider: ${representativeCodexConfig.provider}`
+        };
+  let modelOptions: ReturnType<typeof publicModelOptions>;
+  if (codexAvailability.available) {
+    try {
+      modelOptions = publicModelOptions(
+        await listCodexAppServerModels({
+          appServerBinary: representativeCodexConfig.appServerBinary,
+          model: representativeCodexConfig.model,
+          cwd: representativeCodexConfig.cwd,
+          env: representativeCodexConfig.env
+        }),
+        representativeCodexConfig.model
+      );
+    } catch (error) {
+      modelListError = error instanceof Error ? error.message : String(error);
+      modelOptions = publicModelOptions([], representativeCodexConfig.model);
+    }
+  } else {
+    modelOptions = publicModelOptions([], representativeCodexConfig.model);
+  }
+
+  return {
+    aiClients: [
+      {
+        id: "codex",
+        label: "Codex",
+        status: codexAvailability.available ? "ready" : "unavailable",
+        error: codexAvailability.error ?? modelListError ?? null
+      }
+    ],
+    modelOptions,
+    modelListError,
+    flows: {
+      mcpMemoryAnswer: {
+        ...publicMemoryAnswerConfig(mcpMemoryAnswer),
+        source: localMemoryAgentSettingFor(storedSettings, "mcp_memory_answer")
+          ? "db"
+          : "env"
+      },
+      manualMemoryAnswer: {
+        ...publicMemoryAnswerConfig(manualMemoryAnswer)
+      },
+      lcmSummary: {
+        ...publicLcmSummaryConfig(lcmSummary),
+        source: localMemoryAgentSettingFor(storedSettings, "lcm_summary")
+          ? "db"
+          : "env"
+      }
+    },
+    precedence: {
+      mcpMemoryAnswer: ["API user setting", "MEMORY_ANSWER_*", "code defaults"],
+      manualMemoryAnswer: [
+        "Explorer per-question selection",
+        "MEMORY_MANUAL_ANSWER_*",
+        "MEMORY_ANSWER_*",
+        "code defaults"
+      ],
+      lcmSummary: ["API user setting", "MEMORY_LCM_SUMMARY_*", "code defaults"]
+    }
+  };
+};
 
 const updateQuestionWithAnswer = async (
   client: MemoryApiClient,
@@ -758,6 +1023,10 @@ export const answerClaimedMemoryQuestion = async (
     },
     "answering claimed memory question"
   );
+  const workerConfig = resolveManualMemoryAnswerWorkerConfig(
+    process.env,
+    workerOverridesFromConfig(question.localMemoryWorkerConfig)
+  );
   try {
     const evidence = {
       markdown: "",
@@ -770,6 +1039,7 @@ export const answerClaimedMemoryQuestion = async (
       }
     };
     const answer = await answerWithMemoryWorker(evidence, {
+      config: workerConfig,
       client,
       retrievalScope,
       searchDomain,
@@ -1060,7 +1330,10 @@ export const handleAnswerLocal = async (
         project_path: input.project_path,
         session_id: input.session_id,
         thread_id: input.thread_id,
-        thread_name: input.thread_name
+        thread_name: input.thread_name,
+        local_memory_worker_config: storedWorkerConfigFromInput(
+          input.local_memory_worker_config
+        )
       })
     );
 
@@ -1154,6 +1427,60 @@ export const createAnswerBridgeServer = (options?: {
             startedAt: answerBridgeStartedAt,
             backgroundServiceRunning: Boolean(backgroundService)
           });
+          return;
+        }
+
+        if (
+          request.method === "GET" &&
+          request.url === "/v1/memory/local-agent-settings"
+        ) {
+          const token = bearerToken(request);
+          if (!token) {
+            sendJson(request, response, 401, {
+              error: "Bearer API token required"
+            });
+            return;
+          }
+          const client = new MemoryApiClient({
+            ...defaultConfig(),
+            apiToken: token
+          });
+          await client.accessCheck();
+          sendJson(request, response, 200, {
+            ok: true,
+            ...(await localMemoryAgentSettings(process.env, client))
+          });
+          return;
+        }
+
+        const localAgentSettingsFlowKey =
+          localMemoryAgentSettingsFlowKeyFromUrl(request.url);
+        if (request.method === "PUT" && localAgentSettingsFlowKey) {
+          const token = bearerToken(request);
+          if (!token) {
+            sendJson(request, response, 401, {
+              error: "Bearer API token required"
+            });
+            return;
+          }
+          const input = localMemoryAgentSettingsUpdateSchema.parse(
+            await readJsonBody(request)
+          );
+          const client = new MemoryApiClient({
+            ...defaultConfig(),
+            apiToken: token
+          });
+          const result = await client.upsertLocalMemoryAgentSetting(
+            localAgentSettingsFlowKey,
+            {
+              provider: input.provider,
+              model: input.model,
+              reasoningEffort: input.reasoning_effort,
+              timeoutMs: input.timeout_ms,
+              maxAttempts: input.max_attempts
+            }
+          );
+          sendJson(request, response, 200, { ok: true, ...result });
           return;
         }
 

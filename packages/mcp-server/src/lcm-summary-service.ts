@@ -1,4 +1,8 @@
-import type { MemoryApiClient } from "./index.js";
+import {
+  localMemoryAgentSettingFor,
+  type MemoryApiClient,
+  workerOverridesFromLocalMemorySetting
+} from "./index.js";
 import {
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
@@ -87,8 +91,7 @@ export const startLcmSummaryService = (
 ): LcmSummaryServiceHandle | null => {
   const serviceConfig =
     options.serviceConfig ?? resolveLcmSummaryServiceConfig();
-  const workerConfig =
-    options.workerConfig ?? resolveLcmSummaryWorkerConfig(process.env);
+  const fallbackWorkerConfig = options.workerConfig;
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let stopped = false;
@@ -150,9 +153,22 @@ export const startLcmSummaryService = (
     void reason;
     lastRunAt = new Date().toISOString();
     try {
+      const persistedSettings = await client
+        .listLocalMemoryAgentSettings()
+        .then((response) => response.settings)
+        .catch(() => []);
+      const persistedWorkerOverrides = workerOverridesFromLocalMemorySetting(
+        localMemoryAgentSettingFor(persistedSettings, "lcm_summary")
+      );
+      const currentWorkerConfig =
+        runOptions.workerConfig ??
+        (persistedWorkerOverrides
+          ? resolveLcmSummaryWorkerConfig(process.env, persistedWorkerOverrides)
+          : (fallbackWorkerConfig ??
+            resolveLcmSummaryWorkerConfig(process.env)));
       lastResult = await summarizePendingLcmNodes(client, {
         limit: runOptions.limit ?? serviceConfig.batchLimit,
-        config: runOptions.workerConfig ?? workerConfig
+        config: currentWorkerConfig
       });
       lastError = null;
       lastSuccessAt = new Date().toISOString();

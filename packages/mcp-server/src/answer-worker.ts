@@ -33,6 +33,14 @@ export interface MemoryAnswerWorkerConfig {
   env: NodeJS.ProcessEnv;
 }
 
+export interface ManualMemoryAnswerWorkerOverrides {
+  provider?: string;
+  model?: string;
+  reasoningEffort?: string;
+  timeoutMs?: number;
+  maxAttempts?: number;
+}
+
 export interface MemoryAnswerWorkerStatus {
   provider: string;
   promptVersion: string;
@@ -232,22 +240,55 @@ const integerEnv = (
   return Number.isFinite(value) ? value : fallback;
 };
 
+const parsePositiveInteger = (
+  value: unknown,
+  fallback: number,
+  options: { min?: number; max?: number } = {}
+): number => {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : Number.parseInt(typeof value === "string" ? value : "", 10);
+  const finite = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.min(
+    options.max ?? Number.MAX_SAFE_INTEGER,
+    Math.max(options.min ?? 1, finite)
+  );
+};
+
 export const resolveMemoryAnswerWorkerConfig = (
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: Partial<
+    Pick<
+      MemoryAnswerWorkerConfig,
+      "provider" | "model" | "reasoningEffort" | "timeoutMs" | "maxAttempts"
+    >
+  > = {}
 ): MemoryAnswerWorkerConfig => {
   return {
     provider:
+      overrides.provider ??
       resolveEnvValue(env, "MEMORY_ANSWER_PROVIDER")?.toLowerCase() ??
       CODEX_ANSWER_PROVIDER,
-    model: resolveEnvValue(env, "MEMORY_ANSWER_MODEL") ?? "gpt-5.4-mini",
+    model:
+      overrides.model ??
+      resolveEnvValue(env, "MEMORY_ANSWER_MODEL") ??
+      "gpt-5.4-mini",
     reasoningEffort:
-      resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ?? "high",
-    timeoutMs: integerEnv(
-      env,
-      "MEMORY_ANSWER_TIMEOUT_MS",
-      DEFAULT_ANSWER_TIMEOUT_MS
+      overrides.reasoningEffort ??
+      resolveEnvValue(env, "MEMORY_ANSWER_REASONING_EFFORT") ??
+      "high",
+    timeoutMs: parsePositiveInteger(
+      overrides.timeoutMs ?? resolveEnvValue(env, "MEMORY_ANSWER_TIMEOUT_MS"),
+      DEFAULT_ANSWER_TIMEOUT_MS,
+      { min: 1000, max: 600000 }
     ),
-    maxAttempts: Math.max(1, integerEnv(env, "MEMORY_ANSWER_MAX_ATTEMPTS", 2)),
+    maxAttempts: parsePositiveInteger(
+      overrides.maxAttempts ??
+        resolveEnvValue(env, "MEMORY_ANSWER_MAX_ATTEMPTS"),
+      2,
+      { min: 1, max: 25 }
+    ),
     planningMode:
       resolveEnvValue(env, "MEMORY_ANSWER_PLANNING_MODE") === "single_pass"
         ? "single_pass"
@@ -270,6 +311,47 @@ export const resolveMemoryAnswerWorkerConfig = (
     ]),
     cwd: process.cwd(),
     env
+  };
+};
+
+export const resolveManualMemoryAnswerWorkerConfig = (
+  env: NodeJS.ProcessEnv = process.env,
+  overrides: ManualMemoryAnswerWorkerOverrides = {}
+): MemoryAnswerWorkerConfig => {
+  const base = resolveMemoryAnswerWorkerConfig(env);
+  const provider =
+    overrides.provider ??
+    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_PROVIDER")?.toLowerCase() ??
+    base.provider;
+  const model =
+    overrides.model ??
+    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_MODEL") ??
+    base.model;
+  const reasoningEffort =
+    overrides.reasoningEffort ??
+    resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_REASONING_EFFORT") ??
+    base.reasoningEffort;
+  return {
+    ...base,
+    provider,
+    model,
+    reasoningEffort,
+    timeoutMs: parsePositiveInteger(
+      overrides.timeoutMs ??
+        resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_TIMEOUT_MS"),
+      base.timeoutMs,
+      { min: 1000, max: 600000 }
+    ),
+    maxAttempts: parsePositiveInteger(
+      overrides.maxAttempts ??
+        resolveEnvValue(env, "MEMORY_MANUAL_ANSWER_MAX_ATTEMPTS"),
+      base.maxAttempts,
+      { min: 1, max: 25 }
+    ),
+    appServerBinary: resolveCodexAppServerBinary(env, [
+      "MEMORY_MANUAL_ANSWER_CODEX_BINARY",
+      "MEMORY_ANSWER_CODEX_BINARY"
+    ])
   };
 };
 

@@ -4,6 +4,16 @@ import {
   searchDomainSchema
 } from "./retrieval-schemas.js";
 
+export const memoryQuestionWorkerConfigSchema = z
+  .object({
+    provider: z.literal("codex").optional(),
+    model: z.string().trim().min(1).optional(),
+    reasoning_effort: z.string().trim().min(1).optional(),
+    timeout_ms: z.coerce.number().int().min(1000).max(600000).optional(),
+    max_attempts: z.coerce.number().int().min(1).max(25).optional()
+  })
+  .strict();
+
 export const memoryQuestionSchema = z
   .object({
     query: z.string().min(1),
@@ -14,7 +24,8 @@ export const memoryQuestionSchema = z
     project_path: z.string().min(1).optional(),
     session_id: z.string().uuid().optional(),
     thread_id: z.string().min(1).optional(),
-    thread_name: z.string().min(1).optional()
+    thread_name: z.string().min(1).optional(),
+    local_memory_worker_config: memoryQuestionWorkerConfigSchema.optional()
   })
   .superRefine((input, context) => {
     if (input.search_domain === "session" && !input.session_id) {
