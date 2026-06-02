@@ -13,7 +13,9 @@ vi.mock("../src/answer-worker.js", async (importOriginal) => ({
 }));
 
 vi.mock("../src/codex-app-server-runner.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/codex-app-server-runner.js")>()),
+  ...(await importOriginal<
+    typeof import("../src/codex-app-server-runner.js")
+  >()),
   checkCodexAppServerAvailability,
   listCodexAppServerModels
 }));
@@ -577,7 +579,8 @@ describe("local memory answer bridge", () => {
         ]
       }
     ]);
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     const response = await fetch(
@@ -630,7 +633,8 @@ describe("local memory answer bridge", () => {
   });
 
   it("allows credentialed browser preflight for local agent settings", async () => {
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(
       createAnswerBridgeServer({ startBackgroundService: false })
     );
@@ -683,7 +687,8 @@ describe("local memory answer bridge", () => {
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(
       createAnswerBridgeServer({ startBackgroundService: false })
     );
@@ -772,7 +777,8 @@ describe("local memory answer bridge", () => {
       json(response, 404, { error: "not found" });
     });
     vi.stubEnv("MEMORY_API_URL", apiUrl);
-    const { createAnswerBridgeServer } = await import("../src/answer-bridge.js");
+    const { createAnswerBridgeServer } =
+      await import("../src/answer-bridge.js");
     const bridgeUrl = await listenServer(createAnswerBridgeServer());
 
     await fetch(`${bridgeUrl}/v1/memory/answer-local`, {
