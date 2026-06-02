@@ -1,8 +1,10 @@
 # Koed Self-Hosted
 
-Koed Self-Hosted is the source-available backend distribution for running Koed memory capture, recall, and inspection on infrastructure you control. It is focused on Codex today: Codex is the only supported AI client/integration in this public distribution.
+Koed Self-Hosted is the source-available memory layer for AI clients that support MCP. It runs Koed memory capture, recall, and inspection on infrastructure you control.
 
-This repository is not the hosted Koed SaaS product. It does not include Koed Cloud onboarding, billing, hosted account management, desktop companion builds, private deployment scripts, pricing pages, or marketing surfaces.
+Codex is the first complete supported integration: today it has MCP recall plus the TypeScript Capture Hook for automatic conversation capture. Other MCP-capable AI clients can use Koed for recall through the MCP Server, and can get full automatic capture once they have a compatible Capture Hook.
+
+This repository is not the hosted Koed SaaS product. It does not include hosted onboarding, billing, hosted account management, desktop companion builds, private deployment scripts, pricing pages, or marketing surfaces.
 
 ## Architecture
 
@@ -12,7 +14,7 @@ This repository is not the hosted Koed SaaS product. It does not include Koed Cl
 - `apps/history-browser`: wrapper package and Docker integration that fetches and builds the separate `koed-labs/koed-history-browser` frontend.
 - `packages/db`: Postgres repository and migrations.
 - `packages/core`: memory capture, retrieval, answer, and compaction logic.
-- `packages/mcp-server`: Koed MCP Server and TypeScript Codex Capture Hook.
+- `packages/mcp-server`: Koed MCP Server and the TypeScript Codex Capture Hook.
 - `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
 
 Postgres uses pgvector. Redis backs BullMQ. Koed Self-Hosted relies on the connected AI client for LLM synthesis; the backend stores memory, retrieves evidence, manages embeddings and ranking, and does not make server-side LLM calls in this build.
@@ -96,9 +98,14 @@ Start from `.env.example`. Important values:
 
 Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or private deployment details. Server-side LLM synthesis and backend LLM provider configuration are unsupported in this self-hosted build.
 
-## Codex Setup
+## AI Client Setup
 
-Codex is currently the only supported AI client. Other clients will need their own setup guides as they are added.
+Koed recall is exposed through the MCP Server, so any MCP-capable AI client can integrate with Koed for recall. The complete supported integration today is Codex because Koed also ships a TypeScript Codex Capture Hook for automatic conversation capture.
+
+For Codex, use both pieces:
+
+- MCP Server: recall for prior conversations, project history, and remembered context.
+- Capture Hook: automatic capture of Codex conversation activity.
 
 1. Create an API Token:
 
@@ -135,7 +142,7 @@ If you changed `API_HOST_PORT`, use that port in `MEMORY_API_URL`.
 MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token from pnpm api-token:create> pnpm codex:verify-capture
 ```
 
-See [docs/codex-integration.md](docs/codex-integration.md) for MCP and Capture Hook details.
+See [docs/codex-integration.md](docs/codex-integration.md) for Codex MCP and Capture Hook details.
 
 ## History Browser
 
