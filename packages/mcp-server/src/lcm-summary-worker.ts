@@ -6,6 +6,7 @@ import { chunkTextForModel, countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
   CodexAppServerTurnError,
+  koedAppServerWorkerDeveloperInstructions,
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
   type CodexAppServerRawEvent,
@@ -539,7 +540,7 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
       clientName: "koed-lcm-summary-worker",
       baseInstructions:
         "You are a private local Koed LCM summary worker running in Codex app-server mode. Return only the requested JSON object.",
-      developerInstructions: ""
+      developerInstructions: koedAppServerWorkerDeveloperInstructions
     },
     timeoutMs
   );

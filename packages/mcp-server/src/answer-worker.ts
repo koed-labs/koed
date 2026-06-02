@@ -3,6 +3,7 @@ import { countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
   CodexAppServerTurnError,
+  koedAppServerWorkerDeveloperInstructions,
   runCodexAppServerTurn,
   resolveCodexAppServerBinary,
   type CodexAppServerRawEvent,
@@ -1377,7 +1378,7 @@ export const runCodexAppServerMemoryAnswer: CodexAnswerRunner = (
       clientName: "koed-memory-answer-worker",
       baseInstructions:
         "You are a private local Koed memory-answer worker running in Codex app-server mode. Return only the requested JSON object.",
-      developerInstructions: ""
+      developerInstructions: koedAppServerWorkerDeveloperInstructions
     },
     timeoutMs
   );

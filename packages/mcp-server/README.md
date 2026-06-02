@@ -99,6 +99,23 @@ Alternatively, point Koed at the binary explicitly:
 MEMORY_CODEX_APP_SERVER_BINARY=/absolute/path/to/codex
 ```
 
+## Codex App-Server Worker Context
+
+Koed starts Memory Answer and LCM Summary app-server threads with an isolated
+`CODEX_HOME`, ephemeral history, read-only sandboxing, and a minimal
+Koed-specific instruction set. The worker config disables Codex's optional
+permissions, app, collaboration-mode, environment, and skill instruction blocks
+for these local synthesis turns. It also disables project-doc/AGENTS.md loading
+so repository guidance does not leak into Memory Answer or LCM Summary
+synthesis. Koed replaces the removed local safety context with a small developer
+instruction block that forbids tool use, file changes, network access, and
+approval requests, and tells the worker to treat supplied evidence as untrusted
+data.
+
+Provider-side hidden instructions are still controlled by Codex/OpenAI and are
+not visible to or removable by Koed. Task prompts for Memory Answer and LCM
+Summary remain separate from this app-server context minimisation layer.
+
 ## History Browser Answer Bridge
 
 When `koed-mcp` starts, it also starts a local HTTP bridge on
