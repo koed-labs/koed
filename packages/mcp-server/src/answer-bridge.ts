@@ -21,6 +21,7 @@ import { answerBridgeLogger } from "./logger.js";
 
 export const host = process.env.MEMORY_ANSWER_BRIDGE_HOST ?? "0.0.0.0";
 export const DEFAULT_ANSWER_BRIDGE_PORT = 3210;
+export const DEFAULT_EXISTING_ANSWER_BRIDGE_PROBE_TIMEOUT_MS = 1_500;
 export const parseAnswerBridgePort = (value?: string): number | null => {
   const candidate = (value ?? String(DEFAULT_ANSWER_BRIDGE_PORT)).trim();
   if (!/^\d+$/.test(candidate)) {
@@ -223,6 +224,7 @@ interface AnswerBridgeShutdownOptions {
 interface StandaloneAnswerBridgeOptions {
   createServer?: typeof createAnswerBridgeServer;
   exit?: (code: number) => void;
+  existingBridgeProbeTimeoutMs?: number;
   fetchFn?: typeof fetch;
   host?: string;
   installShutdownHandlers?: typeof installAnswerBridgeShutdownHandlers;
@@ -1280,11 +1282,19 @@ export const installAnswerBridgeShutdownHandlers = (
 export const probeExistingAnswerBridge = async (
   bridgeHost: string,
   bridgePort: number,
-  fetchFn: typeof fetch = fetch
+  fetchFn: typeof fetch = fetch,
+  timeoutMs = DEFAULT_EXISTING_ANSWER_BRIDGE_PROBE_TIMEOUT_MS
 ): Promise<ExistingAnswerBridgeProbeResult> => {
   const healthUrl = answerBridgeHealthUrl(bridgeHost, bridgePort);
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => {
+    abortController.abort();
+  }, timeoutMs);
+  timeout.unref?.();
   try {
-    const response = await fetchFn(healthUrl);
+    const response = await fetchFn(healthUrl, {
+      signal: abortController.signal
+    });
     const payload = (await response.json().catch(() => ({}))) as Record<
       string,
       unknown
@@ -1303,6 +1313,8 @@ export const probeExistingAnswerBridge = async (
       healthUrl,
       error: errorMessage(error)
     };
+  } finally {
+    clearTimeout(timeout);
   }
 };
 
@@ -1330,7 +1342,10 @@ export const startStandaloneAnswerBridge = (
   const installShutdownHandlers =
     options.installShutdownHandlers ?? installAnswerBridgeShutdownHandlers;
   const server = createServer();
-  installShutdownHandlers(server);
+  installShutdownHandlers(server, {
+    exit,
+    log
+  });
   server.once("error", (error: NodeJS.ErrnoException) => {
     if (error.code !== "EADDRINUSE") {
       log.error(
@@ -1349,7 +1364,8 @@ export const startStandaloneAnswerBridge = (
       const existing = await probeExistingAnswerBridge(
         bridgeHost,
         configuredPort,
-        options.fetchFn
+        options.fetchFn,
+        options.existingBridgeProbeTimeoutMs
       );
       if (existing.ok) {
         log.info(

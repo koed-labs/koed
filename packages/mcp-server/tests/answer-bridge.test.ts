@@ -62,6 +62,17 @@ const waitForAsyncHandlers = async () => {
   await new Promise<void>((resolve) => setImmediate(resolve));
 };
 
+const expectFetchWithAbortSignal = (
+  fetchFn: typeof fetch,
+  healthUrl: string
+) => {
+  const calls = vi.mocked(fetchFn).mock.calls;
+  expect(calls).toHaveLength(1);
+  const [url, init] = calls[0]!;
+  expect(url).toBe(healthUrl);
+  expect(init?.signal).toBeInstanceOf(AbortSignal);
+};
+
 const json = (
   response: http.ServerResponse,
   status: number,
@@ -1233,7 +1244,7 @@ describe("local memory answer bridge", () => {
       "0.0.0.0",
       expect.any(Function)
     );
-    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3210/health");
+    expectFetchWithAbortSignal(fetchFn, "http://127.0.0.1:3210/health");
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({
         healthUrl: "http://127.0.0.1:3210/health",
@@ -1284,7 +1295,7 @@ describe("local memory answer bridge", () => {
     );
     await waitForAsyncHandlers();
 
-    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3211/health");
+    expectFetchWithAbortSignal(fetchFn, "http://127.0.0.1:3211/health");
     expect(log.error).toHaveBeenCalledWith(
       expect.objectContaining({
         healthUrl: "http://127.0.0.1:3211/health",
@@ -1293,6 +1304,65 @@ describe("local memory answer bridge", () => {
       "memory answer bridge port already in use by an incompatible service"
     );
     expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it("bounds the existing bridge health probe with a timeout", async () => {
+    const fetchFn = vi.fn(
+      (_url: unknown, init?: { signal?: AbortSignal | null }) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new Error("probe timed out"));
+          });
+        })
+    ) as unknown as typeof fetch;
+    const { probeExistingAnswerBridge } =
+      await import("../src/answer-bridge.js");
+
+    const result = await probeExistingAnswerBridge(
+      "127.0.0.1",
+      3212,
+      fetchFn,
+      1
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      healthUrl: "http://127.0.0.1:3212/health",
+      error: "probe timed out"
+    });
+  });
+
+  it("forwards injected shutdown options during standalone startup", async () => {
+    const server = Object.assign(new EventEmitter(), {
+      listen: vi.fn(),
+      close: vi.fn()
+    }) as unknown as http.Server & EventEmitter;
+    const exit = vi.fn();
+    const installShutdownHandlers = vi.fn();
+    const log = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      fatal: vi.fn(),
+      info: vi.fn(),
+      level: "info",
+      trace: vi.fn(),
+      warn: vi.fn()
+    };
+    const { startStandaloneAnswerBridge } =
+      await import("../src/answer-bridge.js");
+
+    startStandaloneAnswerBridge({
+      createServer: () => server,
+      exit,
+      installShutdownHandlers,
+      log: log as never,
+      port: 3210
+    });
+
+    expect(installShutdownHandlers).toHaveBeenCalledWith(server, {
+      exit,
+      log
+    });
   });
 
   it("closes the standalone bridge cleanly on SIGINT", async () => {
