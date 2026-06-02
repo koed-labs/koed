@@ -539,6 +539,113 @@ describe("local memory answer bridge", () => {
     });
   });
 
+  it("allows credentialed browser preflight for local agent settings", async () => {
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(
+      createAnswerBridgeServer({ startBackgroundService: false })
+    );
+
+    const response = await fetch(
+      `${bridgeUrl}/v1/memory/local-agent-settings/mcp_memory_answer`,
+      {
+        method: "OPTIONS",
+        headers: {
+          origin: "http://localhost:5174",
+          "access-control-request-method": "PUT",
+          "access-control-request-headers": "authorization, content-type"
+        }
+      }
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:5174"
+    );
+    expect(response.headers.get("access-control-allow-credentials")).toBe(
+      "true"
+    );
+    expect(response.headers.get("access-control-allow-methods")).toContain(
+      "PUT"
+    );
+  });
+
+  it("persists local agent settings through the bridge", async () => {
+    const updates: Record<string, unknown>[] = [];
+    const apiUrl = await createServer(async (request, response) => {
+      if (
+        request.method === "PUT" &&
+        request.url === "/v1/memory/local-agent-settings/mcp_memory_answer"
+      ) {
+        expect(request.headers.authorization).toBe("Bearer cmt_test");
+        updates.push(await readJson(request));
+        json(response, 200, {
+          setting: {
+            flowKey: "mcp_memory_answer",
+            provider: "codex",
+            model: "gpt-5.4",
+            reasoningEffort: "xhigh",
+            timeoutMs: 150000,
+            maxAttempts: 5
+          }
+        });
+        return;
+      }
+      json(response, 404, { error: "not found" });
+    });
+    vi.stubEnv("MEMORY_API_URL", apiUrl);
+    const { createAnswerBridgeServer } = await import("./answer-bridge.js");
+    const bridgeUrl = await listenServer(
+      createAnswerBridgeServer({ startBackgroundService: false })
+    );
+
+    const response = await fetch(
+      `${bridgeUrl}/v1/memory/local-agent-settings/mcp_memory_answer`,
+      {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer cmt_test",
+          "content-type": "application/json",
+          origin: "http://localhost:5174"
+        },
+        body: JSON.stringify({
+          provider: "codex",
+          model: "gpt-5.4",
+          reasoning_effort: "xhigh",
+          timeout_ms: 150000,
+          max_attempts: 5
+        })
+      }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:5174"
+    );
+    expect(response.headers.get("access-control-allow-credentials")).toBe(
+      "true"
+    );
+    expect(await response.json()).toEqual({
+      ok: true,
+      setting: {
+        flowKey: "mcp_memory_answer",
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoningEffort: "xhigh",
+        timeoutMs: 150000,
+        maxAttempts: 5
+      }
+    });
+    expect(updates).toEqual([
+      {
+        provider: "codex",
+        model: "gpt-5.4",
+        reasoning_effort: "xhigh",
+        timeout_ms: 150000,
+        max_attempts: 5
+      }
+    ]);
+  });
+
   it("persists per-question worker settings when the bridge creates the question", async () => {
     const questionId = randomUUID();
     const createdQuestions: Record<string, unknown>[] = [];

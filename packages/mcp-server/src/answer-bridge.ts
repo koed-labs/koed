@@ -19,6 +19,7 @@ import {
   defaultAnswerScope,
   defaultConfig,
   localMemoryAgentSettingFor,
+  type LocalMemoryAgentFlowKey,
   MemoryApiClient,
   MemoryApiError,
   workerOverridesFromLocalMemorySetting
@@ -95,6 +96,16 @@ const requestSchema = z
     }
   });
 
+const localMemoryAgentSettingsUpdateSchema = z
+  .object({
+    provider: z.literal("codex").default("codex"),
+    model: z.string().trim().min(1),
+    reasoning_effort: z.string().trim().min(1),
+    timeout_ms: z.coerce.number().int().min(1000).max(600000),
+    max_attempts: z.coerce.number().int().min(1).max(25)
+  })
+  .strict();
+
 type JsonBody = Record<string, unknown>;
 type MemoryQuestionStatus = "pending" | "answered" | "error";
 
@@ -155,12 +166,16 @@ const applyCors = (
   const origin = request.headers.origin?.replace(/\/+$/, "");
   if (origin && allowedOrigins.has(origin)) {
     response.setHeader("access-control-allow-origin", origin);
+    response.setHeader("access-control-allow-credentials", "true");
     response.setHeader("vary", "origin");
     response.setHeader(
       "access-control-allow-headers",
       "authorization, content-type"
     );
-    response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+    response.setHeader(
+      "access-control-allow-methods",
+      "GET, POST, PUT, OPTIONS"
+    );
   }
 };
 
@@ -197,6 +212,32 @@ const bearerToken = (request: http.IncomingMessage): string | null => {
   }
   const token = header.slice("Bearer ".length).trim();
   return token || null;
+};
+
+const localMemoryAgentSettingsFlowKeyFromUrl = (
+  url: string | undefined
+): LocalMemoryAgentFlowKey | null => {
+  if (!url) {
+    return null;
+  }
+  const pathname = new URL(url, "http://localhost").pathname;
+  const prefix = "/v1/memory/local-agent-settings/";
+  if (!pathname.startsWith(prefix)) {
+    return null;
+  }
+  const encodedFlowKey = pathname.slice(prefix.length);
+  if (!encodedFlowKey || encodedFlowKey.includes("/")) {
+    return null;
+  }
+  try {
+    const flowKey = decodeURIComponent(encodedFlowKey);
+    if (flowKey === "mcp_memory_answer" || flowKey === "lcm_summary") {
+      return flowKey;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 };
 
 const errorMessage = (error: unknown): string => {
@@ -1135,6 +1176,37 @@ export const createAnswerBridgeServer = (options?: {
             ok: true,
             ...(await localMemoryAgentSettings(process.env, client))
           });
+          return;
+        }
+
+        const localAgentSettingsFlowKey =
+          localMemoryAgentSettingsFlowKeyFromUrl(request.url);
+        if (request.method === "PUT" && localAgentSettingsFlowKey) {
+          const token = bearerToken(request);
+          if (!token) {
+            sendJson(request, response, 401, {
+              error: "Bearer API token required"
+            });
+            return;
+          }
+          const input = localMemoryAgentSettingsUpdateSchema.parse(
+            await readJsonBody(request)
+          );
+          const client = new MemoryApiClient({
+            ...defaultConfig(),
+            apiToken: token
+          });
+          const result = await client.upsertLocalMemoryAgentSetting(
+            localAgentSettingsFlowKey,
+            {
+              provider: input.provider,
+              model: input.model,
+              reasoningEffort: input.reasoning_effort,
+              timeoutMs: input.timeout_ms,
+              maxAttempts: input.max_attempts
+            }
+          );
+          sendJson(request, response, 200, { ok: true, ...result });
           return;
         }
 
