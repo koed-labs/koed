@@ -16,12 +16,13 @@ import type {
   RetrievalMetadata
 } from "@koed/core";
 import {
+  combineStorageSanitizationCounts,
   env,
-  metadataWithNulSanitization,
+  metadataWithStorageSanitization,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
-  sanitizeNulCharacters
+  sanitizeForPostgresStorage
 } from "@koed/shared";
 
 const { Pool } = pg;
@@ -1148,53 +1149,60 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const sanitizeConversationItemForStorage = (
   item: ConversationItemInput
 ): ConversationItemInput => {
-  const rawJson = sanitizeNulCharacters(item.rawJson);
-  const rawText = sanitizeNulCharacters(item.rawText);
-  const metadata = sanitizeNulCharacters(item.metadata ?? {});
-  const sourceKind = sanitizeNulCharacters(item.sourceKind);
-  const sourceAdapterVersion = sanitizeNulCharacters(item.sourceAdapterVersion);
-  const sourceTransport = sanitizeNulCharacters(item.sourceTransport);
-  const externalSessionId = sanitizeNulCharacters(item.externalSessionId);
-  const externalThreadId = sanitizeNulCharacters(item.externalThreadId);
-  const externalTurnId = sanitizeNulCharacters(item.externalTurnId);
-  const externalItemId = sanitizeNulCharacters(item.externalItemId);
-  const parentExternalItemId = sanitizeNulCharacters(item.parentExternalItemId);
-  const sourceRecordType = sanitizeNulCharacters(item.sourceRecordType);
-  const sourceEventType = sanitizeNulCharacters(item.sourceEventType);
-  const sourcePath = sanitizeNulCharacters(item.sourcePath);
-  const logicalSourceId = sanitizeNulCharacters(item.logicalSourceId);
-  const transportChunkText = sanitizeNulCharacters(item.transportChunkText);
-  const transportChunkEncoding = sanitizeNulCharacters(
+  const rawJson = sanitizeForPostgresStorage(item.rawJson);
+  const rawText = sanitizeForPostgresStorage(item.rawText);
+  const metadata = sanitizeForPostgresStorage(item.metadata ?? {});
+  const sourceKind = sanitizeForPostgresStorage(item.sourceKind);
+  const sourceAdapterVersion = sanitizeForPostgresStorage(
+    item.sourceAdapterVersion
+  );
+  const sourceTransport = sanitizeForPostgresStorage(item.sourceTransport);
+  const externalSessionId = sanitizeForPostgresStorage(item.externalSessionId);
+  const externalThreadId = sanitizeForPostgresStorage(item.externalThreadId);
+  const externalTurnId = sanitizeForPostgresStorage(item.externalTurnId);
+  const externalItemId = sanitizeForPostgresStorage(item.externalItemId);
+  const parentExternalItemId = sanitizeForPostgresStorage(
+    item.parentExternalItemId
+  );
+  const sourceRecordType = sanitizeForPostgresStorage(item.sourceRecordType);
+  const sourceEventType = sanitizeForPostgresStorage(item.sourceEventType);
+  const sourcePath = sanitizeForPostgresStorage(item.sourcePath);
+  const logicalSourceId = sanitizeForPostgresStorage(item.logicalSourceId);
+  const transportChunkText = sanitizeForPostgresStorage(
+    item.transportChunkText
+  );
+  const transportChunkEncoding = sanitizeForPostgresStorage(
     item.transportChunkEncoding
   );
-  const sourceHash = sanitizeNulCharacters(item.sourceHash);
-  const idempotencyKey = sanitizeNulCharacters(item.idempotencyKey);
-  const projectionStatus = sanitizeNulCharacters(item.projectionStatus);
-  const projectionVersion = sanitizeNulCharacters(item.projectionVersion);
-  const projectionError = sanitizeNulCharacters(item.projectionError);
-  const replacementCount =
-    rawJson.replacementCount +
-    rawText.replacementCount +
-    metadata.replacementCount +
-    sourceKind.replacementCount +
-    sourceAdapterVersion.replacementCount +
-    sourceTransport.replacementCount +
-    externalSessionId.replacementCount +
-    externalThreadId.replacementCount +
-    externalTurnId.replacementCount +
-    externalItemId.replacementCount +
-    parentExternalItemId.replacementCount +
-    sourceRecordType.replacementCount +
-    sourceEventType.replacementCount +
-    sourcePath.replacementCount +
-    logicalSourceId.replacementCount +
-    transportChunkText.replacementCount +
-    transportChunkEncoding.replacementCount +
-    sourceHash.replacementCount +
-    idempotencyKey.replacementCount +
-    projectionStatus.replacementCount +
-    projectionVersion.replacementCount +
-    projectionError.replacementCount;
+  const sourceHash = sanitizeForPostgresStorage(item.sourceHash);
+  const idempotencyKey = sanitizeForPostgresStorage(item.idempotencyKey);
+  const projectionStatus = sanitizeForPostgresStorage(item.projectionStatus);
+  const projectionVersion = sanitizeForPostgresStorage(item.projectionVersion);
+  const projectionError = sanitizeForPostgresStorage(item.projectionError);
+  const sanitizationCounts = combineStorageSanitizationCounts(
+    rawJson,
+    rawText,
+    metadata,
+    sourceKind,
+    sourceAdapterVersion,
+    sourceTransport,
+    externalSessionId,
+    externalThreadId,
+    externalTurnId,
+    externalItemId,
+    parentExternalItemId,
+    sourceRecordType,
+    sourceEventType,
+    sourcePath,
+    logicalSourceId,
+    transportChunkText,
+    transportChunkEncoding,
+    sourceHash,
+    idempotencyKey,
+    projectionStatus,
+    projectionVersion,
+    projectionError
+  );
 
   return {
     ...item,
@@ -1221,9 +1229,9 @@ const sanitizeConversationItemForStorage = (
       | undefined,
     projectionVersion: projectionVersion.value as string | undefined,
     projectionError: projectionError.value as string | undefined,
-    metadata: metadataWithNulSanitization(
+    metadata: metadataWithStorageSanitization(
       metadata.value as Record<string, unknown>,
-      replacementCount
+      sanitizationCounts
     )
   };
 };
@@ -2420,14 +2428,11 @@ const loadLogicalConversationProjectionItem = async (
     .map((chunk) => chunk.transport_chunk_text ?? "")
     .join("");
   const decoded = decodeTransportChunkEnvelope(envelope, encoding);
-  const decodedRawJson = sanitizeNulCharacters(decoded.rawJson);
-  const decodedRawText = sanitizeNulCharacters(decoded.rawText);
-  const decodedMetadata = metadataWithNulSanitization(
+  const decodedRawJson = sanitizeForPostgresStorage(decoded.rawJson);
+  const decodedRawText = sanitizeForPostgresStorage(decoded.rawText);
+  const decodedMetadata = metadataWithStorageSanitization(
     row.metadata ?? {},
-    [decodedRawJson.replacementCount, decodedRawText.replacementCount].reduce(
-      (sum, count) => sum + count,
-      0
-    )
+    combineStorageSanitizationCounts(decodedRawJson, decodedRawText)
   );
   const representative =
     sorted.find((chunk) => chunk.transport_chunk_index === 0) ?? row;

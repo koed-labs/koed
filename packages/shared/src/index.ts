@@ -52,6 +52,17 @@ export const configFlagEnabled = (value: string | undefined): boolean =>
 const NUL_CHARACTER = "\u0000";
 export const NUL_DISPLAY_REPLACEMENT = "\uFFFD";
 
+export interface StorageSanitizationCounts {
+  nulCharacters: number;
+  malformedUtf16: number;
+}
+
+export interface StorageSanitizationResult {
+  value: unknown;
+  replacementCount: number;
+  counts: StorageSanitizationCounts;
+}
+
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -60,65 +71,162 @@ const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
   return prototype === Object.prototype || prototype === null;
 };
 
-export const sanitizeNulCharacters = (
+const emptyStorageSanitizationCounts = (): StorageSanitizationCounts => ({
+  nulCharacters: 0,
+  malformedUtf16: 0
+});
+
+const addStorageSanitizationCounts = (
+  target: StorageSanitizationCounts,
+  source: StorageSanitizationCounts
+): void => {
+  target.nulCharacters += source.nulCharacters;
+  target.malformedUtf16 += source.malformedUtf16;
+};
+
+const totalStorageSanitizationCount = (
+  counts: StorageSanitizationCounts
+): number => counts.nulCharacters + counts.malformedUtf16;
+
+export const combineStorageSanitizationCounts = (
+  ...results: Array<{ counts: StorageSanitizationCounts }>
+): StorageSanitizationCounts => {
+  const counts = emptyStorageSanitizationCounts();
+  for (const result of results) {
+    addStorageSanitizationCounts(counts, result.counts);
+  }
+  return counts;
+};
+
+const countMalformedUtf16CodeUnits = (value: string): number => {
+  let count = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        index += 1;
+      } else {
+        count += 1;
+      }
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      count += 1;
+    }
+  }
+  return count;
+};
+
+const fallbackToWellFormed = (value: string): string => {
+  let wellFormed = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        wellFormed += value[index] ?? "";
+        wellFormed += value[index + 1] ?? "";
+        index += 1;
+      } else {
+        wellFormed += NUL_DISPLAY_REPLACEMENT;
+      }
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      wellFormed += NUL_DISPLAY_REPLACEMENT;
+    } else {
+      wellFormed += value[index] ?? "";
+    }
+  }
+  return wellFormed;
+};
+
+const toWellFormedStorageString = (value: string): string => {
+  const nativeToWellFormed = (value as string & { toWellFormed?: () => string })
+    .toWellFormed;
+  return typeof nativeToWellFormed === "function"
+    ? nativeToWellFormed.call(value)
+    : fallbackToWellFormed(value);
+};
+
+export const sanitizeForPostgresStorage = (
   value: unknown
-): { value: unknown; replacementCount: number } => {
+): StorageSanitizationResult => {
   if (typeof value === "string") {
-    const replacementCount = value.split(NUL_CHARACTER).length - 1;
+    const nulCharacters = value.split(NUL_CHARACTER).length - 1;
+    const withoutNul =
+      nulCharacters > 0
+        ? value.replaceAll(NUL_CHARACTER, NUL_DISPLAY_REPLACEMENT)
+        : value;
+    const malformedUtf16 = countMalformedUtf16CodeUnits(withoutNul);
+    const sanitized =
+      malformedUtf16 > 0 ? toWellFormedStorageString(withoutNul) : withoutNul;
+    const counts = { nulCharacters, malformedUtf16 };
     return {
-      value:
-        replacementCount > 0
-          ? value.replaceAll(NUL_CHARACTER, NUL_DISPLAY_REPLACEMENT)
-          : value,
-      replacementCount
+      value: sanitized,
+      replacementCount: totalStorageSanitizationCount(counts),
+      counts
     };
   }
 
   if (Array.isArray(value)) {
-    let replacementCount = 0;
+    const counts = emptyStorageSanitizationCounts();
     const sanitized = value.map((item) => {
-      const result = sanitizeNulCharacters(item);
-      replacementCount += result.replacementCount;
+      const result = sanitizeForPostgresStorage(item);
+      addStorageSanitizationCounts(counts, result.counts);
       return result.value;
     });
-    return { value: sanitized, replacementCount };
+    return {
+      value: sanitized,
+      replacementCount: totalStorageSanitizationCount(counts),
+      counts
+    };
   }
 
   if (isPlainRecord(value)) {
-    let replacementCount = 0;
+    const counts = emptyStorageSanitizationCounts();
     const sanitized: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(value)) {
-      const sanitizedKey = sanitizeNulCharacters(key);
-      const sanitizedField = sanitizeNulCharacters(field);
-      replacementCount +=
-        sanitizedKey.replacementCount + sanitizedField.replacementCount;
+      const sanitizedKey = sanitizeForPostgresStorage(key);
+      const sanitizedField = sanitizeForPostgresStorage(field);
+      addStorageSanitizationCounts(counts, sanitizedKey.counts);
+      addStorageSanitizationCounts(counts, sanitizedField.counts);
       sanitized[String(sanitizedKey.value)] = sanitizedField.value;
     }
-    return { value: sanitized, replacementCount };
+    return {
+      value: sanitized,
+      replacementCount: totalStorageSanitizationCount(counts),
+      counts
+    };
   }
 
-  return { value, replacementCount: 0 };
+  const counts = emptyStorageSanitizationCounts();
+  return { value, replacementCount: 0, counts };
 };
 
-export const metadataWithNulSanitization = (
+export const metadataWithStorageSanitization = (
   metadata: Record<string, unknown>,
-  replacementCount: number
+  counts: StorageSanitizationCounts
 ): Record<string, unknown> => {
-  if (replacementCount === 0) {
+  if (totalStorageSanitizationCount(counts) === 0) {
     return metadata;
   }
   const existingKoed = isPlainRecord(metadata.koedSanitization)
     ? metadata.koedSanitization
     : {};
+  const sanitization: Record<string, unknown> = { ...existingKoed };
+  if (counts.nulCharacters > 0) {
+    sanitization.nulCharacters = {
+      replacement: "U+FFFD",
+      replacementCount: counts.nulCharacters
+    };
+  }
+  if (counts.malformedUtf16 > 0) {
+    sanitization.malformedUtf16 = {
+      replacement: "U+FFFD",
+      replacementCount: counts.malformedUtf16
+    };
+  }
   return {
     ...metadata,
-    koedSanitization: {
-      ...existingKoed,
-      nulCharacters: {
-        replacement: "U+FFFD",
-        replacementCount
-      }
-    }
+    koedSanitization: sanitization
   };
 };
 

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
-  metadataWithNulSanitization,
-  sanitizeNulCharacters
+  combineStorageSanitizationCounts,
+  metadataWithStorageSanitization,
+  sanitizeForPostgresStorage
 } from "@koed/shared";
 import { metadataSchema } from "./common-schemas.js";
 
@@ -41,19 +42,22 @@ const conversationItemSchema = z
     metadata: metadataSchema
   })
   .transform((item) => {
-    const rawJson = sanitizeNulCharacters(item.rawJson);
-    const rawText = sanitizeNulCharacters(item.rawText);
-    const transportChunkText = sanitizeNulCharacters(item.transportChunkText);
-    const projectionError = sanitizeNulCharacters(item.projectionError);
-    const sourcePath = sanitizeNulCharacters(item.sourcePath);
-    const metadata = sanitizeNulCharacters(item.metadata);
-    const replacementCount =
-      rawJson.replacementCount +
-      rawText.replacementCount +
-      transportChunkText.replacementCount +
-      projectionError.replacementCount +
-      sourcePath.replacementCount +
-      metadata.replacementCount;
+    const rawJson = sanitizeForPostgresStorage(item.rawJson);
+    const rawText = sanitizeForPostgresStorage(item.rawText);
+    const transportChunkText = sanitizeForPostgresStorage(
+      item.transportChunkText
+    );
+    const projectionError = sanitizeForPostgresStorage(item.projectionError);
+    const sourcePath = sanitizeForPostgresStorage(item.sourcePath);
+    const metadata = sanitizeForPostgresStorage(item.metadata);
+    const sanitizationCounts = combineStorageSanitizationCounts(
+      rawJson,
+      rawText,
+      transportChunkText,
+      projectionError,
+      sourcePath,
+      metadata
+    );
 
     return {
       ...item,
@@ -62,9 +66,9 @@ const conversationItemSchema = z
       transportChunkText: transportChunkText.value as string | undefined,
       projectionError: projectionError.value as string | undefined,
       sourcePath: sourcePath.value as string | undefined,
-      metadata: metadataWithNulSanitization(
+      metadata: metadataWithStorageSanitization(
         metadata.value as Record<string, unknown>,
-        replacementCount
+        sanitizationCounts
       )
     };
   });

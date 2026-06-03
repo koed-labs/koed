@@ -2384,7 +2384,7 @@ describe("account and access flows", () => {
     ).toContain("concise changelog");
   });
 
-  it("sanitizes NUL characters before forwarding raw conversation item ingestion", async () => {
+  it("sanitizes storage-unsafe strings before forwarding raw conversation item ingestion", async () => {
     const repository = createFakeRepository();
     const createConversationItems =
       repository.createConversationItems.bind(repository);
@@ -2433,15 +2433,15 @@ describe("account and access flows", () => {
               params: {
                 item: {
                   type: "agentMessage",
-                  text: `Raw API text a${"\u0000"}b`
+                  text: `Raw API text a${"\u0000"}b${"\uD800"}c`
                 }
               }
             },
-            rawText: `Raw text a${"\u0000"}b`,
-            transportChunkText: `Transport text a${"\u0000"}b`,
+            rawText: `Raw text 你好 🚀\nline a${"\u0000"}b`,
+            transportChunkText: `Transport text a${"\uDC00"}b`,
             sourceHash: "nul-api-source-hash",
             idempotencyKey: "nul-api-idempotency-key",
-            metadata: { label: `metadata a${"\u0000"}b` }
+            metadata: { label: `metadata a${"\u0000"}b`, valid: "Cafe\u0301" }
           }
         ]
       }
@@ -2458,13 +2458,23 @@ describe("account and access flows", () => {
         metadata: Record<string, unknown>;
       }>
     )?.[0];
-    expect(forwardedItem?.rawJson.params.item.text).toBe("Raw API text a�b");
-    expect(forwardedItem?.rawText).toBe("Raw text a�b");
+    expect(forwardedItem?.rawJson.params.item.text).toBe("Raw API text a�b�c");
+    expect(forwardedItem?.rawText).toBe("Raw text 你好 🚀\nline a�b");
     expect(forwardedItem?.transportChunkText).toBe("Transport text a�b");
     expect(forwardedItem?.sourcePath).toBe("/tmp/a�b.jsonl");
-    expect(JSON.stringify(forwardedItem?.metadata)).toContain(
-      '"replacementCount":5'
-    );
+    expect(forwardedItem?.metadata).toMatchObject({
+      valid: "Cafe\u0301",
+      koedSanitization: {
+        nulCharacters: {
+          replacement: "U+FFFD",
+          replacementCount: 4
+        },
+        malformedUtf16: {
+          replacement: "U+FFFD",
+          replacementCount: 2
+        }
+      }
+    });
     expect(JSON.stringify(forwardedItem)).not.toContain("\\u0000");
   });
 

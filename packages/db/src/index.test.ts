@@ -2865,7 +2865,7 @@ describeDb("memory repository visibility", () => {
     expect(bobRawItem?.id).not.toBe(rawItem?.id);
   });
 
-  it("sanitizes NUL characters in raw conversation items before storage and projection", async () => {
+  it("sanitizes storage-unsafe strings in raw conversation items before storage and projection", async () => {
     const alice = await repo.createUser({
       email: `alice-raw-nul-${randomUUID()}@example.com`
     });
@@ -2908,12 +2908,12 @@ describeDb("memory repository visibility", () => {
               params: {
                 item: {
                   type: "agentMessage",
-                  text: `The captured text is a${"\u0000"}b.`
+                  text: `The captured text is a${"\u0000"}b${"\uD800"}c.`
                 },
                 nested: [{ value: `nested-${"\u0000"}value` }]
               }
             },
-            rawText: `Raw text a${"\u0000"}b`,
+            rawText: `Raw text 你好 🚀\nline a${"\u0000"}b`,
             sourceHash: `source-${idempotencyKey}`,
             idempotencyKey,
             projectionStatus: "pending",
@@ -2921,7 +2921,10 @@ describeDb("memory repository visibility", () => {
               workspaceId,
               transcriptType: "agent_message",
               label: `metadata a${"\u0000"}b`,
-              nested: { [`key${"\u0000"}name`]: `value${"\u0000"}text` }
+              valid: "Cafe\u0301",
+              nested: {
+                [`key${"\u0000"}name`]: `value${"\u0000"}text${"\uDC00"}`
+              }
             }
           }
         ]
@@ -2960,7 +2963,7 @@ describeDb("memory repository visibility", () => {
             logicalSourceId: `logical-${transportIdempotencyKey}`,
             transportChunkIndex: 0,
             transportChunkCount: 1,
-            transportChunkText: `Transport a${"\u0000"}b`,
+            transportChunkText: `Transport a${"\u0000"}b${"\uDC00"}c`,
             transportChunkEncoding: "test-plain-text",
             sourceHash: `source-${transportIdempotencyKey}`,
             idempotencyKey: transportIdempotencyKey,
@@ -3008,20 +3011,44 @@ describeDb("memory repository visibility", () => {
 
     expect(rawItem?.id).toBeTruthy();
     expect(duplicateRawItem?.id).toBe(rawItem?.id);
-    expect(stored.rows[0]?.raw_payload_text).toBe("The captured text is a�b.");
-    expect(stored.rows[0]?.raw_text).toBe("Raw text a�b");
+    expect(stored.rows[0]?.raw_payload_text).toBe(
+      "The captured text is a�b�c."
+    );
+    expect(stored.rows[0]?.raw_text).toBe("Raw text 你好 🚀\nline a�b");
     expect(stored.rows[0]?.source_path).toBe("/tmp/a�b.jsonl");
-    expect(JSON.stringify(stored.rows[0]?.metadata)).toContain(
-      '"replacementCount":7'
+    expect(stored.rows[0]?.metadata).toMatchObject({
+      transcriptType: "agent_message",
+      valid: "Cafe\u0301",
+      koedSanitization: {
+        nulCharacters: {
+          replacement: "U+FFFD",
+          replacementCount: 7
+        },
+        malformedUtf16: {
+          replacement: "U+FFFD",
+          replacementCount: 2
+        }
+      }
+    });
+    expect(storedTransport.rows[0]?.transport_chunk_text).toBe(
+      "Transport a�b�c"
     );
-    expect(storedTransport.rows[0]?.transport_chunk_text).toBe("Transport a�b");
-    expect(JSON.stringify(storedTransport.rows[0]?.metadata)).toContain(
-      '"replacementCount":1'
-    );
+    expect(storedTransport.rows[0]?.metadata).toMatchObject({
+      koedSanitization: {
+        nulCharacters: {
+          replacement: "U+FFFD",
+          replacementCount: 1
+        },
+        malformedUtf16: {
+          replacement: "U+FFFD",
+          replacementCount: 1
+        }
+      }
+    });
     expect(JSON.stringify(stored.rows[0])).not.toContain("\u0000");
     expect(JSON.stringify(stored.rows[0])).not.toContain("\\u0000");
     expect(projection.memoryEventsCreated).toBe(1);
-    expect(event.rows[0]?.content).toBe("Raw text a�b");
+    expect(event.rows[0]?.content).toBe("Raw text 你好 🚀\nline a�b");
     expect(event.rows[0]?.content).not.toContain("\\u0000");
     expect(JSON.stringify(event.rows[0]?.metadata)).toContain(
       '"replacementCount":7'
@@ -4822,7 +4849,7 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("sanitizes NUL characters after decoding transport chunk envelopes", async () => {
+  it("sanitizes storage-unsafe strings after decoding transport chunk envelopes", async () => {
     const alice = await repo.createUser({
       email: `alice-nul-transport-${randomUUID()}@example.com`
     });
@@ -4845,7 +4872,7 @@ describeDb("memory repository visibility", () => {
       }
     );
     const logicalSourceId = `nul-transport-logical-${randomUUID()}`;
-    const reconstructedText = `Chunked decoded text is c${"\u0000"}d.`;
+    const reconstructedText = `Chunked decoded text is 你好 c${"\u0000"}d${"\uD800"}e.`;
     const envelope = JSON.stringify({
       rawJson: {
         method: "item/completed",
@@ -4907,12 +4934,21 @@ describeDb("memory repository visibility", () => {
 
     expect(projection.rawItemsProjected).toBe(2);
     expect(projection.memoryEventsCreated).toBe(1);
-    expect(events.rows[0]?.content).toBe("Chunked decoded text is c�d.");
+    expect(events.rows[0]?.content).toBe("Chunked decoded text is 你好 c�d�e.");
     expect(events.rows[0]?.content).not.toContain("\u0000");
     expect(events.rows[0]?.content).not.toContain("\\u0000");
-    expect(JSON.stringify(events.rows[0]?.metadata)).toContain(
-      '"replacementCount":2'
-    );
+    expect(events.rows[0]?.metadata).toMatchObject({
+      koedSanitization: {
+        nulCharacters: {
+          replacement: "U+FFFD",
+          replacementCount: 2
+        },
+        malformedUtf16: {
+          replacement: "U+FFFD",
+          replacementCount: 2
+        }
+      }
+    });
   });
 
   it("keeps projected app-server threads under the canonical session project", async () => {

@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   configFlagEnabled,
   createHealth,
-  metadataWithNulSanitization,
+  metadataWithStorageSanitization,
   requireEnv,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
-  sanitizeNulCharacters
+  sanitizeForPostgresStorage
 } from "./index.js";
 
 describe("createHealth", () => {
@@ -38,29 +38,69 @@ describe("requireEnv", () => {
   });
 });
 
-describe("sanitizeNulCharacters", () => {
-  it("replaces NUL characters in nested values and object keys", () => {
-    const result = sanitizeNulCharacters({
-      plain: `a${"\u0000"}b`,
-      nested: [{ [`key${"\u0000"}name`]: `value${"\u0000"}text` }]
+describe("sanitizeForPostgresStorage", () => {
+  it("replaces NUL characters and malformed UTF-16 in nested values and object keys", () => {
+    const result = sanitizeForPostgresStorage({
+      plain: `a${"\u0000"}b${"\uD800"}c`,
+      nested: [{ [`key${"\uDC00"}name`]: `value${"\uD800"}text` }]
     });
 
-    expect(result.replacementCount).toBe(3);
+    expect(result.replacementCount).toBe(4);
+    expect(result.counts).toEqual({
+      nulCharacters: 1,
+      malformedUtf16: 3
+    });
     expect(result.value).toEqual({
-      plain: "a�b",
+      plain: "a�b�c",
       nested: [{ "key�name": "value�text" }]
+    });
+  });
+
+  it("leaves valid Unicode and normal whitespace unchanged", () => {
+    const value = {
+      mandarin: "你好，世界",
+      emoji: "Koed 🚀",
+      accents: "Cafe\u0301",
+      whitespace: "line one\nline two\tindented"
+    };
+
+    expect(sanitizeForPostgresStorage(value)).toEqual({
+      value,
+      replacementCount: 0,
+      counts: {
+        nulCharacters: 0,
+        malformedUtf16: 0
+      }
     });
   });
 });
 
-describe("metadataWithNulSanitization", () => {
-  it("adds an explicit NUL sanitization marker without dropping metadata", () => {
-    expect(metadataWithNulSanitization({ workflow: "capture" }, 2)).toEqual({
+describe("metadataWithStorageSanitization", () => {
+  it("adds separate storage sanitization markers without dropping metadata", () => {
+    expect(
+      metadataWithStorageSanitization(
+        {
+          workflow: "capture",
+          koedSanitization: {
+            previous: true
+          }
+        },
+        {
+          nulCharacters: 2,
+          malformedUtf16: 3
+        }
+      )
+    ).toEqual({
       workflow: "capture",
       koedSanitization: {
+        previous: true,
         nulCharacters: {
           replacement: "U+FFFD",
           replacementCount: 2
+        },
+        malformedUtf16: {
+          replacement: "U+FFFD",
+          replacementCount: 3
         }
       }
     });
