@@ -13,7 +13,7 @@ jobs:
   verify:
     name: Test and lint
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 2
+    timeout-minutes: 10
 
     steps:
       - name: Checkout

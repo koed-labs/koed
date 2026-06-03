@@ -2,6 +2,7 @@
   "name": "@koed/mcp-server",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
     "koed-memory-answer-bridge": "dist/answer-bridge.js",

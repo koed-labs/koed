@@ -167,6 +167,7 @@ describe("local memory answer bridge", () => {
     const tokenUsageRequests: Record<string, unknown>[] = [];
     const operations: string[] = [];
     const tokenConversationItemId = randomUUID();
+    const largeEvidenceText = "large evidence payload ".repeat(20_000);
     const apiUrl = await createServer(async (request, response) => {
       if (request.url === "/v1/access/check") {
         json(response, 200, {
@@ -284,12 +285,15 @@ describe("local memory answer bridge", () => {
     vi.stubEnv("MEMORY_API_URL", apiUrl);
     answerWithMemoryWorker.mockResolvedValue({
       markdown: "The answer",
-      evidenceBundle: { evidence: [{ id: "evidence-1" }] },
+      evidenceBundle: {
+        evidence: [{ id: "evidence-1", summaryText: largeEvidenceText }],
+        retrieval: { mode: "leaf_search" }
+      },
       citations: [{ id: "citation-1" }],
       localMemoryWorker: {
         status: "ok",
         appServerThreadId: "thread-question-test",
-        appServerTurnId: "turn-question-test",
+        appServerTurnId: "final-question-test",
         appServerEvents: [
           {
             method: "turn/completed",
@@ -317,9 +321,9 @@ describe("local memory answer bridge", () => {
         ],
         appServerExecutions: [
           {
-            stepIndex: 0,
-            stepKind: "final",
+            answerJobId: "answer-job-test",
             model: "codex-app-server:test",
+            primaryThreadId: "thread-question-test",
             threadId: "thread-question-test",
             turnId: "turn-question-test",
             tokenUsage: {
@@ -394,6 +398,7 @@ describe("local memory answer bridge", () => {
       ok: boolean;
       question: { id: string };
       answer?: {
+        evidenceBundle?: { evidence?: unknown[] };
         localMemoryWorker?: {
           appServerEvents?: unknown;
           appServerExecutions?: Array<{ rawEvents?: unknown }>;
@@ -407,6 +412,9 @@ describe("local memory answer bridge", () => {
     });
 
     expect(result).toMatchObject({ ok: true, question: { id: questionId } });
+    expect(result.answer?.evidenceBundle?.evidence).toEqual([
+      { id: "evidence-1", summaryText: largeEvidenceText }
+    ]);
     expect(result.answer?.localMemoryWorker?.appServerEvents).toBeUndefined();
     expect(
       result.answer?.localMemoryWorker?.appServerExecutions?.[0]?.rawEvents
@@ -427,6 +435,14 @@ describe("local memory answer bridge", () => {
       answer_markdown: "The answer",
       local_memory_worker: { status: "ok" }
     });
+    expect(patches[0]?.evidence).toEqual([
+      { id: "evidence-1", summaryText: largeEvidenceText }
+    ]);
+    expect(JSON.stringify(patches[0]?.response)).not.toContain(
+      largeEvidenceText
+    );
+    expect(patches[0]?.response).not.toHaveProperty("evidenceBundle");
+    expect(patches[0]?.response).not.toHaveProperty("evidence");
     expect(
       (patches[0]?.local_memory_worker as { appServerEvents?: unknown })
         .appServerEvents
@@ -487,16 +503,24 @@ describe("local memory answer bridge", () => {
     ).items?.[0];
     expect(firstRawItem?.metadata).toMatchObject({
       workflow: "memory_question",
-      questionId
+      questionId,
+      answerJobId: "answer-job-test",
+      primaryAppServerThreadId: "thread-question-test"
     });
-    expect(tokenUsageRequests).toEqual([
-      expect.objectContaining({
-        workflowType: "memory_question",
-        workflowId: questionId,
-        conversationItemId: tokenConversationItemId,
-        idempotencyKey: `token:${tokenConversationItemId}:last`
-      })
-    ]);
+    expect(tokenUsageRequests).toHaveLength(1);
+    expect(tokenUsageRequests[0]).toMatchObject({
+      workflowType: "memory_question",
+      workflowId: questionId,
+      conversationItemId: tokenConversationItemId,
+      idempotencyKey: `token:${tokenConversationItemId}:last`
+    });
+    expect(tokenUsageRequests[0]?.metadata).toMatchObject({
+      answerJobId: "answer-job-test",
+      appServerTurnId: "turn-question-test",
+      primaryAppServerThreadId: "thread-question-test",
+      executionThreadId: "thread-question-test",
+      executionTurnId: "turn-question-test"
+    });
     expect(operations).toEqual(["raw", "token", "project", "patch"]);
   });
 
@@ -568,7 +592,7 @@ describe("local memory answer bridge", () => {
       {
         id: "gpt-5.4",
         model: "gpt-5.4",
-        label: "GPT-5.4",
+        label: "gpt-5.4",
         hidden: false,
         isDefault: true,
         defaultReasoningEffort: "high",
@@ -580,7 +604,7 @@ describe("local memory answer bridge", () => {
       {
         id: "gpt-5.4-mini",
         model: "gpt-5.4-mini",
-        label: "GPT-5.4 mini",
+        label: "gpt-5.4-mini",
         hidden: false,
         isDefault: false,
         defaultReasoningEffort: "medium",
@@ -608,7 +632,7 @@ describe("local memory answer bridge", () => {
     expect(body.modelOptions).toEqual([
       expect.objectContaining({
         model: "gpt-5.4",
-        label: "GPT-5.4",
+        label: "gpt-5.4",
         defaultReasoningEffort: "high",
         supportedReasoningEfforts: [
           { reasoningEffort: "minimal", description: "Minimal" },
@@ -617,7 +641,7 @@ describe("local memory answer bridge", () => {
       }),
       expect.objectContaining({
         model: "gpt-5.4-mini",
-        label: "GPT-5.4 mini",
+        label: "gpt-5.4-mini",
         defaultReasoningEffort: "medium"
       })
     ]);
@@ -911,6 +935,7 @@ describe("local memory answer bridge", () => {
   it("does not persist Codex fallback evidence as an answered question", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];
+    const largeEvidenceText = "retry evidence payload ".repeat(20_000);
     const fallbackMarkdown =
       "Evidence bundle returned for Codex synthesis, but Codex failed.";
     const apiUrl = await createServer(async (request, response) => {
@@ -966,7 +991,7 @@ describe("local memory answer bridge", () => {
     answerWithMemoryWorker.mockResolvedValue({
       markdown: fallbackMarkdown,
       evidenceBundle: {
-        evidence: [{ id: "evidence-1" }],
+        evidence: [{ id: "evidence-1", summaryText: largeEvidenceText }],
         retrieval: { mode: "leaf_search" }
       },
       citations: [{ id: "citation-1" }],
@@ -1009,6 +1034,11 @@ describe("local memory answer bridge", () => {
       },
       retrieval: { mode: "leaf_search" }
     });
+    expect(JSON.stringify(patches[0]?.response)).not.toContain(
+      largeEvidenceText
+    );
+    expect(patches[0]?.response).not.toHaveProperty("evidenceBundle");
+    expect(patches[0]?.response).not.toHaveProperty("evidence");
     expect(patches[0]?.last_error_message).not.toContain("Evidence bundle");
     expect(patches[0]).not.toHaveProperty("answer_markdown");
     expect(patches[0]).not.toHaveProperty("evidence");
@@ -1018,6 +1048,7 @@ describe("local memory answer bridge", () => {
   it("marks retry-exhausted fallback evidence as an explicit error", async () => {
     const questionId = randomUUID();
     const patches: Record<string, unknown>[] = [];
+    const largeEvidenceText = "terminal evidence payload ".repeat(20_000);
     const fallbackMarkdown =
       "Evidence bundle returned for Codex synthesis, but Codex failed.";
     const apiUrl = await createServer(async (request, response) => {
@@ -1073,7 +1104,7 @@ describe("local memory answer bridge", () => {
     answerWithMemoryWorker.mockResolvedValue({
       markdown: fallbackMarkdown,
       evidenceBundle: {
-        evidence: [{ id: "evidence-1" }],
+        evidence: [{ id: "evidence-1", summaryText: largeEvidenceText }],
         retrieval: { mode: "leaf_search" }
       },
       citations: [],
@@ -1118,6 +1149,11 @@ describe("local memory answer bridge", () => {
         skippedReason: "codex_failed"
       }
     });
+    expect(JSON.stringify(patches[0]?.response)).not.toContain(
+      largeEvidenceText
+    );
+    expect(patches[0]?.response).not.toHaveProperty("evidenceBundle");
+    expect(patches[0]?.response).not.toHaveProperty("evidence");
     expect(patches[0]?.error_message).not.toContain("Evidence bundle");
     expect(patches[0]).not.toHaveProperty("answer_markdown");
   });

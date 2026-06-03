@@ -204,19 +204,11 @@ See [docs/backup-restore.md](docs/backup-restore.md) and
 
 ## License
 
-Koed is currently source-available and non-commercial while the final license is
-under review. Commercial reuse, resale, hosted competing services, or other
-business use is not permitted until a final license is chosen and published.
+Koed Self-Hosted is licensed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
 
-License candidates to evaluate:
+The AGPL requires modified versions that interact with users over a network to offer those users access to the corresponding source code. Koed Labs may also offer separate commercial licenses for organizations that need different terms, including for proprietary modified SaaS products.
 
-- PolyForm Noncommercial License: clear non-commercial source-available baseline.
-- Business Source License-style terms: useful if a delayed conversion or change-date model is desired.
-- Custom source-available non-commercial license: best fit if Koed needs explicit anti-competition and SaaS-hosting restrictions.
-
-See [LICENSE_PENDING.md](LICENSE_PENDING.md) and [docs/license.md](docs/license.md).
-Do not describe this distribution as OSI-approved open source unless the final
-license is OSI-approved.
+External code contributions require contributor terms that preserve Koed Labs' ability to dual-license the project. See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/license.md](docs/license.md).
 
 ## Learn More
 
@@ -226,4 +218,4 @@ license is OSI-approved.
 - [Backup and restore](docs/backup-restore.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
-- [License guidance](docs/license.md)
+- [License](docs/license.md)
