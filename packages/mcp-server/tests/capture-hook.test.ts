@@ -1029,7 +1029,83 @@ describe("Codex capture hook transcript parsing", () => {
     expect(items).toHaveLength(1);
   });
 
-  it("uses the same raw identity for immediate UserPromptSubmit payloads and later transcript prompts", () => {
+  it("does not suppress a repeated prompt when transcript backlog contains older matching text", () => {
+    const payload = {
+      session_id: "session-userprompt-repeat",
+      turn_id: "turn-repeat",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Repeated prompt"
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Repeated prompt"
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Older backlog after the repeated prompt"
+          }
+        }
+      ],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "Repeated prompt",
+      "Older backlog after the repeated prompt",
+      "Repeated prompt"
+    ]);
+    expect(items[2]).toMatchObject({
+      sourceRecordType: "hook_payload",
+      sourceEventType: "UserPromptSubmit"
+    });
+  });
+
+  it("deduplicates subagent UserPromptSubmit payloads already present in the transcript batch", () => {
+    const payload = {
+      session_id: "parent-thread",
+      agent_id: "subagent-thread",
+      turn_id: "subagent-turn",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Subagent prompt already in transcript"
+    };
+    const effectiveContext = effectiveCaptureContext(payload, {
+      threadKind: "subagent",
+      transcriptSessionId: "subagent-thread",
+      parentThreadId: "parent-thread",
+      transcriptMetadata: {}
+    });
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Subagent prompt already in transcript"
+          }
+        }
+      ],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "Subagent prompt already in transcript"
+    ]);
+    expect(items).toHaveLength(1);
+  });
+
+  it("keeps transcript raw identity stable between foreground and catch-up reads", () => {
     const payload = {
       session_id: "session-userprompt-later",
       turn_id: "turn-3",
@@ -1037,33 +1113,32 @@ describe("Codex capture hook transcript parsing", () => {
       prompt: "Prompt later appears in transcript"
     };
     const effectiveContext = effectiveCaptureContext(payload);
-    const immediate = selectRawConversationItemsForHook({
-      transcriptRecords: [],
+    const record = {
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        message: "Prompt later appears in transcript"
+      }
+    };
+    const foregroundTranscript = buildRawTranscriptConversationItems({
+      records: [record],
       payload,
-      effectiveContext,
-      mode: "foreground"
+      effectiveContext
     });
-    const laterTranscript = buildRawTranscriptConversationItems({
-      records: [
-        {
-          type: "event_msg",
-          payload: {
-            type: "user_message",
-            message: "Prompt later appears in transcript"
-          }
-        }
-      ],
+    const catchupTranscript = buildRawTranscriptConversationItems({
+      records: [record],
       payload: {
         session_id: "session-userprompt-later",
-        turn_id: "turn-3",
-        hook_event_name: "PostToolUse"
+        hook_event_name: "UserPromptSubmit"
       },
       effectiveContext
     });
 
-    expect(immediate[0]?.sourceHash).toBe(laterTranscript[0]?.sourceHash);
-    expect(immediate[0]?.idempotencyKey).toBe(
-      laterTranscript[0]?.idempotencyKey
+    expect(foregroundTranscript[0]?.sourceHash).toBe(
+      catchupTranscript[0]?.sourceHash
+    );
+    expect(foregroundTranscript[0]?.idempotencyKey).toBe(
+      catchupTranscript[0]?.idempotencyKey
     );
   });
 

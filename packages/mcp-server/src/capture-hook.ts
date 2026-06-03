@@ -76,6 +76,17 @@ type RawConversationItemRequest = {
 interface CaptureState {
   seen: Record<string, true>;
   rawSeen: Record<string, true>;
+  immediatePrompts?: Record<
+    string,
+    {
+      sourceHash: string;
+      externalSessionId?: string;
+      externalTurnId?: string;
+      actor: "user" | "agent";
+      prompt: string;
+      capturedAt: number;
+    }
+  >;
   transcriptOffsets?: Record<
     string,
     {
@@ -1345,29 +1356,18 @@ const sourceHashForRawRecord = (input: {
   transcriptPath?: string;
   index: number;
   record: unknown;
-  turnId?: string;
-  parsedItem?: CaptureItem | null;
 }): string =>
-  input.turnId &&
-  input.parsedItem?.actor === "user" &&
-  input.parsedItem.content.trim()
-    ? sourceHashForImmediatePrompt({
-        externalSessionId: input.externalSessionId,
-        turnId: input.turnId,
-        actor: "user",
-        prompt: input.parsedItem.content
-      })
-    : hash({
-        externalSessionId: input.externalSessionId,
-        transcriptPath: input.transcriptPath,
-        recordIdentity: rawExternalItemId(input.record) ??
-          transcriptRecordPosition(input.record) ?? {
-            eventType: rawEventType(input.record),
-            eventTime: rawEventTime(input.record),
-            rawText: rawText(input.record),
-            record: input.record
-          }
-      });
+  hash({
+    externalSessionId: input.externalSessionId,
+    transcriptPath: input.transcriptPath,
+    recordIdentity: rawExternalItemId(input.record) ??
+      transcriptRecordPosition(input.record) ?? {
+        eventType: rawEventType(input.record),
+        eventTime: rawEventTime(input.record),
+        rawText: rawText(input.record),
+        record: input.record
+      }
+  });
 
 const immediatePromptActor = (
   effectiveContext: EffectiveCaptureContext
@@ -1401,10 +1401,90 @@ const promptAlreadyRepresented = (
     (item) =>
       item.sourceHash === hookPromptItem.sourceHash ||
       item.idempotencyKey === hookPromptItem.idempotencyKey ||
-      (item.externalTurnId === hookPromptItem.externalTurnId &&
-        item.metadata?.immediateHookPrompt === true &&
+      (items.length === 1 &&
+        item.externalTurnId === hookPromptItem.externalTurnId &&
         item.rawText === hookPromptItem.rawText)
   );
+
+const immediatePromptStateKey = (
+  stateScope: string,
+  input: {
+    externalSessionId?: string;
+    externalTurnId?: string;
+    actor: "user" | "agent";
+    prompt: string;
+  }
+): string =>
+  scopedStateKey(
+    stateScope,
+    hash({
+      externalSessionId: input.externalSessionId,
+      externalTurnId: input.externalTurnId,
+      actor: input.actor,
+      prompt: input.prompt
+    })
+  );
+
+const rememberImmediatePrompt = (
+  state: CaptureState,
+  stateScope: string,
+  item: RawConversationItemRequest
+): void => {
+  if (
+    item.metadata?.immediateHookPrompt !== true ||
+    typeof item.rawText !== "string" ||
+    !item.rawText.trim()
+  ) {
+    return;
+  }
+  const actor = item.metadata.threadKind === "subagent" ? "agent" : "user";
+  const key = immediatePromptStateKey(stateScope, {
+    externalSessionId: item.externalSessionId,
+    externalTurnId: item.externalTurnId,
+    actor,
+    prompt: item.rawText
+  });
+  state.immediatePrompts = {
+    ...(state.immediatePrompts ?? {}),
+    [key]: {
+      sourceHash: item.sourceHash,
+      externalSessionId: item.externalSessionId,
+      externalTurnId: item.externalTurnId,
+      actor,
+      prompt: item.rawText,
+      capturedAt: Date.now()
+    }
+  };
+};
+
+const transcriptItemAlreadyCapturedFromImmediatePrompt = (
+  state: CaptureState,
+  stateScope: string,
+  item: RawConversationItemRequest
+): boolean => {
+  if (
+    item.sourceRecordType === "hook_payload" ||
+    typeof item.rawText !== "string" ||
+    !item.rawText.trim()
+  ) {
+    return false;
+  }
+  const transcriptType =
+    typeof item.metadata?.transcriptType === "string"
+      ? item.metadata.transcriptType
+      : item.sourceEventType;
+  if (!/user/i.test(transcriptType ?? "") || !item.externalTurnId) {
+    return false;
+  }
+  const actor = item.metadata?.threadKind === "subagent" ? "agent" : "user";
+  const key = immediatePromptStateKey(stateScope, {
+    externalSessionId: item.externalSessionId,
+    externalTurnId: item.externalTurnId,
+    actor,
+    prompt: item.rawText
+  });
+  return Boolean(state.immediatePrompts?.[key]);
+};
 
 const hookPromptMetadata = (
   payload: HookPayload,
@@ -1529,9 +1609,7 @@ export const buildRawTranscriptConversationItems = (input: {
       externalSessionId: input.effectiveContext.externalSessionId,
       transcriptPath: input.transcriptPath,
       index: sourceSequence,
-      record,
-      turnId: input.payload.turn_id,
-      parsedItem
+      record
     });
     return {
       sessionId: input.sessionId,
@@ -1664,10 +1742,16 @@ const loadState = (): CaptureState => {
     return {
       seen: state.seen ?? {},
       rawSeen: state.rawSeen ?? {},
+      immediatePrompts: state.immediatePrompts ?? {},
       transcriptOffsets: state.transcriptOffsets ?? {}
     };
   } catch {
-    return { seen: {}, rawSeen: {}, transcriptOffsets: {} };
+    return {
+      seen: {},
+      rawSeen: {},
+      immediatePrompts: {},
+      transcriptOffsets: {}
+    };
   }
 };
 
@@ -1682,6 +1766,9 @@ const saveState = (state: CaptureState): void => {
         seen: Object.fromEntries(Object.entries(state.seen).slice(-5000)),
         rawSeen: Object.fromEntries(
           Object.entries(state.rawSeen).slice(-20_000)
+        ),
+        immediatePrompts: Object.fromEntries(
+          Object.entries(state.immediatePrompts ?? {}).slice(-5_000)
         ),
         transcriptOffsets: Object.fromEntries(
           Object.entries(state.transcriptOffsets ?? {}).slice(-2_000)
@@ -2058,7 +2145,10 @@ const runCapturePass = async (input: {
     transcriptPath: captureTranscriptPath,
     payload,
     mode
-  });
+  }).filter(
+    (item) =>
+      !transcriptItemAlreadyCapturedFromImmediatePrompt(state, stateScope, item)
+  );
   const rawItemsToSend = rawItemsForCapture(
     rawItemsRequest,
     scopedRawSeen(state.rawSeen, stateScope, rawItemsRequest),
@@ -2080,6 +2170,9 @@ const runCapturePass = async (input: {
         );
   for (const item of rawItemsResponse) {
     state.rawSeen[scopedStateKey(stateScope, item.idempotencyKey)] = true;
+  }
+  for (const item of rawItemsToSend) {
+    rememberImmediatePrompt(state, stateScope, item);
   }
   if (!rawItemsResult.completed) {
     console.error(
