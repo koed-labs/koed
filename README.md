@@ -1,4 +1,10 @@
-# Koed
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/koed-logo-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/koed-logo.svg">
+  <img alt="Koed" src="docs/assets/koed-logo.svg" width="190" height="60">
+</picture>
+</p>
 
 ## Make your AI remember the work
 
