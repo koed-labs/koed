@@ -138,53 +138,17 @@ It talks to the same API and accepts bearer API tokens created with
 
 ## Configuration
 
-Start from `.env.example`.
+Start from `.env.example`:
 
-Required local settings:
+```bash
+pnpm env:setup
+```
 
-- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`: Postgres container settings.
-- `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`.
-- `API_TOKEN_PEPPER`: server-side pepper for API token hashes.
-- `EMBEDDING_SERVICE_TOKEN`: shared internal token used by the API and worker when calling the private embedding service.
-- `API_CORS_ORIGINS`: include the local history-browser origin.
-- `GITHUB_TOKEN`: GitHub token used by Docker to fetch the private
-  `koed-labs/koed-history-browser` frontend repository.
+For local Docker builds, set `GITHUB_TOKEN` if you want the history browser to be
+fetched from `koed-labs/koed-history-browser`.
 
-Embedding settings:
-
-- `EMBEDDING_MODEL_KEY`: local embedding model setting. The embedding service only accepts supported model keys.
-- `EMBEDDING_RERANKER_KEY`: optional local reranker model key. Leave blank to keep reranking disabled; Docker Compose maps this to the app-local `RERANKER_KEY`.
-
-History browser settings:
-
-- `HISTORY_BROWSER_REPO`, `HISTORY_BROWSER_REF`: optional override for the
-  history-browser repository and branch/tag/SHA.
-
-Memory processing settings:
-
-- `MEMORY_LCM_LEAF_EVENT_THRESHOLD`, `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`,
-  `MEMORY_LCM_FRESH_EVENT_TAIL`, `MEMORY_LCM_DEPTH1_FANOUT`: LCM placeholder
-  cadence controls for Codex capture traffic.
-- `MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS`: local Codex summary prompt budget.
-
-Logging settings:
-
-- `WORKER_LOG_LEVEL`: JSON log level for the worker (`trace`, `debug`, `info`,
-  `warn`, `error`, `fatal`, or `silent`).
-- `WORKER_LOG_FILE`: optional log file for worker logs. Leave blank to log to
-  stderr.
-- `WORKER_LOG_DESTINATION`: optional `stderr`, `file`, or `both`. If
-  `WORKER_LOG_FILE` is set and this is blank, logs go to the file.
-- `MEMORY_LOG_LEVEL`: JSON log level for the local MCP server and answer bridge
-  (`trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent`).
-- `MEMORY_LOG_FILE`: optional log file for MCP server and answer bridge logs.
-  Leave blank to log to stderr.
-- `MEMORY_LOG_DESTINATION`: optional `stderr`, `file`, or `both`. If
-  `MEMORY_LOG_FILE` is set and this is blank, logs go to the file.
-
-Security-sensitive settings:
-
-- `API_DATA_ENCRYPTION_KEY`: reserved 32-byte base64 key for encrypted server-side fields. In the current build, memory payloads remain plaintext at the application layer in Postgres and must be protected with deployment-level database, volume, backup, and access controls.
+See [Configuration](docs/configuration.md) for all environment variables,
+embedding settings, logging options, AI client values, and production notes.
 
 Do not commit `.env`, `.env.production`, API tokens, peppers, encryption keys, or
 private deployment details. Server-side LLM synthesis and backend LLM provider
@@ -192,18 +156,19 @@ configuration are unsupported in this build.
 
 ## Architecture
 
+Koed is made of a few core services:
+
 - `apps/api`: Fastify API for auth, API tokens, capture policy, memory capture, recall, graph inspection, export, and diagnostics.
 - `apps/worker`: BullMQ worker for embedding and memory background jobs.
 - `apps/embedding-service`: local embedding/reranking HTTP service.
-- `apps/history-browser`: wrapper package and Docker integration that fetches and builds the separate `koed-labs/koed-history-browser` frontend.
-- `packages/db`: Postgres repository and migrations.
-- `packages/core`: memory capture, retrieval, answer, and compaction logic.
-- `packages/mcp-server`: Koed MCP Server and the TypeScript Codex Capture Hook.
-- `packages/shared`, `packages/evals`: retained runtime support and validation utilities.
+- `apps/history-browser`: wrapper and Docker integration for the memory history frontend.
+- `packages/mcp-server`: MCP Server, local answer bridge, and Codex Capture Hook.
+- `packages/db`: Postgres repositories, migrations, and operator scripts.
 
-Postgres uses pgvector. Redis backs BullMQ. Koed relies on the connected AI
-client for LLM synthesis; the backend stores memory, retrieves evidence, manages
-embeddings and ranking, and does not make server-side LLM calls in this build.
+Postgres with pgvector stores memory data and embeddings. Redis backs background
+jobs. Koed relies on the connected AI client for LLM synthesis; the backend
+stores memory, retrieves evidence, manages embeddings and ranking, and does not
+make server-side LLM calls in this build.
 
 This repository is not the hosted Koed SaaS product. It does not include hosted
 onboarding, billing, hosted account management, desktop companion builds, private
@@ -216,6 +181,10 @@ tokens for AI-client integrations. Local operators create tokens with
 `pnpm api-token:create`, which uses trusted database access and stores only token
 hashes. Postgres and Redis should stay on private Docker/internal networks in
 production deployments. See [docs/security.md](docs/security.md).
+
+Memory payloads remain plaintext at the application layer in Postgres in the
+current build. Protect the database, volumes, backups, and administrator access
+with deployment-level controls.
 
 Report suspected vulnerabilities privately. See [SECURITY.md](SECURITY.md) for
 supported versions, the reporting channel, and guidance on not disclosing user
