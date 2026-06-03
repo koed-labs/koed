@@ -15,6 +15,7 @@ import {
   rawItemBatches,
   rawItemsForCapture,
   rawItemRequestChunks,
+  selectRawConversationItemsForHook,
   selectCaptureItems,
   shouldReadTranscriptForHook,
   stateScopeKey,
@@ -959,6 +960,111 @@ describe("Codex capture hook transcript parsing", () => {
         metadata: { externalSessionId: "session-b" }
       }
     ]);
+  });
+
+  it("keeps UserPromptSubmit hook payloads when transcript backlog exists without the new prompt", () => {
+    const effectiveContext = effectiveCaptureContext({
+      session_id: "session-userprompt-backlog",
+      turn_id: "turn-1",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Immediate prompt from hook"
+    });
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Older unread transcript backlog"
+          }
+        }
+      ],
+      payload: {
+        session_id: "session-userprompt-backlog",
+        turn_id: "turn-1",
+        hook_event_name: "UserPromptSubmit",
+        prompt: "Immediate prompt from hook"
+      },
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "Older unread transcript backlog",
+      "Immediate prompt from hook"
+    ]);
+    expect(items[1]).toMatchObject({
+      sourceRecordType: "hook_payload",
+      sourceEventType: "UserPromptSubmit",
+      rawText: "Immediate prompt from hook"
+    });
+  });
+
+  it("does not duplicate UserPromptSubmit hook payloads already present in the transcript batch", () => {
+    const payload = {
+      session_id: "session-userprompt-present",
+      turn_id: "turn-2",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Prompt already in transcript"
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Prompt already in transcript"
+          }
+        }
+      ],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "Prompt already in transcript"
+    ]);
+    expect(items).toHaveLength(1);
+  });
+
+  it("uses the same raw identity for immediate UserPromptSubmit payloads and later transcript prompts", () => {
+    const payload = {
+      session_id: "session-userprompt-later",
+      turn_id: "turn-3",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Prompt later appears in transcript"
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const immediate = selectRawConversationItemsForHook({
+      transcriptRecords: [],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+    const laterTranscript = buildRawTranscriptConversationItems({
+      records: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Prompt later appears in transcript"
+          }
+        }
+      ],
+      payload: {
+        session_id: "session-userprompt-later",
+        turn_id: "turn-3",
+        hook_event_name: "PostToolUse"
+      },
+      effectiveContext
+    });
+
+    expect(immediate[0]?.sourceHash).toBe(laterTranscript[0]?.sourceHash);
+    expect(immediate[0]?.idempotencyKey).toBe(
+      laterTranscript[0]?.idempotencyKey
+    );
   });
 
   it("batches raw conversation items under the configured request budget", () => {
