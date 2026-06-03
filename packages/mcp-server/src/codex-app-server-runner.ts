@@ -41,6 +41,28 @@ export interface CodexAppServerModelOption {
   supportedReasoningEfforts: CodexAppServerReasoningEffortOption[];
 }
 
+export interface CodexAppServerDynamicToolSpec {
+  namespace?: string;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  deferLoading?: boolean;
+}
+
+export interface CodexAppServerDynamicToolCall {
+  threadId: string;
+  turnId: string;
+  callId: string;
+  namespace?: string;
+  tool: string;
+  arguments: unknown;
+}
+
+export interface CodexAppServerDynamicToolResponse {
+  success: boolean;
+  text: string;
+}
+
 export interface CodexAppServerRunConfig {
   appServerBinary: string;
   model: string;
@@ -50,6 +72,10 @@ export interface CodexAppServerRunConfig {
   clientName: string;
   baseInstructions: string;
   developerInstructions?: string;
+  dynamicTools?: CodexAppServerDynamicToolSpec[];
+  dynamicToolHandler?: (
+    call: CodexAppServerDynamicToolCall
+  ) => Promise<CodexAppServerDynamicToolResponse>;
 }
 
 export interface CodexAppServerRunResult {
@@ -59,6 +85,7 @@ export interface CodexAppServerRunResult {
   threadId?: string;
   turnId?: string;
   rawEvents?: CodexAppServerRawEvent[];
+  primaryThreadId?: string;
 }
 
 export class CodexAppServerTurnError extends Error {
@@ -247,6 +274,9 @@ class CodexAppServerClient {
     resolve: (value: CodexAppServerRunResult) => void;
     reject: (error: Error) => void;
   } | null = null;
+  private currentDynamicToolHandler:
+    | CodexAppServerRunConfig["dynamicToolHandler"]
+    | undefined;
 
   constructor(
     private readonly binary: string,
@@ -288,7 +318,7 @@ class CodexAppServerClient {
         version: "0.1.0"
       },
       capabilities: {
-        experimental_api: true
+        experimentalApi: true
       }
     });
     this.notify("initialized");
@@ -311,6 +341,7 @@ class CodexAppServerClient {
   }
 
   async startThread(config: CodexAppServerRunConfig): Promise<string> {
+    this.currentDynamicToolHandler = config.dynamicToolHandler;
     const response = await this.request("thread/start", {
       model: config.model,
       cwd: config.cwd,
@@ -323,7 +354,10 @@ class CodexAppServerClient {
       baseInstructions: config.baseInstructions,
       developerInstructions: config.developerInstructions ?? "",
       personality: "none",
-      threadSource: "memory_consolidation"
+      threadSource: "memory_consolidation",
+      ...(config.dynamicTools && config.dynamicTools.length > 0
+        ? { dynamicTools: config.dynamicTools }
+        : {})
     });
     const thread = asRecord(asRecord(response.result).thread);
     if (typeof thread.id !== "string") {
@@ -389,6 +423,21 @@ class CodexAppServerClient {
     return [...this.rawEvents];
   }
 
+  rawEventCount(): number {
+    return this.rawEvents.length;
+  }
+
+  rawEventsSince(index: number): CodexAppServerRawEvent[] {
+    return this.rawEvents.slice(index);
+  }
+
+  turnTokenUsage(
+    threadId: string,
+    turnId: string
+  ): CodexThreadTokenUsage | undefined {
+    return this.stateFor(threadId, turnId).tokenUsage;
+  }
+
   private request(method: string, params: unknown): Promise<JsonRpcMessage> {
     if (this.closed) {
       return Promise.reject(new Error("Codex app-server is closed"));
@@ -412,6 +461,12 @@ class CodexAppServerClient {
     }
   }
 
+  private respond(id: number, result: unknown): void {
+    if (!this.closed) {
+      this.child.stdin.write(`${JSON.stringify({ id, result })}\n`);
+    }
+  }
+
   private handleLine(line: string): void {
     if (!line.trim()) {
       return;
@@ -429,6 +484,11 @@ class CodexAppServerClient {
       this.close();
       return;
     }
+    if (typeof message.id === "number" && typeof message.method === "string") {
+      this.handleServerRequest(message);
+      return;
+    }
+
     if (typeof message.id === "number") {
       const pending = this.pending.get(message.id);
       if (!pending) {
@@ -534,6 +594,66 @@ class CodexAppServerClient {
     }
   }
 
+  private handleServerRequest(message: JsonRpcMessage): void {
+    if (message.method !== "item/tool/call" || typeof message.id !== "number") {
+      return;
+    }
+    this.recordRawEvent(message.method, message.params);
+    const params = asRecord(message.params);
+    const call: CodexAppServerDynamicToolCall = {
+      threadId: typeof params.threadId === "string" ? params.threadId : "",
+      turnId: typeof params.turnId === "string" ? params.turnId : "",
+      callId: typeof params.callId === "string" ? params.callId : "",
+      ...(typeof params.namespace === "string"
+        ? { namespace: params.namespace }
+        : {}),
+      tool: typeof params.tool === "string" ? params.tool : "",
+      arguments: params.arguments
+    };
+    const handler = this.currentDynamicToolHandler;
+    if (!handler) {
+      this.respond(message.id, {
+        contentItems: [
+          {
+            type: "inputText",
+            text: JSON.stringify({
+              error: "No dynamic tool handler is configured."
+            })
+          }
+        ],
+        success: false
+      });
+      return;
+    }
+    void handler(call)
+      .then((response) => {
+        this.respond(message.id!, {
+          contentItems: [{ type: "inputText", text: response.text }],
+          success: response.success
+        });
+        this.recordRawEvent("item/tool/call/response", message.params, {
+          success: response.success
+        });
+      })
+      .catch((error) => {
+        this.respond(message.id!, {
+          contentItems: [
+            {
+              type: "inputText",
+              text: JSON.stringify({
+                error: error instanceof Error ? error.message : String(error)
+              })
+            }
+          ],
+          success: false
+        });
+        this.recordRawEvent("item/tool/call/response", message.params, {
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+  }
+
   private stateFor(
     threadId: string,
     turnId: string
@@ -627,54 +747,136 @@ class CodexAppServerClient {
   }
 }
 
+export class CodexAppServerThreadSession {
+  private readonly isolatedHome: string;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly client: CodexAppServerClient;
+  private initialized = false;
+  private threadId: string | null = null;
+  private closed = false;
+
+  constructor(private readonly config: CodexAppServerRunConfig) {
+    this.isolatedHome = createIsolatedCodexHome(config.env, config.model);
+    this.env = {
+      ...config.env,
+      CODEX_HOME: this.isolatedHome
+    };
+    this.client = new CodexAppServerClient(
+      config.appServerBinary,
+      config.cwd,
+      this.env
+    );
+  }
+
+  get primaryThreadId(): string | undefined {
+    return this.threadId ?? undefined;
+  }
+
+  async runTurn(
+    prompt: string,
+    timeoutMs: number
+  ): Promise<CodexAppServerRunResult> {
+    if (this.closed) {
+      throw new Error("Codex app-server thread session is closed");
+    }
+
+    const rawEventStartIndex = this.client.rawEventCount();
+    const threadId = await this.ensureThread();
+    let turnId: string | null = null;
+    let timedOut = false;
+    let timeout: NodeJS.Timeout | undefined;
+
+    try {
+      turnId = await this.client.startTurn(threadId, prompt, this.config);
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          void this.client.interruptTurn(threadId, turnId!);
+          reject(new Error(`Codex app-server timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+      const result = await Promise.race([
+        this.client.waitForTurn(threadId, turnId),
+        timeoutPromise
+      ]);
+      return {
+        ...result,
+        model: this.modelLabel(),
+        threadId,
+        turnId,
+        primaryThreadId: threadId,
+        rawEvents: this.client.rawEventsSince(rawEventStartIndex)
+      };
+    } catch (error) {
+      const rawEvents = this.client.rawEventsSince(rawEventStartIndex);
+      if (timedOut) {
+        this.close();
+        throw new CodexAppServerTurnError(
+          `Codex app-server timed out after ${timeoutMs}ms`,
+          {
+            model: this.modelLabel(),
+            tokenUsage: turnId
+              ? this.client.turnTokenUsage(threadId, turnId)
+              : undefined,
+            threadId,
+            turnId: turnId ?? undefined,
+            rawEvents
+          }
+        );
+      }
+      if (error instanceof CodexAppServerTurnError) {
+        throw new CodexAppServerTurnError(error.message, {
+          model: this.modelLabel(),
+          tokenUsage: error.tokenUsage,
+          threadId: error.threadId ?? threadId,
+          turnId: error.turnId ?? turnId ?? undefined,
+          rawEvents
+        });
+      }
+      throw error;
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.client.close();
+    fs.rmSync(this.isolatedHome, { recursive: true, force: true });
+  }
+
+  private async ensureThread(): Promise<string> {
+    if (!this.initialized) {
+      await this.client.initialize(this.config.clientName);
+      this.initialized = true;
+    }
+    if (!this.threadId) {
+      this.threadId = await this.client.startThread(this.config);
+    }
+    return this.threadId;
+  }
+
+  private modelLabel(): string {
+    return `codex-app-server:${this.config.model}:${this.config.reasoningEffort}`;
+  }
+}
+
 export const runCodexAppServerTurn = async (
   prompt: string,
   config: CodexAppServerRunConfig,
   timeoutMs: number
 ): Promise<CodexAppServerRunResult> => {
-  const isolatedHome = createIsolatedCodexHome(config.env, config.model);
-  const env = {
-    ...config.env,
-    CODEX_HOME: isolatedHome
-  };
-  const client = new CodexAppServerClient(
-    config.appServerBinary,
-    config.cwd,
-    env
-  );
-  let threadId: string | null = null;
-  let turnId: string | null = null;
-  let timedOut = false;
-
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    if (threadId && turnId) {
-      void client.interruptTurn(threadId, turnId);
-    }
-    client.close();
-  }, timeoutMs);
+  const session = new CodexAppServerThreadSession(config);
 
   try {
-    await client.initialize(config.clientName);
-    threadId = await client.startThread(config);
-    turnId = await client.startTurn(threadId, prompt, config);
-    const result = await client.waitForTurn(threadId, turnId);
-    return {
-      ...result,
-      model: `codex-app-server:${config.model}:${config.reasoningEffort}`,
-      rawEvents: client.getRawEvents()
-    };
-  } catch (error) {
-    if (timedOut) {
-      throw new Error(`Codex app-server timed out after ${timeoutMs}ms`, {
-        cause: error
-      });
-    }
-    throw error;
+    return await session.runTurn(prompt, timeoutMs);
   } finally {
-    clearTimeout(timeout);
-    client.close();
-    fs.rmSync(isolatedHome, { recursive: true, force: true });
+    session.close();
   }
 };
 
@@ -719,8 +921,7 @@ const normalizeModelList = (payload: unknown): CodexAppServerModelOption[] => {
       return {
         id,
         model,
-        label:
-          typeof record.displayName === "string" ? record.displayName : model,
+        label: model,
         ...(typeof record.description === "string"
           ? { description: record.description }
           : {}),

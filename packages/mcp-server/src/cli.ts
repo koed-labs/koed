@@ -370,9 +370,9 @@ server.registerTool(
       evidenceBundle: {
         query: answerInput.query,
         instructions:
-          "Use the local memory planner to gather and judge evidence before answering.",
+          "Use Koed memory RAG tools to gather and judge evidence before answering.",
         evidence: [],
-        retrieval: { mode: "planner_controlled_initial" }
+        retrieval: { mode: "app_server_dynamic_tools" }
       }
     };
     const answer = await answerWithMemoryWorker(evidence, {
@@ -404,8 +404,6 @@ server.registerTool(
         ? answer.localMemoryWorker.appServerExecutions
         : [
             {
-              stepIndex: 0,
-              stepKind: "final" as const,
               model: answer.localMemoryWorker.model ?? "codex-app-server",
               tokenUsage: answer.localMemoryWorker.tokenUsage,
               threadId: answer.localMemoryWorker.appServerThreadId,
@@ -441,18 +439,22 @@ server.registerTool(
             totalTokens: lastUsage.totalTokens ?? null,
             usageScope: "last",
             metadata: {
-              appServerThreadId: execution.threadId,
+              appServerThreadId:
+                execution.primaryThreadId ?? execution.threadId,
               appServerTurnId: execution.turnId,
+              answerJobId: answer.localMemoryWorker.jobId,
+              primaryAppServerThreadId: execution.primaryThreadId,
+              executionThreadId: execution.threadId,
+              executionTurnId: execution.turnId,
               searchDomain: input.search_domain,
               workspaceId: workspace_id,
-              stepIndex: execution.stepIndex,
-              stepKind: execution.stepKind,
               attemptIndex: execution.attemptIndex,
               executionStatus: execution.status ?? "succeeded",
+              replacementThreadReason: execution.replacementThreadReason,
               errorMessage: execution.errorMessage,
               executionIndex
             },
-            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${execution.stepIndex}:${execution.attemptIndex ?? executionIndex}:last`
+            idempotencyKey: `mcp-memory-answer:${answer.localMemoryWorker.jobId}:${executionIndex}:${execution.attemptIndex ?? 1}:last`
           });
         })
       );

@@ -102,10 +102,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_ANSWER_REASONING_EFFORT`: Codex reasoning effort for MCP Memory Answer synthesis.
 - `MEMORY_ANSWER_TIMEOUT_MS`: timeout for each local MCP Memory Answer app-server turn.
 - `MEMORY_ANSWER_MAX_ATTEMPTS`: maximum local MCP Memory Answer synthesis attempts.
-- `MEMORY_ANSWER_PLANNING_MODE`: `planned` lets the worker plan recall searches and expansions; `single_pass` only uses initial evidence.
-- `MEMORY_ANSWER_MAX_SEARCHES`: maximum planned recall searches per MCP Memory Answer.
-- `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum planned evidence expansions per MCP Memory Answer.
-- `MEMORY_ANSWER_PROMPT_STATE_MAX_CHARS`: prompt-state serialization guard for local Codex memory-answer planning. It bounds transport/context payload size for the planner state JSON; it is not a semantic Memory Event or embedding chunking limit.
+- `MEMORY_ANSWER_MAX_SEARCHES`: maximum Koed RAG search tool calls per MCP Memory Answer worker turn.
+- `MEMORY_ANSWER_MAX_EXPANSIONS`: maximum Koed RAG evidence expansion tool calls per MCP Memory Answer worker turn.
 - `MEMORY_MANUAL_ANSWER_PROVIDER`: AI Client provider for Explorer manual Memory Questions. Default and only supported value: `codex`.
 - `MEMORY_MANUAL_ANSWER_MODEL`: default Codex model for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_MODEL`.
 - `MEMORY_MANUAL_ANSWER_REASONING_EFFORT`: default reasoning effort for Explorer manual Memory Questions. Leave blank to inherit `MEMORY_ANSWER_REASONING_EFFORT`.

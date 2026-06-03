@@ -8292,7 +8292,11 @@ export const createMemorySourceRepository = (
                     else null
                   end as filtered_source_items,
                   me.visibility,
-                  coalesce(me.source_text, mn.summary_text, ev.payload ->> 'content', msg.content, '') as summary_text,
+                  case
+                    when me.memory_node_id is not null
+                    then coalesce(mn.summary_text, me.source_text, '')
+                    else coalesce(me.source_text, ev.payload ->> 'content', msg.content, '')
+                  end as summary_text,
                   case
                     when mn.summary_model is not null then mn.summary_text
                     when linked_mn.summary_model is not null then linked_mn.summary_text

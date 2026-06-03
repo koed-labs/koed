@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CodexAppServerThreadSession,
   CodexAppServerTurnError,
   koedAppServerMinimalContextConfig,
   koedAppServerWorkerDeveloperInstructions,
@@ -19,7 +20,8 @@ const writeFakeAppServer = (
       expectedCursor?: string | null;
       response: Record<string, unknown>;
     }>;
-    turnStatus?: "completed" | "failed" | "interrupted";
+    turnStatus?: "completed" | "failed" | "interrupted" | "running";
+    turnStatuses?: Array<"completed" | "failed" | "interrupted" | "running">;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-codex-app-server.mjs");
@@ -74,8 +76,10 @@ const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 const malformedStdout = ${JSON.stringify(options.malformedStdout ?? "")};
 const modelPages = ${JSON.stringify(options.modelPages ?? [])};
 const turnStatus = ${JSON.stringify(options.turnStatus ?? "completed")};
+const turnStatuses = ${JSON.stringify(options.turnStatuses ?? [])};
 let threadId = "thread-test";
 let turnId = "turn-test";
+let turnIndex = 0;
 let modelListCalls = 0;
 
 lineReader.on("line", (line) => {
@@ -130,10 +134,16 @@ lineReader.on("line", (line) => {
     return;
   }
   if (message.method === "turn/start") {
+    turnId = turnIndex === 0 ? "turn-test" : "turn-test-" + (turnIndex + 1);
+    const currentTurnStatus = turnStatuses[turnIndex] ?? turnStatus;
+    turnIndex += 1;
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
-    send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "message-test", delta: "app-server answer" } });
+    send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "message-test", delta: "app-server answer " + turnId } });
     send({ method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 1, outputTokens: 1, reasoningOutputTokens: 0 }, last: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 1, outputTokens: 1, reasoningOutputTokens: 0 }, modelContextWindow: 1000 } } });
-    send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "notLoaded", status: turnStatus, error: turnStatus === "failed" ? { message: "turn failed" } : null, startedAt: 1, completedAt: 2, durationMs: 1000 } } });
+    if (currentTurnStatus === "running") {
+      return;
+    }
+    send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "notLoaded", status: currentTurnStatus, error: currentTurnStatus === "failed" ? { message: "turn failed" } : null, startedAt: 1, completedAt: 2, durationMs: 1000 } } });
     return;
   }
 });
@@ -249,12 +259,12 @@ describe("Codex app-server runner", () => {
         "gpt-5.4"
       ]);
       expect(models[0]).toMatchObject({
-        label: "GPT-5.4 mini",
+        label: "gpt-5.4-mini",
         isDefault: true,
         defaultReasoningEffort: "medium"
       });
       expect(models[1]).toMatchObject({
-        label: "GPT-5.4",
+        label: "gpt-5.4",
         defaultReasoningEffort: "high"
       });
     } finally {
@@ -295,7 +305,7 @@ describe("Codex app-server runner", () => {
       );
 
       expect(result).toMatchObject({
-        text: "app-server answer",
+        text: "app-server answer turn-test",
         model: "codex-app-server:gpt-5.4-mini:low",
         threadId: "thread-test",
         turnId: "turn-test"
@@ -343,7 +353,7 @@ describe("Codex app-server runner", () => {
         3000
       );
 
-      expect(result.text).toBe("app-server answer");
+      expect(result.text).toBe("app-server answer turn-test");
     } finally {
       fs.chmodSync(realCodexHome, 0o700);
       fs.rmSync(tempDirectory, { recursive: true, force: true });
@@ -465,6 +475,160 @@ describe("Codex app-server runner", () => {
       expect((error as CodexAppServerTurnError).threadId).toBe("thread-test");
       expect((error as CodexAppServerTurnError).turnId).toBe("turn-test");
     } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("runs multiple turns in one app-server thread session", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-thread-session-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const session = new CodexAppServerThreadSession({
+      appServerBinary: writeFakeAppServer(tempDirectory),
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+      cwd: tempDirectory,
+      env: {
+        ...process.env,
+        CODEX_HOME: realCodexHome,
+        FAKE_REAL_CODEX_HOME: realCodexHome
+      },
+      clientName: "koed-test",
+      baseInstructions: "Return the answer.",
+      developerInstructions: ""
+    });
+
+    try {
+      const first = await session.runTurn("First prompt", 3000);
+      const second = await session.runTurn("Second prompt", 3000);
+
+      expect(first.threadId).toBe("thread-test");
+      expect(second.threadId).toBe("thread-test");
+      expect(first.primaryThreadId).toBe("thread-test");
+      expect(second.primaryThreadId).toBe("thread-test");
+      expect(first.turnId).toBe("turn-test");
+      expect(second.turnId).toBe("turn-test-2");
+      expect(first.rawEvents?.map((event) => event.method)).toEqual(
+        expect.arrayContaining(["thread/start", "turn/start"])
+      );
+      expect(second.rawEvents?.map((event) => event.method)).toEqual(
+        expect.arrayContaining(["turn/start", "turn/completed"])
+      );
+      expect(second.rawEvents?.map((event) => event.method)).not.toContain(
+        "thread/start"
+      );
+    } finally {
+      session.close();
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("can continue a thread session after a failed turn", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-thread-session-retry-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const session = new CodexAppServerThreadSession({
+      appServerBinary: writeFakeAppServer(tempDirectory, {
+        turnStatuses: ["failed", "completed"]
+      }),
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+      cwd: tempDirectory,
+      env: {
+        ...process.env,
+        CODEX_HOME: realCodexHome,
+        FAKE_REAL_CODEX_HOME: realCodexHome
+      },
+      clientName: "koed-test",
+      baseInstructions: "Return the answer.",
+      developerInstructions: ""
+    });
+
+    try {
+      let error: unknown;
+      try {
+        await session.runTurn("First prompt", 3000);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(CodexAppServerTurnError);
+      expect((error as CodexAppServerTurnError).threadId).toBe("thread-test");
+      expect((error as CodexAppServerTurnError).turnId).toBe("turn-test");
+      expect(
+        (error as CodexAppServerTurnError).rawEvents?.length
+      ).toBeGreaterThan(0);
+
+      const second = await session.runTurn("Retry prompt", 3000);
+      expect(second.threadId).toBe("thread-test");
+      expect(second.turnId).toBe("turn-test-2");
+      expect(second.text).toBe("app-server answer turn-test-2");
+    } finally {
+      session.close();
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("closes a thread session on timeout while preserving failed turn metadata", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-thread-session-timeout-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    const session = new CodexAppServerThreadSession({
+      appServerBinary: writeFakeAppServer(tempDirectory, {
+        turnStatus: "running"
+      }),
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+      cwd: tempDirectory,
+      env: {
+        ...process.env,
+        CODEX_HOME: realCodexHome,
+        FAKE_REAL_CODEX_HOME: realCodexHome
+      },
+      clientName: "koed-test",
+      baseInstructions: "Return the answer.",
+      developerInstructions: ""
+    });
+
+    try {
+      let error: unknown;
+      try {
+        await session.runTurn("Prompt that never completes", 20);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(CodexAppServerTurnError);
+      expect((error as CodexAppServerTurnError).message).toContain("timed out");
+      expect((error as CodexAppServerTurnError).threadId).toBe("thread-test");
+      expect((error as CodexAppServerTurnError).turnId).toBe("turn-test");
+      expect((error as CodexAppServerTurnError).tokenUsage?.last).toMatchObject(
+        {
+          totalTokens: 3
+        }
+      );
+      expect(
+        (error as CodexAppServerTurnError).rawEvents?.map(
+          (event) => event.method
+        )
+      ).toEqual(
+        expect.arrayContaining([
+          "thread/start",
+          "turn/start",
+          "item/agentMessage/delta",
+          "thread/tokenUsage/updated"
+        ])
+      );
+      await expect(session.runTurn("Retry prompt", 3000)).rejects.toThrow(
+        "closed"
+      );
+    } finally {
+      session.close();
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }
   });

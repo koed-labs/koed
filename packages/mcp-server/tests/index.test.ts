@@ -1,5 +1,8 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MemoryApiClient,
@@ -18,8 +21,7 @@ import {
   MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
   answerWithMemoryWorker,
   compactMemoryAnswerPayload,
-  resolveMemoryAnswerWorkerConfig,
-  type CodexAnswerRunner
+  resolveMemoryAnswerWorkerConfig
 } from "../src/answer-worker.js";
 import {
   resolveLcmSummaryWorkerConfigFromSettings,
@@ -53,6 +55,64 @@ const memoryAnswerObject = (answer_markdown: string) => ({
   missing: [],
   missing_evidence: []
 });
+
+const writeFakeMemoryAnswerAppServer = (directory: string): string => {
+  const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
+  const scriptPath = path.join(directory, "fake-memory-answer-app-server");
+  fs.writeFileSync(
+    scriptPath,
+    `#!/bin/sh
+exec "${process.execPath}" "${modulePath}" "$@"
+`,
+    { mode: 0o700 }
+  );
+  fs.writeFileSync(
+    modulePath,
+    `
+import readline from "node:readline";
+
+const lineReader = readline.createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const threadId = "thread-index-memory-answer";
+const turnId = "turn-index-memory-answer";
+
+lineReader.on("line", (line) => {
+  if (!line.trim()) return;
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: { userAgent: "fake", codexHome: process.env.CODEX_HOME, platformFamily: "unix", platformOs: "linux" } });
+    return;
+  }
+  if (message.method === "initialized") return;
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: threadId }, model: message.params.model, modelProvider: "openai", serviceTier: null, cwd: message.params.cwd, runtimeWorkspaceRoots: [], instructionSources: [], approvalPolicy: "never", approvalsReviewer: "user", sandbox: { type: "readOnly", networkAccess: false }, activePermissionProfile: null, reasoningEffort: null } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
+    send({ id: 9001, method: "item/tool/call", params: { threadId, turnId, callId: "call-scan", namespace: "koed_memory", tool: "scan", arguments: { query: "MVP recall flow", search_domain: "project", workspace_id: "/repo/koed" } } });
+    return;
+  }
+  if (message.id === 9001) {
+    send({ id: 9002, method: "item/tool/call", params: { threadId, turnId, callId: "call-search", namespace: "koed_memory", tool: "search", arguments: { query: "MVP recall flow", stage: "leaf_search", search_domain: "project", workspace_id: "/repo/koed", limit: 1 } } });
+    return;
+  }
+  if (message.id === 9002) {
+    const answer = ${JSON.stringify(
+      memoryAnswerObject(
+        "The MVP flow captures by hook, summarizes locally, and recalls through memory_answer. [personal]"
+      )
+    )};
+    send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "message-final", delta: JSON.stringify(answer) } });
+    send({ method: "turn/completed", params: { threadId, turn: { id: turnId, items: [], itemsView: "notLoaded", status: "completed", error: null, startedAt: 1, completedAt: 2, durationMs: 1000 } } });
+    return;
+  }
+});
+`,
+    { mode: 0o600 }
+  );
+  return scriptPath;
+};
 
 const lcmSummaryJson = (summary_text: string) =>
   JSON.stringify({
@@ -716,40 +776,46 @@ describe("LCM summary background service", () => {
         });
         return;
       }
-      if (request.url === "/v1/memory/answer") {
-        response.end(
-          JSON.stringify({
-            markdown: "Evidence bundle returned for Codex synthesis.",
-            evidence: submittedSummary
-              ? [
-                  {
-                    nodeId,
-                    visibility: "personal",
-                    summaryText: submittedSummary,
-                    citation: { nodeId, visibility: "personal" }
-                  }
-                ]
-              : [],
-            citations: submittedSummary
-              ? [{ nodeId, visibility: "personal" }]
-              : [],
-            evidenceBundle: {
-              query: "What is the MVP recall flow?",
-              instructions: "Use only cited memory evidence.",
-              evidence: submittedSummary
+      if (request.url === "/v1/memory/search") {
+        let body = "";
+        request.on("data", (chunk) => {
+          body += String(chunk);
+        });
+        request.on("end", () => {
+          const parsed = JSON.parse(body) as { retrieval_stage?: string };
+          if (parsed.retrieval_stage === "score_scan") {
+            response.end(
+              JSON.stringify({
+                retrieval: {
+                  stages: [
+                    {
+                      name: "leaf_search",
+                      countAboveThreshold: submittedSummary ? 1 : 0,
+                      maxAllowed: submittedSummary ? 1 : 0
+                    }
+                  ]
+                }
+              })
+            );
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              hits: submittedSummary
                 ? [
                     {
                       nodeId,
+                      sourceId: nodeId,
                       visibility: "personal",
                       summaryText: submittedSummary,
                       citation: { nodeId, visibility: "personal" }
                     }
                   ]
                 : [],
-              retrieval: { retrievalMode: "semantic_vector" }
-            }
-          })
-        );
+              retrieval: { stage: parsed.retrieval_stage }
+            })
+          );
+        });
         return;
       }
       response.statusCode = 404;
@@ -783,43 +849,43 @@ describe("LCM summary background service", () => {
     });
     expect(summary.submittedCount).toBe(1);
 
-    const evidence = await client.answer({
-      query: "What is the MVP recall flow?",
-      retrieval_scope: "personal",
-      search_domain: "project",
-      workspace_id: "/repo/koed",
-      limit: 10
-    });
-    const runner: CodexAnswerRunner = async (_prompt, config) => ({
-      text: JSON.stringify({
-        action: "answer",
-        answer: memoryAnswerObject(
-          "The MVP flow captures by hook, summarizes locally, and recalls through memory_answer. [personal]"
-        )
-      }),
-      model: `codex:${config.model}:${config.reasoningEffort}`
-    });
-    const answered = await answerWithMemoryWorker(evidence, {
-      runner,
-      client,
-      retrievalScope: "personal",
-      searchDomain: "project",
-      workspaceId: "/repo/koed",
-      limit: 10,
-      config: {
-        ...resolveMemoryAnswerWorkerConfig({
-          MEMORY_ANSWER_PROVIDER: "codex",
-          MEMORY_ANSWER_TIMEOUT_MS: "1000",
-          MEMORY_ANSWER_MAX_ATTEMPTS: "1",
-          MEMORY_ANSWER_MAX_SEARCHES: "1",
-          MEMORY_ANSWER_MAX_EXPANSIONS: "0"
-        }),
-        cwd: "/tmp"
-      }
-    });
-    const compact = compactMemoryAnswerPayload(answered);
-    expect(compact.markdown).toContain("memory_answer");
-    expect(compact.retrieval.evidenceCount).toBe(1);
-    expect(compact).not.toHaveProperty("evidenceBundle");
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-index-"));
+    try {
+      const appServerBinary = writeFakeMemoryAnswerAppServer(directory);
+      const answered = await answerWithMemoryWorker(
+        {
+          markdown: "",
+          evidenceBundle: {
+            query: "What is the MVP recall flow?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          workspaceId: "/repo/koed",
+          limit: 10,
+          config: {
+            ...resolveMemoryAnswerWorkerConfig({
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_ANSWER_TIMEOUT_MS: "1000",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_ANSWER_MAX_SEARCHES: "2",
+              MEMORY_ANSWER_MAX_EXPANSIONS: "0",
+              MEMORY_ANSWER_CODEX_BINARY: appServerBinary
+            }),
+            cwd: "/tmp"
+          }
+        }
+      );
+      const compact = compactMemoryAnswerPayload(answered);
+      expect(compact.markdown).toContain("memory_answer");
+      expect(compact.retrieval.evidenceCount).toBe(1);
+      expect(compact).not.toHaveProperty("evidenceBundle");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

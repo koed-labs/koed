@@ -455,7 +455,7 @@ const releaseQuestionForRetry = async (
     last_error_message: message,
     ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
     ...(diagnostics.response
-      ? { response: stripAppServerEvents(diagnostics.response) }
+      ? { response: persistedAnswerResponse(diagnostics.response) }
       : {}),
     ...(diagnostics.retrieval ? { retrieval: diagnostics.retrieval } : {}),
     ...(diagnostics.localMemoryWorker
@@ -482,7 +482,7 @@ const updateQuestionWithError = async (
     error_message: message,
     ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
     ...(diagnostics.response
-      ? { response: stripAppServerEvents(diagnostics.response) }
+      ? { response: persistedAnswerResponse(diagnostics.response) }
       : {}),
     ...(diagnostics.retrieval ? { retrieval: diagnostics.retrieval } : {}),
     ...(diagnostics.localMemoryWorker
@@ -525,6 +525,23 @@ const stripAppServerEvents = <T>(value: T): T => {
       stripAppServerEvents(entry)
     ])
   ) as T;
+};
+
+const persistedAnswerResponse = (
+  answer: MemoryAnswerWorkerResponse
+): MemoryAnswerWorkerResponse => {
+  const compact: Record<string, unknown> = {
+    markdown: answer.markdown,
+    retrieval: answer.retrieval,
+    localMemoryWorker: stripAppServerEvents(answer.localMemoryWorker)
+  };
+  if (answer.structuredAnswer !== undefined) {
+    compact.structuredAnswer = answer.structuredAnswer;
+  }
+  if (answer.citations !== undefined) {
+    compact.citations = answer.citations;
+  }
+  return compact as MemoryAnswerWorkerResponse;
 };
 
 const isRetryableSynthesisFallback = (answer: MemoryAnswerWorkerResponse) =>
@@ -634,7 +651,6 @@ const publicMemoryAnswerConfig = (
   reasoningEffort: config.reasoningEffort,
   timeoutMs: config.timeoutMs,
   maxAttempts: config.maxAttempts,
-  planningMode: config.planningMode,
   maxSearches: config.maxSearches,
   maxExpansions: config.maxExpansions,
   appServerBinary: config.appServerBinary
@@ -790,7 +806,7 @@ const updateQuestionWithAnswer = async (
     ...(question.attemptCount ? { attempt_count: question.attemptCount } : {}),
     answer_markdown:
       answer.markdown?.trim() || "No matching memory evidence found.",
-    response: stripAppServerEvents(answer),
+    response: persistedAnswerResponse(answer),
     evidence: evidenceFromAnswer(answer),
     citations: citationsFromAnswer(answer),
     retrieval: retrievalFromAnswer(answer),
@@ -859,8 +875,6 @@ const persistAnswerAppServerEvents = async (
       ? worker.appServerExecutions
       : [
           {
-            stepIndex: 0,
-            stepKind: "final" as const,
             model: worker.model ?? "codex-app-server",
             tokenUsage: worker.tokenUsage,
             threadId: worker.appServerThreadId,
@@ -887,8 +901,6 @@ const persistAnswerAppServerEvents = async (
       threadId: entry.execution.threadId,
       turnId: entry.execution.turnId,
       executionIndex: entry.executionIndex,
-      stepIndex: entry.execution.stepIndex,
-      stepKind: entry.execution.stepKind,
       eventIndex: entry.eventIndex,
       method: entry.event.method,
       params: entry.event.params,
@@ -914,11 +926,11 @@ const persistAnswerAppServerEvents = async (
       metadata: {
         workflow: "memory_question",
         questionId: question.id,
+        answerJobId: entry.execution.answerJobId,
+        primaryAppServerThreadId: entry.execution.primaryThreadId,
         searchDomain: question.searchDomain,
         workspaceId: question.workspaceId,
         sessionId: question.sessionId,
-        stepIndex: entry.execution.stepIndex,
-        stepKind: entry.execution.stepKind,
         executionIndex: entry.executionIndex
       }
     };
@@ -974,21 +986,23 @@ const persistAnswerAppServerEvents = async (
       totalTokens: lastUsage.totalTokens ?? null,
       usageScope: "last",
       metadata: {
-        appServerThreadId: worker.appServerThreadId,
-        appServerTurnId: worker.appServerTurnId,
+        appServerThreadId:
+          execution.primaryThreadId ?? worker.appServerThreadId,
+        appServerTurnId: execution.turnId,
+        answerJobId: execution.answerJobId,
+        primaryAppServerThreadId: execution.primaryThreadId,
         executionThreadId: execution.threadId,
         executionTurnId: execution.turnId,
         searchDomain: question.searchDomain,
-        stepIndex: execution.stepIndex,
-        stepKind: execution.stepKind,
         attemptIndex: execution.attemptIndex,
         executionStatus: execution.status ?? "succeeded",
+        replacementThreadReason: execution.replacementThreadReason,
         errorMessage: execution.errorMessage,
         executionIndex
       },
       idempotencyKey: tokenConversationItemId
         ? `token:${tokenConversationItemId}:last`
-        : `memory-question:${question.id}:token:${execution.stepIndex}:${execution.attemptIndex ?? executionIndex}:last`
+        : `memory-question:${question.id}:token:${executionIndex}:${execution.attemptIndex ?? 1}:last`
     });
   }
   await projectRawConversationItems(
@@ -1033,9 +1047,9 @@ export const answerClaimedMemoryQuestion = async (
       evidenceBundle: {
         query: question.query,
         instructions:
-          "Use the local memory planner to gather and judge evidence before answering.",
+          "Use Koed memory RAG tools to gather and judge evidence before answering.",
         evidence: [],
-        retrieval: { mode: "planner_controlled_initial" }
+        retrieval: { mode: "app_server_dynamic_tools" }
       }
     };
     const answer = await answerWithMemoryWorker(evidence, {

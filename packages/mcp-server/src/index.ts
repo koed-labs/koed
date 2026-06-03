@@ -96,7 +96,6 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     reasoningEffort: string;
     timeoutMs: number;
     maxAttempts: number;
-    planningMode: "planned" | "single_pass";
     maxSearches: number;
     maxExpansions: number;
     appServerBinary: string;
@@ -108,7 +107,6 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     reasoningEffort: string;
     timeoutMs: number;
     maxAttempts: number;
-    planningMode: "planned" | "single_pass";
     maxSearches: number;
     maxExpansions: number;
     appServerBinary: string;
@@ -559,7 +557,6 @@ export const memoryAccessCheck = async (
       reasoningEffort: answerWorker.reasoningEffort,
       timeoutMs: answerWorker.timeoutMs,
       maxAttempts: answerWorker.maxAttempts,
-      planningMode: answerWorker.planningMode,
       maxSearches: answerWorker.maxSearches,
       maxExpansions: answerWorker.maxExpansions,
       appServerBinary: answerWorker.appServerBinary,
@@ -571,7 +568,6 @@ export const memoryAccessCheck = async (
       reasoningEffort: manualAnswerWorker.reasoningEffort,
       timeoutMs: manualAnswerWorker.timeoutMs,
       maxAttempts: manualAnswerWorker.maxAttempts,
-      planningMode: manualAnswerWorker.planningMode,
       maxSearches: manualAnswerWorker.maxSearches,
       maxExpansions: manualAnswerWorker.maxExpansions,
       appServerBinary: manualAnswerWorker.appServerBinary,
@@ -603,7 +599,7 @@ export const memoryAccessCheck = async (
           "MCP alone does not automatically observe the whole conversation; the main-agent MCP surface is for retrieval and local summarisation.",
           "Use memory_answer as the normal retrieval entry point. It defaults to response_detail=answer_only and search_domain=project for the current Codex workspace/cwd; use response_detail=with_citations for source metadata, response_detail=with_evidence only for debugging/UI inspection, search_domain=session with a backend session_id for one conversation, or search_domain=global only for deliberate cross-project memory checks.",
           "MCP recall is personal-only in this build. search_domain controls the search boundary (session, project, or global).",
-          "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval planning to the local memory-answer worker.",
+          "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval work to the local memory-answer worker.",
           "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
           "Local memory processing: backend workers create pending title and LCM summary work, while the MCP background service runs Codex on the user's machine and submits results back for storage and embedding.",
           "When answering from memory, cite each source."

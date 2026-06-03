@@ -735,6 +735,92 @@ describeDb("memory repository visibility", () => {
     );
   });
 
+  it("displays stored LCM summaries instead of node embedding chunk text", async () => {
+    const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
+    process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
+
+    try {
+      const dimensions = 1024;
+      const queryVector = Array.from({ length: dimensions }, (_, index) =>
+        index === 0 ? 1 : 0
+      );
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+            dimensions,
+            vectors: [queryVector]
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        )
+      );
+
+      const alice = await repo.createUser({
+        email: `alice-lcm-display-${randomUUID()}@example.com`
+      });
+      const engine = createMemoryEngine(repo);
+      const event = await captureUserEvent(engine, alice.id, {
+        workspaceId: "workspace-lcm-display",
+        content: "Koed is being run in Docker for local testing."
+      });
+      const node = await repo.createMemoryNode(
+        { userId: alice.id },
+        {
+          visibility: "personal",
+          summaryText:
+            "Clean LCM summary: Koed is being run in Docker for local testing.",
+          summaryModel: "codex:test"
+        }
+      );
+      await pool.query(
+        "insert into memory_node_sources (memory_node_id, memory_event_id, source_order) values ($1, $2, 0)",
+        [node.id, event.id]
+      );
+      const source = await repo.getEmbeddableSource("memory_node", node.id);
+      expect(source).not.toBeNull();
+
+      await repo.upsertSourceEmbedding({
+        source: source!,
+        model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        dimensions,
+        version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        vector: queryVector,
+        sourceText: [
+          "LCM depth 0 leaf summary",
+          "Source items: 100",
+          "",
+          "Exact ordered source outline:",
+          "- [memory_event abc] tool: Tool call internal outline text"
+        ].join("\n")
+      });
+
+      const search = await engine.searchMemory({
+        requesterContext: { userId: alice.id },
+        query: "Is Koed running in Docker?",
+        scope: "personal",
+        searchDomain: "global",
+        limit: 1
+      });
+
+      expect(search.results[0]?.sourceType).toBe("memory_node");
+      expect(search.results[0]?.summaryText).toBe(
+        "Clean LCM summary: Koed is being run in Docker for local testing."
+      );
+      expect(search.results[0]?.summaryText).not.toContain(
+        "Exact ordered source outline"
+      );
+    } finally {
+      if (originalEmbeddingServiceUrl === undefined) {
+        delete process.env.EMBEDDING_SERVICE_URL;
+      } else {
+        process.env.EMBEDDING_SERVICE_URL = originalEmbeddingServiceUrl;
+      }
+    }
+  });
+
   it("keeps non-rerankable vector hits when summary reranking is enabled", async () => {
     const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
     const originalRerankerKey = process.env.RERANKER_KEY;
