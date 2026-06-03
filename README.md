@@ -12,13 +12,11 @@ Koed is a universal memory layer for AI clients. It captures project knowledge,
 coding sessions, decisions, debugging history, and remembered context, then makes
 that memory available through MCP recall.
 
-
 - Automatic conversation capture with hooks.
 - Seamless recall for prior conversations, project history, and remembered context.
 - Explorer for inspecting captured Koed memory.
 - Postgres + pgvector storage under your control.
 - Local embedding, reranking, and Redis-backed memory processing.
-
 
 ## Quickstart
 
@@ -92,7 +90,6 @@ Koed is composed of the following primary services:
 | `packages/mcp-server`    | MCP Server, local answer bridge, and Codex Capture Hook                                         |
 | `packages/db`            | Postgres repositories, migrations, and operator scripts                                         |
 
-
 ## Security Notes
 
 Koed assumes the operator controls the deployment. The API supports bearer API
@@ -120,7 +117,6 @@ pnpm --filter @koed/db migrate:up
 
 See [docs/backup-restore.md](docs/backup-restore.md) and
 [docs/upgrades.md](docs/upgrades.md).
-
 
 ## License
 
