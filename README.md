@@ -1,6 +1,6 @@
 # Koed Self-Hosted
 
-Koed Self-Hosted is the source-available backend distribution for running Koed memory capture, recall, and inspection on infrastructure you control. It is focused on Codex today: Codex is the only supported AI client/integration in this public distribution.
+Koed Self-Hosted is the AGPL-licensed backend distribution for running Koed memory capture, recall, and inspection on infrastructure you control. It is focused on Codex today: Codex is the only supported AI client/integration in this public distribution.
 
 This repository is not the hosted Koed SaaS product. It does not include Koed Cloud onboarding, billing, hosted account management, desktop companion builds, private deployment scripts, pricing pages, or marketing surfaces.
 
@@ -170,17 +170,13 @@ pnpm --filter @koed/db migrate:up
 
 See [docs/backup-restore.md](docs/backup-restore.md) and [docs/upgrades.md](docs/upgrades.md).
 
-## License Status
+## License
 
-No final license has been selected. This repository should be treated as source-available and non-commercial pending legal review. Commercial reuse, resale, hosted competing services, or other business use is not permitted until a final license is chosen and published.
+Koed Self-Hosted is licensed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See [LICENSE](LICENSE).
 
-License candidates to evaluate:
+The AGPL requires modified versions that interact with users over a network to offer those users access to the corresponding source code. Koed Labs may also offer separate commercial licenses for organizations that need different terms, including for proprietary modified SaaS products.
 
-- PolyForm Noncommercial License: clear non-commercial source-available baseline.
-- Business Source License-style terms: useful if a delayed conversion or change-date model is desired.
-- Custom source-available non-commercial license: best fit if Koed needs explicit anti-competition and SaaS-hosting restrictions.
-
-See [LICENSE_PENDING.md](LICENSE_PENDING.md) and [docs/license.md](docs/license.md). Do not describe this distribution as OSI-approved open source unless the final license is OSI-approved.
+External code contributions require contributor terms that preserve Koed Labs' ability to dual-license the project. See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/license.md](docs/license.md).
 
 ## More Docs
 
@@ -190,4 +186,4 @@ See [LICENSE_PENDING.md](LICENSE_PENDING.md) and [docs/license.md](docs/license.
 - [Backup and restore](docs/backup-restore.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
-- [License guidance](docs/license.md)
+- [License](docs/license.md)

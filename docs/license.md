@@ -1,13 +1,11 @@
-# License Guidance
+# License
 
-No final license has been selected. Legal review is required before public release.
+Koed Self-Hosted is licensed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See [../LICENSE](../LICENSE).
 
-Because Koed will also have a SaaS version and the self-hosted distribution should not be used to compete with it, avoid permissive licenses such as MIT, Apache-2.0, or BSD for this distribution unless the business decision changes.
+AGPL-3.0-only is an OSI-approved open source license with network copyleft obligations. If someone modifies Koed Self-Hosted and makes that modified version available to users over a network, the AGPL requires them to offer those users access to the corresponding source code.
 
-Recommended candidates:
+Koed Labs may offer separate commercial licenses for organizations that need different terms, including for proprietary modified SaaS products. Public AGPL recipients keep their AGPL rights for the versions they receive.
 
-- PolyForm Noncommercial: strongest off-the-shelf fit for non-commercial source-available access.
-- Business Source License-style terms: useful if Koed wants a change date or delayed conversion model.
-- Custom source-available non-commercial license: useful if anti-SaaS, anti-resale, and anti-competition terms need to be explicit.
+Contributor licensing matters for this dual-license model. Koed Labs should accept non-trivial external code contributions only when the contributor has signed terms granting Koed Labs the rights needed to use, modify, sublicense, and relicense the contribution, including under commercial terms. See [../CONTRIBUTING.md](../CONTRIBUTING.md).
 
-Do not call Koed Self-Hosted open source unless the final license is OSI-approved. Until then, describe it as source-available and non-commercial.
+Third-party dependencies keep their own licenses. Koed Labs' commercial licensing terms cannot override obligations imposed by dependency licenses.
