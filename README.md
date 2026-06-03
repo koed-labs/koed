@@ -20,6 +20,9 @@ that memory available through MCP recall.
 
 ## Quickstart
 
+> [!IMPORTANT]  
+> Only Codex is supported for knowledge capture. More agents to follow!
+
 Create the local environment file, then install and start the service:
 
 ```bash
@@ -48,7 +51,7 @@ http://localhost:5174
 
 ## Connect Codex
 
-Setup capture hooks and MCP server to enable all of Koeds features.
+Set up the MCP Server and Capture Hook to enable recall and automatic capture in Codex.
 
 ```bash
 MEMORY_API_TOKEN=<token from pnpm api-token:create> pnpm codex:configure
