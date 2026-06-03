@@ -14,7 +14,7 @@ import {
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
-export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v2";
+export const MEMORY_ANSWER_PROMPT_VERSION = "memory-answer-codex-worker-v3";
 export const MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION = "memory-answer-v1";
 const MEMORY_ANSWER_DYNAMIC_TOOL_NAMESPACE = "koed_memory";
 
@@ -1181,6 +1181,16 @@ const buildDynamicMemoryAnswerPrompt = (
     "- Use memory_status=found only when at least one candidate directly supports the answer.",
     "- If evidence is partial or summaries are pending, use memory_status=insufficient or pending_summary.",
     "",
+    "Recency and conflict rules:",
+    "- Treat evidence timing as part of relevance. Use capturedAt, createdAt, source time, source order, or surrounding retrieval metadata when available.",
+    "- Do not blindly prefer the newest evidence. Prefer the evidence that best answers the user's actual question.",
+    "- If the user asks for current/latest state, prefer newer directly relevant evidence when it appears to supersede older evidence.",
+    "- If the user asks about history, prior decisions, evolution, or what changed, summarize the timeline instead of collapsing to only the newest fact.",
+    "- If older and newer evidence conflict, say that the memory appears to have changed over time and explain both sides briefly.",
+    "- If newer evidence is weak or indirect but older evidence is direct, report the uncertainty instead of treating recency as decisive.",
+    "- If evidence agrees across time, answer normally and cite the strongest, most direct evidence.",
+    "- If conflict affects confidence, use memory_status=insufficient unless the answer can honestly explain the conflict.",
+    "",
     "Final response rules:",
     "- Return only one JSON object and no prose outside JSON.",
     "- The answer_markdown field is the only place for user-facing markdown.",
@@ -1196,14 +1206,15 @@ const buildDynamicMemoryAnswerPrompt = (
           "true only when at least one inspected memory candidate is genuinely relevant",
         answer_markdown: "Concise markdown answer for the main agent.",
         relevance_explanation:
-          "Short explanation of why selected evidence is relevant, or why no relevant memory was found.",
+          "Short explanation of why selected evidence is relevant, including recency/conflict reasoning when evidence differs over time, or why no relevant memory was found.",
         evidence: [
           {
             evidence_index: 0,
             source_id: "optional source/node id",
             node_id: "optional node id",
             visibility: "personal",
-            relevance: "why this evidence supports the answer",
+            relevance:
+              "why this evidence supports the answer, including timing if relevant",
             support: "short quote or paraphrase from evidence"
           }
         ],

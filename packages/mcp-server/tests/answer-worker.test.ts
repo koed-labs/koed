@@ -85,6 +85,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
       | "scanOnlyNotFound"
       | "timeoutThenValid";
     answer?: Record<string, unknown>;
+    requiredPromptSnippets?: string[];
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-memory-answer-app-server.mjs");
@@ -105,6 +106,7 @@ import readline from "node:readline";
 
 const useTools = ${options.useTools === false ? "false" : "true"};
 const mode = ${JSON.stringify(options.mode ?? "happy")};
+const requiredPromptSnippets = ${JSON.stringify(options.requiredPromptSnippets ?? [])};
 const attemptFile = ${JSON.stringify(attemptFile)};
 const answer = ${JSON.stringify(
       options.answer ?? {
@@ -163,6 +165,13 @@ lineReader.on("line", (line) => {
     return;
   }
   if (message.method === "turn/start") {
+    const promptText = message.params?.input?.[0]?.text ?? "";
+    for (const snippet of requiredPromptSnippets) {
+      if (!promptText.includes(snippet)) {
+        console.error("missing prompt snippet: " + snippet);
+        process.exit(67);
+      }
+    }
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
     if (mode === "timeoutThenValid" && attempt === 1) {
       return;
@@ -266,6 +275,53 @@ describe("memory answer worker", () => {
     expect(config.maxAttempts).toBe(3);
     expect(config.maxSearches).toBe(4);
     expect(config.maxExpansions).toBe(2);
+  });
+
+  it("sends recency and conflict guidance to the memory-answer worker prompt", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        useTools: false,
+        requiredPromptSnippets: [
+          "Recency and conflict rules:",
+          "If the user asks for current/latest state, prefer newer directly relevant evidence when it appears to supersede older evidence.",
+          "If the user asks about history, prior decisions, evolution, or what changed, summarize the timeline instead of collapsing to only the newest fact.",
+          "If newer evidence is weak or indirect but older evidence is direct, report the uncertainty instead of treating recency as decisive.",
+          "If older and newer evidence conflict, say that the memory appears to have changed over time and explain both sides briefly.",
+          "including recency/conflict reasoning when evidence differs over time"
+        ]
+      });
+
+      const response = await answerWithMemoryWorker(payload, {
+        client: {
+          async search() {
+            throw new Error(
+              "search should not be needed for prompt assertions"
+            );
+          },
+          async expand() {
+            throw new Error(
+              "expand should not be needed for prompt assertions"
+            );
+          }
+        },
+        retrievalScope: "personal",
+        searchDomain: "project",
+        workspaceId: "workspace-1",
+        config: resolveMemoryAnswerWorkerConfig({
+          MEMORY_ANSWER_PROVIDER: "codex",
+          MEMORY_ANSWER_CODEX_BINARY: appServerBinary
+        })
+      });
+
+      expect(response.localMemoryWorker.errorMessage).toBeUndefined();
+      expect(response.localMemoryWorker.usedFallback).toBe(false);
+      expect(response.localMemoryWorker.promptVersion).toBe(
+        MEMORY_ANSWER_PROMPT_VERSION
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("runs one app-server worker turn with dynamic Koed RAG tools", async () => {
