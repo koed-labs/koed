@@ -729,6 +729,34 @@ const retrievalsHaveAvailableSemanticCandidates = (
     });
   });
 
+const availableCandidateStages = (retrievals: unknown[]): Set<string> => {
+  const stagesWithCandidates = new Set<string>();
+  for (const retrieval of retrievals) {
+    const record =
+      retrieval && typeof retrieval === "object" && !Array.isArray(retrieval)
+        ? (retrieval as Record<string, unknown>)
+        : {};
+    const stages = Array.isArray(record.stages) ? record.stages : [];
+    for (const stage of stages) {
+      const stageRecord =
+        stage && typeof stage === "object" && !Array.isArray(stage)
+          ? (stage as Record<string, unknown>)
+          : {};
+      const name = stageRecord.name;
+      const available = stageRecord.countAboveThreshold;
+      if (
+        typeof name === "string" &&
+        semanticSearchStages.has(name) &&
+        typeof available === "number" &&
+        available > 0
+      ) {
+        stagesWithCandidates.add(name);
+      }
+    }
+  }
+  return stagesWithCandidates;
+};
+
 const inspectedSearchStages = (searches: ToolSearchRecord[]): Set<string> =>
   new Set(
     searches
@@ -745,6 +773,16 @@ const hasInspectedSemanticStage = (searches: ToolSearchRecord[]): boolean =>
 
 const hasInspectedEvidenceStage = (searches: ToolSearchRecord[]): boolean =>
   [...inspectedSearchStages(searches)].length > 0;
+
+const uninspectedAvailableCandidateStages = (
+  retrievals: unknown[],
+  searches: ToolSearchRecord[]
+): string[] => {
+  const inspected = inspectedSearchStages(searches);
+  return [...availableCandidateStages(retrievals)].filter(
+    (stage) => !inspected.has(stage)
+  );
+};
 
 const stripJsonFence = (text: string): string => {
   const trimmed = text.trim();
@@ -1429,6 +1467,20 @@ const runDynamicToolMemoryAnswer = async (
     ) {
       throw new Error(
         "Memory answer worker returned not_found after scan candidates without inspecting evidence"
+      );
+    }
+    const uninspectedCandidateStages = uninspectedAvailableCandidateStages(
+      state.retrievals,
+      state.searches
+    );
+    if (
+      structuredAnswer.memory_status === "not_found" &&
+      uninspectedCandidateStages.length > 0 &&
+      hasInspectedEvidenceStage(state.searches) &&
+      state.searches.length < options.config.maxSearches
+    ) {
+      throw new Error(
+        `Memory answer worker returned not_found before inspecting scan-positive stages: ${uninspectedCandidateStages.join(", ")}`
       );
     }
     const curatedEvidence = evidenceSelectedByAnswer(

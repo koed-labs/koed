@@ -80,6 +80,7 @@ const writeFakeDynamicMemoryAnswerAppServer = (
     mode?:
       | "happy"
       | "invalidThenValid"
+      | "partialStageNotFound"
       | "scanLoop"
       | "scanOnlyNotFound"
       | "timeoutThenValid";
@@ -196,6 +197,14 @@ lineReader.on("line", (line) => {
       if (!text.includes("validation_error")) {
         console.error("expected scan budget validation error, got " + text.slice(0, 200));
         process.exit(65);
+      }
+      sendFinal(notFoundAnswer);
+      return;
+    }
+    if (mode === "partialStageNotFound") {
+      if (!text.includes("search_result")) {
+        console.error("expected search_result tool response, got " + text.slice(0, 200));
+        process.exit(66);
       }
       sendFinal(notFoundAnswer);
       return;
@@ -568,6 +577,85 @@ describe("memory answer worker", () => {
       expect(response.localMemoryWorker.errorMessage).toContain(
         "after scan candidates without inspecting evidence"
       );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects not_found answers while scan-positive stages remain uninspected", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
+    try {
+      const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
+        mode: "partialStageNotFound"
+      });
+      const searches: Record<string, unknown>[] = [];
+      const client: MemoryAnswerRetrievalClient = {
+        async search(input) {
+          searches.push(input);
+          if (input.retrieval_stage === "score_scan") {
+            return {
+              retrieval: {
+                stages: [
+                  {
+                    name: "leaf_search",
+                    countAboveThreshold: 1,
+                    maxAllowed: 1
+                  },
+                  {
+                    name: "raw_fallback_search",
+                    countAboveThreshold: 1,
+                    maxAllowed: 1
+                  }
+                ]
+              }
+            };
+          }
+          return {
+            hits: [],
+            retrieval: { stage: input.retrieval_stage }
+          };
+        },
+        async expand() {
+          throw new Error(
+            "expand should not be required for partial-stage not_found answer"
+          );
+        }
+      };
+
+      const response = await answerWithMemoryWorker(
+        {
+          markdown: "",
+          evidenceBundle: {
+            query: "Are we running koed on docker?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client,
+          retrievalScope: "personal",
+          searchDomain: "project",
+          workspaceId: "workspace-1",
+          config: resolveMemoryAnswerWorkerConfig({
+            MEMORY_ANSWER_PROVIDER: "codex",
+            MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+            MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+            MEMORY_ANSWER_MAX_SEARCHES: "3"
+          })
+        }
+      );
+
+      expect(response.localMemoryWorker.usedFallback).toBe(true);
+      expect(response.localMemoryWorker.errorMessage).toContain(
+        "before inspecting scan-positive stages"
+      );
+      expect(response.localMemoryWorker.errorMessage).toContain(
+        "raw_fallback_search"
+      );
+      expect(searches.map((search) => search.retrieval_stage)).toEqual([
+        "score_scan",
+        "leaf_search"
+      ]);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
