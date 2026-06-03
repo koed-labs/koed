@@ -19,11 +19,9 @@ the command preserves existing values and adds any missing keys from
 - `POSTGRES_USER`: Postgres user used by Docker Compose.
 - `POSTGRES_PASSWORD`: Postgres password. Use a deployment-specific secret.
 - `POSTGRES_HOST_PORT`: host port mapped to the Postgres container.
-- `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`.
+- `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`. Docker Compose derives service-internal database URLs from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
 - `API_NODE_ENV`: runtime environment for the API service. Use `production` for deployed compose runs.
-- `API_HOST`: bind host inside the API container.
-- `API_PORT`: API port inside the API container.
-- `API_HOST_PORT`: host port mapped to the API container.
+- `API_HOST_PORT`: host port mapped to the API container. The API container listens on internal port `3000`.
 - `API_LOG_LEVEL`: API log level. See [observability](observability.md) for
   the structured API log schema and redaction rules.
 - `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current self-hosted build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
@@ -34,12 +32,8 @@ the command preserves existing values and adds any missing keys from
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
 - `API_MEMORY_RATE_LIMIT_WINDOW_MS`: fallback API-token memory rate-limit window. The default window is 60 seconds.
 - `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local History Browser and MCP Server bursts in a self-hosted deployment without changing the stricter auth rate limit.
-- `API_MEMORY_READ_RATE_LIMIT_WINDOW_MS`: read-oriented memory endpoint rate-limit window.
-- `API_MEMORY_READ_RATE_LIMIT_MAX`: read-oriented memory requests allowed per window. The default is 1000 requests per 60-second window.
-- `API_MEMORY_WRITE_RATE_LIMIT_WINDOW_MS`: write-oriented memory endpoint rate-limit window.
-- `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The default is 300 requests per 60-second window.
-- `API_MEMORY_RECALL_RATE_LIMIT_WINDOW_MS`: recall-oriented memory endpoint rate-limit window.
-- `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The default is 300 requests per 60-second window.
+- `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
+- `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_RATE_LIMIT_STORE`: `memory` by default; set `redis` to share API rate-limit counters across API replicas.
 - `API_RATE_LIMIT_REDIS_URL`: optional Redis URL for API rate-limit counters; falls back to `REDIS_URL`.
 - `API_CACHE_STORE`: `memory` by default; set `redis` to enable short-lived graph response caching.
@@ -50,11 +44,16 @@ the command preserves existing values and adds any missing keys from
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `HISTORY_NODE_ENV`: runtime environment for the history browser service.
 - `HISTORY_API_BASE_URL`: browser-visible API base URL used when building the history browser.
+- `HISTORY_WEB_HOST_PORT`: host port mapped to the history browser. The history browser container listens on internal port `5174`.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
 - `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`: maximum memory owner scopes checked on each worker catch-up pass. Default `10`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
+- `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
+- `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
+- `MEMORY_RAG_RAW_FALLBACK_ENABLED`: set `false` to disable raw fallback retrieval.
+- `MEMORY_RAG_ROLLUP_MIN_SCORE`, `MEMORY_RAG_SCOPED_LEAF_MIN_SCORE`, `MEMORY_RAG_LEAF_MIN_SCORE`, `MEMORY_RAG_FRESH_EVENT_MIN_SCORE`, `MEMORY_RAG_RAW_FALLBACK_MIN_SCORE`: optional per-stage minimum score thresholds. Leave blank to use the default threshold of `0`.
 - `MEMORY_EVENT_MAX_TOKENS`: maximum tokens per projected semantic Memory Event chunk. Default `2048`; values above `32000` are clamped to the Qwen operational cap.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
 - `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: semantic `memory_event.content` token threshold for creating LCM placeholders. Default `32000`; values above `32000` are clamped to the Qwen operational cap. Provenance payload JSON is not counted.
