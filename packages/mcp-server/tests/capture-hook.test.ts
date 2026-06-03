@@ -8,6 +8,7 @@ import {
   captureTranscriptPathForPayload,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
+  filterTranscriptItemsAlreadyCapturedFromImmediatePrompts,
   isRetryableTranscriptCatchupError,
   parseForegroundTranscriptFileRecords,
   parseTranscriptFileRecords,
@@ -1029,6 +1030,43 @@ describe("Codex capture hook transcript parsing", () => {
     expect(items).toHaveLength(1);
   });
 
+  it("does not duplicate UserPromptSubmit hook payloads present after mixed transcript backlog", () => {
+    const payload = {
+      session_id: "session-userprompt-mixed-present",
+      turn_id: "turn-mixed-present",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "Prompt already present after backlog"
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Older unread transcript backlog"
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Prompt already present after backlog"
+          }
+        }
+      ],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "Older unread transcript backlog",
+      "Prompt already present after backlog"
+    ]);
+    expect(items).toHaveLength(2);
+  });
+
   it("does not suppress a repeated prompt when transcript backlog contains older matching text", () => {
     const payload = {
       session_id: "session-userprompt-repeat",
@@ -1140,6 +1178,68 @@ describe("Codex capture hook transcript parsing", () => {
     expect(foregroundTranscript[0]?.idempotencyKey).toBe(
       catchupTranscript[0]?.idempotencyKey
     );
+  });
+
+  it("deduplicates detached catch-up transcript prompts without suppressing older repeated backlog", () => {
+    const stateScope = "scope-detached-prompt";
+    const prompt = "Repeated detached prompt";
+    const payload = {
+      session_id: "session-detached-prompt",
+      hook_event_name: "PostToolUse"
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const transcriptItems = buildRawTranscriptConversationItems({
+      records: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: prompt
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Backlog between repeated prompts"
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: prompt
+          }
+        }
+      ],
+      payload,
+      effectiveContext
+    });
+
+    const filtered = filterTranscriptItemsAlreadyCapturedFromImmediatePrompts(
+      {
+        seen: {},
+        rawSeen: {},
+        immediatePrompts: {
+          [`${stateScope}:immediate-prompt-1`]: {
+            sourceHash: "immediate-source-hash",
+            externalSessionId: "session-detached-prompt",
+            externalTurnId: "turn-immediate-prompt",
+            actor: "user",
+            prompt,
+            capturedAt: Date.now()
+          }
+        },
+        transcriptOffsets: {}
+      },
+      stateScope,
+      transcriptItems
+    );
+
+    expect(filtered.map((item) => item.rawText)).toEqual([
+      prompt,
+      "Backlog between repeated prompts"
+    ]);
   });
 
   it("batches raw conversation items under the configured request budget", () => {
