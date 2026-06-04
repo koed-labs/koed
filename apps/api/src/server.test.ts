@@ -1793,6 +1793,31 @@ describe("api health", () => {
     expect(privateStatus.body).not.toContain("/sensitive/local/path");
   });
 
+  it("does not advertise planned AI clients in self-host status", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "client-status@example.com", password: "password123" }
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/self-host/status",
+      headers: { cookie: cookieHeader(registered) }
+    });
+    await app.close();
+
+    const status = jsonBody<{
+      configuration: {
+        supportedClients: string[];
+        plannedClients?: string[];
+      };
+    }>(response);
+
+    expect(response.statusCode).toBe(200);
+    expect(status.configuration).not.toHaveProperty("plannedClients");
+  });
+
   it("uses separate memory rate-limit buckets with Retry-After headers", async () => {
     process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
     process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";

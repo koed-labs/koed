@@ -201,7 +201,6 @@ export const registerOperationalRoutes = (
       },
       configuration: {
         supportedClients: ["codex"],
-        plannedClients: ["claude", "gemini", "cursor", "pi"],
         embeddingModel: config.embeddingModel ?? embedding.model,
         embeddingDimensions: resolveSupportedEmbeddingModelConfig(
           config.embeddingModel ?? embedding.model ?? undefined

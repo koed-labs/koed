@@ -21,7 +21,7 @@ that memory available through MCP recall.
 ## Quickstart
 
 > [!IMPORTANT]  
-> Only Codex is supported for knowledge capture. More agents to follow!
+> Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
 Create the local environment file, then install and start the service:
 
