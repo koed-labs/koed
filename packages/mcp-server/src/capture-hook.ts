@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { splitCodexIdePrompt } from "@koed/core";
 import {
   MemoryApiError,
   MemoryApiClient,
@@ -777,6 +778,113 @@ const contextMetadata = (
     : {})
 });
 
+const additionalContextContainer = (
+  raw: Record<string, unknown>,
+  payload: Record<string, unknown> | undefined
+): Record<string, unknown> | null => {
+  const params =
+    payload && isRecord(payload.params) ? payload.params : undefined;
+  const item =
+    params && isRecord(params.item)
+      ? params.item
+      : payload && isRecord(payload.item)
+        ? payload.item
+        : undefined;
+  for (const candidate of [
+    params?.additionalContext,
+    payload?.additionalContext,
+    raw.additionalContext,
+    item?.additionalContext
+  ]) {
+    if (isRecord(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const additionalContextEntryText = (
+  key: string,
+  value: unknown
+): string | null => {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text =
+    typeof value.value === "string"
+      ? value.value
+      : typeof value.text === "string"
+        ? value.text
+        : typeof value.content === "string"
+          ? value.content
+          : "";
+  const normalized = text.trim();
+  if (!normalized) {
+    return null;
+  }
+  const kind = asString(value.kind);
+  const label = [key, kind].filter(Boolean).join(" ");
+  return label ? `${label}\n${normalized}` : normalized;
+};
+
+const additionalContextCaptureItem = (
+  raw: Record<string, unknown>,
+  payload: Record<string, unknown> | undefined,
+  index: number,
+  context: TranscriptContext
+): CaptureItem | null => {
+  const additionalContext = additionalContextContainer(raw, payload);
+  if (!additionalContext) {
+    return null;
+  }
+  const entries = Object.entries(additionalContext)
+    .map(([key, value]) => additionalContextEntryText(key, value))
+    .filter((value): value is string => Boolean(value));
+  const content = entries.join("\n\n").trim();
+  if (!content) {
+    return null;
+  }
+  return {
+    actor: "system",
+    eventType: "codex_transcript_ide_context",
+    content,
+    metadata: {
+      ...contextMetadata(context),
+      transcriptIndex: index,
+      transcriptType: "ide_context",
+      transcriptParentType: raw.type,
+      contextKind: "ide_client_context",
+      contextSource: "vscode_codex",
+      sourceRole: "supporting_context",
+      additionalContextSources: Object.keys(additionalContext)
+    }
+  };
+};
+
+const ideClientContextCaptureItemFromText = (
+  content: string,
+  raw: Record<string, unknown>,
+  index: number,
+  context: TranscriptContext
+): CaptureItem => ({
+  actor: "system",
+  eventType: "codex_transcript_ide_context",
+  content,
+  metadata: {
+    ...contextMetadata(context),
+    transcriptIndex: index,
+    transcriptType: "ide_context",
+    transcriptParentType: raw.type,
+    contextKind: "ide_client_context",
+    contextSource: "vscode_codex",
+    sourceRole: "supporting_context",
+    contextEncoding: "codex_rendered_prompt_wrapper"
+  }
+});
+
 export const captureTranscriptPathForPayload = (
   payload: HookPayload
 ): string | undefined => {
@@ -876,7 +984,13 @@ const codexMessageActor = (
   return roleToActor(role);
 };
 
-const extractTranscriptItem = (
+type ParsedTranscriptItem = {
+  item: CaptureItem;
+  itemDiscriminator: string;
+  sourceOffset: number;
+};
+
+const extractPrimaryTranscriptItem = (
   record: unknown,
   index: number,
   options: { preferEventMessages: boolean; context: TranscriptContext }
@@ -891,13 +1005,6 @@ const extractTranscriptItem = (
   }
   const payload = isRecord(raw.payload) ? raw.payload : undefined;
   const item = payload ?? raw;
-  if (
-    options.preferEventMessages &&
-    raw.type === "response_item" &&
-    item.type === "message"
-  ) {
-    return null;
-  }
   const message = isRecord(item.message) ? item.message : undefined;
   if (item.type === "function_call" || item.type === "custom_tool_call") {
     const metadata = toolMetadata(item, raw, index, options.context, "call");
@@ -960,6 +1067,70 @@ const extractTranscriptItem = (
       transcriptId: item.id
     }
   };
+};
+
+const extractTranscriptItems = (
+  record: unknown,
+  index: number,
+  options: { preferEventMessages: boolean; context: TranscriptContext }
+): ParsedTranscriptItem[] => {
+  if (!record || typeof record !== "object") {
+    return [];
+  }
+
+  const raw = isRecord(record) ? record : null;
+  if (!raw) {
+    return [];
+  }
+  const payload = isRecord(raw.payload) ? raw.payload : undefined;
+  const item = payload ?? raw;
+  if (
+    options.preferEventMessages &&
+    raw.type === "response_item" &&
+    item.type === "message"
+  ) {
+    return [];
+  }
+
+  const items: ParsedTranscriptItem[] = [];
+  let contextItem = additionalContextCaptureItem(
+    raw,
+    payload,
+    index,
+    options.context
+  );
+  const primaryItem = extractPrimaryTranscriptItem(record, index, options);
+  const renderedPromptSplit =
+    primaryItem &&
+    (primaryItem.actor === "user" || primaryItem.actor === "agent")
+      ? splitCodexIdePrompt(primaryItem.content)
+      : null;
+  if (!contextItem && renderedPromptSplit) {
+    contextItem = ideClientContextCaptureItemFromText(
+      renderedPromptSplit.ideContext,
+      raw,
+      index,
+      options.context
+    );
+  }
+  if (contextItem) {
+    items.push({
+      item: contextItem,
+      itemDiscriminator: "supporting_context",
+      sourceOffset: 0
+    });
+  }
+
+  if (primaryItem) {
+    items.push({
+      item: renderedPromptSplit
+        ? { ...primaryItem, content: renderedPromptSplit.userPrompt }
+        : primaryItem,
+      itemDiscriminator: `primary:${primaryItem.eventType}`,
+      sourceOffset: contextItem ? 1 : 0
+    });
+  }
+  return items;
 };
 
 const parseTranscriptRecordsText = (text: string): unknown[] => {
@@ -1036,11 +1207,11 @@ export const parseTranscriptRecords = (
   const context = extractTranscriptSessionMetadata(records);
 
   return records
-    .map((record, index) =>
-      extractTranscriptItem(record, index + indexOffset, {
+    .flatMap((record, index) =>
+      extractTranscriptItems(record, index + indexOffset, {
         preferEventMessages,
         context
-      })
+      }).map((parsed) => parsed.item)
     )
     .filter((item): item is CaptureItem => Boolean(item));
 };
@@ -1356,10 +1527,12 @@ const sourceHashForRawRecord = (input: {
   transcriptPath?: string;
   index: number;
   record: unknown;
+  itemDiscriminator?: string;
 }): string =>
   hash({
     externalSessionId: input.externalSessionId,
     transcriptPath: input.transcriptPath,
+    itemDiscriminator: input.itemDiscriminator,
     recordIdentity: rawExternalItemId(input.record) ??
       transcriptRecordPosition(input.record) ?? {
         eventType: rawEventType(input.record),
@@ -1384,6 +1557,19 @@ const sourceHashForImmediatePrompt = (input: {
     turnId: input.turnId,
     actor: input.actor,
     hookPrompt: input.prompt
+  });
+
+const sourceHashForImmediatePromptSupportingContext = (input: {
+  externalSessionId?: string;
+  turnId?: string;
+  actor: "user" | "agent";
+  context: string;
+}): string =>
+  hash({
+    externalSessionId: input.externalSessionId,
+    turnId: input.turnId,
+    actor: input.actor,
+    hookPromptSupportingContext: input.context
   });
 
 const isImmediateUserPromptSubmit = (
@@ -1586,6 +1772,18 @@ const hookPromptMetadata = (
   immediateHookPrompt: true
 });
 
+const hookPromptSupportingContextMetadata = (
+  payload: HookPayload,
+  effectiveContext: EffectiveCaptureContext
+): Record<string, unknown> => ({
+  ...hookPayloadMetadata(payload, effectiveContext),
+  transcriptType: "ide_context",
+  contextKind: "ide_client_context",
+  contextSource: "vscode_codex",
+  sourceRole: "supporting_context",
+  contextEncoding: "codex_rendered_prompt_wrapper"
+});
+
 const buildRawHookConversationItem = (input: {
   sessionId?: string;
   effectiveContext: EffectiveCaptureContext;
@@ -1627,6 +1825,77 @@ const buildRawHookConversationItem = (input: {
   };
 };
 
+const buildRawHookConversationItems = (input: {
+  sessionId?: string;
+  effectiveContext: EffectiveCaptureContext;
+  payload: HookPayload;
+}): RawConversationItemRequest[] => {
+  if (!isImmediateUserPromptSubmit(input.payload)) {
+    return [buildRawHookConversationItem(input)];
+  }
+  const split = splitCodexIdePrompt(input.payload.prompt);
+  if (!split) {
+    return [buildRawHookConversationItem(input)];
+  }
+  const actor = immediatePromptActor(input.effectiveContext);
+  const contextHash = sourceHashForImmediatePromptSupportingContext({
+    externalSessionId: input.effectiveContext.externalSessionId,
+    turnId: input.payload.turn_id,
+    actor,
+    context: split.ideContext
+  });
+  const promptHash = sourceHashForImmediatePrompt({
+    externalSessionId: input.effectiveContext.externalSessionId,
+    turnId: input.payload.turn_id,
+    actor,
+    prompt: split.userPrompt
+  });
+  return [
+    {
+      sessionId: input.sessionId,
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-hook-v1",
+      sourceTransport: "hook",
+      externalSessionId: input.effectiveContext.externalSessionId,
+      externalThreadId: input.effectiveContext.externalSessionId,
+      externalTurnId: input.payload.turn_id,
+      sourceRecordType: "hook_payload",
+      sourceEventType: input.payload.hook_event_name ?? "hook_payload",
+      rawJson: input.payload,
+      rawText: split.ideContext,
+      sourceHash: contextHash,
+      idempotencyKey: contextHash,
+      projectionStatus: "pending",
+      projectionVersion: "codex-hook-v1",
+      metadata: hookPromptSupportingContextMetadata(
+        input.payload,
+        input.effectiveContext
+      )
+    },
+    {
+      sessionId: input.sessionId,
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-hook-v1",
+      sourceTransport: "hook",
+      externalSessionId: input.effectiveContext.externalSessionId,
+      externalThreadId: input.effectiveContext.externalSessionId,
+      externalTurnId: input.payload.turn_id,
+      sourceRecordType: "hook_payload",
+      sourceEventType: input.payload.hook_event_name ?? "hook_payload",
+      rawJson: input.payload,
+      rawText: split.userPrompt,
+      sourceHash: promptHash,
+      idempotencyKey: promptHash,
+      projectionStatus: "pending",
+      projectionVersion: "codex-hook-v1",
+      metadata: {
+        ...hookPromptMetadata(input.payload, input.effectiveContext),
+        contextEncoding: "codex_rendered_prompt_wrapper"
+      }
+    }
+  ];
+};
+
 export const selectRawConversationItemsForHook = (input: {
   transcriptRecords: unknown[];
   indexOffset?: number;
@@ -1652,23 +1921,28 @@ export const selectRawConversationItemsForHook = (input: {
     return transcriptItems;
   }
 
-  const hookItem = buildRawHookConversationItem({
+  const hookItems = buildRawHookConversationItems({
     sessionId: input.sessionId,
     effectiveContext: input.effectiveContext,
     payload: input.payload
   });
+  const promptHookItem = hookItems.find((item) => immediatePromptInfo(item));
 
   if (input.transcriptRecords.length === 0) {
-    return [hookItem];
+    return hookItems;
   }
 
   if (!isImmediateUserPromptSubmit(input.payload)) {
     return transcriptItems;
   }
 
-  return promptAlreadyRepresented(transcriptItems, hookItem)
+  if (!promptHookItem) {
+    return transcriptItems;
+  }
+
+  return promptAlreadyRepresented(transcriptItems, promptHookItem)
     ? transcriptItems
-    : [...transcriptItems, hookItem];
+    : [...transcriptItems, ...hookItems];
 };
 
 export const buildRawTranscriptConversationItems = (input: {
@@ -1691,48 +1965,69 @@ export const buildRawTranscriptConversationItems = (input: {
       : {})
   };
 
-  return input.records.map((record, index) => {
-    const sourceSequence = safeSourceSequence(index + (input.indexOffset ?? 0));
-    const parsedItem = extractTranscriptItem(record, sourceSequence, {
+  return input.records.flatMap((record, index) => {
+    const sourceLineNumber = index + (input.indexOffset ?? 0);
+    const sourceSequenceBase = safeSourceSequence(sourceLineNumber * 2);
+    const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
       preferEventMessages,
       context
     });
-    const sourceHash = sourceHashForRawRecord({
-      externalSessionId: input.effectiveContext.externalSessionId,
-      transcriptPath: input.transcriptPath,
-      index: sourceSequence,
-      record
+    const rawItems =
+      parsedItems.length > 0
+        ? parsedItems
+        : [
+            {
+              item: null,
+              itemDiscriminator: "raw",
+              sourceOffset: 0
+            }
+          ];
+    const needsItemDiscriminator = rawItems.length > 1;
+
+    return rawItems.map((parsedItem) => {
+      const sourceSequence = safeSourceSequence(
+        sourceSequenceBase + parsedItem.sourceOffset
+      );
+      const sourceHash = sourceHashForRawRecord({
+        externalSessionId: input.effectiveContext.externalSessionId,
+        transcriptPath: input.transcriptPath,
+        index: sourceSequence,
+        record,
+        itemDiscriminator: needsItemDiscriminator
+          ? parsedItem.itemDiscriminator
+          : undefined
+      });
+      return {
+        sessionId: input.sessionId,
+        sourceKind: "codex",
+        sourceAdapterVersion: "codex-transcript-v1",
+        sourceTransport: "hook",
+        externalSessionId: input.effectiveContext.externalSessionId,
+        externalThreadId: input.effectiveContext.externalSessionId,
+        externalTurnId: input.payload.turn_id,
+        externalItemId: rawExternalItemId(record),
+        sourceRecordType: rawRecordType(record),
+        sourceEventType: rawEventType(record),
+        sourcePath: input.transcriptPath,
+        sourceLineNumber,
+        sourceSequence,
+        eventTime: rawEventTime(record),
+        rawJson: record,
+        rawText: parsedItem.item?.content ?? rawText(record),
+        sourceHash,
+        idempotencyKey: sourceHash,
+        projectionStatus: "pending",
+        projectionVersion: "codex-transcript-v1",
+        metadata: {
+          ...(parsedItem.item?.metadata ?? {}),
+          hookEventName: input.payload.hook_event_name,
+          threadKind: input.effectiveContext.isSubagent
+            ? "subagent"
+            : "conversation",
+          parentThreadId: input.effectiveContext.parentThreadId
+        }
+      };
     });
-    return {
-      sessionId: input.sessionId,
-      sourceKind: "codex",
-      sourceAdapterVersion: "codex-transcript-v1",
-      sourceTransport: "hook",
-      externalSessionId: input.effectiveContext.externalSessionId,
-      externalThreadId: input.effectiveContext.externalSessionId,
-      externalTurnId: input.payload.turn_id,
-      externalItemId: rawExternalItemId(record),
-      sourceRecordType: rawRecordType(record),
-      sourceEventType: rawEventType(record),
-      sourcePath: input.transcriptPath,
-      sourceLineNumber: sourceSequence,
-      sourceSequence,
-      eventTime: rawEventTime(record),
-      rawJson: record,
-      rawText: parsedItem?.content ?? rawText(record),
-      sourceHash,
-      idempotencyKey: sourceHash,
-      projectionStatus: "pending",
-      projectionVersion: "codex-transcript-v1",
-      metadata: {
-        ...(parsedItem?.metadata ?? {}),
-        hookEventName: input.payload.hook_event_name,
-        threadKind: input.effectiveContext.isSubagent
-          ? "subagent"
-          : "conversation",
-        parentThreadId: input.effectiveContext.parentThreadId
-      }
-    };
   });
 };
 
@@ -1743,6 +2038,30 @@ export const fallbackItems = (
   const metadata = hookPayloadMetadata(payload, effectiveContext);
 
   if (payload.prompt) {
+    const split = splitCodexIdePrompt(payload.prompt);
+    if (split) {
+      return [
+        {
+          actor: "system",
+          eventType: "codex_transcript_ide_context",
+          content: split.ideContext,
+          metadata: {
+            ...metadata,
+            transcriptType: "ide_context",
+            contextKind: "ide_client_context",
+            contextSource: "vscode_codex",
+            sourceRole: "supporting_context",
+            contextEncoding: "codex_rendered_prompt_wrapper"
+          }
+        },
+        {
+          actor: effectiveContext.isSubagent ? "agent" : "user",
+          eventType: "codex_user_prompt",
+          content: split.userPrompt,
+          metadata
+        }
+      ];
+    }
     return [
       {
         actor: effectiveContext.isSubagent ? "agent" : "user",

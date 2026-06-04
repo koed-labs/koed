@@ -467,6 +467,181 @@ describe("Codex capture hook transcript parsing", () => {
     ]);
   });
 
+  it("labels structured VS Code additional context as IDE client context", () => {
+    // Synthetic fixture: the repo does not contain a real VS Code Codex
+    // transcript with Include IDE Context enabled, so this locks the
+    // structured additionalContext shape referenced by KOE-179.
+    const items = parseTranscriptText(
+      JSON.stringify([
+        {
+          type: "turn_start",
+          payload: {
+            type: "turn_start",
+            additionalContext: {
+              vscode: {
+                kind: "application",
+                value:
+                  "Open file: src/server.ts\nSelected text: createMemoryEvent"
+              }
+            }
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: "Why did the capture path include the selected file?"
+          }
+        }
+      ])
+    );
+
+    expect(items).toMatchObject([
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context",
+        content:
+          "vscode application\nOpen file: src/server.ts\nSelected text: createMemoryEvent",
+        metadata: {
+          contextKind: "ide_client_context",
+          contextSource: "vscode_codex",
+          sourceRole: "supporting_context",
+          transcriptType: "ide_context",
+          additionalContextSources: ["vscode"]
+        }
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user"
+      }
+    ]);
+  });
+
+  it("preserves the user message when VS Code context shares its transcript record", () => {
+    const record = {
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        message: "Please review this file.",
+        additionalContext: {
+          vscode: {
+            kind: "application",
+            value: "Open file: SECURITY.md"
+          }
+        }
+      }
+    };
+    const parsed = parseTranscriptText(JSON.stringify([record]));
+
+    expect(parsed).toMatchObject([
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context",
+        content: "vscode application\nOpen file: SECURITY.md"
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content: "Please review this file."
+      }
+    ]);
+
+    const rawItems = buildRawTranscriptConversationItems({
+      records: [record],
+      effectiveContext: effectiveCaptureContext({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "same-record-context"
+      }),
+      payload: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "same-record-context",
+        prompt: "Please review this file."
+      }
+    });
+
+    expect(rawItems.map((item) => item.rawText)).toEqual([
+      "vscode application\nOpen file: SECURITY.md",
+      "Please review this file."
+    ]);
+    expect(rawItems.map((item) => item.sourceSequence)).toEqual([0, 1]);
+    expect(rawItems[0]!.sourceHash).not.toBe(rawItems[1]!.sourceHash);
+    expect(rawItems[0]!.metadata).toMatchObject({
+      contextKind: "ide_client_context",
+      sourceRole: "supporting_context"
+    });
+  });
+
+  it("splits rendered Codex IDE prompt wrappers into supporting context plus user prompt", () => {
+    const wrappedPrompt = `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## Open tabs:
+- SECURITY.md: koed-self-hosted/SECURITY.md
+
+## My request for Codex:
+Coffee cardamom sounds interesting - should I cool the coffee first?`;
+    const record = {
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        message: wrappedPrompt
+      }
+    };
+
+    const parsed = parseTranscriptText(JSON.stringify([record]));
+    expect(parsed).toMatchObject([
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context",
+        content: expect.stringContaining(
+          "Active file: koed-self-hosted/SECURITY.md"
+        ),
+        metadata: {
+          contextKind: "ide_client_context",
+          sourceRole: "supporting_context",
+          contextEncoding: "codex_rendered_prompt_wrapper"
+        }
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content:
+          "Coffee cardamom sounds interesting - should I cool the coffee first?"
+      }
+    ]);
+
+    const effectiveContext = effectiveCaptureContext({
+      hook_event_name: "UserPromptSubmit",
+      session_id: "rendered-wrapper"
+    });
+    const rawItems = selectRawConversationItemsForHook({
+      transcriptRecords: [],
+      effectiveContext,
+      payload: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "rendered-wrapper",
+        prompt: wrappedPrompt
+      },
+      mode: "foreground"
+    });
+
+    expect(rawItems.map((item) => item.rawText)).toEqual([
+      expect.stringContaining("Context from my IDE setup"),
+      "Coffee cardamom sounds interesting - should I cool the coffee first?"
+    ]);
+    expect(rawItems[0]!.metadata).toMatchObject({
+      contextKind: "ide_client_context",
+      sourceRole: "supporting_context",
+      contextEncoding: "codex_rendered_prompt_wrapper"
+    });
+    expect(rawItems[1]!.metadata).toMatchObject({
+      immediateHookPrompt: true,
+      contextEncoding: "codex_rendered_prompt_wrapper"
+    });
+    expect(rawItems[0]!.sourceHash).not.toBe(rawItems[1]!.sourceHash);
+  });
+
   it("uses child session metadata to label subagent conversation actors", () => {
     const records = [
       {

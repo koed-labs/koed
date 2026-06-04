@@ -27,6 +27,41 @@ export interface TokenCountResult extends TokenEncodingResolution {
 
 export const DEFAULT_CODEX_TOKEN_MODEL = "gpt-5.4-mini";
 
+export interface CodexIdePromptParts {
+  ideContext: string;
+  userPrompt: string;
+}
+
+const CODEX_IDE_CONTEXT_HEADER = /^#{0,6}\s*Context from my IDE setup:\s*$/i;
+const CODEX_IDE_REQUEST_HEADER = /^#{0,6}\s*My request for Codex:\s*$/im;
+
+export const splitCodexIdePrompt = (
+  value: string
+): CodexIdePromptParts | null => {
+  const normalized = value.replace(/\r\n?/g, "\n").trim();
+  const lines = normalized.split("\n");
+  if (!CODEX_IDE_CONTEXT_HEADER.test(lines[0] ?? "")) {
+    return null;
+  }
+
+  const requestHeader = normalized.match(CODEX_IDE_REQUEST_HEADER);
+  if (!requestHeader || requestHeader.index === undefined) {
+    return null;
+  }
+
+  const headerStart = requestHeader.index;
+  const headerEnd = headerStart + requestHeader[0].length;
+  const ideContext = normalized.slice(0, headerStart).trim();
+  const userPrompt = normalized
+    .slice(headerEnd)
+    .replace(/<image\b[\s\S]*?<\/image>/g, "")
+    .trim();
+  return ideContext && userPrompt ? { ideContext, userPrompt } : null;
+};
+
+export const codexIdePromptUserText = (value: string): string =>
+  splitCodexIdePrompt(value)?.userPrompt ?? value;
+
 const explicitCodexModelEncodings = new Map<string, TokenizerEncoding>([
   ["gpt-5.5", "o200k_base"],
   ["gpt-5.4", "o200k_base"],
@@ -436,6 +471,14 @@ export interface ExpandedMemoryNode {
   sources: MemoryEventRecord[];
 }
 
+export interface SupportingContextItem {
+  sourceId: string;
+  sourceRole: "supporting_context";
+  contextKind: "ide_client_context";
+  label: string;
+  text: string;
+}
+
 export interface LcmSourceItem {
   kind: "memory_event" | "message" | "tool_event" | "lcm_child";
   sourceTable?: "memory_events" | "messages" | "tool_events";
@@ -447,6 +490,7 @@ export interface LcmSourceItem {
   createdAt?: string;
   text?: string;
   payload?: unknown;
+  supportingContext?: SupportingContextItem[];
   position: number;
 }
 

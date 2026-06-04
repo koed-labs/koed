@@ -33,6 +33,9 @@ Working directory: /path/to/koed-self-hosted
 ```
 
 If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
+If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
+or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
+from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.
 
 ## Browser Questions
 

@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   chunkTextForModel,
+  codexIdePromptUserText,
   countTokensForModel,
   createMemoryEngine,
   estimateTokens,
   memorySourceInputSchema,
   resolveTokenEncodingForModel,
+  splitCodexIdePrompt,
   type ExpandedMemoryNode,
   type MemoryEngineRepository,
   type MemoryEventRecord,
@@ -81,6 +83,37 @@ describe("core schemas", () => {
         countTokensForModel(chunk, { model: "gpt-5.4-mini" }).tokens
       ).toBeLessThanOrEqual(50);
     }
+  });
+
+  it("splits the rendered Codex IDE prompt wrapper narrowly", () => {
+    const wrapped = `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## Open tabs:
+- SECURITY.md: koed-self-hosted/SECURITY.md
+
+## My request for Codex:
+Coffee cardamom sounds interesting - should I cool the coffee first?`;
+
+    expect(splitCodexIdePrompt(wrapped)).toEqual({
+      ideContext: `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## Open tabs:
+- SECURITY.md: koed-self-hosted/SECURITY.md`,
+      userPrompt:
+        "Coffee cardamom sounds interesting - should I cool the coffee first?"
+    });
+    expect(codexIdePromptUserText(wrapped)).toBe(
+      "Coffee cardamom sounds interesting - should I cool the coffee first?"
+    );
+    expect(
+      codexIdePromptUserText(
+        "A normal prompt mentioning My request for Codex remains intact."
+      )
+    ).toBe("A normal prompt mentioning My request for Codex remains intact.");
   });
 });
 

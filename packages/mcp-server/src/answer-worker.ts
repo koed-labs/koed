@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { countTokensForModel } from "@koed/core";
+import { codexIdePromptUserText, countTokensForModel } from "@koed/core";
 import { z } from "zod";
 import {
   CodexAppServerThreadSession,
@@ -466,12 +466,18 @@ const evidenceFromExpansion = (
       return [];
     }
     const record = item as Record<string, unknown>;
-    const text = typeof record.text === "string" ? record.text.trim() : "";
+    const text =
+      typeof record.text === "string"
+        ? codexIdePromptUserText(record.text).trim()
+        : "";
     if (!text) {
       return [];
     }
     const sourceId =
       typeof record.sourceId === "string" ? record.sourceId : undefined;
+    const supportingContext = Array.isArray(record.supportingContext)
+      ? record.supportingContext
+      : undefined;
     return [
       {
         nodeId: nodeId ?? sourceId ?? `expanded-${index}`,
@@ -480,6 +486,7 @@ const evidenceFromExpansion = (
         retrievalStage: "expanded_source",
         visibility,
         summaryText: text,
+        ...(supportingContext ? { supportingContext } : {}),
         score: 1,
         citation: {
           nodeId: nodeId ?? sourceId ?? `expanded-${index}`,

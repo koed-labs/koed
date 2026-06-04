@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import {
+  codexIdePromptUserText,
   chunkTextForModel,
   estimateTokens,
+  splitCodexIdePrompt,
   type LcmSourceItem
 } from "@koed/core";
 import type {
@@ -481,6 +483,20 @@ type ConversationSemanticProjectionItem = {
   actorType: MemoryActor;
   content: string;
   projectionMetadata: Record<string, unknown>;
+};
+
+type SupportingContextProjectionItem = {
+  row: ConversationProjectionRawRow;
+  sourceIds: string[];
+  content: string;
+};
+
+type SupportingContextItem = {
+  sourceId: string;
+  sourceRole: "supporting_context";
+  contextKind: "ide_client_context";
+  label: string;
+  text: string;
 };
 
 type ConversationSemanticProjectionChunk = {
@@ -1326,6 +1342,10 @@ const isInternalMemorySummary = (value: string): boolean =>
   value.includes("Child summaries:");
 
 const extractCodexRequestText = (value: string): string | null => {
+  const split = splitCodexIdePrompt(value);
+  if (split) {
+    return split.userPrompt;
+  }
   const marker = "## My request for Codex:";
   const markerIndex = value.indexOf(marker);
   if (markerIndex < 0) {
@@ -1781,6 +1801,91 @@ const normalizeProjectionText = (value: string | null): string | null => {
 const joinProjectionTexts = (values: string[]): string | null =>
   normalizeProjectionText(values.map((value) => value.trim()).join("\n\n"));
 
+const DERIVED_SOURCE_ROLE = "derived_from";
+const SUPPORTING_CONTEXT_SOURCE_ROLE = "supporting_context";
+const IDE_CLIENT_CONTEXT_KIND = "ide_client_context";
+
+const additionalContextContainer = (
+  rawJson: unknown
+): Record<string, unknown> | null => {
+  const raw = isRecord(rawJson) ? rawJson : null;
+  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
+  const params = payload && isRecord(payload.params) ? payload.params : null;
+  const item =
+    (params && isRecord(params.item) ? params.item : null) ??
+    (payload && isRecord(payload.item) ? payload.item : null);
+  for (const candidate of [
+    params?.additionalContext,
+    payload?.additionalContext,
+    raw?.additionalContext,
+    item?.additionalContext
+  ]) {
+    if (isRecord(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+const additionalContextEntryText = (
+  key: string,
+  value: unknown
+): string | null => {
+  if (typeof value === "string") {
+    return normalizeProjectionText(value);
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = normalizeProjectionText(
+    typeof value.value === "string"
+      ? value.value
+      : typeof value.text === "string"
+        ? value.text
+        : typeof value.content === "string"
+          ? value.content
+          : null
+  );
+  if (!text) {
+    return null;
+  }
+  const kind = stringField(value, "kind");
+  const label = [key, kind].filter(Boolean).join(" ");
+  return label ? `${label}\n${text}` : text;
+};
+
+const additionalContextText = (rawJson: unknown): string | null => {
+  const container = additionalContextContainer(rawJson);
+  if (!container) {
+    return null;
+  }
+  return joinProjectionTexts(
+    Object.entries(container)
+      .map(([key, value]) => additionalContextEntryText(key, value))
+      .filter((value): value is string => Boolean(value))
+  );
+};
+
+const metadataMarksIdeClientContext = (
+  metadata: Record<string, unknown> | null
+): boolean => {
+  const contextKind = stringField(metadata ?? {}, "contextKind");
+  const sourceRole = stringField(metadata ?? {}, "sourceRole");
+  const transcriptType = stringField(metadata ?? {}, "transcriptType");
+  return (
+    contextKind === IDE_CLIENT_CONTEXT_KIND ||
+    sourceRole === SUPPORTING_CONTEXT_SOURCE_ROLE ||
+    transcriptType === "ide_context" ||
+    transcriptType === "client_context" ||
+    transcriptType === "additional_context" ||
+    transcriptType === "application_context"
+  );
+};
+
+const projectionIsIdeClientContext = (row: {
+  metadata?: Record<string, unknown> | null;
+}): boolean => metadataMarksIdeClientContext(row.metadata ?? null);
+
 const textFromReasoningSummaryValue = (value: unknown): string | null => {
   if (typeof value === "string") {
     return normalizeProjectionText(value);
@@ -2039,6 +2144,9 @@ const conversationItemContent = (row: {
     (params && isRecord(params.item) ? params.item : null) ??
     (payload && isRecord(payload.item) ? payload.item : null) ??
     (payload && isRecord(payload) ? payload : null);
+  if (projectionIsIdeClientContext(row)) {
+    return additionalContextText(row.raw_json) ?? row.raw_text?.trim() ?? null;
+  }
   if (row.source_record_type === "hook_payload") {
     const hookTool = hookToolContent(raw);
     if (hookTool) {
@@ -2061,7 +2169,7 @@ const conversationItemContent = (row: {
     return reasoningSummaryTextFromItem(item);
   }
   if (row.raw_text?.trim()) {
-    return row.raw_text.trim();
+    return codexIdePromptUserText(row.raw_text.trim());
   }
   if (!payload) {
     return null;
@@ -2079,18 +2187,19 @@ const conversationItemContent = (row: {
     ]) {
       const value = stringFromNestedField(appServerParams, path);
       if (value) {
-        return value;
+        return codexIdePromptUserText(value);
       }
     }
   }
   for (const key of ["message", "text", "content", "delta"]) {
     const value = stringField(payload, key);
     if (value) {
-      return value;
+      return codexIdePromptUserText(value);
     }
   }
   const nestedItem = isRecord(payload.item) ? payload.item : null;
-  return nestedItem ? stringField(nestedItem, "text") : null;
+  const nestedText = nestedItem ? stringField(nestedItem, "text") : null;
+  return nestedText ? codexIdePromptUserText(nestedText) : null;
 };
 
 const actorFromConversationItem = (row: {
@@ -2278,6 +2387,9 @@ const classifyConversationItemProjection = (
     createToolEvent: false,
     reason: "not-projectable"
   };
+  if (projectionIsIdeClientContext(row)) {
+    return { ...base, reason: "ide-client-supporting-context" };
+  }
   if (!input.content || !input.actorType) {
     return { ...base, reason: "missing-content-or-actor" };
   }
@@ -2509,6 +2621,22 @@ const conversationSemanticBoundaryKey = (
       sessionId: item.row.session_id,
       sessionWorkspaceId: item.row.session_workspace_id,
       sessionCwd: item.row.session_cwd
+    })
+  ].join(":");
+
+const conversationProjectionBoundaryKey = (
+  row: ConversationProjectionRawRow
+): string =>
+  [
+    row.visibility,
+    row.session_id ?? row.external_session_id ?? "sessionless",
+    row.turn_id ?? row.external_turn_id ?? "turnless",
+    row.external_thread_id ?? "threadless",
+    canonicalWorkspaceId({
+      metadata: row.metadata,
+      sessionId: row.session_id,
+      sessionWorkspaceId: row.session_workspace_id,
+      sessionCwd: row.session_cwd
     })
   ].join(":");
 
@@ -3357,7 +3485,9 @@ const rawConversationItemIdsFromMetadata = (
 const linkMemoryEventSources = async (
   pool: pg.Pool,
   memoryEventId: string,
-  conversationItemIds: string[]
+  conversationItemIds: string[],
+  sourceRole = DERIVED_SOURCE_ROLE,
+  sourceOrderOffset = 0
 ): Promise<void> => {
   for (let index = 0; index < conversationItemIds.length; index += 1) {
     await pool.query(
@@ -3368,7 +3498,7 @@ const linkMemoryEventSources = async (
           source_order,
           source_role
         )
-        select $1, ci.id, $3, 'derived_from'
+        select $1, ci.id, $3, $4
         from conversation_items ci
         join memory_events me on me.id = $1
         where ci.id = $2
@@ -3376,7 +3506,12 @@ const linkMemoryEventSources = async (
           and ci.owner_user_id = me.owner_user_id
         on conflict do nothing
       `,
-      [memoryEventId, conversationItemIds[index], index]
+      [
+        memoryEventId,
+        conversationItemIds[index],
+        sourceOrderOffset + index,
+        sourceRole
+      ]
     );
   }
 };
@@ -4979,6 +5114,11 @@ export const createMemorySourceRepository = (
     const projectedStatusSourceIds = new Set<string>();
     let pendingAgentItems: ConversationSemanticProjectionItem[] = [];
     let pendingAgentBoundaryKey: string | null = null;
+    const pendingSupportingContextsByBoundary = new Map<
+      string,
+      SupportingContextProjectionItem[]
+    >();
+    const lastMemoryEventIdsByBoundary = new Map<string, string[]>();
 
     const markProjected = async (sourceIds: string[]) => {
       const pendingIds = sourceIds.filter(
@@ -5045,6 +5185,14 @@ export const createMemorySourceRepository = (
       const allSourceIds = uniqueOrderedStrings(
         items.flatMap((item) => item.sourceIds)
       );
+      const boundaryKey = conversationSemanticBoundaryKey(first);
+      const supportingContexts =
+        pendingSupportingContextsByBoundary.get(boundaryKey) ?? [];
+      pendingSupportingContextsByBoundary.delete(boundaryKey);
+      const supportingSourceIds = uniqueOrderedStrings(
+        supportingContexts.flatMap((item) => item.sourceIds)
+      );
+      const createdEventIds: string[] = [];
 
       for (const chunk of chunks) {
         const unitHash = createHash("sha256")
@@ -5115,6 +5263,16 @@ export const createMemorySourceRepository = (
           }
         );
         if (event.id) {
+          createdEventIds.push(event.id);
+          if (supportingSourceIds.length > 0) {
+            await linkMemoryEventSources(
+              pool,
+              event.id,
+              supportingSourceIds,
+              SUPPORTING_CONTEXT_SOURCE_ROLE,
+              chunk.sourceIds.length
+            );
+          }
           result.memoryEventsCreated += 1;
           result.memoryEventIds.push(event.id);
           result.memoryEventScopes.push({
@@ -5122,6 +5280,9 @@ export const createMemorySourceRepository = (
             visibility: first.row.visibility
           });
         }
+      }
+      if (createdEventIds.length > 0) {
+        lastMemoryEventIdsByBoundary.set(boundaryKey, createdEventIds);
       }
     };
 
@@ -5182,6 +5343,46 @@ export const createMemorySourceRepository = (
           actorType,
           content
         });
+        if (projectionPolicy.reason === "ide-client-supporting-context") {
+          if (content) {
+            const boundaryKey = conversationProjectionBoundaryKey(row);
+            const supportingContext: SupportingContextProjectionItem = {
+              row,
+              sourceIds,
+              content
+            };
+            if (
+              pendingAgentBoundaryKey === boundaryKey &&
+              pendingAgentItems.length > 0
+            ) {
+              pendingSupportingContextsByBoundary.set(boundaryKey, [
+                ...(pendingSupportingContextsByBoundary.get(boundaryKey) ?? []),
+                supportingContext
+              ]);
+            } else {
+              const lastEventIds =
+                lastMemoryEventIdsByBoundary.get(boundaryKey) ?? [];
+              if (lastEventIds.length > 0) {
+                for (const eventId of lastEventIds) {
+                  await linkMemoryEventSources(
+                    pool,
+                    eventId,
+                    sourceIds,
+                    SUPPORTING_CONTEXT_SOURCE_ROLE
+                  );
+                }
+              } else {
+                pendingSupportingContextsByBoundary.set(boundaryKey, [
+                  ...(pendingSupportingContextsByBoundary.get(boundaryKey) ??
+                    []),
+                  supportingContext
+                ]);
+              }
+            }
+          }
+          await markProjected(sourceIds);
+          continue;
+        }
 
         if (tokenUsage) {
           for (const scope of ["last", "total"] as const) {
@@ -8764,7 +8965,8 @@ export const createMemorySourceRepository = (
       },
       weight: number
     ) => {
-      const normalizedText = row.summary_text.trim().toLowerCase();
+      const summaryText = codexIdePromptUserText(row.summary_text).trim();
+      const normalizedText = summaryText.toLowerCase();
       const key = normalizedText
         ? `${row.visibility}:${normalizedText}`
         : `${row.source_type}:${row.source_id}`;
@@ -8785,7 +8987,7 @@ export const createMemorySourceRepository = (
           retrievalStage: row.retrieval_stage,
           parentNodeIds: row.parent_node_ids ?? undefined,
           visibility: row.visibility,
-          summaryText: row.summary_text,
+          summaryText,
           lcmNodeSummaryStatus: row.lcm_summary_pending
             ? "pending"
             : row.lcm_summary_model
@@ -9387,6 +9589,71 @@ export const createMemorySourceRepository = (
         input.workspaceId ?? null
       ]
     );
+    const supportingRows =
+      sources.rows.length > 0
+        ? await pool.query<{
+            memory_event_id: string;
+            conversation_item_id: string;
+            source_role: string | null;
+            source_event_type: string | null;
+            source_record_type: string;
+            raw_json: unknown;
+            raw_text: string | null;
+            metadata: Record<string, unknown> | null;
+          }>(
+            `
+	              select
+	                mes.memory_event_id,
+	                ci.id as conversation_item_id,
+	                mes.source_role,
+	                ci.source_event_type,
+	                ci.source_record_type,
+	                ci.raw_json,
+	                ci.raw_text,
+	                ci.metadata
+	              from memory_event_sources mes
+	              join conversation_items ci on ci.id = mes.conversation_item_id
+	              where mes.memory_event_id = any($1::uuid[])
+	                and mes.source_role = $2
+	                and ci.visibility = 'personal'
+	                and ci.owner_user_id = $3
+	              order by mes.memory_event_id, mes.source_order asc, ci.id asc
+	            `,
+            [
+              sources.rows.map((source) => source.id),
+              SUPPORTING_CONTEXT_SOURCE_ROLE,
+              actor.userId
+            ]
+          )
+        : { rows: [] };
+    const supportingContextByEventId = new Map<
+      string,
+      SupportingContextItem[]
+    >();
+    for (const row of supportingRows.rows) {
+      const text =
+        conversationItemContent({
+          source_event_type: row.source_event_type,
+          source_record_type: row.source_record_type,
+          metadata: row.metadata,
+          raw_json: row.raw_json,
+          raw_text: row.raw_text
+        }) ?? "";
+      if (!text.trim()) {
+        continue;
+      }
+      const item: SupportingContextItem = {
+        sourceId: row.conversation_item_id,
+        sourceRole: SUPPORTING_CONTEXT_SOURCE_ROLE,
+        contextKind: IDE_CLIENT_CONTEXT_KIND,
+        label: "IDE/client context",
+        text: text.trim()
+      };
+      supportingContextByEventId.set(row.memory_event_id, [
+        ...(supportingContextByEventId.get(row.memory_event_id) ?? []),
+        item
+      ]);
+    }
     const eventSourceItems: LcmSourceItem[] = sources.rows.map(
       (source, position) => ({
         kind: "memory_event",
@@ -9396,8 +9663,13 @@ export const createMemorySourceRepository = (
         actor: source.payload.actor,
         turnId: source.turn_id,
         createdAt: source.captured_at.toISOString(),
-        text: source.payload.content ?? "",
+        text: codexIdePromptUserText(source.payload.content ?? ""),
         payload: source.payload,
+        ...(supportingContextByEventId.has(source.id)
+          ? {
+              supportingContext: supportingContextByEventId.get(source.id)
+            }
+          : {}),
         position
       })
     );
