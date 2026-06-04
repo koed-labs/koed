@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 const apiUrl = (process.env.MEMORY_API_URL ?? "http://localhost:3000").replace(
@@ -13,6 +14,9 @@ const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const hookPath =
   process.env.MEMORY_CAPTURE_HOOK_PATH ??
   path.resolve("packages/mcp-server/dist/capture-hook.js");
+const requireFromDbPackage = createRequire(
+  path.resolve("packages/db/package.json")
+);
 const marker = `koed-capture-verify-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
 if (!apiToken) {
@@ -58,41 +62,75 @@ await requestJson("/v1/capture-policies", {
   })
 });
 
-const hookPayload = {
-  hook_event_name: "Stop",
-  session_id: marker,
-  turn_id: randomUUID(),
-  cwd: process.cwd(),
-  model: "verification",
-  prompt: `Koed capture hook verification marker: ${marker}`
+const runHook = async (payload) => {
+  const hook = spawn(nodeCommand, [hookPath], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      MEMORY_API_URL: apiUrl,
+      MEMORY_API_TOKEN: apiToken,
+      MEMORY_HOOK_STRICT: "true",
+      MEMORY_HOOK_TRIGGER_LCM_SUMMARY: "false"
+    },
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+
+  let stdout = "";
+  let stderr = "";
+  hook.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  hook.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  hook.stdin.end(`${JSON.stringify(payload)}\n`);
+
+  const code = await new Promise((resolve) => hook.on("close", resolve));
+  if (code !== 0) {
+    throw new Error(stderr.trim() || stdout.trim() || `hook exited ${code}`);
+  }
+  return stderr.trim();
 };
 
-const hook = spawn(nodeCommand, [hookPath], {
-  cwd: process.cwd(),
-  env: {
-    ...process.env,
-    MEMORY_API_URL: apiUrl,
-    MEMORY_API_TOKEN: apiToken,
-    MEMORY_HOOK_STRICT: "true",
-    MEMORY_HOOK_TRIGGER_LCM_SUMMARY: "false"
+const turnId = randomUUID();
+const hookPayloads = [
+  {
+    hook_event_name: "UserPromptSubmit",
+    session_id: marker,
+    turn_id: turnId,
+    cwd: process.cwd(),
+    model: "verification",
+    prompt: `Koed capture hook verification prompt: ${marker}`
   },
-  stdio: ["pipe", "pipe", "pipe"]
-});
+  {
+    hook_event_name: "PostToolUse",
+    session_id: marker,
+    turn_id: turnId,
+    tool_use_id: `verify-tool-${randomUUID()}`,
+    tool_name: "verification_tool",
+    tool_input: { marker },
+    tool_response: `Koed capture hook verification tool result: ${marker}`,
+    cwd: process.cwd(),
+    model: "verification"
+  },
+  {
+    hook_event_name: "Stop",
+    session_id: marker,
+    turn_id: turnId,
+    cwd: process.cwd(),
+    model: "verification",
+    last_assistant_message: `Koed capture hook verification final response: ${marker}`
+  }
+];
 
-let stdout = "";
-let stderr = "";
-hook.stdout.on("data", (chunk) => {
-  stdout += chunk.toString();
-});
-hook.stderr.on("data", (chunk) => {
-  stderr += chunk.toString();
-});
-hook.stdin.end(`${JSON.stringify(hookPayload)}\n`);
-
-const code = await new Promise((resolve) => hook.on("close", resolve));
-if (code !== 0) {
-  console.error(stderr.trim() || stdout.trim());
-  process.exit(Number(code) || 1);
+const hookLogs = [];
+for (const payload of hookPayloads) {
+  try {
+    hookLogs.push(await runHook(payload));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
 
 const search = await requestJson("/v1/memory/search", {
@@ -117,6 +155,55 @@ if (!hit) {
   process.exit(1);
 }
 
+if (process.env.DATABASE_URL) {
+  const { Client } = requireFromDbPackage("pg");
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const raw = await client.query(
+      `
+        select source_event_type, count(*)::int as count
+        from conversation_items
+        where external_session_id = $1
+          and source_adapter_version = 'codex-hook-v1'
+          and source_event_type = any($2::text[])
+        group by source_event_type
+      `,
+      [marker, ["UserPromptSubmit", "PostToolUse", "Stop"]]
+    );
+    const counts = new Map(
+      raw.rows.map((row) => [row.source_event_type, Number(row.count)])
+    );
+    for (const eventName of ["UserPromptSubmit", "PostToolUse", "Stop"]) {
+      if (counts.get(eventName) !== 1) {
+        throw new Error(
+          `Expected exactly one raw ${eventName} item for ${marker}; got ${
+            counts.get(eventName) ?? 0
+          }`
+        );
+      }
+    }
+
+    const duplicates = await client.query(
+      `
+        select idempotency_key, count(*)::int as count
+        from conversation_items
+        where external_session_id = $1
+        group by idempotency_key
+        having count(*) > 1
+      `,
+      [marker]
+    );
+    if (duplicates.rowCount > 0) {
+      throw new Error(
+        `Duplicate raw conversation item idempotency keys found for ${marker}`
+      );
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 console.log("Codex Capture Hook verification passed.");
 console.log(`Marker: ${marker}`);
-console.log(stderr.trim());
+console.log(hookLogs.filter(Boolean).join("\n"));

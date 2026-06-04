@@ -97,6 +97,20 @@ interface CaptureState {
   >;
 }
 
+export interface HookBreakerEntry {
+  consecutiveFailures: number;
+  openedAt?: number;
+  retryAfter?: number;
+  lastFailureAt?: number;
+  lastError?: string;
+  lastDetachedCatchupAt?: number;
+}
+
+export interface HookBreakerState {
+  version: 1;
+  foregroundFailures: Record<string, HookBreakerEntry>;
+}
+
 type CaptureHookConfig = McpServerConfig & {
   baseUrl?: string;
   captureEnabled?: boolean;
@@ -137,11 +151,14 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const asUnknownArray = (value: unknown): unknown[] | null =>
   Array.isArray(value) ? (value as unknown[]) : null;
 
-const loadConfig = (configPath?: string): CaptureHookConfig => {
+export const hookApiRequestTimeoutMs = (): number =>
+  positiveIntEnv("MEMORY_HOOK_API_REQUEST_TIMEOUT_MS", 1_500);
+
+export const loadConfig = (configPath?: string): CaptureHookConfig => {
   const envConfig = defaultConfig();
 
   if (!configPath) {
-    return envConfig;
+    return { ...envConfig, requestTimeoutMs: hookApiRequestTimeoutMs() };
   }
 
   const fileConfig = JSON.parse(
@@ -151,7 +168,7 @@ const loadConfig = (configPath?: string): CaptureHookConfig => {
   return {
     apiUrl: fileConfig.apiUrl ?? fileConfig.baseUrl ?? envConfig.apiUrl,
     apiToken: fileConfig.apiToken ?? envConfig.apiToken,
-    requestTimeoutMs: fileConfig.requestTimeoutMs ?? envConfig.requestTimeoutMs,
+    requestTimeoutMs: fileConfig.requestTimeoutMs ?? hookApiRequestTimeoutMs(),
     captureEnabled: fileConfig.captureEnabled,
     capturePausedUntil: fileConfig.capturePausedUntil
   };
@@ -212,6 +229,12 @@ const foregroundTranscriptTailBytes = (): number =>
 
 const hookDeadlineMs = (): number =>
   positiveIntEnv("MEMORY_HOOK_DEADLINE_MS", 8_500);
+
+const hookBreakerFailureThreshold = (): number =>
+  positiveIntEnv("MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD", 3);
+
+const hookBreakerCooldownMs = (): number =>
+  positiveIntEnv("MEMORY_HOOK_BREAKER_COOLDOWN_MS", 60_000);
 
 const transcriptCatchupPassDeadlineMs = (): number =>
   positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_PASS_DEADLINE_MS", 60_000);
@@ -1826,6 +1849,123 @@ export const selectCaptureItems = (
 const statePath = (): string =>
   path.join(os.homedir(), ".koed", "capture-state.json");
 
+const hookBreakerStatePath = (): string =>
+  process.env.MEMORY_HOOK_STATE_PATH ??
+  path.join(os.homedir(), ".koed", "hook-state.json");
+
+export const emptyHookBreakerState = (): HookBreakerState => ({
+  version: 1,
+  foregroundFailures: {}
+});
+
+const loadHookBreakerState = (): HookBreakerState => {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(hookBreakerStatePath(), "utf8")
+    ) as Partial<HookBreakerState>;
+    return {
+      version: 1,
+      foregroundFailures: parsed.foregroundFailures ?? {}
+    };
+  } catch {
+    return emptyHookBreakerState();
+  }
+};
+
+const saveHookBreakerState = (state: HookBreakerState): void => {
+  try {
+    const file = hookBreakerStatePath();
+    const tempFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      tempFile,
+      JSON.stringify(
+        {
+          version: 1,
+          foregroundFailures: Object.fromEntries(
+            Object.entries(state.foregroundFailures).slice(-500)
+          )
+        },
+        null,
+        2
+      ),
+      { mode: 0o600 }
+    );
+    fs.renameSync(tempFile, file);
+  } catch {
+    // breaker state is latency protection only; capture must not depend on it
+  }
+};
+
+export const hookBreakerKey = (
+  config: Pick<McpServerConfig, "apiToken" | "apiUrl">
+): string =>
+  hash({
+    apiUrl: config.apiUrl.replace(/\/+$/, ""),
+    apiTokenHash: hash(config.apiToken ?? "")
+  });
+
+export const hookBreakerEntryIsOpen = (
+  entry: HookBreakerEntry | undefined,
+  now = Date.now()
+): boolean => Boolean(entry?.openedAt && (entry.retryAfter ?? 0) > now);
+
+export const hookBreakerEntryCanRetryHealth = (
+  entry: HookBreakerEntry | undefined,
+  now = Date.now()
+): boolean => Boolean(entry?.openedAt && (entry.retryAfter ?? 0) <= now);
+
+export const recordHookBreakerFailure = (
+  state: HookBreakerState,
+  key: string,
+  error: unknown,
+  now = Date.now()
+): HookBreakerEntry => {
+  const prior = state.foregroundFailures[key];
+  const consecutiveFailures = (prior?.consecutiveFailures ?? 0) + 1;
+  const opened =
+    prior?.openedAt ??
+    (consecutiveFailures >= hookBreakerFailureThreshold() ? now : undefined);
+  const entry: HookBreakerEntry = {
+    consecutiveFailures,
+    ...(opened
+      ? { openedAt: opened, retryAfter: now + hookBreakerCooldownMs() }
+      : {}),
+    lastFailureAt: now,
+    lastError: error instanceof Error ? error.message : String(error),
+    ...(prior?.lastDetachedCatchupAt
+      ? { lastDetachedCatchupAt: prior.lastDetachedCatchupAt }
+      : {})
+  };
+  state.foregroundFailures[key] = entry;
+  return entry;
+};
+
+export const resetHookBreaker = (
+  state: HookBreakerState,
+  key: string
+): void => {
+  delete state.foregroundFailures[key];
+};
+
+const shouldTriggerBreakerCatchup = (
+  entry: HookBreakerEntry | undefined,
+  now = Date.now()
+): boolean =>
+  !entry?.lastDetachedCatchupAt ||
+  now - entry.lastDetachedCatchupAt >= hookBreakerCooldownMs();
+
+const markBreakerCatchupTriggered = (
+  state: HookBreakerState,
+  key: string,
+  now = Date.now()
+): void => {
+  const entry = state.foregroundFailures[key];
+  if (entry) {
+    entry.lastDetachedCatchupAt = now;
+  }
+};
+
 const loadState = (): CaptureState => {
   try {
     const state = JSON.parse(
@@ -2327,12 +2467,122 @@ const runCapturePass = async (input: {
   };
 };
 
+const captureUnavailableMessage =
+  "Koed API unavailable; capture will retry from transcript later. MCP recall may still work once the API is back.";
+
+const maybeTriggerBreakerCatchup = (
+  input: {
+    configPath?: string;
+    payload: HookPayload;
+    state: HookBreakerState;
+    breakerKey: string;
+  },
+  now = Date.now()
+): void => {
+  if (!captureTranscriptPathForPayload(input.payload)) {
+    return;
+  }
+  const entry = input.state.foregroundFailures[input.breakerKey];
+  if (!shouldTriggerBreakerCatchup(entry, now)) {
+    return;
+  }
+  triggerDetachedTranscriptCatchup(input.configPath, input.payload);
+  markBreakerCatchupTriggered(input.state, input.breakerKey, now);
+};
+
+export const runForegroundCapturePass = async (input: {
+  configPath?: string;
+  payload: HookPayload;
+  runPass?: typeof runCapturePass;
+  healthCheck?: () => Promise<unknown>;
+}): Promise<Awaited<ReturnType<typeof runCapturePass>>> => {
+  const { configPath, payload } = input;
+  const runPass = input.runPass ?? runCapturePass;
+  const config = loadConfig(configPath);
+  const breakerKey = hookBreakerKey(config);
+  let breakerState = loadHookBreakerState();
+  const entry = breakerState.foregroundFailures[breakerKey];
+
+  if (hookBreakerEntryIsOpen(entry)) {
+    maybeTriggerBreakerCatchup({
+      configPath,
+      payload,
+      state: breakerState,
+      breakerKey
+    });
+    saveHookBreakerState(breakerState);
+    console.error(captureUnavailableMessage);
+    return {
+      rawItemsStored: 0,
+      transcriptBacklogRemaining: Boolean(
+        captureTranscriptPathForPayload(payload)
+      ),
+      transcriptCheckpointAdvanced: false
+    };
+  }
+
+  if (hookBreakerEntryCanRetryHealth(entry)) {
+    const client = new MemoryApiClient(config);
+    try {
+      await (input.healthCheck ?? (() => client.accessCheck()))();
+      resetHookBreaker(breakerState, breakerKey);
+      saveHookBreakerState(breakerState);
+    } catch (error) {
+      if (!isRetryableTranscriptCatchupError(error)) {
+        resetHookBreaker(breakerState, breakerKey);
+        saveHookBreakerState(breakerState);
+        throw error;
+      }
+      recordHookBreakerFailure(breakerState, breakerKey, error);
+      maybeTriggerBreakerCatchup({
+        configPath,
+        payload,
+        state: breakerState,
+        breakerKey
+      });
+      saveHookBreakerState(breakerState);
+      console.error(captureUnavailableMessage);
+      return {
+        rawItemsStored: 0,
+        transcriptBacklogRemaining: Boolean(
+          captureTranscriptPathForPayload(payload)
+        ),
+        transcriptCheckpointAdvanced: false
+      };
+    }
+  }
+
+  try {
+    const result = await runPass({ configPath, payload, mode: "foreground" });
+    breakerState = loadHookBreakerState();
+    resetHookBreaker(breakerState, breakerKey);
+    saveHookBreakerState(breakerState);
+    return result;
+  } catch (error) {
+    if (isRetryableTranscriptCatchupError(error)) {
+      breakerState = loadHookBreakerState();
+      const failure = recordHookBreakerFailure(breakerState, breakerKey, error);
+      if (failure.openedAt) {
+        maybeTriggerBreakerCatchup({
+          configPath,
+          payload,
+          state: breakerState,
+          breakerKey
+        });
+      }
+      saveHookBreakerState(breakerState);
+    }
+    throw error;
+  }
+};
+
 const runTranscriptCatchup = async (
   configPath: string | undefined,
   payload: HookPayload
 ): Promise<void> => {
   const config = loadConfig(configPath);
   const client = new MemoryApiClient(config);
+  const breakerKey = hookBreakerKey(config);
   const workspaceId = payload.cwd ?? "default";
   const transcriptPath = captureTranscriptPathForPayload(payload);
   if (!transcriptPath) {
@@ -2344,6 +2594,9 @@ const runTranscriptCatchup = async (
   while (Date.now() < stopAt) {
     try {
       access = await client.accessCheck();
+      const breakerState = loadHookBreakerState();
+      resetHookBreaker(breakerState, breakerKey);
+      saveHookBreakerState(breakerState);
       break;
     } catch (error) {
       if (!isRetryableTranscriptCatchupError(error)) {
@@ -2381,6 +2634,9 @@ const runTranscriptCatchup = async (
           payload,
           mode: "catchup"
         });
+        const breakerState = loadHookBreakerState();
+        resetHookBreaker(breakerState, breakerKey);
+        saveHookBreakerState(breakerState);
         passRetryAttempt = 0;
       } catch (error) {
         if (!isRetryableTranscriptCatchupError(error)) {
@@ -2431,7 +2687,7 @@ const main = async () => {
     return;
   }
 
-  await runCapturePass({ configPath, payload, mode: "foreground" });
+  await runForegroundCapturePass({ configPath, payload });
 };
 
 if (

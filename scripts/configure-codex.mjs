@@ -25,6 +25,10 @@ const codexConfigPath = resolve(
 const hookConfigPath = resolve(
   process.env.MEMORY_HOOK_CONFIG ?? `${homedir()}/.koed/config.json`
 );
+const hookRequestTimeoutMs = Number.parseInt(
+  process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS ?? "1500",
+  10
+);
 const mcpCliPath = resolve(repoRoot, "packages/mcp-server/dist/cli.js");
 const captureHookPath = resolve(
   repoRoot,
@@ -43,8 +47,19 @@ for (const filePath of [mcpCliPath, captureHookPath]) {
 mkdirSync(dirname(hookConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(
   hookConfigPath,
-  JSON.stringify({ apiUrl, apiToken: token, captureEnabled: true }, null, 2) +
-    "\n",
+  JSON.stringify(
+    {
+      apiUrl,
+      apiToken: token,
+      captureEnabled: true,
+      requestTimeoutMs:
+        Number.isFinite(hookRequestTimeoutMs) && hookRequestTimeoutMs > 0
+          ? hookRequestTimeoutMs
+          : 1500
+    },
+    null,
+    2
+  ) + "\n",
   { mode: 0o600 }
 );
 
@@ -52,12 +67,12 @@ const markerStart = "# >>> koed-self-hosted";
 const markerEnd = "# <<< koed-self-hosted";
 const hookCommand = `${nodeCommand} ${captureHookPath} --config ${hookConfigPath}`;
 const hookEvents = [
-  ["SessionStart", 10],
-  ["UserPromptSubmit", 10],
-  ["PostToolUse", 10],
-  ["Stop", 30],
-  ["SubagentStart", 10],
-  ["SubagentStop", 30]
+  ["SessionStart", 3],
+  ["UserPromptSubmit", 3],
+  ["PostToolUse", 3],
+  ["Stop", 10],
+  ["SubagentStart", 3],
+  ["SubagentStop", 10]
 ];
 const hookBlocks = hookEvents
   .map(
@@ -90,6 +105,7 @@ const withoutPrevious = existing.replace(
   new RegExp(`\\n?${markerStart}[\\s\\S]*?${markerEnd}\\n?`, "g"),
   "\n"
 );
+mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 
 console.log(`Updated ${codexConfigPath}`);

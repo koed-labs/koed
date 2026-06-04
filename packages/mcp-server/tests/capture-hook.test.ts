@@ -2,20 +2,28 @@ import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { MemoryApiError } from "../src/index.js";
+import { defaultConfig, MemoryApiError } from "../src/index.js";
 import {
   buildRawTranscriptConversationItems,
   captureTranscriptPathForPayload,
+  emptyHookBreakerState,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
   filterTranscriptItemsAlreadyCapturedFromImmediatePrompts,
+  hookApiRequestTimeoutMs,
+  hookBreakerEntryCanRetryHealth,
+  hookBreakerEntryIsOpen,
+  hookBreakerKey,
   isRetryableTranscriptCatchupError,
+  loadConfig,
   parseForegroundTranscriptFileRecords,
   parseTranscriptFileRecords,
   parseTranscriptText,
   rawItemBatches,
   rawItemsForCapture,
   rawItemRequestChunks,
+  recordHookBreakerFailure,
+  runForegroundCapturePass,
   selectRawConversationItemsForHook,
   selectCaptureItems,
   shouldReadTranscriptForHook,
@@ -24,6 +32,29 @@ import {
 } from "../src/capture-hook.js";
 
 describe("Codex capture hook transcript parsing", () => {
+  it("uses a short hook API timeout without changing the MCP default timeout", () => {
+    const priorApiTimeout = process.env.MEMORY_API_REQUEST_TIMEOUT_MS;
+    const priorHookTimeout = process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
+    process.env.MEMORY_API_REQUEST_TIMEOUT_MS = "42000";
+    delete process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
+    try {
+      expect(defaultConfig().requestTimeoutMs).toBe(42000);
+      expect(hookApiRequestTimeoutMs()).toBe(1500);
+      expect(loadConfig().requestTimeoutMs).toBe(1500);
+    } finally {
+      if (priorApiTimeout === undefined) {
+        delete process.env.MEMORY_API_REQUEST_TIMEOUT_MS;
+      } else {
+        process.env.MEMORY_API_REQUEST_TIMEOUT_MS = priorApiTimeout;
+      }
+      if (priorHookTimeout === undefined) {
+        delete process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
+      } else {
+        process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS = priorHookTimeout;
+      }
+    }
+  });
+
   it("retries only transient transcript catch-up API failures", () => {
     expect(
       isRetryableTranscriptCatchupError(
@@ -64,6 +95,221 @@ describe("Codex capture hook transcript parsing", () => {
     } finally {
       delete process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_INITIAL_DELAY_MS;
       delete process.env.MEMORY_TRANSCRIPT_CATCHUP_RETRY_MAX_DELAY_MS;
+    }
+  });
+
+  it("opens the hook breaker after three retryable foreground failures", () => {
+    const state = emptyHookBreakerState();
+    const key = "breaker-key";
+    recordHookBreakerFailure(state, key, new MemoryApiError("timeout"), 1000);
+    expect(hookBreakerEntryIsOpen(state.foregroundFailures[key], 1001)).toBe(
+      false
+    );
+    recordHookBreakerFailure(state, key, new MemoryApiError("timeout"), 2000);
+    expect(hookBreakerEntryIsOpen(state.foregroundFailures[key], 2001)).toBe(
+      false
+    );
+    const entry = recordHookBreakerFailure(
+      state,
+      key,
+      new MemoryApiError("timeout"),
+      3000
+    );
+
+    expect(entry).toMatchObject({
+      consecutiveFailures: 3,
+      openedAt: 3000,
+      retryAfter: 63000
+    });
+    expect(hookBreakerEntryIsOpen(entry, 3001)).toBe(true);
+    expect(hookBreakerEntryCanRetryHealth(entry, 63000)).toBe(true);
+  });
+
+  it("short-circuits foreground capture while the hook breaker is open", async () => {
+    const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
+    const priorToken = process.env.MEMORY_API_TOKEN;
+    const priorUrl = process.env.MEMORY_API_URL;
+    const priorCatchup = process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
+    const statePath = path.join(dir, "hook-state.json");
+    process.env.MEMORY_HOOK_STATE_PATH = statePath;
+    process.env.MEMORY_API_TOKEN = "token-open";
+    process.env.MEMORY_API_URL = "http://127.0.0.1:1";
+    process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = "false";
+    const key = hookBreakerKey({
+      apiUrl: process.env.MEMORY_API_URL,
+      apiToken: process.env.MEMORY_API_TOKEN
+    });
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        foregroundFailures: {
+          [key]: {
+            consecutiveFailures: 3,
+            openedAt: Date.now(),
+            retryAfter: Date.now() + 60_000
+          }
+        }
+      })
+    );
+    const runPass = vi.fn();
+    try {
+      const result = await runForegroundCapturePass({
+        payload: {
+          hook_event_name: "PostToolUse",
+          session_id: "session-open",
+          transcript_path: path.join(dir, "transcript.jsonl")
+        },
+        runPass
+      });
+
+      expect(runPass).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        rawItemsStored: 0,
+        transcriptBacklogRemaining: true,
+        transcriptCheckpointAdvanced: false
+      });
+    } finally {
+      if (priorStatePath === undefined) {
+        delete process.env.MEMORY_HOOK_STATE_PATH;
+      } else {
+        process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
+      }
+      if (priorToken === undefined) {
+        delete process.env.MEMORY_API_TOKEN;
+      } else {
+        process.env.MEMORY_API_TOKEN = priorToken;
+      }
+      if (priorUrl === undefined) {
+        delete process.env.MEMORY_API_URL;
+      } else {
+        process.env.MEMORY_API_URL = priorUrl;
+      }
+      if (priorCatchup === undefined) {
+        delete process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
+      } else {
+        process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = priorCatchup;
+      }
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("uses a successful access check to reset the hook breaker after cooldown", async () => {
+    const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
+    const priorToken = process.env.MEMORY_API_TOKEN;
+    const priorUrl = process.env.MEMORY_API_URL;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
+    const statePath = path.join(dir, "hook-state.json");
+    process.env.MEMORY_HOOK_STATE_PATH = statePath;
+    process.env.MEMORY_API_TOKEN = "token-reset";
+    process.env.MEMORY_API_URL = "http://127.0.0.1:1";
+    const key = hookBreakerKey({
+      apiUrl: process.env.MEMORY_API_URL,
+      apiToken: process.env.MEMORY_API_TOKEN
+    });
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        version: 1,
+        foregroundFailures: {
+          [key]: {
+            consecutiveFailures: 3,
+            openedAt: Date.now() - 120_000,
+            retryAfter: Date.now() - 1
+          }
+        }
+      })
+    );
+    const runPass = vi.fn(async () => ({
+      rawItemsStored: 1,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: true
+    }));
+    try {
+      const result = await runForegroundCapturePass({
+        payload: { hook_event_name: "UserPromptSubmit", session_id: "s" },
+        runPass,
+        healthCheck: async () => ({
+          ok: true,
+          auth: "bearer_api_token",
+          user: { id: "user-1", email: "u@example.com" },
+          canWritePersonal: true
+        })
+      });
+
+      expect(runPass).toHaveBeenCalledOnce();
+      expect(result.rawItemsStored).toBe(1);
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+        foregroundFailures?: Record<string, unknown>;
+      };
+      expect(state.foregroundFailures?.[key]).toBeUndefined();
+    } finally {
+      if (priorStatePath === undefined) {
+        delete process.env.MEMORY_HOOK_STATE_PATH;
+      } else {
+        process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
+      }
+      if (priorToken === undefined) {
+        delete process.env.MEMORY_API_TOKEN;
+      } else {
+        process.env.MEMORY_API_TOKEN = priorToken;
+      }
+      if (priorUrl === undefined) {
+        delete process.env.MEMORY_API_URL;
+      } else {
+        process.env.MEMORY_API_URL = priorUrl;
+      }
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("does not open the hook breaker for non-retryable foreground failures", async () => {
+    const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
+    const priorToken = process.env.MEMORY_API_TOKEN;
+    const priorUrl = process.env.MEMORY_API_URL;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
+    const statePath = path.join(dir, "hook-state.json");
+    process.env.MEMORY_HOOK_STATE_PATH = statePath;
+    process.env.MEMORY_API_TOKEN = "token-nonretryable";
+    process.env.MEMORY_API_URL = "http://127.0.0.1:1";
+    const key = hookBreakerKey({
+      apiUrl: process.env.MEMORY_API_URL,
+      apiToken: process.env.MEMORY_API_TOKEN
+    });
+    const runPass = vi.fn(async () => {
+      throw new MemoryApiError("bad token", { status: 401 });
+    });
+    try {
+      await expect(
+        runForegroundCapturePass({
+          payload: { hook_event_name: "UserPromptSubmit", session_id: "s" },
+          runPass
+        })
+      ).rejects.toThrow("bad token");
+      const state = fs.existsSync(statePath)
+        ? (JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+            foregroundFailures?: Record<string, unknown>;
+          })
+        : { foregroundFailures: {} };
+      expect(state.foregroundFailures?.[key]).toBeUndefined();
+    } finally {
+      if (priorStatePath === undefined) {
+        delete process.env.MEMORY_HOOK_STATE_PATH;
+      } else {
+        process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
+      }
+      if (priorToken === undefined) {
+        delete process.env.MEMORY_API_TOKEN;
+      } else {
+        process.env.MEMORY_API_TOKEN = priorToken;
+      }
+      if (priorUrl === undefined) {
+        delete process.env.MEMORY_API_URL;
+      } else {
+        process.env.MEMORY_API_URL = priorUrl;
+      }
+      fs.rmSync(dir, { force: true, recursive: true });
     }
   });
 
