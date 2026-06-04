@@ -594,9 +594,6 @@ Coffee cardamom sounds interesting - should I cool the coffee first?`;
       {
         actor: "system",
         eventType: "codex_transcript_ide_context",
-        content: expect.stringContaining(
-          "Active file: koed-self-hosted/SECURITY.md"
-        ),
         metadata: {
           contextKind: "ide_client_context",
           sourceRole: "supporting_context",
@@ -610,6 +607,9 @@ Coffee cardamom sounds interesting - should I cool the coffee first?`;
           "Coffee cardamom sounds interesting - should I cool the coffee first?"
       }
     ]);
+    expect(parsed[0]?.content).toContain(
+      "Active file: koed-self-hosted/SECURITY.md"
+    );
 
     const effectiveContext = effectiveCaptureContext({
       hook_event_name: "UserPromptSubmit",
