@@ -685,10 +685,7 @@ Review the active file.`;
     expect(parsed).toMatchObject([
       {
         actor: "system",
-        eventType: "codex_transcript_ide_context",
-        content: expect.stringContaining(
-          "Active file: koed-self-hosted/SECURITY.md"
-        )
+        eventType: "codex_transcript_ide_context"
       },
       {
         actor: "user",
@@ -697,8 +694,7 @@ Review the active file.`;
       },
       {
         actor: "system",
-        eventType: "codex_transcript_ide_context",
-        content: expect.stringContaining("Open tabs:")
+        eventType: "codex_transcript_ide_context"
       },
       {
         actor: "user",
@@ -706,6 +702,10 @@ Review the active file.`;
         content: "Review the active file."
       }
     ]);
+    expect(parsed[0]?.content).toContain(
+      "Active file: koed-self-hosted/SECURITY.md"
+    );
+    expect(parsed[2]?.content).toContain("Open tabs:");
     expect(parsed.map((item) => item.content).join("\n")).not.toContain(
       "<environment_context>"
     );
