@@ -138,9 +138,7 @@ const fixture = "## My request for Codex:";
 - prompt-template.ts`,
       userPrompt: "Review the prompt template."
     });
-    expect(codexIdePromptUserText(wrapped)).toBe(
-      "Review the prompt template."
-    );
+    expect(codexIdePromptUserText(wrapped)).toBe("Review the prompt template.");
   });
 
   it("does not split user-authored text that only resembles IDE markers", () => {
