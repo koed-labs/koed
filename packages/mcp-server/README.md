@@ -203,8 +203,8 @@ installs.
 
 ## Capture Hook
 
-The capture hook reads Codex lifecycle payloads from stdin and writes personal
-memory events to the Koed API.
+The capture hook reads Codex lifecycle payloads from stdin and writes raw
+capture records to the Koed API.
 
 Use the built hook path in Codex hook configuration:
 
@@ -230,6 +230,7 @@ MEMORY_HOOK_STRICT=false
 MEMORY_HOOK_API_REQUEST_TIMEOUT_MS=1500
 MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD=3
 MEMORY_HOOK_BREAKER_COOLDOWN_MS=60000
+MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS=60000
 MEMORY_HOOK_TRIGGER_LCM_SUMMARY=true
 MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
 MEMORY_HOOK_LCM_SUMMARY_LIMIT=2

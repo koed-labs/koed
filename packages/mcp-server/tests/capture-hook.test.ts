@@ -28,6 +28,7 @@ import {
   selectCaptureItems,
   shouldReadTranscriptForHook,
   stateScopeKey,
+  transcriptCatchupApiRequestTimeoutMs,
   transcriptCatchupRetryDelayMs
 } from "../src/capture-hook.js";
 
@@ -35,12 +36,42 @@ describe("Codex capture hook transcript parsing", () => {
   it("uses a short hook API timeout without changing the MCP default timeout", () => {
     const priorApiTimeout = process.env.MEMORY_API_REQUEST_TIMEOUT_MS;
     const priorHookTimeout = process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
+    const priorCatchupTimeout =
+      process.env.MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS;
     process.env.MEMORY_API_REQUEST_TIMEOUT_MS = "42000";
     delete process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
+    delete process.env.MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS;
     try {
       expect(defaultConfig().requestTimeoutMs).toBe(42000);
       expect(hookApiRequestTimeoutMs()).toBe(1500);
-      expect(loadConfig().requestTimeoutMs).toBe(1500);
+      expect(transcriptCatchupApiRequestTimeoutMs()).toBe(60000);
+      expect(loadConfig(undefined, "foreground").requestTimeoutMs).toBe(1500);
+      expect(loadConfig(undefined, "catchup").requestTimeoutMs).toBe(60000);
+
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-config-"));
+      const configPath = path.join(dir, "config.json");
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          apiUrl: "http://127.0.0.1:3000",
+          requestTimeoutMs: 1500
+        })
+      );
+      expect(loadConfig(configPath, "foreground").requestTimeoutMs).toBe(1500);
+      expect(loadConfig(configPath, "catchup").requestTimeoutMs).toBe(60000);
+
+      const catchupConfigPath = path.join(dir, "catchup-config.json");
+      fs.writeFileSync(
+        catchupConfigPath,
+        JSON.stringify({
+          apiUrl: "http://127.0.0.1:3000",
+          requestTimeoutMs: 1500,
+          catchupRequestTimeoutMs: 45000
+        })
+      );
+      expect(loadConfig(catchupConfigPath, "catchup").requestTimeoutMs).toBe(
+        45000
+      );
     } finally {
       if (priorApiTimeout === undefined) {
         delete process.env.MEMORY_API_REQUEST_TIMEOUT_MS;
@@ -51,6 +82,12 @@ describe("Codex capture hook transcript parsing", () => {
         delete process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
       } else {
         process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS = priorHookTimeout;
+      }
+      if (priorCatchupTimeout === undefined) {
+        delete process.env.MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS;
+      } else {
+        process.env.MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS =
+          priorCatchupTimeout;
       }
     }
   });

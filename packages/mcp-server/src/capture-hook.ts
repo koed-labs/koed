@@ -113,9 +113,12 @@ export interface HookBreakerState {
 
 type CaptureHookConfig = McpServerConfig & {
   baseUrl?: string;
+  catchupRequestTimeoutMs?: number;
   captureEnabled?: boolean;
   capturePausedUntil?: string | null;
 };
+
+type CaptureConfigMode = "foreground" | "catchup";
 
 const parseArgs = (
   args: string[]
@@ -154,11 +157,29 @@ const asUnknownArray = (value: unknown): unknown[] | null =>
 export const hookApiRequestTimeoutMs = (): number =>
   positiveIntEnv("MEMORY_HOOK_API_REQUEST_TIMEOUT_MS", 1_500);
 
-export const loadConfig = (configPath?: string): CaptureHookConfig => {
+export const transcriptCatchupApiRequestTimeoutMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS", 60_000);
+
+const requestTimeoutMsForMode = (
+  fileConfig: Partial<CaptureHookConfig> | undefined,
+  mode: CaptureConfigMode
+): number =>
+  mode === "catchup"
+    ? (fileConfig?.catchupRequestTimeoutMs ??
+      transcriptCatchupApiRequestTimeoutMs())
+    : (fileConfig?.requestTimeoutMs ?? hookApiRequestTimeoutMs());
+
+export const loadConfig = (
+  configPath?: string,
+  mode: CaptureConfigMode = "foreground"
+): CaptureHookConfig => {
   const envConfig = defaultConfig();
 
   if (!configPath) {
-    return { ...envConfig, requestTimeoutMs: hookApiRequestTimeoutMs() };
+    return {
+      ...envConfig,
+      requestTimeoutMs: requestTimeoutMsForMode(undefined, mode)
+    };
   }
 
   const fileConfig = JSON.parse(
@@ -168,7 +189,7 @@ export const loadConfig = (configPath?: string): CaptureHookConfig => {
   return {
     apiUrl: fileConfig.apiUrl ?? fileConfig.baseUrl ?? envConfig.apiUrl,
     apiToken: fileConfig.apiToken ?? envConfig.apiToken,
-    requestTimeoutMs: fileConfig.requestTimeoutMs ?? hookApiRequestTimeoutMs(),
+    requestTimeoutMs: requestTimeoutMsForMode(fileConfig, mode),
     captureEnabled: fileConfig.captureEnabled,
     capturePausedUntil: fileConfig.capturePausedUntil
   };
@@ -2255,7 +2276,7 @@ const runCapturePass = async (input: {
   transcriptCheckpointAdvanced: boolean;
 }> => {
   const { configPath, payload, mode } = input;
-  const config = loadConfig(configPath);
+  const config = loadConfig(configPath, mode);
   if (config.captureEnabled === false) {
     console.error("koed capture hook skipped because capture is paused");
     return {
@@ -2498,7 +2519,7 @@ export const runForegroundCapturePass = async (input: {
 }): Promise<Awaited<ReturnType<typeof runCapturePass>>> => {
   const { configPath, payload } = input;
   const runPass = input.runPass ?? runCapturePass;
-  const config = loadConfig(configPath);
+  const config = loadConfig(configPath, "foreground");
   const breakerKey = hookBreakerKey(config);
   let breakerState = loadHookBreakerState();
   const entry = breakerState.foregroundFailures[breakerKey];
@@ -2580,7 +2601,7 @@ const runTranscriptCatchup = async (
   configPath: string | undefined,
   payload: HookPayload
 ): Promise<void> => {
-  const config = loadConfig(configPath);
+  const config = loadConfig(configPath, "catchup");
   const client = new MemoryApiClient(config);
   const breakerKey = hookBreakerKey(config);
   const workspaceId = payload.cwd ?? "default";
