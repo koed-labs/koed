@@ -1341,21 +1341,24 @@ const isInternalMemorySummary = (value: string): boolean =>
   value.includes("Exact ordered source outline:") ||
   value.includes("Child summaries:");
 
+const CODEX_REQUEST_HEADER = /^#{0,6}\s*My request for Codex:\s*$/gim;
+const IMAGE_TAG = /<image\b[\s\S]*?<\/image>/gi;
+
 const extractCodexRequestText = (value: string): string | null => {
   const split = splitCodexIdePrompt(value);
   if (split) {
     return split.userPrompt;
   }
-  const marker = "## My request for Codex:";
-  const markerIndex = value.indexOf(marker);
-  if (markerIndex < 0) {
+  const markers = [...value.matchAll(CODEX_REQUEST_HEADER)];
+  const marker = markers.at(-1);
+  if (!marker || marker.index === undefined) {
     return null;
   }
   const requestText = value
-    .slice(markerIndex + marker.length)
-    .replace(/<image\b[\s\S]*?<\/image>/g, "")
+    .slice(marker.index + marker[0].length)
+    .replace(IMAGE_TAG, "")
     .trim();
-  return requestText || null;
+  return requestText;
 };
 
 export const presentMemoryText = (
@@ -1386,7 +1389,7 @@ export const presentMemoryText = (
   }
 
   const requestText = extractCodexRequestText(summaryText);
-  if (requestText) {
+  if (requestText !== null) {
     return presentMemoryText(requestText, row);
   }
 
@@ -1612,21 +1615,40 @@ const mapLcmGraphThreadRow = (row: {
   thread_kind: "conversation" | "subagent" | null;
   parent_thread_id: string | null;
   parent_session_id: string | null;
-}): LcmGraphThread & { projectPath: string | null } => ({
-  id: row.thread_id,
-  name: row.thread_name,
-  sessionId: row.session_id,
-  projectId: row.project_id,
-  projectName: row.project_name,
-  projectPath: row.project_path,
-  eventCount: Number(row.event_count),
-  invalidatedCount: Number(row.invalidated_count),
-  latestAt: row.latest_at.toISOString(),
-  sample: truncateDisplayText(row.sample ?? "", 220),
-  threadKind: row.thread_kind ?? "conversation",
-  parentThreadId: row.parent_thread_id,
-  parentSessionId: row.parent_session_id
-});
+}): LcmGraphThread & { projectPath: string | null } => {
+  const provenance = {
+    project_name: row.project_name,
+    project_path: row.project_path
+  };
+  const presentedName = presentMemoryText(row.thread_name, provenance);
+  const name =
+    presentedName === "Captured memory." ||
+    isGenericDevelopmentActivity(presentedName, provenance)
+      ? "Untitled conversation"
+      : truncateDisplayText(presentedName, 120);
+  const presentedSample = row.sample
+    ? presentMemoryText(row.sample, provenance)
+    : "";
+  const sample =
+    presentedSample === "Captured memory."
+      ? ""
+      : truncateDisplayText(presentedSample, 220);
+  return {
+    id: row.thread_id,
+    name,
+    sessionId: row.session_id,
+    projectId: row.project_id,
+    projectName: row.project_name,
+    projectPath: row.project_path,
+    eventCount: Number(row.event_count),
+    invalidatedCount: Number(row.invalidated_count),
+    latestAt: row.latest_at.toISOString(),
+    sample,
+    threadKind: row.thread_kind ?? "conversation",
+    parentThreadId: row.parent_thread_id,
+    parentSessionId: row.parent_session_id
+  };
+};
 
 const mapCapturedSession = (row: {
   id: string;
@@ -5118,7 +5140,6 @@ export const createMemorySourceRepository = (
       string,
       SupportingContextProjectionItem[]
     >();
-    const lastMemoryEventIdsByBoundary = new Map<string, string[]>();
 
     const markProjected = async (sourceIds: string[]) => {
       const pendingIds = sourceIds.filter(
@@ -5187,8 +5208,12 @@ export const createMemorySourceRepository = (
       );
       const boundaryKey = conversationSemanticBoundaryKey(first);
       const supportingContexts =
-        pendingSupportingContextsByBoundary.get(boundaryKey) ?? [];
-      pendingSupportingContextsByBoundary.delete(boundaryKey);
+        unitType === "user_turn"
+          ? (pendingSupportingContextsByBoundary.get(boundaryKey) ?? [])
+          : [];
+      if (unitType === "user_turn") {
+        pendingSupportingContextsByBoundary.delete(boundaryKey);
+      }
       const supportingSourceIds = uniqueOrderedStrings(
         supportingContexts.flatMap((item) => item.sourceIds)
       );
@@ -5281,8 +5306,8 @@ export const createMemorySourceRepository = (
           });
         }
       }
-      if (createdEventIds.length > 0) {
-        lastMemoryEventIdsByBoundary.set(boundaryKey, createdEventIds);
+      if (createdEventIds.length > 0 && supportingSourceIds.length > 0) {
+        await markProjected(supportingSourceIds);
       }
     };
 
@@ -5351,36 +5376,13 @@ export const createMemorySourceRepository = (
               sourceIds,
               content
             };
-            if (
-              pendingAgentBoundaryKey === boundaryKey &&
-              pendingAgentItems.length > 0
-            ) {
-              pendingSupportingContextsByBoundary.set(boundaryKey, [
-                ...(pendingSupportingContextsByBoundary.get(boundaryKey) ?? []),
-                supportingContext
-              ]);
-            } else {
-              const lastEventIds =
-                lastMemoryEventIdsByBoundary.get(boundaryKey) ?? [];
-              if (lastEventIds.length > 0) {
-                for (const eventId of lastEventIds) {
-                  await linkMemoryEventSources(
-                    pool,
-                    eventId,
-                    sourceIds,
-                    SUPPORTING_CONTEXT_SOURCE_ROLE
-                  );
-                }
-              } else {
-                pendingSupportingContextsByBoundary.set(boundaryKey, [
-                  ...(pendingSupportingContextsByBoundary.get(boundaryKey) ??
-                    []),
-                  supportingContext
-                ]);
-              }
-            }
+            pendingSupportingContextsByBoundary.set(boundaryKey, [
+              ...(pendingSupportingContextsByBoundary.get(boundaryKey) ?? []),
+              supportingContext
+            ]);
+          } else {
+            await markProjected(sourceIds);
           }
-          await markProjected(sourceIds);
           continue;
         }
 

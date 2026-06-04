@@ -117,6 +117,27 @@ describe("memory presentation helpers", () => {
 
     expect(text).toBe("Can you please find out what is missing on the setup?");
   });
+
+  it("hides image-only Codex requests instead of exposing prompt context", () => {
+    const text = presentMemoryText(
+      [
+        "# Context from my IDE setup:",
+        "",
+        "## Active file: koed-self-hosted/SECURITY.md",
+        "",
+        "## Open tabs:",
+        "- SECURITY.md: koed-self-hosted/SECURITY.md",
+        "",
+        "## My request for Codex:",
+        "<image name=[Image #1]>raw image metadata</image>"
+      ].join("\n"),
+      provenance
+    );
+
+    expect(text).toBe("Captured memory.");
+    expect(text).not.toContain("Context from my IDE setup");
+    expect(text).not.toContain("Open tabs");
+  });
 });
 
 describe("local embedding status", () => {
@@ -4469,6 +4490,188 @@ describeDb("memory repository visibility", () => {
           previousLeafEventThreshold;
       }
     }
+  });
+
+  it("attaches IDE context after a pending agent turn to the following user turn", async () => {
+    const alice = await repo.createUser({
+      email: `alice-ide-context-after-agent-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `ide-context-after-agent-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `ide-context-after-agent-session-${randomUUID()}`
+      }
+    );
+    const marker = `FOLLOWING_USER_CONTEXT_${randomUUID()}`;
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-after-agent",
+            sourceRecordType: "event_msg",
+            sourceEventType: "agent_message",
+            sourceSequence: 0,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "agent_message",
+                message: "Previous assistant answer should not get context."
+              }
+            },
+            rawText: "Previous assistant answer should not get context.",
+            sourceHash: `ide-context-after-agent-reply-${randomUUID()}`,
+            idempotencyKey: `ide-context-after-agent-reply-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-after-agent",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 1,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message"
+              }
+            },
+            rawText: `vscode application\nSelected file contains ${marker}`,
+            sourceHash: `ide-context-after-agent-context-${randomUUID()}`,
+            idempotencyKey: `ide-context-after-agent-context-${randomUUID()}`,
+            metadata: {
+              transcriptType: "ide_context",
+              contextKind: "ide_client_context",
+              sourceRole: "supporting_context"
+            }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-after-agent",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 2,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "Please review the selected file."
+              }
+            },
+            rawText: "Please review the selected file.",
+            sourceHash: `ide-context-after-agent-user-${randomUUID()}`,
+            idempotencyKey: `ide-context-after-agent-user-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const supportingLinks = await pool.query<{
+      event_content: string;
+      context_text: string | null;
+    }>(
+      `
+        select me.payload ->> 'content' as event_content, ci.raw_text as context_text
+        from memory_event_sources mes
+        join memory_events me on me.id = mes.memory_event_id
+        join conversation_items ci on ci.id = mes.conversation_item_id
+        where mes.source_role = 'supporting_context'
+      `
+    );
+
+    expect(projection.memoryEventsCreated).toBe(2);
+    expect(projection.rawItemsProjected).toBe(3);
+    expect(supportingLinks.rows).toEqual([
+      {
+        event_content: "Please review the selected file.",
+        context_text: `vscode application\nSelected file contains ${marker}`
+      }
+    ]);
+  });
+
+  it("keeps unlinked IDE supporting context pending for retry", async () => {
+    const alice = await repo.createUser({
+      email: `alice-ide-context-pending-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `ide-context-pending-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `ide-context-pending-session-${randomUUID()}`
+      }
+    );
+    const sourceHash = `ide-context-pending-context-${randomUUID()}`;
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-pending-context",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 0,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message"
+              }
+            },
+            rawText: "vscode application\nSelected file without prompt",
+            sourceHash,
+            idempotencyKey: sourceHash,
+            metadata: {
+              transcriptType: "ide_context",
+              contextKind: "ide_client_context",
+              sourceRole: "supporting_context"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_error: string | null;
+    }>(
+      `
+        select projection_status, projection_error
+        from conversation_items
+        where source_hash = $1
+      `,
+      [sourceHash]
+    );
+
+    expect(projection.rawItemsScanned).toBe(1);
+    expect(projection.rawItemsProjected).toBe(0);
+    expect(statuses.rows).toEqual([
+      { projection_status: "pending", projection_error: null }
+    ]);
   });
 
   it("treats user interruptions as semantic boundaries inside an agent turn", async () => {

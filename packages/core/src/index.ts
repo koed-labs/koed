@@ -33,7 +33,7 @@ export interface CodexIdePromptParts {
 }
 
 const CODEX_IDE_CONTEXT_HEADER = /^#{0,6}\s*Context from my IDE setup:\s*$/i;
-const CODEX_IDE_REQUEST_HEADER = /^#{0,6}\s*My request for Codex:\s*$/im;
+const CODEX_IDE_REQUEST_HEADER = /^#{0,6}\s*My request for Codex:\s*$/gim;
 const CODEX_IDE_CONTEXT_SECTION =
   /^#{1,6}\s*(Active file|Open tabs|Selected text|Selected file):\s*$/im;
 
@@ -46,7 +46,9 @@ export const splitCodexIdePrompt = (
     return null;
   }
 
-  const requestHeader = normalized.match(CODEX_IDE_REQUEST_HEADER);
+  const requestHeader = [...normalized.matchAll(CODEX_IDE_REQUEST_HEADER)].at(
+    -1
+  );
   if (!requestHeader || requestHeader.index === undefined) {
     return null;
   }
