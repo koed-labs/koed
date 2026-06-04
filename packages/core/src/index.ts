@@ -35,35 +35,54 @@ export interface CodexIdePromptParts {
 const CODEX_IDE_CONTEXT_HEADER = /^#{0,6}\s*Context from my IDE setup:\s*$/i;
 const CODEX_IDE_REQUEST_HEADER = /^#{0,6}\s*My request for Codex:\s*$/gim;
 const CODEX_IDE_CONTEXT_SECTION =
-  /^#{1,6}\s*(Active file|Open tabs|Selected text|Selected file):\s*$/im;
+  /^#{0,6}\s*(Active file|Open tabs|Selected text|Selected file):.*$/im;
+const CODEX_IDE_IMAGE_TAG = /<image\b[\s\S]*?<\/image>/gi;
+const CODEX_IDE_IMAGE_TAGS_ONLY = /^(?:\s*<image\b[\s\S]*?<\/image>\s*)+$/i;
+const CODEX_ENVIRONMENT_CONTEXT_ONLY =
+  /^(?:<environment_context\b[^>]*>[\s\S]*?<\/environment_context>\s*)+$/i;
+
+const codexIdeContextStart = (value: string): number | null => {
+  let offset = 0;
+  for (const line of value.split("\n")) {
+    if (CODEX_IDE_CONTEXT_HEADER.test(line)) {
+      const prefix = value.slice(0, offset).trim();
+      return !prefix || CODEX_ENVIRONMENT_CONTEXT_ONLY.test(prefix)
+        ? offset
+        : null;
+    }
+    offset += line.length + 1;
+  }
+  return null;
+};
 
 export const splitCodexIdePrompt = (
   value: string
 ): CodexIdePromptParts | null => {
   const normalized = value.replace(/\r\n?/g, "\n").trim();
-  const lines = normalized.split("\n");
-  if (!CODEX_IDE_CONTEXT_HEADER.test(lines[0] ?? "")) {
+  const contextStart = codexIdeContextStart(normalized);
+  if (contextStart === null) {
     return null;
   }
+  const prompt = normalized.slice(contextStart);
 
-  const requestHeader = [...normalized.matchAll(CODEX_IDE_REQUEST_HEADER)].at(
-    -1
-  );
+  const requestHeader = [...prompt.matchAll(CODEX_IDE_REQUEST_HEADER)].at(-1);
   if (!requestHeader || requestHeader.index === undefined) {
     return null;
   }
 
   const headerStart = requestHeader.index;
   const headerEnd = headerStart + requestHeader[0].length;
-  const ideContext = normalized.slice(0, headerStart).trim();
+  const ideContext = prompt.slice(0, headerStart).trim();
   if (!CODEX_IDE_CONTEXT_SECTION.test(ideContext)) {
     return null;
   }
-  const userPrompt = normalized
-    .slice(headerEnd)
-    .replace(/<image\b[\s\S]*?<\/image>/g, "")
-    .trim();
-  return ideContext && userPrompt ? { ideContext, userPrompt } : null;
+  const rawUserPrompt = prompt.slice(headerEnd).trim();
+  const userPrompt = CODEX_IDE_IMAGE_TAGS_ONLY.test(rawUserPrompt)
+    ? rawUserPrompt.replace(CODEX_IDE_IMAGE_TAG, "").trim()
+    : rawUserPrompt;
+  return ideContext && (userPrompt || rawUserPrompt)
+    ? { ideContext, userPrompt }
+    : null;
 };
 
 export const codexIdePromptUserText = (value: string): string =>

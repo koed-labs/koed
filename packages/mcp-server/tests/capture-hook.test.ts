@@ -642,6 +642,172 @@ Coffee cardamom sounds interesting - should I cool the coffee first?`;
     expect(rawItems[0]!.sourceHash).not.toBe(rawItems[1]!.sourceHash);
   });
 
+  it("splits browser-compatible rendered IDE wrapper variants", () => {
+    const wrappedWithEnvironment = `<environment_context>
+  <cwd>/Users/jacobo/Coding/koed</cwd>
+</environment_context>
+
+# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## My request for Codex:
+Review the active file.`;
+    const unHashedWrappedPrompt = `Context from my IDE setup:
+
+Active file: koed-self-hosted/SECURITY.md
+
+Open tabs:
+- SECURITY.md: koed-self-hosted/SECURITY.md
+
+My request for Codex:
+Review the active file.`;
+
+    const parsed = parseTranscriptText(
+      JSON.stringify([
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: wrappedWithEnvironment
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: unHashedWrappedPrompt
+          }
+        }
+      ])
+    );
+
+    expect(parsed).toMatchObject([
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context",
+        content: expect.stringContaining(
+          "Active file: koed-self-hosted/SECURITY.md"
+        )
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content: "Review the active file."
+      },
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context",
+        content: expect.stringContaining("Open tabs:")
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content: "Review the active file."
+      }
+    ]);
+    expect(parsed.map((item) => item.content).join("\n")).not.toContain(
+      "<environment_context>"
+    );
+
+    const rawItems = selectRawConversationItemsForHook({
+      transcriptRecords: [],
+      effectiveContext: effectiveCaptureContext({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "browser-compatible-wrapper"
+      }),
+      payload: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "browser-compatible-wrapper",
+        prompt: wrappedWithEnvironment
+      },
+      mode: "foreground"
+    });
+
+    expect(rawItems.map((item) => item.rawText)).toEqual([
+      expect.stringContaining("Context from my IDE setup"),
+      "Review the active file."
+    ]);
+    expect(rawItems.map((item) => item.rawText).join("\n")).not.toContain(
+      "<environment_context>"
+    );
+  });
+
+  it("keeps literal image tags but hides image-only wrapped prompts", () => {
+    const literalImagePrompt = `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/fixture.html
+
+## My request for Codex:
+Please explain why <image>logo</image> is invalid HTML in this fixture.`;
+    const imageOnlyPrompt = `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## My request for Codex:
+<image name=[Image #1]>raw image metadata</image>`;
+
+    const parsed = parseTranscriptText(
+      JSON.stringify([
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: literalImagePrompt
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: imageOnlyPrompt
+          }
+        }
+      ])
+    );
+
+    expect(parsed).toMatchObject([
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context"
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content:
+          "Please explain why <image>logo</image> is invalid HTML in this fixture."
+      },
+      {
+        actor: "system",
+        eventType: "codex_transcript_ide_context"
+      },
+      {
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content: ""
+      }
+    ]);
+
+    const rawItems = selectRawConversationItemsForHook({
+      transcriptRecords: [],
+      effectiveContext: effectiveCaptureContext({
+        hook_event_name: "UserPromptSubmit",
+        session_id: "image-only-wrapper"
+      }),
+      payload: {
+        hook_event_name: "UserPromptSubmit",
+        session_id: "image-only-wrapper",
+        prompt: imageOnlyPrompt
+      },
+      mode: "foreground"
+    });
+
+    expect(rawItems.map((item) => item.rawText)).toEqual([
+      expect.stringContaining("Context from my IDE setup"),
+      ""
+    ]);
+  });
+
   it("keeps marker-like user-authored prompts as normal user text", () => {
     const markerLikePrompt = `# Context from my IDE setup:
 

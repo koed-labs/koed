@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { codexIdePromptUserText } from "@koed/core";
 import {
   CodexAppServerTurnError,
   koedAppServerWorkerDeveloperInstructions,
@@ -15,6 +16,8 @@ import {
 
 export const SESSION_TITLE_PROMPT_VERSION = "session-title-codex-json-v1";
 const MAX_SESSION_TITLE_EXCERPT_CHARS = 1_200;
+const ENVIRONMENT_CONTEXT_BLOCK =
+  /<environment_context\b[^>]*>[\s\S]*?<\/environment_context>/gi;
 
 export interface SessionTitleCandidate {
   id: string;
@@ -64,8 +67,14 @@ const stripJsonFences = (text: string): string => {
   return fenced?.[1]?.trim() ?? trimmed;
 };
 
+const titlePromptText = (text: string): string =>
+  codexIdePromptUserText(text)
+    .replace(ENVIRONMENT_CONTEXT_BLOCK, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const normalizeTitle = (title: string): string =>
-  title
+  titlePromptText(title)
     .replace(/\s+/g, " ")
     .replace(/^["'`]+|["'`]+$/g, "")
     .trim()
@@ -77,7 +86,7 @@ const parseSessionTitle = (text: string): string => {
 };
 
 const boundedExcerpt = (content: string): string => {
-  const normalized = content.replace(/\s+/g, " ").trim();
+  const normalized = titlePromptText(content);
   if (normalized.length <= MAX_SESSION_TITLE_EXCERPT_CHARS) {
     return normalized;
   }
@@ -110,7 +119,7 @@ export const buildSessionTitlePrompt = (
     "Session metadata:",
     `- session_id: ${session.id}`,
     `- external_session_id: ${session.externalSessionId ?? "none"}`,
-    `- current_title: ${session.currentTitle ?? "none"}`,
+    `- current_title: ${session.currentTitle ? titlePromptText(session.currentTitle) || "none" : "none"}`,
     `- project: ${session.projectName ?? session.projectPath ?? "unknown"}`,
     `- title_event_count: ${session.eventCount}`,
     "",

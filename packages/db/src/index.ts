@@ -3295,6 +3295,10 @@ const deriveProvisionalSessionTitle = (
     return null;
   }
   const cleaned = presented
+    .replace(
+      /<environment_context\b[^>]*>[\s\S]*?<\/environment_context>/gi,
+      " "
+    )
     .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")

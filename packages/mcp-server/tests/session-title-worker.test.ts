@@ -75,6 +75,34 @@ describe("session title worker", () => {
     expect(prompt.length).toBeLessThan(2_000);
   });
 
+  it("removes Codex environment and IDE wrappers from title evidence", () => {
+    const wrappedPrompt = `<environment_context>
+  <cwd>/Users/hill399/code/@koed-labs/koed-self-hosted</cwd>
+</environment_context>
+
+# Context from my IDE setup:
+
+## Active file: koed-self-hosted/packages/core/src/index.test.ts
+
+## My request for Codex:
+Please review the IDE parser parity fix.`;
+    const prompt = buildSessionTitlePrompt({
+      ...candidate,
+      currentTitle: wrappedPrompt,
+      sourceItems: [
+        {
+          ...candidate.sourceItems[0]!,
+          content: wrappedPrompt
+        }
+      ]
+    });
+
+    expect(prompt).toContain("Please review the IDE parser parity fix.");
+    expect(prompt).not.toContain("<environment_context>");
+    expect(prompt).not.toContain("Context from my IDE setup");
+    expect(prompt).not.toContain("Active file:");
+  });
+
   it("submits generated titles for pending sessions", async () => {
     const submitted: unknown[] = [];
     const client = {

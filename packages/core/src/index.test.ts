@@ -85,7 +85,7 @@ describe("core schemas", () => {
     }
   });
 
-  it("splits the rendered Codex IDE prompt wrapper narrowly", () => {
+  it("splits the rendered Codex IDE prompt wrapper", () => {
     const wrapped = `# Context from my IDE setup:
 
 ## Active file: koed-self-hosted/SECURITY.md
@@ -139,6 +139,84 @@ const fixture = "## My request for Codex:";
       userPrompt: "Review the prompt template."
     });
     expect(codexIdePromptUserText(wrapped)).toBe("Review the prompt template.");
+  });
+
+  it("splits rendered IDE prompts after leading environment context", () => {
+    const wrapped = `<environment_context>
+  <cwd>/Users/jacobo/Coding/koed</cwd>
+</environment_context>
+
+# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## My request for Codex:
+Review the active file.`;
+
+    expect(splitCodexIdePrompt(wrapped)).toEqual({
+      ideContext: `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md`,
+      userPrompt: "Review the active file."
+    });
+    expect(codexIdePromptUserText(wrapped)).toBe("Review the active file.");
+  });
+
+  it("splits rendered IDE prompts with un-hashed section headings", () => {
+    const wrapped = `Context from my IDE setup:
+
+Active file: koed-self-hosted/SECURITY.md
+
+Open tabs:
+- SECURITY.md: koed-self-hosted/SECURITY.md
+
+My request for Codex:
+Review the active file.`;
+
+    expect(splitCodexIdePrompt(wrapped)).toEqual({
+      ideContext: `Context from my IDE setup:
+
+Active file: koed-self-hosted/SECURITY.md
+
+Open tabs:
+- SECURITY.md: koed-self-hosted/SECURITY.md`,
+      userPrompt: "Review the active file."
+    });
+    expect(codexIdePromptUserText(wrapped)).toBe("Review the active file.");
+  });
+
+  it("preserves literal image tags in user-authored requests", () => {
+    const wrapped = `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/fixture.html
+
+## My request for Codex:
+Please explain why <image>logo</image> is invalid HTML in this fixture.`;
+
+    expect(splitCodexIdePrompt(wrapped)).toMatchObject({
+      userPrompt:
+        "Please explain why <image>logo</image> is invalid HTML in this fixture."
+    });
+    expect(codexIdePromptUserText(wrapped)).toBe(
+      "Please explain why <image>logo</image> is invalid HTML in this fixture."
+    );
+  });
+
+  it("splits image-only wrapped prompts without exposing IDE context", () => {
+    const wrapped = `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md
+
+## My request for Codex:
+<image name=[Image #1]>raw image metadata</image>`;
+
+    expect(splitCodexIdePrompt(wrapped)).toEqual({
+      ideContext: `# Context from my IDE setup:
+
+## Active file: koed-self-hosted/SECURITY.md`,
+      userPrompt: ""
+    });
+    expect(codexIdePromptUserText(wrapped)).toBe("");
   });
 
   it("does not split user-authored text that only resembles IDE markers", () => {
