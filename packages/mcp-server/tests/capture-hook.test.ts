@@ -642,6 +642,60 @@ Coffee cardamom sounds interesting - should I cool the coffee first?`;
     expect(rawItems[0]!.sourceHash).not.toBe(rawItems[1]!.sourceHash);
   });
 
+  it("keeps marker-like user-authored prompts as normal user text", () => {
+    const markerLikePrompt = `# Context from my IDE setup:
+
+This is a markdown example, not client-provided IDE context.
+
+## My request for Codex:
+Explain why this template exists.`;
+    const fencedExample = `Please review this fixture:
+
+\`\`\`text
+# Context from my IDE setup:
+
+## Active file: example.ts
+
+## My request for Codex:
+Do the thing.
+\`\`\``;
+
+    const parsed = parseTranscriptText(
+      JSON.stringify([
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: markerLikePrompt
+          }
+        },
+        {
+          type: "event_msg",
+          payload: {
+            type: "user_message",
+            message: fencedExample
+          }
+        }
+      ])
+    );
+
+    expect(parsed).toEqual([
+      expect.objectContaining({
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content: markerLikePrompt
+      }),
+      expect.objectContaining({
+        actor: "user",
+        eventType: "codex_transcript_user",
+        content: fencedExample
+      })
+    ]);
+    expect(
+      parsed.some((item) => item.eventType === "codex_transcript_ide_context")
+    ).toBe(false);
+  });
+
   it("uses child session metadata to label subagent conversation actors", () => {
     const records = [
       {

@@ -34,6 +34,8 @@ export interface CodexIdePromptParts {
 
 const CODEX_IDE_CONTEXT_HEADER = /^#{0,6}\s*Context from my IDE setup:\s*$/i;
 const CODEX_IDE_REQUEST_HEADER = /^#{0,6}\s*My request for Codex:\s*$/im;
+const CODEX_IDE_CONTEXT_SECTION =
+  /^#{1,6}\s*(Active file|Open tabs|Selected text|Selected file):\s*$/im;
 
 export const splitCodexIdePrompt = (
   value: string
@@ -52,6 +54,9 @@ export const splitCodexIdePrompt = (
   const headerStart = requestHeader.index;
   const headerEnd = headerStart + requestHeader[0].length;
   const ideContext = normalized.slice(0, headerStart).trim();
+  if (!CODEX_IDE_CONTEXT_SECTION.test(ideContext)) {
+    return null;
+  }
   const userPrompt = normalized
     .slice(headerEnd)
     .replace(/<image\b[\s\S]*?<\/image>/g, "")

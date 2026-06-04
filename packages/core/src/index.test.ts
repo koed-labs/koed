@@ -115,6 +115,30 @@ Coffee cardamom sounds interesting - should I cool the coffee first?`;
       )
     ).toBe("A normal prompt mentioning My request for Codex remains intact.");
   });
+
+  it("does not split user-authored text that only resembles IDE markers", () => {
+    const markerLikePrompt = `# Context from my IDE setup:
+
+This is a markdown example, not client-provided IDE context.
+
+## My request for Codex:
+Explain why this template exists.`;
+    const fencedExample = `Please review this fixture:
+
+\`\`\`text
+# Context from my IDE setup:
+
+## Active file: example.ts
+
+## My request for Codex:
+Do the thing.
+\`\`\``;
+
+    expect(splitCodexIdePrompt(markerLikePrompt)).toBeNull();
+    expect(codexIdePromptUserText(markerLikePrompt)).toBe(markerLikePrompt);
+    expect(splitCodexIdePrompt(fencedExample)).toBeNull();
+    expect(codexIdePromptUserText(fencedExample)).toBe(fencedExample);
+  });
 });
 
 const createFakeRepository = (): MemoryEngineRepository => {
