@@ -17,6 +17,9 @@
     "api-token:revoke": "pnpm --filter @koed/db api-token:revoke",
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
     "eval": "pnpm --filter @koed/evals eval",
+    "changeset": "changeset",
+    "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets",
+    "release:notes": "node scripts/product-release-notes.mjs",
     "codex:configure": "node scripts/configure-codex.mjs",
     "codex:verify-capture": "node scripts/verify-codex-capture-hook.mjs",
     "env:setup": "node scripts/setup-env.mjs",
@@ -38,6 +41,7 @@
     "fmt:python:check": "cd apps/embedding-service && .venv/bin/ruff format --check ."
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.8.0",
     "@vitejs/plugin-react": "^6.0.2",

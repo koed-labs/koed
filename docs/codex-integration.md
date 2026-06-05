@@ -1,6 +1,6 @@
 # Codex Integration
 
-Codex is currently the only supported AI client for Koed Self-Hosted.
+Codex is currently the only supported AI Client for Koed.
 
 ## API Token
 
@@ -24,12 +24,12 @@ In Codex Desktop, add a custom MCP server using `STDIO`:
 ```text
 Name: koed-selfhost
 Command: node
-Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
+Argument: /path/to/koed/packages/mcp-server/dist/cli.js
 Environment:
   MEMORY_API_URL=http://localhost:3000
   MEMORY_API_TOKEN=<token>
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
-Working directory: /path/to/koed-self-hosted
+Working directory: /path/to/koed
 ```
 
 If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
@@ -67,10 +67,10 @@ If you install the package binary, use:
 koed-capture-hook
 ```
 
-For a direct self-hosted checkout, build `@koed/mcp-server` and point Codex at:
+For a direct Koed checkout, build `@koed/mcp-server` and point Codex at:
 
 ```text
-/path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js
+/path/to/koed/packages/mcp-server/dist/capture-hook.js
 ```
 
 Install the Capture Hook for these Codex hook events:
@@ -123,7 +123,7 @@ with a fresh session marker, and searches Koed for the captured marker. After
 that, start a fresh Codex session and ask it to check memory access through the
 `koed-selfhost` MCP server.
 
-The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed Self-Hosted relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone. Recall-only or MCP-only integrations are experimental because they do not provide supported automatic capture.
+The MCP Server uses the Koed API Token for Recall, LCM summary submission, and Memory Answer evidence. Koed relies on Codex for Synthesis; the backend does not make server-side LLM calls in this build. Full automatic Conversation capture depends on the Capture Hook and is not performed by MCP alone. Recall-only or MCP-only integrations are experimental because they do not provide supported automatic capture.
 
 `memory_answer` is the only normal recall tool exposed by default. It is
 described to Codex as recall for prior conversations, remembered preferences,

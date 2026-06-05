@@ -1,6 +1,6 @@
 # Local Memory Agent Settings
 
-Koed Self-Hosted performs answer and summary synthesis through the connected AI
+Koed performs answer and summary synthesis through the connected AI
 Client. The backend stores memory and evidence, but it does not run LLM
 synthesis itself.
 

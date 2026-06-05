@@ -5,7 +5,7 @@ export const workerJsonCases: WorkerJsonCase[] = [
     id: "memory-found-project-decision",
     worker: "memory_answer",
     prompt:
-      "What did we decide about where answer synthesis should run for Koed Self-Hosted?",
+      "What did we decide about where answer synthesis should run for Koed?",
     expected: {
       status: "found",
       requiredSubstrings: ["local Codex", "subscription"],

@@ -63,8 +63,8 @@ writeFileSync(
   { mode: 0o600 }
 );
 
-const markerStart = "# >>> koed-self-hosted";
-const markerEnd = "# <<< koed-self-hosted";
+const markerStart = "# >>> koed";
+const markerEnd = "# <<< koed";
 const hookCommand = `${nodeCommand} ${captureHookPath} --config ${hookConfigPath}`;
 const hookEvents = [
   ["SessionStart", 3],

@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    name: Version and Release
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.2
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Python dependencies
+        run: pnpm setup:python
+
+      - name: Create release pull request
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: pnpm release:version
+          title: Version Koed
+          commit: "ci: version koed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read product version
+        id: product
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        run: |
+          version="$(node -e "const fs = require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('packages/koed/package.json', 'utf8')).version)")"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check GitHub release
+        id: release
+        if: steps.changesets.outputs.hasChangesets == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.product.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Verify release commit
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
+        run: pnpm verify
+
+      - name: Build release artifacts
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
+        run: pnpm build
+
+      - name: Create release notes
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
+        run: pnpm release:notes > release-notes.md
+
+      - name: Create GitHub release
+        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.product.outputs.tag }}" \
+            --title "Koed ${{ steps.product.outputs.tag }}" \
+            --target "${GITHUB_SHA}" \
+            --notes-file release-notes.md

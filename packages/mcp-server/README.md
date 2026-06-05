@@ -1,6 +1,6 @@
 # Koed MCP Server
 
-The MCP server is Koed Self-Hosted's local Codex integration. It gives Codex
+The MCP Server is Koed's local Codex integration. It gives Codex
 tools for memory recall, starts local background workers for answer synthesis
 captured-session titles, and LCM summaries, and provides the capture hook binary
 used by Codex lifecycle hooks.
@@ -46,8 +46,8 @@ Configure Codex with a custom stdio MCP server:
 ```text
 Name: koed-selfhost
 Command: node
-Argument: /path/to/koed-self-hosted/packages/mcp-server/dist/cli.js
-Working directory: /path/to/koed-self-hosted
+Argument: /path/to/koed/packages/mcp-server/dist/cli.js
+Working directory: /path/to/koed
 Environment:
   MEMORY_API_URL=http://localhost:3000
   MEMORY_API_TOKEN=<koed-api-token>
@@ -209,7 +209,7 @@ capture records to the Koed API.
 Use the built hook path in Codex hook configuration:
 
 ```text
-/path/to/koed-self-hosted/packages/mcp-server/dist/capture-hook.js
+/path/to/koed/packages/mcp-server/dist/capture-hook.js
 ```
 
 Recommended hook events:

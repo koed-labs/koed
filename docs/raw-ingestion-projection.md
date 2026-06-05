@@ -137,7 +137,7 @@ release, a fresh local reset is acceptable:
 
 ```bash
 docker compose down
-docker volume rm koed-self-hosted_postgres-data
+docker volume rm koed_postgres-data
 docker compose up --build
 ```
 

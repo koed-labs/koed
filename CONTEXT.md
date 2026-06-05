@@ -1,15 +1,17 @@
-# Koed Self-Hosted
+# Koed
 
-Koed Self-Hosted is the product context for running Koed memory capture, recall, and inspection on infrastructure controlled by the operator.
+Koed is the product context for running memory capture, recall, and inspection
+on infrastructure controlled by the operator.
 
 ## Language
 
-**Koed Self-Hosted**:
-The source-available Koed distribution for self-managed memory infrastructure.
+**Koed**:
+The source-available Koed distribution for operator-managed memory
+infrastructure.
 _Avoid_: Koed Cloud, hosted Koed, open-source Koed
 
 **Operator**:
-The person or organization responsible for running a Koed Self-Hosted deployment.
+The person or organization responsible for running a Koed deployment.
 _Avoid_: Customer, tenant, account
 
 **Local Operator Scripts**:
@@ -17,7 +19,7 @@ Trusted commands run from the deployment checkout, such as API Token bootstrap.
 _Avoid_: Console, dashboard, admin app
 
 **User**:
-A human account authenticated inside a Koed Self-Hosted deployment.
+A human account authenticated inside a Koed deployment.
 _Avoid_: Account, customer, operator
 
 **API Token**:
@@ -97,7 +99,7 @@ Local background work that turns pending LCM placeholders into LCM summaries thr
 _Avoid_: Agent tool, backend LLM worker, manual summarization
 
 **Diagnostic Status**:
-Non-blocking operational information used to inspect Koed Self-Hosted behavior.
+Non-blocking operational information used to inspect Koed behavior.
 _Avoid_: Health gate, setup requirement, authorization rule
 
 **Pending LCM Staleness**:
@@ -146,7 +148,7 @@ _Avoid_: Capture state, disabled policy, deletion
 
 ## Relationships
 
-- **Koed Self-Hosted** is operated by one **Operator**
+- **Koed** is operated by one **Operator**
 - An **Operator** may use **Local Operator Scripts** to create user API tokens
 - One **Operator** may create one or more **Users**
 - A **User** owns zero or more **API Tokens**

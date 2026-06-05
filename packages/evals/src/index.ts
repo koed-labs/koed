@@ -372,8 +372,7 @@ const seedEvalDataset = async (world: EvalWorld) => {
     workspaceId: world.workspaceId,
     actor: "user",
     eventType: "codex_user_prompt",
-    content:
-      "The self-hosted deployment target is a local Docker Compose stack.",
+    content: "The Koed deployment target is a local Docker Compose stack.",
     metadata: { automaticCaptureScope: "personal" }
   });
 
@@ -506,7 +505,7 @@ const evalCases = (world: EvalWorld) => {
         search.results.some((hit) =>
           hit.summaryText.includes("local Docker Compose stack")
         ),
-        "expected semantic retrieval to find self-hosted Docker Compose target"
+        "expected semantic retrieval to find Koed Docker Compose target"
       );
     }),
     runCase("negative query returns not found in memory", async () => {

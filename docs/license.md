@@ -1,8 +1,8 @@
 # License
 
-Koed Self-Hosted is licensed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See [../LICENSE](../LICENSE).
+Koed is licensed under the GNU Affero General Public License version 3 only (`AGPL-3.0-only`). See [../LICENSE](../LICENSE).
 
-AGPL-3.0-only is an OSI-approved open source license with network copyleft obligations. If someone modifies Koed Self-Hosted and makes that modified version available to users over a network, the AGPL requires them to offer those users access to the corresponding source code.
+AGPL-3.0-only is an OSI-approved open source license with network copyleft obligations. If someone modifies Koed and makes that modified version available to users over a network, the AGPL requires them to offer those users access to the corresponding source code.
 
 Koed Labs may offer separate commercial licenses for organizations that need different terms, including for proprietary modified SaaS products. Public AGPL recipients keep their AGPL rights for the versions they receive.
 
