@@ -1,7 +1,7 @@
 # Database Row-Boundary Safeguards
 
 This note records the KOE-127 review of database-level safeguards for Koed
-Self-Hosted memory storage. It is an implementation plan, not an accepted ADR.
+Koed memory storage. It is an implementation plan, not an accepted ADR.
 
 ## Current State
 

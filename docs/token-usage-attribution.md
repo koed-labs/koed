@@ -34,7 +34,7 @@ Additional attribution links use the typed
 `message`, `tool_event`, and `memory_event` references are validated against the
 caller's personal visibility before insert. `answer_job` references are local
 Koed worker job identities and must match the usage row's `workflow_id`; they do
-not point at a separate backend synthesis table in this self-hosted build.
+not point at a separate backend synthesis table in the current build.
 
 Idempotency is scoped to the owning user. Personal rows are unique by
 `(owner_user_id, idempotency_key)`.
@@ -68,7 +68,7 @@ fallback. The helper returns the resolved model, encoding, exact-match flag,
 token count, and tokenizer name.
 
 These helpers are sufficient for Codex-style local estimates and structural
-splitting in the current self-hosted build. Non-Codex connectors can use them as
+splitting in the current build. Non-Codex connectors can use them as
 fallback estimates only when native/provider usage is absent or incomplete, and
 must mark those rows as estimates.
 
