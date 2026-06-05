@@ -1378,7 +1378,7 @@ const createFakeRepository = (): MemorySourceRepository => {
 
       const limitedThreads = [...threadMap.values()]
         .sort((left, right) => right.latestAt.localeCompare(left.latestAt))
-        .slice(0, input.limit ?? 100);
+        .slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? 100));
       const limitedThreadIds = new Set(
         limitedThreads.map((thread) => `${thread.projectId}:${thread.id}`)
       );
@@ -3127,6 +3127,11 @@ describe("account and access flows", () => {
       url: "/v1/memory/graph/threads?limit=1&includeInvalidated=false",
       headers: { cookie }
     });
+    const offsetIndex = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads?limit=1&offset=1&includeInvalidated=false",
+      headers: { cookie }
+    });
     const firstEventPage = await app.inject({
       method: "GET",
       url: "/v1/memory/graph/events?threadId=thread-index-a&limit=1&includeInvalidated=false",
@@ -3197,6 +3202,11 @@ describe("account and access flows", () => {
         (project) => project.threads
       )
     ).toHaveLength(1);
+    expect(
+      jsonBody<GraphThreadIndexResponse>(offsetIndex).projects.flatMap(
+        (project) => project.threads
+      )
+    ).toMatchObject([{ id: "thread-index-a" }]);
     expect(jsonBody<GraphEventsResponse>(secondEventPage).events).toHaveLength(
       1
     );

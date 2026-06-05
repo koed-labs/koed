@@ -941,6 +941,7 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       threadId?: string;
       includeInvalidated?: boolean;
       limit?: number;
+      offset?: number;
     }
   ): Promise<LcmGraphProjectThreads[]>;
   updateCapturedSessionTitle(
@@ -6864,6 +6865,7 @@ export const createMemorySourceRepository = (
 
   async listLcmGraphThreads(actor, input = {}) {
     const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const offset = Math.max(input.offset ?? 0, 0);
     const result = await pool.query<Parameters<typeof mapLcmGraphThreadRow>[0]>(
       `
         with visible_thread_rows as (
@@ -6986,7 +6988,7 @@ export const createMemorySourceRepository = (
             max(event_order_at) filter (where row_kind = 'event'),
             max(order_at)
           ) desc, thread_id desc
-          limit $7
+          limit $7 offset $8
         )
         select *
         from ranked_threads
@@ -6999,7 +7001,8 @@ export const createMemorySourceRepository = (
         input.projectId ?? null,
         input.threadId ?? null,
         input.query?.trim() || null,
-        limit
+        limit,
+        offset
       ]
     );
 

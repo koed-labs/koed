@@ -57,6 +57,9 @@ jobs:
       - name: Typecheck tests
         run: pnpm typecheck:test
 
+      - name: Python checks
+        run: pnpm test:python
+
       - name: Test
         run: pnpm test
 

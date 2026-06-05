@@ -33,7 +33,8 @@ export const graphQuerySchema = z.object({
   projectId: z.string().min(1).optional(),
   threadId: z.string().min(1).optional(),
   includeInvalidated: queryBooleanSchema.default(false),
-  limit: z.coerce.number().int().positive().max(500).default(100)
+  limit: z.coerce.number().int().positive().max(500).default(100),
+  offset: z.coerce.number().int().nonnegative().default(0)
 });
 
 export const graphNodesQuerySchema = graphQuerySchema.extend({
