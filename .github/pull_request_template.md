@@ -1,21 +1,48 @@
-### Purpose
+## Summary
 
-<!-- Write here the purpose of the code change in terms of the benefit intended. -->
+<!-- What changed, and what problem does it solve? -->
 
-### Issues
+## Related Issues
 
-<!-- List issues addesses by the code change. Prefix issue with "Closes" if the issue is resolved. e.g: "Closes #15" -->
-<!-- That will automatically close the issue when this PR has been merged. -->
+<!-- Link related issues. Use `Closes #123` only when this PR fully resolves the issue. -->
 
-### Changes
+## Type of Change
 
-<!-- Short list of code changes in this -->
+- [ ] Bug fix
+- [ ] Feature
+- [ ] Documentation
+- [ ] Maintenance
+- [ ] Security hardening
+- [ ] Other
 
-### Check list
+## Validation
 
-<!-- Ensure that the following tasks have been completed before code review is requested. -->
+<!-- List the commands you ran and the result. If you did not run validation, explain why. -->
 
-- [ ] Code runs without regressions even though new code is incomplete
-- [ ] Automatic tests have been written, they work, and code coverage has been maintained.
-- [ ] Code has been submitted to build server and build succeeds
-- [ ] Code reviewer has been explicitly notified outside automatic notification channels
+- [ ] `pnpm verify`
+- [ ] Other:
+
+## Security and Memory Data
+
+<!-- Note any security, privacy, or deployment impact. -->
+
+- [ ] This PR does not include API Tokens, session cookies, database credentials,
+      deployment secrets, captured Memory data, database exports, or backups.
+- [ ] This PR does not expose Postgres, Redis, the Embedding Service, diagnostics,
+      logs, or Memory data beyond the intended access boundary.
+- [ ] Any change to authentication, API Token handling, Capture Policy behavior,
+      Recall, Evidence Bundles, or Personal Memory access is described above.
+
+## Documentation and Release Notes
+
+- [ ] User-facing behavior changes are documented, or documentation is not needed.
+- [ ] Deployment/configuration changes are documented, or documentation is not needed.
+- [ ] A changeset is included for release-noteworthy changes, or a changeset is
+      not needed.
+
+## Contributor Checklist
+
+- [ ] I have read `CONTRIBUTING.md`.
+- [ ] I have kept the PR focused on one coherent change.
+- [ ] I have added or updated tests where the change needs test coverage.
+- [ ] I have checked that public-facing wording uses Koed's canonical terms.
