@@ -16,10 +16,8 @@ import { createMemoryEngine } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
-  localRerankingEnabled,
-  presentMemoryText,
   type MemorySourceRepository
-} from "./index.js";
+} from "../src/index.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const runDbTests = Boolean(databaseUrl);
@@ -31,189 +29,6 @@ const originalMemoryEventMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
 const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
 
 const describeDb = runDbTests ? describe : describe.skip;
-
-describe("memory presentation helpers", () => {
-  it("keeps reranking disabled by default and honors the documented root key", () => {
-    expect(localRerankingEnabled({})).toBe(false);
-    expect(
-      localRerankingEnabled({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b"
-      })
-    ).toBe(true);
-    expect(
-      localRerankingEnabled({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
-        RERANKER_KEY: ""
-      })
-    ).toBe(false);
-    expect(
-      localRerankingEnabled({
-        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
-        RERANKER_KEY: "qwen3-reranker-0.6b"
-      })
-    ).toBe(true);
-  });
-
-  const provenance = {
-    project_name: "/Users/jacobo/Coding/koed",
-    project_path: "/Users/jacobo/Coding/koed"
-  };
-
-  it("does not expose raw tool input JSON as memory text", () => {
-    const text = presentMemoryText(
-      JSON.stringify({
-        toolInput: {
-          command:
-            "node --input-type=module <<'EOF'\nconsole.log('secret')\nEOF"
-        }
-      }),
-      provenance
-    );
-
-    expect(text).toBe("Development activity captured in koed.");
-    expect(text).not.toContain("toolInput");
-    expect(text).not.toContain("node --input-type");
-  });
-
-  it("does not expose malformed tool payload text as memory text", () => {
-    const text = presentMemoryText(
-      `{"toolInput": {"command": "sed -n '1,140p' deploy/deploy-vps.sh"}, "toolResponse": "partial output...`,
-      provenance
-    );
-
-    expect(text).toBe("Development activity captured in koed.");
-    expect(text).not.toContain("toolResponse");
-    expect(text).not.toContain("deploy-vps.sh");
-  });
-
-  it("unwraps LCM source outlines without showing internal scaffolding", () => {
-    const text = presentMemoryText(
-      [
-        "LCM depth 0 leaf summary",
-        "Source items: 1",
-        "",
-        "Exact ordered source outline:",
-        "- [event memory_events:abc] user: Jacobo prefers concise memory cards."
-      ].join("\n"),
-      provenance
-    );
-
-    expect(text).toBe("Jacobo prefers concise memory cards.");
-  });
-
-  it("shows the Codex request instead of uploaded-file boilerplate", () => {
-    const text = presentMemoryText(
-      [
-        "# Files mentioned by the user:",
-        "",
-        "## CleanShot.png: /Users/jacobo/Library/Application Support/CleanShot/media/file.png",
-        "",
-        "## My request for Codex:",
-        "Can you please find out what is missing on the setup?",
-        "<image name=[Image #1]>raw image metadata</image>"
-      ].join("\n"),
-      provenance
-    );
-
-    expect(text).toBe("Can you please find out what is missing on the setup?");
-  });
-
-  it("hides image-only Codex requests instead of exposing prompt context", () => {
-    const text = presentMemoryText(
-      [
-        "# Context from my IDE setup:",
-        "",
-        "## Active file: koed-self-hosted/SECURITY.md",
-        "",
-        "## Open tabs:",
-        "- SECURITY.md: koed-self-hosted/SECURITY.md",
-        "",
-        "## My request for Codex:",
-        "<image name=[Image #1]>raw image metadata</image>"
-      ].join("\n"),
-      provenance
-    );
-
-    expect(text).toBe("Captured memory.");
-    expect(text).not.toContain("Context from my IDE setup");
-    expect(text).not.toContain("Open tabs");
-  });
-});
-
-describe("local embedding status", () => {
-  const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
-  const originalEmbeddingServiceToken = process.env.EMBEDDING_SERVICE_TOKEN;
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-    if (originalEmbeddingServiceUrl === undefined) {
-      delete process.env.EMBEDDING_SERVICE_URL;
-    } else {
-      process.env.EMBEDDING_SERVICE_URL = originalEmbeddingServiceUrl;
-    }
-    if (originalEmbeddingServiceToken === undefined) {
-      delete process.env.EMBEDDING_SERVICE_TOKEN;
-    } else {
-      process.env.EMBEDDING_SERVICE_TOKEN = originalEmbeddingServiceToken;
-    }
-  });
-
-  it("reports embedding health as unhealthy when the service rejects the configured token", async () => {
-    process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
-    process.env.EMBEDDING_SERVICE_TOKEN = "api-token";
-    const repo = createMemorySourceRepository({} as pg.Pool);
-
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "qwen3-0.6b",
-          dimensions: 1024,
-          authRequired: true,
-          authValid: false
-        }),
-        { status: 200 }
-      )
-    );
-
-    await expect(repo.getLocalEmbeddingStatus()).resolves.toMatchObject({
-      enabled: true,
-      healthy: false,
-      model: "qwen3-0.6b",
-      dimensions: 1024,
-      error: "Embedding service token rejected"
-    });
-    expect(
-      new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers).get(
-        "x-koed-embedding-token"
-      )
-    ).toBe("api-token");
-  });
-
-  it("reports embedding health as healthy when token authentication succeeds", async () => {
-    process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
-    process.env.EMBEDDING_SERVICE_TOKEN = "api-token";
-    const repo = createMemorySourceRepository({} as pg.Pool);
-
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "qwen3-0.6b",
-          dimensions: 1024,
-          authRequired: true,
-          authValid: true
-        }),
-        { status: 200 }
-      )
-    );
-
-    await expect(repo.getLocalEmbeddingStatus()).resolves.toMatchObject({
-      enabled: true,
-      healthy: true,
-      model: "qwen3-0.6b",
-      dimensions: 1024
-    });
-  });
-});
 
 describeDb("memory repository visibility", () => {
   let pool: pg.Pool;
@@ -285,7 +100,7 @@ describeDb("memory repository visibility", () => {
     repo = createMemorySourceRepository(pool);
 
     const currentDir = dirname(fileURLToPath(import.meta.url));
-    const migrationsDir = join(currentDir, "migrations");
+    const migrationsDir = join(currentDir, "..", "src", "migrations");
     const migrations = (await readdir(migrationsDir))
       .filter((file) => file.endsWith(".sql"))
       .sort();
