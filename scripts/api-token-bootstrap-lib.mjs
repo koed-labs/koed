@@ -232,9 +232,7 @@ export const requireEnv = (environment, keys) => {
 };
 
 const errorCode = (error) =>
-  typeof error === "object" &&
-  error !== null &&
-  typeof error.code === "string"
+  typeof error === "object" && error !== null && typeof error.code === "string"
     ? error.code
     : null;
 

@@ -54,10 +54,9 @@ Use `pnpm test` for Vitest.
 
 ## Performance Architecture
 
-Read [docs/explorer-performance.md](docs/explorer-performance.md) before
-changing sidebar shell loading, thread detail loading, prewarming, cache
-retention, or long event rendering. The browser intentionally keeps the
-project/thread shell separate from selected-thread detail data.
+The browser intentionally keeps the project/thread shell separate from
+selected-thread detail data. Be careful when changing sidebar shell loading,
+thread detail loading, prewarming, cache retention, or long event rendering.
 
 ## License and Attribution
 

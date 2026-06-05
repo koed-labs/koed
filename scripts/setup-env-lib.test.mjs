@@ -49,9 +49,7 @@ test("generates missing generated secrets while preserving non-generated values"
         "EMBEDDING_SERVICE_TOKEN=replace_with_generated_embedding_service_token",
         "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create"
       ].join("\n"),
-      existing: [
-        "MEMORY_API_TOKEN=existing-memory-token"
-      ].join("\n"),
+      existing: ["MEMORY_API_TOKEN=existing-memory-token"].join("\n"),
       generatedValues
     })
   );

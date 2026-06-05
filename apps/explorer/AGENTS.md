@@ -21,10 +21,9 @@ This repository is a VERY EARLY WIP. Proposing sweeping changes that improve lon
 If a tradeoff is required, choose correctness and robustness over short-term convenience.
 
 Before changing the explorer shell, thread detail loading, sidebar behavior, or
-message/event timeline rendering, read `docs/explorer-performance.md`. The
-project/thread shell, bounded prewarming, warm detail cache, normalized state,
-and long-thread virtualization are deliberate architecture, not incidental
-implementation details.
+message/event timeline rendering, preserve the project/thread shell, bounded
+prewarming, warm detail cache, normalized state, and long-thread virtualization.
+These are deliberate architecture, not incidental implementation details.
 
 ## Maintainability
 
