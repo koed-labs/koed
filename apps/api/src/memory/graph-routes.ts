@@ -31,7 +31,6 @@ export const registerGraphRoutes = (
       memoryWrite: memoryWriteRateLimit
     }
   } = context;
-
   app.get(
     "/v1/memory/clusters",
     { preHandler: memoryReadRateLimit },

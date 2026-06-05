@@ -453,6 +453,8 @@ export interface MemoryEventRecord {
   eventType: string;
   content: string;
   metadata: Record<string, unknown>;
+  tokenCount?: number | null;
+  sealReason?: string | null;
   visibility: Visibility;
   ownerUserId: string | null;
   createdAt: string;
@@ -546,6 +548,8 @@ export interface MemoryEngineRepository {
       capturedAt?: string;
       sourceEventTime?: string;
       sourceSequence?: number;
+      tokenModel?: string;
+      sealReason?: string;
     }
   ): Promise<MemoryEventRecord>;
   searchMemoryNodes(

@@ -54,7 +54,8 @@ the command preserves existing values and adds any missing keys from
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
 - `MEMORY_RAG_RAW_FALLBACK_ENABLED`: set `false` to disable raw fallback retrieval.
 - `MEMORY_RAG_ROLLUP_MIN_SCORE`, `MEMORY_RAG_SCOPED_LEAF_MIN_SCORE`, `MEMORY_RAG_LEAF_MIN_SCORE`, `MEMORY_RAG_FRESH_EVENT_MIN_SCORE`, `MEMORY_RAG_RAW_FALLBACK_MIN_SCORE`: optional per-stage minimum score thresholds. Leave blank to use the default threshold of `0`.
-- `MEMORY_EVENT_MAX_TOKENS`: maximum tokens per projected semantic Memory Event chunk. Default `2048`; values above `32000` are clamped to the Qwen operational cap.
+- `MEMORY_EVENT_MAX_TOKENS`: soft token target for projected semantic Memory Event bundle rollover. Default `2048`; values above `32000` are clamped to the Qwen operational cap. Projection rolls over only between complete source items at this target.
+- `MEMORY_AGENT_TURN_STALE_MS`: quiet-time fallback for sealing an incomplete agent-turn Memory Event during catch-up if no turn-complete Capture Hook or next user prompt arrives. Default `900000` (15 minutes). Set `0` only in tests or controlled recovery runs to seal any incomplete agent turn immediately.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
 - `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: semantic `memory_event.content` token threshold for creating LCM placeholders. Default `32000`; values above `32000` are clamped to the Qwen operational cap. Provenance payload JSON is not counted.
 - `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
@@ -64,7 +65,7 @@ the command preserves existing values and adds any missing keys from
 - `EMBEDDING_SERVICE_TOKEN`: shared internal token required by embedding and reranking endpoints when configured. `pnpm env:setup` generates this for Docker Compose deployments.
 - `EMBEDDING_LOG_LEVEL`: embedding service structured JSON log level. Default `info`; use `debug` for scheduler, chunking, batching, and reranker scoring details.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
-- `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request. Default `4096`; values above `32000` are clamped by the embedding service and values above the configured llama context are reduced to that context.
+- `EMBEDDING_MAX_TOKENS`: maximum tokens per embedding request and the hard cap for a single projected source item before forced split metadata is used. Default `4096`; values above `32000` are clamped by the embedding service and values above the configured llama context are reduced to that context.
 - `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding or reranking text before model processing. It is not a semantic chunking limit.
 - `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters accepted for one embedding or reranking request before model processing. It is not a semantic chunking limit.
 - `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service. Default `32000`; values above `32000` are clamped by the embedding service.
