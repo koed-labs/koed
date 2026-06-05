@@ -39,14 +39,14 @@ from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.
 
 ## Browser Questions
 
-The History Browser Questions tab uses the local MCP server as its AI-client
+The Explorer Questions tab uses the local MCP server as its AI-client
 sidecar. The browser can ask a question and persist it in Koed, then the MCP
 server delegates answer synthesis to Codex app-server mode in the local Codex
 environment. The backend stores questions, retrieval evidence, citations, and
 answer status, but does not run LLM synthesis.
 
 When the MCP server starts, it also starts a local browser bridge on
-`http://localhost:3210` by default. The History Browser uses that local endpoint
+`http://localhost:3210` by default. The Explorer uses that local endpoint
 for Questions; there is no separate bridge process to run. `MEMORY_API_TOKEN`
 also enables the MCP server's local pending-question catch-up service, which
 claims unanswered browser questions and finishes them through local Codex answer

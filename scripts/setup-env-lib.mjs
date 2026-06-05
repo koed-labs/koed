@@ -2,7 +2,6 @@ export const retainedCompatibilityKeys = new Set([
   "API_DATA_ENCRYPTION_KEY",
   "API_TOKEN_PEPPER",
   "EMBEDDING_SERVICE_TOKEN",
-  "GITHUB_TOKEN",
   "MEMORY_API_TOKEN"
 ]);
 

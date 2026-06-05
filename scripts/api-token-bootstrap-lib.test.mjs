@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   createApiTokenBootstrap,
   formatCreateApiTokenResult,
+  formatCliError,
   formatListApiTokenResult,
   formatRevokeApiTokenResult,
   hashApiToken,
@@ -155,6 +156,21 @@ test("fails clearly when required env vars are missing", async () => {
       }),
     /Missing required environment value: DATABASE_URL/
   );
+});
+
+test("formats blank AggregateError database connection failures", () => {
+  const error = new AggregateError([
+    Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:15432"), {
+      code: "ECONNREFUSED"
+    })
+  ]);
+  error.code = "ECONNREFUSED";
+
+  const message = formatCliError(error);
+
+  assert.match(message, /Could not connect to Postgres using DATABASE_URL/);
+  assert.match(message, /docker compose up postgres/);
+  assert.match(message, /connect ECONNREFUSED 127\.0\.0\.1:15432/);
 });
 
 test("prints the full token once without exposing the stored hash", async () => {

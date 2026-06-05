@@ -15,9 +15,9 @@ export const appEnvSources = [
     prefix: "EMBEDDING"
   },
   {
-    label: "History browser",
-    dir: "apps/history-browser",
-    prefix: "HISTORY_BROWSER"
+    label: "Explorer",
+    dir: "apps/explorer",
+    prefix: "EXPLORER"
   }
 ];
 
@@ -40,11 +40,10 @@ const rootDirective = (line) => {
 const defaultRootKey = (key, prefix) => {
   const passThroughPrefixes = [
     "API_",
-    "HISTORY_",
+    "EXPLORER_",
     "WORKER_",
     "EMBEDDING_",
-    "MEMORY_",
-    "GITHUB_"
+    "MEMORY_"
   ];
   if (passThroughPrefixes.some((passThrough) => key.startsWith(passThrough))) {
     return key;

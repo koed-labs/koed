@@ -153,20 +153,16 @@ services:
       embedding-service:
         condition: service_healthy
 
-  history-browser:
+  explorer:
     build:
       context: .
-      dockerfile: apps/history-browser/Dockerfile
+      dockerfile: apps/explorer/Dockerfile
       args:
-        VITE_API_BASE_URL: ${HISTORY_API_BASE_URL:-http://localhost:3000}
-        HISTORY_BROWSER_REPO: ${HISTORY_BROWSER_REPO:-https://github.com/koed-labs/koed-history-browser.git}
-        HISTORY_BROWSER_REF: ${HISTORY_BROWSER_REF:-main}
-      secrets:
-        - github_token
+        VITE_KOED_API_BASE_URL: ${EXPLORER_API_BASE_URL:-http://localhost:3000}
     environment:
-      NODE_ENV: ${HISTORY_NODE_ENV:-production}
+      NODE_ENV: ${EXPLORER_NODE_ENV:-production}
     ports:
-      - "${HISTORY_WEB_HOST_PORT}:5174"
+      - "${EXPLORER_WEB_HOST_PORT}:5174"
     depends_on:
       api:
         condition: service_started
@@ -175,7 +171,3 @@ volumes:
   postgres-data:
   redis-data:
   embedding-model-cache:
-
-secrets:
-  github_token:
-    environment: GITHUB_TOKEN

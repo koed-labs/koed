@@ -14,7 +14,6 @@ export default tseslint.config(
       "**/dist/**",
       "**/coverage/**",
       "**/target/**",
-      "apps/history-browser/*/**",
       "node_modules/**"
     ]
   },
@@ -43,6 +42,14 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error"
+    }
+  },
+  {
+    files: ["apps/explorer/src/**/*.{ts,tsx}"],
+    languageOptions: {
+      globals: {
+        ...globals.browser
+      }
     }
   },
   {

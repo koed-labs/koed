@@ -14,4 +14,4 @@ Migration command:
 pnpm --filter @koed/db migrate:up
 ```
 
-After upgrade, verify API readiness, Postgres, Redis/BullMQ, embedding service, worker queues, and history browser access.
+After upgrade, verify API readiness, Postgres, Redis/BullMQ, embedding service, worker queues, and Explorer access.

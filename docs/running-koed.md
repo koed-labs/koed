@@ -3,7 +3,7 @@
 > [!IMPORTANT]  
 > Only Codex is supported for knowledge capture. More agents to follow!
 
-Koed runs API, worker, embedding service, and an optional history-browser
+Koed runs API, worker, embedding service, and an optional Explorer
 frontend. Postgres with pgvector stores Users, API Tokens, Memory Events, Memory
 Nodes, embeddings, and Capture Policies. Redis backs BullMQ queues.
 
@@ -19,7 +19,7 @@ docker compose up --build
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 HISTORY_WEB_HOST_PORT=5574 HISTORY_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3300 docker compose up --build
 ```
 
 Create a local API token after the API migrations have run:
@@ -28,11 +28,11 @@ Create a local API token after the API migrations have run:
 pnpm api-token:create --owner-email local@koed.ai --name "Client Integration"
 ```
 
-The history browser frontend is available at `http://localhost:5174`, or the host port you selected.
+The Explorer frontend is available at `http://localhost:5174`, or the host port you selected.
 
 ## Production Notes
 
-Keep Postgres, Redis, and the embedding service private. Expose only the API and optional history browser through your reverse proxy. Set strong `API_DATA_ENCRYPTION_KEY`, `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, database password, and Redis password. Use TLS at the reverse proxy if the API or history browser are reachable beyond localhost.
+Keep Postgres, Redis, and the embedding service private. Expose only the API and optional Explorer through your reverse proxy. Set strong `API_DATA_ENCRYPTION_KEY`, `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, database password, and Redis password. Use TLS at the reverse proxy if the API or Explorer are reachable beyond localhost.
 
 Memory data is stored plaintext at the application layer in Postgres in this build. Protect the database and backups with private networking, least-privilege credentials, encrypted storage, and restricted administrator access.
 

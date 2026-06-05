@@ -35,7 +35,7 @@ const candidate: SessionTitleCandidate = {
     {
       id: "00000000-0000-4000-8000-000000000102",
       actor: "user",
-      content: "Can we rename chat titles in the Koed history browser?",
+      content: "Can we rename chat titles in Koed Explorer?",
       capturedAt: "2026-06-02T10:00:00.000Z"
     },
     {
@@ -139,7 +139,7 @@ Please review the IDE parser parity fix.`;
         }
       },
       runner: async () => ({
-        title: "History Browser Titles",
+        title: "Explorer Titles",
         model: "codex-app-server:test"
       })
     });
@@ -155,7 +155,7 @@ Please review the IDE parser parity fix.`;
       {
         sessionId: candidate.id,
         input: {
-          title: "History Browser Titles",
+          title: "Explorer Titles",
           titleModel: "codex-app-server:test",
           titlePromptVersion: SESSION_TITLE_PROMPT_VERSION
         }

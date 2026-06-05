@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   formatRevokeApiTokenResult,
+  formatCliError,
   loadRootEnv,
   revokeApiTokenBootstrap,
   revokeHelpText,
@@ -37,7 +38,7 @@ try {
     console.error(error.message);
     process.exitCode = 2;
   } else {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(formatCliError(error));
     process.exitCode = 1;
   }
 } finally {

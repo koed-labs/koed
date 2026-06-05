@@ -4,6 +4,15 @@ import path from "node:path";
 
 export class UsageError extends Error {}
 
+const databaseConnectionCodes = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPERM"
+]);
+
 const usage = `Usage: pnpm api-token:create --owner-email <email> [--name <name>]
 
 Options:
@@ -220,6 +229,53 @@ export const requireEnv = (environment, keys) => {
       )}`
     );
   }
+};
+
+const errorCode = (error) =>
+  typeof error === "object" &&
+  error !== null &&
+  typeof error.code === "string"
+    ? error.code
+    : null;
+
+const errorMessage = (error) =>
+  error instanceof Error && error.message.trim()
+    ? error.message.trim()
+    : String(error).trim();
+
+const aggregateErrorMessages = (error) =>
+  error instanceof AggregateError
+    ? error.errors
+        .map((item) => errorMessage(item))
+        .filter((message) => message && message !== "Error")
+    : [];
+
+export const formatCliError = (error) => {
+  const code = errorCode(error);
+  const nestedMessages = aggregateErrorMessages(error);
+  const message = errorMessage(error);
+  const usefulMessage = message && message !== "AggregateError" ? message : "";
+  const details = [...new Set([usefulMessage, ...nestedMessages])].filter(
+    Boolean
+  );
+
+  if (code && databaseConnectionCodes.has(code)) {
+    return [
+      "Could not connect to Postgres using DATABASE_URL.",
+      "Start the local database with `docker compose up postgres` or update DATABASE_URL in `.env`.",
+      details.length > 0 ? `Details: ${details.join("; ")}` : `Code: ${code}`
+    ].join("\n");
+  }
+
+  if (details.length > 0) {
+    return details.join("\n");
+  }
+
+  if (code) {
+    return `${error instanceof Error ? error.name : "Error"} (${code})`;
+  }
+
+  return error instanceof Error ? error.name : String(error);
 };
 
 export const createOpaqueSecret = (prefix, randomBytes = nodeRandomBytes) =>

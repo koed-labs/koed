@@ -26,12 +26,12 @@ the command preserves existing values and adds any missing keys from
   the structured API log schema and redaction rules.
 - `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current self-hosted build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
-- `API_CORS_ORIGINS`: comma-separated allowed browser origins, such as the history browser.
+- `API_CORS_ORIGINS`: comma-separated allowed browser origins, such as the Explorer.
 - `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size. Default `4194304`.
 - `API_AUTH_RATE_LIMIT_WINDOW_MS`: auth rate-limit window.
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
 - `API_MEMORY_RATE_LIMIT_WINDOW_MS`: fallback API-token memory rate-limit window. The default window is 60 seconds.
-- `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local History Browser and MCP Server bursts in a self-hosted deployment without changing the stricter auth rate limit.
+- `API_MEMORY_RATE_LIMIT_MAX`: fallback API-token memory requests allowed per window. The default is 1000 requests per 60-second window, which is intended to absorb local Explorer and MCP Server bursts in a self-hosted deployment without changing the stricter auth rate limit.
 - `API_MEMORY_WRITE_RATE_LIMIT_MAX`: write-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_MEMORY_RECALL_RATE_LIMIT_MAX`: recall-oriented memory requests allowed per window. The window uses `API_MEMORY_RATE_LIMIT_WINDOW_MS`; the default max is 300 requests per 60-second window.
 - `API_RATE_LIMIT_STORE`: `memory` by default; set `redis` to share API rate-limit counters across API replicas.
@@ -42,9 +42,9 @@ the command preserves existing values and adds any missing keys from
 - `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS`: shorter debounce window for captured event stream updates that drive the open history thread.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
-- `HISTORY_NODE_ENV`: runtime environment for the history browser service.
-- `HISTORY_API_BASE_URL`: browser-visible API base URL used when building the history browser.
-- `HISTORY_WEB_HOST_PORT`: host port mapped to the history browser. The history browser container listens on internal port `5174`.
+- `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
+- `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
+- `EXPLORER_WEB_HOST_PORT`: host port mapped to the Explorer. The Explorer container listens on internal port `5174`.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
@@ -98,7 +98,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_CODEX_APP_SERVER_BINARY`: Codex app-server binary used by local Synthesis flows. Default `codex`.
 - `MEMORY_ANSWER_BRIDGE_ENABLED`: when `true`, MCP startup runs the local browser Memory Answer bridge. Default `true`.
 - `MEMORY_ANSWER_BRIDGE_HOST`: local answer bridge bind host. Default `0.0.0.0`.
-- `MEMORY_ANSWER_BRIDGE_PORT`: local answer bridge port used by the History Browser. Default `3210`.
+- `MEMORY_ANSWER_BRIDGE_PORT`: local answer bridge port used by the Explorer. Default `3210`.
 - `MEMORY_ANSWER_BRIDGE_CORS_ORIGINS`: comma-separated browser origins allowed to call the local answer bridge.
 - `MEMORY_ANSWER_PROVIDER`: AI Client provider for MCP Memory Answer synthesis. Default and only supported value: `codex`.
 - `MEMORY_ANSWER_MODEL`: Codex model for MCP Memory Answer synthesis.

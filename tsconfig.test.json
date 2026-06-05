@@ -2,7 +2,14 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vite/client", "vitest/globals"],
+    "paths": {
+      "@koed/core": ["packages/core/src/index.ts"],
+      "@koed/db": ["packages/db/src/index.ts"],
+      "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@koed/shared": ["packages/shared/src/index.ts"],
+      "~/*": ["apps/explorer/src/*"]
+    }
   },
   "include": [
     "apps/**/*.test.ts",
@@ -14,5 +21,10 @@
     "packages/**/*.spec.ts",
     "packages/**/*.spec.tsx"
   ],
-  "exclude": ["**/dist/**", "**/node_modules/**", "apps/history-browser/*/**"]
+  "exclude": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "apps/explorer/src/**/*.test.ts",
+    "apps/explorer/src/**/*.test.tsx"
+  ]
 }

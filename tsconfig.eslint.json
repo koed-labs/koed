@@ -6,7 +6,14 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": true,
-    "types": ["node", "vite/client", "vitest/globals"]
+    "types": ["node", "vite/client", "vitest/globals"],
+    "paths": {
+      "@koed/core": ["packages/core/src/index.ts"],
+      "@koed/db": ["packages/db/src/index.ts"],
+      "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@koed/shared": ["packages/shared/src/index.ts"],
+      "~/*": ["apps/explorer/src/*"]
+    }
   },
   "include": [
     "*.config.ts",

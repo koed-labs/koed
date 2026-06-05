@@ -11,7 +11,7 @@ Operators list and revoke local tokens with `pnpm api-token:list` and `pnpm api-
 
 AI-client integrations use bearer API tokens. Store generated API tokens immediately; only token prefixes are listed later.
 
-Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the API or history browser are accessible outside localhost.
+Do not expose Postgres or Redis publicly. In Docker Compose they should remain on internal networks. Use TLS when the API or Explorer are accessible outside localhost.
 
 Public health probes are intentionally coarse. `/health` and `/ready` do not expose local paths, model details, dependency exception messages, or secret values.
 

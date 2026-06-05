@@ -33,17 +33,13 @@ pnpm test
 docker compose up --build
 ```
 
-The history browser is pulled from the private `koed-labs/koed-history-browser`
-repository during local builds. Set `GITHUB_TOKEN` in `.env` to a GitHub token
-that can read that repository before running `docker compose up --build`.
-
 Create a local API token for your AI client:
 
 ```bash
 pnpm api-token:create --owner-email local@koed.ai --name "Codex"
 ```
 
-The history browser runs beside the API:
+The Explorer runs beside the API:
 
 ```text
 http://localhost:5174
@@ -74,9 +70,6 @@ Start from `.env.example`:
 pnpm env:setup
 ```
 
-For local Docker builds, set `GITHUB_TOKEN` if you want the history browser to be
-fetched from `koed-labs/koed-history-browser`.
-
 See [Configuration](docs/configuration.md) for all environment variables,
 embedding settings, logging options, AI client values, and production notes.
 
@@ -89,7 +82,7 @@ Koed is composed of the following primary services:
 | `apps/api`               | API for auth, capture policy, memory capture, recall, graph inspection, export, and diagnostics |
 | `apps/worker`            | Background memory and embedding jobs                                                            |
 | `apps/embedding-service` | Local embedding and reranking service                                                           |
-| `apps/history-browser`   | History browser wrapper and Docker integration                                                  |
+| `apps/explorer`          | Explorer UI for inspecting captured Koed memory                                                 |
 | `packages/mcp-server`    | MCP Server, local answer bridge, and Codex Capture Hook                                         |
 | `packages/db`            | Postgres repositories, migrations, and operator scripts                                         |
 

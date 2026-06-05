@@ -20,7 +20,7 @@ pnpm --filter @koed/mcp-server build
 After build, the package exposes:
 
 - `koed-mcp`: stdio MCP server for Codex.
-- `koed-memory-answer-bridge`: standalone local HTTP bridge for History Browser
+- `koed-memory-answer-bridge`: standalone local HTTP bridge for Explorer
   questions. Normal MCP startup runs its own bridge.
 - `koed-capture-hook`: Codex lifecycle hook for automatic capture.
 
@@ -126,10 +126,10 @@ Provider-side hidden instructions are still controlled by Codex/OpenAI and are
 not visible to or removable by Koed. Task prompts for Memory Answer and LCM
 Summary remain separate from this app-server context minimisation layer.
 
-## History Browser Answer Bridge
+## Explorer Answer Bridge
 
 When `koed-mcp` starts, it also starts a local HTTP bridge on
-`http://localhost:3210` by default. The History Browser uses this bridge for
+`http://localhost:3210` by default. The Explorer uses this bridge for
 Questions; users do not need to run a separate app-server or answer bridge
 process for normal operation:
 

@@ -3321,7 +3321,7 @@ describe("account and access flows", () => {
     });
     const session = jsonBody<SessionResponse>(sessionResponse).session;
     for (const content of [
-      "Can we add early generated titles for history browser chats?",
+      "Can we add early generated titles for Explorer chats?",
       "Can those generated titles avoid waiting for LCM summaries?",
       "Please make manual renames keep winning over generated names."
     ]) {
@@ -3348,7 +3348,7 @@ describe("account and access flows", () => {
       url: `/v1/memory/session-titles/${session.id}`,
       headers,
       payload: {
-        title: "History Browser Titles",
+        title: "Explorer Titles",
         titleModel: "codex-app-server:test",
         titlePromptVersion: "session-title-codex-json-v1"
       }
@@ -3366,7 +3366,7 @@ describe("account and access flows", () => {
     ).toEqual([expect.objectContaining({ id: session.id })]);
     expect(submitted.statusCode).toBe(200);
     expect(jsonBody<{ title: string }>(submitted).title).toBe(
-      "History Browser Titles"
+      "Explorer Titles"
     );
     expect(
       jsonBody<{ sessions: Array<{ id: string }> }>(pendingAfterSubmit).sessions

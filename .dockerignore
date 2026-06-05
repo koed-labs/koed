@@ -13,6 +13,3 @@ coverage
 !.env.example
 *.tsbuildinfo
 **/*.tsbuildinfo
-apps/history-browser/*
-!apps/history-browser/Dockerfile
-!apps/history-browser/package.json
