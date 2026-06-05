@@ -41,6 +41,6 @@ writeFileSync(envPath, rendered, { mode: 0o600 });
 chmodSync(envPath, 0o600);
 console.log(
   existsSync(envPath) && existing
-    ? "Updated .env with any missing current self-hosted variables."
+    ? "Updated .env with any missing current Koed variables."
     : "Created .env with generated API_DATA_ENCRYPTION_KEY, API_TOKEN_PEPPER, and EMBEDDING_SERVICE_TOKEN."
 );

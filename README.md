@@ -114,6 +114,20 @@ pnpm --filter @koed/db migrate:up
 See [docs/backup-restore.md](docs/backup-restore.md) and
 [docs/upgrades.md](docs/upgrades.md).
 
+## Releases
+
+Koed currently uses one product release version for the Docker Compose
+distribution. Add a changeset for release-noteworthy changes:
+
+```bash
+pnpm changeset
+```
+
+Select `@koed/koed` and choose the SemVer bump for the deployment as a whole.
+Merging to `main` creates or updates a release pull request. Merging that
+release pull request verifies the release commit, creates a single `vX.Y.Z` tag,
+and publishes a GitHub Release.
+
 ## License
 
 Koed is licensed under the GNU Affero General Public License version 3 only

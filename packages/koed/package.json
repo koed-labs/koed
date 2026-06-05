@@ -1,0 +1,7 @@
+{
+  "name": "@koed/koed",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "description": "Release manifest for the Koed Docker Compose distribution"
+}
