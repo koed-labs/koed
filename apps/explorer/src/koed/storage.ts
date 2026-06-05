@@ -1,10 +1,10 @@
 import type { AiClient } from "./types";
 
-export const selectedThreadStorageKey = "koed_history_browser_thread_id";
-export const tokenStorageKey = "koed_history_browser_api_token";
-export const clientStorageKey = "koed_history_browser_ai_client";
+export const selectedThreadStorageKey = "koed_explorer_browser_thread_id";
+export const tokenStorageKey = "koed_explorer_browser_api_token";
+export const clientStorageKey = "koed_explorer_browser_ai_client";
 export const manualMemoryAgentStorageKey =
-  "koed_history_browser_manual_memory_agent";
+  "koed_explorer_browser_manual_memory_agent";
 
 export function readConfiguredToken() {
   return (

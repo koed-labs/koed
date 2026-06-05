@@ -142,7 +142,7 @@ function readManualWorkerConfig(): ManualMemoryQuestionWorkerConfig | null {
   return null;
 }
 
-export function KoedHistoryApp() {
+export function KoedExplorerApp() {
   const { theme, setTheme } = useTheme();
   const [apiToken, setApiToken] = useState(readConfiguredToken);
   const [answerBridgeUrl] = useState(readConfiguredAnswerBridgeUrl);
@@ -678,7 +678,7 @@ export function KoedHistoryApp() {
         className="border-r border-border bg-card text-foreground"
         resizable={{
           minWidth: 13 * 16,
-          storageKey: "koed_history_sidebar_width"
+          storageKey: "koed_explorer_sidebar_width"
         }}
       >
         <SidebarHeader className="gap-2 border-border border-b px-3 py-3">
@@ -695,10 +695,7 @@ export function KoedHistoryApp() {
               </div>
               <div className="min-w-0">
                 <div className="truncate font-semibold text-sm">
-                  Koed History
-                </div>
-                <div className="truncate text-muted-foreground text-xs">
-                  LCM graph browser
+                  Koed Explorer
                 </div>
               </div>
             </div>

@@ -3,12 +3,12 @@ import ReactDOM from "react-dom/client";
 
 import "./index.css";
 
-import { KoedHistoryApp } from "./koed/KoedHistoryApp";
+import { KoedExplorerApp } from "./koed/KoedExplorerApp";
 
-document.title = "Koed History";
+document.title = "Koed Explorer";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <KoedHistoryApp />
+    <KoedExplorerApp />
   </React.StrictMode>
 );

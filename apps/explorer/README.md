@@ -49,7 +49,7 @@ Use `pnpm test` for Vitest.
 
 ## Main Fork-Specific Files
 
-- `src/koed/KoedHistoryApp.tsx`
+- `src/koed/KoedExplorerApp.tsx`
 - `src/main.tsx`
 
 ## Performance Architecture

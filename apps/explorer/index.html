@@ -27,7 +27,9 @@
           'meta[name="theme-color"]'
         );
         try {
-          const storedTheme = window.localStorage.getItem("koed-history:theme");
+          const storedTheme = window.localStorage.getItem(
+            "koed-explorer:theme"
+          );
           const theme =
             storedTheme === "light" ||
             storedTheme === "dark" ||
