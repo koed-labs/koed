@@ -487,6 +487,19 @@ const createFakeRepository = (): MemorySourceRepository => {
     async listConversationProjectionActors() {
       return [];
     },
+    async listSemanticMemoryRebuildActors() {
+      return [];
+    },
+    async processDueSemanticMemoryRebuilds() {
+      return {
+        jobsClaimed: 0,
+        jobsCompleted: 0,
+        jobsFailed: 0,
+        memoryEventsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+    },
     async createMemoryQuestion(actor, input) {
       const now = new Date().toISOString();
       const record: MemoryQuestionDetailRecord = {

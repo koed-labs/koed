@@ -2699,19 +2699,33 @@ describeDb("memory repository visibility", () => {
       [node.id, alice.id, `display-node-${randomUUID()}`]
     );
 
-    expect(
-      await repo.invalidateLcmGraphEvent(
-        { userId: alice.id },
-        timelineEvents[2]!.id
-      )
-    ).toBe(true);
+    const previousRebuildDebounce =
+      process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
+    process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS = "0";
+    try {
+      expect(
+        await repo.invalidateLcmGraphEvent(
+          { userId: alice.id },
+          timelineEvents[2]!.id
+        )
+      ).toBe(true);
+    } finally {
+      if (previousRebuildDebounce === undefined) {
+        delete process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
+      } else {
+        process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS =
+          previousRebuildDebounce;
+      }
+    }
     const invalidated = await pool.query<{
+      id: string;
       semantic_unit_type: string | null;
       invalidated_at: Date | null;
       invalidation_reason: string | null;
     }>(
       `
         select
+          id,
           payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
           invalidated_at,
           invalidation_reason
@@ -2733,6 +2747,17 @@ describeDb("memory repository visibility", () => {
       `,
       [agentSemanticEventId, node.id]
     );
+    const queuedRebuild = await pool.query<{
+      status: string;
+      scheduled_after: Date;
+    }>(
+      `
+        select status, scheduled_after
+        from semantic_memory_rebuild_jobs
+        where memory_event_id = $1
+      `,
+      [agentSemanticEventId]
+    );
     const invalidatedNode = await pool.query<{
       invalidated_at: Date | null;
       invalidation_reason: string | null;
@@ -2741,21 +2766,101 @@ describeDb("memory repository visibility", () => {
       [node.id]
     );
 
-    expect(invalidated.rows[0]).toEqual({
-      semantic_unit_type: "user_turn",
-      invalidated_at: null,
-      invalidation_reason: null
-    });
+    expect(invalidated.rows[0]?.semantic_unit_type).toBe("user_turn");
+    expect(invalidated.rows[0]?.invalidated_at).toBeNull();
+    expect(invalidated.rows[0]?.invalidation_reason).toBeNull();
     expect(invalidated.rows[1]?.semantic_unit_type).toBe("agent_turn");
     expect(invalidated.rows[1]?.invalidated_at).toBeInstanceOf(Date);
     expect(invalidated.rows[1]?.invalidation_reason).toBe(
       "source_event_deleted"
     );
     expect(invalidatedEmbeddings.rows[0]?.count).toBe("2");
+    expect(queuedRebuild.rows[0]).toMatchObject({ status: "pending" });
+    expect(queuedRebuild.rows[0]?.scheduled_after).toBeInstanceOf(Date);
     expect(invalidatedNode.rows[0]?.invalidated_at).toBeInstanceOf(Date);
     expect(invalidatedNode.rows[0]?.invalidation_reason).toBe(
       "source_event_deleted"
     );
+
+    const rebuildResult = await repo.processDueSemanticMemoryRebuilds(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    expect(rebuildResult).toMatchObject({
+      jobsClaimed: 1,
+      jobsCompleted: 1,
+      jobsFailed: 0,
+      memoryEventsCreated: 1
+    });
+    const replacementEventId = rebuildResult.memoryEventIds[0];
+    if (!replacementEventId) {
+      throw new Error("Expected replacement semantic Memory Event");
+    }
+    const rebuiltEvents = await pool.query<{
+      id: string;
+      content: string;
+      semantic_unit_type: string | null;
+      rebuilt_from: string | null;
+      rebuild_reason: string | null;
+      invalidated_at: Date | null;
+    }>(
+      `
+        select
+          id,
+          payload ->> 'content' as content,
+          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
+          payload #>> '{metadata,semanticBundleRebuiltFromMemoryEventId}' as rebuilt_from,
+          payload #>> '{metadata,semanticBundleRebuildReason}' as rebuild_reason,
+          invalidated_at
+        from memory_events
+        where session_id = $1
+        order by created_at asc
+      `,
+      [session.id]
+    );
+    const replacement = rebuiltEvents.rows.find(
+      (row) => row.id === replacementEventId
+    );
+    expect(replacement).toMatchObject({
+      semantic_unit_type: "agent_turn",
+      rebuilt_from: agentSemanticEventId,
+      rebuild_reason: "source_event_deleted",
+      invalidated_at: null
+    });
+    expect(replacement?.content).toContain('{"cmd":"rg projection"}');
+    expect(replacement?.content).toContain("Display reply");
+    expect(replacement?.content).not.toContain("projection match");
+    const rebuildJob = await pool.query<{
+      status: string;
+      replacement_memory_event_ids: string[];
+    }>(
+      `
+        select status, replacement_memory_event_ids
+        from semantic_memory_rebuild_jobs
+        where memory_event_id = $1
+      `,
+      [agentSemanticEventId]
+    );
+    expect(rebuildJob.rows[0]).toEqual({
+      status: "completed",
+      replacement_memory_event_ids: [replacementEventId]
+    });
+    const replacementSource = await repo.getEmbeddableSource(
+      "memory_event",
+      replacementEventId
+    );
+    expect(replacementSource?.text).toBe(replacement?.content);
+    if (!replacementSource) {
+      throw new Error("Expected rebuilt Memory Event to be embeddable");
+    }
+    const storedEmbedding = await repo.upsertSourceEmbedding({
+      source: replacementSource,
+      model: "test-model",
+      dimensions: 384,
+      version: "test-version",
+      vector: Array.from({ length: 384 }, () => 0)
+    });
+    expect(storedEmbedding.inserted).toBe(true);
   });
 
   it("projects hook-only tool payloads into semantic memory and tool events", async () => {
