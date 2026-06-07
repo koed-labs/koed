@@ -30,6 +30,8 @@ const originalDepthOneFanout = process.env.MEMORY_LCM_DEPTH1_FANOUT;
 const originalMemoryEventMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
 const originalAgentTurnStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
 const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
+const originalSemanticMemoryRebuildDebounceMs =
+  process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
 
 const describeDb = runDbTests ? describe : describe.skip;
 
@@ -367,6 +369,12 @@ describeDb("memory repository visibility", () => {
       delete process.env.EMBEDDING_MAX_TOKENS;
     } else {
       process.env.EMBEDDING_MAX_TOKENS = originalEmbeddingMaxTokens;
+    }
+    if (originalSemanticMemoryRebuildDebounceMs === undefined) {
+      delete process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
+    } else {
+      process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS =
+        originalSemanticMemoryRebuildDebounceMs;
     }
     await pool?.end();
   });
@@ -2861,6 +2869,132 @@ describeDb("memory repository visibility", () => {
       vector: Array.from({ length: 384 }, () => 0)
     });
     expect(storedEmbedding.inserted).toBe(true);
+
+    await pool.query(
+      `
+        insert into memory_embeddings (
+          message_id, owner_user_id, visibility, embedding_model,
+          embedding_dimensions, embedding_version, source_hash,
+          source_chunk_index, source_chunk_count, source_text
+        )
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply')
+      `,
+      [timelineEvents[3]!.id, alice.id, `display-message-${randomUUID()}`]
+    );
+
+    const previousMessageRebuildDebounce =
+      process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
+    process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS = "0";
+    try {
+      expect(
+        await repo.invalidateLcmGraphEvent(
+          { userId: alice.id },
+          timelineEvents[3]!.id
+        )
+      ).toBe(true);
+    } finally {
+      if (previousMessageRebuildDebounce === undefined) {
+        delete process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
+      } else {
+        process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS =
+          previousMessageRebuildDebounce;
+      }
+    }
+
+    const messageDeleteState = await pool.query<{
+      replacement_invalidated_at: Date | null;
+      replacement_invalidation_reason: string | null;
+      invalidated_message_embeddings: string;
+    }>(
+      `
+        select
+          me.invalidated_at as replacement_invalidated_at,
+          me.invalidation_reason as replacement_invalidation_reason,
+          (
+            select count(*)::text
+            from memory_embeddings emb
+            where emb.message_id = $2
+              and emb.invalidated_at is not null
+          ) as invalidated_message_embeddings
+        from memory_events me
+        where me.id = $1
+      `,
+      [replacementEventId, timelineEvents[3]!.id]
+    );
+    expect(
+      messageDeleteState.rows[0]?.replacement_invalidated_at
+    ).toBeInstanceOf(Date);
+    expect(messageDeleteState.rows[0]?.replacement_invalidation_reason).toBe(
+      "source_event_deleted"
+    );
+    expect(messageDeleteState.rows[0]?.invalidated_message_embeddings).toBe(
+      "1"
+    );
+
+    const messageRebuildResult = await repo.processDueSemanticMemoryRebuilds(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    expect(messageRebuildResult).toMatchObject({
+      jobsClaimed: 1,
+      jobsCompleted: 1,
+      jobsFailed: 0,
+      memoryEventsCreated: 1
+    });
+    const messageReplacementEventId = messageRebuildResult.memoryEventIds[0];
+    if (!messageReplacementEventId) {
+      throw new Error("Expected replacement after message deletion");
+    }
+    const messageReplacement = await pool.query<{
+      content: string;
+      semantic_unit_type: string | null;
+      rebuilt_from: string | null;
+      rebuild_reason: string | null;
+      invalidated_at: Date | null;
+    }>(
+      `
+        select
+          payload ->> 'content' as content,
+          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
+          payload #>> '{metadata,semanticBundleRebuiltFromMemoryEventId}' as rebuilt_from,
+          payload #>> '{metadata,semanticBundleRebuildReason}' as rebuild_reason,
+          invalidated_at
+        from memory_events
+        where id = $1
+      `,
+      [messageReplacementEventId]
+    );
+    expect(messageReplacement.rows[0]).toMatchObject({
+      semantic_unit_type: "agent_turn",
+      rebuilt_from: replacementEventId,
+      rebuild_reason: "source_event_deleted",
+      invalidated_at: null
+    });
+    expect(messageReplacement.rows[0]?.content).toContain(
+      '{"cmd":"rg projection"}'
+    );
+    expect(messageReplacement.rows[0]?.content).not.toContain("Display reply");
+    expect(messageReplacement.rows[0]?.content).not.toContain(
+      "projection match"
+    );
+    const messageReplacementSource = await repo.getEmbeddableSource(
+      "memory_event",
+      messageReplacementEventId
+    );
+    expect(messageReplacementSource?.text).toBe(
+      messageReplacement.rows[0]?.content
+    );
+    if (!messageReplacementSource) {
+      throw new Error("Expected message-deletion replacement to be embeddable");
+    }
+    const messageReplacementEmbedding = await repo.upsertSourceEmbedding({
+      source: messageReplacementSource,
+      model: "test-model",
+      dimensions: 384,
+      version: "test-version",
+      vector: Array.from({ length: 384 }, () => 1)
+    });
+    expect(messageReplacementEmbedding.inserted).toBe(true);
   });
 
   it("projects hook-only tool payloads into semantic memory and tool events", async () => {

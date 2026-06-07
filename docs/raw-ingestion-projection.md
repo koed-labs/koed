@@ -116,6 +116,13 @@ bound that background work. Local app-server answer and LCM workers also ask
 the API to project the exact raw rows they just persisted before they write the
 derived answer or summary.
 
+When a display item is deleted, Koed excludes the underlying raw source item
+from semantic memory immediately and invalidates affected Memory Events and
+embeddings. A durable rebuild job then waits for
+`SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS` before the worker creates replacement
+Memory Events from the surviving source items and embeds them through the normal
+embedding workflow.
+
 ## Token Usage
 
 `workflow_token_usage` stores token attribution by workflow, model,
