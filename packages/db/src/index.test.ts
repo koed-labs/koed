@@ -2588,10 +2588,13 @@ describeDb("memory repository visibility", () => {
       }
     );
     const semanticEvents = await pool.query<{
+      id: string;
       semantic_unit_type: string | null;
     }>(
       `
-	        select payload #>> '{metadata,semanticUnitType}' as semantic_unit_type
+	        select
+            id,
+            payload #>> '{metadata,semanticUnitType}' as semantic_unit_type
 	        from memory_events
 	        where session_id = $1
 	        order by source_sequence asc nulls last, created_at asc
@@ -2638,7 +2641,11 @@ describeDb("memory repository visibility", () => {
         output: "projection match"
       }
     });
-    expect(semanticEvents.rows).toEqual([
+    expect(
+      semanticEvents.rows.map((row) => ({
+        semantic_unit_type: row.semantic_unit_type
+      }))
+    ).toEqual([
       { semantic_unit_type: "user_turn" },
       { semantic_unit_type: "agent_turn" }
     ]);
@@ -2646,6 +2653,109 @@ describeDb("memory repository visibility", () => {
       eventCount: 4,
       sample: "Display reply"
     });
+
+    const agentSemanticEventId = semanticEvents.rows.find(
+      (row) => row.semantic_unit_type === "agent_turn"
+    )?.id;
+    if (!agentSemanticEventId) {
+      throw new Error("Expected projected agent semantic event");
+    }
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Display reply node",
+        captureMethod: "hook",
+        sourceRuntime: "codex"
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0)
+      `,
+      [node.id, agentSemanticEventId]
+    );
+    await pool.query(
+      `
+        insert into memory_embeddings (
+          memory_event_id, owner_user_id, visibility, embedding_model,
+          embedding_dimensions, embedding_version, source_hash,
+          source_chunk_index, source_chunk_count, source_text
+        )
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply')
+      `,
+      [agentSemanticEventId, alice.id, `display-semantic-${randomUUID()}`]
+    );
+    await pool.query(
+      `
+        insert into memory_embeddings (
+          memory_node_id, owner_user_id, visibility, embedding_model,
+          embedding_dimensions, embedding_version, source_hash,
+          source_chunk_index, source_chunk_count, source_text
+        )
+        values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply node')
+      `,
+      [node.id, alice.id, `display-node-${randomUUID()}`]
+    );
+
+    expect(
+      await repo.invalidateLcmGraphEvent(
+        { userId: alice.id },
+        timelineEvents[2]!.id
+      )
+    ).toBe(true);
+    const invalidated = await pool.query<{
+      semantic_unit_type: string | null;
+      invalidated_at: Date | null;
+      invalidation_reason: string | null;
+    }>(
+      `
+        select
+          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
+          invalidated_at,
+          invalidation_reason
+        from memory_events
+        where session_id = $1
+        order by source_sequence asc nulls last, created_at asc
+      `,
+      [session.id]
+    );
+    const invalidatedEmbeddings = await pool.query<{ count: string }>(
+      `
+        select count(*)::text as count
+        from memory_embeddings
+        where invalidated_at is not null
+          and (
+            memory_event_id = $1
+            or memory_node_id = $2
+          )
+      `,
+      [agentSemanticEventId, node.id]
+    );
+    const invalidatedNode = await pool.query<{
+      invalidated_at: Date | null;
+      invalidation_reason: string | null;
+    }>(
+      "select invalidated_at, invalidation_reason from memory_nodes where id = $1",
+      [node.id]
+    );
+
+    expect(invalidated.rows[0]).toEqual({
+      semantic_unit_type: "user_turn",
+      invalidated_at: null,
+      invalidation_reason: null
+    });
+    expect(invalidated.rows[1]?.semantic_unit_type).toBe("agent_turn");
+    expect(invalidated.rows[1]?.invalidated_at).toBeInstanceOf(Date);
+    expect(invalidated.rows[1]?.invalidation_reason).toBe(
+      "source_event_deleted"
+    );
+    expect(invalidatedEmbeddings.rows[0]?.count).toBe("2");
+    expect(invalidatedNode.rows[0]?.invalidated_at).toBeInstanceOf(Date);
+    expect(invalidatedNode.rows[0]?.invalidation_reason).toBe(
+      "source_event_deleted"
+    );
   });
 
   it("projects hook-only tool payloads into semantic memory and tool events", async () => {

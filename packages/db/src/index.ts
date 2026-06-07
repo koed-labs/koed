@@ -3664,6 +3664,132 @@ const linkMemoryEventSources = async (
   }
 };
 
+const invalidateDerivedMemoryForMemoryEvents = async (
+  pool: pg.Pool,
+  memoryEventIds: string[]
+): Promise<void> => {
+  const uniqueEventIds = uniqueOrderedStrings(memoryEventIds);
+  if (uniqueEventIds.length === 0) {
+    return;
+  }
+
+  await pool.query(
+    `
+      update memory_embeddings
+      set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+      where memory_event_id = any($1::uuid[])
+        and invalidated_at is null
+    `,
+    [uniqueEventIds]
+  );
+
+  const affectedNodes = await pool.query<{ id: string }>(
+    `
+      with recursive affected_nodes as (
+        select distinct mns.memory_node_id as id
+        from memory_node_sources mns
+        where mns.memory_event_id = any($1::uuid[])
+
+        union
+
+        select mnc.parent_memory_node_id as id
+        from memory_node_children mnc
+        join affected_nodes affected
+          on affected.id = mnc.child_memory_node_id
+      )
+      update memory_nodes mn
+      set
+        invalidated_at = coalesce(mn.invalidated_at, now()),
+        invalidation_reason = coalesce(mn.invalidation_reason, 'source_event_deleted'),
+        updated_at = now()
+      where mn.id in (select id from affected_nodes)
+        and mn.invalidated_at is null
+      returning mn.id
+    `,
+    [uniqueEventIds]
+  );
+
+  const nodeIds = affectedNodes.rows.map((row) => row.id);
+  if (nodeIds.length === 0) {
+    return;
+  }
+  await pool.query(
+    `
+      update memory_embeddings
+      set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+      where memory_node_id = any($1::uuid[])
+        and invalidated_at is null
+    `,
+    [nodeIds]
+  );
+};
+
+const invalidateSemanticMemoryForDisplayEvent = async (
+  pool: pg.Pool,
+  input: {
+    actorUserId: string;
+    eventId: string;
+    sourceTable: "messages" | "tool_events";
+  }
+): Promise<string[]> => {
+  const sourcePrefix = input.sourceTable === "messages" ? "message" : "tool";
+  const affected = await pool.query<{ id: string }>(
+    `
+      with display_source as (
+        select
+          owner_user_id,
+          visibility,
+          session_id,
+          idempotency_key,
+          source_hash,
+          transcript_item_id
+        from ${input.sourceTable}
+        where id = $1
+          and visibility = 'personal'
+          and owner_user_id = $2
+        limit 1
+      ),
+      raw_sources as (
+        select distinct ci.id
+        from display_source ds
+        join conversation_items ci
+          on ci.visibility = ds.visibility
+          and ci.owner_user_id = ds.owner_user_id
+        where (
+          ds.idempotency_key = $3 || ':' || coalesce(ci.logical_source_id, ci.id::text)
+          or ds.source_hash = $3 || ':' || coalesce(ci.logical_source_id, ci.source_hash)
+          or (
+            ds.session_id is not distinct from ci.session_id
+            and ds.transcript_item_id is not null
+            and ci.source_sequence is not null
+            and ds.transcript_item_id = ci.source_sequence::text
+          )
+        )
+      ),
+      affected_memory_events as (
+        select distinct mes.memory_event_id as id
+        from memory_event_sources mes
+        join raw_sources rs on rs.id = mes.conversation_item_id
+        join memory_events me on me.id = mes.memory_event_id
+        where me.visibility = 'personal'
+          and me.owner_user_id = $2
+          and me.invalidated_at is null
+      )
+      update memory_events me
+      set
+        invalidated_at = coalesce(me.invalidated_at, now()),
+        invalidation_reason = coalesce(me.invalidation_reason, 'source_event_deleted')
+      from affected_memory_events affected
+      where me.id = affected.id
+      returning me.id
+    `,
+    [input.eventId, input.actorUserId, sourcePrefix]
+  );
+  const affectedIds = affected.rows.map((row) => row.id);
+  await invalidateDerivedMemoryForMemoryEvents(pool, affectedIds);
+  return affectedIds;
+};
+
 const captureMethodForConversationItem = (
   item: Pick<ConversationItemInput, "sourceTransport">
 ): CaptureMethod => {
@@ -7651,21 +7777,24 @@ export const createMemorySourceRepository = (
       ]
     );
     if (input.invalidated) {
-      const embeddingColumn =
-        updateTable === "messages"
-          ? "message_id"
-          : updateTable === "tool_events"
-            ? null
-            : "memory_event_id";
-      if (embeddingColumn) {
-        await pool.query(
-          `
-            update memory_embeddings
-            set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
-            where ${embeddingColumn} = $1 and invalidated_at is null
-          `,
-          [eventId]
-        );
+      if (updateTable === "memory_events") {
+        await invalidateDerivedMemoryForMemoryEvents(pool, [eventId]);
+      } else {
+        await invalidateSemanticMemoryForDisplayEvent(pool, {
+          actorUserId: actor.userId,
+          eventId,
+          sourceTable: updateTable
+        });
+        if (updateTable === "messages") {
+          await pool.query(
+            `
+              update memory_embeddings
+              set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+              where message_id = $1 and invalidated_at is null
+            `,
+            [eventId]
+          );
+        }
       }
     }
     return this.getLcmGraphEvent(actor, eventId, {
