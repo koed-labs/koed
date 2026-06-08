@@ -62,11 +62,15 @@ Current durable audit action names:
 - `api_token.revoked`
 - `capture_policy.upserted`
 - `capture_policy.deleted`
+- `memory.deleted`
+- `memory.presentation_updated`
+- `memory_event.invalidated`
 
 Audit metadata may include identifiers, target names, target type, capture
-state, visibility, pause timestamps, token prefixes, and actor type. Audit
-metadata must not include token secrets, token hashes, session cookies,
-passwords, memory content, search query text, or raw request bodies.
+state, visibility, pause timestamps, token prefixes, actor type, and changed
+field names. Audit metadata must not include token secrets, token hashes,
+session cookies, passwords, memory content, search query text, or raw request
+bodies.
 
 ## Embedding Service Logs
 

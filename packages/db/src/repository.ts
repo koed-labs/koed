@@ -4785,7 +4785,45 @@ export const createMemorySourceRepository = (
         input.visibility ?? null
       ]
     );
-    return result.rows[0] ? mapMemoryBrowserItem(result.rows[0]) : null;
+    const updated = result.rows[0]
+      ? mapMemoryBrowserItem(result.rows[0])
+      : null;
+    if (updated) {
+      const previousPinned = Boolean(existing.pinnedAt);
+      const nextPinned = Boolean(updated.pinnedAt);
+      const changedFields = [
+        input.summaryText !== undefined &&
+        input.summaryText !== existing.summaryText
+          ? "summaryText"
+          : null,
+        input.pinned !== undefined && input.pinned !== previousPinned
+          ? "pinned"
+          : null,
+        input.visibility !== undefined &&
+        input.visibility !== existing.visibility
+          ? "visibility"
+          : null
+      ].filter((field): field is string => Boolean(field));
+
+      if (changedFields.length > 0) {
+        await this.recordAuditEvent({
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: updated.visibility,
+          action: "memory.presentation_updated",
+          targetTable: "memory_nodes",
+          targetId: nodeId,
+          metadata: {
+            changedFields,
+            previousVisibility: existing.visibility,
+            nextVisibility: updated.visibility,
+            previousPinned,
+            nextPinned
+          }
+        });
+      }
+    }
+    return updated;
   },
 
   async deleteMemory(actor, nodeId) {
@@ -4804,7 +4842,24 @@ export const createMemorySourceRepository = (
       `,
       [actor.userId, nodeId]
     );
-    return (result.rowCount ?? 0) > 0;
+    const deleted = (result.rowCount ?? 0) > 0;
+    if (deleted) {
+      await this.recordAuditEvent({
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: existing.visibility,
+        action: "memory.deleted",
+        targetTable: "memory_nodes",
+        targetId: nodeId,
+        metadata: {
+          projectId: existing.projectId ?? null,
+          projectName: existing.projectName ?? null,
+          threadId: existing.threadId ?? null,
+          threadName: existing.threadName ?? null
+        }
+      });
+    }
+    return deleted;
   },
 
   async getLcmGraphOverview(actor) {
@@ -5501,9 +5556,30 @@ export const createMemorySourceRepository = (
         [eventId]
       );
     }
-    return this.getLcmGraphEvent(actor, eventId, {
+    const updated = await this.getLcmGraphEvent(actor, eventId, {
       includeInvalidated: Boolean(input.invalidated)
     });
+    if (input.invalidated && updated) {
+      await this.recordAuditEvent({
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: updated.visibility,
+        action: "memory_event.invalidated",
+        targetTable: "memory_events",
+        targetId: eventId,
+        metadata: {
+          eventType: existing.eventType,
+          projectId: existing.projectId,
+          projectName: existing.projectName,
+          sessionId: existing.sessionId,
+          threadId: existing.threadId,
+          threadName: existing.threadName,
+          captureMethod: existing.captureMethod,
+          sourceRuntime: existing.sourceRuntime
+        }
+      });
+    }
+    return updated;
   },
 
   async invalidateLcmGraphEvent(actor, eventId) {

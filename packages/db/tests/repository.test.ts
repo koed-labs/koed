@@ -438,6 +438,110 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("audits successful destructive memory actions without cross-user attempts or memory content", async () => {
+    const alice = await repo.createUser({
+      email: `alice-destructive-audit-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-destructive-audit-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Sensitive node text must not enter audit metadata",
+        captureMethod: "hook",
+        sourceRuntime: "codex"
+      }
+    );
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId: "audit-workspace",
+      content: "Sensitive event text must not enter audit metadata"
+    });
+
+    expect(
+      await repo.updateMemoryPresentation({ userId: bob.id }, node.id, {
+        summaryText: "Bob rewrite attempt"
+      })
+    ).toBeNull();
+    expect(await repo.deleteMemory({ userId: bob.id }, node.id)).toBe(false);
+    expect(
+      await repo.invalidateLcmGraphEvent({ userId: bob.id }, event.id)
+    ).toBe(false);
+
+    const updatedNode = await repo.updateMemoryPresentation(
+      { userId: alice.id },
+      node.id,
+      {
+        summaryText: "Updated sensitive node text",
+        pinned: true
+      }
+    );
+    expect(updatedNode).toMatchObject({ id: node.id });
+    expect(updatedNode?.pinnedAt).toEqual(expect.any(String));
+    expect(
+      await repo.invalidateLcmGraphEvent({ userId: alice.id }, event.id)
+    ).toBe(true);
+    expect(await repo.deleteMemory({ userId: alice.id }, node.id)).toBe(true);
+
+    const auditEvents = await repo.listAuditEvents({ userId: alice.id });
+    expect(auditEvents.map((eventRecord) => eventRecord.action).sort()).toEqual(
+      [
+        "memory.deleted",
+        "memory.presentation_updated",
+        "memory_event.invalidated"
+      ]
+    );
+    expect(await repo.listAuditEvents({ userId: bob.id })).toEqual([]);
+    expect(
+      auditEvents.every(
+        (eventRecord) =>
+          eventRecord.actorUserId === alice.id &&
+          eventRecord.ownerUserId === alice.id
+      )
+    ).toBe(true);
+    expect(
+      auditEvents.find(
+        (eventRecord) => eventRecord.action === "memory.presentation_updated"
+      )
+    ).toMatchObject({
+      visibility: "personal",
+      targetTable: "memory_nodes",
+      targetId: node.id,
+      metadata: {
+        changedFields: ["summaryText", "pinned"],
+        previousVisibility: "personal",
+        nextVisibility: "personal",
+        previousPinned: false,
+        nextPinned: true
+      }
+    });
+    expect(
+      auditEvents.find((eventRecord) => eventRecord.action === "memory.deleted")
+    ).toMatchObject({
+      visibility: "personal",
+      targetTable: "memory_nodes",
+      targetId: node.id
+    });
+    expect(
+      auditEvents.find(
+        (eventRecord) => eventRecord.action === "memory_event.invalidated"
+      )
+    ).toMatchObject({
+      visibility: "personal",
+      targetTable: "memory_events",
+      targetId: event.id,
+      metadata: {
+        eventType: "user_prompt",
+        projectId: "audit-workspace"
+      }
+    });
+    expect(
+      JSON.stringify(auditEvents.map((eventRecord) => eventRecord.metadata))
+    ).not.toContain("Sensitive");
+  });
+
   it("captures personal facts, compacts, searches, answers, and expands a cited node", async () => {
     const alice = await repo.createUser({
       email: `alice-${randomUUID()}@example.com`
