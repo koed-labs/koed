@@ -551,6 +551,19 @@ const createFakeRepository = (): MemorySourceRepository => {
     async listConversationProjectionActors() {
       return [];
     },
+    async listSemanticMemoryRebuildActors() {
+      return [];
+    },
+    async processDueSemanticMemoryRebuilds() {
+      return {
+        jobsClaimed: 0,
+        jobsCompleted: 0,
+        jobsFailed: 0,
+        memoryEventsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+    },
     async createMemoryQuestion(actor, input) {
       const now = new Date().toISOString();
       const record: MemoryQuestionDetailRecord = {
@@ -1814,15 +1827,31 @@ describe("api health", () => {
         "access-control-request-method": "PUT"
       }
     });
+    const streamResponse = await app.inject({
+      method: "OPTIONS",
+      url: "/v1/memory/graph/stream",
+      headers: {
+        origin: "http://localhost:5174",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization,accept"
+      }
+    });
     await app.close();
 
     expect(patchResponse.statusCode).toBe(204);
     expect(putResponse.statusCode).toBe(204);
+    expect(streamResponse.statusCode).toBe(204);
     expect(patchResponse.headers["access-control-allow-methods"]).toContain(
       "PATCH"
     );
     expect(putResponse.headers["access-control-allow-methods"]).toContain(
       "PUT"
+    );
+    expect(streamResponse.headers["access-control-allow-methods"]).toContain(
+      "GET"
+    );
+    expect(streamResponse.headers["access-control-allow-headers"]).toContain(
+      "authorization"
     );
   });
 

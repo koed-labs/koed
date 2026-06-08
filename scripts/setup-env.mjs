@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { renderSetupEnv } from "./setup-env-lib.mjs";
+import { parseEnv, renderSetupEnv } from "./setup-env-lib.mjs";
 
 const envPath = resolve(process.cwd(), ".env");
 const examplePath = resolve(process.cwd(), ".env.example");
@@ -28,8 +28,37 @@ if (syncResult.status !== 0) {
 
 const example = readFileSync(examplePath, "utf8");
 const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+const currentValues = parseEnv(existing);
+const exampleValues = parseEnv(example);
+
+const usableEnvValue = (value) =>
+  value !== undefined &&
+  value.trim() !== "" &&
+  !value.trim().startsWith("replace_with_");
+
+const configuredOrExampleValue = (key, fallback) => {
+  const current = currentValues.get(key);
+  if (usableEnvValue(current)) {
+    return current;
+  }
+  const fromExample = exampleValues.get(key);
+  return usableEnvValue(fromExample) ? fromExample : fallback;
+};
+
+const generatedPostgresPassword = randomBytes(32).toString("base64url");
+const postgresPassword = configuredOrExampleValue(
+  "POSTGRES_PASSWORD",
+  generatedPostgresPassword
+);
+const postgresDatabaseUrl =
+  `postgres://${encodeURIComponent(configuredOrExampleValue("POSTGRES_USER", "koed"))}` +
+  `:${encodeURIComponent(postgresPassword)}` +
+  `@localhost:${configuredOrExampleValue("POSTGRES_HOST_PORT", "15432")}` +
+  `/${encodeURIComponent(configuredOrExampleValue("POSTGRES_DB", "koed"))}`;
 
 const generatedValues = new Map([
+  ["POSTGRES_PASSWORD", generatedPostgresPassword],
+  ["DATABASE_URL", postgresDatabaseUrl],
   ["API_DATA_ENCRYPTION_KEY", randomBytes(32).toString("base64")],
   ["API_TOKEN_PEPPER", randomBytes(48).toString("base64url")],
   ["EMBEDDING_SERVICE_TOKEN", randomBytes(32).toString("base64url")]
@@ -42,5 +71,5 @@ chmodSync(envPath, 0o600);
 console.log(
   existsSync(envPath) && existing
     ? "Updated .env with any missing current Koed variables."
-    : "Created .env with generated API_DATA_ENCRYPTION_KEY, API_TOKEN_PEPPER, and EMBEDDING_SERVICE_TOKEN."
+    : "Created .env with generated POSTGRES_PASSWORD, API_DATA_ENCRYPTION_KEY, API_TOKEN_PEPPER, and EMBEDDING_SERVICE_TOKEN."
 );

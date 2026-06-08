@@ -92,6 +92,9 @@ export const graphUpdateKey = (payload: GraphUpdatePayload): string => {
   return "global";
 };
 
+const isGraphDisplayEventTable = (table: string | undefined): boolean =>
+  table === "memory_events" || table === "messages" || table === "tool_events";
+
 export const guardedBroadcastGraphUpdate = ({
   app,
   clients,
@@ -169,7 +172,7 @@ export const createGraphStreamService = async ({
     }
     const key = graphUpdateKey(payload);
     const eventRef =
-      payload.table === "memory_events" &&
+      isGraphDisplayEventTable(payload.table) &&
       payload.operation !== "DELETE" &&
       payload.id &&
       payload.projectId &&
@@ -289,6 +292,22 @@ export const createGraphStreamService = async ({
   }
 
   const registerRoutes = () => {
+    app.options("/v1/memory/graph/stream", async (request, reply) => {
+      const origin = request.headers.origin?.replace(/\/+$/, "");
+      if (origin && corsOrigins.has(origin)) {
+        reply.header("access-control-allow-origin", origin);
+        reply.header("access-control-allow-credentials", "true");
+        reply.header("vary", "Origin");
+      }
+      reply.header("access-control-allow-methods", "GET, OPTIONS");
+      reply.header(
+        "access-control-allow-headers",
+        request.headers["access-control-request-headers"] ??
+          "authorization, accept"
+      );
+      return reply.status(204).send();
+    });
+
     app.get("/v1/memory/graph/stream", async (request, reply) => {
       const user = await auth.authenticate(request);
       const origin = request.headers.origin?.replace(/\/+$/, "");

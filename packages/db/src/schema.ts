@@ -184,6 +184,7 @@ export const turns = pgTable(
     codexTranscriptPath: text("codex_transcript_path"),
     idempotencyKey: text("idempotency_key"),
     sourceHash: text("source_hash"),
+    createdAt: now(),
     capturedAt: timestamp("captured_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -345,6 +346,8 @@ export const memoryEvents = pgTable(
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
+    tokenCount: integer("token_count"),
+    sealReason: text("seal_reason"),
     sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
     sourceSequence: bigint("source_sequence", { mode: "number" }),
     capturedAt: timestamp("captured_at", { withTimezone: true })
@@ -832,6 +835,12 @@ export const conversationItems = pgTable(
     projectionVersion: text("projection_version"),
     projectedAt: timestamp("projected_at", { withTimezone: true }),
     projectionError: text("projection_error"),
+    memoryExcludedAt: timestamp("memory_excluded_at", { withTimezone: true }),
+    memoryExclusionReason: text("memory_exclusion_reason"),
+    memoryExcludedByUserId: uuid("memory_excluded_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -872,6 +881,9 @@ export const conversationItems = pgTable(
       table.observedAt,
       table.id
     ),
+    index("conversation_items_memory_excluded_idx")
+      .on(table.ownerUserId, table.memoryExcludedAt)
+      .where(sql`${table.memoryExcludedAt} is not null`),
     index("conversation_items_personal_logical_source_idx")
       .on(table.ownerUserId, table.logicalSourceId, table.transportChunkIndex)
       .where(
@@ -927,6 +939,62 @@ export const memoryEventSources = pgTable(
     index("memory_event_sources_memory_event_order_idx").on(
       table.memoryEventId,
       table.sourceOrder
+    )
+  ]
+);
+
+export const semanticMemoryRebuildJobs = pgTable(
+  "semantic_memory_rebuild_jobs",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    memoryEventId: uuid("memory_event_id")
+      .notNull()
+      .references(() => memoryEvents.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    scheduledAfter: timestamp("scheduled_after", { withTimezone: true })
+      .notNull(),
+    processingStartedAt: timestamp("processing_started_at", {
+      withTimezone: true
+    }),
+    processingLeaseUntil: timestamp("processing_lease_until", {
+      withTimezone: true
+    }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastErrorMessage: text("last_error_message"),
+    replacementMemoryEventIds: uuid("replacement_memory_event_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("semantic_memory_rebuild_jobs_active_unique")
+      .on(table.memoryEventId)
+      .where(sql`${table.status} in ('pending', 'processing')`),
+    index("semantic_memory_rebuild_jobs_due_idx")
+      .on(table.status, table.scheduledAfter, table.id)
+      .where(sql`${table.status} in ('pending', 'error')`),
+    index("semantic_memory_rebuild_jobs_actor_due_idx")
+      .on(table.ownerUserId, table.status, table.scheduledAfter, table.id)
+      .where(
+        sql`${table.visibility} = 'personal' and ${table.status} in ('pending', 'error')`
+      ),
+    check(
+      "semantic_memory_rebuild_jobs_personal_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "semantic_memory_rebuild_jobs_attempt_count_check",
+      sql`${table.attemptCount} >= 0`
+    ),
+    check(
+      "semantic_memory_rebuild_jobs_status_check",
+      sql`${table.status} in ('pending', 'processing', 'completed', 'error')`
     )
   ]
 );

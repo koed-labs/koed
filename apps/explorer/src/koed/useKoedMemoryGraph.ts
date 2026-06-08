@@ -108,6 +108,27 @@ function parseGraphUpdateFrame(frame: string): GraphUpdatePayload | null {
   }
 }
 
+function isGraphDisplayEventTable(table: unknown): boolean {
+  return (
+    table === "memory_events" || table === "messages" || table === "tool_events"
+  );
+}
+
+function isGraphDisplayEventPayload(
+  payload: GraphUpdatePayload | null
+): payload is GraphUpdatePayload & {
+  id: string;
+  projectId: string;
+  threadId: string;
+} {
+  return (
+    isGraphDisplayEventTable(payload?.table) &&
+    typeof payload?.id === "string" &&
+    typeof payload?.projectId === "string" &&
+    typeof payload?.threadId === "string"
+  );
+}
+
 export function mergeEventDetail(
   existing: GraphEvent,
   detail: GraphEvent
@@ -1007,7 +1028,7 @@ export function useKoedMemoryGraph({
             reason: "selected-event-fetch-failed"
           });
         } else if (notSelected) {
-          scheduleRefresh({ reason: "legacy-event-not-selected" });
+          scheduleRefresh({ reason: "stream-event-not-selected" });
         }
       });
     };
@@ -1125,10 +1146,7 @@ export function useKoedMemoryGraph({
               const selectedKey = selectedThreadKeyRef.current;
               const eventRefs = Array.isArray(payload?.eventRefs)
                 ? payload.eventRefs.filter(isStreamEventRef)
-                : payload?.table === "memory_events" &&
-                    typeof payload.id === "string" &&
-                    typeof payload.projectId === "string" &&
-                    typeof payload.threadId === "string" &&
+                : isGraphDisplayEventPayload(payload) &&
                     payload.operation !== "DELETE"
                   ? [
                       {
@@ -1175,8 +1193,7 @@ export function useKoedMemoryGraph({
                 selectedEventIds.length > 0
                   ? selectedEventIds
                   : !payload?.eventRefs &&
-                      payload?.table === "memory_events" &&
-                      typeof payload.id === "string" &&
+                      isGraphDisplayEventPayload(payload) &&
                       payload.operation !== "DELETE"
                     ? [
                         {
@@ -1192,7 +1209,7 @@ export function useKoedMemoryGraph({
                 }
               } else if (
                 !payload?.eventRefs &&
-                payload?.table === "memory_events" &&
+                isGraphDisplayEventPayload(payload) &&
                 payload.operation !== "DELETE"
               ) {
                 retryStreamEvents([
@@ -1207,10 +1224,9 @@ export function useKoedMemoryGraph({
                 });
               } else {
                 scheduleRefresh({
-                  reason:
-                    payload?.table === "memory_events"
-                      ? "non-selected-event"
-                      : "non-event-graph-update"
+                  reason: isGraphDisplayEventTable(payload?.table)
+                    ? "non-selected-event"
+                    : "non-event-graph-update"
                 });
               }
             }

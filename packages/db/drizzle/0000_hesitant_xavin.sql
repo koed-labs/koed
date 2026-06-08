@@ -86,6 +86,9 @@ CREATE TABLE "conversation_items" (
 	"projection_version" text,
 	"projected_at" timestamp with time zone,
 	"projection_error" text,
+	"memory_excluded_at" timestamp with time zone,
+	"memory_exclusion_reason" text,
+	"memory_excluded_by_user_id" uuid,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"logical_source_id" text,
 	"transport_chunk_index" integer DEFAULT 0 NOT NULL,
@@ -188,6 +191,8 @@ CREATE TABLE "memory_events" (
 	"idempotency_key" text,
 	"source_hash" text,
 	"payload" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"token_count" integer,
+	"seal_reason" text,
 	"source_event_time" timestamp with time zone,
 	"source_sequence" bigint,
 	"captured_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -321,6 +326,25 @@ CREATE TABLE "messages" (
 	CONSTRAINT "messages_personal_owner_check" CHECK ("messages"."visibility" = 'personal' and "messages"."owner_user_id" is not null)
 );
 --> statement-breakpoint
+CREATE TABLE "semantic_memory_rebuild_jobs" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"owner_user_id" uuid NOT NULL,
+	"visibility" "visibility_scope" DEFAULT 'personal' NOT NULL,
+	"memory_event_id" uuid NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"scheduled_after" timestamp with time zone NOT NULL,
+	"processing_started_at" timestamp with time zone,
+	"processing_lease_until" timestamp with time zone,
+	"attempt_count" integer DEFAULT 0 NOT NULL,
+	"last_error_message" text,
+	"replacement_memory_event_ids" uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "semantic_memory_rebuild_jobs_personal_owner_check" CHECK ("semantic_memory_rebuild_jobs"."visibility" = 'personal' and "semantic_memory_rebuild_jobs"."owner_user_id" is not null),
+	CONSTRAINT "semantic_memory_rebuild_jobs_attempt_count_check" CHECK ("semantic_memory_rebuild_jobs"."attempt_count" >= 0),
+	CONSTRAINT "semantic_memory_rebuild_jobs_status_check" CHECK ("semantic_memory_rebuild_jobs"."status" in ('pending', 'processing', 'completed', 'error'))
+);
+--> statement-breakpoint
 CREATE TABLE "sessions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"owner_user_id" uuid,
@@ -395,6 +419,7 @@ CREATE TABLE "turns" (
 	"codex_transcript_path" text,
 	"idempotency_key" text,
 	"source_hash" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"captured_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"started_at" timestamp with time zone,
 	"completed_at" timestamp with time zone,
@@ -492,6 +517,7 @@ ALTER TABLE "capture_policies" ADD CONSTRAINT "capture_policies_owner_user_id_us
 ALTER TABLE "conversation_items" ADD CONSTRAINT "conversation_items_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversation_items" ADD CONSTRAINT "conversation_items_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversation_items" ADD CONSTRAINT "conversation_items_turn_id_turns_id_fk" FOREIGN KEY ("turn_id") REFERENCES "public"."turns"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "conversation_items" ADD CONSTRAINT "conversation_items_memory_excluded_by_user_id_users_id_fk" FOREIGN KEY ("memory_excluded_by_user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "local_memory_agent_settings" ADD CONSTRAINT "local_memory_agent_settings_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_embeddings" ADD CONSTRAINT "memory_embeddings_memory_node_id_memory_nodes_id_fk" FOREIGN KEY ("memory_node_id") REFERENCES "public"."memory_nodes"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_embeddings" ADD CONSTRAINT "memory_embeddings_memory_event_id_memory_events_id_fk" FOREIGN KEY ("memory_event_id") REFERENCES "public"."memory_events"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -523,6 +549,8 @@ ALTER TABLE "memory_questions" ADD CONSTRAINT "memory_questions_session_id_sessi
 ALTER TABLE "messages" ADD CONSTRAINT "messages_session_id_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_turn_id_turns_id_fk" FOREIGN KEY ("turn_id") REFERENCES "public"."turns"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "semantic_memory_rebuild_jobs" ADD CONSTRAINT "semantic_memory_rebuild_jobs_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "semantic_memory_rebuild_jobs" ADD CONSTRAINT "semantic_memory_rebuild_jobs_memory_event_id_memory_events_id_fk" FOREIGN KEY ("memory_event_id") REFERENCES "public"."memory_events"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sessions" ADD CONSTRAINT "sessions_parent_session_id_sessions_id_fk" FOREIGN KEY ("parent_session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -549,6 +577,7 @@ CREATE INDEX "conversation_items_session_turn_observed_idx" ON "conversation_ite
 CREATE INDEX "conversation_items_source_thread_idx" ON "conversation_items" USING btree ("source_kind","external_session_id","external_turn_id");--> statement-breakpoint
 CREATE INDEX "conversation_items_source_item_idx" ON "conversation_items" USING btree ("source_kind","external_item_id") WHERE "conversation_items"."external_item_id" is not null;--> statement-breakpoint
 CREATE INDEX "conversation_items_projection_idx" ON "conversation_items" USING btree ("projection_status","projected_at","observed_at","id");--> statement-breakpoint
+CREATE INDEX "conversation_items_memory_excluded_idx" ON "conversation_items" USING btree ("owner_user_id","memory_excluded_at") WHERE "conversation_items"."memory_excluded_at" is not null;--> statement-breakpoint
 CREATE INDEX "conversation_items_personal_logical_source_idx" ON "conversation_items" USING btree ("owner_user_id","logical_source_id","transport_chunk_index") WHERE "conversation_items"."visibility" = 'personal' and "conversation_items"."logical_source_id" is not null;--> statement-breakpoint
 CREATE INDEX "local_memory_agent_settings_owner_idx" ON "local_memory_agent_settings" USING btree ("owner_user_id","updated_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE UNIQUE INDEX "memory_embeddings_unique_active_node_chunk" ON "memory_embeddings" USING btree ("memory_node_id","embedding_model","embedding_dimensions","embedding_version","source_hash","source_chunk_index") WHERE "memory_embeddings"."invalidated_at" is null and "memory_embeddings"."memory_node_id" is not null;--> statement-breakpoint
@@ -578,6 +607,9 @@ CREATE INDEX "memory_questions_personal_pending_claim_idx" ON "memory_questions"
 CREATE UNIQUE INDEX "messages_transcript_item_unique" ON "messages" USING btree ("session_id","transcript_item_id") WHERE "messages"."transcript_item_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "messages_idempotency_key_unique" ON "messages" USING btree ("idempotency_key") WHERE "messages"."idempotency_key" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "messages_source_hash_unique" ON "messages" USING btree ("source_hash") WHERE "messages"."source_hash" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "semantic_memory_rebuild_jobs_active_unique" ON "semantic_memory_rebuild_jobs" USING btree ("memory_event_id") WHERE "semantic_memory_rebuild_jobs"."status" in ('pending', 'processing');--> statement-breakpoint
+CREATE INDEX "semantic_memory_rebuild_jobs_due_idx" ON "semantic_memory_rebuild_jobs" USING btree ("status","scheduled_after","id") WHERE "semantic_memory_rebuild_jobs"."status" in ('pending', 'error');--> statement-breakpoint
+CREATE INDEX "semantic_memory_rebuild_jobs_actor_due_idx" ON "semantic_memory_rebuild_jobs" USING btree ("owner_user_id","status","scheduled_after","id") WHERE "semantic_memory_rebuild_jobs"."visibility" = 'personal' and "semantic_memory_rebuild_jobs"."status" in ('pending', 'error');--> statement-breakpoint
 CREATE UNIQUE INDEX "sessions_idempotency_key_unique" ON "sessions" USING btree ("idempotency_key") WHERE "sessions"."idempotency_key" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "sessions_source_hash_unique" ON "sessions" USING btree ("source_hash") WHERE "sessions"."source_hash" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "tool_events_transcript_item_unique" ON "tool_events" USING btree ("session_id","transcript_item_id") WHERE "tool_events"."transcript_item_id" is not null;--> statement-breakpoint
@@ -594,10 +626,8 @@ CREATE INDEX "workflow_token_usage_conversation_item_idx" ON "workflow_token_usa
 CREATE INDEX "workflow_token_usage_session_turn_idx" ON "workflow_token_usage" USING btree ("session_id","turn_id","observed_at");--> statement-breakpoint
 CREATE INDEX "workflow_token_usage_attribution_idx" ON "workflow_token_usage" USING btree ("usage_source","usage_accuracy","usage_kind","observed_at");--> statement-breakpoint
 CREATE INDEX "workflow_token_usage_connector_idx" ON "workflow_token_usage" USING btree ("connector_client","observed_at") WHERE "workflow_token_usage"."connector_client" is not null;--> statement-breakpoint
-CREATE INDEX "workflow_token_usage_source_references_lookup_idx" ON "workflow_token_usage_source_references" USING btree ("source_type","source_id");--> statement-breakpoint
-CREATE INDEX "memory_events_personal_workspace_expr_idx" ON "memory_events" USING btree ("owner_user_id",(payload ->> 'workspaceId'),"captured_at" DESC,"id" DESC) WHERE "visibility" = 'personal' and "invalidated_at" is null;--> statement-breakpoint
-CREATE INDEX "memory_events_personal_external_thread_expr_idx" ON "memory_events" USING btree ("owner_user_id",(payload #>> '{metadata,externalSessionId}'),"captured_at" DESC,"id" DESC) WHERE "visibility" = 'personal' and "invalidated_at" is null;--> statement-breakpoint
-CREATE INDEX "memory_events_personal_source_order_idx" ON "memory_events" USING btree ("owner_user_id",coalesce("source_event_time", "captured_at") DESC,"source_sequence" DESC NULLS LAST,"id" DESC) WHERE "visibility" = 'personal';--> statement-breakpoint
+CREATE INDEX "workflow_token_usage_source_references_lookup_idx" ON "workflow_token_usage_source_references" USING btree ("source_type","source_id");
+--> statement-breakpoint
 CREATE OR REPLACE FUNCTION notify_koed_graph_update()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -609,6 +639,7 @@ DECLARE
   visibility_value text;
   project_id_value text;
   thread_id_value text;
+  row_session_id uuid;
 BEGIN
   IF tg_table_name = 'memory_node_sources' THEN
     row_id := CASE
@@ -644,6 +675,11 @@ BEGIN
     row_id := old.id;
     owner_id := old.owner_user_id;
     visibility_value := old.visibility::text;
+
+    IF tg_table_name IN ('memory_events', 'messages', 'tool_events') THEN
+      row_session_id := old.session_id;
+    END IF;
+
     IF tg_table_name = 'memory_events' THEN
       project_id_value := old.payload ->> 'workspaceId';
       thread_id_value := old.payload #>> '{metadata,externalSessionId}';
@@ -652,19 +688,26 @@ BEGIN
     row_id := new.id;
     owner_id := new.owner_user_id;
     visibility_value := new.visibility::text;
+
+    IF tg_table_name IN ('memory_events', 'messages', 'tool_events') THEN
+      row_session_id := new.session_id;
+    END IF;
+
     IF tg_table_name = 'memory_events' THEN
       project_id_value := new.payload ->> 'workspaceId';
       thread_id_value := new.payload #>> '{metadata,externalSessionId}';
     END IF;
   END IF;
 
-  IF tg_table_name = 'memory_events' AND (project_id_value IS NULL OR thread_id_value IS NULL) THEN
+  IF tg_table_name IN ('memory_events', 'messages', 'tool_events')
+    AND (project_id_value IS NULL OR thread_id_value IS NULL)
+  THEN
     SELECT
-      coalesce(project_id_value, s.workspace_id::text, s.cwd),
-      coalesce(thread_id_value, s.external_session_id, s.id::text)
+      coalesce(project_id_value, s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd),
+      coalesce(thread_id_value, s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text)
     INTO project_id_value, thread_id_value
     FROM sessions s
-    WHERE s.id = CASE WHEN tg_op = 'DELETE' THEN old.session_id ELSE new.session_id END;
+    WHERE s.id = row_session_id;
   END IF;
 
   payload := jsonb_build_object(
@@ -676,7 +719,7 @@ BEGIN
     'changedAt', now()
   );
 
-  IF tg_table_name = 'memory_events' THEN
+  IF tg_table_name IN ('memory_events', 'messages', 'tool_events') THEN
     payload := payload || jsonb_build_object(
       'projectId', project_id_value,
       'threadId', thread_id_value
@@ -708,4 +751,10 @@ AFTER INSERT OR UPDATE OR DELETE ON sessions
 FOR EACH ROW EXECUTE FUNCTION notify_koed_graph_update();--> statement-breakpoint
 CREATE TRIGGER memory_questions_graph_update_notify
 AFTER INSERT OR UPDATE OR DELETE ON memory_questions
+FOR EACH ROW EXECUTE FUNCTION notify_koed_graph_update();--> statement-breakpoint
+CREATE TRIGGER messages_graph_update_notify
+AFTER INSERT OR UPDATE OR DELETE ON messages
+FOR EACH ROW EXECUTE FUNCTION notify_koed_graph_update();--> statement-breakpoint
+CREATE TRIGGER tool_events_graph_update_notify
+AFTER INSERT OR UPDATE OR DELETE ON tool_events
 FOR EACH ROW EXECUTE FUNCTION notify_koed_graph_update();

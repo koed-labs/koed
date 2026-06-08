@@ -67,6 +67,43 @@ export const createRawProjectionService = (
         scanned += result.rawItemsScanned;
         projected += result.rawItemsProjected;
       }
+      const rebuildActors =
+        await config.repository.listSemanticMemoryRebuildActors({
+          limit: config.actorLimit
+        });
+      let rebuildJobs = 0;
+      let rebuiltEvents = 0;
+      for (const actor of rebuildActors) {
+        const result = await config.repository.processDueSemanticMemoryRebuilds(
+          actor,
+          {
+            limit: config.batchLimit
+          }
+        );
+        await Promise.all(
+          result.memoryEventIds.map((eventId) =>
+            config.embeddingWorkflow.embedSource("memory_event", eventId)
+          )
+        );
+        const scopes = new Map<string, { visibility: Visibility }>();
+        for (const scope of result.memoryEventScopes) {
+          scopes.set(scope.visibility, { visibility: scope.visibility });
+        }
+        for (const scope of scopes.values()) {
+          const compaction = await scheduleCompaction({
+            repository: config.repository,
+            requesterContext: actor,
+            visibility: scope.visibility
+          });
+          const nodeIds = [
+            ...compaction.leafNodeIds,
+            ...(compaction.rollupNodeId ? [compaction.rollupNodeId] : [])
+          ];
+          await config.enqueueLcmNodeEmbeddings(nodeIds);
+        }
+        rebuildJobs += result.jobsCompleted;
+        rebuiltEvents += result.memoryEventsCreated;
+      }
       if (scanned > 0) {
         config.logger.info(
           {
@@ -81,6 +118,22 @@ export const createRawProjectionService = (
             }
           },
           "raw conversation projection catch-up completed"
+        );
+      }
+      if (rebuildJobs > 0) {
+        config.logger.info(
+          {
+            event: {
+              name: "worker.raw_projection.semantic_rebuild.completed",
+              category: "projection"
+            },
+            projection: {
+              actors: rebuildActors.length,
+              rebuildJobs,
+              rebuiltEvents
+            }
+          },
+          "semantic memory rebuild completed"
         );
       }
     } catch (error) {

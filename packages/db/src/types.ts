@@ -545,6 +545,23 @@ interface ConversationProjectionInput {
   visibility?: Visibility;
 }
 
+export type SemanticMemoryRebuildInput = {
+  limit?: number;
+  leaseSeconds?: number;
+};
+
+export interface SemanticMemoryRebuildResult {
+  jobsClaimed: number;
+  jobsCompleted: number;
+  jobsFailed: number;
+  memoryEventsCreated: number;
+  memoryEventIds: string[];
+  memoryEventScopes: Array<{
+    eventId: string;
+    visibility: Visibility;
+  }>;
+}
+
 export interface MemoryQuestionShellRecord {
   id: string;
   ownerUserId: string;
@@ -642,6 +659,13 @@ export interface MemorySourceRepository
   listConversationProjectionActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
+  listSemanticMemoryRebuildActors(input?: {
+    limit?: number;
+  }): Promise<ActorContext[]>;
+  processDueSemanticMemoryRebuilds(
+    actor: ActorContext,
+    input?: SemanticMemoryRebuildInput
+  ): Promise<SemanticMemoryRebuildResult>;
   listLocalMemoryAgentSettings(
     actor: ActorContext
   ): Promise<LocalMemoryAgentSettingRecord[]>;

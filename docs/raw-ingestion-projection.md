@@ -62,13 +62,15 @@ prompts project as standalone `user_turn` units. Agent work projects as ordered
 `agent_turn` units containing agent messages, human-readable reasoning
 summaries, subagent messages, tool-call/tool-result content, and final assistant
 messages that occur after a user prompt until the next user prompt or turn
-boundary. Within an agent turn, projection keeps tool-only spans as `actor=tool`
-semantic events instead of merging them into visible agent prose; this preserves
-tool semantics for retrieval while allowing the explorer to keep tool rendering
-separate from normal assistant messages. A user interruption submitted while the
-agent is running is also a `user_turn` boundary: agent work before the
-interruption and agent work after the interruption become separate semantic
-units.
+boundary. Within an agent turn, projection keeps tool calls and tool results in
+the same embeddable semantic bundle as the related reasoning and final answer so
+retrieval sees the whole evidence chain. The bundle metadata carries an ordered
+item manifest with source ids, actor/kind, tool names/call ids when available,
+source chronology, and text offsets so renderers and evidence expansion can
+still distinguish agent prose, tool calls, tool results, subagent output, and
+final assistant text. A user interruption submitted while the agent is running
+is also a `user_turn` boundary: agent work before the interruption and agent
+work after the interruption become separate semantic units.
 
 Telemetry, lifecycle noise, raw reasoning content, encrypted reasoning, and
 rolling model context should remain raw records or metadata unless there is a
@@ -90,6 +92,22 @@ every raw `conversation_items` row that contributed text to that bundle. The raw
 source rows remain the audit trail for exact Codex payloads and future
 re-projection.
 
+Agent-turn `memory_events` are sealed only on a semantic flush condition:
+turn-complete hook, next user prompt/interruption, session/turn/thread/workspace
+boundary change, a token-limit rollover, or the stale catch-up timeout. Foreground
+projection may continue creating idempotent `messages` and `tool_events` while
+leaving an incomplete agent bundle pending until one of those seal conditions
+arrives. The stale catch-up timeout is based on the newest source item in the
+pending bundle, so an active long turn does not seal merely because its first
+item is old. If adding the next complete source item would cross
+`MEMORY_EVENT_MAX_TOKENS`, projection seals the current bundle and rolls the
+overflowing item into the next `agent_turn` bundle. `MEMORY_EVENT_MAX_TOKENS` is
+a soft bundle target: it is not a reason to split a single source item. If one
+source item exceeds that target but still fits within `EMBEDDING_MAX_TOKENS`, it
+is kept as one memory event. Only a source item that exceeds the embedding hard
+cap is split, and those forced split fragments keep the original item metadata
+plus explicit split index/count metadata.
+
 The worker runs a raw-projection catch-up loop so pending or previously failed
 raw rows are eventually projected after restart, outage, or hook deadline
 pressure. `MEMORY_RAW_PROJECTION_INTERVAL_MS`,
@@ -97,6 +115,13 @@ pressure. `MEMORY_RAW_PROJECTION_INTERVAL_MS`,
 bound that background work. Local app-server answer and LCM workers also ask
 the API to project the exact raw rows they just persisted before they write the
 derived answer or summary.
+
+When a display item is deleted, Koed excludes the underlying raw source item
+from semantic memory immediately and invalidates affected Memory Events and
+embeddings. A durable rebuild job then waits for
+`SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS` before the worker creates replacement
+Memory Events from the surviving source items and embeds them through the normal
+embedding workflow.
 
 ## Token Usage
 
@@ -112,12 +137,11 @@ boundary.
 ## Token Bounds
 
 Koed's operational Qwen cap is 32000 tokens. Runtime configuration defaults
-semantic Memory Event chunks to 2048 tokens and embedding requests to 4096
-tokens. Values above 32000 are clamped.
-If a projected semantic unit exceeds that cap, split it into ordered chunks and
-link every chunk to the relevant raw source item or items. Projection keeps
-source-item boundaries intact where possible and only splits inside a single raw
-source item when that item alone is over the token cap.
+semantic Memory Event bundle rollover to 2048 tokens and embedding requests to
+4096 tokens. Values above 32000 are clamped. Projection keeps source-item
+boundaries intact at the 2048-token bundle target. It only splits inside a single
+raw source item when that item alone exceeds the embedding hard cap, then links
+every forced fragment to the same raw source item or items with split metadata.
 
 LCM leaves are packed from the same canonical semantic `memory_events` text
 used for embeddings. LCM token thresholds count only `memory_event.content`,
