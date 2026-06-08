@@ -105,7 +105,9 @@ Memory data publicly.
 ## Operations
 
 Use normal Postgres backups and restore into the same Koed version before
-upgrading. Run migrations during API startup or manually with:
+upgrading. The API runs database migrations during startup.
+
+Local Operators can also run the same Drizzle migration path manually with:
 
 ```bash
 pnpm --filter @koed/db migrate:up
@@ -141,5 +143,6 @@ and [docs/license.md](docs/license.md).
 - [Security](docs/security.md)
 - [Backup and restore](docs/backup-restore.md)
 - [Upgrades](docs/upgrades.md)
+- [Database development](docs/database-development.md)
 - [Codex integration](docs/codex-integration.md)
 - [License](docs/license.md)

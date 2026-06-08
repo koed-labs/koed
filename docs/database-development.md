@@ -34,6 +34,8 @@ readability, or testability. These queries often rely on Postgres-specific
 ranking, recursive relationships, vector operators, expression indexes, or
 careful result shaping that Drizzle would not simplify today.
 
+The db package implementation backlog lives in `packages/db/TODO.md`.
+
 When adding a Drizzle-backed fragment:
 
 1. Keep the public `MemorySourceRepository` method contract unchanged.

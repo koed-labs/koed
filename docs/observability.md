@@ -56,6 +56,18 @@ Use the database `audit_events` table for durable operator/audit history such
 as token lifecycle changes, login outcomes, policy changes, and destructive
 memory actions. Operational logs are for debugging and monitoring.
 
+Current durable audit action names:
+
+- `api_token.created`
+- `api_token.revoked`
+- `capture_policy.upserted`
+- `capture_policy.deleted`
+
+Audit metadata may include identifiers, target names, target type, capture
+state, visibility, pause timestamps, token prefixes, and actor type. Audit
+metadata must not include token secrets, token hashes, session cookies,
+passwords, memory content, search query text, or raw request bodies.
+
 ## Embedding Service Logs
 
 The embedding service writes structured JSON logs with

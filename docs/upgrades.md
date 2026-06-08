@@ -6,9 +6,9 @@ Before upgrading:
 2. Back up Postgres.
 3. Save the current image/version identifier.
 4. Pull or build the new version.
-5. Run migrations.
+5. Start the API so it can run Drizzle migrations, or run migrations manually.
 
-Migration command:
+Manual migration command:
 
 ```bash
 pnpm --filter @koed/db migrate:up
