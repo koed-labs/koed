@@ -219,6 +219,43 @@ describeDb("memory repository visibility", () => {
     expect(await repo.getApiTokenUser(tokenHash)).toBeNull();
   });
 
+  it("rolls back API token lifecycle changes when audit insertion fails", async () => {
+    const user = await repo.createUser({
+      email: `api-token-audit-rollback-${randomUUID()}@example.com`
+    });
+    const missingActorId = randomUUID();
+    const failedCreateHash = `hash-${randomUUID()}-${randomUUID()}`;
+
+    await expect(
+      repo.createApiToken({
+        ownerUserId: user.id,
+        name: "Rollback Create",
+        tokenHash: failedCreateHash,
+        tokenPrefix: "cmt_fail",
+        audit: {
+          actorUserId: missingActorId,
+          actorType: "user"
+        }
+      })
+    ).rejects.toThrow();
+    expect(await repo.listApiTokens(user.id)).toEqual([]);
+
+    const tokenHash = `hash-${randomUUID()}-${randomUUID()}`;
+    const token = await repo.createApiToken({
+      ownerUserId: user.id,
+      name: "Rollback Revoke",
+      tokenHash,
+      tokenPrefix: "cmt_keep"
+    });
+    await expect(
+      repo.revokeApiToken(user.id, token.id, {
+        actorUserId: missingActorId,
+        actorType: "user"
+      })
+    ).rejects.toThrow();
+    expect(await repo.listApiTokens(user.id)).toEqual([token]);
+  });
+
   it("manages auth sessions through the Drizzle-backed repository slice", async () => {
     const email = `auth-session-${randomUUID()}@example.com`;
     const user = await repo.createUser({

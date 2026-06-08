@@ -1,7 +1,12 @@
 import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { KoedDb } from "./connection.js";
-import { apiTokens, users } from "./schema.js";
-import type { ApiTokenRecord, CreateUserInput, UserRecord } from "./types.js";
+import { apiTokens, auditEvents, users } from "./schema.js";
+import type {
+  ApiTokenRecord,
+  AuditActorInput,
+  CreateUserInput,
+  UserRecord
+} from "./types.js";
 
 export const mapUserRecord = (row: {
   id: string;
@@ -35,6 +40,20 @@ const mapApiTokenRecord = (row: {
   lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
   expiresAt: row.expiresAt?.toISOString() ?? null,
   revokedAt: row.revokedAt?.toISOString() ?? null
+});
+
+const apiTokenAuditMetadata = (
+  audit: AuditActorInput,
+  token?: Pick<ApiTokenRecord, "name" | "tokenPrefix" | "scopes">
+) => ({
+  actorType: audit.actorType,
+  ...(token
+    ? {
+        name: token.name,
+        tokenPrefix: token.tokenPrefix,
+        scopes: token.scopes
+      }
+    : {})
 });
 
 export const createUserApiTokenRepository = (db: KoedDb) => {
@@ -93,20 +112,36 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
       tokenPrefix: string;
       scopes?: string[];
       expiresAt?: Date;
+      audit?: AuditActorInput;
     }): Promise<ApiTokenRecord> {
-      const rows = await db
-        .insert(apiTokens)
-        .values({
-          ownerUserId: input.ownerUserId,
-          name: input.name,
-          tokenHash: input.tokenHash,
-          tokenPrefix: input.tokenPrefix,
-          scopes: input.scopes ?? [],
-          expiresAt: input.expiresAt ?? null
-        })
-        .returning();
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(apiTokens)
+          .values({
+            ownerUserId: input.ownerUserId,
+            name: input.name,
+            tokenHash: input.tokenHash,
+            tokenPrefix: input.tokenPrefix,
+            scopes: input.scopes ?? [],
+            expiresAt: input.expiresAt ?? null
+          })
+          .returning();
 
-      return mapApiTokenRecord(rows[0]!);
+        const token = mapApiTokenRecord(rows[0]!);
+        if (input.audit) {
+          await tx.insert(auditEvents).values({
+            actorUserId: input.audit.actorUserId ?? null,
+            ownerUserId: input.ownerUserId,
+            visibility: "personal",
+            action: "api_token.created",
+            targetTable: "api_tokens",
+            targetId: token.id,
+            metadata: apiTokenAuditMetadata(input.audit, token)
+          });
+        }
+
+        return token;
+      });
     },
 
     async listApiTokens(userId: string): Promise<ApiTokenRecord[]> {
@@ -121,20 +156,38 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
       return rows.map(mapApiTokenRecord);
     },
 
-    async revokeApiToken(userId: string, tokenId: string): Promise<boolean> {
-      const rows = await db
-        .update(apiTokens)
-        .set({ revokedAt: sql`now()` })
-        .where(
-          and(
-            eq(apiTokens.id, tokenId),
-            eq(apiTokens.ownerUserId, userId),
-            isNull(apiTokens.revokedAt)
+    async revokeApiToken(
+      userId: string,
+      tokenId: string,
+      audit?: AuditActorInput
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .update(apiTokens)
+          .set({ revokedAt: sql`now()` })
+          .where(
+            and(
+              eq(apiTokens.id, tokenId),
+              eq(apiTokens.ownerUserId, userId),
+              isNull(apiTokens.revokedAt)
+            )
           )
-        )
-        .returning({ id: apiTokens.id });
+          .returning({ id: apiTokens.id });
 
-      return rows.length > 0;
+        if (rows.length > 0 && audit) {
+          await tx.insert(auditEvents).values({
+            actorUserId: audit.actorUserId ?? null,
+            ownerUserId: userId,
+            visibility: "personal",
+            action: "api_token.revoked",
+            targetTable: "api_tokens",
+            targetId: tokenId,
+            metadata: apiTokenAuditMetadata(audit)
+          });
+        }
+
+        return rows.length > 0;
+      });
     },
 
     async getApiTokenUser(tokenHash: string): Promise<UserRecord | null> {

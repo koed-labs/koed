@@ -301,103 +301,107 @@ export const createSettingsRepository = (db: KoedDb) => ({
           ? new Date(input.pauseUntil)
           : null;
 
-    const result = await db.execute<{
-      id: string;
-      owner_user_id: string;
-      target_type: CapturePolicyTarget;
-      project_id: string | null;
-      project_name: string | null;
-      project_path: string | null;
-      thread_id: string | null;
-      thread_name: string | null;
-      capture_state: CaptureState | null;
-      visibility: Visibility | null;
-      pause_until: Date | string | null;
-      created_at: Date | string;
-      updated_at: Date | string;
-    }>(sql`
-      insert into ${capturePolicies} (
-        owner_user_id,
-        target_type,
-        project_id,
-        project_name,
-        project_path,
-        thread_id,
-        thread_name,
-        capture_state,
-        visibility,
-        pause_until
-      )
-      values (
-        ${actor.userId},
-        ${input.targetType},
-        ${input.targetType === "global" ? null : (input.projectId ?? null)},
-        ${input.projectName ?? null},
-        ${input.projectPath ?? null},
-        ${input.targetType === "thread" ? input.threadId! : null},
-        ${input.threadName ?? null},
-        ${input.captureState ?? null},
-        ${input.visibility ?? null},
-        ${pauseUntil}
-      )
-      on conflict (
-        owner_user_id,
-        target_type,
-        (coalesce(project_id, '')),
-        (coalesce(thread_id, ''))
-      )
-      do update set
-        project_name = excluded.project_name,
-        project_path = excluded.project_path,
-        thread_name = excluded.thread_name,
-        capture_state = excluded.capture_state,
-        visibility = excluded.visibility,
-        pause_until = excluded.pause_until,
-        updated_at = now()
-      returning *
-    `);
+    return db.transaction(async (tx) => {
+      const result = await tx.execute<{
+        id: string;
+        owner_user_id: string;
+        target_type: CapturePolicyTarget;
+        project_id: string | null;
+        project_name: string | null;
+        project_path: string | null;
+        thread_id: string | null;
+        thread_name: string | null;
+        capture_state: CaptureState | null;
+        visibility: Visibility | null;
+        pause_until: Date | string | null;
+        created_at: Date | string;
+        updated_at: Date | string;
+      }>(sql`
+        insert into ${capturePolicies} (
+          owner_user_id,
+          target_type,
+          project_id,
+          project_name,
+          project_path,
+          thread_id,
+          thread_name,
+          capture_state,
+          visibility,
+          pause_until
+        )
+        values (
+          ${actor.userId},
+          ${input.targetType},
+          ${input.targetType === "global" ? null : (input.projectId ?? null)},
+          ${input.projectName ?? null},
+          ${input.projectPath ?? null},
+          ${input.targetType === "thread" ? input.threadId! : null},
+          ${input.threadName ?? null},
+          ${input.captureState ?? null},
+          ${input.visibility ?? null},
+          ${pauseUntil}
+        )
+        on conflict (
+          owner_user_id,
+          target_type,
+          (coalesce(project_id, '')),
+          (coalesce(thread_id, ''))
+        )
+        do update set
+          project_name = excluded.project_name,
+          project_path = excluded.project_path,
+          thread_name = excluded.thread_name,
+          capture_state = excluded.capture_state,
+          visibility = excluded.visibility,
+          pause_until = excluded.pause_until,
+          updated_at = now()
+        returning *
+      `);
 
-    const policy = mapCapturePolicySqlRecord(result.rows[0]!);
-    await db.insert(auditEvents).values({
-      actorUserId: actor.userId,
-      ownerUserId: actor.userId,
-      visibility: policy.visibility ?? "personal",
-      action: "capture_policy.upserted",
-      targetTable: "capture_policies",
-      targetId: policy.id,
-      metadata: capturePolicyAuditMetadata(policy)
+      const policy = mapCapturePolicySqlRecord(result.rows[0]!);
+      await tx.insert(auditEvents).values({
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: policy.visibility ?? "personal",
+        action: "capture_policy.upserted",
+        targetTable: "capture_policies",
+        targetId: policy.id,
+        metadata: capturePolicyAuditMetadata(policy)
+      });
+
+      return policy;
     });
-
-    return policy;
   },
 
   async deleteCapturePolicy(
     actor: ActorContext,
     policyId: string
   ): Promise<boolean> {
-    const rows = await db
-      .delete(capturePolicies)
-      .where(
-        and(
-          eq(capturePolicies.id, policyId),
-          eq(capturePolicies.ownerUserId, actor.userId)
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .delete(capturePolicies)
+        .where(
+          and(
+            eq(capturePolicies.id, policyId),
+            eq(capturePolicies.ownerUserId, actor.userId)
+          )
         )
-      )
-      .returning();
+        .returning();
 
-    const policy = rows[0] ? mapCapturePolicyRecord(rows[0]) : null;
-    if (policy) {
-      await db.insert(auditEvents).values({
-        actorUserId: actor.userId,
-        ownerUserId: actor.userId,
-        visibility: policy.visibility ?? "personal",
-        action: "capture_policy.deleted",
-        targetTable: "capture_policies",
-        targetId: policy.id,
-        metadata: capturePolicyAuditMetadata(policy)
-      });
-    }
+      const policy = rows[0] ? mapCapturePolicyRecord(rows[0]) : null;
+      if (policy) {
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: policy.visibility ?? "personal",
+          action: "capture_policy.deleted",
+          targetTable: "capture_policies",
+          targetId: policy.id,
+          metadata: capturePolicyAuditMetadata(policy)
+        });
+      }
 
-    return Boolean(policy);
+      return Boolean(policy);
+    });
   }
 });

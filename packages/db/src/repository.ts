@@ -469,6 +469,43 @@ const mapLcmGraphEvent = (row: {
   };
 };
 
+const recordAuditEventWithClient = async (
+  client: pg.PoolClient,
+  input: {
+    actorUserId?: string | null;
+    ownerUserId?: string | null;
+    visibility?: Visibility | null;
+    action: string;
+    targetTable?: string | null;
+    targetId?: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await client.query(
+    `
+      insert into audit_events (
+        actor_user_id,
+        owner_user_id,
+        visibility,
+        action,
+        target_table,
+        target_id,
+        metadata
+      )
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+    `,
+    [
+      input.actorUserId ?? null,
+      input.ownerUserId ?? null,
+      input.visibility ?? null,
+      input.action,
+      input.targetTable ?? null,
+      input.targetId ?? null,
+      JSON.stringify(input.metadata ?? {})
+    ]
+  );
+};
+
 const mapLcmGraphThreadRow = (row: {
   project_id: string;
   project_name: string;
@@ -4745,85 +4782,97 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
-    const result = await pool.query<Parameters<typeof mapMemoryBrowserItem>[0]>(
-      `
-        update memory_nodes mn
-        set
-          summary_text = coalesce($3, mn.summary_text),
-          pinned_at = case
-            when $4::boolean is null then mn.pinned_at
-            when $4::boolean = true then coalesce(mn.pinned_at, now())
-            else null
-          end,
-          visibility = coalesce($5::visibility_scope, mn.visibility),
-          owner_user_id = case
-            when $5::visibility_scope = 'personal' then $1
-            else mn.owner_user_id
-          end,
-          updated_at = now()
-        where mn.id = $2
-          and mn.invalidated_at is null
-        returning
-          mn.id,
-          mn.title,
-          mn.summary_text,
-          mn.visibility,
-          mn.created_at,
-          mn.updated_at,
-          mn.pinned_at,
-          null::text as project_id,
-          null::text as project_name,
-          null::text as project_path,
-          null::text as thread_id,
-          null::text as thread_name
-      `,
-      [
-        actor.userId,
-        nodeId,
-        input.summaryText ?? null,
-        input.pinned ?? null,
-        input.visibility ?? null
-      ]
-    );
-    const updated = result.rows[0]
-      ? mapMemoryBrowserItem(result.rows[0])
-      : null;
-    if (updated) {
-      const previousPinned = Boolean(existing.pinnedAt);
-      const nextPinned = Boolean(updated.pinnedAt);
-      const changedFields = [
-        input.summaryText !== undefined &&
-        input.summaryText !== existing.summaryText
-          ? "summaryText"
-          : null,
-        input.pinned !== undefined && input.pinned !== previousPinned
-          ? "pinned"
-          : null,
-        input.visibility !== undefined &&
-        input.visibility !== existing.visibility
-          ? "visibility"
-          : null
-      ].filter((field): field is string => Boolean(field));
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query<
+        Parameters<typeof mapMemoryBrowserItem>[0]
+      >(
+        `
+          update memory_nodes mn
+          set
+            summary_text = coalesce($3, mn.summary_text),
+            pinned_at = case
+              when $4::boolean is null then mn.pinned_at
+              when $4::boolean = true then coalesce(mn.pinned_at, now())
+              else null
+            end,
+            visibility = coalesce($5::visibility_scope, mn.visibility),
+            owner_user_id = case
+              when $5::visibility_scope = 'personal' then $1
+              else mn.owner_user_id
+            end,
+            updated_at = now()
+          where mn.id = $2
+            and mn.invalidated_at is null
+          returning
+            mn.id,
+            mn.title,
+            mn.summary_text,
+            mn.visibility,
+            mn.created_at,
+            mn.updated_at,
+            mn.pinned_at,
+            null::text as project_id,
+            null::text as project_name,
+            null::text as project_path,
+            null::text as thread_id,
+            null::text as thread_name
+        `,
+        [
+          actor.userId,
+          nodeId,
+          input.summaryText ?? null,
+          input.pinned ?? null,
+          input.visibility ?? null
+        ]
+      );
+      const updated = result.rows[0]
+        ? mapMemoryBrowserItem(result.rows[0])
+        : null;
+      if (updated) {
+        const previousPinned = Boolean(existing.pinnedAt);
+        const nextPinned = Boolean(updated.pinnedAt);
+        const changedFields = [
+          input.summaryText !== undefined &&
+          input.summaryText !== existing.summaryText
+            ? "summaryText"
+            : null,
+          input.pinned !== undefined && input.pinned !== previousPinned
+            ? "pinned"
+            : null,
+          input.visibility !== undefined &&
+          input.visibility !== existing.visibility
+            ? "visibility"
+            : null
+        ].filter((field): field is string => Boolean(field));
 
-      if (changedFields.length > 0) {
-        await this.recordAuditEvent({
-          actorUserId: actor.userId,
-          ownerUserId: actor.userId,
-          visibility: updated.visibility,
-          action: "memory.presentation_updated",
-          targetTable: "memory_nodes",
-          targetId: nodeId,
-          metadata: {
-            changedFields,
-            previousVisibility: existing.visibility,
-            nextVisibility: updated.visibility,
-            previousPinned,
-            nextPinned
-          }
-        });
+        if (changedFields.length > 0) {
+          await recordAuditEventWithClient(client, {
+            actorUserId: actor.userId,
+            ownerUserId: actor.userId,
+            visibility: updated.visibility,
+            action: "memory.presentation_updated",
+            targetTable: "memory_nodes",
+            targetId: nodeId,
+            metadata: {
+              changedFields,
+              previousVisibility: existing.visibility,
+              nextVisibility: updated.visibility,
+              previousPinned,
+              nextPinned
+            }
+          });
+        }
       }
+      await client.query("commit");
+      return updated;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
     }
-    return updated;
   },
 
   async deleteMemory(actor, nodeId) {
@@ -4831,35 +4880,45 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return false;
     }
-    const result = await pool.query(
-      `
-        update memory_nodes mn
-        set invalidated_at = now(), invalidation_reason = 'user_deleted'
-        where mn.id = $2
-          and mn.invalidated_at is null
-          and mn.visibility = 'personal'
-          and mn.owner_user_id = $1
-      `,
-      [actor.userId, nodeId]
-    );
-    const deleted = (result.rowCount ?? 0) > 0;
-    if (deleted) {
-      await this.recordAuditEvent({
-        actorUserId: actor.userId,
-        ownerUserId: actor.userId,
-        visibility: existing.visibility,
-        action: "memory.deleted",
-        targetTable: "memory_nodes",
-        targetId: nodeId,
-        metadata: {
-          projectId: existing.projectId ?? null,
-          projectName: existing.projectName ?? null,
-          threadId: existing.threadId ?? null,
-          threadName: existing.threadName ?? null
-        }
-      });
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `
+          update memory_nodes mn
+          set invalidated_at = now(), invalidation_reason = 'user_deleted'
+          where mn.id = $2
+            and mn.invalidated_at is null
+            and mn.visibility = 'personal'
+            and mn.owner_user_id = $1
+        `,
+        [actor.userId, nodeId]
+      );
+      const deleted = (result.rowCount ?? 0) > 0;
+      if (deleted) {
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: existing.visibility,
+          action: "memory.deleted",
+          targetTable: "memory_nodes",
+          targetId: nodeId,
+          metadata: {
+            projectId: existing.projectId ?? null,
+            projectName: existing.projectName ?? null,
+            threadId: existing.threadId ?? null,
+            threadName: existing.threadName ?? null
+          }
+        });
+      }
+      await client.query("commit");
+      return deleted;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
     }
-    return deleted;
   },
 
   async getLcmGraphOverview(actor) {
@@ -5525,61 +5584,68 @@ export const createMemorySourceRepository = (
     if (!existing) {
       return null;
     }
-    await pool.query(
-      `
-        update memory_events
-        set
-          visibility = coalesce($3::visibility_scope, visibility),
-          owner_user_id = case
-            when $3::visibility_scope = 'personal' then $1
-            else owner_user_id
-          end,
-          invalidated_at = case when $4::boolean = true then coalesce(invalidated_at, now()) else invalidated_at end,
-          invalidation_reason = case when $4::boolean = true then coalesce(invalidation_reason, 'user_deleted') else invalidation_reason end,
-          updated_at = now()
-        where id = $2
-      `,
-      [
-        actor.userId,
-        eventId,
-        input.visibility ?? null,
-        input.invalidated ?? null
-      ]
-    );
-    if (input.invalidated) {
-      await pool.query(
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
         `
-          update memory_embeddings
-          set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
-          where memory_event_id = $1 and invalidated_at is null
+          update memory_events
+          set
+            visibility = coalesce($3::visibility_scope, visibility),
+            owner_user_id = case
+              when $3::visibility_scope = 'personal' then $1
+              else owner_user_id
+            end,
+            invalidated_at = case when $4::boolean = true then coalesce(invalidated_at, now()) else invalidated_at end,
+            invalidation_reason = case when $4::boolean = true then coalesce(invalidation_reason, 'user_deleted') else invalidation_reason end,
+            updated_at = now()
+          where id = $2
         `,
-        [eventId]
+        [
+          actor.userId,
+          eventId,
+          input.visibility ?? null,
+          input.invalidated ?? null
+        ]
       );
+      if (input.invalidated) {
+        await client.query(
+          `
+            update memory_embeddings
+            set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+            where memory_event_id = $1 and invalidated_at is null
+          `,
+          [eventId]
+        );
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: input.visibility ?? existing.visibility,
+          action: "memory_event.invalidated",
+          targetTable: "memory_events",
+          targetId: eventId,
+          metadata: {
+            eventType: existing.eventType,
+            projectId: existing.projectId,
+            projectName: existing.projectName,
+            sessionId: existing.sessionId,
+            threadId: existing.threadId,
+            threadName: existing.threadName,
+            captureMethod: existing.captureMethod,
+            sourceRuntime: existing.sourceRuntime
+          }
+        });
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
     }
-    const updated = await this.getLcmGraphEvent(actor, eventId, {
+    return this.getLcmGraphEvent(actor, eventId, {
       includeInvalidated: Boolean(input.invalidated)
     });
-    if (input.invalidated && updated) {
-      await this.recordAuditEvent({
-        actorUserId: actor.userId,
-        ownerUserId: actor.userId,
-        visibility: updated.visibility,
-        action: "memory_event.invalidated",
-        targetTable: "memory_events",
-        targetId: eventId,
-        metadata: {
-          eventType: existing.eventType,
-          projectId: existing.projectId,
-          projectName: existing.projectName,
-          sessionId: existing.sessionId,
-          threadId: existing.threadId,
-          threadName: existing.threadName,
-          captureMethod: existing.captureMethod,
-          sourceRuntime: existing.sourceRuntime
-        }
-      });
-    }
-    return updated;
   },
 
   async invalidateLcmGraphEvent(actor, eventId) {

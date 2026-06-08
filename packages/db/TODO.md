@@ -2,8 +2,10 @@
 
 ## Drizzle Hybrid Adoption
 
-- Consider Memory Question shell CRUD only after checking whether the current
-  lease/claim/update behavior remains clearer with raw SQL.
+- Memory Question repository methods were reviewed on 2026-06-08. Keep them
+  raw SQL for now: `claimPendingMemoryQuestions` and `updateMemoryQuestion`
+  are lease/concurrency-sensitive, while splitting only create/list/get would
+  add hybrid complexity without enough payoff.
 - Keep graph, vector search, retrieval, LCM, chronology, and projection queries
   raw SQL unless a specific conversion has a clear correctness, readability, or
   testability payoff.

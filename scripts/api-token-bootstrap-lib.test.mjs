@@ -47,6 +47,22 @@ const createFakeRepo = ({ existingUser = null } = {}) => {
         scopes: input.scopes
       };
       state.createdTokens.push(token);
+      if (input.audit) {
+        state.auditEvents.push({
+          actorUserId: input.audit.actorUserId ?? null,
+          ownerUserId: input.ownerUserId,
+          visibility: "personal",
+          action: "api_token.created",
+          targetTable: "api_tokens",
+          targetId: token.id,
+          metadata: {
+            actorType: input.audit.actorType,
+            name: token.name,
+            tokenPrefix: token.tokenPrefix,
+            scopes: token.scopes ?? []
+          }
+        });
+      }
       return token;
     },
     async listApiTokens(userId) {
@@ -54,7 +70,7 @@ const createFakeRepo = ({ existingUser = null } = {}) => {
         (token) => token.ownerUserId === userId && !token.revokedAt
       );
     },
-    async revokeApiToken(userId, tokenId) {
+    async revokeApiToken(userId, tokenId, audit) {
       const token = state.createdTokens.find(
         (item) => item.ownerUserId === userId && item.id === tokenId
       );
@@ -62,21 +78,18 @@ const createFakeRepo = ({ existingUser = null } = {}) => {
         return false;
       }
       token.revokedAt = new Date().toISOString();
+      if (audit) {
+        state.auditEvents.push({
+          actorUserId: audit.actorUserId ?? null,
+          ownerUserId: userId,
+          visibility: "personal",
+          action: "api_token.revoked",
+          targetTable: "api_tokens",
+          targetId: tokenId,
+          metadata: { actorType: audit.actorType }
+        });
+      }
       return true;
-    },
-    async recordAuditEvent(input) {
-      state.auditEvents.push(input);
-      return {
-        id: `audit-${state.auditEvents.length}`,
-        actorUserId: input.actorUserId ?? null,
-        ownerUserId: input.ownerUserId ?? null,
-        visibility: input.visibility ?? null,
-        action: input.action,
-        targetTable: input.targetTable ?? null,
-        targetId: input.targetId ?? null,
-        metadata: input.metadata ?? {},
-        createdAt: "2026-06-08T00:00:00.000Z"
-      };
     }
   };
 };

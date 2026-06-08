@@ -311,20 +311,10 @@ export const createApiTokenBootstrap = async ({
     name: args.name,
     tokenHash: hashApiToken(environment.API_TOKEN_PEPPER, token),
     tokenPrefix: token.slice(0, 12),
-    scopes: []
-  });
-  await repo.recordAuditEvent?.({
-    actorUserId: null,
-    ownerUserId: owner.id,
-    visibility: "personal",
-    action: "api_token.created",
-    targetTable: "api_tokens",
-    targetId: apiToken.id,
-    metadata: {
-      actorType: "local_operator_script",
-      name: apiToken.name,
-      tokenPrefix: apiToken.tokenPrefix,
-      scopes: apiToken.scopes ?? []
+    scopes: [],
+    audit: {
+      actorUserId: null,
+      actorType: "local_operator_script"
     }
   });
 
@@ -376,21 +366,15 @@ export const revokeApiTokenBootstrap = async ({ repo, environment, argv }) => {
     throw new UsageError(`Owner user not found: ${args.ownerEmail}`);
   }
 
-  const revoked = await repo.revokeApiToken(owner.id, args.tokenId);
+  const revoked = await repo.revokeApiToken(owner.id, args.tokenId, {
+    actorUserId: null,
+    actorType: "local_operator_script"
+  });
   if (!revoked) {
     throw new UsageError(
       `API token not found or already revoked: ${args.tokenId}`
     );
   }
-  await repo.recordAuditEvent?.({
-    actorUserId: null,
-    ownerUserId: owner.id,
-    visibility: "personal",
-    action: "api_token.revoked",
-    targetTable: "api_tokens",
-    targetId: args.tokenId,
-    metadata: { actorType: "local_operator_script" }
-  });
 
   return {
     help: false,

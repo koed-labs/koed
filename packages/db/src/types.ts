@@ -53,6 +53,13 @@ export interface ApiTokenRecord {
   revokedAt: string | null;
 }
 
+export type AuditActorType = "user" | "local_operator_script";
+
+export interface AuditActorInput {
+  actorUserId?: string | null;
+  actorType: AuditActorType;
+}
+
 export interface AuditEventRecord {
   id: string;
   actorUserId: string | null;
@@ -600,9 +607,14 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     tokenPrefix: string;
     scopes?: string[];
     expiresAt?: Date;
+    audit?: AuditActorInput;
   }): Promise<ApiTokenRecord>;
   listApiTokens(userId: string): Promise<ApiTokenRecord[]>;
-  revokeApiToken(userId: string, tokenId: string): Promise<boolean>;
+  revokeApiToken(
+    userId: string,
+    tokenId: string,
+    audit?: AuditActorInput
+  ): Promise<boolean>;
   getApiTokenUser(tokenHash: string): Promise<UserRecord | null>;
   recordAuditEvent(input: RecordAuditEventInput): Promise<AuditEventRecord>;
   listAuditEvents(

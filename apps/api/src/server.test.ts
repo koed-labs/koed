@@ -240,6 +240,24 @@ const createFakeRepository = (): MemorySourceRepository => {
         tokenHash: input.tokenHash
       };
       tokens.set(input.tokenHash, record);
+      if (input.audit) {
+        auditEvents.push({
+          id: randomUUID(),
+          actorUserId: input.audit.actorUserId ?? null,
+          ownerUserId: input.ownerUserId,
+          visibility: "personal",
+          action: "api_token.created",
+          targetTable: "api_tokens",
+          targetId: record.id,
+          metadata: {
+            actorType: input.audit.actorType,
+            name: record.name,
+            tokenPrefix: record.tokenPrefix,
+            scopes: record.scopes
+          },
+          createdAt: new Date().toISOString()
+        });
+      }
       return record;
     },
     async listApiTokens(userId: string) {
@@ -247,7 +265,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         (token) => token.ownerUserId === userId && !token.revokedAt
       );
     },
-    async revokeApiToken(userId: string, tokenId: string) {
+    async revokeApiToken(userId: string, tokenId: string, audit) {
       const token = [...tokens.values()].find(
         (candidate) =>
           candidate.id === tokenId && candidate.ownerUserId === userId
@@ -256,6 +274,19 @@ const createFakeRepository = (): MemorySourceRepository => {
         return false;
       }
       token.revokedAt = new Date().toISOString();
+      if (audit) {
+        auditEvents.push({
+          id: randomUUID(),
+          actorUserId: audit.actorUserId ?? null,
+          ownerUserId: userId,
+          visibility: "personal",
+          action: "api_token.revoked",
+          targetTable: "api_tokens",
+          targetId: tokenId,
+          metadata: { actorType: audit.actorType },
+          createdAt: new Date().toISOString()
+        });
+      }
       return true;
     },
     async getApiTokenUser(tokenHash: string) {
@@ -2061,22 +2092,6 @@ describe("account and access flows", () => {
 
   it("audits API token lifecycle routes", async () => {
     const repository = createFakeRepository();
-    const auditEvents: AuditEventRecord[] = [];
-    repository.recordAuditEvent = async (input) => {
-      const record: AuditEventRecord = {
-        id: randomUUID(),
-        actorUserId: input.actorUserId ?? null,
-        ownerUserId: input.ownerUserId ?? null,
-        visibility: input.visibility ?? null,
-        action: input.action,
-        targetTable: input.targetTable ?? null,
-        targetId: input.targetId ?? null,
-        metadata: input.metadata ?? {},
-        createdAt: new Date().toISOString()
-      };
-      auditEvents.push(record);
-      return record;
-    };
     const app = await buildServer({ repository });
     const registered = await app.inject({
       method: "POST",
@@ -2100,6 +2115,9 @@ describe("account and access flows", () => {
       method: "DELETE",
       url: `/api-tokens/${apiToken.id}`,
       headers: { cookie }
+    });
+    const auditEvents = await repository.listAuditEvents({
+      userId: apiToken.ownerUserId
     });
     await app.close();
 
