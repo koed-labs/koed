@@ -594,7 +594,8 @@ export interface LocalMemoryAgentSettingRecord {
 }
 
 export interface MemorySourceRepository
-  extends MemoryEngineRepository,
+  extends
+    MemoryEngineRepository,
     CapturedSessionRepository,
     ConversationItemRepository,
     LocalEmbeddingStatusRepository,
