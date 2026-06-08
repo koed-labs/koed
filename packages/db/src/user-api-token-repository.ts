@@ -105,6 +105,15 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
 
     getUser,
 
+    async countUsers(): Promise<number> {
+      const rows = await db
+        .select({ count: sql<string>`count(*)` })
+        .from(users)
+        .where(isNull(users.disabledAt));
+
+      return Number(rows[0]?.count ?? 0);
+    },
+
     async createApiToken(input: {
       ownerUserId: string;
       name: string;

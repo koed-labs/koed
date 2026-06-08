@@ -1,0 +1,337 @@
+import pg from "pg";
+import type { MemoryActor } from "@koed/core";
+import type {
+  CaptureMethod,
+  CapturedSessionRecord,
+  CapturedSessionTitleCandidate,
+  MemorySourceRepository,
+  SourceRuntime,
+  Visibility
+} from "./types.js";
+
+type CapturedSessionRepository = Pick<
+  MemorySourceRepository,
+  | "createCapturedSession"
+  | "updateCapturedSessionTitle"
+  | "listCapturedSessionsNeedingTitles"
+  | "updateCapturedSessionGeneratedTitle"
+>;
+
+type CapturedSessionRow = {
+  id: string;
+  owner_user_id: string | null;
+  visibility: Visibility;
+  external_session_id: string | null;
+  workspace_id: string | null;
+  source_runtime: SourceRuntime;
+  capture_method: CaptureMethod;
+  model: string | null;
+  cwd: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: Date;
+};
+
+type CapturedSessionTitleCandidateRow = {
+  id: string;
+  external_session_id: string | null;
+  project_name: string | null;
+  project_path: string | null;
+  current_title: string | null;
+  event_count: string | number;
+  source_items: Array<{
+    id: string;
+    actor: MemoryActor;
+    content: string;
+    capturedAt: string;
+  }> | null;
+};
+
+const mapCapturedSession = (
+  row: CapturedSessionRow
+): CapturedSessionRecord => ({
+  id: row.id,
+  ownerUserId: row.owner_user_id,
+  visibility: row.visibility,
+  externalSessionId: row.external_session_id,
+  workspaceId: row.workspace_id,
+  sourceRuntime: row.source_runtime,
+  captureMethod: row.capture_method,
+  model: row.model,
+  cwd: row.cwd,
+  metadata: row.metadata ?? {},
+  createdAt: row.created_at.toISOString()
+});
+
+const mapCapturedSessionTitleCandidate = (
+  row: CapturedSessionTitleCandidateRow
+): CapturedSessionTitleCandidate => ({
+  id: row.id,
+  externalSessionId: row.external_session_id,
+  projectName: row.project_name,
+  projectPath: row.project_path,
+  currentTitle: row.current_title,
+  eventCount: Number(row.event_count),
+  sourceItems: row.source_items ?? []
+});
+
+const normalizeSessionTitle = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:;,.!?-]+|[\s:;,.!?-]+$/g, "")
+    .trim();
+  if (!normalized) {
+    return null;
+  }
+  return normalized.slice(0, 120);
+};
+
+export const createCapturedSessionRepository = (
+  pool: pg.Pool
+): CapturedSessionRepository => ({
+  async createCapturedSession(actor, input) {
+    const metadata = input.metadata ?? {};
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        insert into sessions (
+          owner_user_id,
+          workspace_id,
+          visibility,
+          external_session_id,
+          source_runtime,
+          capture_method,
+          codex_transcript_path,
+          idempotency_key,
+          source_hash,
+          model,
+          cwd,
+          metadata,
+          source_kind,
+          source_adapter_version,
+          external_thread_id,
+          forked_from_external_thread_id,
+          parent_external_thread_id,
+          parent_session_id,
+          agent_nickname,
+          agent_role,
+          agent_path,
+          thread_source,
+          source_metadata
+        )
+        values (
+          $1, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11,
+          $12, $13, $14, $15, $16,
+          (
+            select id
+            from sessions parent
+            where parent.owner_user_id = $1
+              and parent.visibility = 'personal'
+              and (
+                parent.external_thread_id = $16
+                or parent.external_session_id = $16
+                or parent.id::text = $16
+              )
+            order by parent.created_at desc
+            limit 1
+          ),
+          $17, $18, $19, $20, $21
+        )
+        on conflict (idempotency_key)
+        where idempotency_key is not null
+        do update set
+          updated_at = now(),
+          metadata =
+            sessions.metadata ||
+            excluded.metadata ||
+            case
+              when sessions.metadata ->> 'threadNameSource' = 'manual'
+              then jsonb_strip_nulls(jsonb_build_object(
+                'threadName', sessions.metadata ->> 'threadName',
+                'threadNameSource', sessions.metadata ->> 'threadNameSource',
+                'threadNameEditedAt', sessions.metadata ->> 'threadNameEditedAt'
+              ))
+              else '{}'::jsonb
+            end,
+          parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
+          source_metadata = sessions.source_metadata || excluded.source_metadata
+        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+      `,
+      [
+        actor.userId,
+        input.workspaceId ?? null,
+        input.externalSessionId ?? null,
+        input.sourceRuntime ?? "codex",
+        input.captureMethod ?? "mcp",
+        input.codexTranscriptPath ?? null,
+        input.idempotencyKey ?? null,
+        input.sourceHash ?? null,
+        input.model ?? null,
+        input.cwd ?? null,
+        metadata,
+        "codex",
+        input.sourceRuntime === "codex-cli"
+          ? "codex-cli-hook-v1"
+          : "codex-app-server-v1",
+        input.externalSessionId ?? null,
+        typeof metadata.forked_from_id === "string"
+          ? metadata.forked_from_id
+          : null,
+        typeof metadata.parentThreadId === "string"
+          ? metadata.parentThreadId
+          : typeof metadata.parentExternalSessionId === "string"
+            ? metadata.parentExternalSessionId
+            : null,
+        typeof metadata.agent_nickname === "string"
+          ? metadata.agent_nickname
+          : typeof metadata.agentNickname === "string"
+            ? metadata.agentNickname
+            : null,
+        typeof metadata.agent_role === "string"
+          ? metadata.agent_role
+          : typeof metadata.agentType === "string"
+            ? metadata.agentType
+            : null,
+        typeof metadata.agent_path === "string" ? metadata.agent_path : null,
+        typeof metadata.thread_source === "string"
+          ? metadata.thread_source
+          : typeof metadata.threadKind === "string"
+            ? metadata.threadKind
+            : null,
+        metadata
+      ]
+    );
+
+    return mapCapturedSession(result.rows[0]!);
+  },
+
+  async updateCapturedSessionTitle(actor, sessionId, input) {
+    const title = normalizeSessionTitle(input.title);
+    if (!title) {
+      return null;
+    }
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        update sessions
+        set
+          metadata = metadata || jsonb_build_object(
+            'threadName', $3::text,
+            'threadNameSource', 'manual',
+            'threadNameEditedAt', now()
+          ),
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+      `,
+      [actor.userId, sessionId, title]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  async listCapturedSessionsNeedingTitles(actor, input = {}) {
+    const limit = Math.min(Math.max(input.limit ?? 5, 1), 25);
+    const minUserEvents = Math.min(Math.max(input.minUserEvents ?? 3, 1), 50);
+    const result = await pool.query<CapturedSessionTitleCandidateRow>(
+      `
+        with eligible_sessions as (
+          select
+            s.id,
+            s.external_session_id,
+            coalesce(s.metadata ->> 'projectName', s.cwd, s.workspace_id::text) as project_name,
+            coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
+            s.metadata ->> 'threadName' as current_title,
+            count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent'))::text as event_count,
+            max(coalesce(me.source_event_time, me.captured_at)) as latest_event_at
+          from sessions s
+          join memory_events me on me.session_id = s.id
+          where s.invalidated_at is null
+            and s.visibility = 'personal'
+            and s.owner_user_id = $1
+            and me.invalidated_at is null
+            and me.visibility = 'personal'
+            and me.owner_user_id = $1
+            and coalesce(s.metadata ->> 'threadNameSource', '') <> 'manual'
+            and (
+              s.metadata ->> 'threadName' is null
+              or btrim(s.metadata ->> 'threadName') = ''
+              or s.metadata ->> 'threadName' = coalesce(s.external_session_id, '')
+              or s.metadata ->> 'threadName' = s.id::text
+              or s.metadata ->> 'threadNameSource' = 'provisional'
+          )
+          group by s.id
+          having count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent')) >= $2
+          order by max(coalesce(me.source_event_time, me.captured_at)) desc, s.id desc
+          limit $3
+        )
+        select
+          es.*,
+          coalesce(source_items.source_items, '[]'::jsonb) as source_items
+        from eligible_sessions es
+        left join lateral (
+          select jsonb_agg(
+            jsonb_build_object(
+              'id', item.id,
+              'actor', item.payload ->> 'actor',
+              'content', item.payload ->> 'content',
+              'capturedAt', item.captured_at
+            )
+            order by item.captured_at asc, item.id asc
+          ) as source_items
+          from (
+            select me.id, me.payload, me.captured_at
+            from memory_events me
+            where me.session_id = es.id
+              and me.invalidated_at is null
+              and me.visibility = 'personal'
+              and me.owner_user_id = $1
+              and me.payload ->> 'actor' in ('user', 'assistant', 'agent', 'subagent')
+              and coalesce(me.payload ->> 'content', '') <> ''
+            order by me.captured_at asc, me.id asc
+            limit 8
+          ) item
+        ) source_items on true
+        order by es.latest_event_at desc, es.id desc
+      `,
+      [actor.userId, minUserEvents, limit]
+    );
+    return result.rows.map(mapCapturedSessionTitleCandidate);
+  },
+
+  async updateCapturedSessionGeneratedTitle(actor, sessionId, input) {
+    const title = normalizeSessionTitle(input.title);
+    if (!title) {
+      return null;
+    }
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        update sessions
+        set
+          metadata = metadata || jsonb_build_object(
+            'threadName', $3::text,
+            'threadNameSource', $4::text,
+            'threadNameGeneratedAt', now()
+          ),
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+          and coalesce(metadata ->> 'threadNameSource', '') <> 'manual'
+          and (
+            metadata ->> 'threadName' is null
+            or btrim(metadata ->> 'threadName') = ''
+            or metadata ->> 'threadName' = coalesce(external_session_id, '')
+            or metadata ->> 'threadName' = id::text
+            or metadata ->> 'threadNameSource' in ('generated', 'lcm', 'provisional')
+          )
+        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+      `,
+      [actor.userId, sessionId, title, input.source]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  }
+});

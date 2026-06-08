@@ -2,10 +2,15 @@
 
 ## Drizzle Hybrid Adoption
 
-- Memory Question repository methods were reviewed on 2026-06-08. Keep them
-  raw SQL for now: `claimPendingMemoryQuestions` and `updateMemoryQuestion`
-  are lease/concurrency-sensitive, while splitting only create/list/get would
-  add hybrid complexity without enough payoff.
+- Memory Question repository methods were reviewed on 2026-06-08 and extracted
+  to `memory-question-repository.ts`. Keep them raw SQL for now:
+  `claimPendingMemoryQuestions` and `updateMemoryQuestion` are
+  lease/concurrency-sensitive.
+- Repository decomposition has moved captured sessions, conversation items,
+  local embedding diagnostic status, Memory Questions, Memory Node browser/CRUD,
+  and workflow token usage into dedicated fragments. The remaining
+  `repository.ts` core is graph/vector/retrieval/LCM/projection-heavy and should
+  be split only along those runtime boundaries.
 - Keep graph, vector search, retrieval, LCM, chronology, and projection queries
   raw SQL unless a specific conversion has a clear correctness, readability, or
   testability payoff.
