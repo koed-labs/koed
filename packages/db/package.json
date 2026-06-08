@@ -15,9 +15,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
-    "api-token:create": "node scripts/create-api-token.mjs",
-    "api-token:list": "node scripts/list-api-tokens.mjs",
-    "api-token:revoke": "node scripts/revoke-api-token.mjs",
+    "api-token:create": "pnpm run build && node scripts/create-api-token.mjs",
+    "api-token:list": "pnpm run build && node scripts/list-api-tokens.mjs",
+    "api-token:revoke": "pnpm run build && node scripts/revoke-api-token.mjs",
     "migrate:generate": "drizzle-kit generate --config drizzle.config.ts",
     "migrate:check": "drizzle-kit check --config drizzle.config.ts",
     "migrate:smoke": "pnpm run build && node scripts/migration-smoke.mjs",

@@ -18,6 +18,10 @@ export {
   createMemorySourceRepository,
   localRerankingEnabled
 } from "./repository.js";
+export {
+  createUserApiTokenRepository,
+  mapUserRecord
+} from "./user-api-token-repository.js";
 export { presentMemoryText } from "./presentation.js";
 export * as schema from "./schema.js";
 export * from "./types.js";

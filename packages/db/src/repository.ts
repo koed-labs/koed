@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { checkDatabase } from "./connection.js";
+import { checkDatabase, createDb } from "./connection.js";
 import {
   clusterIdForLabel,
   isGenericDevelopmentActivity,
@@ -11,6 +11,7 @@ import {
   looksLikeToolPayloadText,
   truncateDisplayText
 } from "./value-helpers.js";
+import { createUserApiTokenRepository } from "./user-api-token-repository.js";
 import {
   codexIdePromptUserText,
   chunkTextForModel,
@@ -36,7 +37,6 @@ import {
 } from "@koed/shared";
 
 import type {
-  ApiTokenRecord,
   CaptureMethod,
   CapturePolicyRecord,
   CapturePolicyTarget,
@@ -1954,28 +1954,6 @@ const mapUser = (row: {
   passwordHash: row.password_hash
 });
 
-const mapApiToken = (row: {
-  id: string;
-  owner_user_id: string;
-  name: string;
-  token_prefix: string;
-  scopes: string[];
-  created_at: Date;
-  last_used_at: Date | null;
-  expires_at: Date | null;
-  revoked_at: Date | null;
-}): ApiTokenRecord => ({
-  id: row.id,
-  ownerUserId: row.owner_user_id,
-  name: row.name,
-  tokenPrefix: row.token_prefix,
-  scopes: row.scopes,
-  createdAt: row.created_at.toISOString(),
-  lastUsedAt: row.last_used_at?.toISOString() ?? null,
-  expiresAt: row.expires_at?.toISOString() ?? null,
-  revokedAt: row.revoked_at?.toISOString() ?? null
-});
-
 const localEmbeddingServiceUrl = (): string | null =>
   (
     process.env.EMBEDDING_SERVICE_URL ?? "http://embedding-service:8000"
@@ -2936,6 +2914,8 @@ const mapLcmNodeForSummarization = async (
 export const createMemorySourceRepository = (
   pool: pg.Pool
 ): MemorySourceRepository => ({
+  ...createUserApiTokenRepository(createDb(pool)),
+
   health: () => checkDatabase(pool),
 
   async getLocalEmbeddingStatus() {
@@ -2983,66 +2963,11 @@ export const createMemorySourceRepository = (
     }
   },
 
-  async createUser(input) {
-    const result = await pool.query<{ id: string }>(
-      `
-        insert into users (email, display_name, password_hash)
-        values ($1, $2, $3)
-        returning id
-      `,
-      [
-        input.email.toLowerCase(),
-        input.displayName ?? null,
-        input.passwordHash ?? null
-      ]
-    );
-
-    return { id: result.rows[0]!.id };
-  },
-
   async countUsers() {
     const result = await pool.query<{ count: string }>(
       "select count(*) as count from users where disabled_at is null"
     );
     return Number(result.rows[0]?.count ?? 0);
-  },
-
-  async findUserByEmail(email) {
-    const result = await pool.query<{
-      id: string;
-      email: string;
-      display_name: string | null;
-      password_hash: string | null;
-    }>(
-      `
-        select id, email, display_name, password_hash
-        from users
-        where email = $1 and disabled_at is null
-        limit 1
-      `,
-      [email.toLowerCase()]
-    );
-
-    return result.rows[0] ? mapUser(result.rows[0]) : null;
-  },
-
-  async getUser(userId) {
-    const result = await pool.query<{
-      id: string;
-      email: string;
-      display_name: string | null;
-      password_hash: string | null;
-    }>(
-      `
-        select id, email, display_name, password_hash
-        from users
-        where id = $1 and disabled_at is null
-        limit 1
-      `,
-      [userId]
-    );
-
-    return result.rows[0] ? mapUser(result.rows[0]) : null;
   },
 
   async createSession(userId, sessionHash, expiresAt) {
@@ -3087,109 +3012,6 @@ export const createMemorySourceRepository = (
       `,
       [sessionHash]
     );
-  },
-
-  async createApiToken(input) {
-    const result = await pool.query<{
-      id: string;
-      owner_user_id: string;
-      name: string;
-      token_prefix: string;
-      scopes: string[];
-      created_at: Date;
-      last_used_at: Date | null;
-      expires_at: Date | null;
-      revoked_at: Date | null;
-    }>(
-      `
-        insert into api_tokens (owner_user_id, name, token_hash, token_prefix, scopes, expires_at)
-        values ($1, $2, $3, $4, $5, $6)
-        returning id, owner_user_id, name, token_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
-      `,
-      [
-        input.ownerUserId,
-        input.name,
-        input.tokenHash,
-        input.tokenPrefix,
-        input.scopes ?? [],
-        input.expiresAt ?? null
-      ]
-    );
-
-    return mapApiToken(result.rows[0]!);
-  },
-
-  async listApiTokens(userId) {
-    const result = await pool.query<{
-      id: string;
-      owner_user_id: string;
-      name: string;
-      token_prefix: string;
-      scopes: string[];
-      created_at: Date;
-      last_used_at: Date | null;
-      expires_at: Date | null;
-      revoked_at: Date | null;
-    }>(
-      `
-        select id, owner_user_id, name, token_prefix, scopes, created_at, last_used_at, expires_at, revoked_at
-        from api_tokens
-        where owner_user_id = $1 and revoked_at is null
-        order by created_at desc
-      `,
-      [userId]
-    );
-
-    return result.rows.map(mapApiToken);
-  },
-
-  async revokeApiToken(userId, tokenId) {
-    const result = await pool.query(
-      `
-        update api_tokens
-        set revoked_at = now()
-        where id = $1 and owner_user_id = $2 and revoked_at is null
-      `,
-      [tokenId, userId]
-    );
-
-    return (result.rowCount ?? 0) > 0;
-  },
-
-  async getApiTokenUser(tokenHash) {
-    const result = await pool.query<{ owner_user_id: string }>(
-      `
-        update api_tokens
-        set last_used_at = now()
-        where token_hash = $1
-          and revoked_at is null
-          and (expires_at is null or expires_at > now())
-        returning owner_user_id
-      `,
-      [tokenHash]
-    );
-
-    const token = result.rows[0];
-    if (!token) {
-      return null;
-    }
-
-    const userResult = await pool.query<{
-      id: string;
-      email: string;
-      display_name: string | null;
-      password_hash: string | null;
-    }>(
-      `
-        select id, email, display_name, password_hash
-        from users
-        where id = $1 and disabled_at is null
-        limit 1
-      `,
-      [token.owner_user_id]
-    );
-
-    return userResult.rows[0] ? mapUser(userResult.rows[0]) : null;
   },
 
   async createCapturedSession(actor, input) {

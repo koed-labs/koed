@@ -166,6 +166,59 @@ describeDb("memory repository visibility", () => {
     await pool?.end();
   });
 
+  it("manages API tokens through the Drizzle-backed repository slice", async () => {
+    const email = `api-token-${randomUUID()}@example.com`;
+    const user = await repo.createUser({
+      email: email.toUpperCase(),
+      displayName: "API Token User"
+    });
+
+    const foundUser = await repo.findUserByEmail(email);
+    expect(foundUser).toMatchObject({
+      id: user.id,
+      email,
+      displayName: "API Token User",
+      passwordHash: null
+    });
+
+    const tokenHash = `hash-${randomUUID()}-${randomUUID()}`;
+    const token = await repo.createApiToken({
+      ownerUserId: user.id,
+      name: "Codex",
+      tokenHash,
+      tokenPrefix: "cmt_test",
+      scopes: ["memory:read", "memory:write"]
+    });
+
+    expect(token).toMatchObject({
+      ownerUserId: user.id,
+      name: "Codex",
+      tokenPrefix: "cmt_test",
+      scopes: ["memory:read", "memory:write"],
+      lastUsedAt: null,
+      revokedAt: null
+    });
+
+    expect(await repo.listApiTokens(user.id)).toEqual([token]);
+
+    const authenticatedUser = await repo.getApiTokenUser(tokenHash);
+    expect(authenticatedUser).toMatchObject({
+      id: user.id,
+      email,
+      displayName: "API Token User",
+      passwordHash: null
+    });
+
+    const tokensAfterAuth = await repo.listApiTokens(user.id);
+    expect(tokensAfterAuth).toHaveLength(1);
+    expect(tokensAfterAuth[0]?.lastUsedAt).not.toBeNull();
+
+    expect(await repo.revokeApiToken(user.id, token.id)).toBe(true);
+    expect(await repo.revokeApiToken(user.id, token.id)).toBe(false);
+    expect(await repo.listApiTokens(user.id)).toEqual([]);
+    expect(await repo.getApiTokenUser(tokenHash)).toBeNull();
+  });
+
   it("filters personal memory to the owning user", async () => {
     const alice = await repo.createUser({
       email: `alice-${randomUUID()}@example.com`
