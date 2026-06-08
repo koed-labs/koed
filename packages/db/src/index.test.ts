@@ -6750,7 +6750,8 @@ describeDb("memory repository visibility", () => {
         eventType: "captured",
         rawEventType: "agent_turn",
         visibility: "personal",
-        content: "Session-backed semantic source should expand from node detail",
+        content:
+          "Session-backed semantic source should expand from node detail",
         idempotencyKey: `session-backed-event-${randomUUID()}`,
         sourceHash: `session-backed-event-${randomUUID()}`
       }
@@ -6775,7 +6776,10 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       { query: "Session-backed semantic source", limit: 10 }
     );
-    const exactEvent = await repo.getLcmGraphEvent({ userId: alice.id }, event.id);
+    const exactEvent = await repo.getLcmGraphEvent(
+      { userId: alice.id },
+      event.id
+    );
     const graphNode = await repo.getLcmGraphNode({ userId: alice.id }, node.id);
 
     expect(displayEvents.map((item) => item.id)).not.toContain(event.id);
