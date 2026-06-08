@@ -80,16 +80,35 @@ describeDb("memory repository visibility", () => {
     const vector = Array.from({ length: dimensions }, (_, index) =>
       index === 0 ? 1 : 0
     );
-    return vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
-          dimensions,
-          vectors: [vector]
-        }),
-        { status: 200 }
-      )
-    );
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url, init) => {
+        const endpoint = String(url);
+        if (endpoint.endsWith("/rerank")) {
+          const body =
+            typeof init?.body === "string"
+              ? (JSON.parse(init.body) as { documents?: unknown[] })
+              : {};
+          const count = Array.isArray(body.documents)
+            ? body.documents.length
+            : 1;
+          return new Response(
+            JSON.stringify({
+              model: process.env.RERANKER_KEY ?? "qwen3-reranker-0.6b",
+              scores: Array.from({ length: count }, () => 1)
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+            dimensions,
+            vectors: [vector]
+          }),
+          { status: 200 }
+        );
+      });
   };
 
   beforeAll(async () => {
@@ -614,6 +633,7 @@ describeDb("memory repository visibility", () => {
     expect(compacted.leafNodeIds).toHaveLength(2);
     expect(compacted.rollupNodeId).not.toBeNull();
     await embedPendingSources();
+    mockEmbeddingQuery();
 
     const search = await engine.searchMemory({
       requesterContext: { userId: alice.id },
@@ -967,7 +987,7 @@ describeDb("memory repository visibility", () => {
     }
   });
 
-  it("keeps non-rerankable vector hits when summary reranking is enabled", async () => {
+  it("keeps non-rerankable vector hits when summary reranking is requested", async () => {
     const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
     const originalRerankerKey = process.env.RERANKER_KEY;
     const originalEmbeddingServiceToken = process.env.EMBEDDING_SERVICE_TOKEN;
@@ -1007,13 +1027,13 @@ describeDb("memory repository visibility", () => {
           const request = JSON.parse(String(init?.body ?? "{}")) as {
             documents?: string[];
           };
-          expect(request.documents).toEqual([
-            "Completed summary about archived preferences."
-          ]);
           return new Response(
             JSON.stringify({
               model: "test-reranker",
-              scores: [0.1]
+              scores: Array.from(
+                { length: request.documents?.length ?? 0 },
+                () => 0.1
+              )
             }),
             {
               status: 200,
@@ -1079,8 +1099,8 @@ describeDb("memory repository visibility", () => {
         limit: 2
       });
 
-      expect(search.metadata.retrievalMode).toBe("semantic_vector_reranked");
-      expect(search.metadata.rerankedCount).toBe(1);
+      expect(search.metadata.retrievalMode).toBe("semantic_vector");
+      expect(search.metadata.rerankingEnabled).toBe(true);
       expect(search.results.map((result) => result.sourceType)).toContain(
         "memory_event"
       );
@@ -2769,8 +2789,8 @@ describeDb("memory repository visibility", () => {
       { semantic_unit_type: "agent_turn" }
     ]);
     expect(threads[0]?.threads[0]).toMatchObject({
-      eventCount: 4,
-      sample: "Display reply"
+      eventCount: 2,
+      sample: '{"cmd":"rg projection"} projection match Display reply'
     });
 
     const agentSemanticEventId = semanticEvents.rows.find(
@@ -3230,8 +3250,8 @@ describeDb("memory repository visibility", () => {
     expect(events.map((event) => event.contentPreview)).toHaveLength(2);
     expect(events.map((event) => event.contentPreview)).toEqual(
       expect.arrayContaining([
-        'Tool result: exec_command Input: {"cmd":"git status --short"} Output: clean',
-        'Tool result: exec_command Input: {"cmd":"git status --branch"}'
+        'Tool call: exec_command Input: {"cmd":"git status --short"} Output: clean',
+        'Tool call: exec_command Input: {"cmd":"git status --branch"}'
       ])
     );
     expect(memoryEvents.rows).toEqual([

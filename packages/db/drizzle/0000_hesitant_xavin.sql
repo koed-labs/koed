@@ -396,6 +396,7 @@ CREATE TABLE "tool_events" (
 	"idempotency_key" text,
 	"source_hash" text,
 	"captured_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"started_at" timestamp with time zone,
 	"completed_at" timestamp with time zone,
 	"invalidated_at" timestamp with time zone,

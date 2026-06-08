@@ -77,7 +77,11 @@ const mapCapturedSession = (
   ownerUserId: row.owner_user_id,
   visibility: row.visibility,
   externalSessionId: row.external_session_id,
-  workspaceId: row.workspace_id,
+  workspaceId:
+    row.workspace_id ??
+    (typeof row.metadata?.workspaceId === "string"
+      ? row.metadata.workspaceId
+      : null),
   sourceRuntime: row.source_runtime,
   captureMethod: row.capture_method,
   model: row.model,
@@ -112,11 +116,53 @@ const normalizeSessionTitle = (value: unknown): string | null => {
   return normalized.slice(0, 120);
 };
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const normalizeSessionMetadata = (input: {
+  workspaceId?: string;
+  metadata?: Record<string, unknown>;
+}): Record<string, unknown> => {
+  const metadata = { ...(input.metadata ?? {}) };
+  if (input.workspaceId && typeof metadata.workspaceId !== "string") {
+    metadata.workspaceId = input.workspaceId;
+  }
+  return metadata;
+};
+
+const resolveWorkspaceForeignKey = async (
+  pool: pg.Pool,
+  actor: ActorContext,
+  workspaceId: string | undefined
+): Promise<string | null> => {
+  if (!workspaceId || !UUID_PATTERN.test(workspaceId)) {
+    return null;
+  }
+  const result = await pool.query<{ id: string }>(
+    `
+      select id
+      from workspaces
+      where id = $1
+        and owner_user_id = $2
+        and visibility = 'personal'
+        and archived_at is null
+      limit 1
+    `,
+    [workspaceId, actor.userId]
+  );
+  return result.rows[0]?.id ?? null;
+};
+
 export const createCapturedSessionRepository = (
   pool: pg.Pool
 ): CapturedSessionRepository => ({
   async createCapturedSession(actor, input) {
-    const metadata = input.metadata ?? {};
+    const metadata = normalizeSessionMetadata(input);
+    const workspaceForeignKey = await resolveWorkspaceForeignKey(
+      pool,
+      actor,
+      input.workspaceId
+    );
     const result = await pool.query<CapturedSessionRow>(
       `
         insert into sessions (
@@ -184,7 +230,7 @@ export const createCapturedSessionRepository = (
       `,
       [
         actor.userId,
-        input.workspaceId ?? null,
+        workspaceForeignKey,
         input.externalSessionId ?? null,
         input.sourceRuntime ?? "codex",
         input.captureMethod ?? "mcp",

@@ -16,6 +16,20 @@ jobs:
     name: Version and Release
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: koed
+          POSTGRES_USER: koed
+          POSTGRES_PASSWORD: koed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U koed -d koed"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -78,6 +92,8 @@ jobs:
 
       - name: Verify release commit
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
+        env:
+          DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: pnpm verify
 
       - name: Build release artifacts

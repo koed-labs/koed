@@ -191,7 +191,8 @@ type SemanticBundleSealReason =
   | "token_limit"
   | "boundary_change"
   | "stop_hook"
-  | "catch_up_stale";
+  | "catch_up_stale"
+  | "batch_end";
 
 type ConversationSemanticProjectionGroup = {
   unitType: ConversationSemanticUnitType;
@@ -675,7 +676,9 @@ const transcriptTokenUsageFromRaw = (
       ? payload.token_count
       : isRecord(payload.tokenCount)
         ? payload.tokenCount
-        : payload;
+        : isRecord(payload.info) && isRecord(payload.info.last_token_usage)
+          ? payload.info.last_token_usage
+          : payload;
   const inputTokens = tokenNumberField(
     usage,
     "inputTokens",
@@ -1527,29 +1530,22 @@ const conversationSemanticProjectionGroups = (
   unitType: ConversationSemanticUnitType,
   items: ConversationSemanticProjectionItem[]
 ): ConversationSemanticProjectionGroup[] => {
-  if (unitType === "user_turn") {
-    return items.length > 0 ? [{ unitType, items }] : [];
-  }
-
-  const groups: ConversationSemanticProjectionGroup[] = [];
-  let current: ConversationSemanticProjectionItem[] = [];
-  let currentActor: MemoryActor | null = null;
-  const actorClass = (item: ConversationSemanticProjectionItem): MemoryActor =>
-    conversationSemanticUnitActor(unitType, [item.actorType]);
-
-  for (const item of items) {
-    const itemActor = actorClass(item);
-    if (current.length > 0 && currentActor !== itemActor) {
-      groups.push({ unitType, items: current });
-      current = [];
+  if (unitType === "agent_turn") {
+    let lastNonToolIndex = -1;
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index]?.actorType !== "tool") {
+        lastNonToolIndex = index;
+        break;
+      }
     }
-    current.push(item);
-    currentActor = itemActor;
+    if (lastNonToolIndex >= 0 && lastNonToolIndex < items.length - 1) {
+      return [
+        { unitType, items: items.slice(0, lastNonToolIndex + 1) },
+        { unitType, items: items.slice(lastNonToolIndex + 1) }
+      ].filter((group) => group.items.length > 0);
+    }
   }
-  if (current.length > 0) {
-    groups.push({ unitType, items: current });
-  }
-  return groups;
+  return items.length > 0 ? [{ unitType, items }] : [];
 };
 
 const conversationItemToolPayload = (
@@ -3555,6 +3551,8 @@ export const createMemorySourceRepository = (
     }
     if (pendingAgentBundleIsStale()) {
       await flushAgentBundle("catch_up_stale");
+    } else if (pendingAgentItems.length > 0) {
+      await flushAgentBundle("batch_end");
     }
     return result;
   },
@@ -4108,7 +4106,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
-            and ($6::uuid is not null or me.session_id is null)
+            and ($6::uuid is not null or me.session_id is null or me.capture_method = 'api')
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(
               case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
@@ -4199,6 +4197,7 @@ export const createMemorySourceRepository = (
           join sessions s on s.id = msg.session_id
           where ($2::boolean = true or msg.invalidated_at is null)
             and msg.role <> 'tool'
+            and msg.capture_method = 'hook'
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
@@ -4299,8 +4298,15 @@ export const createMemorySourceRepository = (
             concat_ws(
               E'\n\n',
               'Tool call: ' || te.tool_name,
-              case when te.tool_input is null then null else 'Input:' || E'\n' || te.tool_input::text end,
-              case when te.tool_response is null then null else 'Output:' || E'\n' || te.tool_response::text end
+              case
+                when te.tool_input is null then null
+                else 'Input:' || E'\n' || regexp_replace(te.tool_input::text, '([,:]) ', '\\1', 'g')
+              end,
+              case
+                when te.tool_response is null then null
+                when jsonb_typeof(te.tool_response) = 'string' then 'Output:' || E'\n' || (te.tool_response #>> '{}')
+                else 'Output:' || E'\n' || regexp_replace(te.tool_response::text, '([,:]) ', '\\1', 'g')
+              end
             ) as content,
             jsonb_build_object(
               'sourceTable', 'tool_events',
@@ -4322,6 +4328,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = te.session_id
           where ($2::boolean = true or te.invalidated_at is null)
+            and te.capture_method = 'hook'
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
