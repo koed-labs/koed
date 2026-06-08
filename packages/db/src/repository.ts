@@ -3,7 +3,6 @@ import pg from "pg";
 import { checkDatabase } from "./connection.js";
 import {
   clusterIdForLabel,
-  clusterLabelForMemoryText,
   isGenericDevelopmentActivity,
   presentMemoryText
 } from "./presentation.js";
@@ -357,9 +356,10 @@ const mapMemoryBrowserItem = (row: {
   thread_name: string | null;
 }): MemoryBrowserItem => {
   const text = presentMemoryText(row.summary_text, row);
+  const titleLabel = row.title ? truncateDisplayText(row.title, 80) : "";
   const label = isGenericDevelopmentActivity(text, row)
     ? "Development Activity"
-    : clusterLabelForMemoryText(`${row.title ?? ""} ${text}`);
+    : titleLabel || "General";
   return {
     id: row.id,
     clusterId: clusterIdForLabel(label),
