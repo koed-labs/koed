@@ -1741,7 +1741,7 @@ const nonNegativeFloatEnv = (name: string, fallback: number): number => {
 const DEFAULT_MEMORY_EVENT_MAX_TOKENS = 2_048;
 const DEFAULT_EMBEDDING_MAX_TOKENS = 4_096;
 const DEFAULT_MEMORY_AGENT_TURN_STALE_MS = 15 * 60_000;
-const QWEN_OPERATIONAL_MAX_TOKENS = 32_000;
+const QWEN_OPERATIONAL_MAX_TOKENS = 32_768;
 
 const positiveIntEnvCapped = (
   name: string,

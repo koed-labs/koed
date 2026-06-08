@@ -40,6 +40,7 @@ class EmbeddedChunk(BaseModel):
     inputIndex: int
     chunkIndex: int
     chunkCount: int
+    tokenCount: int
     text: str
     vector: list[float]
 
@@ -47,6 +48,7 @@ class EmbeddedChunk(BaseModel):
 class EmbedResponse(BaseModel):
     model: str
     dimensions: int
+    measuredTokens: int | None = None
     vectors: list[list[float]]
     chunks: list[EmbeddedChunk]
 

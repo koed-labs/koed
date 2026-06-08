@@ -307,7 +307,7 @@ describe("local memory answer bridge", () => {
               threadId: "thread-question-test",
               turnId: "turn-question-test",
               tokenUsage: {
-                modelContextWindow: 32000,
+                modelContextWindow: 32768,
                 last: {
                   inputTokens: 10,
                   cachedInputTokens: 2,
@@ -327,7 +327,7 @@ describe("local memory answer bridge", () => {
             threadId: "thread-question-test",
             turnId: "turn-question-test",
             tokenUsage: {
-              modelContextWindow: 32000,
+              modelContextWindow: 32768,
               last: {
                 inputTokens: 10,
                 cachedInputTokens: 2,
@@ -356,7 +356,7 @@ describe("local memory answer bridge", () => {
                   threadId: "thread-question-test",
                   turnId: "turn-question-test",
                   tokenUsage: {
-                    modelContextWindow: 32000,
+                    modelContextWindow: 32768,
                     last: {
                       inputTokens: 10,
                       cachedInputTokens: 2,
@@ -371,7 +371,7 @@ describe("local memory answer bridge", () => {
           }
         ],
         tokenUsage: {
-          modelContextWindow: 32000,
+          modelContextWindow: 32768,
           last: {
             inputTokens: 10,
             cachedInputTokens: 2,

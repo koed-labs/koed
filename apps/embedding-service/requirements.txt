@@ -1,8 +1,4 @@
---extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-
 fastapi==0.115.6
 huggingface-hub==0.35.3
-llama-cpp-python==0.3.22
 python-dotenv==1.0.1
-qwen3-embed==1.4.0
 uvicorn[standard]==0.34.0

@@ -1,7 +1,6 @@
 import argparse
 import json
 import math
-import os
 import statistics
 import time
 import urllib.error
@@ -9,9 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from vectors import extract_embedding_vectors, normalize_vector
-
-DEFAULT_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32000]
+DEFAULT_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 
 
 @dataclass
@@ -53,39 +50,6 @@ def make_repeated_text(target_tokens: int) -> str:
     # Short ASCII words keep tokenization stable across runtimes and make failures
     # easier to reason about when HTTP text-length limits are lower than token limits.
     return ("memory benchmark retrieval qwen " * max(1, math.ceil(target_tokens / 5))).strip()
-
-
-def fit_text_to_tokens(llm: Any, target_tokens: int) -> tuple[str, int]:
-    text = make_repeated_text(target_tokens)
-
-    def count_tokens(value: str) -> int:
-        return len(llm.tokenize(value.encode("utf-8"), add_bos=False))
-
-    while count_tokens(text) < target_tokens:
-        text += " memory benchmark retrieval qwen"
-
-    words = text.split()
-    low = 1
-    high = len(words)
-    best_text = text
-    best_delta = abs(count_tokens(text) - target_tokens)
-    while low <= high:
-        mid = (low + high) // 2
-        candidate = " ".join(words[:mid])
-        tokens = count_tokens(candidate)
-        delta = abs(tokens - target_tokens)
-        if delta < best_delta:
-            best_text = candidate
-            best_delta = delta
-        if tokens < target_tokens:
-            low = mid + 1
-        elif tokens > target_tokens:
-            high = mid - 1
-        else:
-            best_text = candidate
-            break
-
-    return best_text, count_tokens(best_text)
 
 
 def post_json(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -139,63 +103,6 @@ def run_http(args: argparse.Namespace) -> list[BenchmarkResult]:
     return results
 
 
-def run_direct(args: argparse.Namespace) -> list[BenchmarkResult]:
-    from huggingface_hub import hf_hub_download
-    from llama_cpp import LLAMA_POOLING_TYPE_LAST, Llama
-
-    model_path = args.model_path or hf_hub_download(
-        repo_id=args.model_repo,
-        filename=args.model_file,
-    )
-    llm = Llama(
-        model_path=model_path,
-        embedding=True,
-        pooling_type=LLAMA_POOLING_TYPE_LAST,
-        n_ctx=args.n_ctx,
-        n_batch=args.n_batch,
-        n_threads=args.n_threads,
-        verbose=False,
-    )
-
-    for _ in range(args.warmup_runs):
-        result = llm.create_embedding("warmup", model=args.model_name)
-        normalize_vector(extract_embedding_vectors(result)[0])
-
-    results: list[BenchmarkResult] = []
-    for size in args.sizes:
-        text, measured_tokens = fit_text_to_tokens(llm, size)
-        latencies: list[float] = []
-        dimensions: int | None = None
-        error: str | None = None
-        status = "ok"
-        for _ in range(args.runs):
-            try:
-                if hasattr(llm, "reset"):
-                    llm.reset()
-                started = time.perf_counter()
-                result = llm.create_embedding(text, model=args.model_name)
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                vector = normalize_vector(extract_embedding_vectors(result)[0])
-                dimensions = len(vector)
-                latencies.append(elapsed_ms)
-            except Exception as exc:
-                status = "error"
-                error = str(exc)
-                break
-        results.append(
-            BenchmarkResult(
-                target_tokens=size,
-                measured_tokens=measured_tokens,
-                text_chars=len(text),
-                status=status,
-                dimensions=dimensions,
-                latencies_ms=latencies,
-                error=error,
-            )
-        )
-    return results
-
-
 def print_markdown(results: list[BenchmarkResult]) -> None:
     print(
         "| Target tokens | Measured tokens | Chars | Status | "
@@ -213,40 +120,18 @@ def print_markdown(results: list[BenchmarkResult]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark Qwen GGUF embedding latency.")
-    parser.add_argument("--mode", choices=["http", "direct"], default="http")
+    parser = argparse.ArgumentParser(description="Benchmark Koed embedding-service HTTP latency.")
     parser.add_argument("--url", default="http://127.0.0.1:8000/embed")
     parser.add_argument("--sizes", type=int, nargs="+", default=DEFAULT_SIZES)
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=600)
-    parser.add_argument(
-        "--model-repo",
-        default=os.getenv("MODEL_REPO", "Qwen/Qwen3-Embedding-0.6B-GGUF"),
-    )
-    parser.add_argument(
-        "--model-file",
-        default=os.getenv("MODEL_FILE", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
-    )
-    parser.add_argument("--model-path", default=os.getenv("MODEL_PATH"))
-    parser.add_argument(
-        "--model-name",
-        default=os.getenv("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B-GGUF"),
-    )
-    parser.add_argument("--n-ctx", type=int, default=int(os.getenv("BENCHMARK_N_CTX", "32000")))
-    parser.add_argument("--n-batch", type=int, default=int(os.getenv("LLAMA_N_BATCH", "512")))
-    parser.add_argument(
-        "--n-threads",
-        type=int,
-        default=int(os.getenv("LLAMA_N_THREADS", str(os.cpu_count() or 1))),
-    )
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    results = run_http(args) if args.mode == "http" else run_direct(args)
+    results = run_http(args)
     if args.format == "json":
         print(json.dumps([result.summary() for result in results], indent=2))
     else:
