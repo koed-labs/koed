@@ -9,15 +9,18 @@ pnpm env:setup
 ```
 
 This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
-`API_TOKEN_PEPPER`, and `EMBEDDING_SERVICE_TOKEN`. If `.env` already exists,
-the command preserves existing values and adds any missing keys from
+`API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, and a local
+`POSTGRES_PASSWORD`. If `.env` already exists, the command preserves existing
+values and adds any missing keys from
 `.env.example`.
 
 ## Required Deployment Values
 
 - `POSTGRES_DB`: Postgres database name used by Docker Compose.
 - `POSTGRES_USER`: Postgres user used by Docker Compose.
-- `POSTGRES_PASSWORD`: Postgres password. Use a deployment-specific secret.
+- `POSTGRES_PASSWORD`: Postgres password. `pnpm env:setup` generates this for
+  local Docker Compose deployments. Use a deployment-specific secret for
+  production.
 - `POSTGRES_HOST_PORT`: host port mapped to the Postgres container.
 - `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`. Docker Compose derives service-internal database URLs from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
 - `API_NODE_ENV`: runtime environment for the API service. Use `production` for deployed compose runs.

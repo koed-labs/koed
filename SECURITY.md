@@ -52,7 +52,7 @@ repository, including:
 
 - authentication or session handling;
 - API Token handling;
-- authorization boundaries for Personal Memory and Team Memory;
+- authorization boundaries for Personal Memory;
 - capture policy enforcement;
 - exposure of Memory data, diagnostics, logs, backups, or exports;
 - container, deployment, or default-configuration issues that could expose
