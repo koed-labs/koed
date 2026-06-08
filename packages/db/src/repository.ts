@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
+import { createAuthSessionRepository } from "./auth-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
 import { createSettingsRepository } from "./settings-repository.js";
 import {
@@ -61,7 +62,6 @@ import type {
   MemoryQuestionStatus,
   MemorySourceRepository,
   SourceRuntime,
-  UserRecord,
   Visibility,
   WorkflowTokenUsageInput,
   WorkflowTokenUsageRecord,
@@ -1886,18 +1886,6 @@ const mapMemoryQuestionDetail = (
   response: row.response
 });
 
-const mapUser = (row: {
-  id: string;
-  email: string;
-  display_name: string | null;
-  password_hash: string | null;
-}): UserRecord => ({
-  id: row.id,
-  email: row.email,
-  displayName: row.display_name,
-  passwordHash: row.password_hash
-});
-
 const localEmbeddingServiceUrl = (): string | null =>
   (
     process.env.EMBEDDING_SERVICE_URL ?? "http://embedding-service:8000"
@@ -2858,10 +2846,11 @@ const mapLcmNodeForSummarization = async (
 export const createMemorySourceRepository = (
   pool: pg.Pool
 ): MemorySourceRepository => ({
-  // Drizzle fragments cover table-shaped account and settings workflows.
+  // Drizzle fragments cover table-shaped account, auth session, and settings workflows.
   // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
   ...createUserApiTokenRepository(createDb(pool)),
   ...createSettingsRepository(createDb(pool)),
+  ...createAuthSessionRepository(createDb(pool)),
 
   health: () => checkDatabase(pool),
 
@@ -2915,50 +2904,6 @@ export const createMemorySourceRepository = (
       "select count(*) as count from users where disabled_at is null"
     );
     return Number(result.rows[0]?.count ?? 0);
-  },
-
-  async createSession(userId, sessionHash, expiresAt) {
-    await pool.query(
-      `
-        insert into user_sessions (user_id, session_hash, expires_at)
-        values ($1, $2, $3)
-      `,
-      [userId, sessionHash, expiresAt]
-    );
-  },
-
-  async getSessionUser(sessionHash) {
-    const result = await pool.query<{
-      id: string;
-      email: string;
-      display_name: string | null;
-      password_hash: string | null;
-    }>(
-      `
-        select u.id, u.email, u.display_name, u.password_hash
-        from user_sessions us
-        join users u on u.id = us.user_id
-        where us.session_hash = $1
-          and us.revoked_at is null
-          and us.expires_at > now()
-          and u.disabled_at is null
-        limit 1
-      `,
-      [sessionHash]
-    );
-
-    return result.rows[0] ? mapUser(result.rows[0]) : null;
-  },
-
-  async revokeSession(sessionHash) {
-    await pool.query(
-      `
-        update user_sessions
-        set revoked_at = now()
-        where session_hash = $1 and revoked_at is null
-      `,
-      [sessionHash]
-    );
   },
 
   async createCapturedSession(actor, input) {

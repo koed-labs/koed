@@ -219,6 +219,56 @@ describeDb("memory repository visibility", () => {
     expect(await repo.getApiTokenUser(tokenHash)).toBeNull();
   });
 
+  it("manages auth sessions through the Drizzle-backed repository slice", async () => {
+    const email = `auth-session-${randomUUID()}@example.com`;
+    const user = await repo.createUser({
+      email,
+      displayName: "Session User"
+    });
+    const activeHash = `${randomUUID()}-${randomUUID()}`;
+    const revokedHash = `${randomUUID()}-${randomUUID()}`;
+    const expiredHash = `${randomUUID()}-${randomUUID()}`;
+    const disabledHash = `${randomUUID()}-${randomUUID()}`;
+
+    await repo.createSession(
+      user.id,
+      activeHash,
+      new Date(Date.now() + 60_000)
+    );
+    expect(await repo.getSessionUser(activeHash)).toMatchObject({
+      id: user.id,
+      email,
+      displayName: "Session User",
+      passwordHash: null
+    });
+
+    await repo.createSession(
+      user.id,
+      revokedHash,
+      new Date(Date.now() + 60_000)
+    );
+    await repo.revokeSession(revokedHash);
+    expect(await repo.getSessionUser(revokedHash)).toBeNull();
+    await repo.revokeSession(revokedHash);
+
+    await repo.createSession(
+      user.id,
+      expiredHash,
+      new Date(Date.now() - 60_000)
+    );
+    expect(await repo.getSessionUser(expiredHash)).toBeNull();
+
+    await repo.createSession(
+      user.id,
+      disabledHash,
+      new Date(Date.now() + 60_000)
+    );
+    await pool.query("update users set disabled_at = now() where id = $1", [
+      user.id
+    ]);
+    expect(await repo.getSessionUser(disabledHash)).toBeNull();
+  });
+
   it("filters personal memory to the owning user", async () => {
     const alice = await repo.createUser({
       email: `alice-${randomUUID()}@example.com`

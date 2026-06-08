@@ -1,3 +1,4 @@
+export { createAuthSessionRepository } from "./auth-session-repository.js";
 export {
   checkDatabase,
   checkDatabaseMigrated,

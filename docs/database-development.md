@@ -25,7 +25,8 @@ was replaced by the Drizzle migration folder.
 
 Use Drizzle for schema ownership, migrations, and table-shaped repository
 fragments where typed columns reduce drift. Current Drizzle-backed fragments
-cover Users, API Tokens, Capture Policies, and Local Memory Agent Settings.
+cover Users, API Tokens, auth sessions, Capture Policies, and Local Memory Agent
+Settings.
 
 Keep dense graph, vector search, retrieval, LCM, chronology, and projection
 queries as raw SQL unless converting them clearly improves correctness,
