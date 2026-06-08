@@ -53,6 +53,33 @@ export interface ApiTokenRecord {
   revokedAt: string | null;
 }
 
+export interface AuditEventRecord {
+  id: string;
+  actorUserId: string | null;
+  ownerUserId: string | null;
+  visibility: Visibility | null;
+  action: string;
+  targetTable: string | null;
+  targetId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface RecordAuditEventInput {
+  actorUserId?: string | null;
+  ownerUserId?: string | null;
+  visibility?: Visibility | null;
+  action: string;
+  targetTable?: string | null;
+  targetId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ListAuditEventsInput {
+  action?: string;
+  limit?: number;
+}
+
 export interface CreateMemoryNodeInput {
   visibility: Visibility;
   summaryText: string;
@@ -577,6 +604,11 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   listApiTokens(userId: string): Promise<ApiTokenRecord[]>;
   revokeApiToken(userId: string, tokenId: string): Promise<boolean>;
   getApiTokenUser(tokenHash: string): Promise<UserRecord | null>;
+  recordAuditEvent(input: RecordAuditEventInput): Promise<AuditEventRecord>;
+  listAuditEvents(
+    actor: ActorContext,
+    input?: ListAuditEventsInput
+  ): Promise<AuditEventRecord[]>;
   createCapturedSession(
     actor: ActorContext,
     input: {

@@ -1,3 +1,4 @@
+export { createAuditRepository } from "./audit-repository.js";
 export { createAuthSessionRepository } from "./auth-session-repository.js";
 export {
   checkDatabase,

@@ -8,6 +8,7 @@ import type {
 } from "@koed/core";
 import type {
   ActorContext,
+  AuditEventRecord,
   ApiTokenRecord,
   CapturedSessionRecord,
   CreateMemoryNodeInput,
@@ -169,6 +170,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     updatedAt: string;
   }> = [];
   const capturedSessions = new Map<string, CapturedSessionRecord>();
+  const auditEvents: AuditEventRecord[] = [];
   const events: MemoryEventRecord[] = [];
   const eventIdempotencyKeys = new Map<string, string>();
   const eventSourceHashes = new Map<string, string>();
@@ -253,6 +255,31 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getApiTokenUser(tokenHash: string) {
       const token = tokens.get(tokenHash);
       return token ? (users.get(token.ownerUserId) ?? null) : null;
+    },
+    async recordAuditEvent(input) {
+      const record: AuditEventRecord = {
+        id: randomUUID(),
+        actorUserId: input.actorUserId ?? null,
+        ownerUserId: input.ownerUserId ?? null,
+        visibility: input.visibility ?? null,
+        action: input.action,
+        targetTable: input.targetTable ?? null,
+        targetId: input.targetId ?? null,
+        metadata: input.metadata ?? {},
+        createdAt: new Date().toISOString()
+      };
+      auditEvents.push(record);
+      return record;
+    },
+    async listAuditEvents(actor, input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+      return auditEvents
+        .filter(
+          (event) =>
+            event.ownerUserId === actor.userId &&
+            (!input.action || event.action === input.action)
+        )
+        .slice(0, limit);
     },
     async createCapturedSession(actor: ActorContext, input) {
       const id = randomUUID();

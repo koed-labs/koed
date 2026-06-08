@@ -269,6 +269,72 @@ describeDb("memory repository visibility", () => {
     expect(await repo.getSessionUser(disabledHash)).toBeNull();
   });
 
+  it("records user-scoped audit events through the Drizzle-backed repository slice", async () => {
+    const alice = await repo.createUser({
+      email: `audit-alice-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `audit-bob-${randomUUID()}@example.com`
+    });
+    const targetId = randomUUID();
+
+    const aliceEvent = await repo.recordAuditEvent({
+      actorUserId: alice.id,
+      ownerUserId: alice.id,
+      visibility: "personal",
+      action: "api_token.created",
+      targetTable: "api_tokens",
+      targetId,
+      metadata: {
+        tokenPrefix: "cmt_test",
+        nested: { ok: true }
+      }
+    });
+    await repo.recordAuditEvent({
+      actorUserId: bob.id,
+      ownerUserId: bob.id,
+      visibility: "personal",
+      action: "api_token.revoked",
+      targetTable: "api_tokens",
+      targetId: randomUUID(),
+      metadata: { tokenPrefix: "cmt_other" }
+    });
+    await repo.recordAuditEvent({
+      actorUserId: alice.id,
+      action: "operator.maintenance",
+      metadata: { reason: "not user-scoped" }
+    });
+
+    expect(aliceEvent).toMatchObject({
+      actorUserId: alice.id,
+      ownerUserId: alice.id,
+      visibility: "personal",
+      action: "api_token.created",
+      targetTable: "api_tokens",
+      targetId,
+      metadata: {
+        tokenPrefix: "cmt_test",
+        nested: { ok: true }
+      }
+    });
+    expect(aliceEvent.createdAt).toEqual(expect.any(String));
+
+    const aliceEvents = await repo.listAuditEvents({ userId: alice.id });
+    expect(aliceEvents).toHaveLength(1);
+    expect(aliceEvents[0]).toEqual(aliceEvent);
+
+    expect(await repo.listAuditEvents({ userId: bob.id })).toHaveLength(1);
+    expect(
+      await repo.listAuditEvents(
+        { userId: alice.id },
+        { action: "api_token.revoked" }
+      )
+    ).toEqual([]);
+    expect(
+      await repo.listAuditEvents({ userId: alice.id }, { limit: 1 })
+    ).toHaveLength(1);
+  });
+
   it("filters personal memory to the owning user", async () => {
     const alice = await repo.createUser({
       email: `alice-${randomUUID()}@example.com`

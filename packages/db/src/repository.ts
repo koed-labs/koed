@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
+import { createAuditRepository } from "./audit-repository.js";
 import { createAuthSessionRepository } from "./auth-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
 import { createSettingsRepository } from "./settings-repository.js";
@@ -2846,11 +2847,12 @@ const mapLcmNodeForSummarization = async (
 export const createMemorySourceRepository = (
   pool: pg.Pool
 ): MemorySourceRepository => ({
-  // Drizzle fragments cover table-shaped account, auth session, and settings workflows.
+  // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
   // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
   ...createUserApiTokenRepository(createDb(pool)),
   ...createSettingsRepository(createDb(pool)),
   ...createAuthSessionRepository(createDb(pool)),
+  ...createAuditRepository(createDb(pool)),
 
   health: () => checkDatabase(pool),
 
