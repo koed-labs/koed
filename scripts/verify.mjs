@@ -13,6 +13,7 @@ const requirePythonChecks =
 
 const steps = [
   ["lint", "pnpm", ["lint"]],
+  ["db migration check", "pnpm", ["db:migrate:check"]],
   ["typecheck", "pnpm", ["typecheck"]],
   ["test typecheck", "pnpm", ["typecheck:test"]]
 ];

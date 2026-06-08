@@ -20,6 +20,7 @@
     "api-token:revoke": "node scripts/revoke-api-token.mjs",
     "migrate:generate": "drizzle-kit generate --config drizzle.config.ts",
     "migrate:check": "drizzle-kit check --config drizzle.config.ts",
+    "migrate:smoke": "pnpm run build && node scripts/migration-smoke.mjs",
     "migrate:up": "pnpm run build && node dist/migrate-cli.js",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -15,6 +15,8 @@
     "api-token:create": "pnpm --filter @koed/db api-token:create",
     "api-token:list": "pnpm --filter @koed/db api-token:list",
     "api-token:revoke": "pnpm --filter @koed/db api-token:revoke",
+    "db:migrate:check": "pnpm --filter @koed/db migrate:check",
+    "db:migrate:smoke": "pnpm --filter @koed/db migrate:smoke",
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
     "eval": "pnpm --filter @koed/evals eval",
     "changeset": "changeset",
