@@ -1,18 +1,26 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import type {
-  MemorySourceRepository,
+  ActorContext,
   Visibility,
   WorkflowTokenUsageInput,
   WorkflowTokenUsageRecord,
+  WorkflowTokenUsageRollupInput,
+  WorkflowTokenUsageRollupRecord,
   WorkflowTokenUsageSourceReference,
   WorkflowTokenUsageSourceReferenceType
 } from "./types.js";
 
-type WorkflowTokenUsageRepository = Pick<
-  MemorySourceRepository,
-  "recordWorkflowTokenUsage" | "listWorkflowTokenUsageRollups"
->;
+export interface WorkflowTokenUsageRepository {
+  recordWorkflowTokenUsage(
+    actor: ActorContext,
+    input: WorkflowTokenUsageInput
+  ): Promise<WorkflowTokenUsageRecord>;
+  listWorkflowTokenUsageRollups(
+    actor: ActorContext,
+    input?: WorkflowTokenUsageRollupInput
+  ): Promise<WorkflowTokenUsageRollupRecord[]>;
+}
 
 type WorkflowTokenUsageRow = {
   id: string;
@@ -74,7 +82,7 @@ const mapWorkflowTokenUsage = (
 });
 
 const validateWorkflowTokenUsageSources = async (
-  pool: pg.Pool,
+  db: pg.Pool | pg.PoolClient,
   input: {
     ownerUserId: string | null;
     visibility: Visibility;
@@ -83,7 +91,7 @@ const validateWorkflowTokenUsageSources = async (
 ): Promise<void> => {
   const { usage } = input;
   if (usage.sessionId) {
-    const session = await pool.query<{ id: string }>(
+    const session = await db.query<{ id: string }>(
       `
         select id
         from sessions
@@ -101,7 +109,7 @@ const validateWorkflowTokenUsageSources = async (
   }
 
   if (usage.turnId) {
-    const turn = await pool.query<{ id: string }>(
+    const turn = await db.query<{ id: string }>(
       `
         select id
         from turns
@@ -124,7 +132,7 @@ const validateWorkflowTokenUsageSources = async (
   }
 
   if (usage.conversationItemId) {
-    const item = await pool.query<{ id: string }>(
+    const item = await db.query<{ id: string }>(
       `
         select id
         from conversation_items
@@ -186,7 +194,7 @@ const validateUuidSourceReference = (
 };
 
 const validateWorkflowTokenUsageSourceReferences = async (
-  pool: pg.Pool,
+  db: pg.Pool | pg.PoolClient,
   input: {
     ownerUserId: string | null;
     visibility: Visibility;
@@ -218,7 +226,7 @@ const validateWorkflowTokenUsageSourceReferences = async (
     const table = tableByType[reference.type];
     const invalidationFilter =
       reference.type === "question" ? "" : "and invalidated_at is null";
-    const found = await pool.query<{ id: string }>(
+    const found = await db.query<{ id: string }>(
       `
         select id
         from ${table}
@@ -245,17 +253,6 @@ export const createWorkflowTokenUsageRepository = (
     const visibility = input.visibility ?? "personal";
     const ownerUserId = actor.userId;
     const sourceReferences = workflowTokenUsageSourceReferences(input);
-    await validateWorkflowTokenUsageSources(pool, {
-      ownerUserId,
-      visibility,
-      usage: input
-    });
-    await validateWorkflowTokenUsageSourceReferences(pool, {
-      ownerUserId,
-      visibility,
-      usage: input,
-      references: sourceReferences
-    });
     const idempotencyKey =
       input.idempotencyKey ??
       createHash("sha256")
@@ -280,147 +277,168 @@ export const createWorkflowTokenUsageRepository = (
           })
         )
         .digest("hex");
-    const result = await pool.query<WorkflowTokenUsageRow>(
-      `
-        insert into workflow_token_usage (
-          owner_user_id,
-          visibility,
-          workflow_type,
-          workflow_id,
-          session_id,
-          turn_id,
-          conversation_item_id,
-          source_runtime,
-          source_kind,
-          source_adapter_version,
-          usage_source,
-          usage_accuracy,
-          usage_kind,
-          connector_client,
-          tokenizer_package,
-          tokenizer_encoding,
-          tokenizer_model,
-          tokenizer_exact_model_match,
-          tokenizer_heuristic_fallback,
-          tokenizer_version,
-          model,
-          model_context_window,
-          input_tokens,
-          cached_input_tokens,
-          output_tokens,
-          reasoning_output_tokens,
-          total_tokens,
-          usage_scope,
-          metadata,
-          idempotency_key,
-          source_hash
-        )
-        values (
-          $1, $2, $3, $4, $5, $6, $7, $8,
-          $9, $10, $11, $12, $13, $14, $15, $16,
-          $17, $18, $19, $20, $21, $22, $23, $24,
-          $25, $26, $27, $28, $29, $30, $31
-        )
-        on conflict do nothing
-        returning
-          id, workflow_type, workflow_id, session_id, turn_id,
-          conversation_item_id, model, usage_source, usage_accuracy,
-          usage_kind, connector_client, tokenizer_package, tokenizer_encoding,
-          tokenizer_model, tokenizer_exact_model_match,
-          tokenizer_heuristic_fallback, tokenizer_version,
-          input_tokens, cached_input_tokens,
-          output_tokens, reasoning_output_tokens, total_tokens, usage_scope,
-          created_at
-      `,
-      [
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await validateWorkflowTokenUsageSources(client, {
         ownerUserId,
         visibility,
-        input.workflowType,
-        input.workflowId ?? null,
-        input.sessionId ?? null,
-        input.turnId ?? null,
-        input.conversationItemId ?? null,
-        input.sourceRuntime ?? null,
-        input.sourceKind ?? null,
-        input.sourceAdapterVersion ?? null,
-        input.usageSource ?? "app_server",
-        input.usageAccuracy ?? "provider_reported",
-        input.usageKind ?? "turn_delta",
-        input.connectorClient ?? null,
-        input.tokenizerPackage ?? null,
-        input.tokenizerEncoding ?? null,
-        input.tokenizerModel ?? null,
-        input.tokenizerExactModelMatch ?? null,
-        input.tokenizerHeuristicFallback ?? null,
-        input.tokenizerVersion ?? null,
-        input.model ?? null,
-        input.modelContextWindow ?? null,
-        input.inputTokens ?? null,
-        input.cachedInputTokens ?? null,
-        input.outputTokens ?? null,
-        input.reasoningOutputTokens ?? null,
-        input.totalTokens ?? null,
-        input.usageScope ?? "last",
-        input.metadata ?? {},
-        idempotencyKey,
-        input.sourceHash ?? idempotencyKey
-      ]
-    );
-    const row =
-      result.rows[0] ??
-      (
-        await pool.query<WorkflowTokenUsageRow>(
-          `
-            select
-              id, workflow_type, workflow_id, session_id, turn_id,
-              conversation_item_id, model, usage_source, usage_accuracy,
-              usage_kind, connector_client, tokenizer_package,
-              tokenizer_encoding, tokenizer_model,
-              tokenizer_exact_model_match, tokenizer_heuristic_fallback,
-              tokenizer_version, input_tokens, cached_input_tokens,
-              output_tokens, reasoning_output_tokens, total_tokens,
-              usage_scope, created_at
-            from workflow_token_usage
-            where idempotency_key = $1
-              and visibility = $2::visibility_scope
-              and owner_user_id = $3
-            limit 1
-          `,
-          [idempotencyKey, visibility, ownerUserId]
-        )
-      ).rows[0];
-    if (!row) {
-      throw Object.assign(
-        new Error(
-          "Duplicate token usage conflicts with data outside caller visibility"
-        ),
-        { statusCode: 409 }
-      );
-    }
-    if (sourceReferences.length > 0) {
-      await pool.query(
+        usage: input
+      });
+      await validateWorkflowTokenUsageSourceReferences(client, {
+        ownerUserId,
+        visibility,
+        usage: input,
+        references: sourceReferences
+      });
+      const result = await client.query<WorkflowTokenUsageRow>(
         `
-          insert into workflow_token_usage_source_references (
-            workflow_token_usage_id,
-            source_type,
-            source_id
+          insert into workflow_token_usage (
+            owner_user_id,
+            visibility,
+            workflow_type,
+            workflow_id,
+            session_id,
+            turn_id,
+            conversation_item_id,
+            source_runtime,
+            source_kind,
+            source_adapter_version,
+            usage_source,
+            usage_accuracy,
+            usage_kind,
+            connector_client,
+            tokenizer_package,
+            tokenizer_encoding,
+            tokenizer_model,
+            tokenizer_exact_model_match,
+            tokenizer_heuristic_fallback,
+            tokenizer_version,
+            model,
+            model_context_window,
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+            reasoning_output_tokens,
+            total_tokens,
+            usage_scope,
+            metadata,
+            idempotency_key,
+            source_hash
           )
-          select $1::uuid, ref.source_type, ref.source_id
-          from jsonb_to_recordset($2::jsonb) as ref(source_type text, source_id text)
+          values (
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9, $10, $11, $12, $13, $14, $15, $16,
+            $17, $18, $19, $20, $21, $22, $23, $24,
+            $25, $26, $27, $28, $29, $30, $31
+          )
           on conflict do nothing
+          returning
+            id, workflow_type, workflow_id, session_id, turn_id,
+            conversation_item_id, model, usage_source, usage_accuracy,
+            usage_kind, connector_client, tokenizer_package, tokenizer_encoding,
+            tokenizer_model, tokenizer_exact_model_match,
+            tokenizer_heuristic_fallback, tokenizer_version,
+            input_tokens, cached_input_tokens,
+            output_tokens, reasoning_output_tokens, total_tokens, usage_scope,
+            created_at
         `,
         [
-          row.id,
-          JSON.stringify(
-            sourceReferences.map((reference) => ({
-              source_type: reference.type,
-              source_id: reference.id
-            }))
-          )
+          ownerUserId,
+          visibility,
+          input.workflowType,
+          input.workflowId ?? null,
+          input.sessionId ?? null,
+          input.turnId ?? null,
+          input.conversationItemId ?? null,
+          input.sourceRuntime ?? null,
+          input.sourceKind ?? null,
+          input.sourceAdapterVersion ?? null,
+          input.usageSource ?? "app_server",
+          input.usageAccuracy ?? "provider_reported",
+          input.usageKind ?? "turn_delta",
+          input.connectorClient ?? null,
+          input.tokenizerPackage ?? null,
+          input.tokenizerEncoding ?? null,
+          input.tokenizerModel ?? null,
+          input.tokenizerExactModelMatch ?? null,
+          input.tokenizerHeuristicFallback ?? null,
+          input.tokenizerVersion ?? null,
+          input.model ?? null,
+          input.modelContextWindow ?? null,
+          input.inputTokens ?? null,
+          input.cachedInputTokens ?? null,
+          input.outputTokens ?? null,
+          input.reasoningOutputTokens ?? null,
+          input.totalTokens ?? null,
+          input.usageScope ?? "last",
+          input.metadata ?? {},
+          idempotencyKey,
+          input.sourceHash ?? idempotencyKey
         ]
       );
+      const row =
+        result.rows[0] ??
+        (
+          await client.query<WorkflowTokenUsageRow>(
+            `
+              select
+                id, workflow_type, workflow_id, session_id, turn_id,
+                conversation_item_id, model, usage_source, usage_accuracy,
+                usage_kind, connector_client, tokenizer_package,
+                tokenizer_encoding, tokenizer_model,
+                tokenizer_exact_model_match, tokenizer_heuristic_fallback,
+                tokenizer_version, input_tokens, cached_input_tokens,
+                output_tokens, reasoning_output_tokens, total_tokens,
+                usage_scope, created_at
+              from workflow_token_usage
+              where idempotency_key = $1
+                and visibility = $2::visibility_scope
+                and owner_user_id = $3
+              limit 1
+            `,
+            [idempotencyKey, visibility, ownerUserId]
+          )
+        ).rows[0];
+      if (!row) {
+        throw Object.assign(
+          new Error(
+            "Duplicate token usage conflicts with data outside caller visibility"
+          ),
+          { statusCode: 409 }
+        );
+      }
+      if (sourceReferences.length > 0) {
+        await client.query(
+          `
+            insert into workflow_token_usage_source_references (
+              workflow_token_usage_id,
+              source_type,
+              source_id
+            )
+            select $1::uuid, ref.source_type, ref.source_id
+            from jsonb_to_recordset($2::jsonb) as ref(source_type text, source_id text)
+            on conflict do nothing
+          `,
+          [
+            row.id,
+            JSON.stringify(
+              sourceReferences.map((reference) => ({
+                source_type: reference.type,
+                source_id: reference.id
+              }))
+            )
+          ]
+        );
+      }
+      await client.query("commit");
+      return mapWorkflowTokenUsage(row);
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
     }
-    return mapWorkflowTokenUsage(row);
   },
 
   async listWorkflowTokenUsageRollups(actor, input = {}) {

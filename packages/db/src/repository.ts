@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
-import { createAuditRepository } from "./audit-repository.js";
+import {
+  createAuditRepository,
+  recordAuditEventWithClient
+} from "./audit-repository.js";
 import { createAuthSessionRepository } from "./auth-session-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
@@ -298,43 +301,6 @@ const mapLcmGraphEvent = (row: {
     metadata: row.metadata ?? {},
     linkedNodeIds: row.linked_node_ids ?? []
   };
-};
-
-const recordAuditEventWithClient = async (
-  client: pg.PoolClient,
-  input: {
-    actorUserId?: string | null;
-    ownerUserId?: string | null;
-    visibility?: Visibility | null;
-    action: string;
-    targetTable?: string | null;
-    targetId?: string | null;
-    metadata?: Record<string, unknown>;
-  }
-): Promise<void> => {
-  await client.query(
-    `
-      insert into audit_events (
-        actor_user_id,
-        owner_user_id,
-        visibility,
-        action,
-        target_table,
-        target_id,
-        metadata
-      )
-      values ($1, $2, $3, $4, $5, $6, $7::jsonb)
-    `,
-    [
-      input.actorUserId ?? null,
-      input.ownerUserId ?? null,
-      input.visibility ?? null,
-      input.action,
-      input.targetTable ?? null,
-      input.targetId ?? null,
-      JSON.stringify(input.metadata ?? {})
-    ]
-  );
 };
 
 const mapLcmGraphThreadRow = (row: {

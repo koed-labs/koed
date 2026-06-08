@@ -5,17 +5,19 @@ import {
   sanitizeForPostgresStorage
 } from "@koed/shared";
 import type {
+  ActorContext,
   CaptureMethod,
   ConversationItemInput,
   ConversationItemRecord,
-  MemorySourceRepository,
   Visibility
 } from "./types.js";
 
-type ConversationItemRepository = Pick<
-  MemorySourceRepository,
-  "createConversationItems"
->;
+export interface ConversationItemRepository {
+  createConversationItems(
+    actor: ActorContext,
+    input: { items: ConversationItemInput[] }
+  ): Promise<ConversationItemRecord[]>;
+}
 
 type ConversationItemRow = {
   id: string;

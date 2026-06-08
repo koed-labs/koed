@@ -1,21 +1,45 @@
 import pg from "pg";
 import type { MemoryActor } from "@koed/core";
 import type {
+  ActorContext,
   CaptureMethod,
   CapturedSessionRecord,
   CapturedSessionTitleCandidate,
-  MemorySourceRepository,
   SourceRuntime,
   Visibility
 } from "./types.js";
 
-type CapturedSessionRepository = Pick<
-  MemorySourceRepository,
-  | "createCapturedSession"
-  | "updateCapturedSessionTitle"
-  | "listCapturedSessionsNeedingTitles"
-  | "updateCapturedSessionGeneratedTitle"
->;
+export interface CapturedSessionRepository {
+  createCapturedSession(
+    actor: ActorContext,
+    input: {
+      workspaceId?: string;
+      externalSessionId?: string;
+      sourceRuntime?: SourceRuntime;
+      captureMethod?: CaptureMethod;
+      model?: string;
+      cwd?: string;
+      codexTranscriptPath?: string;
+      idempotencyKey?: string;
+      sourceHash?: string;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<CapturedSessionRecord>;
+  updateCapturedSessionTitle(
+    actor: ActorContext,
+    sessionId: string,
+    input: { title: string }
+  ): Promise<CapturedSessionRecord | null>;
+  listCapturedSessionsNeedingTitles(
+    actor: ActorContext,
+    input?: { limit?: number; minUserEvents?: number }
+  ): Promise<CapturedSessionTitleCandidate[]>;
+  updateCapturedSessionGeneratedTitle(
+    actor: ActorContext,
+    sessionId: string,
+    input: { title: string; source: "generated" | "lcm" | "provisional" }
+  ): Promise<CapturedSessionRecord | null>;
+}
 
 type CapturedSessionRow = {
   id: string;

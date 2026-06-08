@@ -1,23 +1,89 @@
 import pg from "pg";
 import { truncateDisplayText } from "./value-helpers.js";
 import type {
+  ActorContext,
   MemoryQuestionDetailRecord,
   MemoryQuestionRetrievalScope,
   MemoryQuestionSearchDomain,
   MemoryQuestionShellRecord,
   MemoryQuestionStatus,
-  MemorySourceRepository,
   Visibility
 } from "./types.js";
 
-type MemoryQuestionRepository = Pick<
-  MemorySourceRepository,
-  | "createMemoryQuestion"
-  | "listMemoryQuestions"
-  | "claimPendingMemoryQuestions"
-  | "getMemoryQuestion"
-  | "updateMemoryQuestion"
->;
+export interface MemoryQuestionRepository {
+  createMemoryQuestion(
+    actor: ActorContext,
+    input: {
+      query: string;
+      retrievalScope?: MemoryQuestionRetrievalScope;
+      searchDomain: MemoryQuestionSearchDomain;
+      workspaceId?: string;
+      projectName?: string;
+      projectPath?: string;
+      sessionId?: string;
+      threadId?: string;
+      threadName?: string;
+      localMemoryWorkerConfig?: Record<string, unknown>;
+    }
+  ): Promise<MemoryQuestionDetailRecord>;
+  listMemoryQuestions(
+    actor: ActorContext,
+    input?: {
+      query?: string;
+      searchDomain?: MemoryQuestionSearchDomain;
+      status?: MemoryQuestionStatus;
+      workspaceId?: string;
+      sessionId?: string;
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<MemoryQuestionShellRecord[]>;
+  claimPendingMemoryQuestions(
+    actor: ActorContext,
+    input?: {
+      questionId?: string;
+      limit?: number;
+      leaseSeconds?: number;
+    }
+  ): Promise<MemoryQuestionDetailRecord[]>;
+  getMemoryQuestion(
+    actor: ActorContext,
+    questionId: string
+  ): Promise<MemoryQuestionDetailRecord | null>;
+  updateMemoryQuestion(
+    actor: ActorContext,
+    questionId: string,
+    input:
+      | {
+          status: "answered";
+          answerMarkdown: string;
+          attemptCount?: number;
+          response?: Record<string, unknown>;
+          evidence?: unknown[];
+          citations?: unknown[];
+          retrieval?: Record<string, unknown>;
+          localMemoryWorker?: Record<string, unknown>;
+        }
+      | {
+          status: "error";
+          errorMessage: string;
+          attemptCount?: number;
+          response?: Record<string, unknown>;
+          retrieval?: Record<string, unknown>;
+          localMemoryWorker?: Record<string, unknown>;
+        }
+      | {
+          status: "pending";
+          lastErrorMessage: string;
+          attemptCount?: number;
+          response?: Record<string, unknown>;
+          evidence?: unknown[];
+          citations?: unknown[];
+          retrieval?: Record<string, unknown>;
+          localMemoryWorker?: Record<string, unknown>;
+        }
+  ): Promise<MemoryQuestionDetailRecord | null>;
+}
 
 type MemoryQuestionShellRow = {
   id: string;

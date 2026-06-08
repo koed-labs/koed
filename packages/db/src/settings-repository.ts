@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
   auditEvents,
@@ -359,15 +360,17 @@ export const createSettingsRepository = (db: KoedDb) => ({
       `);
 
       const policy = mapCapturePolicySqlRecord(result.rows[0]!);
-      await tx.insert(auditEvents).values({
-        actorUserId: actor.userId,
-        ownerUserId: actor.userId,
-        visibility: policy.visibility ?? "personal",
-        action: "capture_policy.upserted",
-        targetTable: "capture_policies",
-        targetId: policy.id,
-        metadata: capturePolicyAuditMetadata(policy)
-      });
+      await tx.insert(auditEvents).values(
+        auditEventValues({
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: policy.visibility ?? "personal",
+          action: "capture_policy.upserted",
+          targetTable: "capture_policies",
+          targetId: policy.id,
+          metadata: capturePolicyAuditMetadata(policy)
+        })
+      );
 
       return policy;
     });
@@ -390,15 +393,17 @@ export const createSettingsRepository = (db: KoedDb) => ({
 
       const policy = rows[0] ? mapCapturePolicyRecord(rows[0]) : null;
       if (policy) {
-        await tx.insert(auditEvents).values({
-          actorUserId: actor.userId,
-          ownerUserId: actor.userId,
-          visibility: policy.visibility ?? "personal",
-          action: "capture_policy.deleted",
-          targetTable: "capture_policies",
-          targetId: policy.id,
-          metadata: capturePolicyAuditMetadata(policy)
-        });
+        await tx.insert(auditEvents).values(
+          auditEventValues({
+            actorUserId: actor.userId,
+            ownerUserId: actor.userId,
+            visibility: policy.visibility ?? "personal",
+            action: "capture_policy.deleted",
+            targetTable: "capture_policies",
+            targetId: policy.id,
+            metadata: capturePolicyAuditMetadata(policy)
+          })
+        );
       }
 
       return Boolean(policy);

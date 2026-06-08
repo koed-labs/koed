@@ -1,4 +1,5 @@
 import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import { apiTokens, auditEvents, users } from "./schema.js";
 import type {
@@ -138,15 +139,17 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
 
         const token = mapApiTokenRecord(rows[0]!);
         if (input.audit) {
-          await tx.insert(auditEvents).values({
-            actorUserId: input.audit.actorUserId ?? null,
-            ownerUserId: input.ownerUserId,
-            visibility: "personal",
-            action: "api_token.created",
-            targetTable: "api_tokens",
-            targetId: token.id,
-            metadata: apiTokenAuditMetadata(input.audit, token)
-          });
+          await tx.insert(auditEvents).values(
+            auditEventValues({
+              actorUserId: input.audit.actorUserId ?? null,
+              ownerUserId: input.ownerUserId,
+              visibility: "personal",
+              action: "api_token.created",
+              targetTable: "api_tokens",
+              targetId: token.id,
+              metadata: apiTokenAuditMetadata(input.audit, token)
+            })
+          );
         }
 
         return token;
@@ -184,15 +187,17 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
           .returning({ id: apiTokens.id });
 
         if (rows.length > 0 && audit) {
-          await tx.insert(auditEvents).values({
-            actorUserId: audit.actorUserId ?? null,
-            ownerUserId: userId,
-            visibility: "personal",
-            action: "api_token.revoked",
-            targetTable: "api_tokens",
-            targetId: tokenId,
-            metadata: apiTokenAuditMetadata(audit)
-          });
+          await tx.insert(auditEvents).values(
+            auditEventValues({
+              actorUserId: audit.actorUserId ?? null,
+              ownerUserId: userId,
+              visibility: "personal",
+              action: "api_token.revoked",
+              targetTable: "api_tokens",
+              targetId: tokenId,
+              metadata: apiTokenAuditMetadata(audit)
+            })
+          );
         }
 
         return rows.length > 0;

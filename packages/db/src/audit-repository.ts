@@ -1,4 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
+import type pg from "pg";
 import type { KoedDb } from "./connection.js";
 import { auditEvents } from "./schema.js";
 import type {
@@ -39,21 +40,53 @@ const mapAuditEventRecord = (row: {
   createdAt: timestampIso(row.createdAt)
 });
 
+export const auditEventValues = (input: RecordAuditEventInput) => ({
+  actorUserId: input.actorUserId ?? null,
+  ownerUserId: input.ownerUserId ?? null,
+  visibility: input.visibility ?? null,
+  action: input.action,
+  targetTable: input.targetTable ?? null,
+  targetId: input.targetId ?? null,
+  metadata: input.metadata ?? {}
+});
+
+export const recordAuditEventWithClient = async (
+  client: pg.PoolClient,
+  input: RecordAuditEventInput
+): Promise<void> => {
+  const values = auditEventValues(input);
+  await client.query(
+    `
+      insert into audit_events (
+        actor_user_id,
+        owner_user_id,
+        visibility,
+        action,
+        target_table,
+        target_id,
+        metadata
+      )
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb)
+    `,
+    [
+      values.actorUserId,
+      values.ownerUserId,
+      values.visibility,
+      values.action,
+      values.targetTable,
+      values.targetId,
+      JSON.stringify(values.metadata)
+    ]
+  );
+};
+
 export const createAuditRepository = (db: KoedDb) => ({
   async recordAuditEvent(
     input: RecordAuditEventInput
   ): Promise<AuditEventRecord> {
     const rows = await db
       .insert(auditEvents)
-      .values({
-        actorUserId: input.actorUserId ?? null,
-        ownerUserId: input.ownerUserId ?? null,
-        visibility: input.visibility ?? null,
-        action: input.action,
-        targetTable: input.targetTable ?? null,
-        targetId: input.targetId ?? null,
-        metadata: input.metadata ?? {}
-      })
+      .values(auditEventValues(input))
       .returning();
 
     return mapAuditEventRecord(rows[0]!);

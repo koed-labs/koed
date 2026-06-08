@@ -3,6 +3,12 @@ import type {
   MemoryActor,
   MemoryEngineRepository
 } from "@koed/core";
+import type { CapturedSessionRepository } from "./captured-session-repository.js";
+import type { ConversationItemRepository } from "./conversation-item-repository.js";
+import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
+import type { MemoryNodeRepository } from "./memory-node-repository.js";
+import type { MemoryQuestionRepository } from "./memory-question-repository.js";
+import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 
 export type Visibility = "personal";
 
@@ -587,7 +593,14 @@ export interface LocalMemoryAgentSettingRecord {
   updatedAt: string;
 }
 
-export interface MemorySourceRepository extends MemoryEngineRepository {
+export interface MemorySourceRepository
+  extends MemoryEngineRepository,
+    CapturedSessionRepository,
+    ConversationItemRepository,
+    LocalEmbeddingStatusRepository,
+    MemoryNodeRepository,
+    MemoryQuestionRepository,
+    WorkflowTokenUsageRepository {
   health(): Promise<boolean>;
   countUsers(): Promise<number>;
   createUser(input: CreateUserInput): Promise<{ id: string }>;
@@ -621,33 +634,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     actor: ActorContext,
     input?: ListAuditEventsInput
   ): Promise<AuditEventRecord[]>;
-  createCapturedSession(
-    actor: ActorContext,
-    input: {
-      workspaceId?: string;
-      externalSessionId?: string;
-      sourceRuntime?: SourceRuntime;
-      captureMethod?: CaptureMethod;
-      model?: string;
-      cwd?: string;
-      codexTranscriptPath?: string;
-      idempotencyKey?: string;
-      sourceHash?: string;
-      metadata?: Record<string, unknown>;
-    }
-  ): Promise<CapturedSessionRecord>;
-  createConversationItems(
-    actor: ActorContext,
-    input: { items: ConversationItemInput[] }
-  ): Promise<ConversationItemRecord[]>;
-  recordWorkflowTokenUsage(
-    actor: ActorContext,
-    input: WorkflowTokenUsageInput
-  ): Promise<WorkflowTokenUsageRecord>;
-  listWorkflowTokenUsageRollups(
-    actor: ActorContext,
-    input?: WorkflowTokenUsageRollupInput
-  ): Promise<WorkflowTokenUsageRollupRecord[]>;
   projectPendingConversationItems(
     actor: ActorContext,
     input?: ConversationProjectionInput
@@ -655,45 +641,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
   listConversationProjectionActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
-  createMemoryQuestion(
-    actor: ActorContext,
-    input: {
-      query: string;
-      retrievalScope?: MemoryQuestionRetrievalScope;
-      searchDomain: MemoryQuestionSearchDomain;
-      workspaceId?: string;
-      projectName?: string;
-      projectPath?: string;
-      sessionId?: string;
-      threadId?: string;
-      threadName?: string;
-      localMemoryWorkerConfig?: Record<string, unknown>;
-    }
-  ): Promise<MemoryQuestionDetailRecord>;
-  listMemoryQuestions(
-    actor: ActorContext,
-    input?: {
-      query?: string;
-      searchDomain?: MemoryQuestionSearchDomain;
-      status?: MemoryQuestionStatus;
-      workspaceId?: string;
-      sessionId?: string;
-      limit?: number;
-      offset?: number;
-    }
-  ): Promise<MemoryQuestionShellRecord[]>;
-  claimPendingMemoryQuestions(
-    actor: ActorContext,
-    input?: {
-      questionId?: string;
-      limit?: number;
-      leaseSeconds?: number;
-    }
-  ): Promise<MemoryQuestionDetailRecord[]>;
-  getMemoryQuestion(
-    actor: ActorContext,
-    questionId: string
-  ): Promise<MemoryQuestionDetailRecord | null>;
   listLocalMemoryAgentSettings(
     actor: ActorContext
   ): Promise<LocalMemoryAgentSettingRecord[]>;
@@ -708,43 +655,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       maxAttempts: number;
     }
   ): Promise<LocalMemoryAgentSettingRecord>;
-  updateMemoryQuestion(
-    actor: ActorContext,
-    questionId: string,
-    input:
-      | {
-          status: "answered";
-          answerMarkdown: string;
-          attemptCount?: number;
-          response?: Record<string, unknown>;
-          evidence?: unknown[];
-          citations?: unknown[];
-          retrieval?: Record<string, unknown>;
-          localMemoryWorker?: Record<string, unknown>;
-        }
-      | {
-          status: "error";
-          errorMessage: string;
-          attemptCount?: number;
-          response?: Record<string, unknown>;
-          retrieval?: Record<string, unknown>;
-          localMemoryWorker?: Record<string, unknown>;
-        }
-      | {
-          status: "pending";
-          lastErrorMessage: string;
-          attemptCount?: number;
-          response?: Record<string, unknown>;
-          evidence?: unknown[];
-          citations?: unknown[];
-          retrieval?: Record<string, unknown>;
-          localMemoryWorker?: Record<string, unknown>;
-        }
-  ): Promise<MemoryQuestionDetailRecord | null>;
-  createMemoryNode(
-    actor: ActorContext,
-    input: CreateMemoryNodeInput
-  ): Promise<MemoryNodeRecord>;
   getEffectiveCapturePolicy(
     actor: ActorContext,
     input?: { projectId?: string; threadId?: string; sessionId?: string }
@@ -758,47 +668,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     input: UpsertCapturePolicyInput
   ): Promise<CapturePolicyRecord>;
   deleteCapturePolicy(actor: ActorContext, policyId: string): Promise<boolean>;
-  getVisibleMemoryNode(
-    actor: ActorContext,
-    nodeId: string
-  ): Promise<MemoryNodeRecord | null>;
-  listVisibleMemoryNodes(
-    actor: ActorContext,
-    visibility?: Visibility
-  ): Promise<MemoryNodeRecord[]>;
-  listMemoryBrowserItems(
-    actor: ActorContext,
-    input?: {
-      query?: string;
-      visibility?: Visibility;
-      projectId?: string;
-      threadId?: string;
-      pinned?: boolean;
-      limit?: number;
-    }
-  ): Promise<MemoryBrowserItem[]>;
-  listMemoryClusters(
-    actor: ActorContext,
-    input?: {
-      query?: string;
-      visibility?: Visibility;
-      projectId?: string;
-      threadId?: string;
-      limit?: number;
-      itemsPerCluster?: number;
-    }
-  ): Promise<MemoryClusterRecord[]>;
-  listMemoriesInCluster(
-    actor: ActorContext,
-    clusterId: string,
-    input?: { limit?: number }
-  ): Promise<MemoryBrowserItem[]>;
-  updateMemoryPresentation(
-    actor: ActorContext,
-    nodeId: string,
-    input: { summaryText?: string; pinned?: boolean; visibility?: Visibility }
-  ): Promise<MemoryBrowserItem | null>;
-  deleteMemory(actor: ActorContext, nodeId: string): Promise<boolean>;
   getLcmGraphOverview(actor: ActorContext): Promise<LcmGraphOverview>;
   listLcmGraphNodes(
     actor: ActorContext,
@@ -852,20 +721,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
       offset?: number;
     }
   ): Promise<LcmGraphProjectThreads[]>;
-  updateCapturedSessionTitle(
-    actor: ActorContext,
-    sessionId: string,
-    input: { title: string }
-  ): Promise<CapturedSessionRecord | null>;
-  listCapturedSessionsNeedingTitles(
-    actor: ActorContext,
-    input?: { limit?: number; minUserEvents?: number }
-  ): Promise<CapturedSessionTitleCandidate[]>;
-  updateCapturedSessionGeneratedTitle(
-    actor: ActorContext,
-    sessionId: string,
-    input: { title: string; source: "generated" | "lcm" | "provisional" }
-  ): Promise<CapturedSessionRecord | null>;
   getLcmGraphEvent(
     actor: ActorContext,
     eventId: string,
@@ -886,7 +741,6 @@ export interface MemorySourceRepository extends MemoryEngineRepository {
     nodes: LcmGraphNodeDetail[];
     events: LcmGraphEvent[];
   }>;
-  getLocalEmbeddingStatus(): Promise<LocalEmbeddingStatus>;
   listSourcesNeedingEmbeddings(
     limit?: number
   ): Promise<EmbeddableSourceRecord[]>;

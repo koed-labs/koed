@@ -1,4 +1,5 @@
 import pg from "pg";
+import { recordAuditEventWithClient } from "./audit-repository.js";
 import {
   clusterIdForLabel,
   isGenericDevelopmentActivity,
@@ -7,24 +8,60 @@ import {
 import { truncateDisplayText } from "./value-helpers.js";
 import type {
   ActorContext,
+  CreateMemoryNodeInput,
   MemoryBrowserItem,
   MemoryClusterRecord,
   MemoryNodeRecord,
-  MemorySourceRepository,
   Visibility
 } from "./types.js";
 
-type MemoryNodeRepository = Pick<
-  MemorySourceRepository,
-  | "createMemoryNode"
-  | "getVisibleMemoryNode"
-  | "listVisibleMemoryNodes"
-  | "listMemoryBrowserItems"
-  | "listMemoryClusters"
-  | "listMemoriesInCluster"
-  | "updateMemoryPresentation"
-  | "deleteMemory"
->;
+export interface MemoryNodeRepository {
+  createMemoryNode(
+    actor: ActorContext,
+    input: CreateMemoryNodeInput
+  ): Promise<MemoryNodeRecord>;
+  getVisibleMemoryNode(
+    actor: ActorContext,
+    nodeId: string
+  ): Promise<MemoryNodeRecord | null>;
+  listVisibleMemoryNodes(
+    actor: ActorContext,
+    visibility?: Visibility
+  ): Promise<MemoryNodeRecord[]>;
+  listMemoryBrowserItems(
+    actor: ActorContext,
+    input?: {
+      query?: string;
+      visibility?: Visibility;
+      projectId?: string;
+      threadId?: string;
+      pinned?: boolean;
+      limit?: number;
+    }
+  ): Promise<MemoryBrowserItem[]>;
+  listMemoryClusters(
+    actor: ActorContext,
+    input?: {
+      query?: string;
+      visibility?: Visibility;
+      projectId?: string;
+      threadId?: string;
+      limit?: number;
+      itemsPerCluster?: number;
+    }
+  ): Promise<MemoryClusterRecord[]>;
+  listMemoriesInCluster(
+    actor: ActorContext,
+    clusterId: string,
+    input?: { limit?: number }
+  ): Promise<MemoryBrowserItem[]>;
+  updateMemoryPresentation(
+    actor: ActorContext,
+    nodeId: string,
+    input: { summaryText?: string; pinned?: boolean; visibility?: Visibility }
+  ): Promise<MemoryBrowserItem | null>;
+  deleteMemory(actor: ActorContext, nodeId: string): Promise<boolean>;
+}
 
 type MemoryNodeRow = {
   id: string;
@@ -97,43 +134,6 @@ const mapMemoryBrowserItem = (row: MemoryBrowserItemRow): MemoryBrowserItem => {
     threadId: row.thread_id,
     threadName: row.thread_name
   };
-};
-
-const recordAuditEventWithClient = async (
-  client: pg.PoolClient,
-  input: {
-    actorUserId?: string | null;
-    ownerUserId?: string | null;
-    visibility?: Visibility | null;
-    action: string;
-    targetTable?: string | null;
-    targetId?: string | null;
-    metadata?: Record<string, unknown>;
-  }
-): Promise<void> => {
-  await client.query(
-    `
-      insert into audit_events (
-        actor_user_id,
-        owner_user_id,
-        visibility,
-        action,
-        target_table,
-        target_id,
-        metadata
-      )
-      values ($1, $2, $3, $4, $5, $6, $7)
-    `,
-    [
-      input.actorUserId ?? null,
-      input.ownerUserId ?? null,
-      input.visibility ?? null,
-      input.action,
-      input.targetTable ?? null,
-      input.targetId ?? null,
-      input.metadata ?? {}
-    ]
-  );
 };
 
 export const createMemoryNodeRepository = (

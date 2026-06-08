@@ -1,9 +1,8 @@
-import type { MemorySourceRepository } from "./types.js";
+import type { LocalEmbeddingStatus } from "./types.js";
 
-type LocalEmbeddingStatusRepository = Pick<
-  MemorySourceRepository,
-  "getLocalEmbeddingStatus"
->;
+export interface LocalEmbeddingStatusRepository {
+  getLocalEmbeddingStatus(): Promise<LocalEmbeddingStatus>;
+}
 
 const localEmbeddingServiceUrl = (): string | null =>
   (
