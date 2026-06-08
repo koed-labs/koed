@@ -3288,6 +3288,124 @@ describeDb("memory repository visibility", () => {
     );
   });
 
+  it("resolves capture policy precedence, pause inheritance, and deletion", async () => {
+    const alice = await repo.createUser({
+      email: `alice-capture-policy-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-capture-policy-${randomUUID()}@example.com`
+    });
+
+    expect(await repo.getEffectiveCapturePolicy({ userId: alice.id })).toEqual({
+      captureState: "enabled",
+      visibility: "personal",
+      paused: false,
+      pauseUntil: null,
+      source: "default",
+      policy: null
+    });
+
+    const global = await repo.upsertCapturePolicy(
+      { userId: alice.id },
+      {
+        targetType: "global",
+        captureState: "disabled",
+        visibility: "personal"
+      }
+    );
+    const project = await repo.upsertCapturePolicy(
+      { userId: alice.id },
+      {
+        targetType: "project",
+        projectId: "repo-a",
+        projectName: "Repo A",
+        captureState: "enabled",
+        visibility: "personal"
+      }
+    );
+    const thread = await repo.upsertCapturePolicy(
+      { userId: alice.id },
+      {
+        targetType: "thread",
+        projectId: "repo-a",
+        threadId: "thread-a",
+        threadName: "Thread A",
+        captureState: "disabled",
+        visibility: "personal"
+      }
+    );
+
+    expect(
+      await repo.getEffectiveCapturePolicy(
+        { userId: alice.id },
+        { projectId: "repo-a" }
+      )
+    ).toMatchObject({
+      captureState: "enabled",
+      paused: false,
+      source: "project",
+      policy: { id: project.id, targetType: "project" }
+    });
+    expect(
+      await repo.getEffectiveCapturePolicy(
+        { userId: alice.id },
+        { projectId: "repo-a", threadId: "thread-a" }
+      )
+    ).toMatchObject({
+      captureState: "disabled",
+      paused: false,
+      source: "thread",
+      policy: { id: thread.id, targetType: "thread" }
+    });
+    expect(await repo.listCapturePolicies({ userId: alice.id })).toEqual([
+      global,
+      project,
+      thread
+    ]);
+    expect(await repo.listCapturePolicies({ userId: bob.id })).toEqual([]);
+
+    const pauseUntil = new Date(Date.now() + 60_000);
+    const pausedGlobal = await repo.upsertCapturePolicy(
+      { userId: alice.id },
+      {
+        targetType: "global",
+        captureState: "enabled",
+        visibility: "personal",
+        pauseUntil
+      }
+    );
+    expect(pausedGlobal.id).toBe(global.id);
+
+    expect(
+      await repo.getEffectiveCapturePolicy(
+        { userId: alice.id },
+        { projectId: "repo-a" }
+      )
+    ).toMatchObject({
+      captureState: "disabled",
+      paused: true,
+      pauseUntil: pauseUntil.toISOString(),
+      source: "project",
+      policy: { id: project.id }
+    });
+
+    expect(await repo.deleteCapturePolicy({ userId: bob.id }, thread.id)).toBe(
+      false
+    );
+    expect(
+      await repo.deleteCapturePolicy({ userId: alice.id }, thread.id)
+    ).toBe(true);
+    expect(
+      await repo.getEffectiveCapturePolicy(
+        { userId: alice.id },
+        { projectId: "repo-a", threadId: "thread-a" }
+      )
+    ).toMatchObject({
+      source: "project",
+      policy: { id: project.id }
+    });
+  });
+
   it("stores validated token usage source references", async () => {
     const alice = await repo.createUser({
       email: `alice-token-source-references-${randomUUID()}@example.com`

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import pg from "pg";
 import { checkDatabase, createDb } from "./connection.js";
+import { createSettingsRepository } from "./settings-repository.js";
 import {
   clusterIdForLabel,
   isGenericDevelopmentActivity,
@@ -38,9 +39,6 @@ import {
 
 import type {
   CaptureMethod,
-  CapturePolicyRecord,
-  CapturePolicyTarget,
-  CaptureState,
   CapturedSessionRecord,
   CapturedSessionTitleCandidate,
   ConversationItemInput,
@@ -53,8 +51,6 @@ import type {
   LcmGraphProjectThreads,
   LcmGraphThread,
   LcmNodeForSummarization,
-  LocalMemoryAgentSettingRecord,
-  LocalMemoryAgentSettingsFlowKey,
   MemoryBrowserItem,
   MemoryClusterRecord,
   MemoryNodeRecord,
@@ -208,36 +204,6 @@ const mapMemoryNode = (row: {
   ...(row.project_path !== undefined ? { projectPath: row.project_path } : {}),
   ...(row.thread_id !== undefined ? { threadId: row.thread_id } : {}),
   ...(row.thread_name !== undefined ? { threadName: row.thread_name } : {})
-});
-
-const mapCapturePolicy = (row: {
-  id: string;
-  owner_user_id: string;
-  target_type: CapturePolicyTarget;
-  project_id: string | null;
-  project_name: string | null;
-  project_path: string | null;
-  thread_id: string | null;
-  thread_name: string | null;
-  capture_state: CaptureState | null;
-  visibility: Visibility | null;
-  pause_until: Date | null;
-  created_at: Date;
-  updated_at: Date;
-}): CapturePolicyRecord => ({
-  id: row.id,
-  ownerUserId: row.owner_user_id,
-  targetType: row.target_type,
-  projectId: row.project_id,
-  projectName: row.project_name,
-  projectPath: row.project_path,
-  threadId: row.thread_id,
-  threadName: row.thread_name,
-  captureState: row.capture_state,
-  visibility: row.visibility,
-  pauseUntil: row.pause_until?.toISOString() ?? null,
-  createdAt: row.created_at.toISOString(),
-  updatedAt: row.updated_at.toISOString()
 });
 
 const sanitizeConversationItemForStorage = (
@@ -1920,28 +1886,6 @@ const mapMemoryQuestionDetail = (
   response: row.response
 });
 
-const mapLocalMemoryAgentSetting = (row: {
-  owner_user_id: string;
-  flow_key: LocalMemoryAgentSettingsFlowKey;
-  provider: "codex";
-  model: string;
-  reasoning_effort: string;
-  timeout_ms: number | string;
-  max_attempts: number | string;
-  created_at: Date;
-  updated_at: Date;
-}): LocalMemoryAgentSettingRecord => ({
-  ownerUserId: row.owner_user_id,
-  flowKey: row.flow_key,
-  provider: row.provider,
-  model: row.model,
-  reasoningEffort: row.reasoning_effort,
-  timeoutMs: Number(row.timeout_ms),
-  maxAttempts: Number(row.max_attempts),
-  createdAt: row.created_at.toISOString(),
-  updatedAt: row.updated_at.toISOString()
-});
-
 const mapUser = (row: {
   id: string;
   email: string;
@@ -2915,6 +2859,7 @@ export const createMemorySourceRepository = (
   pool: pg.Pool
 ): MemorySourceRepository => ({
   ...createUserApiTokenRepository(createDb(pool)),
+  ...createSettingsRepository(createDb(pool)),
 
   health: () => checkDatabase(pool),
 
@@ -4556,58 +4501,6 @@ export const createMemorySourceRepository = (
     return result.rows[0] ? mapMemoryQuestionDetail(result.rows[0]) : null;
   },
 
-  async listLocalMemoryAgentSettings(actor) {
-    const result = await pool.query<
-      Parameters<typeof mapLocalMemoryAgentSetting>[0]
-    >(
-      `
-        select
-          owner_user_id, flow_key, provider, model, reasoning_effort,
-          timeout_ms, max_attempts, created_at, updated_at
-        from local_memory_agent_settings
-        where owner_user_id = $1
-        order by flow_key asc
-      `,
-      [actor.userId]
-    );
-    return result.rows.map(mapLocalMemoryAgentSetting);
-  },
-
-  async upsertLocalMemoryAgentSetting(actor, input) {
-    const result = await pool.query<
-      Parameters<typeof mapLocalMemoryAgentSetting>[0]
-    >(
-      `
-        insert into local_memory_agent_settings (
-          owner_user_id, flow_key, provider, model, reasoning_effort,
-          timeout_ms, max_attempts
-        )
-        values ($1, $2, $3, $4, $5, $6, $7)
-        on conflict (owner_user_id, flow_key)
-        do update set
-          provider = excluded.provider,
-          model = excluded.model,
-          reasoning_effort = excluded.reasoning_effort,
-          timeout_ms = excluded.timeout_ms,
-          max_attempts = excluded.max_attempts,
-          updated_at = now()
-        returning
-          owner_user_id, flow_key, provider, model, reasoning_effort,
-          timeout_ms, max_attempts, created_at, updated_at
-      `,
-      [
-        actor.userId,
-        input.flowKey,
-        input.provider,
-        input.model,
-        input.reasoningEffort,
-        input.timeoutMs,
-        input.maxAttempts
-      ]
-    );
-    return mapLocalMemoryAgentSetting(result.rows[0]!);
-  },
-
   async updateMemoryQuestion(actor, questionId, input) {
     const result = await pool.query<
       Parameters<typeof mapMemoryQuestionDetail>[0]
@@ -4734,171 +4627,6 @@ export const createMemorySourceRepository = (
     );
 
     return mapMemoryNode(result.rows[0]!);
-  },
-
-  async getEffectiveCapturePolicy(actor, input = {}) {
-    const sessionLookup = input.sessionId
-      ? await pool.query<{
-          id: string;
-          external_session_id: string | null;
-          workspace_id: string | null;
-          cwd: string | null;
-        }>(
-          `
-            select id, external_session_id, workspace_id::text, cwd
-            from sessions
-            where id = $2
-              and owner_user_id = $1
-              and invalidated_at is null
-            limit 1
-          `,
-          [actor.userId, input.sessionId]
-        )
-      : null;
-    const threadIds = [
-      input.threadId,
-      input.sessionId,
-      sessionLookup?.rows[0]?.external_session_id ?? undefined
-    ].filter((value): value is string => Boolean(value));
-    const projectId =
-      input.projectId ??
-      sessionLookup?.rows[0]?.cwd ??
-      sessionLookup?.rows[0]?.workspace_id ??
-      null;
-    const result = await pool.query<{
-      id: string;
-      owner_user_id: string;
-      target_type: CapturePolicyTarget;
-      project_id: string | null;
-      project_name: string | null;
-      project_path: string | null;
-      thread_id: string | null;
-      thread_name: string | null;
-      capture_state: CaptureState | null;
-      visibility: Visibility | null;
-      pause_until: Date | null;
-      created_at: Date;
-      updated_at: Date;
-      priority: number;
-    }>(
-      `
-        select cp.*, case cp.target_type
-          when 'thread' then 3
-          when 'project' then 2
-          else 1
-        end as priority
-        from capture_policies cp
-        where cp.owner_user_id = $1
-          and (
-            cp.target_type = 'global'
-            or (cp.target_type = 'project' and cp.project_id = $2)
-            or (cp.target_type = 'thread' and cp.thread_id = any($3::text[]))
-          )
-        order by priority desc, cp.updated_at desc
-      `,
-      [actor.userId, projectId, threadIds]
-    );
-    const policies = result.rows.map(mapCapturePolicy);
-    const global = policies.find((policy) => policy.targetType === "global");
-    const effective = policies[0] ?? null;
-    const pauseUntil = effective?.pauseUntil ?? global?.pauseUntil ?? null;
-    const paused = pauseUntil
-      ? new Date(pauseUntil).getTime() > Date.now()
-      : false;
-    return {
-      captureState: paused
-        ? "disabled"
-        : (effective?.captureState ?? global?.captureState ?? "enabled"),
-      visibility: effective?.visibility ?? global?.visibility ?? "personal",
-      paused,
-      pauseUntil,
-      source: effective?.targetType ?? (global ? "global" : "default"),
-      policy: effective
-    };
-  },
-
-  async listCapturePolicies(actor, targetType) {
-    const result = await pool.query<Parameters<typeof mapCapturePolicy>[0]>(
-      `
-        select *
-        from capture_policies
-        where owner_user_id = $1
-          and ($2::capture_policy_target is null or target_type = $2::capture_policy_target)
-        order by
-          case target_type when 'global' then 0 when 'project' then 1 else 2 end,
-          updated_at desc
-      `,
-      [actor.userId, targetType ?? null]
-    );
-    return result.rows.map(mapCapturePolicy);
-  },
-
-  async upsertCapturePolicy(actor, input) {
-    if (input.targetType === "project" && !input.projectId) {
-      throw new Error("Project capture policy requires projectId");
-    }
-    if (input.targetType === "thread" && !input.threadId) {
-      throw new Error("Thread capture policy requires threadId");
-    }
-    const pauseUntil =
-      input.pauseUntil instanceof Date
-        ? input.pauseUntil
-        : input.pauseUntil
-          ? new Date(input.pauseUntil)
-          : null;
-    const result = await pool.query<Parameters<typeof mapCapturePolicy>[0]>(
-      `
-        insert into capture_policies (
-          owner_user_id,
-          target_type,
-          project_id,
-          project_name,
-          project_path,
-          thread_id,
-          thread_name,
-          capture_state,
-          visibility,
-          pause_until
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        on conflict (
-          owner_user_id,
-          target_type,
-          (coalesce(project_id, '')),
-          (coalesce(thread_id, ''))
-        )
-        do update set
-          project_name = excluded.project_name,
-          project_path = excluded.project_path,
-          thread_name = excluded.thread_name,
-          capture_state = excluded.capture_state,
-          visibility = excluded.visibility,
-          pause_until = excluded.pause_until,
-          updated_at = now()
-        returning *
-      `,
-      [
-        actor.userId,
-        input.targetType,
-        input.targetType === "global" ? null : (input.projectId ?? null),
-        input.projectName ?? null,
-        input.projectPath ?? null,
-        input.targetType === "thread" ? input.threadId! : null,
-        input.threadName ?? null,
-        input.captureState ?? null,
-        input.visibility ?? null,
-        pauseUntil
-      ]
-    );
-    return mapCapturePolicy(result.rows[0]!);
-  },
-
-  async deleteCapturePolicy(actor, policyId) {
-    const result = await pool.query(
-      "delete from capture_policies where id = $2 and owner_user_id = $1",
-      [actor.userId, policyId]
-    );
-    return (result.rowCount ?? 0) > 0;
   },
 
   async getVisibleMemoryNode(actor, nodeId) {

@@ -18,6 +18,7 @@ export {
   createMemorySourceRepository,
   localRerankingEnabled
 } from "./repository.js";
+export { createSettingsRepository } from "./settings-repository.js";
 export {
   createUserApiTokenRepository,
   mapUserRecord
