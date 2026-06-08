@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { KoedDb } from "./connection.js";
 import {
+  auditEvents,
   capturePolicies,
   localMemoryAgentSettings,
   sessions
@@ -101,6 +102,18 @@ const mapLocalMemoryAgentSettingRecord = (row: {
   maxAttempts: Number(row.maxAttempts),
   createdAt: timestampIso(row.createdAt),
   updatedAt: timestampIso(row.updatedAt)
+});
+
+const capturePolicyAuditMetadata = (policy: CapturePolicyRecord) => ({
+  targetType: policy.targetType,
+  projectId: policy.projectId,
+  projectName: policy.projectName,
+  projectPath: policy.projectPath,
+  threadId: policy.threadId,
+  threadName: policy.threadName,
+  captureState: policy.captureState,
+  visibility: policy.visibility,
+  pauseUntil: policy.pauseUntil
 });
 
 export const createSettingsRepository = (db: KoedDb) => ({
@@ -344,7 +357,18 @@ export const createSettingsRepository = (db: KoedDb) => ({
       returning *
     `);
 
-    return mapCapturePolicySqlRecord(result.rows[0]!);
+    const policy = mapCapturePolicySqlRecord(result.rows[0]!);
+    await db.insert(auditEvents).values({
+      actorUserId: actor.userId,
+      ownerUserId: actor.userId,
+      visibility: policy.visibility ?? "personal",
+      action: "capture_policy.upserted",
+      targetTable: "capture_policies",
+      targetId: policy.id,
+      metadata: capturePolicyAuditMetadata(policy)
+    });
+
+    return policy;
   },
 
   async deleteCapturePolicy(
@@ -359,8 +383,21 @@ export const createSettingsRepository = (db: KoedDb) => ({
           eq(capturePolicies.ownerUserId, actor.userId)
         )
       )
-      .returning({ id: capturePolicies.id });
+      .returning();
 
-    return rows.length > 0;
+    const policy = rows[0] ? mapCapturePolicyRecord(rows[0]) : null;
+    if (policy) {
+      await db.insert(auditEvents).values({
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: policy.visibility ?? "personal",
+        action: "capture_policy.deleted",
+        targetTable: "capture_policies",
+        targetId: policy.id,
+        metadata: capturePolicyAuditMetadata(policy)
+      });
+    }
+
+    return Boolean(policy);
   }
 });

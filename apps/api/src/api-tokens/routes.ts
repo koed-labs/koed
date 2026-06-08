@@ -26,6 +26,20 @@ export const registerApiTokenRoutes = (
       tokenPrefix: token.slice(0, 12),
       scopes: []
     });
+    await repo.recordAuditEvent({
+      actorUserId: user.id,
+      ownerUserId: user.id,
+      visibility: "personal",
+      action: "api_token.created",
+      targetTable: "api_tokens",
+      targetId: record.id,
+      metadata: {
+        actorType: "user",
+        name: record.name,
+        tokenPrefix: record.tokenPrefix,
+        scopes: record.scopes
+      }
+    });
 
     return { token, apiToken: record };
   });
@@ -42,6 +56,17 @@ export const registerApiTokenRoutes = (
     const user = await authenticateSession(request);
     const params = z.object({ id: z.string().uuid() }).parse(request.params);
     const deleted = await repo.revokeApiToken(user.id, params.id);
+    if (deleted) {
+      await repo.recordAuditEvent({
+        actorUserId: user.id,
+        ownerUserId: user.id,
+        visibility: "personal",
+        action: "api_token.revoked",
+        targetTable: "api_tokens",
+        targetId: params.id,
+        metadata: { actorType: "user" }
+      });
+    }
 
     return reply.status(deleted ? 200 : 404).send({ ok: deleted });
   });

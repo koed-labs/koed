@@ -18,7 +18,8 @@ const deterministicRandomBytes = () => Buffer.alloc(32, 7);
 const createFakeRepo = ({ existingUser = null } = {}) => {
   const state = {
     users: existingUser ? [existingUser] : [],
-    createdTokens: []
+    createdTokens: [],
+    auditEvents: []
   };
 
   return {
@@ -62,6 +63,20 @@ const createFakeRepo = ({ existingUser = null } = {}) => {
       }
       token.revokedAt = new Date().toISOString();
       return true;
+    },
+    async recordAuditEvent(input) {
+      state.auditEvents.push(input);
+      return {
+        id: `audit-${state.auditEvents.length}`,
+        actorUserId: input.actorUserId ?? null,
+        ownerUserId: input.ownerUserId ?? null,
+        visibility: input.visibility ?? null,
+        action: input.action,
+        targetTable: input.targetTable ?? null,
+        targetId: input.targetId ?? null,
+        metadata: input.metadata ?? {},
+        createdAt: "2026-06-08T00:00:00.000Z"
+      };
     }
   };
 };
@@ -122,6 +137,26 @@ test("creates a passwordless owner when none exists", async () => {
   assert.equal(
     repo.state.createdTokens[0].tokenHash,
     hashApiToken("pepper", result.token)
+  );
+  assert.deepEqual(repo.state.auditEvents, [
+    {
+      actorUserId: null,
+      ownerUserId: "user-1",
+      visibility: "personal",
+      action: "api_token.created",
+      targetTable: "api_tokens",
+      targetId: "token-1",
+      metadata: {
+        actorType: "local_operator_script",
+        name: "Codex",
+        tokenPrefix: result.token.slice(0, 12),
+        scopes: []
+      }
+    }
+  ]);
+  assert.equal(
+    Object.hasOwn(repo.state.auditEvents[0].metadata, "tokenHash"),
+    false
   );
 });
 
@@ -239,4 +274,15 @@ test("revokes an active token for a passwordless owner", async () => {
 
   assert.match(output, /Revoked Koed API token token-1/);
   assert.equal(repo.state.createdTokens[0].revokedAt !== undefined, true);
+  assert.deepEqual(repo.state.auditEvents, [
+    {
+      actorUserId: null,
+      ownerUserId: "existing-user",
+      visibility: "personal",
+      action: "api_token.revoked",
+      targetTable: "api_tokens",
+      targetId: "token-1",
+      metadata: { actorType: "local_operator_script" }
+    }
+  ]);
 });

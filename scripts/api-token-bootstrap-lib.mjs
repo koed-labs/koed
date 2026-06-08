@@ -313,6 +313,20 @@ export const createApiTokenBootstrap = async ({
     tokenPrefix: token.slice(0, 12),
     scopes: []
   });
+  await repo.recordAuditEvent?.({
+    actorUserId: null,
+    ownerUserId: owner.id,
+    visibility: "personal",
+    action: "api_token.created",
+    targetTable: "api_tokens",
+    targetId: apiToken.id,
+    metadata: {
+      actorType: "local_operator_script",
+      name: apiToken.name,
+      tokenPrefix: apiToken.tokenPrefix,
+      scopes: apiToken.scopes ?? []
+    }
+  });
 
   return {
     help: false,
@@ -368,6 +382,15 @@ export const revokeApiTokenBootstrap = async ({ repo, environment, argv }) => {
       `API token not found or already revoked: ${args.tokenId}`
     );
   }
+  await repo.recordAuditEvent?.({
+    actorUserId: null,
+    ownerUserId: owner.id,
+    visibility: "personal",
+    action: "api_token.revoked",
+    targetTable: "api_tokens",
+    targetId: args.tokenId,
+    metadata: { actorType: "local_operator_script" }
+  });
 
   return {
     help: false,

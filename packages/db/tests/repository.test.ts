@@ -3520,6 +3520,48 @@ describeDb("memory repository visibility", () => {
       source: "project",
       policy: { id: project.id }
     });
+
+    const auditEvents = await repo.listAuditEvents({ userId: alice.id });
+    expect(auditEvents.map((event) => event.action).sort()).toEqual([
+      "capture_policy.deleted",
+      "capture_policy.upserted",
+      "capture_policy.upserted",
+      "capture_policy.upserted",
+      "capture_policy.upserted"
+    ]);
+    expect(
+      auditEvents.find(
+        (event) =>
+          event.action === "capture_policy.deleted" &&
+          event.targetId === thread.id
+      )
+    ).toMatchObject({
+      actorUserId: alice.id,
+      ownerUserId: alice.id,
+      visibility: "personal",
+      targetTable: "capture_policies",
+      metadata: {
+        targetType: "thread",
+        projectId: "repo-a",
+        threadId: "thread-a",
+        captureState: "disabled",
+        visibility: "personal"
+      }
+    });
+    expect(
+      auditEvents.find(
+        (event) =>
+          event.targetId === pausedGlobal.id &&
+          event.metadata.pauseUntil === pauseUntil.toISOString()
+      )
+    ).toMatchObject({
+      action: "capture_policy.upserted",
+      metadata: {
+        targetType: "global",
+        pauseUntil: pauseUntil.toISOString()
+      }
+    });
+    expect(await repo.listAuditEvents({ userId: bob.id })).toEqual([]);
   });
 
   it("stores validated token usage source references", async () => {

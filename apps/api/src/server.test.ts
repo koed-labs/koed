@@ -71,7 +71,13 @@ const jsonBody = <T>(response: { body: string }): T =>
 
 type TokenResponse = {
   token: string;
-  apiToken: { tokenPrefix: string };
+  apiToken: {
+    id: string;
+    ownerUserId: string;
+    name: string;
+    tokenPrefix: string;
+    scopes: string[];
+  };
 };
 
 type AccessResponse = {
@@ -246,7 +252,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         (candidate) =>
           candidate.id === tokenId && candidate.ownerUserId === userId
       );
-      if (!token) {
+      if (!token || token.revokedAt) {
         return false;
       }
       token.revokedAt = new Date().toISOString();
@@ -2051,6 +2057,81 @@ describe("account and access flows", () => {
     );
     expect(authed.statusCode).toBe(200);
     expect(jsonBody<AccessResponse>(authed).ok).toBe(true);
+  });
+
+  it("audits API token lifecycle routes", async () => {
+    const repository = createFakeRepository();
+    const auditEvents: AuditEventRecord[] = [];
+    repository.recordAuditEvent = async (input) => {
+      const record: AuditEventRecord = {
+        id: randomUUID(),
+        actorUserId: input.actorUserId ?? null,
+        ownerUserId: input.ownerUserId ?? null,
+        visibility: input.visibility ?? null,
+        action: input.action,
+        targetTable: input.targetTable ?? null,
+        targetId: input.targetId ?? null,
+        metadata: input.metadata ?? {},
+        createdAt: new Date().toISOString()
+      };
+      auditEvents.push(record);
+      return record;
+    };
+    const app = await buildServer({ repository });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "token-audit@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const apiToken = jsonBody<TokenResponse>(created).apiToken;
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/api-tokens/${apiToken.id}`,
+      headers: { cookie }
+    });
+    const notFound = await app.inject({
+      method: "DELETE",
+      url: `/api-tokens/${apiToken.id}`,
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(created.statusCode).toBe(200);
+    expect(revoked.statusCode).toBe(200);
+    expect(notFound.statusCode).toBe(404);
+    expect(auditEvents.map((event) => event.action)).toEqual([
+      "api_token.created",
+      "api_token.revoked"
+    ]);
+    expect(auditEvents[0]).toMatchObject({
+      actorUserId: apiToken.ownerUserId,
+      ownerUserId: apiToken.ownerUserId,
+      visibility: "personal",
+      targetTable: "api_tokens",
+      targetId: apiToken.id,
+      metadata: {
+        actorType: "user",
+        name: "Client Integration",
+        tokenPrefix: apiToken.tokenPrefix,
+        scopes: []
+      }
+    });
+    expect(auditEvents[0]?.metadata).not.toHaveProperty("tokenHash");
+    expect(auditEvents[1]).toMatchObject({
+      actorUserId: apiToken.ownerUserId,
+      ownerUserId: apiToken.ownerUserId,
+      visibility: "personal",
+      action: "api_token.revoked",
+      targetId: apiToken.id,
+      metadata: { actorType: "user" }
+    });
   });
 
   it("rejects cross-origin browser-session writes without blocking bearer API tokens", async () => {
