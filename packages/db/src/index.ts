@@ -7673,7 +7673,7 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
-	            and me.session_id is null
+            and ($6::uuid is not null or me.session_id is null)
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(
               case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,

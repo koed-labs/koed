@@ -6721,6 +6721,68 @@ describeDb("memory repository visibility", () => {
     expect(fetched?.summaryText).toBe("Target LCM node summary");
   });
 
+  it("expands session-backed memory event sources for exact LCM graph nodes", async () => {
+    const alice = await repo.createUser({
+      email: `alice-session-lcm-source-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Session Source Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `session-source-${randomUUID()}`,
+        idempotencyKey: `session-source-${randomUUID()}`
+      }
+    );
+    const event = await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId,
+        sessionId: session.id,
+        actor: "agent",
+        eventType: "captured",
+        rawEventType: "agent_turn",
+        visibility: "personal",
+        content: "Session-backed semantic source should expand from node detail",
+        idempotencyKey: `session-backed-event-${randomUUID()}`,
+        sourceHash: `session-backed-event-${randomUUID()}`
+      }
+    );
+    const node = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Node summary linked to session-backed semantic source",
+        summaryModel: "codex:test"
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0)
+      `,
+      [node.id, event.id]
+    );
+
+    const displayEvents = await repo.listLcmGraphEvents(
+      { userId: alice.id },
+      { query: "Session-backed semantic source", limit: 10 }
+    );
+    const exactEvent = await repo.getLcmGraphEvent({ userId: alice.id }, event.id);
+    const graphNode = await repo.getLcmGraphNode({ userId: alice.id }, node.id);
+
+    expect(displayEvents.map((item) => item.id)).not.toContain(event.id);
+    expect(exactEvent?.id).toBe(event.id);
+    expect(graphNode?.sources.map((source) => source.id)).toEqual([event.id]);
+  });
+
   it("persists structured LCM summary data beside summary text", async () => {
     const alice = await repo.createUser({
       email: `alice-structured-lcm-${randomUUID()}@example.com`
