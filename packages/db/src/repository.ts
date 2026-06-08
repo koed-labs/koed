@@ -2858,6 +2858,8 @@ const mapLcmNodeForSummarization = async (
 export const createMemorySourceRepository = (
   pool: pg.Pool
 ): MemorySourceRepository => ({
+  // Drizzle fragments cover table-shaped account and settings workflows.
+  // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
   ...createUserApiTokenRepository(createDb(pool)),
   ...createSettingsRepository(createDb(pool)),
 

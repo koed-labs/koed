@@ -20,3 +20,23 @@ databases, and the server must have the `vector` extension available.
 
 Do not add new migrations under `packages/db/src/migrations/`; that directory
 was replaced by the Drizzle migration folder.
+
+## Hybrid Query Policy
+
+Use Drizzle for schema ownership, migrations, and table-shaped repository
+fragments where typed columns reduce drift. Current Drizzle-backed fragments
+cover Users, API Tokens, Capture Policies, and Local Memory Agent Settings.
+
+Keep dense graph, vector search, retrieval, LCM, chronology, and projection
+queries as raw SQL unless converting them clearly improves correctness,
+readability, or testability. These queries often rely on Postgres-specific
+ranking, recursive relationships, vector operators, expression indexes, or
+careful result shaping that Drizzle would not simplify today.
+
+When adding a Drizzle-backed fragment:
+
+1. Keep the public `MemorySourceRepository` method contract unchanged.
+2. Put the fragment in `packages/db/src/*-repository.ts`.
+3. Compose the fragment in `createMemorySourceRepository`.
+4. Add focused real-DB tests for the moved behavior.
+5. Leave unrelated raw SQL paths alone.
