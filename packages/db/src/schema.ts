@@ -373,6 +373,34 @@ export const memoryEvents = pgTable(
       .where(
         sql`${table.visibility} = 'personal' and ${table.invalidatedAt} is null`
       ),
+    index("memory_events_personal_workspace_expr_idx")
+      .on(
+        table.ownerUserId,
+        sql`${table.payload} ->> 'workspaceId'`,
+        table.capturedAt.desc(),
+        table.id.desc()
+      )
+      .where(
+        sql`${table.visibility} = 'personal' and ${table.invalidatedAt} is null`
+      ),
+    index("memory_events_personal_external_thread_expr_idx")
+      .on(
+        table.ownerUserId,
+        sql`${table.payload} #>> '{metadata,externalSessionId}'`,
+        table.capturedAt.desc(),
+        table.id.desc()
+      )
+      .where(
+        sql`${table.visibility} = 'personal' and ${table.invalidatedAt} is null`
+      ),
+    index("memory_events_personal_source_order_idx")
+      .on(
+        table.ownerUserId,
+        sql`coalesce(${table.sourceEventTime}, ${table.capturedAt}) desc`,
+        sql`${table.sourceSequence} desc nulls last`,
+        table.id.desc()
+      )
+      .where(sql`${table.visibility} = 'personal'`),
     check(
       "memory_events_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
@@ -955,8 +983,9 @@ export const semanticMemoryRebuildJobs = pgTable(
       .notNull()
       .references(() => memoryEvents.id, { onDelete: "cascade" }),
     status: text("status").notNull().default("pending"),
-    scheduledAfter: timestamp("scheduled_after", { withTimezone: true })
-      .notNull(),
+    scheduledAfter: timestamp("scheduled_after", {
+      withTimezone: true
+    }).notNull(),
     processingStartedAt: timestamp("processing_started_at", {
       withTimezone: true
     }),

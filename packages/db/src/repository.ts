@@ -1461,11 +1461,7 @@ const conversationSemanticUnitChunks = (
               : splitIndex,
           itemManifest: [
             {
-              ...conversationSemanticItemManifest(
-                item,
-                0,
-                splitContent.length
-              ),
+              ...conversationSemanticItemManifest(item, 0, splitContent.length),
               itemSplitIndex: splitIndex,
               itemSplitCount: effectiveSplitChunks.length,
               itemSplitReason: "embedding_token_limit",
@@ -3700,10 +3696,7 @@ export const createMemorySourceRepository = (
               updated_at = now()
             where id = $1
           `,
-          [
-            job.id,
-            error instanceof Error ? error.message : String(error)
-          ]
+          [job.id, error instanceof Error ? error.message : String(error)]
         );
         result.jobsFailed += 1;
       }

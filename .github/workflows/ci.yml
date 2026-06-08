@@ -83,6 +83,8 @@ jobs:
         run: pnpm test:python
 
       - name: Test
+        env:
+          DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: pnpm test
 
   build:
