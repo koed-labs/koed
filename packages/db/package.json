@@ -13,7 +13,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -b tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "api-token:create": "pnpm run build && node scripts/create-api-token.mjs",
     "api-token:list": "pnpm run build && node scripts/list-api-tokens.mjs",
