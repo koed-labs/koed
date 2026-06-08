@@ -2,6 +2,7 @@ import { Queue, Worker } from "bullmq";
 import {
   createDbPool,
   createMemorySourceRepository,
+  waitForCurrentDbMigrations,
   type MemorySourceRepository
 } from "@koed/db";
 import { createEmbeddingWorkflow } from "./embedding-workflow.js";
@@ -33,6 +34,9 @@ const connection = {
 const pool = workerEnv.databaseUrl
   ? createDbPool({ connectionString: workerEnv.databaseUrl })
   : null;
+if (pool) {
+  await waitForCurrentDbMigrations(pool);
+}
 const repository = pool ? createMemorySourceRepository(pool) : null;
 const lcmEmbedQueue = new Queue<EmbeddingQueueJobData>("lcm-embed", {
   connection

@@ -38,7 +38,9 @@ describe("graph stream updates", () => {
         ownerUserId: "user-1"
       })
     ).toBe("personal:user-1");
-    expect(graphUpdateKey({ table: "schema_migrations" })).toBe("global");
+    expect(graphUpdateKey({ table: "drizzle.__drizzle_migrations" })).toBe(
+      "global"
+    );
   });
 
   it("logs broadcast write failures without dropping later clients", () => {

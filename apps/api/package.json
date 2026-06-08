@@ -34,7 +34,6 @@
     "dotenv": "^17.2.3",
     "fastify": "^5.8.5",
     "ioredis": "^5.10.1",
-    "node-pg-migrate": "^8.0.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {

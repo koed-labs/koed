@@ -1703,7 +1703,7 @@ describe("api health", () => {
       canReceiveGraphStreamPayload(
         { userId: outsiderId },
         {
-          table: "schema_migrations"
+          table: "drizzle.__drizzle_migrations"
         }
       )
     ).toBe(true);

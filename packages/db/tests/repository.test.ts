@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import {
   afterAll,
   afterEach,
@@ -16,6 +13,7 @@ import { createMemoryEngine } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
+  runDbMigrations,
   type MemorySourceRepository
 } from "../src/index.js";
 
@@ -98,19 +96,7 @@ describeDb("memory repository visibility", () => {
     process.env.MEMORY_LCM_DEPTH1_FANOUT = "2";
     pool = createDbPool({ connectionString: databaseUrl });
     repo = createMemorySourceRepository(pool);
-
-    const currentDir = dirname(fileURLToPath(import.meta.url));
-    const migrationsDir = join(currentDir, "..", "src", "migrations");
-    const migrations = (await readdir(migrationsDir))
-      .filter((file) => file.endsWith(".sql"))
-      .sort();
-    for (const migrationFile of migrations) {
-      const migration = await readFile(
-        join(migrationsDir, migrationFile),
-        "utf8"
-      );
-      await pool.query(migration);
-    }
+    await runDbMigrations(pool);
   });
 
   afterEach(async () => {

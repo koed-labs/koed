@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { readdir, readFile, writeFile } from "node:fs/promises";
-import fs from "node:fs";
-import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { answerMemory, type MemorySearchResult } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
+  runDbMigrations,
   type MemorySourceRepository
 } from "@koed/db";
 import {
@@ -131,34 +130,9 @@ const createTemporaryDatabase = async (
 const runMigrations = async (databaseUrl: string): Promise<void> => {
   const pool = createDbPool({ connectionString: databaseUrl });
   try {
-    const migrationsDir = findRepoPath("packages/db/src/migrations");
-    const migrations = (await readdir(migrationsDir))
-      .filter((file) => file.endsWith(".sql"))
-      .sort();
-    for (const migrationFile of migrations) {
-      const migration = await readFile(
-        path.join(migrationsDir, migrationFile),
-        "utf8"
-      );
-      await pool.query(migration);
-    }
+    await runDbMigrations(pool);
   } finally {
     await pool.end();
-  }
-};
-
-const findRepoPath = (relativePath: string): string => {
-  let current = process.cwd();
-  for (;;) {
-    const candidate = path.join(current, relativePath);
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      throw new Error(`Could not find ${relativePath} from ${process.cwd()}`);
-    }
-    current = parent;
   }
 };
 

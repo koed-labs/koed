@@ -8,6 +8,7 @@ import { type Visibility } from "@koed/core";
 import {
   createDbPool,
   createMemorySourceRepository,
+  runDbMigrations,
   type MemorySourceRepository
 } from "@koed/db";
 import {
@@ -134,6 +135,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
 
   const pool =
     options.repository || !config.databaseUrl ? null : createDbPool();
+  if (pool) {
+    await runDbMigrations(pool);
+  }
   const repository =
     options.repository ?? (pool ? createMemorySourceRepository(pool) : null);
   const createQueue = (name: string) =>
