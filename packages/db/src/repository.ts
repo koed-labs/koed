@@ -7,6 +7,19 @@ import {
 import { createAuthSessionRepository } from "./auth-session-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
+import {
+  conversationSemanticEventMetadata,
+  conversationSemanticProjectionGroups,
+  conversationSemanticUnitActor,
+  conversationSemanticUnitChunks,
+  conversationSemanticUnitTypeForActor,
+  joinedSemanticContentTokenCount,
+  uniqueOrderedStrings,
+  type ConversationSemanticProjectionItem,
+  type ConversationSemanticUnitType,
+  type PendingAgentSemanticBundle,
+  type SemanticBundleSealReason
+} from "./conversation-semantic-projection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
@@ -25,7 +38,6 @@ import { createUserApiTokenRepository } from "./user-api-token-repository.js";
 import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
 import {
   codexIdePromptUserText,
-  chunkTextForModel,
   estimateTokens,
   type LcmSourceItem
 } from "@koed/core";
@@ -128,37 +140,6 @@ type LogicalConversationProjectionItem = {
   sourceHash: string;
 };
 
-type ConversationSemanticUnitType = "user_turn" | "agent_turn";
-
-type ConversationSemanticProjectionItem = {
-  row: ConversationProjectionRawRow;
-  sourceIds: string[];
-  sourceIdentity: string;
-  sourceHash: string;
-  actorType: MemoryActor;
-  content: string;
-  projectionMetadata: Record<string, unknown>;
-};
-
-type ConversationSemanticProjectionItemManifest = {
-  sourceIds: string[];
-  sourceIdentity: string;
-  sourceHash: string;
-  actor: MemoryActor;
-  kind: string;
-  toolName?: string;
-  toolCallId?: string;
-  toolEventKind?: string;
-  sourceSequence: number | null;
-  sourceEventTime: string | null;
-  offsetStart: number;
-  offsetEnd: number;
-  itemSplitIndex?: number;
-  itemSplitCount?: number;
-  itemSplitReason?: "embedding_token_limit";
-  originalItemTokenCount?: number;
-};
-
 type SupportingContextProjectionItem = {
   row: ConversationProjectionRawRow;
   sourceIds: string[];
@@ -171,35 +152,6 @@ type SupportingContextItem = {
   contextKind: "ide_client_context";
   label: string;
   text: string;
-};
-
-type ConversationSemanticProjectionChunk = {
-  content: string;
-  tokenCount: number;
-  chunkIndex: number;
-  chunkCount: number;
-  sourceIds: string[];
-  sourceIdentities: string[];
-  sourceHashes: string[];
-  sourceEventTime: Date | null;
-  sourceSequence: number | null;
-  itemManifest: ConversationSemanticProjectionItemManifest[];
-};
-
-type SemanticBundleSealReason =
-  | "user_turn"
-  | "next_user_turn"
-  | "token_limit"
-  | "stop_hook"
-  | "catch_up_stale";
-
-type ConversationSemanticProjectionGroup = {
-  unitType: ConversationSemanticUnitType;
-  items: ConversationSemanticProjectionItem[];
-};
-
-type PendingAgentSemanticBundle = {
-  items: ConversationSemanticProjectionItem[];
 };
 
 const jsonbParam = (value: unknown): string | null =>
@@ -1234,109 +1186,6 @@ const loadLogicalConversationProjectionItem = async (
   };
 };
 
-const conversationSemanticUnitTypeForActor = (
-  actorType: MemoryActor | null
-): ConversationSemanticUnitType | null => {
-  if (actorType === "user") {
-    return "user_turn";
-  }
-  if (
-    actorType === "agent" ||
-    actorType === "assistant" ||
-    actorType === "subagent" ||
-    actorType === "tool"
-  ) {
-    return "agent_turn";
-  }
-  return null;
-};
-
-const uniqueOrderedStrings = (values: Iterable<string>): string[] => {
-  const seen = new Set<string>();
-  const ordered: string[] = [];
-  for (const value of values) {
-    if (!seen.has(value)) {
-      seen.add(value);
-      ordered.push(value);
-    }
-  }
-  return ordered;
-};
-
-const joinedSemanticContentTokenCount = (
-  contents: string[],
-  model?: string | null
-): number =>
-  estimateTokens(contents.join("\n\n"), {
-    model: model ?? "gpt-5.4-mini"
-  });
-
-const conversationSemanticItemKind = (
-  item: ConversationSemanticProjectionItem
-): string => {
-  const metadata = item.row.metadata ?? {};
-  const toolCall = isRecord(metadata.toolCall) ? metadata.toolCall : {};
-  const toolEventKind =
-    stringField(metadata, "toolEventKind") ?? stringField(toolCall, "kind");
-  if (item.actorType === "tool") {
-    return /output|result/i.test(toolEventKind ?? "")
-      ? "tool_result"
-      : "tool_call";
-  }
-  const transcriptType = stringField(metadata, "transcriptType");
-  if (transcriptType && projectionIsReasoningSummaryLabel(transcriptType)) {
-    return "reasoning_summary";
-  }
-  if (/reasoning|thought/i.test(transcriptType ?? "")) {
-    return "reasoning_summary";
-  }
-  if (item.actorType === "subagent") {
-    return "subagent_message";
-  }
-  if (item.actorType === "agent" || item.actorType === "assistant") {
-    return /final/i.test(transcriptType ?? "")
-      ? "final_message"
-      : "agent_message";
-  }
-  return (
-    transcriptType ?? item.row.source_event_type ?? item.row.source_record_type
-  );
-};
-
-const conversationSemanticItemManifest = (
-  item: ConversationSemanticProjectionItem,
-  offsetStart: number,
-  offsetEnd: number
-): ConversationSemanticProjectionItemManifest => {
-  const metadata = item.row.metadata ?? {};
-  const toolCall = isRecord(metadata.toolCall) ? metadata.toolCall : {};
-  const toolName =
-    stringField(metadata, "toolName") ??
-    stringField(toolCall, "name") ??
-    stringField(toolCall, "title");
-  const toolCallId =
-    stringField(metadata, "toolCallId") ??
-    stringField(metadata, "callId") ??
-    stringField(toolCall, "id");
-  const toolEventKind =
-    stringField(metadata, "toolEventKind") ?? stringField(toolCall, "kind");
-
-  return {
-    sourceIds: item.sourceIds,
-    sourceIdentity: item.sourceIdentity,
-    sourceHash: item.sourceHash,
-    actor: item.actorType,
-    kind: conversationSemanticItemKind(item),
-    ...(toolName ? { toolName } : {}),
-    ...(toolCallId ? { toolCallId } : {}),
-    ...(toolEventKind ? { toolEventKind } : {}),
-    sourceSequence: item.row.source_sequence,
-    sourceEventTime: item.row.event_time?.toISOString() ?? null,
-    offsetStart,
-    offsetEnd
-  };
-};
-
 const conversationProjectionBoundaryParts = (
   row: ConversationProjectionRawRow
 ): [string, string, string, string, string] => [
@@ -1372,248 +1221,6 @@ const conversationSemanticBoundaryUnitKey = (
   boundaryKey: string,
   unitType: ConversationSemanticUnitType
 ): string => `${unitType}:${boundaryKey}`;
-
-const conversationSemanticUnitChunks = (
-  items: ConversationSemanticProjectionItem[],
-  unitType: ConversationSemanticUnitType,
-  model?: string | null
-): ConversationSemanticProjectionChunk[] => {
-  type PendingSegment = {
-    item: ConversationSemanticProjectionItem;
-    content: string;
-    sourceIds: string[];
-    sourceIdentity: string;
-    sourceHash: string;
-    sourceEventTime: Date | null;
-    sourceSequence: number | null;
-  };
-
-  const maxTokens = projectionMaxTokens();
-  const hardMaxTokens = projectionHardMaxTokens();
-  const chunks: Omit<
-    ConversationSemanticProjectionChunk,
-    "chunkIndex" | "chunkCount"
-  >[] = [];
-  let pendingSegments: PendingSegment[] = [];
-
-  const flushPending = () => {
-    if (pendingSegments.length === 0) {
-      return;
-    }
-    let offset = 0;
-    const itemManifest: ConversationSemanticProjectionItemManifest[] = [];
-    for (const [index, segment] of pendingSegments.entries()) {
-      if (index > 0) {
-        offset += 2;
-      }
-      const offsetStart = offset;
-      const offsetEnd = offsetStart + segment.content.length;
-      itemManifest.push(
-        conversationSemanticItemManifest(segment.item, offsetStart, offsetEnd)
-      );
-      offset = offsetEnd;
-    }
-    const content = pendingSegments
-      .map((segment) => segment.content)
-      .join("\n\n");
-    chunks.push({
-      content,
-      tokenCount: estimateTokens(content, {
-        model: model ?? "gpt-5.4-mini"
-      }),
-      sourceIds: uniqueOrderedStrings(
-        pendingSegments.flatMap((segment) => segment.sourceIds)
-      ),
-      sourceIdentities: uniqueOrderedStrings(
-        pendingSegments.map((segment) => segment.sourceIdentity)
-      ),
-      sourceHashes: uniqueOrderedStrings(
-        pendingSegments.map((segment) => segment.sourceHash)
-      ),
-      sourceEventTime:
-        pendingSegments
-          .map((segment) => segment.sourceEventTime)
-          .filter((value): value is Date => value instanceof Date)
-          .sort((left, right) => left.getTime() - right.getTime())[0] ?? null,
-      sourceSequence: (() => {
-        const minSourceSequence = pendingSegments
-          .map((segment) => segment.sourceSequence)
-          .filter((value): value is number => typeof value === "number")
-          .sort((left, right) => left - right)[0];
-        return typeof minSourceSequence === "number"
-          ? minSourceSequence * 1_000_000
-          : null;
-      })(),
-      itemManifest
-    });
-    pendingSegments = [];
-  };
-
-  for (const item of items) {
-    const segment: PendingSegment = {
-      item,
-      content: item.content,
-      sourceIds: item.sourceIds,
-      sourceIdentity: item.sourceIdentity,
-      sourceHash: item.sourceHash,
-      sourceEventTime: item.row.event_time,
-      sourceSequence: item.row.source_sequence
-    };
-    const segmentTokens = estimateTokens(segment.content, {
-      model: model ?? "gpt-5.4-mini"
-    });
-
-    if (segmentTokens > hardMaxTokens) {
-      flushPending();
-      const splitChunks = chunkTextForModel(segment.content, {
-        model: model ?? "gpt-5.4-mini",
-        maxTokens: hardMaxTokens,
-        overlapTokens: 100
-      });
-      const effectiveSplitChunks =
-        splitChunks.length > 0 ? splitChunks : [segment.content];
-      effectiveSplitChunks.forEach((splitContent, splitIndex) => {
-        chunks.push({
-          content: splitContent,
-          tokenCount: estimateTokens(splitContent, {
-            model: model ?? "gpt-5.4-mini"
-          }),
-          sourceIds: segment.sourceIds,
-          sourceIdentities: [segment.sourceIdentity],
-          sourceHashes: [segment.sourceHash],
-          sourceEventTime: segment.sourceEventTime,
-          sourceSequence:
-            typeof segment.sourceSequence === "number"
-              ? segment.sourceSequence * 1_000_000 + splitIndex
-              : splitIndex,
-          itemManifest: [
-            {
-              ...conversationSemanticItemManifest(item, 0, splitContent.length),
-              itemSplitIndex: splitIndex,
-              itemSplitCount: effectiveSplitChunks.length,
-              itemSplitReason: "embedding_token_limit",
-              originalItemTokenCount: segmentTokens
-            }
-          ]
-        });
-      });
-      continue;
-    }
-
-    if (
-      pendingSegments.length > 0 &&
-      joinedSemanticContentTokenCount(
-        [...pendingSegments.map((pending) => pending.content), segment.content],
-        model
-      ) > maxTokens
-    ) {
-      flushPending();
-    }
-
-    pendingSegments.push(segment);
-  }
-
-  flushPending();
-  const effectiveChunks =
-    chunks.length > 0
-      ? chunks
-      : [
-          {
-            content: "",
-            tokenCount: 0,
-            sourceIds: [],
-            sourceIdentities: [],
-            sourceHashes: [],
-            sourceEventTime: null,
-            sourceSequence: null,
-            itemManifest: []
-          }
-        ];
-
-  return effectiveChunks.map((chunk, index) => ({
-    ...chunk,
-    chunkIndex: index,
-    chunkCount: effectiveChunks.length
-  }));
-};
-
-const conversationSemanticUnitActor = (
-  unitType: ConversationSemanticUnitType,
-  sourceActors: string[]
-): MemoryActor => {
-  if (unitType === "user_turn") {
-    return "user";
-  }
-  if (sourceActors.length === 1 && sourceActors[0] === "tool") {
-    return "tool";
-  }
-  if (sourceActors.length === 1 && sourceActors[0] === "subagent") {
-    return "subagent";
-  }
-  return "agent";
-};
-
-const conversationSemanticProjectionGroups = (
-  unitType: ConversationSemanticUnitType,
-  items: ConversationSemanticProjectionItem[]
-): ConversationSemanticProjectionGroup[] => {
-  if (unitType === "agent_turn") {
-    let lastNonToolIndex = -1;
-    for (let index = items.length - 1; index >= 0; index -= 1) {
-      if (items[index]?.actorType !== "tool") {
-        lastNonToolIndex = index;
-        break;
-      }
-    }
-    if (lastNonToolIndex >= 0 && lastNonToolIndex < items.length - 1) {
-      return [
-        { unitType, items: items.slice(0, lastNonToolIndex + 1) },
-        { unitType, items: items.slice(lastNonToolIndex + 1) }
-      ].filter((group) => group.items.length > 0);
-    }
-  }
-  return items.length > 0 ? [{ unitType, items }] : [];
-};
-
-const conversationSemanticEventMetadata = (input: {
-  first: ConversationSemanticProjectionItem;
-  chunk: ConversationSemanticProjectionChunk;
-  allSourceIds: string[];
-  sourceActors: string[];
-  unitType: ConversationSemanticUnitType;
-  sealedReason: string;
-  model?: string | null;
-  rebuild?: {
-    reason: "source_event_deleted";
-    memoryEventId: string;
-  };
-}): Record<string, unknown> => ({
-  ...input.first.projectionMetadata,
-  rawConversationItemId: input.chunk.sourceIds[0] ?? input.allSourceIds[0],
-  rawConversationItemIds: input.chunk.sourceIds,
-  logicalSourceId: input.chunk.sourceIdentities[0],
-  logicalSourceIds: input.chunk.sourceIdentities,
-  projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-  semanticUnitType: input.unitType,
-  semanticSourceActors: input.sourceActors,
-  semanticBundleSealedReason: input.sealedReason,
-  ...(input.rebuild
-    ? {
-        semanticBundleRebuildReason: input.rebuild.reason,
-        semanticBundleRebuiltFromMemoryEventId: input.rebuild.memoryEventId
-      }
-    : {}),
-  tokenCount: input.chunk.tokenCount,
-  tokenModel: input.model ?? undefined,
-  semanticItemManifest: input.chunk.itemManifest,
-  sourceAdapterVersion: input.first.row.source_adapter_version,
-  sourceChunkIndex: input.chunk.chunkIndex,
-  sourceChunkCount: input.chunk.chunkCount,
-  sourceItemCount: input.allSourceIds.length,
-  externalSessionId: input.first.row.external_session_id,
-  externalThreadId: input.first.row.external_thread_id,
-  externalTurnId: input.first.row.external_turn_id
-});
 
 const conversationItemToolPayload = (
   raw: Record<string, unknown>
@@ -2487,7 +2094,11 @@ const rebuiltSemanticMemoryEventsFromSources = async (
 
   const first = semanticItems[0]!;
   const model = stringField(first.row.metadata ?? {}, "model");
-  const chunks = conversationSemanticUnitChunks(semanticItems, unitType, model);
+  const chunks = conversationSemanticUnitChunks(semanticItems, {
+    model,
+    maxTokens: projectionMaxTokens(),
+    hardMaxTokens: projectionHardMaxTokens()
+  });
   const sourceCapturedAt =
     semanticItems
       .map((item) => item.row.event_time ?? item.row.observed_at)
@@ -2568,6 +2179,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           sourceActors,
           unitType,
           sealedReason: originalSealReason,
+          projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
           model,
           rebuild: {
             reason: "source_event_deleted",
@@ -3139,7 +2751,11 @@ export const createMemorySourceRepository = (
       }
       const first = items[0]!;
       const model = stringField(first.row.metadata ?? {}, "model");
-      const chunks = conversationSemanticUnitChunks(items, unitType, model);
+      const chunks = conversationSemanticUnitChunks(items, {
+        model,
+        maxTokens: projectionMaxTokens(),
+        hardMaxTokens: projectionHardMaxTokens()
+      });
       const sourceCapturedAt =
         items
           .map((item) => item.row.event_time ?? item.row.observed_at)
@@ -3210,6 +2826,7 @@ export const createMemorySourceRepository = (
               sourceActors,
               unitType,
               sealedReason,
+              projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
               model
             }),
             visibility: first.row.visibility,
