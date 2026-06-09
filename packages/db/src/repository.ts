@@ -1330,37 +1330,36 @@ const conversationSemanticItemManifest = (
   };
 };
 
+const conversationProjectionBoundaryParts = (
+  row: ConversationProjectionRawRow
+): [string, string, string, string, string] => [
+  row.visibility,
+  row.session_id ?? row.external_session_id ?? "sessionless",
+  row.turn_id ?? row.external_turn_id ?? "turnless",
+  row.external_thread_id ?? "threadless",
+  canonicalWorkspaceId({
+    metadata: row.metadata,
+    sessionId: row.session_id,
+    sessionWorkspaceId: row.session_workspace_id,
+    sessionCwd: row.session_cwd
+  })
+];
+
 const conversationSemanticBoundaryKey = (
   item: ConversationSemanticProjectionItem
-): string =>
-  [
-    item.row.visibility,
-    item.row.session_id ?? item.row.external_session_id ?? "sessionless",
-    item.row.turn_id ?? item.row.external_turn_id ?? "turnless",
-    item.row.external_thread_id ?? "threadless",
-    canonicalWorkspaceId({
-      metadata: item.row.metadata,
-      sessionId: item.row.session_id,
-      sessionWorkspaceId: item.row.session_workspace_id,
-      sessionCwd: item.row.session_cwd
-    })
-  ].join(":");
+): string => conversationProjectionBoundaryParts(item.row).join(":");
 
 const conversationProjectionBoundaryKey = (
   row: ConversationProjectionRawRow
-): string =>
-  [
-    row.visibility,
-    row.session_id ?? row.external_session_id ?? "sessionless",
-    row.turn_id ?? row.external_turn_id ?? "turnless",
-    row.external_thread_id ?? "threadless",
-    canonicalWorkspaceId({
-      metadata: row.metadata,
-      sessionId: row.session_id,
-      sessionWorkspaceId: row.session_workspace_id,
-      sessionCwd: row.session_cwd
-    })
-  ].join(":");
+): string => conversationProjectionBoundaryParts(row).join(":");
+
+const conversationProjectionScopeKey = (
+  row: ConversationProjectionRawRow
+): string => {
+  const [visibility, session, , thread, workspace] =
+    conversationProjectionBoundaryParts(row);
+  return [visibility, session, thread, workspace].join(":");
+};
 
 const conversationSemanticBoundaryUnitKey = (
   boundaryKey: string,
@@ -3006,8 +3005,15 @@ export const createMemorySourceRepository = (
     const processedSourceIdentities = new Set<string>();
     const projectedStatusSourceIds = new Set<string>();
     const currentBatchNonHookSemanticBoundaries = new Set<string>();
-    for (const row of rows.rows) {
-      if (row.source_record_type === "hook_payload") {
+    for (const sourceRow of rows.rows) {
+      if (sourceRow.source_record_type === "hook_payload") {
+        continue;
+      }
+      let row: ConversationProjectionRawRow;
+      try {
+        row = (await loadLogicalConversationProjectionItem(pool, sourceRow))
+          .row;
+      } catch {
         continue;
       }
       const content = conversationItemContent(row);
@@ -3218,9 +3224,13 @@ export const createMemorySourceRepository = (
       row: ConversationProjectionRawRow,
       unitType: ConversationSemanticUnitType
     ): Promise<boolean> => {
-      if (!row.session_id || !row.turn_id) {
-        return false;
-      }
+      const [
+        boundaryVisibility,
+        boundarySession,
+        boundaryTurn,
+        boundaryThread,
+        boundaryWorkspace
+      ] = conversationProjectionBoundaryParts(row);
       const existing = await pool.query<{ exists: boolean }>(
         `
           select exists (
@@ -3232,20 +3242,35 @@ export const createMemorySourceRepository = (
               on ci.id = mes.conversation_item_id
             where me.owner_user_id = $1
               and me.visibility = $2::visibility_scope
-              and me.session_id = $3
-              and me.turn_id = $4
+              and coalesce(
+                me.session_id::text,
+                me.payload #>> '{metadata,externalSessionId}',
+                'sessionless'
+              ) = $3
+              and coalesce(
+                me.turn_id::text,
+                me.payload #>> '{metadata,externalTurnId}',
+                'turnless'
+              ) = $4
+              and coalesce(
+                me.payload #>> '{metadata,externalThreadId}',
+                'threadless'
+              ) = $5
+              and coalesce(me.payload ->> 'workspaceId', 'unknown-project') = $6
               and me.invalidated_at is null
-              and mes.source_role = $5
-              and me.payload #>> '{metadata,semanticUnitType}' = $6
+              and mes.source_role = $7
+              and me.payload #>> '{metadata,semanticUnitType}' = $8
               and ci.source_record_type <> 'hook_payload'
             limit 1
           ) as exists
         `,
         [
           actor.userId,
-          row.visibility,
-          row.session_id,
-          row.turn_id,
+          boundaryVisibility,
+          boundarySession,
+          boundaryTurn,
+          boundaryThread,
+          boundaryWorkspace,
           DERIVED_SOURCE_ROLE,
           unitType
         ]
@@ -3302,6 +3327,18 @@ export const createMemorySourceRepository = (
         await markProjected(sourceIds);
       } catch (error) {
         await markProjectionError(sourceIds, error);
+      }
+    };
+
+    const flushAgentBundlesForScope = async (
+      scopeKey: string,
+      sealedReason: SemanticBundleSealReason
+    ) => {
+      for (const [boundaryKey, bundle] of [...pendingAgentBundles]) {
+        const first = bundle.items[0];
+        if (first && conversationProjectionScopeKey(first.row) === scopeKey) {
+          await flushAgentBundle(boundaryKey, sealedReason);
+        }
       }
     };
 
@@ -3642,8 +3679,8 @@ export const createMemorySourceRepository = (
             projectionMetadata
           };
           if (semanticUnitType === "user_turn") {
-            await flushAgentBundle(
-              conversationSemanticBoundaryKey(semanticItem),
+            await flushAgentBundlesForScope(
+              conversationProjectionScopeKey(row),
               "next_user_turn"
             );
             await createSemanticMemoryUnit(

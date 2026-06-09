@@ -3733,6 +3733,154 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("keeps hook fallback suppression scoped to the full semantic boundary", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-boundary-fallback-${randomUUID()}@example.com`
+    });
+    const workspaceA = randomUUID();
+    const workspaceB = randomUUID();
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-boundary-fallback-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-boundary-fallback-session-${randomUUID()}`
+      }
+    );
+    const [transcriptItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "boundary-thread-a",
+            externalTurnId: "shared-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "Thread A transcript memory."
+                }
+              }
+            },
+            rawText: "Thread A transcript memory.",
+            sourceHash: `projection-boundary-transcript-${randomUUID()}`,
+            idempotencyKey: `projection-boundary-transcript-${randomUUID()}`,
+            metadata: {
+              workspaceId: workspaceA,
+              transcriptType: "agent_message"
+            }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "boundary-thread-a",
+            externalTurnId: "shared-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 1,
+            rawJson: { hook_event_name: "Stop", turn_id: "shared-turn" },
+            sourceHash: `projection-boundary-stop-a-${randomUUID()}`,
+            idempotencyKey: `projection-boundary-stop-a-${randomUUID()}`,
+            metadata: {
+              workspaceId: workspaceA,
+              hookEventName: "Stop"
+            }
+          }
+        ]
+      }
+    );
+
+    const transcriptProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    if (!transcriptItem?.turnId) {
+      throw new Error("Expected transcript item to create a turn");
+    }
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            turnId: transcriptItem.turnId,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "boundary-thread-b",
+            externalTurnId: "shared-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 2,
+            rawJson: {
+              hook_event_name: "Stop",
+              last_assistant_message: "Thread B hook fallback should remain."
+            },
+            rawText: "Thread B hook fallback should remain.",
+            sourceHash: `projection-boundary-stop-b-${randomUUID()}`,
+            idempotencyKey: `projection-boundary-stop-b-${randomUUID()}`,
+            metadata: {
+              workspaceId: workspaceB,
+              hookEventName: "Stop"
+            }
+          }
+        ]
+      }
+    );
+
+    const hookProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const memoryEvents = await pool.query<{
+      content: string;
+      external_thread_id: string | null;
+      workspace_id: string | null;
+      seal_reason: string | null;
+    }>(
+      `
+        select
+          payload ->> 'content' as content,
+          payload #>> '{metadata,externalThreadId}' as external_thread_id,
+          payload ->> 'workspaceId' as workspace_id,
+          seal_reason
+        from memory_events
+        where session_id = $1
+          and payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+        order by source_sequence asc nulls last, created_at asc
+      `,
+      [session.id]
+    );
+
+    expect(transcriptProjection.memoryEventsCreated).toBe(1);
+    expect(hookProjection.memoryEventsCreated).toBe(1);
+    expect(memoryEvents.rows).toEqual([
+      {
+        content: "Thread A transcript memory.",
+        external_thread_id: "boundary-thread-a",
+        workspace_id: workspaceA,
+        seal_reason: "stop_hook"
+      },
+      {
+        content: "Thread B hook fallback should remain.",
+        external_thread_id: "boundary-thread-b",
+        workspace_id: workspaceB,
+        seal_reason: "stop_hook"
+      }
+    ]);
+  });
+
   it("stores raw conversation items idempotently and links projected memory events to sources", async () => {
     const alice = await repo.createUser({
       email: `alice-raw-conversation-${randomUUID()}@example.com`
@@ -6452,6 +6600,127 @@ describeDb("memory repository visibility", () => {
     }
   });
 
+  it("seals a pending agent bundle when the next user turn arrives", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-next-user-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-next-user-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-next-user-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "agent-before-next-user",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "I am waiting for the next user prompt."
+                }
+              }
+            },
+            rawText: "I am waiting for the next user prompt.",
+            sourceHash: `projection-next-user-agent-${randomUUID()}`,
+            idempotencyKey: `projection-next-user-agent-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "next-user-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 1,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "userMessage",
+                  text: "Here is the next prompt."
+                }
+              }
+            },
+            rawText: "Here is the next prompt.",
+            sourceHash: `projection-next-user-user-${randomUUID()}`,
+            idempotencyKey: `projection-next-user-user-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const events = await pool.query<{
+      content: string;
+      semantic_unit_type: string | null;
+      sealed_reason: string | null;
+      seal_reason: string | null;
+    }>(
+      `
+        select
+          payload ->> 'content' as content,
+          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
+          payload #>> '{metadata,semanticBundleSealedReason}' as sealed_reason,
+          seal_reason
+        from memory_events
+        where session_id = $1
+        order by source_sequence asc nulls last, created_at asc
+      `,
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        where session_id = $1
+        group by projection_status
+      `,
+      [session.id]
+    );
+
+    expect(projection.memoryEventsCreated).toBe(2);
+    expect(events.rows).toEqual([
+      {
+        semantic_unit_type: "agent_turn",
+        content: "I am waiting for the next user prompt.",
+        sealed_reason: "next_user_turn",
+        seal_reason: "next_user_turn"
+      },
+      {
+        semantic_unit_type: "user_turn",
+        content: "Here is the next prompt.",
+        sealed_reason: "user_turn",
+        seal_reason: "user_turn"
+      }
+    ]);
+    expect(statuses.rows).toEqual([
+      { projection_status: "projected", count: "2" }
+    ]);
+  });
+
   it("keeps delayed tool output names linked to the original call id", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-delayed-tool-${randomUUID()}@example.com`
@@ -7037,6 +7306,169 @@ describeDb("memory repository visibility", () => {
         projection_status: "projected",
         projection_version: "conversation-projection-v3"
       }
+    ]);
+  });
+
+  it("suppresses hook fallback semantics when transcript sources are transport chunked", async () => {
+    const alice = await repo.createUser({
+      email: `alice-transport-fallback-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `transport-fallback-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `transport-fallback-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const logicalSourceId = `transport-fallback-logical-${randomUUID()}`;
+    const reconstructedText =
+      "Chunked transcript text should be the only semantic content.";
+    const envelope = JSON.stringify({
+      rawJson: {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "agentMessage",
+            text: reconstructedText
+          }
+        }
+      },
+      rawText: reconstructedText
+    });
+    const midpoint = Math.floor(envelope.length / 2);
+    const chunks = [envelope.slice(0, midpoint), envelope.slice(midpoint)];
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          ...chunks.map((chunk, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "transport-fallback-thread",
+            externalTurnId: "transport-fallback-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: index,
+            rawJson: {
+              transportChunk: true,
+              sourceItemHash: logicalSourceId,
+              chunkIndex: index,
+              chunkCount: chunks.length
+            },
+            logicalSourceId,
+            transportChunkIndex: index,
+            transportChunkCount: chunks.length,
+            transportChunkText: chunk,
+            transportChunkEncoding: "conversation-item-json-v1",
+            sourceHash: `${logicalSourceId}-chunk-${index}`,
+            idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+            metadata: {
+              workspaceId,
+              transcriptType: "agent_message",
+              sourceItemHash: logicalSourceId,
+              sourceChunkIndex: index,
+              sourceChunkCount: chunks.length
+            }
+          })),
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "transport-fallback-thread",
+            externalTurnId: "transport-fallback-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "PostToolUse",
+            sourceSequence: chunks.length,
+            rawJson: {
+              hook_event_name: "PostToolUse",
+              tool_name: "exec_command",
+              tool_input: { cmd: "echo duplicate" },
+              tool_response: "duplicate hook fallback response"
+            },
+            sourceHash: `transport-fallback-hook-${randomUUID()}`,
+            idempotencyKey: `transport-fallback-hook-${randomUUID()}`,
+            metadata: { workspaceId }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "transport-fallback-thread",
+            externalTurnId: "transport-fallback-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: chunks.length + 1,
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "transport-fallback-turn"
+            },
+            sourceHash: `transport-fallback-stop-${randomUUID()}`,
+            idempotencyKey: `transport-fallback-stop-${randomUUID()}`,
+            metadata: {
+              workspaceId,
+              hookEventName: "Stop"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const events = await pool.query<{
+      content: string;
+      source_count: string;
+    }>(
+      `
+        select
+          me.payload ->> 'content' as content,
+          count(mes.conversation_item_id)::text as source_count
+        from memory_events me
+        join memory_event_sources mes
+          on mes.memory_event_id = me.id
+        where me.session_id = $1
+          and me.payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+        group by me.id
+      `,
+      [session.id]
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from tool_events where session_id = $1",
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        where session_id = $1
+        group by projection_status
+      `,
+      [session.id]
+    );
+
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(events.rows).toEqual([
+      {
+        content: reconstructedText,
+        source_count: "2"
+      }
+    ]);
+    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(statuses.rows).toEqual([
+      { projection_status: "projected", count: "4" }
     ]);
   });
 
