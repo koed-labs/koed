@@ -175,6 +175,7 @@ type SupportingContextItem = {
 
 type ConversationSemanticProjectionChunk = {
   content: string;
+  tokenCount: number;
   chunkIndex: number;
   chunkCount: number;
   sourceIds: string[];
@@ -189,14 +190,17 @@ type SemanticBundleSealReason =
   | "user_turn"
   | "next_user_turn"
   | "token_limit"
-  | "boundary_change"
   | "stop_hook"
-  | "catch_up_stale"
-  | "batch_end";
+  | "catch_up_stale";
 
 type ConversationSemanticProjectionGroup = {
   unitType: ConversationSemanticUnitType;
   items: ConversationSemanticProjectionItem[];
+};
+
+type PendingAgentSemanticBundle = {
+  items: ConversationSemanticProjectionItem[];
+  tokens: number;
 };
 
 const jsonbParam = (value: unknown): string | null =>
@@ -1268,7 +1272,9 @@ const conversationSemanticItemKind = (
   const toolEventKind =
     stringField(metadata, "toolEventKind") ?? stringField(toolCall, "kind");
   if (item.actorType === "tool") {
-    return toolEventKind === "output" ? "tool_result" : "tool_call";
+    return /output|result/i.test(toolEventKind ?? "")
+      ? "tool_result"
+      : "tool_call";
   }
   const transcriptType = stringField(metadata, "transcriptType");
   if (transcriptType && projectionIsReasoningSummaryLabel(transcriptType)) {
@@ -1356,6 +1362,11 @@ const conversationProjectionBoundaryKey = (
     })
   ].join(":");
 
+const conversationSemanticBoundaryUnitKey = (
+  boundaryKey: string,
+  unitType: ConversationSemanticUnitType
+): string => `${unitType}:${boundaryKey}`;
+
 const conversationSemanticUnitChunks = (
   items: ConversationSemanticProjectionItem[],
   unitType: ConversationSemanticUnitType,
@@ -1399,6 +1410,7 @@ const conversationSemanticUnitChunks = (
     }
     chunks.push({
       content: pendingSegments.map((segment) => segment.content).join("\n\n"),
+      tokenCount: pendingTokens,
       sourceIds: uniqueOrderedStrings(
         pendingSegments.flatMap((segment) => segment.sourceIds)
       ),
@@ -1454,6 +1466,9 @@ const conversationSemanticUnitChunks = (
       effectiveSplitChunks.forEach((splitContent, splitIndex) => {
         chunks.push({
           content: splitContent,
+          tokenCount: estimateTokens(splitContent, {
+            model: model ?? "gpt-5.4-mini"
+          }),
           sourceIds: segment.sourceIds,
           sourceIdentities: [segment.sourceIdentity],
           sourceHashes: [segment.sourceHash],
@@ -1494,6 +1509,7 @@ const conversationSemanticUnitChunks = (
       : [
           {
             content: "",
+            tokenCount: 0,
             sourceIds: [],
             sourceIdentities: [],
             sourceHashes: [],
@@ -2989,9 +3005,33 @@ export const createMemorySourceRepository = (
 
     const processedSourceIdentities = new Set<string>();
     const projectedStatusSourceIds = new Set<string>();
-    let pendingAgentItems: ConversationSemanticProjectionItem[] = [];
-    let pendingAgentBoundaryKey: string | null = null;
-    let pendingAgentTokens = 0;
+    const currentBatchNonHookSemanticBoundaries = new Set<string>();
+    for (const row of rows.rows) {
+      if (row.source_record_type === "hook_payload") {
+        continue;
+      }
+      const content = conversationItemContent(row);
+      const actorType = actorFromConversationItem(row);
+      const projectionPolicy = classifyConversationItemProjection(row, {
+        actorType,
+        content
+      });
+      if (!content || !actorType || !projectionPolicy.createSemanticEvent) {
+        continue;
+      }
+      const semanticUnitType = conversationSemanticUnitTypeForActor(actorType);
+      if (!semanticUnitType) {
+        continue;
+      }
+      currentBatchNonHookSemanticBoundaries.add(
+        conversationSemanticBoundaryUnitKey(
+          conversationProjectionBoundaryKey(row),
+          semanticUnitType
+        )
+      );
+    }
+
+    const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
     const pendingSupportingContextsByBoundary = new Map<
       string,
       SupportingContextProjectionItem[]
@@ -3123,6 +3163,8 @@ export const createMemorySourceRepository = (
               semanticUnitType: unitType,
               semanticSourceActors: sourceActors,
               semanticBundleSealedReason: sealedReason,
+              tokenCount: chunk.tokenCount,
+              tokenModel: model ?? undefined,
               semanticItemManifest: chunk.itemManifest,
               sourceAdapterVersion: first.row.source_adapter_version,
               sourceChunkIndex: chunk.chunkIndex,
@@ -3172,16 +3214,77 @@ export const createMemorySourceRepository = (
       }
     };
 
-    const flushAgentBundle = async (sealedReason: SemanticBundleSealReason) => {
-      if (pendingAgentItems.length === 0) {
-        pendingAgentBoundaryKey = null;
-        pendingAgentTokens = 0;
+    const semanticBoundaryHasNonHookSource = async (
+      row: ConversationProjectionRawRow,
+      unitType: ConversationSemanticUnitType
+    ): Promise<boolean> => {
+      if (!row.session_id || !row.turn_id) {
+        return false;
+      }
+      const existing = await pool.query<{ exists: boolean }>(
+        `
+          select exists (
+            select 1
+            from memory_events me
+            join memory_event_sources mes
+              on mes.memory_event_id = me.id
+            join conversation_items ci
+              on ci.id = mes.conversation_item_id
+            where me.owner_user_id = $1
+              and me.visibility = $2::visibility_scope
+              and me.session_id = $3
+              and me.turn_id = $4
+              and me.invalidated_at is null
+              and mes.source_role = $5
+              and me.payload #>> '{metadata,semanticUnitType}' = $6
+              and ci.source_record_type <> 'hook_payload'
+            limit 1
+          ) as exists
+        `,
+        [
+          actor.userId,
+          row.visibility,
+          row.session_id,
+          row.turn_id,
+          DERIVED_SOURCE_ROLE,
+          unitType
+        ]
+      );
+      return existing.rows[0]?.exists === true;
+    };
+
+    const shouldSuppressHookSemanticFallback = async (
+      semanticItem: ConversationSemanticProjectionItem,
+      unitType: ConversationSemanticUnitType
+    ): Promise<boolean> => {
+      if (
+        unitType !== "agent_turn" ||
+        !projectionIsHookSemanticFallback(semanticItem.row)
+      ) {
+        return false;
+      }
+      const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
+      if (
+        currentBatchNonHookSemanticBoundaries.has(
+          conversationSemanticBoundaryUnitKey(boundaryKey, unitType)
+        )
+      ) {
+        return true;
+      }
+      return semanticBoundaryHasNonHookSource(semanticItem.row, unitType);
+    };
+
+    const flushAgentBundle = async (
+      boundaryKey: string,
+      sealedReason: SemanticBundleSealReason
+    ) => {
+      const bundle = pendingAgentBundles.get(boundaryKey);
+      if (!bundle || bundle.items.length === 0) {
+        pendingAgentBundles.delete(boundaryKey);
         return;
       }
-      const items = pendingAgentItems;
-      pendingAgentItems = [];
-      pendingAgentBoundaryKey = null;
-      pendingAgentTokens = 0;
+      pendingAgentBundles.delete(boundaryKey);
+      const items = bundle.items;
       const sourceIds = uniqueOrderedStrings(
         items.flatMap((item) => item.sourceIds)
       );
@@ -3202,59 +3305,71 @@ export const createMemorySourceRepository = (
       }
     };
 
-    const pendingAgentLatestActivityTime = (): Date | null =>
-      pendingAgentItems
+    const pendingAgentLatestActivityTime = (
+      bundle: PendingAgentSemanticBundle
+    ): Date | null =>
+      bundle.items
         .map((item) => item.row.event_time ?? item.row.observed_at)
         .filter((value): value is Date => value instanceof Date)
         .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
 
-    const pendingAgentBundleIsStale = (): boolean => {
-      if (pendingAgentItems.length === 0) {
+    const pendingAgentBundleIsStale = (
+      bundle: PendingAgentSemanticBundle
+    ): boolean => {
+      if (bundle.items.length === 0) {
         return false;
       }
       const staleMs = projectionAgentTurnStaleMs();
       if (staleMs <= 0) {
         return true;
       }
-      const latestActivityTime = pendingAgentLatestActivityTime();
+      const latestActivityTime = pendingAgentLatestActivityTime(bundle);
       if (!latestActivityTime) {
         return false;
       }
       return Date.now() - latestActivityTime.getTime() >= staleMs;
     };
 
+    const flushStaleAgentBundles = async () => {
+      for (const [boundaryKey, bundle] of pendingAgentBundles) {
+        if (pendingAgentBundleIsStale(bundle)) {
+          await flushAgentBundle(boundaryKey, "catch_up_stale");
+        }
+      }
+    };
+
     const queueAgentSemanticItem = async (
       semanticItem: ConversationSemanticProjectionItem
     ) => {
       const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
-      if (pendingAgentBoundaryKey && pendingAgentBoundaryKey !== boundaryKey) {
-        await flushAgentBundle("boundary_change");
-      }
-
       const model = stringField(semanticItem.row.metadata ?? {}, "model");
       const itemTokens = estimateTokens(semanticItem.content, {
         model: model ?? "gpt-5.4-mini"
       });
       const maxTokens = projectionMaxTokens();
+      let bundle = pendingAgentBundles.get(boundaryKey);
+      if (!bundle) {
+        bundle = { items: [], tokens: 0 };
+        pendingAgentBundles.set(boundaryKey, bundle);
+      }
 
-      if (
-        pendingAgentItems.length > 0 &&
-        pendingAgentTokens + itemTokens > maxTokens
-      ) {
-        await flushAgentBundle("token_limit");
+      if (bundle.items.length > 0 && bundle.tokens + itemTokens > maxTokens) {
+        await flushAgentBundle(boundaryKey, "token_limit");
+        bundle = { items: [], tokens: 0 };
+        pendingAgentBundles.set(boundaryKey, bundle);
       }
 
       if (itemTokens > maxTokens) {
-        pendingAgentItems = [semanticItem];
-        pendingAgentBoundaryKey = boundaryKey;
-        pendingAgentTokens = itemTokens;
-        await flushAgentBundle("token_limit");
+        pendingAgentBundles.set(boundaryKey, {
+          items: [semanticItem],
+          tokens: itemTokens
+        });
+        await flushAgentBundle(boundaryKey, "token_limit");
         return;
       }
 
-      pendingAgentBoundaryKey = boundaryKey;
-      pendingAgentItems.push(semanticItem);
-      pendingAgentTokens += itemTokens;
+      bundle.items.push(semanticItem);
+      bundle.tokens += itemTokens;
     };
 
     for (const sourceRow of rows.rows) {
@@ -3527,7 +3642,10 @@ export const createMemorySourceRepository = (
             projectionMetadata
           };
           if (semanticUnitType === "user_turn") {
-            await flushAgentBundle("next_user_turn");
+            await flushAgentBundle(
+              conversationSemanticBoundaryKey(semanticItem),
+              "next_user_turn"
+            );
             await createSemanticMemoryUnit(
               "user_turn",
               [semanticItem],
@@ -3535,7 +3653,16 @@ export const createMemorySourceRepository = (
             );
             await markProjected(sourceIds);
           } else if (semanticUnitType === "agent_turn") {
-            await queueAgentSemanticItem(semanticItem);
+            if (
+              await shouldSuppressHookSemanticFallback(
+                semanticItem,
+                semanticUnitType
+              )
+            ) {
+              await markProjected(sourceIds);
+            } else {
+              await queueAgentSemanticItem(semanticItem);
+            }
           } else {
             await markProjected(sourceIds);
           }
@@ -3543,17 +3670,16 @@ export const createMemorySourceRepository = (
           await markProjected(sourceIds);
         }
         if (turnCompleteSignal) {
-          await flushAgentBundle("stop_hook");
+          await flushAgentBundle(
+            conversationProjectionBoundaryKey(row),
+            "stop_hook"
+          );
         }
       } catch (error) {
         await markProjectionError(sourceIds, error);
       }
     }
-    if (pendingAgentBundleIsStale()) {
-      await flushAgentBundle("catch_up_stale");
-    } else if (pendingAgentItems.length > 0) {
-      await flushAgentBundle("batch_end");
-    }
+    await flushStaleAgentBundles();
     return result;
   },
 
