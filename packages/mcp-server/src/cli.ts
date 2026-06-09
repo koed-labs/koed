@@ -417,49 +417,60 @@ server.registerTool(
       limit: input.limit,
       responseDetail: "with_evidence"
     });
-    const recordedQuestion = questionFromResponse(
-      await client.createFinalQuestion(
-        answer.localMemoryWorker.usedFallback
-          ? {
-              query: answerInput.query,
-              origin: "mcp_memory_answer",
-              retrieval_scope,
-              search_domain: input.search_domain,
-              workspace_id,
-              session_id: input.session_id,
-              status: "error",
-              error_message: errorMessageFromAnswer(answer),
-              attempt_count: 1,
-              response: persistedAnswerResponse(answer),
-              retrieval: retrievalFromAnswer(answer),
-              local_memory_worker: stripAppServerEvents(
-                answer.localMemoryWorker
-              )
-            }
-          : {
-              query: answerInput.query,
-              origin: "mcp_memory_answer",
-              retrieval_scope,
-              search_domain: input.search_domain,
-              workspace_id,
-              session_id: input.session_id,
-              status: "answered",
-              answer_markdown: answerMarkdownFromAnswer(answer),
-              attempt_count: 1,
-              response: persistedAnswerResponse(answer),
-              evidence: evidenceFromAnswer(answer),
-              citations: citationsFromAnswer(answer),
-              retrieval: retrievalFromAnswer(answer),
-              local_memory_worker: stripAppServerEvents(
-                answer.localMemoryWorker
-              )
-            }
-      )
-    );
+    let recordedQuestion: McpMemoryQuestion | null = null;
+    try {
+      recordedQuestion = questionFromResponse(
+        await client.createFinalQuestion(
+          answer.localMemoryWorker.usedFallback
+            ? {
+                query: answerInput.query,
+                origin: "mcp_memory_answer",
+                retrieval_scope,
+                search_domain: input.search_domain,
+                workspace_id,
+                session_id: input.session_id,
+                status: "error",
+                error_message: errorMessageFromAnswer(answer),
+                attempt_count: 1,
+                response: persistedAnswerResponse(answer),
+                retrieval: retrievalFromAnswer(answer),
+                local_memory_worker: stripAppServerEvents(
+                  answer.localMemoryWorker
+                )
+              }
+            : {
+                query: answerInput.query,
+                origin: "mcp_memory_answer",
+                retrieval_scope,
+                search_domain: input.search_domain,
+                workspace_id,
+                session_id: input.session_id,
+                status: "answered",
+                answer_markdown: answerMarkdownFromAnswer(answer),
+                attempt_count: 1,
+                response: persistedAnswerResponse(answer),
+                evidence: evidenceFromAnswer(answer),
+                citations: citationsFromAnswer(answer),
+                retrieval: retrievalFromAnswer(answer),
+                local_memory_worker: stripAppServerEvents(
+                  answer.localMemoryWorker
+                )
+              }
+        )
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          jobId: answer.localMemoryWorker.jobId
+        },
+        "koed memory_answer question history persistence skipped"
+      );
+    }
     logger.info(
       {
         jobId: answer.localMemoryWorker.jobId,
-        questionId: recordedQuestion.id,
+        questionId: recordedQuestion?.id,
         memoryStatus: answer.localMemoryWorker.memoryStatus,
         usedFallback: answer.localMemoryWorker.usedFallback,
         skippedReason: answer.localMemoryWorker.skippedReason,
@@ -489,7 +500,7 @@ server.registerTool(
           await client.recordTokenUsage({
             workflowType: "mcp_memory_answer",
             workflowId: answer.localMemoryWorker.jobId,
-            questionId: recordedQuestion.id,
+            questionId: recordedQuestion?.id,
             answerJobId: answer.localMemoryWorker.jobId,
             sessionId: input.session_id,
             sourceRuntime: "codex",
@@ -512,7 +523,7 @@ server.registerTool(
               appServerThreadId:
                 execution.primaryThreadId ?? execution.threadId,
               appServerTurnId: execution.turnId,
-              questionId: recordedQuestion.id,
+              questionId: recordedQuestion?.id,
               answerJobId: answer.localMemoryWorker.jobId,
               primaryAppServerThreadId: execution.primaryThreadId,
               executionThreadId: execution.threadId,

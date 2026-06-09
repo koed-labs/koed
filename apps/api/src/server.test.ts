@@ -3965,7 +3965,7 @@ describe("account and access flows", () => {
       headers,
       payload: {
         query: "What did we decide about rate limits?",
-        origin: "mcp_memory_answer",
+        origin: "explorer",
         search_domain: "project",
         workspace_id: "project-1",
         project_name: "Koed",
@@ -3987,7 +3987,7 @@ describe("account and access flows", () => {
       headers,
       payload: {
         question_id: questionId,
-        origin: "explorer",
+        origin: "mcp_memory_answer",
         limit: 1,
         lease_seconds: 120
       }
@@ -3998,7 +3998,7 @@ describe("account and access flows", () => {
       headers,
       payload: {
         question_id: questionId,
-        origin: "mcp_memory_answer",
+        origin: "explorer",
         limit: 1,
         lease_seconds: 120
       }
@@ -4047,7 +4047,7 @@ describe("account and access flows", () => {
       "pending"
     );
     expect(jsonBody<MemoryQuestionResponse>(created).question.origin).toBe(
-      "mcp_memory_answer"
+      "explorer"
     );
     expect(
       jsonBody<MemoryQuestionResponse>(created).question.retrievalScope
@@ -4084,7 +4084,7 @@ describe("account and access flows", () => {
     expect(jsonBody<MemoryQuestionsResponse>(listed).questions).toHaveLength(1);
     expect(jsonBody<MemoryQuestionResponse>(detail).question).toMatchObject({
       id: questionId,
-      origin: "mcp_memory_answer",
+      origin: "explorer",
       answerMarkdown: "Use the documented read and write limits.",
       evidenceCount: 1,
       localMemoryWorkerConfig: {
@@ -4344,6 +4344,41 @@ describe("account and access flows", () => {
       payload: {
         query: "What did we decide about memory?",
         retrieval_scope: "shared"
+      }
+    });
+    await app.close();
+
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({
+      error: "Invalid request payload"
+    });
+  });
+
+  it("rejects MCP origin on pending memory question creation", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "memory-question-mcp-pending@example.com",
+        password: "password123"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Client Integration" }
+    });
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/v1/memory/questions",
+      headers: {
+        authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+      },
+      payload: {
+        query: "What did memory_answer find?",
+        origin: "mcp_memory_answer"
       }
     });
     await app.close();

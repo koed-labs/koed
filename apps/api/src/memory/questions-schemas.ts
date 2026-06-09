@@ -17,7 +17,7 @@ export const memoryQuestionWorkerConfigSchema = z
 export const memoryQuestionSchema = z
   .object({
     query: z.string().min(1),
-    origin: z.enum(["explorer", "mcp_memory_answer"]).default("explorer"),
+    origin: z.literal("explorer").default("explorer"),
     retrieval_scope: memoryQuestionRetrievalScopeSchema.default("personal"),
     search_domain: searchDomainSchema.default("global"),
     workspace_id: z.string().min(1).optional(),
