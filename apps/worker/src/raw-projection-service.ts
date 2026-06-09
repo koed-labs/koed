@@ -36,6 +36,9 @@ export const createRawProjectionService = (
       });
       let scanned = 0;
       let projected = 0;
+      let waitingForAgentSeal = 0;
+      let suppressedAsFallback = 0;
+      let noProgressActors = 0;
       for (const actor of actors) {
         const result = await config.repository.projectPendingConversationItems(
           actor,
@@ -66,6 +69,11 @@ export const createRawProjectionService = (
         }
         scanned += result.rawItemsScanned;
         projected += result.rawItemsProjected;
+        waitingForAgentSeal += result.rawItemsWaitingForAgentSeal;
+        suppressedAsFallback += result.rawItemsSuppressedAsFallback;
+        if (result.rawItemsScanned > 0 && result.rawItemsProjected === 0) {
+          noProgressActors += 1;
+        }
       }
       const rebuildActors =
         await config.repository.listSemanticMemoryRebuildActors({
@@ -114,7 +122,10 @@ export const createRawProjectionService = (
             projection: {
               actors: actors.length,
               scanned,
-              projected
+              projected,
+              waitingForAgentSeal,
+              suppressedAsFallback,
+              noProgressActors
             }
           },
           "raw conversation projection catch-up completed"
