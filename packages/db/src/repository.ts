@@ -886,7 +886,17 @@ type ConversationProjectionCandidate = {
   boundary: ConversationProjectionBoundary;
   semanticUnitType: ConversationSemanticUnitType | null;
   semanticItem: ConversationSemanticProjectionItem | null;
+  disposition: ConversationProjectionDisposition;
 };
+
+type ConversationProjectionDisposition =
+  | "raw_only"
+  | "ready_for_semantic_projection"
+  | "waiting_for_agent_seal";
+
+type AgentSemanticQueueResult =
+  | "waiting_for_agent_seal"
+  | "projected_by_token_limit";
 
 const projectionLabelForConversationItem = (row: {
   source_event_type: string | null;
@@ -2601,6 +2611,8 @@ export const createMemorySourceRepository = (
       return {
         rawItemsScanned: 0,
         rawItemsProjected: 0,
+        rawItemsWaitingForAgentSeal: 0,
+        rawItemsSuppressedAsFallback: 0,
         messagesCreated: 0,
         toolEventsCreated: 0,
         memoryEventsCreated: 0,
@@ -2616,6 +2628,8 @@ export const createMemorySourceRepository = (
     const result: ConversationProjectionResult = {
       rawItemsScanned: 0,
       rawItemsProjected: 0,
+      rawItemsWaitingForAgentSeal: 0,
+      rawItemsSuppressedAsFallback: 0,
       messagesCreated: 0,
       toolEventsCreated: 0,
       memoryEventsCreated: 0,
@@ -2795,6 +2809,12 @@ export const createMemorySourceRepository = (
                 projectionMetadata
               }
             : null;
+        const disposition: ConversationProjectionDisposition =
+          !semanticItem || !semanticUnitType
+            ? "raw_only"
+            : semanticUnitType === "agent_turn"
+              ? "waiting_for_agent_seal"
+              : "ready_for_semantic_projection";
         candidates.push({
           logicalItem,
           row,
@@ -2809,7 +2829,8 @@ export const createMemorySourceRepository = (
           turnCompleteSignal: conversationItemIsTurnCompleteSignal(row),
           boundary: conversationProjectionBoundary(row),
           semanticUnitType,
-          semanticItem
+          semanticItem,
+          disposition
         });
       } catch (error) {
         await markProjectionError(sourceIds, error);
@@ -3121,7 +3142,7 @@ export const createMemorySourceRepository = (
 
     const queueAgentSemanticItem = async (
       semanticItem: ConversationSemanticProjectionItem
-    ) => {
+    ): Promise<AgentSemanticQueueResult> => {
       const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
       const model = stringField(semanticItem.row.metadata ?? {}, "model");
       const itemTokens = estimateTokens(semanticItem.content, {
@@ -3155,11 +3176,14 @@ export const createMemorySourceRepository = (
           items: [semanticItem]
         });
         await flushAgentBundle(boundaryKey, "token_limit");
-        return;
+        return "projected_by_token_limit";
       }
 
       bundle.items.push(semanticItem);
+      return "waiting_for_agent_seal";
     };
+
+    const waitingForAgentSealSourceIds = new Set<string>();
 
     for (const candidate of candidates) {
       const {
@@ -3175,7 +3199,8 @@ export const createMemorySourceRepository = (
         turnCompleteSignal,
         boundary,
         semanticUnitType,
-        semanticItem
+        semanticItem,
+        disposition
       } = candidate;
       try {
         const ownerUserId = actor.userId;
@@ -3401,8 +3426,12 @@ export const createMemorySourceRepository = (
           }
         }
 
-        if (semanticItem && semanticUnitType) {
-          if (semanticUnitType === "user_turn") {
+        switch (disposition) {
+          case "ready_for_semantic_projection": {
+            if (!semanticItem || semanticUnitType !== "user_turn") {
+              await markProjected(sourceIds);
+              break;
+            }
             await flushAgentBundlesForScope(
               boundary.scopeKey,
               "next_user_turn"
@@ -3413,7 +3442,13 @@ export const createMemorySourceRepository = (
               "user_turn"
             );
             await markProjected(sourceIds);
-          } else if (semanticUnitType === "agent_turn") {
+            break;
+          }
+          case "waiting_for_agent_seal": {
+            if (!semanticItem || semanticUnitType !== "agent_turn") {
+              await markProjected(sourceIds);
+              break;
+            }
             if (
               await shouldSuppressHookSemanticFallback(
                 semanticItem,
@@ -3421,15 +3456,21 @@ export const createMemorySourceRepository = (
                 semanticUnitType
               )
             ) {
+              result.rawItemsSuppressedAsFallback += sourceIds.length;
               await markProjected(sourceIds);
             } else {
-              await queueAgentSemanticItem(semanticItem);
+              const queueResult = await queueAgentSemanticItem(semanticItem);
+              if (queueResult === "waiting_for_agent_seal") {
+                for (const sourceId of sourceIds) {
+                  waitingForAgentSealSourceIds.add(sourceId);
+                }
+              }
             }
-          } else {
-            await markProjected(sourceIds);
+            break;
           }
-        } else {
-          await markProjected(sourceIds);
+          case "raw_only":
+          default:
+            await markProjected(sourceIds);
         }
         if (turnCompleteSignal) {
           await flushAgentBundle(boundary.key, "stop_hook");
@@ -3439,6 +3480,9 @@ export const createMemorySourceRepository = (
       }
     }
     await flushStaleAgentBundles();
+    result.rawItemsWaitingForAgentSeal = [
+      ...waitingForAgentSealSourceIds
+    ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
     return result;
   },
 
