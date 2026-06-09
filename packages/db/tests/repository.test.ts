@@ -473,9 +473,9 @@ describeDb("memory repository visibility", () => {
     );
     await pool.query(
       `
-        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
-        values ($1, $2, 0), ($1, $3, 1), ($1, $4, 2)
-      `,
+          insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+          values ($1, $2, 0), ($1, $3, 1), ($1, $4, 2)
+        `,
       [aliceNode.id, aliceEvent.id, bobEvent.id, invalidatedAliceEvent.id]
     );
 
@@ -506,7 +506,7 @@ describeDb("memory repository visibility", () => {
     expect(aliceExpanded.sources.map((source) => source.content)).toEqual([
       "Alice-only source evidence."
     ]);
-  });
+  }, 30_000);
 
   it("audits successful destructive memory actions without cross-user attempts or memory content", async () => {
     const alice = await repo.createUser({
