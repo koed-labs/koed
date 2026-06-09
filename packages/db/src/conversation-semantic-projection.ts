@@ -158,14 +158,18 @@ export const conversationSemanticItemKind = (
 ): string => {
   const metadata = item.row.metadata ?? {};
   const toolCall = isRecord(metadata.toolCall) ? metadata.toolCall : {};
+  const transcriptType = stringField(metadata, "transcriptType");
   const toolEventKind =
-    stringField(metadata, "toolEventKind") ?? stringField(toolCall, "kind");
+    stringField(metadata, "toolEventKind") ??
+    stringField(toolCall, "kind") ??
+    transcriptType ??
+    item.row.source_event_type ??
+    item.row.source_record_type;
   if (item.actorType === "tool") {
     return /output|result/i.test(toolEventKind ?? "")
       ? "tool_result"
       : "tool_call";
   }
-  const transcriptType = stringField(metadata, "transcriptType");
   if (transcriptType && projectionIsReasoningSummaryLabel(transcriptType)) {
     return "reasoning_summary";
   }
@@ -414,10 +418,17 @@ export const conversationSemanticProjectionGroups = (
       }
     }
     if (lastNonToolIndex >= 0 && lastNonToolIndex < items.length - 1) {
-      return [
-        { unitType, items: items.slice(0, lastNonToolIndex + 1) },
-        { unitType, items: items.slice(lastNonToolIndex + 1) }
-      ].filter((group) => group.items.length > 0);
+      const trailingTools = items.slice(lastNonToolIndex + 1);
+      if (
+        trailingTools.every(
+          (item) => conversationSemanticItemKind(item) === "tool_call"
+        )
+      ) {
+        return [
+          { unitType, items: items.slice(0, lastNonToolIndex + 1) },
+          { unitType, items: trailingTools }
+        ].filter((group) => group.items.length > 0);
+      }
     }
   }
   return items.length > 0 ? [{ unitType, items }] : [];

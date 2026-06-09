@@ -1263,10 +1263,6 @@ const conversationSemanticBoundaryKey = (
   item: ConversationSemanticProjectionItem
 ): string => conversationProjectionBoundary(item.row).key;
 
-const conversationProjectionBoundaryKey = (
-  row: ConversationProjectionRawRow
-): string => conversationProjectionBoundary(row).key;
-
 const conversationProjectionScopeKey = (
   row: ConversationProjectionRawRow
 ): string => conversationProjectionBoundary(row).scopeKey;
@@ -3191,7 +3187,6 @@ export const createMemorySourceRepository = (
         row,
         sourceIds,
         content,
-        actorType,
         messageRole,
         tokenUsage,
         transcriptTokenUsage,
