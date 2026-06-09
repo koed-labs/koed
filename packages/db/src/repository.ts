@@ -140,6 +140,16 @@ type LogicalConversationProjectionItem = {
   sourceHash: string;
 };
 
+type ConversationProjectionBoundary = {
+  visibility: Visibility;
+  sessionIdentity: string;
+  turnIdentity: string;
+  threadIdentity: string;
+  workspaceIdentity: string;
+  key: string;
+  scopeKey: string;
+};
+
 type SupportingContextProjectionItem = {
   row: ConversationProjectionRawRow;
   sourceIds: string[];
@@ -861,6 +871,23 @@ type ConversationProjectionPolicy = {
   reason: string;
 };
 
+type ConversationProjectionCandidate = {
+  logicalItem: LogicalConversationProjectionItem;
+  row: ConversationProjectionRawRow;
+  sourceIds: string[];
+  content: string | null;
+  actorType: MemoryActor | null;
+  messageRole: "user" | "assistant" | "system" | "tool" | null;
+  tokenUsage: ReturnType<typeof appServerTokenUsageFromRaw>;
+  transcriptTokenUsage: ReturnType<typeof transcriptTokenUsageFromRaw>;
+  projectionMetadata: Record<string, unknown>;
+  projectionPolicy: ConversationProjectionPolicy;
+  turnCompleteSignal: boolean;
+  boundary: ConversationProjectionBoundary;
+  semanticUnitType: ConversationSemanticUnitType | null;
+  semanticItem: ConversationSemanticProjectionItem | null;
+};
+
 const projectionLabelForConversationItem = (row: {
   source_event_type: string | null;
   source_record_type: string;
@@ -1186,41 +1213,58 @@ const loadLogicalConversationProjectionItem = async (
   };
 };
 
-const conversationProjectionBoundaryParts = (
+const conversationProjectionBoundary = (
   row: ConversationProjectionRawRow
-): [string, string, string, string, string] => [
-  row.visibility,
-  row.session_id ?? row.external_session_id ?? "sessionless",
-  row.turn_id ?? row.external_turn_id ?? "turnless",
-  row.external_thread_id ?? "threadless",
-  canonicalWorkspaceId({
+): ConversationProjectionBoundary => {
+  const visibility = row.visibility;
+  const sessionIdentity =
+    row.session_id ?? row.external_session_id ?? "sessionless";
+  const turnIdentity = row.turn_id ?? row.external_turn_id ?? "turnless";
+  const threadIdentity = row.external_thread_id ?? "threadless";
+  const workspaceIdentity = canonicalWorkspaceId({
     metadata: row.metadata,
     sessionId: row.session_id,
     sessionWorkspaceId: row.session_workspace_id,
     sessionCwd: row.session_cwd
-  })
-];
+  });
+  return {
+    visibility,
+    sessionIdentity,
+    turnIdentity,
+    threadIdentity,
+    workspaceIdentity,
+    key: [
+      visibility,
+      sessionIdentity,
+      turnIdentity,
+      threadIdentity,
+      workspaceIdentity
+    ].join(":"),
+    scopeKey: [
+      visibility,
+      sessionIdentity,
+      threadIdentity,
+      workspaceIdentity
+    ].join(":")
+  };
+};
 
 const conversationSemanticBoundaryKey = (
   item: ConversationSemanticProjectionItem
-): string => conversationProjectionBoundaryParts(item.row).join(":");
+): string => conversationProjectionBoundary(item.row).key;
 
 const conversationProjectionBoundaryKey = (
   row: ConversationProjectionRawRow
-): string => conversationProjectionBoundaryParts(row).join(":");
+): string => conversationProjectionBoundary(row).key;
 
 const conversationProjectionScopeKey = (
   row: ConversationProjectionRawRow
-): string => {
-  const [visibility, session, , thread, workspace] =
-    conversationProjectionBoundaryParts(row);
-  return [visibility, session, thread, workspace].join(":");
-};
+): string => conversationProjectionBoundary(row).scopeKey;
 
 const conversationSemanticBoundaryUnitKey = (
-  boundaryKey: string,
+  boundary: ConversationProjectionBoundary,
   unitType: ConversationSemanticUnitType
-): string => `${unitType}:${boundaryKey}`;
+): string => `${unitType}:${boundary.key}`;
 
 const conversationItemToolPayload = (
   raw: Record<string, unknown>
@@ -2658,47 +2702,7 @@ export const createMemorySourceRepository = (
       [actor.userId, limit, conversationItemIds, visibility]
     );
 
-    const processedSourceIdentities = new Set<string>();
     const projectedStatusSourceIds = new Set<string>();
-    const currentBatchNonHookSemanticBoundaries = new Set<string>();
-    for (const sourceRow of rows.rows) {
-      if (sourceRow.source_record_type === "hook_payload") {
-        continue;
-      }
-      let row: ConversationProjectionRawRow;
-      try {
-        row = (await loadLogicalConversationProjectionItem(pool, sourceRow))
-          .row;
-      } catch {
-        continue;
-      }
-      const content = conversationItemContent(row);
-      const actorType = actorFromConversationItem(row);
-      const projectionPolicy = classifyConversationItemProjection(row, {
-        actorType,
-        content
-      });
-      if (!content || !actorType || !projectionPolicy.createSemanticEvent) {
-        continue;
-      }
-      const semanticUnitType = conversationSemanticUnitTypeForActor(actorType);
-      if (!semanticUnitType) {
-        continue;
-      }
-      currentBatchNonHookSemanticBoundaries.add(
-        conversationSemanticBoundaryUnitKey(
-          conversationProjectionBoundaryKey(row),
-          semanticUnitType
-        )
-      );
-    }
-
-    const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
-    const pendingSupportingContextsByBoundary = new Map<
-      string,
-      SupportingContextProjectionItem[]
-    >();
-
     const markProjected = async (sourceIds: string[]) => {
       const pendingIds = sourceIds.filter(
         (sourceId) => !projectedStatusSourceIds.has(sourceId)
@@ -2740,6 +2744,104 @@ export const createMemorySourceRepository = (
         [pendingIds, error instanceof Error ? error.message : String(error)]
       );
     };
+
+    const processedSourceIdentities = new Set<string>();
+    const candidates: ConversationProjectionCandidate[] = [];
+    for (const sourceRow of rows.rows) {
+      result.rawItemsScanned += 1;
+      let sourceIds = [sourceRow.id];
+      try {
+        const logicalItem = await loadLogicalConversationProjectionItem(
+          pool,
+          sourceRow
+        );
+        if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
+          continue;
+        }
+        processedSourceIdentities.add(logicalItem.sourceIdentity);
+        const row = logicalItem.row;
+        sourceIds = logicalItem.sourceIds;
+        const content = conversationItemContent(row);
+        const actorType = actorFromConversationItem(row);
+        const messageRole = messageRoleForActor(actorType);
+        const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
+        const transcriptTokenUsage = tokenUsage
+          ? null
+          : transcriptTokenUsageFromRaw(row.raw_json);
+        const projectionMetadata = canonicalProjectMetadata({
+          metadata: row.metadata,
+          sessionMetadata: row.session_metadata,
+          sessionId: row.session_id,
+          sessionWorkspaceId: row.session_workspace_id,
+          sessionCwd: row.session_cwd
+        });
+        const projectionPolicy = classifyConversationItemProjection(row, {
+          actorType,
+          content
+        });
+        const semanticUnitType =
+          content && actorType && projectionPolicy.createSemanticEvent
+            ? conversationSemanticUnitTypeForActor(actorType)
+            : null;
+        const semanticItem: ConversationSemanticProjectionItem | null =
+          content && actorType && semanticUnitType
+            ? {
+                row,
+                sourceIds,
+                sourceIdentity: logicalItem.sourceIdentity,
+                sourceHash: logicalItem.sourceHash,
+                actorType,
+                content,
+                projectionMetadata
+              }
+            : null;
+        candidates.push({
+          logicalItem,
+          row,
+          sourceIds,
+          content,
+          actorType,
+          messageRole,
+          tokenUsage,
+          transcriptTokenUsage,
+          projectionMetadata,
+          projectionPolicy,
+          turnCompleteSignal: conversationItemIsTurnCompleteSignal(row),
+          boundary: conversationProjectionBoundary(row),
+          semanticUnitType,
+          semanticItem
+        });
+      } catch (error) {
+        await markProjectionError(sourceIds, error);
+      }
+    }
+
+    const currentBatchNonHookSemanticBoundaries = new Set(
+      candidates
+        .filter(
+          (
+            candidate
+          ): candidate is ConversationProjectionCandidate & {
+            semanticUnitType: ConversationSemanticUnitType;
+          } =>
+            Boolean(
+              candidate.row.source_record_type !== "hook_payload" &&
+              candidate.semanticUnitType
+            )
+        )
+        .map((candidate) =>
+          conversationSemanticBoundaryUnitKey(
+            candidate.boundary,
+            candidate.semanticUnitType
+          )
+        )
+    );
+
+    const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
+    const pendingSupportingContextsByBoundary = new Map<
+      string,
+      SupportingContextProjectionItem[]
+    >();
 
     const createSemanticMemoryUnit = async (
       unitType: ConversationSemanticUnitType,
@@ -2870,16 +2972,9 @@ export const createMemorySourceRepository = (
     };
 
     const semanticBoundaryHasNonHookSource = async (
-      row: ConversationProjectionRawRow,
+      boundary: ConversationProjectionBoundary,
       unitType: ConversationSemanticUnitType
     ): Promise<boolean> => {
-      const [
-        boundaryVisibility,
-        boundarySession,
-        boundaryTurn,
-        boundaryThread,
-        boundaryWorkspace
-      ] = conversationProjectionBoundaryParts(row);
       const existing = await pool.query<{ exists: boolean }>(
         `
           select exists (
@@ -2915,11 +3010,11 @@ export const createMemorySourceRepository = (
         `,
         [
           actor.userId,
-          boundaryVisibility,
-          boundarySession,
-          boundaryTurn,
-          boundaryThread,
-          boundaryWorkspace,
+          boundary.visibility,
+          boundary.sessionIdentity,
+          boundary.turnIdentity,
+          boundary.threadIdentity,
+          boundary.workspaceIdentity,
           DERIVED_SOURCE_ROLE,
           unitType
         ]
@@ -2929,6 +3024,7 @@ export const createMemorySourceRepository = (
 
     const shouldSuppressHookSemanticFallback = async (
       semanticItem: ConversationSemanticProjectionItem,
+      boundary: ConversationProjectionBoundary,
       unitType: ConversationSemanticUnitType
     ): Promise<boolean> => {
       if (
@@ -2937,15 +3033,14 @@ export const createMemorySourceRepository = (
       ) {
         return false;
       }
-      const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
       if (
         currentBatchNonHookSemanticBoundaries.has(
-          conversationSemanticBoundaryUnitKey(boundaryKey, unitType)
+          conversationSemanticBoundaryUnitKey(boundary, unitType)
         )
       ) {
         return true;
       }
-      return semanticBoundaryHasNonHookSource(semanticItem.row, unitType);
+      return semanticBoundaryHasNonHookSource(boundary, unitType);
     };
 
     const flushAgentBundle = async (
@@ -3066,50 +3161,33 @@ export const createMemorySourceRepository = (
       bundle.items.push(semanticItem);
     };
 
-    for (const sourceRow of rows.rows) {
-      result.rawItemsScanned += 1;
-      let sourceIds = [sourceRow.id];
+    for (const candidate of candidates) {
+      const {
+        logicalItem,
+        row,
+        sourceIds,
+        content,
+        actorType,
+        messageRole,
+        tokenUsage,
+        transcriptTokenUsage,
+        projectionPolicy,
+        turnCompleteSignal,
+        boundary,
+        semanticUnitType,
+        semanticItem
+      } = candidate;
       try {
-        const logicalItem = await loadLogicalConversationProjectionItem(
-          pool,
-          sourceRow
-        );
-        if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
-          continue;
-        }
-        processedSourceIdentities.add(logicalItem.sourceIdentity);
-        const row = logicalItem.row;
-        sourceIds = logicalItem.sourceIds;
         const ownerUserId = actor.userId;
-        const content = conversationItemContent(row);
-        const actorType = actorFromConversationItem(row);
-        const messageRole = messageRoleForActor(actorType);
-        const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
-        const transcriptTokenUsage = tokenUsage
-          ? null
-          : transcriptTokenUsageFromRaw(row.raw_json);
-        const projectionMetadata = canonicalProjectMetadata({
-          metadata: row.metadata,
-          sessionMetadata: row.session_metadata,
-          sessionId: row.session_id,
-          sessionWorkspaceId: row.session_workspace_id,
-          sessionCwd: row.session_cwd
-        });
-        const projectionPolicy = classifyConversationItemProjection(row, {
-          actorType,
-          content
-        });
-        const turnCompleteSignal = conversationItemIsTurnCompleteSignal(row);
         if (projectionPolicy.reason === "ide-client-supporting-context") {
           if (content) {
-            const boundaryKey = conversationProjectionBoundaryKey(row);
             const supportingContext: SupportingContextProjectionItem = {
               row,
               sourceIds,
               content
             };
-            pendingSupportingContextsByBoundary.set(boundaryKey, [
-              ...(pendingSupportingContextsByBoundary.get(boundaryKey) ?? []),
+            pendingSupportingContextsByBoundary.set(boundary.key, [
+              ...(pendingSupportingContextsByBoundary.get(boundary.key) ?? []),
               supportingContext
             ]);
           } else {
@@ -3323,21 +3401,10 @@ export const createMemorySourceRepository = (
           }
         }
 
-        if (content && actorType && projectionPolicy.createSemanticEvent) {
-          const semanticUnitType =
-            conversationSemanticUnitTypeForActor(actorType);
-          const semanticItem: ConversationSemanticProjectionItem = {
-            row,
-            sourceIds,
-            sourceIdentity: logicalItem.sourceIdentity,
-            sourceHash: logicalItem.sourceHash,
-            actorType,
-            content,
-            projectionMetadata
-          };
+        if (semanticItem && semanticUnitType) {
           if (semanticUnitType === "user_turn") {
             await flushAgentBundlesForScope(
-              conversationProjectionScopeKey(row),
+              boundary.scopeKey,
               "next_user_turn"
             );
             await createSemanticMemoryUnit(
@@ -3350,6 +3417,7 @@ export const createMemorySourceRepository = (
             if (
               await shouldSuppressHookSemanticFallback(
                 semanticItem,
+                boundary,
                 semanticUnitType
               )
             ) {
@@ -3364,10 +3432,7 @@ export const createMemorySourceRepository = (
           await markProjected(sourceIds);
         }
         if (turnCompleteSignal) {
-          await flushAgentBundle(
-            conversationProjectionBoundaryKey(row),
-            "stop_hook"
-          );
+          await flushAgentBundle(boundary.key, "stop_hook");
         }
       } catch (error) {
         await markProjectionError(sourceIds, error);
