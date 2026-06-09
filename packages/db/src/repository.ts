@@ -200,7 +200,6 @@ type ConversationSemanticProjectionGroup = {
 
 type PendingAgentSemanticBundle = {
   items: ConversationSemanticProjectionItem[];
-  tokens: number;
 };
 
 const jsonbParam = (value: unknown): string | null =>
@@ -1264,6 +1263,14 @@ const uniqueOrderedStrings = (values: Iterable<string>): string[] => {
   return ordered;
 };
 
+const joinedSemanticContentTokenCount = (
+  contents: string[],
+  model?: string | null
+): number =>
+  estimateTokens(contents.join("\n\n"), {
+    model: model ?? "gpt-5.4-mini"
+  });
+
 const conversationSemanticItemKind = (
   item: ConversationSemanticProjectionItem
 ): string => {
@@ -1388,7 +1395,6 @@ const conversationSemanticUnitChunks = (
     "chunkIndex" | "chunkCount"
   >[] = [];
   let pendingSegments: PendingSegment[] = [];
-  let pendingTokens = 0;
 
   const flushPending = () => {
     if (pendingSegments.length === 0) {
@@ -1407,9 +1413,14 @@ const conversationSemanticUnitChunks = (
       );
       offset = offsetEnd;
     }
+    const content = pendingSegments
+      .map((segment) => segment.content)
+      .join("\n\n");
     chunks.push({
-      content: pendingSegments.map((segment) => segment.content).join("\n\n"),
-      tokenCount: pendingTokens,
+      content,
+      tokenCount: estimateTokens(content, {
+        model: model ?? "gpt-5.4-mini"
+      }),
       sourceIds: uniqueOrderedStrings(
         pendingSegments.flatMap((segment) => segment.sourceIds)
       ),
@@ -1436,7 +1447,6 @@ const conversationSemanticUnitChunks = (
       itemManifest
     });
     pendingSegments = [];
-    pendingTokens = 0;
   };
 
   for (const item of items) {
@@ -1492,13 +1502,15 @@ const conversationSemanticUnitChunks = (
 
     if (
       pendingSegments.length > 0 &&
-      pendingTokens + segmentTokens > maxTokens
+      joinedSemanticContentTokenCount(
+        [...pendingSegments.map((pending) => pending.content), segment.content],
+        model
+      ) > maxTokens
     ) {
       flushPending();
     }
 
     pendingSegments.push(segment);
-    pendingTokens += segmentTokens;
   }
 
   flushPending();
@@ -1562,6 +1574,46 @@ const conversationSemanticProjectionGroups = (
   }
   return items.length > 0 ? [{ unitType, items }] : [];
 };
+
+const conversationSemanticEventMetadata = (input: {
+  first: ConversationSemanticProjectionItem;
+  chunk: ConversationSemanticProjectionChunk;
+  allSourceIds: string[];
+  sourceActors: string[];
+  unitType: ConversationSemanticUnitType;
+  sealedReason: string;
+  model?: string | null;
+  rebuild?: {
+    reason: "source_event_deleted";
+    memoryEventId: string;
+  };
+}): Record<string, unknown> => ({
+  ...input.first.projectionMetadata,
+  rawConversationItemId: input.chunk.sourceIds[0] ?? input.allSourceIds[0],
+  rawConversationItemIds: input.chunk.sourceIds,
+  logicalSourceId: input.chunk.sourceIdentities[0],
+  logicalSourceIds: input.chunk.sourceIdentities,
+  projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+  semanticUnitType: input.unitType,
+  semanticSourceActors: input.sourceActors,
+  semanticBundleSealedReason: input.sealedReason,
+  ...(input.rebuild
+    ? {
+        semanticBundleRebuildReason: input.rebuild.reason,
+        semanticBundleRebuiltFromMemoryEventId: input.rebuild.memoryEventId
+      }
+    : {}),
+  tokenCount: input.chunk.tokenCount,
+  tokenModel: input.model ?? undefined,
+  semanticItemManifest: input.chunk.itemManifest,
+  sourceAdapterVersion: input.first.row.source_adapter_version,
+  sourceChunkIndex: input.chunk.chunkIndex,
+  sourceChunkCount: input.chunk.chunkCount,
+  sourceItemCount: input.allSourceIds.length,
+  externalSessionId: input.first.row.external_session_id,
+  externalThreadId: input.first.row.external_thread_id,
+  externalTurnId: input.first.row.external_turn_id
+});
 
 const conversationItemToolPayload = (
   raw: Record<string, unknown>
@@ -2509,27 +2561,19 @@ const rebuiltSemanticMemoryEventsFromSources = async (
         eventType: "captured",
         rawEventType: unitType,
         content: chunk.content,
-        metadata: {
-          ...first.projectionMetadata,
-          rawConversationItemId: chunk.sourceIds[0] ?? allSourceIds[0],
-          rawConversationItemIds: chunk.sourceIds,
-          logicalSourceId: chunk.sourceIdentities[0],
-          logicalSourceIds: chunk.sourceIdentities,
-          projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-          semanticUnitType: unitType,
-          semanticSourceActors: sourceActors,
-          semanticBundleSealedReason: originalSealReason,
-          semanticBundleRebuildReason: "source_event_deleted",
-          semanticBundleRebuiltFromMemoryEventId: input.memoryEventId,
-          semanticItemManifest: chunk.itemManifest,
-          sourceAdapterVersion: first.row.source_adapter_version,
-          sourceChunkIndex: chunk.chunkIndex,
-          sourceChunkCount: chunk.chunkCount,
-          sourceItemCount: allSourceIds.length,
-          externalSessionId: first.row.external_session_id,
-          externalThreadId: first.row.external_thread_id,
-          externalTurnId: first.row.external_turn_id
-        },
+        metadata: conversationSemanticEventMetadata({
+          first,
+          chunk,
+          allSourceIds,
+          sourceActors,
+          unitType,
+          sealedReason: originalSealReason,
+          model,
+          rebuild: {
+            reason: "source_event_deleted",
+            memoryEventId: input.memoryEventId
+          }
+        }),
         visibility: first.row.visibility,
         sourceRuntime:
           first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
@@ -3159,27 +3203,15 @@ export const createMemorySourceRepository = (
             eventType: "captured",
             rawEventType: unitType,
             content: chunk.content,
-            metadata: {
-              ...first.projectionMetadata,
-              rawConversationItemId: chunk.sourceIds[0] ?? allSourceIds[0],
-              rawConversationItemIds: chunk.sourceIds,
-              logicalSourceId: chunk.sourceIdentities[0],
-              logicalSourceIds: chunk.sourceIdentities,
-              projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-              semanticUnitType: unitType,
-              semanticSourceActors: sourceActors,
-              semanticBundleSealedReason: sealedReason,
-              tokenCount: chunk.tokenCount,
-              tokenModel: model ?? undefined,
-              semanticItemManifest: chunk.itemManifest,
-              sourceAdapterVersion: first.row.source_adapter_version,
-              sourceChunkIndex: chunk.chunkIndex,
-              sourceChunkCount: chunk.chunkCount,
-              sourceItemCount: allSourceIds.length,
-              externalSessionId: first.row.external_session_id,
-              externalThreadId: first.row.external_thread_id,
-              externalTurnId: first.row.external_turn_id
-            },
+            metadata: conversationSemanticEventMetadata({
+              first,
+              chunk,
+              allSourceIds,
+              sourceActors,
+              unitType,
+              sealedReason,
+              model
+            }),
             visibility: first.row.visibility,
             sourceRuntime:
               first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
@@ -3386,27 +3418,35 @@ export const createMemorySourceRepository = (
       const maxTokens = projectionMaxTokens();
       let bundle = pendingAgentBundles.get(boundaryKey);
       if (!bundle) {
-        bundle = { items: [], tokens: 0 };
+        bundle = { items: [] };
         pendingAgentBundles.set(boundaryKey, bundle);
       }
 
-      if (bundle.items.length > 0 && bundle.tokens + itemTokens > maxTokens) {
+      const candidateTokens =
+        bundle.items.length > 0
+          ? joinedSemanticContentTokenCount(
+              [
+                ...bundle.items.map((item) => item.content),
+                semanticItem.content
+              ],
+              model
+            )
+          : itemTokens;
+      if (bundle.items.length > 0 && candidateTokens > maxTokens) {
         await flushAgentBundle(boundaryKey, "token_limit");
-        bundle = { items: [], tokens: 0 };
+        bundle = { items: [] };
         pendingAgentBundles.set(boundaryKey, bundle);
       }
 
       if (itemTokens > maxTokens) {
         pendingAgentBundles.set(boundaryKey, {
-          items: [semanticItem],
-          tokens: itemTokens
+          items: [semanticItem]
         });
         await flushAgentBundle(boundaryKey, "token_limit");
         return;
       }
 
       bundle.items.push(semanticItem);
-      bundle.tokens += itemTokens;
     };
 
     for (const sourceRow of rows.rows) {

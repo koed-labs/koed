@@ -6333,6 +6333,150 @@ describeDb("memory repository visibility", () => {
     );
   });
 
+  it("counts semantic bundle separators before token-limit rollover", async () => {
+    const previousMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+    process.env.MEMORY_EVENT_MAX_TOKENS = "29";
+    try {
+      const alice = await repo.createUser({
+        email: `alice-projection-separator-tokens-${randomUUID()}@example.com`
+      });
+      const session = await repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          externalSessionId: `projection-separator-tokens-${randomUUID()}`,
+          sourceRuntime: "codex",
+          idempotencyKey: `projection-separator-tokens-session-${randomUUID()}`
+        }
+      );
+      const agentItems = [
+        "I will inspect the repository.",
+        "Tool call: rg -n projection",
+        "Tool output: projection entry point found",
+        "The search confirms the projection entry point."
+      ];
+      const firstContent = agentItems.slice(0, 3).join("\n\n");
+      const joinedContent = agentItems.join("\n\n");
+      expect(
+        agentItems.reduce(
+          (total, item) =>
+            total + estimateTokens(item, { model: "gpt-5.4-mini" }),
+          0
+        )
+      ).toBeLessThanOrEqual(29);
+      expect(
+        estimateTokens(joinedContent, { model: "gpt-5.4-mini" })
+      ).toBeGreaterThan(29);
+
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            ...agentItems.map((text, index) => ({
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              externalTurnId: "separator-token-turn",
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
+              sourceSequence: index,
+              rawJson: {
+                method: "item/completed",
+                params: {
+                  item: {
+                    type:
+                      index === 1
+                        ? "function_call"
+                        : index === 2
+                          ? "function_call_output"
+                          : "agentMessage",
+                    text
+                  }
+                }
+              },
+              rawText: text,
+              sourceHash: `projection-separator-token-${index}-${randomUUID()}`,
+              idempotencyKey: `projection-separator-token-${index}-${randomUUID()}`,
+              metadata: {
+                transcriptType:
+                  index === 1
+                    ? "function_call"
+                    : index === 2
+                      ? "function_call_output"
+                      : "agent_message"
+              }
+            })),
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalTurnId: "separator-token-turn",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "Stop",
+              sourceSequence: agentItems.length,
+              rawJson: {
+                hook_event_name: "Stop",
+                turn_id: "separator-token-turn"
+              },
+              sourceHash: `projection-separator-stop-${randomUUID()}`,
+              idempotencyKey: `projection-separator-stop-${randomUUID()}`,
+              metadata: { hookEventName: "Stop" }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const events = await pool.query<{
+        content: string;
+        token_count: number | null;
+        metadata_token_count: string | null;
+        sealed_reason: string | null;
+      }>(
+        `
+          select
+            payload ->> 'content' as content,
+            token_count,
+            payload #>> '{metadata,tokenCount}' as metadata_token_count,
+            payload #>> '{metadata,semanticBundleSealedReason}' as sealed_reason
+          from memory_events
+          where session_id = $1
+            and payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+          order by source_sequence asc nulls last, created_at asc
+        `,
+        [session.id]
+      );
+
+      expect(projection.memoryEventsCreated).toBe(2);
+      expect(events.rows.map((row) => row.content)).toEqual([
+        firstContent,
+        agentItems[3]
+      ]);
+      expect(events.rows.map((row) => row.sealed_reason)).toEqual([
+        "token_limit",
+        "stop_hook"
+      ]);
+      expect(events.rows.every((row) => (row.token_count ?? 0) <= 29)).toBe(
+        true
+      );
+      expect(
+        events.rows.every(
+          (row) => row.metadata_token_count === String(row.token_count)
+        )
+      ).toBe(true);
+    } finally {
+      if (previousMaxTokens === undefined) {
+        delete process.env.MEMORY_EVENT_MAX_TOKENS;
+      } else {
+        process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+    }
+  });
+
   it("seals transcript-derived agent bundles on Stop hook metadata", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-stop-metadata-${randomUUID()}@example.com`
