@@ -3129,165 +3129,184 @@ describeDb("memory repository visibility", () => {
   });
 
   it("projects hook-only tool payloads into semantic memory and tool events", async () => {
-    const alice = await repo.createUser({
-      email: `alice-hook-tool-fallback-${randomUUID()}@example.com`
-    });
-    const workspaceId = randomUUID();
-    await pool.query(
-      `
-        insert into workspaces (id, owner_user_id, visibility, name)
-        values ($1, $2, 'personal', 'Hook Tool Project')
-      `,
-      [workspaceId, alice.id]
-    );
-    const session = await repo.createCapturedSession(
-      { userId: alice.id },
-      {
-        workspaceId,
-        externalSessionId: `hook-tool-fallback-${randomUUID()}`,
-        sourceRuntime: "codex-cli",
-        captureMethod: "hook",
-        idempotencyKey: `hook-tool-fallback-session-${randomUUID()}`
-      }
-    );
-    await repo.createConversationItems(
-      { userId: alice.id },
-      {
-        items: [
-          {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalSessionId: session.externalSessionId ?? undefined,
-            externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "hook-tool-turn-1",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "PostToolUse",
-            sourceSequence: 1,
-            rawJson: {
-              hook_event_name: "PostToolUse",
-              tool_use_id: "toolu-hook-1",
-              tool_name: "exec_command",
-              tool_input: { cmd: "git status --short" },
-              tool_response: "clean"
+    const previousStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
+    process.env.MEMORY_AGENT_TURN_STALE_MS = "1";
+    try {
+      const alice = await repo.createUser({
+        email: `alice-hook-tool-fallback-${randomUUID()}@example.com`
+      });
+      const workspaceId = randomUUID();
+      await pool.query(
+        `
+          insert into workspaces (id, owner_user_id, visibility, name)
+          values ($1, $2, 'personal', 'Hook Tool Project')
+        `,
+        [workspaceId, alice.id]
+      );
+      const session = await repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          workspaceId,
+          externalSessionId: `hook-tool-fallback-${randomUUID()}`,
+          sourceRuntime: "codex-cli",
+          captureMethod: "hook",
+          idempotencyKey: `hook-tool-fallback-session-${randomUUID()}`
+        }
+      );
+      const staleEventTime = new Date(Date.now() - 60_000).toISOString();
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "hook-tool-turn-1",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "PostToolUse",
+              sourceSequence: 1,
+              eventTime: staleEventTime,
+              rawJson: {
+                hook_event_name: "PostToolUse",
+                tool_use_id: "toolu-hook-1",
+                tool_name: "exec_command",
+                tool_input: { cmd: "git status --short" },
+                tool_response: "clean"
+              },
+              sourceHash: `hook-tool-${randomUUID()}`,
+              idempotencyKey: `hook-tool-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: { projectName: "Hook Tool Project" }
             },
-            sourceHash: `hook-tool-${randomUUID()}`,
-            idempotencyKey: `hook-tool-${randomUUID()}`,
-            projectionStatus: "pending",
-            metadata: { projectName: "Hook Tool Project" }
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "hook-tool-turn-2",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "PostToolUse",
+              sourceSequence: 2,
+              eventTime: staleEventTime,
+              rawJson: {
+                hook_event_name: "PostToolUse",
+                tool_use_id: "toolu-hook-2",
+                tool_name: "exec_command",
+                tool_input: { cmd: "git status --branch" }
+              },
+              sourceHash: `hook-tool-missing-response-${randomUUID()}`,
+              idempotencyKey: `hook-tool-missing-response-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: { projectName: "Hook Tool Project" }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const events = await repo.listLcmGraphEvents(
+        { userId: alice.id },
+        {
+          projectId: workspaceId,
+          threadId: session.externalSessionId ?? undefined,
+          limit: 10
+        }
+      );
+      const memoryEvents = await pool.query<{
+        actor: string | null;
+        content: string;
+        semantic_unit_type: string | null;
+        sealed_reason: string | null;
+      }>(
+        `
+          select
+            payload ->> 'actor' as actor,
+            payload ->> 'content' as content,
+            payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
+            seal_reason as sealed_reason
+          from memory_events
+          where session_id = $1
+          order by created_at asc, id asc
+        `,
+        [session.id]
+      );
+      const toolEvents = await pool.query<{
+        tool_name: string;
+        tool_input: unknown;
+        tool_response: unknown;
+      }>(
+        `
+          select tool_name, tool_input, tool_response
+          from tool_events
+          where session_id = $1
+          order by transcript_item_id asc nulls last, id asc
+        `,
+        [session.id]
+      );
+
+      expect(projection.memoryEventsCreated).toBe(2);
+      expect(projection.toolEventsCreated).toBe(2);
+      expect(events.map((event) => event.contentPreview)).toHaveLength(2);
+      expect(events.map((event) => event.contentPreview)).toEqual(
+        expect.arrayContaining([
+          'Tool call: exec_command Input: {"cmd":"git status --short"} Output: clean',
+          'Tool call: exec_command Input: {"cmd":"git status --branch"}'
+        ])
+      );
+      expect(memoryEvents.rows).toEqual(
+        expect.arrayContaining([
+          {
+            actor: "tool",
+            semantic_unit_type: "agent_turn",
+            sealed_reason: "catch_up_stale",
+            content: [
+              "Tool result: exec_command",
+              "",
+              'Input:\n{"cmd":"git status --short"}',
+              "",
+              "Output:\nclean"
+            ].join("\n")
           },
           {
-            sessionId: session.id,
-            sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
-            sourceTransport: "hook",
-            externalSessionId: session.externalSessionId ?? undefined,
-            externalThreadId: session.externalSessionId ?? undefined,
-            externalTurnId: "hook-tool-turn-2",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "PostToolUse",
-            sourceSequence: 2,
-            rawJson: {
-              hook_event_name: "PostToolUse",
-              tool_use_id: "toolu-hook-2",
-              tool_name: "exec_command",
-              tool_input: { cmd: "git status --branch" }
-            },
-            sourceHash: `hook-tool-missing-response-${randomUUID()}`,
-            idempotencyKey: `hook-tool-missing-response-${randomUUID()}`,
-            projectionStatus: "pending",
-            metadata: { projectName: "Hook Tool Project" }
+            actor: "tool",
+            semantic_unit_type: "agent_turn",
+            sealed_reason: "catch_up_stale",
+            content: [
+              "Tool result: exec_command",
+              "",
+              'Input:\n{"cmd":"git status --branch"}'
+            ].join("\n")
           }
-        ]
+        ])
+      );
+      expect(toolEvents.rows).toEqual([
+        {
+          tool_name: "exec_command",
+          tool_input: { cmd: "git status --short" },
+          tool_response: "clean"
+        },
+        {
+          tool_name: "exec_command",
+          tool_input: { cmd: "git status --branch" },
+          tool_response: null
+        }
+      ]);
+    } finally {
+      if (previousStaleMs === undefined) {
+        delete process.env.MEMORY_AGENT_TURN_STALE_MS;
+      } else {
+        process.env.MEMORY_AGENT_TURN_STALE_MS = previousStaleMs;
       }
-    );
-
-    const projection = await repo.projectPendingConversationItems(
-      { userId: alice.id },
-      { limit: 10 }
-    );
-    const events = await repo.listLcmGraphEvents(
-      { userId: alice.id },
-      {
-        projectId: workspaceId,
-        threadId: session.externalSessionId ?? undefined,
-        limit: 10
-      }
-    );
-    const memoryEvents = await pool.query<{
-      actor: string | null;
-      content: string;
-      semantic_unit_type: string | null;
-    }>(
-      `
-        select
-          payload ->> 'actor' as actor,
-          payload ->> 'content' as content,
-          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type
-        from memory_events
-        where session_id = $1
-        order by created_at asc, id asc
-      `,
-      [session.id]
-    );
-    const toolEvents = await pool.query<{
-      tool_name: string;
-      tool_input: unknown;
-      tool_response: unknown;
-    }>(
-      `
-        select tool_name, tool_input, tool_response
-        from tool_events
-        where session_id = $1
-        order by transcript_item_id asc nulls last, id asc
-      `,
-      [session.id]
-    );
-
-    expect(projection.memoryEventsCreated).toBe(2);
-    expect(projection.toolEventsCreated).toBe(2);
-    expect(events.map((event) => event.contentPreview)).toHaveLength(2);
-    expect(events.map((event) => event.contentPreview)).toEqual(
-      expect.arrayContaining([
-        'Tool call: exec_command Input: {"cmd":"git status --short"} Output: clean',
-        'Tool call: exec_command Input: {"cmd":"git status --branch"}'
-      ])
-    );
-    expect(memoryEvents.rows).toEqual([
-      {
-        actor: "tool",
-        semantic_unit_type: "agent_turn",
-        content: [
-          "Tool result: exec_command",
-          "",
-          'Input:\n{"cmd":"git status --short"}',
-          "",
-          "Output:\nclean"
-        ].join("\n")
-      },
-      {
-        actor: "tool",
-        semantic_unit_type: "agent_turn",
-        content: [
-          "Tool result: exec_command",
-          "",
-          'Input:\n{"cmd":"git status --branch"}'
-        ].join("\n")
-      }
-    ]);
-    expect(toolEvents.rows).toEqual([
-      {
-        tool_name: "exec_command",
-        tool_input: { cmd: "git status --short" },
-        tool_response: "clean"
-      },
-      {
-        tool_name: "exec_command",
-        tool_input: { cmd: "git status --branch" },
-        tool_response: null
-      }
-    ]);
+    }
   });
 
   it("bundles complete agent turns across projection limits in source order", async () => {
@@ -3442,6 +3461,423 @@ describeDb("memory repository visibility", () => {
     ]);
     expect(statuses.rows).toEqual([
       { projection_status: "projected", count: "4" }
+    ]);
+  });
+
+  it("does not seal agent turns on boundary changes or batch end", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-no-internal-seal-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-no-internal-seal-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-no-internal-seal-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "first-unsealed-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "First agent turn is still in progress."
+                }
+              }
+            },
+            rawText: "First agent turn is still in progress.",
+            sourceHash: `projection-no-internal-first-${randomUUID()}`,
+            idempotencyKey: `projection-no-internal-first-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "second-unsealed-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 1,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "Second agent turn is also still in progress."
+                }
+              }
+            },
+            rawText: "Second agent turn is also still in progress.",
+            sourceHash: `projection-no-internal-second-${randomUUID()}`,
+            idempotencyKey: `projection-no-internal-second-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const messages = await pool.query<{ content: string }>(
+      "select content from messages where session_id = $1 order by created_at asc",
+      [session.id]
+    );
+    const events = await pool.query<{ seal_reason: string | null }>(
+      `
+        select seal_reason
+        from memory_events
+        where session_id = $1
+          and payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+      `,
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        where session_id = $1
+        group by projection_status
+      `,
+      [session.id]
+    );
+
+    expect(projection.messagesCreated).toBe(2);
+    expect(projection.memoryEventsCreated).toBe(0);
+    expect(messages.rows.map((row) => row.content)).toEqual([
+      "First agent turn is still in progress.",
+      "Second agent turn is also still in progress."
+    ]);
+    expect(events.rows).toEqual([]);
+    expect(statuses.rows).toEqual([
+      { projection_status: "pending", count: "2" }
+    ]);
+  });
+
+  it("suppresses hook fallback semantics after transcript-derived agent memory exists", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-suppress-hook-fallback-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-suppress-hook-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-suppress-hook-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "turn-with-transcript-memory",
+            sourceRecordType: "event_msg",
+            sourceEventType: "agent_message",
+            sourceSequence: 0,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "agent_message",
+                message:
+                  "Transcript-derived answer should be the only semantic bundle."
+              }
+            },
+            rawText:
+              "Transcript-derived answer should be the only semantic bundle.",
+            sourceHash: `projection-suppress-transcript-${randomUUID()}`,
+            idempotencyKey: `projection-suppress-transcript-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "turn-with-transcript-memory",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 1,
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "turn-with-transcript-memory"
+            },
+            sourceHash: `projection-suppress-stop-${randomUUID()}`,
+            idempotencyKey: `projection-suppress-stop-${randomUUID()}`,
+            metadata: { hookEventName: "Stop" }
+          }
+        ]
+      }
+    );
+
+    const transcriptProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "turn-with-transcript-memory",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "PostToolUse",
+            sourceSequence: 2,
+            rawJson: {
+              hook_event_name: "PostToolUse",
+              tool_use_id: "toolu-suppressed-hook",
+              tool_name: "exec_command",
+              tool_input: { cmd: "git status --short" },
+              tool_response: "clean"
+            },
+            sourceHash: `projection-suppress-hook-tool-${randomUUID()}`,
+            idempotencyKey: `projection-suppress-hook-tool-${randomUUID()}`,
+            metadata: {}
+          }
+        ]
+      }
+    );
+
+    const hookProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const memoryEvents = await pool.query<{
+      content: string;
+      seal_reason: string | null;
+      source_records: string[];
+    }>(
+      `
+        select
+          me.payload ->> 'content' as content,
+          me.seal_reason,
+          array_agg(ci.source_record_type order by mes.source_order) as source_records
+        from memory_events me
+        join memory_event_sources mes
+          on mes.memory_event_id = me.id
+        join conversation_items ci
+          on ci.id = mes.conversation_item_id
+        where me.session_id = $1
+          and me.payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+        group by me.id
+        order by me.created_at asc
+      `,
+      [session.id]
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from tool_events where session_id = $1",
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      source_event_type: string | null;
+      projection_status: string;
+    }>(
+      `
+        select source_event_type, projection_status
+        from conversation_items
+        where session_id = $1
+        order by source_sequence asc
+      `,
+      [session.id]
+    );
+
+    expect(transcriptProjection.memoryEventsCreated).toBe(1);
+    expect(hookProjection.memoryEventsCreated).toBe(0);
+    expect(hookProjection.toolEventsCreated).toBe(1);
+    expect(memoryEvents.rows).toEqual([
+      {
+        content:
+          "Transcript-derived answer should be the only semantic bundle.",
+        seal_reason: "stop_hook",
+        source_records: ["event_msg"]
+      }
+    ]);
+    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(statuses.rows).toEqual([
+      { source_event_type: "agent_message", projection_status: "projected" },
+      { source_event_type: "Stop", projection_status: "projected" },
+      { source_event_type: "PostToolUse", projection_status: "projected" }
+    ]);
+  });
+
+  it("keeps hook fallback suppression scoped to the full semantic boundary", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-boundary-fallback-${randomUUID()}@example.com`
+    });
+    const workspaceA = randomUUID();
+    const workspaceB = randomUUID();
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-boundary-fallback-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-boundary-fallback-session-${randomUUID()}`
+      }
+    );
+    const [transcriptItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "boundary-thread-a",
+            externalTurnId: "shared-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "Thread A transcript memory."
+                }
+              }
+            },
+            rawText: "Thread A transcript memory.",
+            sourceHash: `projection-boundary-transcript-${randomUUID()}`,
+            idempotencyKey: `projection-boundary-transcript-${randomUUID()}`,
+            metadata: {
+              workspaceId: workspaceA,
+              transcriptType: "agent_message"
+            }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "boundary-thread-a",
+            externalTurnId: "shared-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 1,
+            rawJson: { hook_event_name: "Stop", turn_id: "shared-turn" },
+            sourceHash: `projection-boundary-stop-a-${randomUUID()}`,
+            idempotencyKey: `projection-boundary-stop-a-${randomUUID()}`,
+            metadata: {
+              workspaceId: workspaceA,
+              hookEventName: "Stop"
+            }
+          }
+        ]
+      }
+    );
+
+    const transcriptProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    if (!transcriptItem?.turnId) {
+      throw new Error("Expected transcript item to create a turn");
+    }
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            turnId: transcriptItem.turnId,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "boundary-thread-b",
+            externalTurnId: "shared-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 2,
+            rawJson: {
+              hook_event_name: "Stop",
+              last_assistant_message: "Thread B hook fallback should remain."
+            },
+            rawText: "Thread B hook fallback should remain.",
+            sourceHash: `projection-boundary-stop-b-${randomUUID()}`,
+            idempotencyKey: `projection-boundary-stop-b-${randomUUID()}`,
+            metadata: {
+              workspaceId: workspaceB,
+              hookEventName: "Stop"
+            }
+          }
+        ]
+      }
+    );
+
+    const hookProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const memoryEvents = await pool.query<{
+      content: string;
+      external_thread_id: string | null;
+      workspace_id: string | null;
+      seal_reason: string | null;
+    }>(
+      `
+        select
+          payload ->> 'content' as content,
+          payload #>> '{metadata,externalThreadId}' as external_thread_id,
+          payload ->> 'workspaceId' as workspace_id,
+          seal_reason
+        from memory_events
+        where session_id = $1
+          and payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+        order by source_sequence asc nulls last, created_at asc
+      `,
+      [session.id]
+    );
+
+    expect(transcriptProjection.memoryEventsCreated).toBe(1);
+    expect(hookProjection.memoryEventsCreated).toBe(1);
+    expect(memoryEvents.rows).toEqual([
+      {
+        content: "Thread A transcript memory.",
+        external_thread_id: "boundary-thread-a",
+        workspace_id: workspaceA,
+        seal_reason: "stop_hook"
+      },
+      {
+        content: "Thread B hook fallback should remain.",
+        external_thread_id: "boundary-thread-b",
+        workspace_id: workspaceB,
+        seal_reason: "stop_hook"
+      }
     ]);
   });
 
@@ -3675,6 +4111,20 @@ describeDb("memory repository visibility", () => {
                 [`key${"\u0000"}name`]: `value${"\u0000"}text${"\uDC00"}`
               }
             }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "nul-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 1,
+            rawJson: { hook_event_name: "Stop", turn_id: "nul-turn" },
+            sourceHash: `nul-stop-${randomUUID()}`,
+            idempotencyKey: `nul-stop-${randomUUID()}`,
+            metadata: { workspaceId, hookEventName: "Stop" }
           }
         ]
       }
@@ -4462,12 +4912,26 @@ describeDb("memory repository visibility", () => {
             metadata: { workflow: "memory_question", questionId: "question-1" }
           },
           {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-1",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 2,
+            rawJson: { hook_event_name: "Stop", turn_id: "turn-1" },
+            sourceHash: `raw-stop-${randomUUID()}`,
+            idempotencyKey: `raw-stop-${randomUUID()}`,
+            metadata: { workspaceId, hookEventName: "Stop" }
+          },
+          {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-app-server-v1",
             sourceTransport: "app_server",
             sourceRecordType: "app_server_notification",
             sourceEventType: "item/completed",
-            sourceSequence: 2,
+            sourceSequence: 3,
             rawJson: {
               method: "item/completed",
               params: {
@@ -4524,7 +4988,7 @@ describeDb("memory repository visibility", () => {
     );
     const embeddable = await repo.listSourcesNeedingEmbeddings(20);
 
-    expect(projection.rawItemsProjected).toBe(3);
+    expect(projection.rawItemsProjected).toBe(4);
     expect(projection.messagesCreated).toBe(1);
     expect(projection.memoryEventsCreated).toBe(1);
     expect(projection.tokenUsageRowsCreated).toBe(1);
@@ -4550,6 +5014,10 @@ describeDb("memory repository visibility", () => {
         projection_version: row.projection_version
       }))
     ).toEqual([
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v3"
+      },
       {
         projection_status: "projected",
         projection_version: "conversation-projection-v3"
@@ -4997,29 +5465,45 @@ describeDb("memory repository visibility", () => {
     await repo.createConversationItems(
       { userId: alice.id },
       {
-        items: rows.map((row, index) => ({
-          sessionId: session.id,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-app-server-v1",
-          sourceTransport: "app_server",
-          externalTurnId: "turn-1",
-          sourceRecordType: "app_server_notification",
-          sourceEventType: "item/completed",
-          sourceSequence: index,
-          rawJson: row.rawJson ?? {
-            method: "item/completed",
-            params: {
-              item: {
-                type: row.transcriptType,
-                text: row.text
+        items: [
+          ...rows.map((row, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-1",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: index,
+            rawJson: row.rawJson ?? {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: row.transcriptType,
+                  text: row.text
+                }
               }
-            }
-          },
-          rawText: row.text,
-          sourceHash: row.sourceHash,
-          idempotencyKey: row.sourceHash,
-          metadata: { workspaceId, transcriptType: row.transcriptType }
-        }))
+            },
+            rawText: row.text,
+            sourceHash: row.sourceHash,
+            idempotencyKey: row.sourceHash,
+            metadata: { workspaceId, transcriptType: row.transcriptType }
+          })),
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-1",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: rows.length,
+            rawJson: { hook_event_name: "Stop", turn_id: "turn-1" },
+            sourceHash: `projection-policy-stop-${randomUUID()}`,
+            idempotencyKey: `projection-policy-stop-${randomUUID()}`,
+            metadata: { workspaceId }
+          }
+        ]
       }
     );
 
@@ -5058,7 +5542,7 @@ describeDb("memory repository visibility", () => {
       `
     );
 
-    expect(projection.rawItemsProjected).toBe(rows.length);
+    expect(projection.rawItemsProjected).toBe(rows.length + 1);
     expect(projection.memoryEventsCreated).toBe(3);
     expect(projection.messagesCreated).toBe(5);
     expect(projection.toolEventsCreated).toBe(1);
@@ -5115,7 +5599,7 @@ describeDb("memory repository visibility", () => {
       "Rolling context"
     );
     expect(rawStatuses.rows).toEqual([
-      { projection_status: "projected", count: String(rows.length) }
+      { projection_status: "projected", count: String(rows.length + 1) }
     ]);
   });
 
@@ -5703,6 +6187,7 @@ describeDb("memory repository visibility", () => {
         sourceHash: `projection-tool-output-${randomUUID()}`,
         metadata: {
           toolName: "exec_command",
+          toolEventKind: "function_call_output",
           toolCall: {
             kind: "output",
             name: "exec_command",
@@ -5846,6 +6331,150 @@ describeDb("memory repository visibility", () => {
     expect(toolEvents.rows[1]?.tool_response).toBe(
       "projection entry point found"
     );
+  });
+
+  it("counts semantic bundle separators before token-limit rollover", async () => {
+    const previousMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
+    process.env.MEMORY_EVENT_MAX_TOKENS = "29";
+    try {
+      const alice = await repo.createUser({
+        email: `alice-projection-separator-tokens-${randomUUID()}@example.com`
+      });
+      const session = await repo.createCapturedSession(
+        { userId: alice.id },
+        {
+          externalSessionId: `projection-separator-tokens-${randomUUID()}`,
+          sourceRuntime: "codex",
+          idempotencyKey: `projection-separator-tokens-session-${randomUUID()}`
+        }
+      );
+      const agentItems = [
+        "I will inspect the repository.",
+        "Tool call: rg -n projection",
+        "Tool output: projection entry point found",
+        "The search confirms the projection entry point."
+      ];
+      const firstContent = agentItems.slice(0, 3).join("\n\n");
+      const joinedContent = agentItems.join("\n\n");
+      expect(
+        agentItems.reduce(
+          (total, item) =>
+            total + estimateTokens(item, { model: "gpt-5.4-mini" }),
+          0
+        )
+      ).toBeLessThanOrEqual(29);
+      expect(
+        estimateTokens(joinedContent, { model: "gpt-5.4-mini" })
+      ).toBeGreaterThan(29);
+
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            ...agentItems.map((text, index) => ({
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-v1",
+              sourceTransport: "app_server",
+              externalTurnId: "separator-token-turn",
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
+              sourceSequence: index,
+              rawJson: {
+                method: "item/completed",
+                params: {
+                  item: {
+                    type:
+                      index === 1
+                        ? "function_call"
+                        : index === 2
+                          ? "function_call_output"
+                          : "agentMessage",
+                    text
+                  }
+                }
+              },
+              rawText: text,
+              sourceHash: `projection-separator-token-${index}-${randomUUID()}`,
+              idempotencyKey: `projection-separator-token-${index}-${randomUUID()}`,
+              metadata: {
+                transcriptType:
+                  index === 1
+                    ? "function_call"
+                    : index === 2
+                      ? "function_call_output"
+                      : "agent_message"
+              }
+            })),
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalTurnId: "separator-token-turn",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "Stop",
+              sourceSequence: agentItems.length,
+              rawJson: {
+                hook_event_name: "Stop",
+                turn_id: "separator-token-turn"
+              },
+              sourceHash: `projection-separator-stop-${randomUUID()}`,
+              idempotencyKey: `projection-separator-stop-${randomUUID()}`,
+              metadata: { hookEventName: "Stop" }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const events = await pool.query<{
+        content: string;
+        token_count: number | null;
+        metadata_token_count: string | null;
+        sealed_reason: string | null;
+      }>(
+        `
+          select
+            payload ->> 'content' as content,
+            token_count,
+            payload #>> '{metadata,tokenCount}' as metadata_token_count,
+            payload #>> '{metadata,semanticBundleSealedReason}' as sealed_reason
+          from memory_events
+          where session_id = $1
+            and payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+          order by source_sequence asc nulls last, created_at asc
+        `,
+        [session.id]
+      );
+
+      expect(projection.memoryEventsCreated).toBe(2);
+      expect(events.rows.map((row) => row.content)).toEqual([
+        firstContent,
+        agentItems[3]
+      ]);
+      expect(events.rows.map((row) => row.sealed_reason)).toEqual([
+        "token_limit",
+        "stop_hook"
+      ]);
+      expect(events.rows.every((row) => (row.token_count ?? 0) <= 29)).toBe(
+        true
+      );
+      expect(
+        events.rows.every(
+          (row) => row.metadata_token_count === String(row.token_count)
+        )
+      ).toBe(true);
+    } finally {
+      if (previousMaxTokens === undefined) {
+        delete process.env.MEMORY_EVENT_MAX_TOKENS;
+      } else {
+        process.env.MEMORY_EVENT_MAX_TOKENS = previousMaxTokens;
+      }
+    }
   });
 
   it("seals transcript-derived agent bundles on Stop hook metadata", async () => {
@@ -6113,6 +6742,127 @@ describeDb("memory repository visibility", () => {
         process.env.MEMORY_AGENT_TURN_STALE_MS = previousStaleMs;
       }
     }
+  });
+
+  it("seals a pending agent bundle when the next user turn arrives", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-next-user-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-next-user-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-next-user-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "agent-before-next-user",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 0,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "agentMessage",
+                  text: "I am waiting for the next user prompt."
+                }
+              }
+            },
+            rawText: "I am waiting for the next user prompt.",
+            sourceHash: `projection-next-user-agent-${randomUUID()}`,
+            idempotencyKey: `projection-next-user-agent-${randomUUID()}`,
+            metadata: { transcriptType: "agent_message" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "next-user-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 1,
+            rawJson: {
+              method: "item/completed",
+              params: {
+                item: {
+                  type: "userMessage",
+                  text: "Here is the next prompt."
+                }
+              }
+            },
+            rawText: "Here is the next prompt.",
+            sourceHash: `projection-next-user-user-${randomUUID()}`,
+            idempotencyKey: `projection-next-user-user-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const events = await pool.query<{
+      content: string;
+      semantic_unit_type: string | null;
+      sealed_reason: string | null;
+      seal_reason: string | null;
+    }>(
+      `
+        select
+          payload ->> 'content' as content,
+          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
+          payload #>> '{metadata,semanticBundleSealedReason}' as sealed_reason,
+          seal_reason
+        from memory_events
+        where session_id = $1
+        order by source_sequence asc nulls last, created_at asc
+      `,
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        where session_id = $1
+        group by projection_status
+      `,
+      [session.id]
+    );
+
+    expect(projection.memoryEventsCreated).toBe(2);
+    expect(events.rows).toEqual([
+      {
+        semantic_unit_type: "agent_turn",
+        content: "I am waiting for the next user prompt.",
+        sealed_reason: "next_user_turn",
+        seal_reason: "next_user_turn"
+      },
+      {
+        semantic_unit_type: "user_turn",
+        content: "Here is the next prompt.",
+        sealed_reason: "user_turn",
+        seal_reason: "user_turn"
+      }
+    ]);
+    expect(statuses.rows).toEqual([
+      { projection_status: "projected", count: "2" }
+    ]);
   });
 
   it("keeps delayed tool output names linked to the original call id", async () => {
@@ -6599,36 +7349,55 @@ describeDb("memory repository visibility", () => {
     await repo.createConversationItems(
       { userId: alice.id },
       {
-        items: chunks.map((chunk, index) => ({
-          sessionId: session.id,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-app-server-v1",
-          sourceTransport: "app_server",
-          externalTurnId: "turn-transport",
-          sourceRecordType: "app_server_notification",
-          sourceEventType: "item/completed",
-          sourceSequence: 100 + index,
-          rawJson: {
-            transportChunk: true,
-            sourceItemHash: logicalSourceId,
-            chunkIndex: index,
-            chunkCount: chunks.length
-          },
-          logicalSourceId,
-          transportChunkIndex: index,
-          transportChunkCount: chunks.length,
-          transportChunkText: chunk,
-          transportChunkEncoding: "conversation-item-json-v1",
-          sourceHash: `${logicalSourceId}-chunk-${index}`,
-          idempotencyKey: `${logicalSourceId}-chunk-${index}`,
-          metadata: {
-            workspaceId,
-            transcriptType: "agent_message",
-            sourceItemHash: logicalSourceId,
-            sourceChunkIndex: index,
-            sourceChunkCount: chunks.length
+        items: [
+          ...chunks.map((chunk, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-transport",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 100 + index,
+            rawJson: {
+              transportChunk: true,
+              sourceItemHash: logicalSourceId,
+              chunkIndex: index,
+              chunkCount: chunks.length
+            },
+            logicalSourceId,
+            transportChunkIndex: index,
+            transportChunkCount: chunks.length,
+            transportChunkText: chunk,
+            transportChunkEncoding: "conversation-item-json-v1",
+            sourceHash: `${logicalSourceId}-chunk-${index}`,
+            idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+            metadata: {
+              workspaceId,
+              transcriptType: "agent_message",
+              sourceItemHash: logicalSourceId,
+              sourceChunkIndex: index,
+              sourceChunkCount: chunks.length
+            }
+          })),
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-transport",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 100 + chunks.length,
+            rawJson: { hook_event_name: "Stop", turn_id: "turn-transport" },
+            sourceHash: `transport-stop-${randomUUID()}`,
+            idempotencyKey: `transport-stop-${randomUUID()}`,
+            metadata: {
+              workspaceId,
+              hookEventName: "Stop"
+            }
           }
-        }))
+        ]
       }
     );
 
@@ -6653,11 +7422,11 @@ describeDb("memory repository visibility", () => {
       projection_status: string;
       projection_version: string | null;
     }>(
-      "select projection_status, projection_version from conversation_items order by transport_chunk_index asc"
+      "select projection_status, projection_version from conversation_items order by source_sequence asc"
     );
 
-    expect(projection.rawItemsScanned).toBe(1);
-    expect(projection.rawItemsProjected).toBe(2);
+    expect(projection.rawItemsScanned).toBe(2);
+    expect(projection.rawItemsProjected).toBe(3);
     expect(projection.messagesCreated).toBe(1);
     expect(projection.memoryEventsCreated).toBe(1);
     expect(secondProjection.rawItemsScanned).toBe(0);
@@ -6676,7 +7445,174 @@ describeDb("memory repository visibility", () => {
       {
         projection_status: "projected",
         projection_version: "conversation-projection-v3"
+      },
+      {
+        projection_status: "projected",
+        projection_version: "conversation-projection-v3"
       }
+    ]);
+  });
+
+  it("suppresses hook fallback semantics when transcript sources are transport chunked", async () => {
+    const alice = await repo.createUser({
+      email: `alice-transport-fallback-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `transport-fallback-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `transport-fallback-session-${randomUUID()}`,
+        metadata: { workspaceId }
+      }
+    );
+    const logicalSourceId = `transport-fallback-logical-${randomUUID()}`;
+    const reconstructedText =
+      "Chunked transcript text should be the only semantic content.";
+    const envelope = JSON.stringify({
+      rawJson: {
+        method: "item/completed",
+        params: {
+          item: {
+            type: "agentMessage",
+            text: reconstructedText
+          }
+        }
+      },
+      rawText: reconstructedText
+    });
+    const midpoint = Math.floor(envelope.length / 2);
+    const chunks = [envelope.slice(0, midpoint), envelope.slice(midpoint)];
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          ...chunks.map((chunk, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalThreadId: "transport-fallback-thread",
+            externalTurnId: "transport-fallback-turn",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: index,
+            rawJson: {
+              transportChunk: true,
+              sourceItemHash: logicalSourceId,
+              chunkIndex: index,
+              chunkCount: chunks.length
+            },
+            logicalSourceId,
+            transportChunkIndex: index,
+            transportChunkCount: chunks.length,
+            transportChunkText: chunk,
+            transportChunkEncoding: "conversation-item-json-v1",
+            sourceHash: `${logicalSourceId}-chunk-${index}`,
+            idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+            metadata: {
+              workspaceId,
+              transcriptType: "agent_message",
+              sourceItemHash: logicalSourceId,
+              sourceChunkIndex: index,
+              sourceChunkCount: chunks.length
+            }
+          })),
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "transport-fallback-thread",
+            externalTurnId: "transport-fallback-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "PostToolUse",
+            sourceSequence: chunks.length,
+            rawJson: {
+              hook_event_name: "PostToolUse",
+              tool_name: "exec_command",
+              tool_input: { cmd: "echo duplicate" },
+              tool_response: "duplicate hook fallback response"
+            },
+            sourceHash: `transport-fallback-hook-${randomUUID()}`,
+            idempotencyKey: `transport-fallback-hook-${randomUUID()}`,
+            metadata: { workspaceId }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalThreadId: "transport-fallback-thread",
+            externalTurnId: "transport-fallback-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: chunks.length + 1,
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "transport-fallback-turn"
+            },
+            sourceHash: `transport-fallback-stop-${randomUUID()}`,
+            idempotencyKey: `transport-fallback-stop-${randomUUID()}`,
+            metadata: {
+              workspaceId,
+              hookEventName: "Stop"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 20 }
+    );
+    const events = await pool.query<{
+      content: string;
+      source_count: string;
+    }>(
+      `
+        select
+          me.payload ->> 'content' as content,
+          count(mes.conversation_item_id)::text as source_count
+        from memory_events me
+        join memory_event_sources mes
+          on mes.memory_event_id = me.id
+        where me.session_id = $1
+          and me.payload #>> '{metadata,semanticUnitType}' = 'agent_turn'
+        group by me.id
+      `,
+      [session.id]
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from tool_events where session_id = $1",
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      count: string;
+    }>(
+      `
+        select projection_status, count(*)::text as count
+        from conversation_items
+        where session_id = $1
+        group by projection_status
+      `,
+      [session.id]
+    );
+
+    expect(projection.memoryEventsCreated).toBe(1);
+    expect(events.rows).toEqual([
+      {
+        content: reconstructedText,
+        source_count: "2"
+      }
+    ]);
+    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(statuses.rows).toEqual([
+      { projection_status: "projected", count: "4" }
     ]);
   });
 
@@ -6722,36 +7658,58 @@ describeDb("memory repository visibility", () => {
     await repo.createConversationItems(
       { userId: alice.id },
       {
-        items: chunks.map((chunk, index) => ({
-          sessionId: session.id,
-          sourceKind: "codex",
-          sourceAdapterVersion: "codex-app-server-v1",
-          sourceTransport: "app_server",
-          externalTurnId: "turn-nul-transport",
-          sourceRecordType: "app_server_notification",
-          sourceEventType: "item/completed",
-          sourceSequence: 120 + index,
-          rawJson: {
-            transportChunk: true,
-            sourceItemHash: logicalSourceId,
-            chunkIndex: index,
-            chunkCount: chunks.length
-          },
-          logicalSourceId,
-          transportChunkIndex: index,
-          transportChunkCount: chunks.length,
-          transportChunkText: chunk,
-          transportChunkEncoding: "conversation-item-json-v1",
-          sourceHash: `${logicalSourceId}-chunk-${index}`,
-          idempotencyKey: `${logicalSourceId}-chunk-${index}`,
-          metadata: {
-            workspaceId,
-            transcriptType: "agent_message",
-            sourceItemHash: logicalSourceId,
-            sourceChunkIndex: index,
-            sourceChunkCount: chunks.length
+        items: [
+          ...chunks.map((chunk, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            externalTurnId: "turn-nul-transport",
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceSequence: 120 + index,
+            rawJson: {
+              transportChunk: true,
+              sourceItemHash: logicalSourceId,
+              chunkIndex: index,
+              chunkCount: chunks.length
+            },
+            logicalSourceId,
+            transportChunkIndex: index,
+            transportChunkCount: chunks.length,
+            transportChunkText: chunk,
+            transportChunkEncoding: "conversation-item-json-v1",
+            sourceHash: `${logicalSourceId}-chunk-${index}`,
+            idempotencyKey: `${logicalSourceId}-chunk-${index}`,
+            metadata: {
+              workspaceId,
+              transcriptType: "agent_message",
+              sourceItemHash: logicalSourceId,
+              sourceChunkIndex: index,
+              sourceChunkCount: chunks.length
+            }
+          })),
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "turn-nul-transport",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 120 + chunks.length,
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "turn-nul-transport"
+            },
+            sourceHash: `nul-transport-stop-${randomUUID()}`,
+            idempotencyKey: `nul-transport-stop-${randomUUID()}`,
+            metadata: {
+              workspaceId,
+              hookEventName: "Stop"
+            }
           }
-        }))
+        ]
       }
     );
 
@@ -6763,7 +7721,7 @@ describeDb("memory repository visibility", () => {
       "select payload ->> 'content' as content, payload -> 'metadata' as metadata from memory_events order by created_at asc"
     );
 
-    expect(projection.rawItemsProjected).toBe(2);
+    expect(projection.rawItemsProjected).toBe(3);
     expect(projection.memoryEventsCreated).toBe(1);
     expect(events.rows[0]?.content).toBe("Chunked decoded text is 你好 c�d�e.");
     expect(events.rows[0]?.content).not.toContain("\u0000");
@@ -6826,6 +7784,22 @@ describeDb("memory repository visibility", () => {
               workspaceId: session.id,
               transcriptType: "agent_message"
             }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "turn-1",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 1,
+            rawJson: { hook_event_name: "Stop", turn_id: "turn-1" },
+            sourceHash: `canonical-project-stop-${randomUUID()}`,
+            idempotencyKey: `canonical-project-stop-${randomUUID()}`,
+            metadata: { workspaceId: session.id }
           }
         ]
       }

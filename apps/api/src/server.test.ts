@@ -540,6 +540,8 @@ const createFakeRepository = (): MemorySourceRepository => {
       return {
         rawItemsScanned: 0,
         rawItemsProjected: 0,
+        rawItemsWaitingForAgentSeal: 0,
+        rawItemsSuppressedAsFallback: 0,
         messagesCreated: 0,
         toolEventsCreated: 0,
         memoryEventsCreated: 0,
