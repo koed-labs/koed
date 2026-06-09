@@ -126,7 +126,8 @@ describe("resolveSupportedRerankerModelConfig", () => {
   it("resolves supported reranker model metadata", () => {
     expect(resolveSupportedRerankerModelConfig("qwen3-reranker-0.6b")).toEqual({
       key: "qwen3-reranker-0.6b",
-      model: "n24q02m/Qwen3-Reranker-0.6B-ONNX"
+      model:
+        "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp:Qwen3-Reranker-0.6B-Q4_K_M.gguf"
     });
   });
 

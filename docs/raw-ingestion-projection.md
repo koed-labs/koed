@@ -136,9 +136,9 @@ boundary.
 
 ## Token Bounds
 
-Koed's operational Qwen cap is 32000 tokens. Runtime configuration defaults
+Koed's operational Qwen cap is 32768 tokens. Runtime configuration defaults
 semantic Memory Event bundle rollover to 2048 tokens and embedding requests to
-4096 tokens. Values above 32000 are clamped. Projection keeps source-item
+4096 tokens. Values above 32768 are clamped. Projection keeps source-item
 boundaries intact at the 2048-token bundle target. It only splits inside a single
 raw source item when that item alone exceeds the embedding hard cap, then links
 every forced fragment to the same raw source item or items with split metadata.

@@ -22,7 +22,9 @@ from runtime import (
     is_model_loaded,
     is_reranker_loaded,
     load_embedding_model,
+    load_reranker_model,
     rerank_texts,
+    shutdown_runtime,
 )
 from schemas import EmbedRequest, EmbedResponse, RerankRequest, RerankResponse
 from settings import config
@@ -31,7 +33,11 @@ from settings import config
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     load_embedding_model()
-    yield
+    load_reranker_model()
+    try:
+        yield
+    finally:
+        shutdown_runtime()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -74,11 +80,16 @@ async def attach_request_logging_context(request: Request, call_next):
 
 @app.get("/health")
 def health(
+    response: Response,
     x_koed_embedding_token: str | None = Header(default=None),
 ) -> dict[str, Any]:
     auth_required, auth_valid = embedding_token_auth_status(x_koed_embedding_token)
+    reranker_ready = not config.reranker_enabled or is_reranker_loaded()
+    status = "ok" if is_model_loaded() and reranker_ready else "loading"
+    if status != "ok":
+        response.status_code = 503
     return {
-        "status": "ok" if is_model_loaded() else "loading",
+        "status": status,
         "modelKey": config.model_key,
         "model": config.model_name,
         "dimensions": config.expected_dimensions,
@@ -151,6 +162,7 @@ def embed(
                 "input_count": len(request.texts),
                 "chunk_count": len(result.chunks),
                 "vector_count": len(result.vectors),
+                "measured_tokens": result.measuredTokens,
             },
         },
     )

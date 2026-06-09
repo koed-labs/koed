@@ -11,3 +11,4 @@ target
 .env.*
 
 pnpm-*
+benchmarks/koe139/artifacts/

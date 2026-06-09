@@ -213,7 +213,7 @@ describe("LCM summary worker", () => {
                 threadId: "thread-lcm-test",
                 turnId: "turn-lcm-test",
                 tokenUsage: {
-                  modelContextWindow: 32000,
+                  modelContextWindow: 32768,
                   last: {
                     inputTokens: 20,
                     cachedInputTokens: 5,
@@ -226,7 +226,7 @@ describe("LCM summary worker", () => {
             }
           ],
           tokenUsage: {
-            modelContextWindow: 32000,
+            modelContextWindow: 32768,
             last: {
               inputTokens: 20,
               cachedInputTokens: 5,
@@ -391,7 +391,7 @@ describe("LCM summary worker", () => {
               }
             ],
             tokenUsage: {
-              modelContextWindow: 32000,
+              modelContextWindow: 32768,
               last: {
                 inputTokens: 12,
                 cachedInputTokens: 2,
@@ -415,7 +415,7 @@ describe("LCM summary worker", () => {
             }
           ],
           tokenUsage: {
-            modelContextWindow: 32000,
+            modelContextWindow: 32768,
             last: {
               inputTokens: 18,
               cachedInputTokens: 3,
