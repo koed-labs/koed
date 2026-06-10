@@ -36,7 +36,7 @@ const jsonResponse = (body: Record<string, unknown>, status = 200) =>
   });
 
 describe("embedding workflow", () => {
-  it("stores validated embedding chunks", async () => {
+  it("stores validated embedding chunks without prefixing source text", async () => {
     const getEmbeddableSource = vi.fn().mockResolvedValue(source);
     const upsertSourceEmbedding = vi
       .fn()
@@ -81,6 +81,7 @@ describe("embedding workflow", () => {
         body: JSON.stringify({ texts: ["Source text"] })
       })
     );
+    expect(String(fetchFn.mock.calls[0]?.[1]?.body)).not.toContain("Instruct:");
     expect(upsertSourceEmbedding).toHaveBeenCalledWith(
       expect.objectContaining({
         source,
