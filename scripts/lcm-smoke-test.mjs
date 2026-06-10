@@ -17,7 +17,7 @@ for (let index = 2; index < process.argv.length; index += 1) {
 const apiUrl = (
   args.get("api-url") ??
   process.env.MEMORY_API_URL ??
-  "http://localhost:3000"
+  "http://localhost:3300"
 ).replace(/\/+$/, "");
 const composeProject =
   args.get("compose-project") ?? process.env.COMPOSE_PROJECT_NAME ?? "koed";

@@ -31,7 +31,7 @@ pnpm install
 Run the browser app against a local Koed API:
 
 ```bash
-VITE_KOED_API_BASE_URL=http://localhost:3000 \
+VITE_KOED_API_BASE_URL=http://localhost:3300 \
 VITE_KOED_API_TOKEN="$KOED_API_TOKEN" \
 pnpm explorer:dev
 ```

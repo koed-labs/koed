@@ -99,7 +99,7 @@ test("replaces only the generated block and preserves manual sections", () => {
       "# END GENERATED APP ENV EXAMPLES",
       "",
       "# Manual after",
-      "MEMORY_API_URL=http://localhost:3000",
+      "MEMORY_API_URL=http://localhost:3300",
       ""
     ].join("\n"),
     renderGeneratedBlock([
@@ -110,7 +110,7 @@ test("replaces only the generated block and preserves manual sections", () => {
   assert.match(next, /POSTGRES_DB=koed/);
   assert.match(next, /API_PORT=3000/);
   assert.doesNotMatch(next, /OLD=value/);
-  assert.match(next, /MEMORY_API_URL=http:\/\/localhost:3000/);
+  assert.match(next, /MEMORY_API_URL=http:\/\/localhost:3300/);
 });
 
 test("renders shared memory config outside app sections", () => {
@@ -164,7 +164,7 @@ test("sync output is deterministic", () => {
 
   fs.writeFileSync(
     path.join(root, ".env.example"),
-    "# Infra\nPOSTGRES_DB=koed\n\n# Local AI-client integration values.\nMEMORY_API_URL=http://localhost:3000\n"
+    "# Infra\nPOSTGRES_DB=koed\n\n# Local AI-client integration values.\nMEMORY_API_URL=http://localhost:3300\n"
   );
 
   const first = syncRootEnvExample(root).next;

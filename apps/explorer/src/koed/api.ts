@@ -18,7 +18,7 @@ import { selectedThreadEventPageSize } from "./threadDetailCache";
 export const apiBaseUrl = (
   import.meta.env.VITE_KOED_API_BASE_URL ??
   import.meta.env.VITE_API_BASE_URL ??
-  "http://localhost:3000"
+  "http://localhost:3300"
 ).replace(/\/$/, "");
 
 const includeInvalidated = false;

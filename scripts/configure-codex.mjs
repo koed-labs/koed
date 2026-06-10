@@ -16,8 +16,9 @@ const repoRoot = process.cwd();
 const apiUrl =
   process.env.MEMORY_API_URL ??
   process.env.CODEX_MEMORY_BASE_URL ??
-  "http://localhost:3000";
+  "http://localhost:3300";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
+const appServerBinary = process.env.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
@@ -92,7 +93,7 @@ enabled = true
 [mcp_servers.${mcpName}.env]
 MEMORY_API_URL = "${apiUrl}"
 MEMORY_API_TOKEN = "${token}"
-MEMORY_CODEX_APP_SERVER_BINARY = "codex"
+MEMORY_CODEX_APP_SERVER_BINARY = "${appServerBinary}"
 
 ${hookBlocks}
 ${markerEnd}
@@ -108,9 +109,15 @@ const withoutPrevious = existing.replace(
 mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 
-console.log(`Updated ${codexConfigPath}`);
-console.log(`Wrote ${hookConfigPath}`);
-console.log("Restart Codex to load the MCP server and hooks.");
+console.log("Codex configuration updated.");
+console.log(`Detected API URL: ${apiUrl}`);
+console.log(`Detected Node command: ${nodeCommand}`);
+console.log(`Detected Codex app-server binary: ${appServerBinary}`);
+console.log(`Wrote Codex config: ${codexConfigPath}`);
+console.log(`Wrote Capture Hook config: ${hookConfigPath}`);
 console.log(
-  "Codex may ask you to review/trust changed hooks after config.toml changes."
+  "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:bootstrap` to confirm the integration is healthy."
+);
+console.log(
+  "Codex may ask you to review or trust changed hooks after config.toml changes."
 );

@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const apiUrl = (process.env.MEMORY_API_URL ?? "http://localhost:3000").replace(
+const apiUrl = (process.env.MEMORY_API_URL ?? "http://localhost:3300").replace(
   /\/+$/,
   ""
 );
