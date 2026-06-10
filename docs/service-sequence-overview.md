@@ -6,7 +6,6 @@ the backend stores, projects, embeds, and retrieves memory, while the connected
 AI Client performs Answer Synthesis and creates LCM Summaries through local
 MCP-side workers.
 
-
 ## Services In Scope
 
 - **AI Client**: Codex is the supported AI Client in this build.
