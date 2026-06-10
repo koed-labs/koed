@@ -26,6 +26,13 @@ const originalDepthOneFanout = process.env.MEMORY_LCM_DEPTH1_FANOUT;
 const originalMemoryEventMaxTokens = process.env.MEMORY_EVENT_MAX_TOKENS;
 const originalAgentTurnStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
 const originalEmbeddingMaxTokens = process.env.EMBEDDING_MAX_TOKENS;
+const originalEmbeddingModel = process.env.EMBEDDING_MODEL;
+const originalEmbeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL;
+const originalRerankerKey = process.env.RERANKER_KEY;
+const originalEmbeddingQueryInstructionEnabled =
+  process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED;
+const originalEmbeddingQueryInstruction =
+  process.env.EMBEDDING_QUERY_INSTRUCTION;
 const originalSemanticMemoryRebuildDebounceMs =
   process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
 
@@ -189,6 +196,33 @@ describeDb("memory repository visibility", () => {
       delete process.env.EMBEDDING_MAX_TOKENS;
     } else {
       process.env.EMBEDDING_MAX_TOKENS = originalEmbeddingMaxTokens;
+    }
+    if (originalEmbeddingModel === undefined) {
+      delete process.env.EMBEDDING_MODEL;
+    } else {
+      process.env.EMBEDDING_MODEL = originalEmbeddingModel;
+    }
+    if (originalEmbeddingServiceUrl === undefined) {
+      delete process.env.EMBEDDING_SERVICE_URL;
+    } else {
+      process.env.EMBEDDING_SERVICE_URL = originalEmbeddingServiceUrl;
+    }
+    if (originalRerankerKey === undefined) {
+      delete process.env.RERANKER_KEY;
+    } else {
+      process.env.RERANKER_KEY = originalRerankerKey;
+    }
+    if (originalEmbeddingQueryInstructionEnabled === undefined) {
+      delete process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED;
+    } else {
+      process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED =
+        originalEmbeddingQueryInstructionEnabled;
+    }
+    if (originalEmbeddingQueryInstruction === undefined) {
+      delete process.env.EMBEDDING_QUERY_INSTRUCTION;
+    } else {
+      process.env.EMBEDDING_QUERY_INSTRUCTION =
+        originalEmbeddingQueryInstruction;
     }
     if (originalSemanticMemoryRebuildDebounceMs === undefined) {
       delete process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
@@ -671,6 +705,144 @@ describeDb("memory repository visibility", () => {
         .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
         .map((source) => source.content)
     );
+  });
+
+  it("prefixes semantic recall query embeddings with the default Qwen instruction", async () => {
+    process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
+    process.env.EMBEDDING_MODEL = "qwen3-0.6b";
+    process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED = "true";
+    delete process.env.EMBEDDING_QUERY_INSTRUCTION;
+    delete process.env.RERANKER_KEY;
+
+    const alice = await repo.createUser({
+      email: `alice-query-instruction-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-query-instruction-${randomUUID()}`;
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: "Aurora retrieval target for query instruction testing."
+    });
+    const dimensions = 1024;
+    const vector = Array.from({ length: dimensions }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await repo.upsertSourceEmbedding({
+      source: {
+        sourceType: "memory_event",
+        sourceId: event.id,
+        ownerUserId: alice.id,
+        visibility: "personal",
+        text: event.content,
+        sourceHash: `hash-${event.id}`
+      },
+      model: "qwen3-0.6b",
+      dimensions,
+      version: "qwen3-0.6b",
+      vector
+    });
+
+    const embeddingFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "qwen3-0.6b",
+          dimensions,
+          vectors: [vector]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(embeddingFetch);
+
+    const query = "Which memory mentions Aurora?";
+    await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query,
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "raw_fallback_search",
+      strictLimit: true,
+      limit: 1
+    });
+
+    const init = embeddingFetch.mock.calls[0]?.[1];
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as { texts?: string[] })
+        : {};
+    expect(body.texts?.[0]).toBe(
+      [
+        "Instruct: Given a question about captured AI-client memory, retrieve relevant memory events, conversation items, and summaries that answer the question.",
+        `Query: ${query}`
+      ].join("\n")
+    );
+  });
+
+  it("can disable semantic recall query embedding instructions", async () => {
+    process.env.EMBEDDING_SERVICE_URL = "http://embedding.test";
+    process.env.EMBEDDING_MODEL = "qwen3-0.6b";
+    process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED = "false";
+    delete process.env.RERANKER_KEY;
+
+    const alice = await repo.createUser({
+      email: `alice-query-instruction-disabled-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-query-instruction-disabled-${randomUUID()}`;
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: "Plain query embedding target for disabled instruction testing."
+    });
+    const dimensions = 1024;
+    const vector = Array.from({ length: dimensions }, (_, index) =>
+      index === 0 ? 1 : 0
+    );
+    await repo.upsertSourceEmbedding({
+      source: {
+        sourceType: "memory_event",
+        sourceId: event.id,
+        ownerUserId: alice.id,
+        visibility: "personal",
+        text: event.content,
+        sourceHash: `hash-${event.id}`
+      },
+      model: "qwen3-0.6b",
+      dimensions,
+      version: "qwen3-0.6b",
+      vector
+    });
+
+    const embeddingFetch = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "qwen3-0.6b",
+          dimensions,
+          vectors: [vector]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(embeddingFetch);
+
+    const query = "Find the plain query target";
+    await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query,
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "raw_fallback_search",
+      strictLimit: true,
+      limit: 1
+    });
+
+    const init = embeddingFetch.mock.calls[0]?.[1];
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as { texts?: string[] })
+        : {};
+    expect(body.texts).toEqual([query]);
   });
 
   it("packs LCM leaves on semantic memory event boundaries without crossing the token threshold", async () => {
@@ -5840,9 +6012,18 @@ describeDb("memory repository visibility", () => {
         { userId: alice.id },
         { visibility: "personal" }
       );
-      const expanded = await repo.expandMemoryNode(compacted.leafNodeIds[0]!, {
-        userId: alice.id
-      });
+      const expandedLeaves = await Promise.all(
+        compacted.leafNodeIds.map((nodeId) =>
+          repo.expandMemoryNode(nodeId, { userId: alice.id })
+        )
+      );
+      const expanded = expandedLeaves.find((leaf) =>
+        leaf.sourceItems.some((item) => item.supportingContext?.length)
+      );
+      expect(expanded).toBeDefined();
+      if (!expanded) {
+        throw new Error("Expected an LCM leaf with IDE supporting context");
+      }
 
       expect(projection.rawItemsProjected).toBe(4);
       expect(projection.messagesCreated).toBe(3);

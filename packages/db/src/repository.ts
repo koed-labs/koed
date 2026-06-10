@@ -1457,10 +1457,40 @@ const positiveIntEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const booleanEnv = (name: string, fallback: boolean): boolean => {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) {
+    return fallback;
+  }
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+  return fallback;
+};
+
 const nonNegativeFloatEnv = (name: string, fallback: number): number => {
   const parsed = Number.parseFloat(process.env[name] ?? "");
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
+
+const DEFAULT_EMBEDDING_QUERY_INSTRUCTION =
+  "Given a question about captured AI-client memory, retrieve relevant memory events, conversation items, and summaries that answer the question.";
+
+const embeddingQueryInstruction = (): string =>
+  process.env.EMBEDDING_QUERY_INSTRUCTION?.trim() ||
+  DEFAULT_EMBEDDING_QUERY_INSTRUCTION;
+
+const embeddingQueryInstructionEnabled = (): boolean =>
+  localEmbeddingVersion().startsWith("qwen3-") &&
+  booleanEnv("EMBEDDING_QUERY_INSTRUCTION_ENABLED", true);
+
+const formatEmbeddingQuery = (query: string): string =>
+  embeddingQueryInstructionEnabled()
+    ? `Instruct: ${embeddingQueryInstruction()}\nQuery: ${query}`
+    : query;
 
 const DEFAULT_MEMORY_EVENT_MAX_TOKENS = 2_048;
 const DEFAULT_EMBEDDING_MAX_TOKENS = 4_096;
@@ -2429,6 +2459,11 @@ const embedTexts = async (
     vectors: payload.vectors
   };
 };
+
+const embedQueryTexts = (
+  texts: string[]
+): Promise<{ model: string; dimensions: number; vectors: number[][] }> =>
+  embedTexts(texts.map(formatEmbeddingQuery));
 
 const rerankTexts = async (
   query: string,
@@ -5949,7 +5984,7 @@ export const createMemorySourceRepository = (
 
     try {
       if (requestedStage !== "lexical_search") {
-        const embedded = await embedTexts([input.query]);
+        const embedded = await embedQueryTexts([input.query]);
         if (embedded.vectors[0]) {
           const queryVector = embedded.vectors[0];
           const embeddingTable = embeddingTableForDimensions(
