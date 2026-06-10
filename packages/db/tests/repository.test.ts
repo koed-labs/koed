@@ -6012,9 +6012,18 @@ describeDb("memory repository visibility", () => {
         { userId: alice.id },
         { visibility: "personal" }
       );
-      const expanded = await repo.expandMemoryNode(compacted.leafNodeIds[0]!, {
-        userId: alice.id
-      });
+      const expandedLeaves = await Promise.all(
+        compacted.leafNodeIds.map((nodeId) =>
+          repo.expandMemoryNode(nodeId, { userId: alice.id })
+        )
+      );
+      const expanded = expandedLeaves.find((leaf) =>
+        leaf.sourceItems.some((item) => item.supportingContext?.length)
+      );
+      expect(expanded).toBeDefined();
+      if (!expanded) {
+        throw new Error("Expected an LCM leaf with IDE supporting context");
+      }
 
       expect(projection.rawItemsProjected).toBe(4);
       expect(projection.messagesCreated).toBe(3);
