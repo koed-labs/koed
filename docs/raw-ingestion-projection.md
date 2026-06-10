@@ -7,6 +7,10 @@ Koed stores coding-tool output in two layers:
 - Projected records are Koed-specific semantic units used by retrieval,
   summaries, graph views, Questions, and the explorer APIs.
 
+In domain terms, **Projection** is the transformation from captured source
+activity into Koed semantic memory structures. This document describes the
+implementation boundary for that transformation.
+
 ## Terms
 
 - Connector: an integration boundary for a coding tool family, such as Codex.
@@ -18,7 +22,7 @@ Koed stores coding-tool output in two layers:
   type, raw JSON, and an idempotency key.
 - Ingestion service: Koed API and repository code that accepts canonical raw
   records, validates ownership, and persists them idempotently.
-- Projection pipeline: repository code exposed through
+- Projection pipeline: the implementation path exposed through
   `/v1/memory/conversation-items/project` that derives `sessions`, `turns`,
   `messages`, `tool_events`, `memory_events`, token usage rows, LCM nodes, and
   embeddings from raw source records.

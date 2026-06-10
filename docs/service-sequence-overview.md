@@ -14,7 +14,7 @@ MCP-side workers.
 - **MCP Server**: the local process that exposes `memory_answer`, runs local
   memory-answer work, and runs the LCM Summary Service.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
-  records, projects semantic memory, and serves recall endpoints.
+  records, runs Projection, and serves recall endpoints.
 - **Worker**: the BullMQ/background process that performs catch-up projection,
   embedding work, and LCM node embedding.
 - **Embedding Service**: local service that turns memory text into retrieval
