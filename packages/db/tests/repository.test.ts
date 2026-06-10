@@ -742,7 +742,7 @@ describeDb("memory repository visibility", () => {
       vector
     });
 
-    const embeddingFetch = vi.fn().mockResolvedValue(
+    const embeddingFetch = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "qwen3-0.6b",
@@ -766,9 +766,11 @@ describeDb("memory repository visibility", () => {
       limit: 1
     });
 
-    const body = JSON.parse(
-      String(embeddingFetch.mock.calls[0]?.[1]?.body ?? "{}")
-    ) as { texts?: string[] };
+    const init = embeddingFetch.mock.calls[0]?.[1];
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as { texts?: string[] })
+        : {};
     expect(body.texts?.[0]).toBe(
       [
         "Instruct: Given a question about captured AI-client memory, retrieve relevant memory events, conversation items, and summaries that answer the question.",
@@ -811,7 +813,7 @@ describeDb("memory repository visibility", () => {
       vector
     });
 
-    const embeddingFetch = vi.fn().mockResolvedValue(
+    const embeddingFetch = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "qwen3-0.6b",
@@ -835,9 +837,11 @@ describeDb("memory repository visibility", () => {
       limit: 1
     });
 
-    const body = JSON.parse(
-      String(embeddingFetch.mock.calls[0]?.[1]?.body ?? "{}")
-    ) as { texts?: string[] };
+    const init = embeddingFetch.mock.calls[0]?.[1];
+    const body =
+      typeof init?.body === "string"
+        ? (JSON.parse(init.body) as { texts?: string[] })
+        : {};
     expect(body.texts).toEqual([query]);
   });
 
