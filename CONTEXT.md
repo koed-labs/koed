@@ -5,130 +5,25 @@ on infrastructure controlled by the operator.
 
 ## Language
 
-**Koed**:
-The source-available Koed distribution for operator-managed memory
-infrastructure.
-_Avoid_: Koed Cloud, hosted Koed, open-source Koed
-
-**Operator**:
-The person or organization responsible for running a Koed deployment.
-_Avoid_: Customer, tenant, account
-
-**Local Operator Scripts**:
-Trusted commands run from the deployment checkout, such as API Token bootstrap.
-_Avoid_: Console, dashboard, admin app
-
-**User**:
-A human account authenticated inside a Koed deployment.
-_Avoid_: Account, customer, operator
-
-**API Token**:
-A user-owned credential used by an AI-client integration to access Koed.
-_Avoid_: AI key, provider key, password
-
-**Project**:
-A codebase or working directory boundary used to group memory.
-_Avoid_: Workspace, repository, folder
-
-**Conversation**:
-An AI-client interaction thread whose activity may be captured.
-_Avoid_: Thread, chat, transcript
-
-**Captured Session**:
-Koed's record of memory capture for a conversation.
-_Avoid_: Conversation, thread, transcript
-
 **AI Client**:
 An external AI tool that produces conversations and may call Koed for capture or recall.
 _Avoid_: MCP server, model provider, assistant
-
-**Supported AI Client Integration**:
-An AI-client integration that supports both automatic capture through a capture hook and recall through Koed memory tools.
-_Avoid_: Recall-only integration, MCP-only integration
-
-**MCP Server**:
-The local integration process that exposes Koed memory tools to an AI client.
-_Avoid_: AI client, backend, capture hook
-
-**Diagnostic Memory Tool**:
-A low-level memory tool exposed only for debugging or inspection.
-_Avoid_: Supported recall path, normal memory tool
-
-**Capture Hook**:
-A client-side integration point that sends conversation activity to Koed for capture.
-_Avoid_: MCP server, recall tool, backend poller
-
-**Supported Capture Hook**:
-The TypeScript Codex capture hook used as the supported automatic capture integration.
-_Avoid_: Python capture hook, fallback hook, MCP capture endpoint
-
-**Embedding Service**:
-A local service that turns memory text into retrieval vectors.
-_Avoid_: LLM provider, synthesis service, model provider
-
-**Recall**:
-Retrieving relevant memory evidence for an AI client.
-_Avoid_: Synthesis, answer generation, summarization
-
-**Evidence Bundle**:
-Recalled memory evidence plus citation and retrieval metadata handed to an AI client for synthesis.
-_Avoid_: Answer, summary, search result
-
-**Memory Answer**:
-The supported recall entry point that supplies evidence for AI-client answer synthesis.
-_Avoid_: Backend answer generation, diagnostic search
-
-**Synthesis**:
-Producing natural-language answers or summaries from evidence.
-_Avoid_: Recall, retrieval, embedding
 
 **Answer Synthesis**:
 Producing a response from recalled memory evidence.
 _Avoid_: Recall, search, evidence retrieval
 
-**LCM Placeholder**:
-A deterministic backend-created source outline used until an LCM summary is submitted.
-_Avoid_: LCM summary, generated summary, synthesis
+**API Token**:
+A user-owned credential used by an AI-client integration to access Koed.
+_Avoid_: AI key, provider key, password
 
-**LCM Summary**:
-A synthesized summary of memory source items or lower-level memory nodes.
-_Avoid_: LCM placeholder, source outline, concatenation
+**Capture Hook**:
+A client-side integration point that sends conversation activity to Koed for capture.
+_Avoid_: MCP server, recall tool, backend poller
 
-**LCM Summary Service**:
-Local background work that turns pending LCM placeholders into LCM summaries through the AI client.
-_Avoid_: Agent tool, backend LLM worker, manual summarization
-
-**Diagnostic Status**:
-Non-blocking operational information used to inspect Koed behavior.
-_Avoid_: Health gate, setup requirement, authorization rule
-
-**Pending LCM Staleness**:
-A backend-visible diagnostic warning based on the age of the oldest pending LCM placeholder.
-_Avoid_: Health failure, pending count, summarization error
-
-**Memory**:
-Durable knowledge captured from AI-client activity and later retrieved as evidence.
-_Avoid_: Fact, note, document
-
-**Personal Memory**:
-Memory visible only to the owning user.
-_Avoid_: Private memory, individual memory
-
-**Memory Event**:
-A captured source item from an AI-client session.
-_Avoid_: Fact, extracted memory, log line
-
-**Memory Node**:
-A summarized retrievable unit derived from memory events or other memory nodes.
-_Avoid_: Fact, document, chunk
-
-**Retrieval Scope**:
-The caller's choice of whether recall searches personal memory.
-_Avoid_: Visibility, search domain, access level
-
-**Search Domain**:
-The boundary that limits recall to one session, one project, or all visible memory.
-_Avoid_: Retrieval scope, visibility, access level
+**Capture Pause**:
+A temporary capture-policy override that blocks automatic capture until a specified time.
+_Avoid_: Capture state, disabled policy, deletion
 
 **Capture Policy**:
 A user-owned rule that decides whether AI-client activity may become memory.
@@ -142,9 +37,119 @@ _Avoid_: Visibility, capture target, pause
 The activity boundary a capture policy applies to.
 _Avoid_: Capture state, visibility, search domain
 
-**Capture Pause**:
-A temporary capture-policy override that blocks automatic capture until a specified time.
-_Avoid_: Capture state, disabled policy, deletion
+**Captured Session**:
+Koed's record of memory capture for a conversation.
+_Avoid_: Conversation, thread, transcript
+
+**Conversation**:
+An AI-client interaction thread whose activity may be captured.
+_Avoid_: Thread, chat, transcript
+
+**Diagnostic Memory Tool**:
+A low-level memory tool exposed only for debugging or inspection.
+_Avoid_: Supported recall path, normal memory tool
+
+**Diagnostic Status**:
+Non-blocking operational information used to inspect Koed behavior.
+_Avoid_: Health gate, setup requirement, authorization rule
+
+**Embedding Service**:
+A local service that turns memory text into retrieval vectors.
+_Avoid_: LLM provider, synthesis service, model provider
+
+**Evidence Bundle**:
+Recalled memory evidence plus citation and retrieval metadata handed to an AI client for synthesis.
+_Avoid_: Answer, summary, search result
+
+**Koed**:
+The source-available Koed distribution for operator-managed memory
+infrastructure.
+_Avoid_: Koed Cloud, hosted Koed, open-source Koed
+
+**LCM Placeholder**:
+A deterministic backend-created source outline used until an LCM summary is submitted.
+_Avoid_: LCM summary, generated summary, synthesis
+
+**LCM Summary**:
+A synthesized summary of memory source items or lower-level memory nodes.
+_Avoid_: LCM placeholder, source outline, concatenation
+
+**LCM Summary Service**:
+Local background work that turns pending LCM placeholders into LCM summaries through the AI client.
+_Avoid_: Agent tool, backend LLM worker, manual summarization
+
+**Local Operator Scripts**:
+Trusted commands run from the deployment checkout, such as API Token bootstrap.
+_Avoid_: Console, dashboard, admin app
+
+**MCP Server**:
+The local integration process that exposes Koed memory tools to an AI client.
+_Avoid_: AI client, backend, capture hook
+
+**Memory**:
+Durable knowledge captured from AI-client activity and later retrieved as evidence.
+_Avoid_: Fact, note, document
+
+**Memory Answer**:
+The supported recall entry point that supplies evidence for AI-client answer synthesis.
+_Avoid_: Backend answer generation, diagnostic search
+
+**Memory Event**:
+A captured source item from an AI-client session.
+_Avoid_: Fact, extracted memory, log line
+
+**Memory Node**:
+A summarized retrievable unit derived from memory events or other memory nodes.
+_Avoid_: Fact, document, chunk
+
+**Operator**:
+The person or organization responsible for running a Koed deployment.
+_Avoid_: Customer, tenant, account
+
+**Pending LCM Staleness**:
+A backend-visible diagnostic warning based on the age of the oldest pending LCM placeholder.
+_Avoid_: Health failure, pending count, summarization error
+
+**Personal Memory**:
+Memory visible only to the owning user.
+_Avoid_: Private memory, individual memory
+
+**Project**:
+A codebase or working directory boundary used to group memory.
+_Avoid_: Workspace, repository, folder
+
+**Projection**:
+The transformation from captured source activity into Koed semantic memory
+structures used for recall, summaries, graph views, and inspection.
+_Avoid_: Capture, synthesis, raw ingestion
+
+**Recall**:
+Retrieving relevant memory evidence for an AI client.
+_Avoid_: Synthesis, answer generation, summarization
+
+**Retrieval Scope**:
+The caller's choice of whether recall searches personal memory.
+_Avoid_: Visibility, search domain, access level
+
+**Search Domain**:
+The boundary that limits recall to one session, one project, or all visible memory.
+_Avoid_: Retrieval scope, visibility, access level
+
+**Supported AI Client Integration**:
+An AI-client integration that supports both automatic capture through a capture hook and recall through Koed memory tools.
+_Avoid_: Recall-only integration, MCP-only integration
+
+**Supported Capture Hook**:
+The TypeScript Codex capture hook used as the supported automatic capture integration.
+_Avoid_: Python capture hook, fallback hook, MCP capture endpoint
+
+**Synthesis**:
+Producing natural-language answers or summaries from evidence.
+_Avoid_: Recall, retrieval, embedding
+
+**User**:
+A human account authenticated inside a Koed deployment.
+_Avoid_: Account, customer, operator
 
 ## Relationships
 
@@ -171,6 +176,7 @@ _Avoid_: Capture state, disabled policy, deletion
 - An **AI Client** performs **Synthesis** from recalled evidence
 - **Personal Memory** belongs to exactly one **User**
 - **Memory** is composed from one or more **Memory Events**
+- **Projection** transforms captured source activity into Koed semantic memory structures such as **Memory Events**
 - A **Memory Node** summarizes one or more **Memory Events** or **Memory Nodes**
 - A **Retrieval Scope** currently includes **Personal Memory**
 - A **Search Domain** narrows recall within the selected **Retrieval Scope**
