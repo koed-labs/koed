@@ -1,5 +1,17 @@
 # Agent Guidance
 
+## First Stop for Fresh Clones
+
+If you are helping an Operator or User get started in a fresh clone, begin here:
+
+1. `README.md` → Quickstart
+2. `docs/codex-integration.md` → Codex setup and manual bootstrap steps
+3. `docs/running-koed.md` → local run and operation notes
+4. `docs/configuration.md` → environment and deployment settings
+5. `CONTEXT.md` → product language and canonical terms
+
+If you are making code changes, keep using the contributor guidance below.
+
 ## Domain Language
 
 - Read `CONTEXT.md` before making domain, naming, API, documentation, or user-facing wording changes.
@@ -12,6 +24,7 @@
 
 - Put implementation follow-ups in `TODO.md`, not `CONTEXT.md`.
 - `TODO.md` is the current implementation backlog from the domain discussion. Check it before starting cleanup work.
+- If `TODO.md` is present, check it before starting cleanup work.
 - Current API-token behavior is personal-memory only.
 - Server-side LLM synthesis is out of scope for this self-hosted build. Do not add or revive backend LLM calls for answer or LCM summary synthesis.
 
