@@ -1843,6 +1843,29 @@ describe("api health", () => {
     expect(response.body).toBe("OK");
   });
 
+  it("orients operators who open the API root", async () => {
+    process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
+    const app = await buildServer();
+    const response = await app.inject({ method: "GET", url: "/" });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      service: "koed-api",
+      status: "ok",
+      routes: {
+        health: "/health",
+        readiness: "/ready",
+        publicStatus: "/self-host/status",
+        openapi: "/openapi.json"
+      },
+      explorer: {
+        defaultUrl: "http://localhost:5174"
+      }
+    });
+    expect(response.body).not.toContain("/sensitive/local/path");
+  });
+
   it("returns a request id header and accepts safe caller-provided ids", async () => {
     const app = await buildServer();
     const generated = await app.inject({ method: "GET", url: "/health" });

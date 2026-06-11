@@ -45,6 +45,20 @@ export const registerOperationalRoutes = (
     enqueueEmbedding
   } = options;
 
+  app.get("/", async () => ({
+    service: "koed-api",
+    status: "ok",
+    routes: {
+      health: "/health",
+      readiness: "/ready",
+      publicStatus: "/self-host/status",
+      openapi: "/openapi.json"
+    },
+    explorer: {
+      defaultUrl: "http://localhost:5174"
+    }
+  }));
+
   app.get("/health", async (_request, reply) =>
     reply.type("text/plain").send("OK")
   );
