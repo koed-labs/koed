@@ -70,6 +70,14 @@ _Avoid_: Koed Cloud, hosted Koed, open-source Koed
 A deterministic backend-created source outline used until an LCM summary is submitted.
 _Avoid_: LCM summary, generated summary, synthesis
 
+**LCM Leaf**:
+The first-level Memory Node that summarizes one or more Memory Events.
+_Avoid_: Memory event, raw capture, final answer
+
+**LCM Rollup**:
+The second-level Memory Node that summarizes one or more LCM leaves.
+_Avoid_: Memory event, raw capture, backend answer
+
 **LCM Summary**:
 A synthesized summary of memory source items or lower-level memory nodes.
 _Avoid_: LCM placeholder, source outline, concatenation
@@ -178,6 +186,9 @@ _Avoid_: Account, customer, operator
 - **Memory** is composed from one or more **Memory Events**
 - **Projection** transforms captured source activity into Koed semantic memory structures such as **Memory Events**
 - A **Memory Node** summarizes one or more **Memory Events** or **Memory Nodes**
+- An **LCM Leaf** is a **Memory Node** summarized from one or more **Memory Events**
+- An **LCM Rollup** is a **Memory Node** summarized from one or more **LCM Leaves**
+- An **LCM Summary** may complete either an **LCM Leaf** or an **LCM Rollup**
 - A **Retrieval Scope** currently includes **Personal Memory**
 - A **Search Domain** narrows recall within the selected **Retrieval Scope**
 - A **User** owns one or more **Capture Policies**

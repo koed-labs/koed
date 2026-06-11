@@ -145,6 +145,31 @@ sequenceDiagram
 10. The AI Client receives the final Memory Answer and can cite returned
     evidence when requested.
 
+### Recall Stage Ordering
+
+Default recall uses a coarse-to-fine stage order:
+
+1. **Rollup search** looks for broad LCM Rollup matches first.
+2. **Scoped leaf search** searches LCM Leaves beneath selected rollups for
+   more detailed evidence.
+3. **Leaf search** also searches LCM Leaves independently, so detailed evidence
+   can surface even when its parent rollup was not selected.
+4. **Fresh pending search** searches recent Memory Events that have not yet
+   been compacted into LCM Leaves.
+5. **Raw fallback search** searches raw embedded evidence and is admitted only
+   when higher-priority stages have not filled the requested evidence limit,
+   unless the caller explicitly requests raw fallback.
+
+Lexical search is available for exact phrases, identifiers, filenames, error
+text, named topics, or recovery after semantic stages fail. It is not the normal
+first path for Memory Answer recall.
+
+Stage scores are directional relevance signals. Final evidence selection favors
+stage priority first, then weighted score, recency, and stable source ordering.
+Pending LCM Summary work may be returned as degraded evidence; the AI Client
+should surface that status and rely cautiously on exact source text rather than
+treating the pending summary as complete.
+
 ```mermaid
 sequenceDiagram
   participant Client as AI Client
