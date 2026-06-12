@@ -45,7 +45,7 @@ export const registerOperationalRoutes = (
     enqueueEmbedding
   } = options;
 
-  app.get("/", async () => ({
+  app.get("/", () => ({
     service: "koed-api",
     status: "ok",
     routes: {
