@@ -21,7 +21,8 @@ API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://loca
 ```
 
 Finish the Codex integration after the API migrations have run; `pnpm codex:bootstrap`
-builds `@koed/db` and `@koed/mcp-server` automatically:
+creates the API token, writes it into Explorer local config, refreshes the Docker-built
+Explorer, and builds `@koed/db` and `@koed/mcp-server` automatically:
 
 ```bash
 pnpm codex:bootstrap

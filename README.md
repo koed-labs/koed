@@ -44,7 +44,8 @@ http://localhost:5174
 
 ## Connect Codex
 
-`pnpm codex:bootstrap` creates the local API token, builds `@koed/db` and
+`pnpm codex:bootstrap` creates the local API token, writes it into Explorer
+local config, refreshes the Docker-built Explorer, builds `@koed/db` and
 `@koed/mcp-server`, writes the Codex MCP and Capture Hook configuration,
 verifies capture, and finishes with a doctor check. See
 [docs/codex-integration.md](docs/codex-integration.md) for manual setup and

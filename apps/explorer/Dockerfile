@@ -10,7 +10,9 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 ARG VITE_KOED_API_BASE_URL=http://localhost:3300
+ARG VITE_KOED_API_TOKEN=
 ENV VITE_KOED_API_BASE_URL=$VITE_KOED_API_BASE_URL
+ENV VITE_KOED_API_TOKEN=$VITE_KOED_API_TOKEN
 
 RUN pnpm --filter @koed/explorer build
 

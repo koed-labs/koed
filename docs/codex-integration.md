@@ -10,7 +10,8 @@ From a running Koed checkout, bootstrap Codex end-to-end:
 pnpm codex:bootstrap
 ```
 
-This command creates the local API token, writes the Codex MCP and Capture Hook
+This command creates the local API token, writes it into Explorer local config,
+refreshes the Docker-built Explorer, writes the Codex MCP and Capture Hook
 configuration, verifies capture, and finishes with a doctor check.
 
 ## API Token

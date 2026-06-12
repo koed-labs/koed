@@ -79,6 +79,9 @@ test("codex bootstrap runs the setup flow in order", async () => {
     onTokenCreated: (createdTokenResult) => {
       calls.push(["token-output", createdTokenResult.token]);
     },
+    writeExplorerTokenConfigFn: ({ rootDir, token }) => {
+      calls.push(["write-explorer-token-config", rootDir, token]);
+    },
     onComplete: (summary) => {
       calls.push(["complete", summary]);
     }
@@ -101,12 +104,21 @@ test("codex bootstrap runs the setup flow in order", async () => {
       "Build @koed/mcp-server",
       "create-token",
       "token-output",
+      "write-explorer-token-config",
       "Configure Codex",
+      "Refresh Explorer Docker image",
       "Verify capture",
       "Run doctor",
       "complete"
     ]
   );
+
+  const writeConfigCall = calls.find(
+    ([label]) => label === "write-explorer-token-config"
+  );
+  assert.ok(writeConfigCall);
+  assert.equal(writeConfigCall[1], process.cwd());
+  assert.equal(writeConfigCall[2], tokenResult.token);
 
   const configureCall = calls.find(([label]) => label === "Configure Codex");
   assert.ok(configureCall);

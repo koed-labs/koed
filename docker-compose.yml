@@ -176,6 +176,7 @@ services:
       dockerfile: apps/explorer/Dockerfile
       args:
         VITE_KOED_API_BASE_URL: ${EXPLORER_API_BASE_URL:-http://localhost:3000}
+        VITE_KOED_API_TOKEN: ${VITE_KOED_API_TOKEN:-}
     environment:
       NODE_ENV: ${EXPLORER_NODE_ENV:-production}
     ports:
