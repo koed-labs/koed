@@ -22,10 +22,16 @@ package paths have been removed.
 
 ## Development
 
-Install dependencies:
+For the guided local setup, run from the repository root:
 
 ```bash
-pnpm install
+pnpm clients:bootstrap
+```
+
+If you already have a Koed API Token and only need to wire Explorer config:
+
+```bash
+pnpm explorer:bootstrap --token "$KOED_API_TOKEN"
 ```
 
 Run the browser app against a local Koed API:

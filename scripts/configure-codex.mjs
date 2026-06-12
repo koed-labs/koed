@@ -116,7 +116,7 @@ console.log(`Detected Codex app-server binary: ${appServerBinary}`);
 console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
 console.log(`Wrote Capture Hook config: ${hookConfigPath}`);
 console.log(
-  "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:bootstrap` to confirm the integration is healthy."
+  "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:doctor` to confirm the integration is healthy."
 );
 console.log(
   "Codex may ask you to review or trust changed hooks after config.toml changes."

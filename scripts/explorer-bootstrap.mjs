@@ -64,7 +64,7 @@ const parseArgs = (argv, environment = process.env) => {
   parsed.token = parsed.token.trim();
   if (!parsed.token) {
     throw new Error(
-      `Explorer API token is required. Run pnpm codex:bootstrap first or pass --token.\n\n${usageText}`
+      `Explorer API token is required. Run pnpm clients:bootstrap, run pnpm codex:bootstrap first, or pass --token.\n\n${usageText}`
     );
   }
 
