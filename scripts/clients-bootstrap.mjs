@@ -21,6 +21,49 @@ Runs the guided Koed bootstrap path:
 const hasHelpArg = (argv) =>
   argv.some((arg) => arg === "--help" || arg === "-h");
 
+const defaultApiUrl = "http://localhost:3300";
+
+const resolveApiUrl = (environment) =>
+  (
+    environment.MEMORY_API_URL ??
+    environment.CODEX_MEMORY_BASE_URL ??
+    (environment.API_HOST_PORT
+      ? `http://localhost:${environment.API_HOST_PORT}`
+      : defaultApiUrl)
+  ).trim();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForApiReady = async ({
+  apiUrl,
+  timeoutMs = 120000,
+  intervalMs = 2000
+}) => {
+  const readyUrl = new URL("/ready", apiUrl);
+  const startedAt = Date.now();
+  let lastError = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(readyUrl);
+      if (response.ok) {
+        return;
+      }
+
+      const body = await response.text().catch(() => "");
+      lastError = `HTTP ${response.status}${body ? `: ${body.trim()}` : ""}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    await sleep(intervalMs);
+  }
+
+  throw new Error(
+    `API did not become ready at ${readyUrl.toString()} within ${timeoutMs}ms${lastError ? ` (last error: ${lastError})` : ""}.`
+  );
+};
+
 const runCommand = ({ label, command, args, cwd = rootDir }) => {
   console.log(`> ${label}`);
   const result = spawnSync(command, args, {
@@ -42,6 +85,7 @@ export const runClientsBootstrap = async ({
   environment = process.env,
   rootDir: bootstrapRootDir = rootDir,
   runCommandFn = runCommand,
+  waitForApiReadyFn = waitForApiReady,
   runCodexBootstrapFn = runCodexBootstrap,
   runExplorerBootstrapFn = runExplorerBootstrap,
   onComplete = (result) => {
@@ -87,9 +131,12 @@ export const runClientsBootstrap = async ({
     cwd: bootstrapRootDir
   });
 
+  const apiUrl = resolveApiUrl(environment);
+  await waitForApiReadyFn({ apiUrl });
+
   const codex = await runCodexBootstrapFn({
     argv: [],
-    environment,
+    environment: { ...environment, MEMORY_API_URL: apiUrl },
     skipSetup: true
   });
 

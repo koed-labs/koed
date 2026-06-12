@@ -5,9 +5,13 @@ import { runClientsBootstrap } from "./clients-bootstrap.mjs";
 test("clients bootstrap chains environment, codex, and explorer setup", async () => {
   const calls = [];
   const result = await runClientsBootstrap({
+    environment: { API_HOST_PORT: "4545" },
     rootDir: "/tmp/koed",
     runCommandFn: async ({ label, command, args, cwd }) => {
       calls.push([label, command, args, cwd]);
+    },
+    waitForApiReadyFn: async ({ apiUrl }) => {
+      calls.push(["api-ready", apiUrl]);
     },
     runCodexBootstrapFn: async ({ skipSetup }) => {
       calls.push(["codex-bootstrap", skipSetup]);
@@ -33,11 +37,13 @@ test("clients bootstrap chains environment, codex, and explorer setup", async ()
     [
       "Prepare local environment",
       "Start Koed backend services",
+      "api-ready",
       "codex-bootstrap",
       "explorer-bootstrap",
       "complete"
     ]
   );
-  assert.equal(calls[2][1], true);
-  assert.equal(calls[3][1], "cmt_token");
+  assert.equal(calls[2][1], "http://localhost:4545");
+  assert.equal(calls[3][1], true);
+  assert.equal(calls[4][1], "cmt_token");
 });
