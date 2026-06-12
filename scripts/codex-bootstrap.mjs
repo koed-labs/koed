@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,36 +144,6 @@ export const parseBootstrapArgs = (argv, environment = process.env) => {
 const hasHelpArg = (argv) =>
   argv.some((arg) => arg === "--help" || arg === "-h");
 
-const updateEnvFileValue = (filePath, key, value) => {
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
-  const lines = existing === "" ? [] : existing.split(/\r?\n/);
-  let replaced = false;
-  const nextLines = lines.map((line) => {
-    if (line.startsWith(`${key}=`)) {
-      replaced = true;
-      return `${key}=${value}`;
-    }
-    return line;
-  });
-
-  if (!replaced) {
-    nextLines.push(`${key}=${value}`);
-  }
-
-  const rendered = `${nextLines.join("\n")}${nextLines.length > 0 ? "\n" : ""}`;
-  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
-  writeFileSync(filePath, rendered, { mode: 0o600 });
-};
-
-const writeExplorerTokenConfig = ({ rootDir, token }) => {
-  updateEnvFileValue(resolve(rootDir, ".env"), "VITE_KOED_API_TOKEN", token);
-  updateEnvFileValue(
-    resolve(rootDir, "apps/explorer/.env.local"),
-    "VITE_KOED_API_TOKEN",
-    token
-  );
-};
-
 const readFlagValue = (argv, index, flag) => {
   const value = argv[index + 1];
   if (!value || value.startsWith("--")) {
@@ -239,8 +208,8 @@ export const runCodexBootstrap = async ({
   createRepoFn = null,
   loadRootEnvFn = loadRootEnv,
   createTokenBootstrap = createApiTokenBootstrap,
-  writeExplorerTokenConfigFn = writeExplorerTokenConfig,
   runCommandFn = runCommand,
+  skipSetup = false,
   onTokenCreated = (tokenResult) =>
     console.log(formatCreateApiTokenResult(tokenResult)),
   onComplete = (result) => {
@@ -265,11 +234,13 @@ export const runCodexBootstrap = async ({
   let shouldCloseRepo = false;
 
   try {
-    await runCommandFn({
-      label: "Prepare local environment",
-      command: process.execPath,
-      args: [setupEnvScript]
-    });
+    if (!skipSetup) {
+      await runCommandFn({
+        label: "Prepare local environment",
+        command: process.execPath,
+        args: [setupEnvScript]
+      });
+    }
 
     loadRootEnvFn(rootDir, environment);
 
@@ -309,8 +280,6 @@ export const runCodexBootstrap = async ({
 
     await onTokenCreated(tokenResult);
 
-    writeExplorerTokenConfigFn({ rootDir, token: tokenResult.token });
-
     await runCommandFn({
       label: "Configure Codex",
       command: process.execPath,
@@ -321,12 +290,6 @@ export const runCodexBootstrap = async ({
         MEMORY_NODE_COMMAND: args.nodeCommand,
         MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary
       }
-    });
-
-    await runCommandFn({
-      label: "Refresh Explorer Docker image",
-      command: "docker",
-      args: ["compose", "up", "-d", "--build", "explorer"]
     });
 
     if (!args.skipVerify) {

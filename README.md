@@ -23,17 +23,10 @@ that memory available through MCP recall.
 > [!IMPORTANT]  
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
-Create the local environment file and start Koed:
+Run the guided local bootstrap in one step:
 
 ```bash
-pnpm env:setup
-docker compose up --build
-```
-
-Finish the Codex integration in one step:
-
-```bash
-pnpm codex:bootstrap
+pnpm clients:bootstrap
 ```
 
 The Explorer runs beside the API:
@@ -44,12 +37,13 @@ http://localhost:5174
 
 ## Connect Codex
 
-`pnpm codex:bootstrap` creates the local API token, writes it into Explorer
-local config, refreshes the Docker-built Explorer, builds `@koed/db` and
-`@koed/mcp-server`, writes the Codex MCP and Capture Hook configuration,
-verifies capture, and finishes with a doctor check. See
-[docs/codex-integration.md](docs/codex-integration.md) for manual setup and
-deeper Codex integration details.
+`pnpm codex:bootstrap` creates or reuses the local API token, builds
+`@koed/db` and `@koed/mcp-server`, writes the Codex MCP and Capture Hook
+configuration, verifies capture, and finishes with a doctor check.
+`pnpm explorer:bootstrap` writes the token into Explorer local config and
+refreshes the Docker-built Explorer. `pnpm clients:bootstrap` runs the guided
+end-to-end path. See [docs/codex-integration.md](docs/codex-integration.md)
+for manual setup and deeper Codex integration details.
 
 ## Configuration
 

@@ -109,11 +109,11 @@ const withoutPrevious = existing.replace(
 mkdirSync(dirname(codexConfigPath), { recursive: true, mode: 0o700 });
 writeFileSync(codexConfigPath, `${withoutPrevious.trimEnd()}\n\n${koedBlock}`);
 
-console.log("Codex configuration updated.");
+console.log("Codex integration configured.");
 console.log(`Detected API URL: ${apiUrl}`);
 console.log(`Detected Node command: ${nodeCommand}`);
 console.log(`Detected Codex app-server binary: ${appServerBinary}`);
-console.log(`Wrote Codex config: ${codexConfigPath}`);
+console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
 console.log(`Wrote Capture Hook config: ${hookConfigPath}`);
 console.log(
   "Next: restart Codex, then run `pnpm codex:verify-capture` or `pnpm codex:bootstrap` to confirm the integration is healthy."

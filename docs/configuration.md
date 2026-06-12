@@ -48,7 +48,7 @@ values and adds any missing keys from
 - `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
 - `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
 - `EXPLORER_WEB_HOST_PORT`: host port mapped to the Explorer. The Explorer container listens on internal port `5174`.
-- `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app and Docker-built Explorer image. `pnpm codex:bootstrap` writes this after creating the local API token.
+- `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app and Docker-built Explorer image. `pnpm explorer:bootstrap` writes this after creating the local API token.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
