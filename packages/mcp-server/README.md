@@ -1,9 +1,9 @@
 # Koed MCP Server
 
 The MCP Server is Koed's local Codex integration. It gives Codex
-tools for memory recall, starts local background workers for answer synthesis
-captured-session titles, and LCM summaries, and provides the capture hook binary
-used by Codex lifecycle hooks.
+tools for memory recall, starts local background workers for Answer Synthesis,
+captured-session titles, and LCM summaries, and provides the Capture Hook
+binary used by Codex lifecycle hooks.
 
 The backend stores memory, graph data, questions, and retrieval evidence. This
 package runs on the user's machine and uses Codex app-server mode for local

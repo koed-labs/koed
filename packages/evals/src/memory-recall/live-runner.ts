@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   runLiveRetrievalSuccessBenchmark,
+  type LiveRetrievalSuccessComparisonReport,
   type LiveRetrievalSuccessReport
 } from "../retrieval-success/live-runner.js";
 
@@ -29,7 +30,10 @@ interface UnifiedMemoryRecallReport {
   suite: "memory-recall-live";
   generatedAt: string;
   toolChoice: unknown | null;
-  retrievalSuccess: LiveRetrievalSuccessReport | null;
+  retrievalSuccess:
+    | LiveRetrievalSuccessReport
+    | LiveRetrievalSuccessComparisonReport
+    | null;
   combined: {
     totalScore: number;
     maxScore: number;

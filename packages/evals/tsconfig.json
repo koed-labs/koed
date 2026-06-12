@@ -7,5 +7,9 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../core" }, { "path": "../db" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../db" },
+    { "path": "../mcp-server" }
+  ]
 }

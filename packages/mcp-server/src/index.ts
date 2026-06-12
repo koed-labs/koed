@@ -1,6 +1,10 @@
 import {
+  answerWithMemoryWorker,
   resolveManualMemoryAnswerWorkerConfig,
-  resolveMemoryAnswerWorkerConfig
+  resolveMemoryAnswerWorkerConfig,
+  type MemoryAnswerRetrievalClient,
+  type MemoryAnswerWorkerConfig,
+  type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
@@ -10,6 +14,17 @@ import {
 } from "./lcm-summary-worker.js";
 
 export type RetrievalScope = "personal";
+
+export {
+  answerWithMemoryWorker,
+  resolveManualMemoryAnswerWorkerConfig,
+  resolveMemoryAnswerWorkerConfig
+};
+export type {
+  MemoryAnswerRetrievalClient,
+  MemoryAnswerWorkerConfig,
+  MemoryAnswerWorkerResponse
+};
 
 export interface McpServerConfig {
   apiUrl: string;

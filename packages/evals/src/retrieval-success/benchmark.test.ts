@@ -1,4 +1,6 @@
+import { createServer, type IncomingMessage } from "node:http";
 import { describe, expect, it } from "vitest";
+import type { EmbeddableSourceRecord, MemorySourceRepository } from "@koed/db";
 import { retrievalSuccessCases, type RetrievalSuccessCase } from "./cases.js";
 import {
   idealRetrievalSuccessRun,
@@ -8,8 +10,10 @@ import {
   type RetrievalSuccessRunInput
 } from "./benchmark.js";
 import {
+  createServiceEmbeddingProvider,
   databaseUrlWithName,
   deterministicEmbeddingVector,
+  embedPendingSources,
   maintenanceDatabaseUrl,
   withTemporaryEmbeddingEnv
 } from "./live-runner.js";
@@ -23,6 +27,16 @@ const mustCase = (id: string): RetrievalSuccessCase => {
   }
   return benchmarkCase;
 };
+
+const readRequestBody = async (request: IncomingMessage): Promise<string> =>
+  new Promise((resolve, reject) => {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += String(chunk);
+    });
+    request.on("end", () => resolve(body));
+    request.on("error", reject);
+  });
 
 describe("retrieval-success benchmark cases", () => {
   it("covers the retrieval behaviours KOE-167 is meant to protect", () => {
@@ -272,31 +286,42 @@ describe("retrieval-success live benchmark helpers", () => {
       EMBEDDING_SERVICE_URL: process.env.EMBEDDING_SERVICE_URL,
       EMBEDDING_SERVICE_TOKEN: process.env.EMBEDDING_SERVICE_TOKEN,
       EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
+      EMBEDDING_QUERY_INSTRUCTION_ENABLED:
+        process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED,
       EMBEDDING_RERANKER_KEY: process.env.EMBEDDING_RERANKER_KEY,
       RERANKER_KEY: process.env.RERANKER_KEY
     };
     process.env.EMBEDDING_SERVICE_URL = "http://original.test";
     process.env.EMBEDDING_SERVICE_TOKEN = "original-token";
     process.env.EMBEDDING_MODEL = "original-model";
+    delete process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED;
     process.env.EMBEDDING_RERANKER_KEY = "qwen3-reranker-0.6b";
     process.env.RERANKER_KEY = "qwen3-reranker-0.6b";
 
     try {
-      await withTemporaryEmbeddingEnv("http://deterministic.test", async () => {
-        expect(process.env.EMBEDDING_SERVICE_URL).toBe(
-          "http://deterministic.test"
-        );
-        expect(process.env.EMBEDDING_SERVICE_TOKEN).toBe(
-          "koed-retrieval-success-eval"
-        );
-        expect(process.env.EMBEDDING_MODEL).toBe("qwen3-0.6b");
-        expect(process.env.EMBEDDING_RERANKER_KEY).toBeUndefined();
-        expect(process.env.RERANKER_KEY).toBeUndefined();
-      });
+      await withTemporaryEmbeddingEnv(
+        "http://deterministic.test",
+        "koed-retrieval-success-eval",
+        "qwen3-0.6b",
+        "disabled",
+        async () => {
+          expect(process.env.EMBEDDING_SERVICE_URL).toBe(
+            "http://deterministic.test"
+          );
+          expect(process.env.EMBEDDING_SERVICE_TOKEN).toBe(
+            "koed-retrieval-success-eval"
+          );
+          expect(process.env.EMBEDDING_MODEL).toBe("qwen3-0.6b");
+          expect(process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED).toBe("false");
+          expect(process.env.EMBEDDING_RERANKER_KEY).toBeUndefined();
+          expect(process.env.RERANKER_KEY).toBeUndefined();
+        }
+      );
 
       expect(process.env.EMBEDDING_SERVICE_URL).toBe("http://original.test");
       expect(process.env.EMBEDDING_SERVICE_TOKEN).toBe("original-token");
       expect(process.env.EMBEDDING_MODEL).toBe("original-model");
+      expect(process.env.EMBEDDING_QUERY_INSTRUCTION_ENABLED).toBeUndefined();
       expect(process.env.EMBEDDING_RERANKER_KEY).toBe("qwen3-reranker-0.6b");
       expect(process.env.RERANKER_KEY).toBe("qwen3-reranker-0.6b");
     } finally {
@@ -307,6 +332,132 @@ describe("retrieval-success live benchmark helpers", () => {
           process.env[key] = value;
         }
       }
+    }
+  });
+
+  it("can seed source embeddings through a configured embedding service", async () => {
+    const embedRequests: { token: string | undefined; texts: string[] }[] = [];
+    const server = createServer((request, response) => {
+      void (async () => {
+        if (request.method === "GET" && request.url === "/health") {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              status: "ok",
+              modelKey: "qwen3-0.6b",
+              dimensions: 1024
+            })
+          );
+          return;
+        }
+        if (request.method === "POST" && request.url === "/embed") {
+          const body = JSON.parse(await readRequestBody(request)) as {
+            texts?: string[];
+          };
+          const texts = body.texts ?? [];
+          embedRequests.push({
+            token: request.headers["x-koed-embedding-token"]?.toString(),
+            texts
+          });
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              model: "qwen3-0.6b",
+              dimensions: 1024,
+              vectors: texts.map((_, index) =>
+                Array.from({ length: 1024 }, (__, dimension) =>
+                  dimension === index ? 1 : 0
+                )
+              )
+            })
+          );
+          return;
+        }
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ detail: "not found" }));
+      })().catch((error: unknown) => {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            detail: error instanceof Error ? error.message : "test error"
+          })
+        );
+      });
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected local test server address");
+    }
+
+    try {
+      const provider = await createServiceEmbeddingProvider({
+        embeddingServiceUrl: `http://127.0.0.1:${address.port}`,
+        embeddingServiceToken: "test-token"
+      });
+      let listed = false;
+      const upserts: Parameters<
+        MemorySourceRepository["upsertSourceEmbedding"]
+      >[0][] = [];
+      const sources: EmbeddableSourceRecord[] = [
+        {
+          sourceType: "memory_event",
+          sourceId: "source-1",
+          ownerUserId: "user-1",
+          visibility: "personal",
+          text: "alpha benchmark source",
+          sourceHash: "hash-1"
+        },
+        {
+          sourceType: "memory_node",
+          sourceId: "source-2",
+          ownerUserId: "user-1",
+          visibility: "personal",
+          text: "beta benchmark source",
+          sourceHash: "hash-2"
+        }
+      ];
+      await embedPendingSources(
+        {
+          listSourcesNeedingEmbeddings: () => {
+            if (listed) {
+              return Promise.resolve([]);
+            }
+            listed = true;
+            return Promise.resolve(sources);
+          },
+          upsertSourceEmbedding: (input) => {
+            upserts.push(input);
+            return Promise.resolve({
+              id: input.source.sourceId,
+              inserted: true
+            });
+          }
+        },
+        provider
+      );
+
+      expect(embedRequests).toEqual([
+        {
+          token: "test-token",
+          texts: ["alpha benchmark source", "beta benchmark source"]
+        }
+      ]);
+      expect(upserts.map((input) => input.model)).toEqual([
+        "qwen3-0.6b",
+        "qwen3-0.6b"
+      ]);
+      expect(upserts.map((input) => input.dimensions)).toEqual([1024, 1024]);
+      expect(upserts.map((input) => input.vector)).toEqual([
+        expect.arrayContaining([1]),
+        expect.arrayContaining([1])
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   });
 });

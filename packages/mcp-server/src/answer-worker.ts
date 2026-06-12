@@ -1407,6 +1407,7 @@ const runDynamicToolMemoryAnswer = async (
   appServerExecutions: MemoryAnswerAppServerExecution[];
   evidence: unknown[];
   citations: unknown[];
+  searches: ToolSearchRecord[];
   retrievals: unknown[];
   expansions: unknown[];
 }> => {
@@ -1544,6 +1545,7 @@ const runDynamicToolMemoryAnswer = async (
     appServerExecutions,
     evidence: curatedEvidence,
     citations: citationsFromHits(curatedEvidence),
+    searches: state.searches,
     retrievals: state.retrievals,
     expansions: state.expansions
   };
@@ -1637,6 +1639,7 @@ export const answerWithMemoryWorker = async (
           evidence: answer.evidence,
           retrieval: {
             mode: "app_server_dynamic_tools",
+            searches: answer.searches,
             retrievals: answer.retrievals,
             expansions: answer.expansions
           }

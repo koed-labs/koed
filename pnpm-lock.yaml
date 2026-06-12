@@ -225,6 +225,9 @@ importers:
       '@koed/db':
         specifier: workspace:*
         version: link:../db
+      '@koed/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
