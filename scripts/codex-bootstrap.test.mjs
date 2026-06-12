@@ -97,6 +97,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
     [
       "Prepare local environment",
       "load-root-env",
+      "Build @koed/db",
       "Build @koed/mcp-server",
       "create-token",
       "token-output",

@@ -11,7 +11,6 @@ Nodes, embeddings, and Capture Policies. Redis backs BullMQ queues.
 
 ```bash
 pnpm env:setup
-pnpm install
 docker compose up --build
 ```
 
@@ -21,7 +20,8 @@ If ports conflict with another local app:
 API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3300 docker compose up --build
 ```
 
-Finish the Codex integration after the API migrations have run:
+Finish the Codex integration after the API migrations have run; `pnpm codex:bootstrap`
+builds `@koed/db` and `@koed/mcp-server` automatically:
 
 ```bash
 pnpm codex:bootstrap

@@ -10,7 +10,6 @@ import {
   loadRootEnv,
   UsageError
 } from "./api-token-bootstrap-lib.mjs";
-import { createApiTokenScriptRepo } from "../packages/db/scripts/api-token-repo.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultOwnerEmail = "local@koed.ai";
@@ -206,7 +205,7 @@ export const runCodexBootstrap = async ({
   argv = process.argv.slice(2),
   environment = process.env,
   repo = null,
-  createRepoFn = createApiTokenScriptRepo,
+  createRepoFn = null,
   loadRootEnvFn = loadRootEnv,
   createTokenBootstrap = createApiTokenBootstrap,
   runCommandFn = runCommand,
@@ -247,7 +246,18 @@ export const runCodexBootstrap = async ({
     const appServerBinary =
       environment.MEMORY_CODEX_APP_SERVER_BINARY ?? defaultAppServerBinary;
 
+    await runCommandFn({
+      label: "Build @koed/db",
+      command: "pnpm",
+      args: ["--filter", "@koed/db", "build"]
+    });
+
     if (!activeRepo) {
+      if (!createRepoFn) {
+        ({ createApiTokenScriptRepo: createRepoFn } = await import(
+          "../packages/db/scripts/api-token-repo.mjs"
+        ));
+      }
       activeRepo = createRepoFn(environment.DATABASE_URL);
       shouldCloseRepo = true;
     }
