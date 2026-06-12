@@ -237,6 +237,8 @@ importers:
 
   packages/koed: {}
 
+  packages/koed-server: {}
+
   packages/mcp-server:
     dependencies:
       '@koed/core':

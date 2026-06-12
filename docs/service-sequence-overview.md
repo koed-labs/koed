@@ -20,6 +20,27 @@ MCP-side workers.
   vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
   rows, Memory Events, Memory Nodes, embeddings, questions, and token usage.
+- **Koed Server Control Plane**: the local `koed-server` supervisor surface
+  that owns `KOED_HOME`, starts local services, and reports setup/readiness
+  status for headless and desktop use.
+
+## Local Service Startup
+
+1. The Operator or Koed Desktop starts `koed-server`.
+2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
+   directories, and starts the current Docker-backed local services.
+3. Docker Compose remains an implementation detail for Postgres/pgvector,
+   Redis/queues, the Embedding Service, API, Worker, and Explorer during this
+   transition step.
+4. `koed-server status --json` and `koed-server doctor --json` poll the API
+   readiness endpoint, Docker service state, local API Token configuration, MCP
+   Server doctor output, Supported Capture Hook config, Codex config, LCM
+   Summary Service availability, and last verification metadata.
+5. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+   Codex MCP Server, Supported Capture Hook, local API Token, Explorer token,
+   verification, and doctor setup can be invoked through the control plane.
+6. Koed Desktop can consume the same headless command surface without requiring
+   the Operator to invoke repo-local scripts directly.
 
 ## Ingestion
 
@@ -202,6 +223,7 @@ sequenceDiagram
 - LCM Summary Service: `packages/mcp-server/src/lcm-summary-service.ts`
 - LCM summary worker: `packages/mcp-server/src/lcm-summary-worker.ts`
 - LCM API routes: `apps/api/src/memory/lcm-routes.ts`
+- Koed Server control plane: `packages/koed-server/src/cli.ts`
 - MCP `memory_answer`: `packages/mcp-server/src/cli.ts`
 - Memory answer worker: `packages/mcp-server/src/answer-worker.ts`
 - Recall API routes: `apps/api/src/memory/recall-routes.ts`
