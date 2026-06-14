@@ -1,0 +1,185 @@
+:root {
+  color: #17211b;
+  background: #f4f3ec;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  border: 0;
+  border-radius: 10px;
+  background: #17211b;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  padding: 10px 12px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) 1fr;
+  height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid #dedbd0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.brand h1,
+.brand p {
+  margin: 0;
+}
+
+.brand p,
+.hint,
+.component p,
+.status small {
+  color: #667064;
+}
+
+.mark {
+  align-items: center;
+  background: #17211b;
+  border-radius: 14px;
+  color: #fff;
+  display: flex;
+  font-weight: 800;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.status {
+  border-radius: 16px;
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+}
+
+.status span {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.components {
+  display: grid;
+  gap: 10px;
+}
+
+.component {
+  background: #fffdf6;
+  border: 1px solid #dedbd0;
+  border-left-width: 5px;
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.component strong {
+  display: block;
+}
+
+.component span {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.component p {
+  margin: 6px 0 0;
+}
+
+.healthy {
+  border-left-color: #2f9e44;
+}
+
+.starting {
+  border-left-color: #f59f00;
+}
+
+.needs_attention {
+  border-left-color: #e03131;
+}
+
+.not_configured {
+  border-left-color: #748ffc;
+}
+
+.status.healthy {
+  background: #ebfbee;
+}
+
+.status.starting {
+  background: #fff4db;
+}
+
+.status.needs_attention {
+  background: #fff0f0;
+}
+
+.status.not_configured {
+  background: #edf2ff;
+}
+
+.explorer {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-width: 0;
+}
+
+.explorer-bar {
+  align-items: center;
+  border-bottom: 1px solid #dedbd0;
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 16px;
+}
+
+iframe {
+  border: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.empty {
+  align-items: center;
+  color: #667064;
+  display: flex;
+  justify-content: center;
+}
