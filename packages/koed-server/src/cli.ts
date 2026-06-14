@@ -114,7 +114,7 @@ export const runKoedServerCli = async (
 };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runKoedServerCli(process.argv.slice(2)).then((exitCode) => {
+  void runKoedServerCli(process.argv.slice(2)).then((exitCode) => {
     process.exitCode = exitCode;
   });
 }

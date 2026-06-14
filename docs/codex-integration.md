@@ -8,8 +8,8 @@ Start the local control plane, then run the Codex setup wrapper:
 
 ```bash
 pnpm --filter @koed/koed-server build
-koed-server start
-koed-server setup codex --json
+node packages/koed-server/dist/cli.js start
+node packages/koed-server/dist/cli.js setup codex --json
 ```
 
 The setup command prepares the environment, creates or reuses the local API

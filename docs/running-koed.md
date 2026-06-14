@@ -14,7 +14,7 @@ For the local product path, build the control plane and start it:
 
 ```bash
 pnpm --filter @koed/koed-server build
-KOED_HOME="${KOED_HOME:-$HOME/.koed}" koed-server start
+KOED_HOME="${KOED_HOME:-$HOME/.koed}" node packages/koed-server/dist/cli.js start
 ```
 
 `koed-server` owns `KOED_HOME`, starts Docker-backed dependencies, runs API,
@@ -24,15 +24,15 @@ state under `KOED_HOME/run`.
 Check service state from any headless shell:
 
 ```bash
-koed-server status --json
-koed-server doctor --json
+node packages/koed-server/dist/cli.js status --json
+node packages/koed-server/dist/cli.js doctor --json
 ```
 
 Run Codex setup through the same surface after `koed-server start` has made the
 API ready:
 
 ```bash
-koed-server setup codex --json
+node packages/koed-server/dist/cli.js setup codex --json
 ```
 
 Docker Compose is now a dependency implementation detail for Postgres/pgvector,
@@ -46,7 +46,7 @@ docker compose up -d --build postgres redis embedding-service
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 koed-server start
+API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 node packages/koed-server/dist/cli.js start
 ```
 
 The Explorer frontend is available at `http://localhost:5174`, or the host port you selected, and is embedded by Koed Desktop.

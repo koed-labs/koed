@@ -1,12 +1,13 @@
 import type { ChildProcess } from "node:child_process";
+import type { NodeEntrypointInvocation } from "./runtime.js";
 
 export type DesktopCommandHandler = (args?: Record<string, unknown>) => unknown;
 
 export interface KoedServerManagerOptions {
   repoRoot: string;
   cliPath: string;
-  execPath: string;
   environment: NodeJS.ProcessEnv;
+  createCliInvocation: (args: string[]) => NodeEntrypointInvocation;
   existsSync: (path: string) => boolean;
   execFile: (
     command: string,
@@ -54,15 +55,15 @@ export const createKoedEnvironment = (
 export const createKoedServerManager = ({
   repoRoot,
   cliPath,
-  execPath,
   environment,
+  createCliInvocation,
   existsSync,
   execFile,
   spawn,
   openExternal
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
-  const koedEnvironment = () => createKoedEnvironment(repoRoot, environment);
+  void environment;
 
   const runJson = (args: string[]) =>
     new Promise<unknown>((resolvePromise) => {
@@ -71,12 +72,13 @@ export const createKoedServerManager = ({
         return;
       }
 
+      const invocation = createCliInvocation([...args, "--json"]);
       execFile(
-        execPath,
-        [cliPath, ...args, "--json"],
+        invocation.command,
+        invocation.args,
         {
           cwd: repoRoot,
-          env: koedEnvironment(),
+          env: invocation.env,
           timeout: 30_000
         },
         (error, stdout, stderr) => {
@@ -107,9 +109,10 @@ export const createKoedServerManager = ({
       return missingCliPayload();
     }
 
-    serverProcess = spawn(execPath, [cliPath, "start"], {
+    const invocation = createCliInvocation(["start"]);
+    serverProcess = spawn(invocation.command, invocation.args, {
       cwd: repoRoot,
-      env: koedEnvironment(),
+      env: invocation.env,
       stdio: "ignore",
       detached: false
     });

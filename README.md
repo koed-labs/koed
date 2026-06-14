@@ -23,13 +23,20 @@ that memory available through MCP recall.
 > [!IMPORTANT]  
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
-Run the guided local bootstrap in one step:
+Start the local control plane:
 
 ```bash
-pnpm clients:bootstrap
+pnpm --filter @koed/koed-server build
+node packages/koed-server/dist/cli.js start
 ```
 
-The Explorer runs beside the API:
+Then configure Codex from another shell:
+
+```bash
+node packages/koed-server/dist/cli.js setup codex --json
+```
+
+The Explorer runs beside the API and is embedded by Koed Desktop:
 
 ```text
 http://localhost:5174
@@ -37,13 +44,14 @@ http://localhost:5174
 
 ## Connect Codex
 
-`pnpm codex:bootstrap` creates or reuses the local API token, builds
-`@koed/db` and `@koed/mcp-server`, writes the Codex MCP and Capture Hook
-configuration, verifies capture, and finishes with a doctor check.
-`pnpm explorer:bootstrap` writes the token into Explorer local config and
-refreshes the Docker-built Explorer. `pnpm clients:bootstrap` runs the guided
-end-to-end path. See [docs/codex-integration.md](docs/codex-integration.md)
-for manual setup and deeper Codex integration details.
+`koed-server setup codex --json` creates or reuses the local API Token,
+builds the MCP Server, writes the Codex MCP and Supported Capture Hook
+configuration, writes the app-provisioned Explorer credential, verifies capture,
+and finishes with a doctor check. The lower-level `pnpm codex:bootstrap`,
+`pnpm explorer:bootstrap`, and `pnpm clients:bootstrap` Local Operator Scripts
+remain available for development and recovery. See
+[docs/codex-integration.md](docs/codex-integration.md) for manual setup and
+deeper Codex integration details.
 
 ## Configuration
 
@@ -66,6 +74,8 @@ Koed is composed of the following primary services:
 | `apps/worker`            | Background memory and embedding jobs                                                            |
 | `apps/embedding-service` | Local embedding and reranking service                                                           |
 | `apps/explorer`          | Explorer UI for inspecting captured Koed memory                                                 |
+| `apps/desktop`           | Electron shell that starts/monitors `koed-server` and embeds Explorer                           |
+| `packages/koed-server`   | Local control-plane CLI/supervisor for `KOED_HOME`, service status, setup, and startup          |
 | `packages/mcp-server`    | MCP Server, local answer bridge, and Codex Capture Hook                                         |
 | `packages/db`            | Postgres repositories, migrations, and operator scripts                                         |
 
@@ -101,7 +111,7 @@ See [docs/backup-restore.md](docs/backup-restore.md) and
 
 ## Releases
 
-Koed currently uses one product release version for the Docker Compose
+Koed currently uses one product release version for the self-hosted
 distribution. Add a changeset for release-noteworthy changes:
 
 ```bash

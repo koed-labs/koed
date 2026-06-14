@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import { createKoedServerManager } from "./koed-server/manager.js";
+import { createKoedServerCliInvocation } from "./koed-server/runtime.js";
 import {
   KOED_APP_SCHEME,
   resolveAppProtocolRequest
@@ -25,8 +26,19 @@ protocol.registerSchemesAsPrivileged([
 const koedServer = createKoedServerManager({
   repoRoot,
   cliPath: koedServerCli,
-  execPath: process.execPath,
   environment: process.env,
+  createCliInvocation: (args) =>
+    createKoedServerCliInvocation(koedServerCli, args, {
+      appIsPackaged: app.isPackaged,
+      electronExecPath: process.execPath,
+      platform: process.platform,
+      resourcesPath: process.resourcesPath,
+      environment: {
+        ...process.env,
+        KOED_REPO_ROOT: process.env.KOED_REPO_ROOT ?? repoRoot
+      },
+      existsSync
+    }),
   existsSync,
   execFile,
   spawn,

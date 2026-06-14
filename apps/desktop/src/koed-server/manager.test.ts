@@ -34,8 +34,12 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/packages/koed-server/dist/cli.js",
-      execPath: "/node",
       environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/packages/koed-server/dist/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
       existsSync: () => true,
       execFile: (command, args, _options, callback) => {
         calls.push({ command, args });
@@ -59,8 +63,12 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/missing",
-      execPath: "/node",
       environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/missing", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
       existsSync: () => false,
       execFile: () => undefined,
       spawn: () => childProcess() as never,
@@ -83,8 +91,12 @@ describe("Koed server desktop manager", () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
-      execPath: "/node",
       environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
       existsSync: () => true,
       execFile: () => undefined,
       spawn: (_command, args) => {
