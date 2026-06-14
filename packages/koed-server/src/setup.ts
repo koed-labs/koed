@@ -1,6 +1,13 @@
-import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import {
+  spawnSync as nodeSpawnSync,
+  type SpawnSyncReturns
+} from "node:child_process";
+import { writeFileSync as nodeWriteFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  resolveLocalApiToken,
+  writeExplorerCredential
+} from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import { ensureKoedHome, resolveKoedServerPaths } from "./paths.js";
 
@@ -18,9 +25,25 @@ export interface KoedServerSetupCodexResult {
   action?: string;
 }
 
-export const setupCodex = (
-  environment: NodeJS.ProcessEnv = process.env
-): KoedServerSetupCodexResult => {
+type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawnSync>[2]
+) => SpawnSyncReturns<string>;
+
+export interface KoedServerSetupOptions {
+  environment?: NodeJS.ProcessEnv;
+  spawnSync?: SpawnSyncLike;
+  writeFileSync?: typeof nodeWriteFileSync;
+  now?: () => Date;
+}
+
+export const setupCodex = ({
+  environment = process.env,
+  spawnSync = nodeSpawnSync as SpawnSyncLike,
+  writeFileSync = nodeWriteFileSync,
+  now = () => new Date()
+}: KoedServerSetupOptions = {}): KoedServerSetupCodexResult => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   const repoEnv = loadRepoEnv(paths.repoRoot);
@@ -31,7 +54,15 @@ export const setupCodex = (
   };
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const checkedAt = new Date().toISOString();
+  const checkedAt = now().toISOString();
+  const apiToken = resolveLocalApiToken(environment, repoEnv);
+  if (apiToken) {
+    writeExplorerCredential(paths, {
+      apiToken: apiToken.token,
+      provisionedAt: checkedAt,
+      source: apiToken.source
+    });
+  }
   const scriptPath = resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs");
   const result = spawnSync(process.execPath, [scriptPath], {
     cwd: paths.repoRoot,

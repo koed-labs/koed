@@ -4,16 +4,19 @@ Codex is currently the only supported AI Client for Koed.
 
 ## Recommended Setup
 
-From a Koed checkout, run the guided bootstrap path:
+Start the local control plane, then run the Codex setup wrapper:
 
 ```bash
-pnpm clients:bootstrap
+pnpm --filter @koed/koed-server build
+koed-server start
+koed-server setup codex --json
 ```
 
-This command prepares the environment, starts the backend services, creates or
-reuses the local API token, writes it into Explorer local config, refreshes the
-Docker-built Explorer, writes the Codex MCP and Capture Hook configuration,
-verifies capture, and finishes with a doctor check.
+The setup command prepares the environment, creates or reuses the local API
+Token once the API is ready, writes the app-provisioned Explorer credential,
+writes the Codex MCP and Capture Hook configuration, verifies capture, and
+finishes with a doctor check. `pnpm clients:bootstrap` remains as the underlying
+Local Operator Script for this guided client setup path.
 
 ## API Token
 

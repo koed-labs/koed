@@ -1,6 +1,15 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import {
+  spawn as nodeSpawn,
+  spawnSync as nodeSpawnSync,
+  type ChildProcess,
+  type SpawnSyncReturns
+} from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  resolveLocalApiToken,
+  writeExplorerCredential
+} from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import {
   ensureKoedHome,
@@ -10,11 +19,26 @@ import {
 import { collectKoedServerStatus } from "./status.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
+type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawnSync>[2]
+) => SpawnSyncReturns<string>;
+
+type SpawnLike = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawn>[2]
+) => ChildProcess;
+
 export interface KoedServerStartOptions {
   environment?: NodeJS.ProcessEnv;
   stdio?: "inherit" | "pipe";
   pollIntervalMs?: number;
   timeoutMs?: number;
+  spawnSync?: SpawnSyncLike;
+  spawn?: SpawnLike;
+  collectStatus?: typeof collectKoedServerStatus;
 }
 
 const runCommand = (
@@ -22,7 +46,8 @@ const runCommand = (
   label: string,
   command: string,
   args: string[],
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  spawnSync: SpawnSyncLike
 ): void => {
   console.log(`> ${label}`);
   const result = spawnSync(command, args, {
@@ -38,30 +63,41 @@ const runCommand = (
   }
 };
 
-const spawnLogFollower = (
+const spawnManagedProcess = (
   paths: KoedServerPaths,
-  services: string[],
-  environment: NodeJS.ProcessEnv
-): ChildProcess =>
-  spawn("docker", ["compose", "logs", "--follow", ...services], {
+  label: string,
+  command: string,
+  args: string[],
+  environment: NodeJS.ProcessEnv,
+  spawn: SpawnLike
+): ChildProcess => {
+  console.log(`> Start ${label}`);
+  const child = spawn(command, args, {
     cwd: paths.repoRoot,
     env: environment,
     stdio: "inherit"
   });
+  child.on("exit", (code) => {
+    console.log(`${label} exited with code ${code ?? "signal"}.`);
+  });
+  return child;
+};
 
 const waitForHealthyOrReady = async ({
   environment,
   timeoutMs,
-  pollIntervalMs
+  pollIntervalMs,
+  collectStatus
 }: {
   environment: NodeJS.ProcessEnv;
   timeoutMs: number;
   pollIntervalMs: number;
+  collectStatus: typeof collectKoedServerStatus;
 }) => {
   const startedAt = Date.now();
-  let lastStatus = await collectKoedServerStatus(environment);
+  let lastStatus = await collectStatus(environment);
   while (Date.now() - startedAt < timeoutMs) {
-    lastStatus = await collectKoedServerStatus(environment);
+    lastStatus = await collectStatus(environment);
     if (
       lastStatus.api.state === "healthy" &&
       lastStatus.database.state === "healthy" &&
@@ -74,54 +110,161 @@ const waitForHealthyOrReady = async ({
   return lastStatus;
 };
 
+const localServiceEnv = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  apiToken: ReturnType<typeof resolveLocalApiToken> | null
+): NodeJS.ProcessEnv => {
+  const apiPort = repoEnv.API_HOST_PORT ?? environment.API_HOST_PORT ?? "3300";
+  const redisPort =
+    repoEnv.REDIS_HOST_PORT ?? environment.REDIS_HOST_PORT ?? "16379";
+  const embeddingPort =
+    repoEnv.EMBEDDING_SERVICE_HOST_PORT ??
+    environment.EMBEDDING_SERVICE_HOST_PORT ??
+    "3800";
+  const redisUrl = `redis://localhost:${redisPort}`;
+  const embeddingServiceUrl = `http://localhost:${embeddingPort}`;
+  return {
+    ...process.env,
+    ...repoEnv,
+    ...(apiToken ? { VITE_KOED_API_TOKEN: apiToken.token } : {}),
+    ...environment,
+    NODE_ENV: repoEnv.API_NODE_ENV ?? environment.NODE_ENV ?? "production",
+    LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
+    WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
+    API_PORT: apiPort,
+    DATABASE_URL: repoEnv.DATABASE_URL ?? environment.DATABASE_URL,
+    REDIS_URL: redisUrl,
+    RATE_LIMIT_REDIS_URL: repoEnv.API_RATE_LIMIT_REDIS_URL ?? "",
+    CACHE_REDIS_URL: repoEnv.API_CACHE_REDIS_URL ?? "",
+    DATA_ENCRYPTION_KEY:
+      repoEnv.API_DATA_ENCRYPTION_KEY ?? environment.DATA_ENCRYPTION_KEY,
+    API_TOKEN_PEPPER: repoEnv.API_TOKEN_PEPPER ?? environment.API_TOKEN_PEPPER,
+    EMBEDDING_SERVICE_URL: embeddingServiceUrl,
+    EMBEDDING_SERVICE_TOKEN:
+      repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
+    EMBEDDING_MODEL: repoEnv.EMBEDDING_MODEL_KEY ?? environment.EMBEDDING_MODEL,
+    RERANKER_KEY: repoEnv.EMBEDDING_RERANKER_KEY ?? environment.RERANKER_KEY,
+    CORS_ORIGINS: repoEnv.API_CORS_ORIGINS ?? environment.CORS_ORIGINS,
+    COOKIE_SECURE: repoEnv.API_COOKIE_SECURE ?? environment.COOKIE_SECURE,
+    EXPLORER_API_BASE_URL: resolveApiUrl(environment, repoEnv),
+    VITE_KOED_API_BASE_URL: resolveApiUrl(environment, repoEnv)
+  };
+};
+
 export const startKoedServer = async ({
   environment = process.env,
   pollIntervalMs = 2_000,
-  timeoutMs = 180_000
+  timeoutMs = 180_000,
+  spawnSync = nodeSpawnSync as SpawnSyncLike,
+  spawn = nodeSpawn as SpawnLike,
+  collectStatus = collectKoedServerStatus
 }: KoedServerStartOptions = {}): Promise<void> => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
 
   const repoEnv = loadRepoEnv(paths.repoRoot);
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...repoEnv,
-    ...environment
-  };
+  const apiToken = resolveLocalApiToken(environment, repoEnv);
+  if (apiToken) {
+    writeExplorerCredential(paths, {
+      apiToken: apiToken.token,
+      provisionedAt: new Date().toISOString(),
+      source: apiToken.source
+    });
+  }
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const services = [
-    "postgres",
-    "redis",
-    "embedding-service",
-    "api",
-    "worker",
-    "explorer"
-  ];
+  const dependencyServices = ["postgres", "redis", "embedding-service"];
+  const appServices = ["api", "worker", "explorer"];
+  const childEnv = localServiceEnv(environment, repoEnv, apiToken);
 
   runCommand(
     paths,
     "Prepare Koed environment",
     process.execPath,
     [resolve(paths.repoRoot, "scripts/setup-env.mjs")],
-    childEnv
+    childEnv,
+    spawnSync
   );
 
   const refreshedRepoEnv = loadRepoEnv(paths.repoRoot);
-  const refreshedEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...refreshedRepoEnv,
-    ...environment
-  };
+  const refreshedApiToken = resolveLocalApiToken(environment, refreshedRepoEnv);
+  if (refreshedApiToken) {
+    writeExplorerCredential(paths, {
+      apiToken: refreshedApiToken.token,
+      provisionedAt: new Date().toISOString(),
+      source: refreshedApiToken.source
+    });
+  }
+  const refreshedEnv = localServiceEnv(
+    environment,
+    refreshedRepoEnv,
+    refreshedApiToken
+  );
 
   runCommand(
     paths,
-    "Start Koed local services",
+    "Start Koed container dependencies",
     "docker",
-    ["compose", "up", "-d", "--build", ...services],
-    refreshedEnv
+    ["compose", "up", "-d", "--build", ...dependencyServices],
+    refreshedEnv,
+    spawnSync
   );
+  runCommand(
+    paths,
+    "Build Koed server apps",
+    "pnpm",
+    [
+      "--filter",
+      "@koed/api",
+      "--filter",
+      "@koed/worker",
+      "--filter",
+      "@koed/explorer",
+      "build"
+    ],
+    refreshedEnv,
+    spawnSync
+  );
+
+  const children = {
+    api: spawnManagedProcess(
+      paths,
+      "API",
+      "pnpm",
+      ["--filter", "@koed/api", "start"],
+      refreshedEnv,
+      spawn
+    ),
+    worker: spawnManagedProcess(
+      paths,
+      "Worker",
+      "pnpm",
+      ["--filter", "@koed/worker", "start"],
+      refreshedEnv,
+      spawn
+    ),
+    explorer: spawnManagedProcess(
+      paths,
+      "Explorer",
+      "pnpm",
+      [
+        "--filter",
+        "@koed/explorer",
+        "preview",
+        "--",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        refreshedRepoEnv.EXPLORER_WEB_HOST_PORT ??
+          environment.EXPLORER_WEB_HOST_PORT ??
+          "5174"
+      ],
+      refreshedEnv,
+      spawn
+    )
+  };
 
   const runtime: KoedServerRuntimeState = {
     pid: process.pid,
@@ -129,7 +272,12 @@ export const startKoedServer = async ({
     repoRoot: paths.repoRoot,
     apiUrl,
     explorerUrl,
-    services
+    services: [...dependencyServices, ...appServices],
+    processes: {
+      api: children.api.pid ?? 0,
+      worker: children.worker.pid ?? 0,
+      explorer: children.explorer.pid ?? 0
+    }
   };
   writeFileSync(
     paths.runtimeStatePath,
@@ -147,7 +295,7 @@ export const startKoedServer = async ({
         koedHome: paths.koedHome,
         apiUrl,
         explorerUrl,
-        services
+        services: runtime.services
       },
       null,
       2
@@ -157,7 +305,8 @@ export const startKoedServer = async ({
   const status = await waitForHealthyOrReady({
     environment: refreshedEnv,
     timeoutMs,
-    pollIntervalMs
+    pollIntervalMs,
+    collectStatus
   });
   console.log(
     JSON.stringify(
@@ -173,18 +322,27 @@ export const startKoedServer = async ({
     )
   );
   console.log(
-    "Koed server supervisor is running. Press Ctrl-C to stop following logs; services will keep running."
+    "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
   );
 
-  const follower = spawnLogFollower(paths, services, refreshedEnv);
   const shutdown = () => {
-    follower.kill("SIGTERM");
+    for (const child of Object.values(children)) {
+      child.kill("SIGTERM");
+    }
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    follower.on("exit", () => resolvePromise());
-    follower.on("error", rejectPromise);
+    const exits = new Set<string>();
+    for (const [name, child] of Object.entries(children)) {
+      child.on("exit", () => {
+        exits.add(name);
+        if (exits.size === Object.keys(children).length) {
+          resolvePromise();
+        }
+      });
+      child.on("error", rejectPromise);
+    }
   });
 };

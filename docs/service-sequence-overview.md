@@ -28,19 +28,24 @@ MCP-side workers.
 
 1. The Operator or Koed Desktop starts `koed-server`.
 2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
-   directories, and starts the current Docker-backed local services.
-3. Docker Compose remains an implementation detail for Postgres/pgvector,
-   Redis/queues, the Embedding Service, API, Worker, and Explorer during this
-   transition step.
+   directories, provisions the Explorer credential inside `KOED_HOME`, and
+   starts Docker-backed dependencies.
+3. Docker Compose is now limited to dependency services that still need
+   containers in this build: Postgres/pgvector, Redis/queues, and the Embedding
+   Service/model runtime. The API, Worker, and Explorer run as local app
+   processes supervised by `koed-server`.
 4. `koed-server status --json` and `koed-server doctor --json` poll the API
-   readiness endpoint, Docker service state, local API Token configuration, MCP
-   Server doctor output, Supported Capture Hook config, Codex config, LCM
-   Summary Service availability, and last verification metadata.
+   readiness endpoint, Docker dependency state, local Worker process state,
+   local API Token configuration, MCP Server doctor output, Supported Capture
+   Hook config, Codex config, LCM Summary Service availability, and last
+   verification metadata.
 5. `koed-server setup codex --json` wraps the existing guided bootstrap path so
-   Codex MCP Server, Supported Capture Hook, local API Token, Explorer token,
-   verification, and doctor setup can be invoked through the control plane.
-6. Koed Desktop can consume the same headless command surface without requiring
-   the Operator to invoke repo-local scripts directly.
+   Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
+   Explorer credential, verification, and doctor setup can be invoked through
+   the control plane.
+6. Koed Desktop can start/connect to the same headless command surface, poll
+   status, run doctor/setup actions, and embed Explorer without requiring the
+   Operator to invoke repo-local scripts directly.
 
 ## Ingestion
 

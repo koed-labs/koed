@@ -3,7 +3,7 @@ import { setupCodex } from "./setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 import { startKoedServer } from "./start.js";
 
-const usageText = `Usage: koed-server <command> [options]
+export const usageText = `Usage: koed-server <command> [options]
 
 Commands:
   start                  Start and supervise local Koed services
@@ -20,77 +20,101 @@ Environment:
   KOED_REPO_ROOT         Koed checkout path used by this development build
 `;
 
-const args = process.argv.slice(2);
-const command = args[0];
-const subcommand = args[1];
-const wantsHelp = args.includes("--help") || args.includes("-h");
-const wantsJson = args.includes("--json");
+export interface KoedServerCliDependencies {
+  collectStatus?: typeof collectKoedServerStatus;
+  collectDoctor?: typeof collectKoedServerDoctor;
+  start?: typeof startKoedServer;
+  setupCodex?: typeof setupCodex;
+  stdout?: Pick<NodeJS.WriteStream, "write">;
+  stderr?: Pick<NodeJS.WriteStream, "write">;
+}
 
-const printJson = (value: unknown) => {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+const printJson = (
+  stdout: Pick<NodeJS.WriteStream, "write">,
+  value: unknown
+) => {
+  stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 };
 
-const main = async () => {
-  if (wantsHelp || !command) {
-    process.stdout.write(usageText);
-    return;
-  }
+export const runKoedServerCli = async (
+  args: string[],
+  {
+    collectStatus = collectKoedServerStatus,
+    collectDoctor = collectKoedServerDoctor,
+    start = startKoedServer,
+    setupCodex: setup = setupCodex,
+    stdout = process.stdout,
+    stderr = process.stderr
+  }: KoedServerCliDependencies = {}
+): Promise<number> => {
+  const command = args[0];
+  const subcommand = args[1];
+  const wantsHelp = args.includes("--help") || args.includes("-h");
+  const wantsJson = args.includes("--json");
 
-  if (command === "status") {
-    const status = await collectKoedServerStatus();
-    if (wantsJson) {
-      printJson(status);
-    } else {
-      process.stdout.write(`${status.state}\n`);
+  try {
+    if (wantsHelp || !command) {
+      stdout.write(usageText);
+      return 0;
     }
-    process.exitCode = 0;
-    return;
-  }
 
-  if (command === "doctor") {
-    const doctor = await collectKoedServerDoctor();
-    if (wantsJson) {
-      printJson(doctor);
-    } else {
-      process.stdout.write(`${doctor.summary}\n`);
+    if (command === "status") {
+      const status = await collectStatus();
+      if (wantsJson) {
+        printJson(stdout, status);
+      } else {
+        stdout.write(`${status.state}\n`);
+      }
+      return 0;
     }
-    process.exitCode = doctor.ok ? 0 : 1;
-    return;
-  }
 
-  if (command === "start") {
-    await startKoedServer();
-    return;
-  }
-
-  if (command === "setup" && subcommand === "codex") {
-    const result = setupCodex();
-    if (wantsJson) {
-      printJson(result);
-    } else {
-      process.stdout.write(
-        result.ok
-          ? "Codex setup completed.\n"
-          : `${result.error ?? "Codex setup failed."}\n`
-      );
+    if (command === "doctor") {
+      const doctor = await collectDoctor();
+      if (wantsJson) {
+        printJson(stdout, doctor);
+      } else {
+        stdout.write(`${doctor.summary}\n`);
+      }
+      return doctor.ok ? 0 : 1;
     }
-    process.exitCode = result.ok ? 0 : 1;
-    return;
-  }
 
-  process.stderr.write(`Unknown command.\n\n${usageText}`);
-  process.exitCode = 2;
+    if (command === "start") {
+      await start();
+      return 0;
+    }
+
+    if (command === "setup" && subcommand === "codex") {
+      const result = setup();
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(
+          result.ok
+            ? "Codex setup completed.\n"
+            : `${result.error ?? "Codex setup failed."}\n`
+        );
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    stderr.write(`Unknown command.\n\n${usageText}`);
+    return 2;
+  } catch (error) {
+    const payload = {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+    if (wantsJson) {
+      printJson(stdout, payload);
+    } else {
+      stderr.write(`${payload.error}\n`);
+    }
+    return 1;
+  }
 };
 
-main().catch((error) => {
-  const payload = {
-    ok: false,
-    error: error instanceof Error ? error.message : String(error)
-  };
-  if (wantsJson) {
-    printJson(payload);
-  } else {
-    process.stderr.write(`${payload.error}\n`);
-  }
-  process.exitCode = 1;
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runKoedServerCli(process.argv.slice(2)).then((exitCode) => {
+    process.exitCode = exitCode;
+  });
+}

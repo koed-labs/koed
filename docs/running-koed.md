@@ -3,43 +3,53 @@
 > [!IMPORTANT]  
 > Only Codex is supported for knowledge capture. More agents to follow!
 
-Koed runs API, worker, embedding service, and an optional Explorer
-frontend. Postgres with pgvector stores Users, API Tokens, Memory Events, Memory
-Nodes, embeddings, and Capture Policies. Redis backs BullMQ queues.
+Koed runs API, Worker, Embedding Service, and Explorer under the local
+`koed-server` control plane. Postgres with pgvector stores Users, API Tokens,
+Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis backs
+BullMQ queues.
 
 ## Local Run
 
-For the guided zero-to-verified path, run:
+For the local product path, build the control plane and start it:
 
 ```bash
-pnpm clients:bootstrap
+pnpm --filter @koed/koed-server build
+KOED_HOME="${KOED_HOME:-$HOME/.koed}" koed-server start
 ```
 
-If you want to manage the services manually:
+`koed-server` owns `KOED_HOME`, starts Docker-backed dependencies, runs API,
+Worker, and Explorer as supervised local app processes, and records runtime
+state under `KOED_HOME/run`.
+
+Check service state from any headless shell:
+
+```bash
+koed-server status --json
+koed-server doctor --json
+```
+
+Run Codex setup through the same surface after `koed-server start` has made the
+API ready:
+
+```bash
+koed-server setup codex --json
+```
+
+Docker Compose is now a dependency implementation detail for Postgres/pgvector,
+Redis/queues, and the Embedding Service/model runtime:
 
 ```bash
 pnpm env:setup
-docker compose up --build
+docker compose up -d --build postgres redis embedding-service
 ```
 
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 koed-server start
 ```
 
-Finish the Codex integration after the API migrations have run; `pnpm codex:bootstrap`
-creates or reuses the API token, builds `@koed/db` and `@koed/mcp-server`, and
-verifies capture plus doctor health automatically:
-
-```bash
-pnpm codex:bootstrap
-```
-
-Use `pnpm explorer:bootstrap` after `pnpm codex:bootstrap` if you want to refresh the
-Explorer token config separately.
-
-The Explorer frontend is available at `http://localhost:5174`, or the host port you selected.
+The Explorer frontend is available at `http://localhost:5174`, or the host port you selected, and is embedded by Koed Desktop.
 
 ## Production Notes
 

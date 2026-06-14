@@ -18,8 +18,10 @@ export interface KoedServerPaths {
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export const resolveRepoRoot = (): string => {
-  const fromEnv = process.env.KOED_REPO_ROOT?.trim();
+export const resolveRepoRoot = (
+  environment: NodeJS.ProcessEnv = process.env
+): string => {
+  const fromEnv = environment.KOED_REPO_ROOT?.trim();
   if (fromEnv) {
     return resolve(fromEnv);
   }
@@ -36,7 +38,7 @@ export const resolveKoedServerPaths = (
   environment: NodeJS.ProcessEnv = process.env
 ): KoedServerPaths => {
   const koedHome = resolveKoedHome(environment);
-  const repoRoot = resolveRepoRoot();
+  const repoRoot = resolveRepoRoot(environment);
   return {
     koedHome,
     configDir: resolve(koedHome, "config"),

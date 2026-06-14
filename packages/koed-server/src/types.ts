@@ -52,4 +52,5 @@ export interface KoedServerRuntimeState {
   apiUrl: string;
   explorerUrl: string;
   services: string[];
+  processes?: Record<string, number>;
 }

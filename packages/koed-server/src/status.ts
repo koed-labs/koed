@@ -1,6 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import {
+  spawnSync as nodeSpawnSync,
+  type SpawnSyncReturns
+} from "node:child_process";
+import { loadExplorerCredential } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import {
   ensureKoedHome,
@@ -16,7 +20,45 @@ import type {
   KoedServerStatus
 } from "./types.js";
 
-const needsAttention = (
+type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawnSync>[2]
+) => SpawnSyncReturns<string>;
+
+export interface KoedServerStatusDependencies {
+  fetch?: typeof fetch;
+  spawnSync?: SpawnSyncLike;
+  existsSync?: typeof existsSync;
+  readFileSync?: typeof readFileSync;
+  checkPid?: (pid: number) => boolean;
+  now?: () => Date;
+}
+
+const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
+  fetch: globalThis.fetch.bind(globalThis),
+  spawnSync: nodeSpawnSync as SpawnSyncLike,
+  existsSync,
+  readFileSync,
+  checkPid: (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  now: () => new Date()
+});
+
+const withDefaults = (
+  dependencies: KoedServerStatusDependencies = {}
+): Required<KoedServerStatusDependencies> => ({
+  ...defaultDependencies(),
+  ...dependencies
+});
+
+export const needsAttention = (
   message: string,
   action?: string,
   details?: Record<string, unknown>
@@ -27,7 +69,7 @@ const needsAttention = (
   ...(details ? { details } : {})
 });
 
-const healthy = (
+export const healthy = (
   message?: string,
   details?: Record<string, unknown>
 ): KoedServerComponentStatus => ({
@@ -36,7 +78,7 @@ const healthy = (
   ...(details ? { details } : {})
 });
 
-const notConfigured = (
+export const notConfigured = (
   message: string,
   action?: string,
   details?: Record<string, unknown>
@@ -47,7 +89,7 @@ const notConfigured = (
   ...(details ? { details } : {})
 });
 
-const starting = (
+export const starting = (
   message: string,
   details?: Record<string, unknown>
 ): KoedServerComponentStatus => ({
@@ -56,28 +98,23 @@ const starting = (
   ...(details ? { details } : {})
 });
 
-const readJsonFile = <T>(path: string): T | null => {
+const readJsonFile = <T>(
+  path: string,
+  reader: typeof readFileSync = readFileSync
+): T | null => {
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
+    return JSON.parse(reader(path, "utf8") as string) as T;
   } catch {
     return null;
   }
 };
 
-const checkPid = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 const fetchJson = async <T>(
-  url: string
+  url: string,
+  fetcher: typeof fetch
 ): Promise<{ ok: boolean; status: number; body: T | null; error?: string }> => {
   try {
-    const response = await fetch(url);
+    const response = await fetcher(url);
     const text = await response.text();
     return {
       ok: response.ok,
@@ -99,9 +136,12 @@ interface ApiReadyPayload {
   checks?: Array<{ service?: string; status?: string }>;
 }
 
-const statusFromApiReady = async (apiUrl: string) => {
+export const statusFromApiReady = async (
+  apiUrl: string,
+  fetcher: typeof fetch = globalThis.fetch.bind(globalThis)
+) => {
   const readyUrl = new URL("/ready", apiUrl).toString();
-  const response = await fetchJson<ApiReadyPayload>(readyUrl);
+  const response = await fetchJson<ApiReadyPayload>(readyUrl, fetcher);
   if (!response.ok || !response.body) {
     return {
       api: needsAttention(
@@ -152,7 +192,10 @@ const statusFromApiReady = async (apiUrl: string) => {
   };
 };
 
-const dockerComposePs = (paths: KoedServerPaths): KoedServerComponentStatus => {
+export const dockerComposePs = (
+  paths: KoedServerPaths,
+  spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike
+): KoedServerComponentStatus => {
   const result = spawnSync("docker", ["compose", "ps", "--format", "json"], {
     cwd: paths.repoRoot,
     encoding: "utf8",
@@ -163,6 +206,33 @@ const dockerComposePs = (paths: KoedServerPaths): KoedServerComponentStatus => {
       `Could not run docker compose: ${result.error.message}`,
       "Install/start Docker Desktop, then run koed-server start."
     );
+  }
+  if (result.status !== 0 && result.stderr.includes("unknown flag")) {
+    const servicesResult = spawnSync(
+      "docker",
+      ["compose", "ps", "--services", "--filter", "status=running"],
+      {
+        cwd: paths.repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    if (servicesResult.status === 0) {
+      const runningServices = new Set(
+        servicesResult.stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+      );
+      return runningServices.has("redis")
+        ? healthy(undefined, {
+            services: [{ Service: "redis", State: "running" }]
+          })
+        : starting("Redis queue dependency has not started yet.", {
+            missing: ["redis"],
+            services: [...runningServices]
+          });
+    }
   }
   if (result.status !== 0) {
     return needsAttention(
@@ -187,27 +257,21 @@ const dockerComposePs = (paths: KoedServerPaths): KoedServerComponentStatus => {
       return [];
     }
   });
-  const queueServices = services.filter((service) =>
-    ["worker", "redis"].includes(service.Service ?? "")
-  );
-  const present = new Set(queueServices.map((service) => service.Service));
-  const missing = ["redis", "worker"].filter(
-    (service) => !present.has(service)
-  );
-  if (missing.length > 0) {
-    return starting("Worker queue services have not all been started yet.", {
-      missing,
-      services: queueServices
+  const redisService = services.find((service) => service.Service === "redis");
+  if (!redisService) {
+    return starting("Redis queue dependency has not started yet.", {
+      missing: ["redis"],
+      services
     });
   }
-  if (queueServices.some((service) => service.State !== "running")) {
+  if (redisService.State !== "running") {
     return needsAttention(
-      "Worker queues are not fully running.",
+      "Redis queue dependency is not running.",
       "Run koed-server start.",
-      { services: queueServices }
+      { services: [redisService] }
     );
   }
-  return healthy(undefined, { services: queueServices });
+  return healthy(undefined, { services: [redisService] });
 };
 
 const inspectApiToken = (
@@ -229,12 +293,15 @@ const inspectApiToken = (
   return { ...healthy("A local API Token is configured."), configured: true };
 };
 
-const inspectCodex = (): KoedServerStatus["codex"] => {
+const inspectCodex = (
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerStatus["codex"] => {
   const codexConfigPath = resolve(
-    process.env.CODEX_CONFIG_PATH ??
-      `${process.env.HOME ?? ""}/.codex/config.toml`
+    environment.CODEX_CONFIG_PATH ??
+      `${environment.HOME ?? ""}/.codex/config.toml`
   );
-  if (!existsSync(codexConfigPath)) {
+  if (!deps.existsSync(codexConfigPath)) {
     return {
       ...notConfigured(
         "Codex configuration was not found.",
@@ -243,7 +310,7 @@ const inspectCodex = (): KoedServerStatus["codex"] => {
       configured: false
     };
   }
-  const content = readFileSync(codexConfigPath, "utf8");
+  const content = deps.readFileSync(codexConfigPath, "utf8") as string;
   const configured =
     content.includes("# >>> koed") && content.includes("[mcp_servers.");
   if (!configured) {
@@ -261,12 +328,15 @@ const inspectCodex = (): KoedServerStatus["codex"] => {
   };
 };
 
-const inspectCaptureHook = () => {
+const inspectCaptureHook = (
+  environment: NodeJS.ProcessEnv,
+  deps: Required<KoedServerStatusDependencies>
+) => {
   const hookConfigPath = resolve(
-    process.env.MEMORY_HOOK_CONFIG ??
-      `${process.env.HOME ?? ""}/.koed/config.json`
+    environment.MEMORY_HOOK_CONFIG ??
+      `${environment.HOME ?? ""}/.koed/config.json`
   );
-  if (!existsSync(hookConfigPath)) {
+  if (!deps.existsSync(hookConfigPath)) {
     return notConfigured(
       "Supported Capture Hook config was not found.",
       "Run koed-server setup codex --json."
@@ -276,7 +346,7 @@ const inspectCaptureHook = () => {
     apiUrl?: string;
     apiToken?: string;
     captureEnabled?: boolean;
-  }>(hookConfigPath);
+  }>(hookConfigPath, deps.readFileSync);
   if (!parsed?.apiUrl || !parsed.apiToken) {
     return needsAttention(
       "Supported Capture Hook config is incomplete.",
@@ -295,10 +365,11 @@ const inspectCaptureHook = () => {
 const inspectMcp = (
   apiUrl: string,
   repoEnv: Record<string, string>,
-  paths: KoedServerPaths
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
 ) => {
   const cliPath = resolve(paths.repoRoot, "packages/mcp-server/dist/cli.js");
-  if (!existsSync(cliPath)) {
+  if (!deps.existsSync(cliPath)) {
     return notConfigured(
       "MCP Server build output was not found.",
       "Run pnpm --filter @koed/mcp-server build or koed-server setup codex --json."
@@ -314,7 +385,7 @@ const inspectMcp = (
       "Run koed-server setup codex --json."
     );
   }
-  const result = spawnSync(process.execPath, [cliPath, "doctor"], {
+  const result = deps.spawnSync(process.execPath, [cliPath, "doctor"], {
     cwd: paths.repoRoot,
     env: {
       ...process.env,
@@ -335,12 +406,15 @@ const inspectMcp = (
   );
 };
 
-const inspectLastVerification = (paths: KoedServerPaths) => {
+const inspectLastVerification = (
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
+) => {
   const value = readJsonFile<{
     checkedAt?: string;
     ok?: boolean;
     message?: string;
-  }>(paths.lastVerificationPath);
+  }>(paths.lastVerificationPath, deps.readFileSync);
   if (!value?.checkedAt) {
     return {
       ...notConfigured(
@@ -361,37 +435,56 @@ const inspectLastVerification = (paths: KoedServerPaths) => {
   };
 };
 
-const aggregateState = (
+export const aggregateState = (
   components: KoedServerComponentStatus[]
 ): KoedServerComponentState => {
   if (components.some((component) => component.state === "needs_attention")) {
     return "needs_attention";
   }
-  if (components.some((component) => component.state === "starting")) {
-    return "starting";
-  }
   if (components.some((component) => component.state === "not_configured")) {
     return "not_configured";
+  }
+  if (components.some((component) => component.state === "starting")) {
+    return "starting";
   }
   return "healthy";
 };
 
 export const collectKoedServerStatus = async (
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: KoedServerStatusDependencies = {}
 ): Promise<KoedServerStatus> => {
+  const deps = withDefaults(dependencies);
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const runtime = readJsonFile<KoedServerRuntimeState>(paths.runtimeStatePath);
-  const runtimeProcessRunning = runtime ? checkPid(runtime.pid) : false;
-  const apiReady = await statusFromApiReady(apiUrl);
+  const runtime = readJsonFile<KoedServerRuntimeState>(
+    paths.runtimeStatePath,
+    deps.readFileSync
+  );
+  const runtimeProcessRunning = runtime ? deps.checkPid(runtime.pid) : false;
+  const apiReady = await statusFromApiReady(apiUrl, deps.fetch);
   const apiToken = inspectApiToken(repoEnv);
-  const codex = inspectCodex();
-  const captureHook = inspectCaptureHook();
-  const mcpServer = inspectMcp(apiUrl, repoEnv, paths);
-  const workerQueues = dockerComposePs(paths);
+  const codex = inspectCodex(environment, deps);
+  const captureHook = inspectCaptureHook(environment, deps);
+  const mcpServer = inspectMcp(apiUrl, repoEnv, paths, deps);
+  const queueDependency = dockerComposePs(paths, deps.spawnSync);
+  const workerPid = runtime?.processes?.worker;
+  const workerRunning = workerPid ? deps.checkPid(workerPid) : false;
+  const workerQueues =
+    queueDependency.state !== "healthy"
+      ? queueDependency
+      : workerRunning
+        ? healthy("Redis queue dependency and Worker process are running.", {
+            redis: queueDependency.details,
+            workerPid
+          })
+        : starting("Worker process has not reported as running yet.", {
+            redis: queueDependency.details,
+            workerPid: workerPid ?? null
+          });
   const lcmSummaryService =
     mcpServer.state === "healthy"
       ? healthy("LCM Summary Service is available through the MCP Server.")
@@ -404,10 +497,15 @@ export const collectKoedServerStatus = async (
             "LCM Summary Service status could not be verified.",
             "Fix MCP Server health first."
           );
-  const lastVerification = inspectLastVerification(paths);
+  const lastVerification = inspectLastVerification(paths, deps);
+  const explorerCredential = loadExplorerCredential(paths);
   const explorer = runtimeProcessRunning
-    ? healthy("Explorer is available through the Koed local service.")
-    : starting("Koed server supervisor is not currently running.");
+    ? healthy("Explorer is available through the Koed local service.", {
+        appCredentialProvisioned: Boolean(explorerCredential)
+      })
+    : starting("Koed server supervisor is not currently running.", {
+        appCredentialProvisioned: Boolean(explorerCredential)
+      });
   const project = notConfigured(
     "Project association is not configured yet.",
     "Project identity is tracked by KOE-219."
@@ -417,7 +515,7 @@ export const collectKoedServerStatus = async (
     ok: false,
     state: "starting" as KoedServerComponentState,
     koedHome: paths.koedHome,
-    generatedAt: new Date().toISOString(),
+    generatedAt: deps.now().toISOString(),
     api: { ...apiReady.api, url: apiUrl },
     database: apiReady.database,
     redis: apiReady.redis,
@@ -451,9 +549,10 @@ export const collectKoedServerStatus = async (
 };
 
 export const collectKoedServerDoctor = async (
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: KoedServerStatusDependencies = {}
 ): Promise<KoedServerDoctorResult> => {
-  const status = await collectKoedServerStatus(environment);
+  const status = await collectKoedServerStatus(environment, dependencies);
   const checks: KoedServerDoctorCheck[] = [
     ["api", "API", status.api],
     ["database", "Database", status.database],

@@ -36,7 +36,7 @@ test("clients bootstrap chains environment, codex, and explorer setup", async ()
     calls.map(([first]) => first),
     [
       "Prepare local environment",
-      "Start Koed backend services",
+      "Start Koed dependency containers",
       "api-ready",
       "codex-bootstrap",
       "explorer-bootstrap",
