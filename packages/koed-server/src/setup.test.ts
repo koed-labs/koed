@@ -45,11 +45,11 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(true);
     expect(result.apiUrl).toBe("http://localhost:3999");
     expect(calls).toHaveLength(1);
-    expect(calls[0].command).toBe(process.execPath);
-    expect(calls[0].args[0]).toBe(
-      resolve(root, "scripts/clients-bootstrap.mjs")
-    );
-    expect(calls[0].env?.KOED_HOME).toBe(root);
+    const call = calls[0];
+    expect(call).toBeDefined();
+    expect(call!.command).toBe(process.execPath);
+    expect(call!.args[0]).toBe(resolve(root, "scripts/clients-bootstrap.mjs"));
+    expect(call!.env?.KOED_HOME).toBe(root);
   });
 
   it("returns actionable failure JSON on bootstrap error", () => {
