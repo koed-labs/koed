@@ -10,6 +10,7 @@ import type {
   ActorContext,
   AuditEventRecord,
   ApiTokenRecord,
+  AcceptedTeamInviteRecord,
   CapturedSessionRecord,
   CreateMemoryNodeInput,
   CreateUserInput,
@@ -17,6 +18,7 @@ import type {
   MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
+  TeamInviteRecord,
   TeamMembershipRecord,
   TeamRecord,
   TeamWorkspaceAccessRecord,
@@ -181,6 +183,10 @@ const createFakeRepository = (): MemorySourceRepository => {
   }> = [];
   const capturedSessions = new Map<string, CapturedSessionRecord>();
   const teams = new Map<string, TeamRecord>();
+  const teamInvites = new Map<
+    string,
+    TeamInviteRecord & { tokenHash: string }
+  >();
   const teamMemberships = new Map<string, TeamMembershipRecord>();
   const teamWorkspaces = new Map<string, TeamWorkspaceRecord>();
   const teamWorkspaceAccess = new Map<string, TeamWorkspaceAccessRecord>();
@@ -316,6 +322,162 @@ const createFakeRepository = (): MemorySourceRepository => {
         canCreateShare: true
       });
       return workspace;
+    },
+    async createTeamInvite(actor, input) {
+      const actorMembership = teamMemberships.get(
+        `${input.teamId}:${actor.userId}`
+      );
+      if (
+        !actorMembership ||
+        actorMembership.status !== "enabled" ||
+        !["owner", "admin"].includes(actorMembership.role)
+      ) {
+        return null;
+      }
+      if (input.role === "owner" && actorMembership.role !== "owner") {
+        return null;
+      }
+      const now = new Date().toISOString();
+      const invite: TeamInviteRecord & { tokenHash: string } = {
+        id: randomUUID(),
+        teamId: input.teamId,
+        email: input.email.toLowerCase(),
+        role: input.role,
+        createdByUserId: actor.userId,
+        acceptedByUserId: null,
+        createdAt: now,
+        expiresAt: input.expiresAt.toISOString(),
+        acceptedAt: null,
+        revokedAt: null,
+        tokenHash: input.tokenHash
+      };
+      teamInvites.set(input.tokenHash, invite);
+
+      const invitedUser = [...users.values()].find(
+        (user) => user.email === invite.email
+      );
+      if (invitedUser) {
+        const existingMembership = teamMemberships.get(
+          `${input.teamId}:${invitedUser.id}`
+        );
+        if (existingMembership?.status !== "enabled") {
+          teamMemberships.set(`${input.teamId}:${invitedUser.id}`, {
+            id: existingMembership?.id ?? randomUUID(),
+            teamId: input.teamId,
+            userId: invitedUser.id,
+            role: input.role,
+            status: "invited",
+            createdAt: existingMembership?.createdAt ?? now,
+            updatedAt: now,
+            acceptedAt: null,
+            disabledAt: null
+          });
+        }
+      }
+
+      return invite;
+    },
+    async acceptTeamInvite(input) {
+      const invite = teamInvites.get(input.tokenHash);
+      if (
+        !invite ||
+        invite.acceptedAt ||
+        invite.revokedAt ||
+        new Date(invite.expiresAt).getTime() <= Date.now()
+      ) {
+        return null;
+      }
+
+      const invitedEmail = invite.email.toLowerCase();
+      let user = input.userId
+        ? (users.get(input.userId) ?? null)
+        : ([...users.values()].find(
+            (candidate) => candidate.email === invitedEmail
+          ) ?? null);
+      let createdUser = false;
+
+      if (!user) {
+        const requestedEmail = input.email?.toLowerCase() ?? invitedEmail;
+        if (requestedEmail !== invitedEmail) {
+          return null;
+        }
+        const id = randomUUID();
+        user = {
+          id,
+          email: invitedEmail,
+          displayName: input.displayName ?? null,
+          passwordHash: input.passwordHash ?? null
+        };
+        users.set(id, user);
+        createdUser = true;
+      }
+
+      if (user.email.toLowerCase() !== invitedEmail) {
+        return null;
+      }
+
+      const now = new Date().toISOString();
+      invite.acceptedAt = now;
+      invite.acceptedByUserId = user.id;
+      const existingMembership = teamMemberships.get(
+        `${invite.teamId}:${user.id}`
+      );
+      const membership: TeamMembershipRecord = {
+        id: existingMembership?.id ?? randomUUID(),
+        teamId: invite.teamId,
+        userId: user.id,
+        role: invite.role,
+        status: "enabled",
+        createdAt: existingMembership?.createdAt ?? now,
+        updatedAt: now,
+        acceptedAt: now,
+        disabledAt: null
+      };
+      teamMemberships.set(`${invite.teamId}:${user.id}`, membership);
+
+      const result: AcceptedTeamInviteRecord = {
+        invite,
+        membership,
+        user,
+        createdUser
+      };
+      return result;
+    },
+    async disableTeamMember(actor, input) {
+      const actorMembership = teamMemberships.get(
+        `${input.teamId}:${actor.userId}`
+      );
+      if (
+        !actorMembership ||
+        actorMembership.status !== "enabled" ||
+        !["owner", "admin"].includes(actorMembership.role) ||
+        input.userId === actor.userId
+      ) {
+        return null;
+      }
+      const targetMembership = teamMemberships.get(
+        `${input.teamId}:${input.userId}`
+      );
+      if (!targetMembership) {
+        return null;
+      }
+      if (
+        targetMembership.role === "owner" &&
+        actorMembership.role !== "owner"
+      ) {
+        return null;
+      }
+      const disabledMembership: TeamMembershipRecord = {
+        ...targetMembership,
+        status: "disabled",
+        updatedAt: new Date().toISOString(),
+        disabledAt: new Date().toISOString()
+      };
+      teamMemberships.set(
+        `${input.teamId}:${input.userId}`,
+        disabledMembership
+      );
+      return disabledMembership;
     },
     async setTeamWorkspaceAccess(actor, input) {
       const actorAccess = teamWorkspaceAccess.get(
