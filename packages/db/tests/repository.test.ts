@@ -135,6 +135,7 @@ describeDb("memory repository visibility", () => {
         truncate table
           audit_events,
           team_workspace_access_grants,
+          team_invites,
           team_workspaces,
           team_memberships,
           teams,
@@ -599,6 +600,213 @@ describeDb("memory repository visibility", () => {
       acceptedAt: memberAcceptedAt,
       disabledAt: null
     });
+  });
+
+  it("handles Team invites, acceptance, disablement, and audit boundaries", async () => {
+    const owner = await repo.createUser({
+      email: `invite-owner-${randomUUID()}@example.com`,
+      displayName: "Invite Owner"
+    });
+    const existingUserEmail = `existing-member-${randomUUID()}@example.com`;
+    const existingUser = await repo.createUser({
+      email: existingUserEmail,
+      displayName: "Existing Member"
+    });
+    const outsider = await repo.createUser({
+      email: `invite-outsider-${randomUUID()}@example.com`,
+      displayName: "Invite Outsider"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Invite Team" }
+    );
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Launch Workspace" }
+    );
+
+    const existingTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
+    const existingInvite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: existingUserEmail.toUpperCase(),
+        role: "member",
+        tokenHash: existingTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    expect(existingInvite).toMatchObject({
+      teamId: team.id,
+      email: existingUserEmail,
+      role: "member",
+      acceptedAt: null,
+      revokedAt: null
+    });
+    await expect(
+      repo.getTeamMembership({ userId: existingUser.id }, team.id)
+    ).resolves.toMatchObject({
+      role: "member",
+      status: "invited"
+    });
+
+    await expect(
+      repo.createTeamInvite(
+        { userId: outsider.id },
+        {
+          teamId: team.id,
+          email: `blocked-${randomUUID()}@example.com`,
+          role: "member",
+          tokenHash: `blocked-${randomUUID()}-${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
+      )
+    ).resolves.toBeNull();
+
+    const acceptedExisting = await repo.acceptTeamInvite({
+      tokenHash: existingTokenHash,
+      userId: existingUser.id
+    });
+    expect(acceptedExisting).toMatchObject({
+      createdUser: false,
+      user: {
+        id: existingUser.id,
+        email: existingUserEmail
+      },
+      membership: {
+        teamId: team.id,
+        userId: existingUser.id,
+        role: "member",
+        status: "enabled"
+      }
+    });
+    expect(acceptedExisting?.invite.acceptedAt).toEqual(expect.any(String));
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: existingTokenHash,
+        userId: existingUser.id
+      })
+    ).resolves.toBeNull();
+
+    await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: existingUserEmail,
+        role: "member",
+        tokenHash: `reinvite-${randomUUID()}-${randomUUID()}`,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    await expect(
+      repo.getTeamMembership({ userId: existingUser.id }, team.id)
+    ).resolves.toMatchObject({
+      role: "member",
+      status: "enabled"
+    });
+
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: existingUser.id,
+        access: "write"
+      }
+    );
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      access: "write",
+      canRecall: true,
+      canCreateShare: true
+    });
+
+    const disabled = await repo.disableTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: existingUser.id }
+    );
+    expect(disabled).toMatchObject({
+      teamId: team.id,
+      userId: existingUser.id,
+      status: "disabled"
+    });
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      membershipStatus: "disabled",
+      access: "disabled",
+      canRecall: false,
+      canCreateShare: false
+    });
+
+    const newUserEmail = `new-member-${randomUUID()}@example.com`;
+    const newUserTokenHash = `invite-${randomUUID()}-${randomUUID()}`;
+    const newUserInvite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: newUserEmail,
+        role: "admin",
+        tokenHash: newUserTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    expect(newUserInvite).toMatchObject({
+      email: newUserEmail,
+      role: "admin"
+    });
+
+    const acceptedNewUser = await repo.acceptTeamInvite({
+      tokenHash: newUserTokenHash,
+      email: newUserEmail,
+      displayName: "New Team Admin",
+      passwordHash: "hashed-password"
+    });
+    expect(acceptedNewUser).toMatchObject({
+      createdUser: true,
+      user: {
+        email: newUserEmail,
+        displayName: "New Team Admin",
+        passwordHash: "hashed-password"
+      },
+      membership: {
+        teamId: team.id,
+        role: "admin",
+        status: "enabled"
+      }
+    });
+    await expect(
+      repo.disableTeamMember(
+        { userId: acceptedNewUser!.user.id },
+        { teamId: team.id, userId: owner.id }
+      )
+    ).resolves.toBeNull();
+
+    const auditRows = await pool.query<{
+      action: string;
+      metadata: Record<string, unknown>;
+    }>(
+      `
+        select action, metadata
+        from audit_events
+        where action like 'team.%'
+        order by created_at asc, id asc
+      `
+    );
+    expect(auditRows.rows.map((row) => row.action)).toEqual(
+      expect.arrayContaining([
+        "team.invite.created",
+        "team.invite.accepted",
+        "team.member.enabled",
+        "team.member.disabled"
+      ])
+    );
+    for (const row of auditRows.rows) {
+      expect(JSON.stringify(row.metadata)).not.toContain(existingTokenHash);
+      expect(JSON.stringify(row.metadata)).not.toContain(newUserTokenHash);
+      expect(JSON.stringify(row.metadata)).not.toContain("hashed-password");
+      expect(JSON.stringify(row.metadata)).not.toContain("raw memory");
+    }
   });
 
   it("rolls back API token lifecycle changes when audit insertion fails", async () => {

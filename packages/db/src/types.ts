@@ -97,6 +97,26 @@ export interface TeamWorkspaceAccessRecord {
   canCreateShare: boolean;
 }
 
+export interface TeamInviteRecord {
+  id: string;
+  teamId: string;
+  email: string;
+  role: TeamRole;
+  createdByUserId: string | null;
+  acceptedByUserId: string | null;
+  createdAt: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface AcceptedTeamInviteRecord {
+  invite: TeamInviteRecord;
+  membership: TeamMembershipRecord;
+  user: UserRecord;
+  createdUser: boolean;
+}
+
 export interface ApiTokenRecord {
   id: string;
   ownerUserId: string;
@@ -695,6 +715,27 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input: { teamId: string; name: string }
   ): Promise<TeamWorkspaceRecord | null>;
+  createTeamInvite(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      email: string;
+      role: TeamRole;
+      tokenHash: string;
+      expiresAt: Date;
+    }
+  ): Promise<TeamInviteRecord | null>;
+  acceptTeamInvite(input: {
+    tokenHash: string;
+    userId?: string;
+    email?: string;
+    displayName?: string;
+    passwordHash?: string;
+  }): Promise<AcceptedTeamInviteRecord | null>;
+  disableTeamMember(
+    actor: ActorContext,
+    input: { teamId: string; userId: string }
+  ): Promise<TeamMembershipRecord | null>;
   setTeamWorkspaceAccess(
     actor: ActorContext,
     input: {

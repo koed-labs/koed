@@ -1,20 +1,27 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { auditEventValues } from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
+  auditEvents,
+  teamInvites,
   teamMemberships,
   teams,
   teamWorkspaceAccessGrants,
-  teamWorkspaces
+  teamWorkspaces,
+  users
 } from "./schema.js";
 import type {
+  AcceptedTeamInviteRecord,
   ActorContext,
+  TeamInviteRecord,
   TeamMembershipRecord,
   TeamMembershipStatus,
   TeamRecord,
   TeamRole,
   TeamWorkspaceAccessLevel,
   TeamWorkspaceAccessRecord,
-  TeamWorkspaceRecord
+  TeamWorkspaceRecord,
+  UserRecord
 } from "./types.js";
 
 const timestampIso = (value: Date | string): string =>
@@ -54,6 +61,42 @@ const mapMembershipRecord = (row: {
   updatedAt: timestampIso(row.updatedAt),
   acceptedAt: row.acceptedAt ? timestampIso(row.acceptedAt) : null,
   disabledAt: row.disabledAt ? timestampIso(row.disabledAt) : null
+});
+
+const mapUserRecord = (row: {
+  id: string;
+  email: string;
+  displayName: string | null;
+  passwordHash: string | null;
+}): UserRecord => ({
+  id: row.id,
+  email: row.email,
+  displayName: row.displayName,
+  passwordHash: row.passwordHash
+});
+
+const mapInviteRecord = (row: {
+  id: string;
+  teamId: string;
+  email: string;
+  role: TeamRole;
+  createdByUserId: string | null;
+  acceptedByUserId: string | null;
+  createdAt: Date | string;
+  expiresAt: Date | string;
+  acceptedAt: Date | string | null;
+  revokedAt: Date | string | null;
+}): TeamInviteRecord => ({
+  id: row.id,
+  teamId: row.teamId,
+  email: row.email,
+  role: row.role,
+  createdByUserId: row.createdByUserId,
+  acceptedByUserId: row.acceptedByUserId,
+  createdAt: timestampIso(row.createdAt),
+  expiresAt: timestampIso(row.expiresAt),
+  acceptedAt: row.acceptedAt ? timestampIso(row.acceptedAt) : null,
+  revokedAt: row.revokedAt ? timestampIso(row.revokedAt) : null
 });
 
 const mapWorkspaceRecord = (row: {
@@ -192,6 +235,28 @@ export const createTeamAccessRepository = (db: KoedDb) => {
     return buildAccessRecord(row);
   };
 
+  const insertTeamAudit = (
+    tx: KoedDb,
+    input: {
+      actorUserId?: string | null;
+      action: string;
+      targetTable: string;
+      targetId: string;
+      metadata: Record<string, unknown>;
+    }
+  ) =>
+    tx.insert(auditEvents).values(
+      auditEventValues({
+        actorUserId: input.actorUserId ?? null,
+        ownerUserId: input.actorUserId ?? null,
+        visibility: null,
+        action: input.action,
+        targetTable: input.targetTable,
+        targetId: input.targetId,
+        metadata: input.metadata
+      })
+    );
+
   return {
     async createTeam(
       actor: ActorContext,
@@ -252,46 +317,72 @@ export const createTeamAccessRepository = (db: KoedDb) => {
       }
 
       const status = input.status ?? "enabled";
-      const existing = await db
-        .select()
-        .from(teamMemberships)
-        .where(
-          and(
-            eq(teamMemberships.teamId, input.teamId),
-            eq(teamMemberships.userId, input.userId)
+      return db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(teamMemberships)
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, input.userId)
+            )
           )
-        )
-        .limit(1);
-      if (existing[0]?.role === "owner" && manager!.role !== "owner") {
-        return null;
-      }
+          .limit(1);
+        const previous = existing[0];
+        if (previous?.role === "owner" && manager!.role !== "owner") {
+          return null;
+        }
 
-      const rows = await db
-        .insert(teamMemberships)
-        .values({
-          teamId: input.teamId,
-          userId: input.userId,
-          role: input.role,
-          status,
-          acceptedAt: status === "enabled" ? sql`now()` : null,
-          disabledAt: status === "disabled" ? sql`now()` : null
-        })
-        .onConflictDoUpdate({
-          target: [teamMemberships.teamId, teamMemberships.userId],
-          set: {
+        const rows = await tx
+          .insert(teamMemberships)
+          .values({
+            teamId: input.teamId,
+            userId: input.userId,
             role: input.role,
             status,
-            updatedAt: sql`now()`,
-            acceptedAt:
-              status === "enabled"
-                ? sql`coalesce(${teamMemberships.acceptedAt}, now())`
-                : sql`${teamMemberships.acceptedAt}`,
+            acceptedAt: status === "enabled" ? sql`now()` : null,
             disabledAt: status === "disabled" ? sql`now()` : null
-          }
-        })
-        .returning();
+          })
+          .onConflictDoUpdate({
+            target: [teamMemberships.teamId, teamMemberships.userId],
+            set: {
+              role: input.role,
+              status,
+              updatedAt: sql`now()`,
+              acceptedAt:
+                status === "enabled"
+                  ? sql`coalesce(${teamMemberships.acceptedAt}, now())`
+                  : sql`${teamMemberships.acceptedAt}`,
+              disabledAt: status === "disabled" ? sql`now()` : null
+            }
+          })
+          .returning();
 
-      return mapMembershipRecord(rows[0]!);
+        const membership = mapMembershipRecord(rows[0]!);
+        const action =
+          status === "disabled"
+            ? "team.member.disabled"
+            : previous?.status !== "enabled" && status === "enabled"
+              ? "team.member.enabled"
+              : previous && previous.role !== input.role
+                ? "team.member.role_changed"
+                : "team.member.upserted";
+
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action,
+          targetTable: "team_memberships",
+          targetId: membership.id,
+          metadata: {
+            teamId: input.teamId,
+            userId: input.userId,
+            role: input.role,
+            status
+          }
+        });
+
+        return membership;
+      });
     },
 
     async createTeamWorkspace(
@@ -319,6 +410,277 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         });
 
         return mapWorkspaceRecord(workspace);
+      });
+    },
+
+    async createTeamInvite(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        email: string;
+        role: TeamRole;
+        tokenHash: string;
+        expiresAt: Date;
+      }
+    ): Promise<TeamInviteRecord | null> {
+      const manager = await getManagingMembership(actor, input.teamId);
+      if (!membershipManages(manager)) {
+        return null;
+      }
+      if (input.role === "owner" && manager!.role !== "owner") {
+        return null;
+      }
+
+      return db.transaction(async (tx) => {
+        const email = input.email.toLowerCase();
+        const inviteRows = await tx
+          .insert(teamInvites)
+          .values({
+            teamId: input.teamId,
+            email,
+            role: input.role,
+            tokenHash: input.tokenHash,
+            createdByUserId: actor.userId,
+            expiresAt: input.expiresAt
+          })
+          .returning();
+        const invite = mapInviteRecord(inviteRows[0]!);
+
+        const existingUsers = await tx
+          .select()
+          .from(users)
+          .where(eq(users.email, email))
+          .limit(1);
+        const existingUser = existingUsers[0];
+        if (existingUser) {
+          await tx
+            .insert(teamMemberships)
+            .values({
+              teamId: input.teamId,
+              userId: existingUser.id,
+              role: input.role,
+              status: "invited"
+            })
+            .onConflictDoUpdate({
+              target: [teamMemberships.teamId, teamMemberships.userId],
+              set: {
+                role: sql`case when ${teamMemberships.status} = 'enabled' then ${teamMemberships.role} else ${input.role}::team_role end`,
+                status: sql`case when ${teamMemberships.status} = 'enabled' then ${teamMemberships.status} else 'invited'::team_membership_status end`,
+                updatedAt: sql`now()`,
+                disabledAt: sql`case when ${teamMemberships.status} = 'enabled' then ${teamMemberships.disabledAt} else null end`
+              }
+            });
+        }
+
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.invite.created",
+          targetTable: "team_invites",
+          targetId: invite.id,
+          metadata: {
+            teamId: input.teamId,
+            email,
+            role: input.role,
+            existingUser: Boolean(existingUser)
+          }
+        });
+
+        return invite;
+      });
+    },
+
+    async acceptTeamInvite(input: {
+      tokenHash: string;
+      userId?: string;
+      email?: string;
+      displayName?: string;
+      passwordHash?: string;
+    }): Promise<AcceptedTeamInviteRecord | null> {
+      return db.transaction(async (tx) => {
+        const inviteRows = await tx
+          .select()
+          .from(teamInvites)
+          .where(
+            and(
+              eq(teamInvites.tokenHash, input.tokenHash),
+              isNull(teamInvites.acceptedAt),
+              isNull(teamInvites.revokedAt),
+              gt(teamInvites.expiresAt, sql`now()`)
+            )
+          )
+          .limit(1)
+          .for("update");
+        const inviteRow = inviteRows[0];
+        if (!inviteRow) {
+          return null;
+        }
+
+        const inviteEmail = inviteRow.email.toLowerCase();
+        let createdUser = false;
+        let userRows = input.userId
+          ? await tx
+              .select()
+              .from(users)
+              .where(eq(users.id, input.userId))
+              .limit(1)
+          : await tx
+              .select()
+              .from(users)
+              .where(eq(users.email, inviteEmail))
+              .limit(1);
+        let user = userRows[0];
+
+        if (!user) {
+          const requestedEmail = input.email?.toLowerCase() ?? inviteEmail;
+          if (requestedEmail !== inviteEmail) {
+            return null;
+          }
+          userRows = await tx
+            .insert(users)
+            .values({
+              email: inviteEmail,
+              displayName: input.displayName ?? null,
+              passwordHash: input.passwordHash ?? null
+            })
+            .returning();
+          user = userRows[0]!;
+          createdUser = true;
+        }
+
+        if (user.email.toLowerCase() !== inviteEmail) {
+          return null;
+        }
+
+        const membershipRows = await tx
+          .insert(teamMemberships)
+          .values({
+            teamId: inviteRow.teamId,
+            userId: user.id,
+            role: inviteRow.role,
+            status: "enabled",
+            acceptedAt: sql`now()`,
+            disabledAt: null
+          })
+          .onConflictDoUpdate({
+            target: [teamMemberships.teamId, teamMemberships.userId],
+            set: {
+              role: inviteRow.role,
+              status: "enabled",
+              acceptedAt: sql`now()`,
+              disabledAt: null,
+              updatedAt: sql`now()`
+            }
+          })
+          .returning();
+
+        const acceptedRows = await tx
+          .update(teamInvites)
+          .set({ acceptedAt: sql`now()`, acceptedByUserId: user.id })
+          .where(eq(teamInvites.id, inviteRow.id))
+          .returning();
+        const invite = mapInviteRecord(acceptedRows[0]!);
+        const membership = mapMembershipRecord(membershipRows[0]!);
+
+        await insertTeamAudit(tx, {
+          actorUserId: user.id,
+          action: "team.invite.accepted",
+          targetTable: "team_invites",
+          targetId: invite.id,
+          metadata: {
+            teamId: invite.teamId,
+            email: invite.email,
+            role: invite.role,
+            userId: user.id,
+            createdUser
+          }
+        });
+        await insertTeamAudit(tx, {
+          actorUserId: user.id,
+          action: "team.member.enabled",
+          targetTable: "team_memberships",
+          targetId: membership.id,
+          metadata: {
+            teamId: invite.teamId,
+            userId: user.id,
+            role: membership.role,
+            status: membership.status,
+            source: "invite_acceptance"
+          }
+        });
+
+        return {
+          invite,
+          membership,
+          user: mapUserRecord(user),
+          createdUser
+        };
+      });
+    },
+
+    async disableTeamMember(
+      actor: ActorContext,
+      input: { teamId: string; userId: string }
+    ): Promise<TeamMembershipRecord | null> {
+      const manager = await getManagingMembership(actor, input.teamId);
+      if (!membershipManages(manager)) {
+        return null;
+      }
+      if (input.userId === actor.userId) {
+        return null;
+      }
+
+      return db.transaction(async (tx) => {
+        const targetMembershipRows = await tx
+          .select()
+          .from(teamMemberships)
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, input.userId)
+            )
+          )
+          .limit(1);
+        const targetMembership = targetMembershipRows[0];
+        if (!targetMembership) {
+          return null;
+        }
+        if (targetMembership.role === "owner" && manager!.role !== "owner") {
+          return null;
+        }
+
+        const rows = await tx
+          .update(teamMemberships)
+          .set({
+            status: "disabled",
+            disabledAt: sql`now()`,
+            updatedAt: sql`now()`
+          })
+          .where(
+            and(
+              eq(teamMemberships.teamId, input.teamId),
+              eq(teamMemberships.userId, input.userId)
+            )
+          )
+          .returning();
+        if (!rows[0]) {
+          return null;
+        }
+
+        const membership = mapMembershipRecord(rows[0]);
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.member.disabled",
+          targetTable: "team_memberships",
+          targetId: membership.id,
+          metadata: {
+            teamId: input.teamId,
+            userId: input.userId,
+            role: membership.role,
+            status: membership.status
+          }
+        });
+
+        return membership;
       });
     },
 

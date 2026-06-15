@@ -181,6 +181,39 @@ export const teamWorkspaceAccessGrants = pgTable(
   ]
 );
 
+export const teamInvites = pgTable(
+  "team_invites",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: teamRole("role").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    acceptedByUserId: uuid("accepted_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    createdAt: now(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    index("team_invites_team_email_idx").on(table.teamId, table.email),
+    index("team_invites_active_token_idx")
+      .on(table.tokenHash)
+      .where(sql`${table.acceptedAt} is null and ${table.revokedAt} is null`),
+    check(
+      "team_invites_token_hash_length_check",
+      sql`length(${table.tokenHash}) >= 32`
+    )
+  ]
+);
+
 export const workspaces = pgTable(
   "workspaces",
   {
