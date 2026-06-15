@@ -7,7 +7,8 @@ import type {
   LcmSummaryBenchmarkCase,
   LcmSummaryField,
   LcmSummaryForbiddenClaim,
-  LcmSummaryRequiredClaim
+  LcmSummaryRequiredClaim,
+  LcmSummaryTermMatch
 } from "./cases.js";
 
 export interface LcmSummaryBenchmarkRunInput {
@@ -151,8 +152,20 @@ const tokenCoverage = (haystack: string, phrase: string): number => {
   return expected.filter((token) => actual.has(token)).length / expected.length;
 };
 
-const containsClaim = (haystack: string, phrase: string): boolean =>
-  includesPhrase(haystack, phrase) || tokenCoverage(haystack, phrase) >= 0.8;
+const containsTerm = (haystack: string, term: string): boolean => {
+  if (includesAffirmativePhrase(haystack, term)) {
+    return true;
+  }
+  const expected = significantTokens(term);
+  if (expected.length === 0) {
+    return false;
+  }
+  const actual = new Set(significantTokens(haystack));
+  return expected.every((token) => actual.has(token));
+};
+
+const containsFuzzyTerm = (haystack: string, term: string): boolean =>
+  includesPhrase(haystack, term) || tokenCoverage(haystack, term) >= 0.8;
 
 const parseOutput = (output: unknown): StructuredLcmSummary => {
   if (typeof output === "string") {
@@ -188,31 +201,49 @@ const allSummaryText = (summary: StructuredLcmSummary): string =>
     ...summary.provenance_hints
   ].join("\n");
 
-const claimPhrases = (
-  claim: LcmSummaryRequiredClaim | LcmSummaryForbiddenClaim
-): string[] => [claim.text, ...(claim.aliases ?? [])];
-
-const claimPresent = (
+const matchPresent = (
   text: string,
-  claim: LcmSummaryRequiredClaim
+  match: LcmSummaryTermMatch,
+  mode: "required" | "forbidden"
 ): boolean => {
-  if (claim.requiredTerms && claim.requiredTerms.length > 0) {
-    return claim.requiredTerms.every((term) =>
-      includesAffirmativePhrase(text, term)
-    );
-  }
-  return claimPhrases(claim).some((phrase) =>
-    claim.fuzzy === true && claim.critical !== true
-      ? containsClaim(text, phrase)
-      : includesAffirmativePhrase(text, phrase)
+  const exactPhrases = match.exactPhrases ?? [];
+  const allTerms = match.allTerms ?? [];
+  const anyTermGroups = match.anyTermGroups ?? [];
+  const contains =
+    mode === "required"
+      ? containsTerm
+      : (haystack: string, term: string) =>
+          includesPhrase(haystack, term) || containsFuzzyTerm(haystack, term);
+
+  return (
+    exactPhrases.every((phrase) =>
+      mode === "required"
+        ? includesAffirmativePhrase(text, phrase)
+        : includesPhrase(text, phrase)
+    ) &&
+    allTerms.every((term) => contains(text, term)) &&
+    anyTermGroups.every((group) => group.some((term) => contains(text, term)))
   );
 };
 
+const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
+  matchPresent(text, claim.match, "required");
+
 const forbiddenPresent = (
-  text: string,
+  summary: StructuredLcmSummary,
   claim: LcmSummaryForbiddenClaim
-): boolean =>
-  claimPhrases(claim).some((phrase) => includesPhrase(text, phrase));
+): boolean => {
+  const text =
+    claim.fields && claim.fields.length > 0
+      ? claim.fields.map((field) => fieldValue(summary, field)).join("\n")
+      : allSummaryText(summary);
+  if (!matchPresent(text, claim.match, "forbidden")) {
+    return false;
+  }
+  return !(claim.allowedContextTerms ?? []).some((term) =>
+    containsTerm(text, term)
+  );
+};
 
 const nonEmptyStructuredFields = (
   summary: StructuredLcmSummary
@@ -252,7 +283,7 @@ const requiredClaimDetails = (
       score: present ? 4 : 0,
       maxScore: 4,
       reason: present ? "claim present" : "claim missing",
-      actual: claim.text,
+      actual: claim.label,
       critical
     }
   ];
@@ -282,14 +313,14 @@ const forbiddenClaimDetail = (
   summary: StructuredLcmSummary,
   claim: LcmSummaryForbiddenClaim
 ): LcmSummaryScoreDetail => {
-  const present = forbiddenPresent(allSummaryText(summary), claim);
+  const present = forbiddenPresent(summary, claim);
   const maxScore = claim.critical === true ? 6 : 2;
   return {
     name: `forbidden:${claim.id}`,
     score: present ? 0 : maxScore,
     maxScore,
     reason: present ? "forbidden claim present" : "forbidden claim absent",
-    actual: claim.text,
+    actual: claim.label,
     critical: claim.critical ?? false
   };
 };

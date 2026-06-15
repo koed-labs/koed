@@ -13,20 +13,26 @@ export type LcmSummaryField =
   | "unresolved_questions"
   | "provenance_hints";
 
+export interface LcmSummaryTermMatch {
+  exactPhrases?: string[];
+  allTerms?: string[];
+  anyTermGroups?: string[][];
+}
+
 export interface LcmSummaryRequiredClaim {
   id: string;
-  text: string;
-  aliases?: string[];
-  requiredTerms?: string[];
+  label: string;
+  match: LcmSummaryTermMatch;
   fields: LcmSummaryField[];
   critical?: boolean;
-  fuzzy?: boolean;
 }
 
 export interface LcmSummaryForbiddenClaim {
   id: string;
-  text: string;
-  aliases?: string[];
+  label: string;
+  match: LcmSummaryTermMatch;
+  fields?: LcmSummaryField[];
+  allowedContextTerms?: string[];
   critical?: boolean;
   redactInReports?: boolean;
 }
@@ -91,21 +97,20 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "backend-evidence-only",
-          text: "backend returns Evidence Bundles only",
-          aliases: [
-            "backend should return Evidence Bundles only",
-            "Use the backend only for Evidence Bundles"
-          ],
+          label: "backend returns only Evidence Bundles",
+          match: {
+            allTerms: ["backend", "Evidence Bundles"],
+            anyTermGroups: [["return", "returns", "returned"], ["only"]]
+          },
           fields: ["decisions"],
           critical: true
         },
         {
           id: "ai-client-synthesis",
-          text: "Answer Synthesis remains in the connected AI Client",
-          aliases: [
-            "Answer Synthesis should remain in the connected AI Client",
-            "keep Answer Synthesis in the connected AI Client"
-          ],
+          label: "Answer Synthesis remains in the connected AI Client",
+          match: {
+            allTerms: ["Answer Synthesis", "connected AI Client"]
+          },
           fields: ["decisions"],
           critical: true
         }
@@ -113,8 +118,14 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       forbiddenClaims: [
         {
           id: "backend-llm",
-          text: "backend generates answers with an LLM",
-          aliases: ["server-side LLM answers", "backend answer generation"],
+          label: "backend LLM answer generation",
+          match: {
+            allTerms: ["backend"],
+            anyTermGroups: [
+              ["LLM", "server-side"],
+              ["answers", "generation", "generates"]
+            ]
+          },
           critical: true
         }
       ],
@@ -162,19 +173,27 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "typescript-supported",
-          text: "support only the TypeScript Codex Capture Hook",
-          aliases: [
-            "Support only the TypeScript Codex Capture Hook",
-            "supporting only the TypeScript Codex Capture Hook",
-            "only the TypeScript Codex Capture Hook was to be supported"
-          ],
+          label: "only the TypeScript Codex Capture Hook is supported",
+          match: {
+            allTerms: ["TypeScript Codex Capture Hook"],
+            anyTermGroups: [
+              ["only", "sole", "exclusive"],
+              ["support", "supported", "supporting"]
+            ]
+          },
           fields: ["decisions"],
           critical: true
         },
         {
           id: "python-superseded",
-          text: "Python hook",
-          aliases: ["Python Capture Hook"],
+          label: "Python hook was removed or superseded",
+          match: {
+            allTerms: ["Python"],
+            anyTermGroups: [
+              ["hook", "Capture Hook"],
+              ["remove", "removed", "supersede", "superseded"]
+            ]
+          },
           fields: ["decisions"],
           critical: true
         }
@@ -182,7 +201,16 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       forbiddenClaims: [
         {
           id: "python-still-supported",
-          text: "Python hook remains supported",
+          label: "Python hook remains supported",
+          match: {
+            exactPhrases: [
+              "Python hook remains supported",
+              "Python Capture Hook remains supported",
+              "Python hook is supported",
+              "Python Capture Hook is supported"
+            ]
+          },
+          fields: ["decisions", "unresolved_questions"],
           critical: true
         }
       ],
@@ -230,17 +258,20 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "pending-error",
-          text: "projection_status stuck at pending",
-          aliases: [
-            "projection_status stayed pending",
-            "projection_status remained pending"
-          ],
+          label: "projection_status was stuck pending",
+          match: {
+            allTerms: ["projection_status", "pending"],
+            anyTermGroups: [["stuck", "stayed", "remained"]]
+          },
           fields: ["errors"],
           critical: true
         },
         {
           id: "raw-only-fix",
-          text: "mark LCM app-server telemetry as raw_only",
+          label: "LCM app-server telemetry marked raw_only",
+          match: {
+            allTerms: ["LCM app-server telemetry", "raw_only"]
+          },
           fields: ["decisions"],
           critical: true
         }
@@ -290,16 +321,11 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "migration-reset",
-          text: "migration 0012_memory_nodes_backfill is the first migration that requires a fresh local reset",
-          aliases: [
-            "migration 0012_memory_nodes_backfill as the first migration that requires a fresh local reset",
-            "Migration 0012_memory_nodes_backfill was identified as the first migration requiring a fresh local reset"
-          ],
-          requiredTerms: [
-            "migration 0012_memory_nodes_backfill",
-            "first migration",
-            "fresh local reset"
-          ],
+          label: "memory node backfill migration requires first fresh reset",
+          match: {
+            exactPhrases: ["migration 0012_memory_nodes_backfill"],
+            allTerms: ["first migration", "fresh local reset"]
+          },
           fields: ["facts"],
           critical: true
         }
@@ -307,7 +333,10 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       forbiddenClaims: [
         {
           id: "all-tables-important",
-          text: "checking table 001",
+          label: "noisy table check output",
+          match: {
+            exactPhrases: ["checking table 001"]
+          },
           critical: false
         }
       ],
@@ -355,19 +384,28 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "codex-doc",
-          text: "docs/codex-integration.md",
+          label: "codex integration doc path",
+          match: {
+            exactPhrases: ["docs/codex-integration.md"]
+          },
           fields: ["files"],
           critical: true
         },
         {
           id: "smoke-command",
-          text: "pnpm smoke:lcm",
+          label: "LCM smoke command",
+          match: {
+            exactPhrases: ["pnpm smoke:lcm"]
+          },
           fields: ["commands"],
           critical: true
         },
         {
           id: "prompt-token-env",
-          text: "MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS",
+          label: "LCM prompt token env var",
+          match: {
+            exactPhrases: ["MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"]
+          },
           fields: ["facts", "decisions"],
           critical: true
         }
@@ -417,20 +455,20 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "team-memory-undecided",
-          text: "team memory is visible in Memory Answer by default",
-          aliases: [
-            "Should team memory be visible in Memory Answer by default",
-            "team memory should be visible in Memory Answer by default"
-          ],
+          label: "team memory default Memory Answer visibility is unresolved",
+          match: {
+            allTerms: ["team memory", "Memory Answer", "default"],
+            anyTermGroups: [["visible", "visibility"]]
+          },
           fields: ["unresolved_questions"],
           critical: true
         },
         {
           id: "scope-domain-open",
-          text: "Search Domain and Retrieval Scope interact with future team memory",
-          aliases: [
-            "Search Domain and Retrieval Scope should interact with future team memory"
-          ],
+          label: "Search Domain and Retrieval Scope interaction is unresolved",
+          match: {
+            allTerms: ["Search Domain", "Retrieval Scope", "team memory"]
+          },
           fields: ["unresolved_questions"],
           critical: true
         }
@@ -438,7 +476,13 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       forbiddenClaims: [
         {
           id: "team-memory-decided",
-          text: "team memory is visible by default",
+          label: "team memory visible by default as decision",
+          match: {
+            allTerms: ["team memory", "visible", "default"],
+            anyTermGroups: [["accepted", "decided", "decision"]]
+          },
+          fields: ["decisions", "facts"],
+          allowedContextTerms: ["not decided", "undecided", "unresolved"],
           critical: true
         }
       ],
@@ -480,15 +524,24 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "projection-memory-events",
-          text: "Projection creates Memory Events from raw conversation_items",
-          fields: ["facts"],
+          label: "raw conversation_items become Memory Events",
+          match: {
+            allTerms: ["raw conversation_items", "Memory Events"],
+            anyTermGroups: [
+              ["Projection", "project", "projects", "create", "creates"]
+            ]
+          },
+          fields: ["summary_text", "decisions", "facts"],
           critical: true
         },
         {
           id: "rollups-child-summaries",
-          text: "rollups summarize child LCM summaries",
-          aliases: ["Rollups summarize child LCM summaries"],
-          fields: ["facts"],
+          label: "rollups summarize child LCM summaries",
+          match: {
+            allTerms: ["rollups", "child LCM summaries"],
+            anyTermGroups: [["summarize", "summarizes", "operate"]]
+          },
+          fields: ["summary_text", "decisions", "facts"],
           critical: true
         }
       ],
@@ -531,7 +584,11 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "diagnostic-hidden",
-          text: "diagnostic low-level memory tools stay hidden unless explicitly enabled",
+          label: "diagnostic low-level memory tools stay hidden unless enabled",
+          match: {
+            allTerms: ["diagnostic low-level memory tools", "hidden"],
+            exactPhrases: ["unless explicitly enabled"]
+          },
           fields: ["decisions"],
           critical: true
         }
@@ -539,7 +596,12 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       forbiddenClaims: [
         {
           id: "diagnostic-default",
-          text: "enabled by default for all users",
+          label: "diagnostic tools enabled by default as active state",
+          match: {
+            exactPhrases: ["enabled by default for all users"]
+          },
+          fields: ["decisions", "unresolved_questions"],
+          allowedContextTerms: ["superseded", "earlier"],
           critical: true
         }
       ],
@@ -588,10 +650,15 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "lifecycle-raw",
-          text: "lifecycle noise should remain raw records unless there is a deliberate retrieval reason",
-          aliases: [
-            "keep lifecycle noise as raw records unless there is a deliberate retrieval reason"
-          ],
+          label: "lifecycle noise remains raw unless retrieval reason exists",
+          match: {
+            allTerms: [
+              "lifecycle noise",
+              "raw records",
+              "deliberate retrieval reason"
+            ],
+            anyTermGroups: [["remain", "keep", "kept"]]
+          },
           fields: ["decisions"],
           critical: true
         }
@@ -631,15 +698,20 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "model-name",
-          text: "gpt-5.4-mini",
+          label: "LCM model name",
+          match: {
+            exactPhrases: ["gpt-5.4-mini"]
+          },
           fields: ["model_names"],
           critical: true
         },
         {
           id: "reasoning-medium",
-          text: "reasoning effort medium",
-          aliases: ["reasoning effort is medium"],
-          fields: ["facts"],
+          label: "medium reasoning effort",
+          match: {
+            allTerms: ["reasoning effort", "medium"]
+          },
+          fields: ["summary_text", "decisions", "facts"],
           critical: true
         }
       ],
@@ -677,15 +749,21 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "source-anchor",
-          text: "00000000-0000-4000-8000-000000300001",
+          label: "source anchor id",
+          match: {
+            exactPhrases: ["00000000-0000-4000-8000-000000300001"]
+          },
           fields: ["provenance_hints"],
           critical: true
         },
         {
           id: "expand-needs-anchor",
-          text: "expand needs source anchors to trace the claim",
-          aliases: ["expand needs source", "trace the claim"],
-          fields: ["summary_text", "facts"],
+          label: "expand needs source anchors to trace claims",
+          match: {
+            allTerms: ["source", "trace", "claim"],
+            anyTermGroups: [["expand", "expansion"]]
+          },
+          fields: ["summary_text", "user_requests", "facts"],
           critical: true
         }
       ],
@@ -733,19 +811,23 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       requiredClaims: [
         {
           id: "token-rotated",
-          text: "API Token was rotated",
-          aliases: ["API token was rotated", "The token was rotated"],
+          label: "API Token was rotated",
+          match: {
+            allTerms: ["API token", "rotated"]
+          },
           fields: ["facts", "tool_outcomes"],
           critical: true
         },
         {
           id: "literal-redacted",
-          text: "redact the literal secret",
-          aliases: [
-            "literal secret should be redacted",
-            "redact the secret",
-            "redacting the secret"
-          ],
+          label: "literal secret should be redacted",
+          match: {
+            allTerms: ["secret"],
+            anyTermGroups: [
+              ["redact", "redacted", "redacting"],
+              ["literal", "secret-like", "pasted"]
+            ]
+          },
           fields: ["summary_text", "facts"],
           critical: true
         }
@@ -753,7 +835,10 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
       forbiddenClaims: [
         {
           id: "literal-token",
-          text: "koed_live_secret_abc123",
+          label: "literal secret token",
+          match: {
+            exactPhrases: ["koed_live_secret_abc123"]
+          },
           critical: true,
           redactInReports: true
         }

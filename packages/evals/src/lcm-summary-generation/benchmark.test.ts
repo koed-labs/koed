@@ -80,13 +80,24 @@ const addToField = (
   summary[field].push(value);
 };
 
+const textForMatch = (
+  claim: LcmSummaryBenchmarkCase["expected"]["requiredClaims"][number]
+): string =>
+  [
+    ...(claim.match.exactPhrases ?? []),
+    ...(claim.match.allTerms ?? []),
+    ...(claim.match.anyTermGroups?.map((group) => group[0] ?? "") ?? [])
+  ]
+    .filter(Boolean)
+    .join(" ");
+
 const passingOutput = (
   benchmarkCase: LcmSummaryBenchmarkCase
 ): StructuredLcmSummary => {
   const summary = emptySummary();
   for (const claim of benchmarkCase.expected.requiredClaims) {
     for (const field of claim.fields) {
-      addToField(summary, field, claim.text);
+      addToField(summary, field, textForMatch(claim));
     }
   }
   for (const field of benchmarkCase.expected.requiredNonEmptyFields ?? []) {
@@ -106,7 +117,7 @@ const passingOutput = (
   }
   if (!summary.summary_text) {
     summary.summary_text = benchmarkCase.expected.requiredClaims
-      .map((claim) => claim.text)
+      .map((claim) => textForMatch(claim))
       .join(" ");
   }
   return summary;
@@ -260,6 +271,29 @@ describe("LCM summary generation scoring", () => {
     });
   });
 
+  it("accepts supported wording variants for the TypeScript hook decision", () => {
+    const benchmarkCase = mustCase("superseded-decision-typescript-hook");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Superseded the fallback plan and removed the Python hook; only the TypeScript Codex Capture Hook would be supported."
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(score.criticalFailure).toBe(false);
+    expect(
+      score.details.find(
+        (detail) => detail.name === "field:typescript-supported"
+      )
+    ).toMatchObject({
+      score: 2
+    });
+  });
+
   it("fails wrong field placement for critical claims", () => {
     const benchmarkCase = mustCase("exact-identifiers-files-commands-env");
     const output = passingOutput(benchmarkCase);
@@ -319,6 +353,91 @@ describe("LCM summary generation scoring", () => {
       maxScore: 2,
       critical: false
     });
+  });
+
+  it("allows scoped forbidden claims as superseded context outside active fields", () => {
+    const benchmarkCase = mustCase("rollup-conflict-latest-wins");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Diagnostic low-level memory tools stay hidden unless explicitly enabled; the earlier claim that they should be enabled by default for all users is superseded."
+    ];
+    output.facts.push(
+      "An earlier child summary said diagnostic low-level memory tools should be enabled by default for all users."
+    );
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:diagnostic-default"
+      )
+    ).toMatchObject({
+      score: 6
+    });
+    expect(score.criticalFailure).toBe(false);
+  });
+
+  it("does not treat unresolved team-memory visibility as a forbidden decision", () => {
+    const benchmarkCase = mustCase("unresolved-team-memory-question");
+    const output = passingOutput(benchmarkCase);
+    output.facts = [
+      "The team had not decided whether team memory is visible in Memory Answer by default.",
+      "There is a future implementation dependency involving team memory, Search Domain, and Retrieval Scope."
+    ];
+    output.unresolved_questions = [
+      "Should team memory be visible in Memory Answer by default?",
+      "How should Search Domain and Retrieval Scope interact with future team memory?"
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:team-memory-decided"
+      )
+    ).toMatchObject({
+      score: 6
+    });
+    expect(score.criticalFailure).toBe(false);
+  });
+
+  it("accepts provenance trace rationale in user requests", () => {
+    const benchmarkCase = mustCase("provenance-source-anchor");
+    const output = passingOutput(benchmarkCase);
+    output.summary_text =
+      "The user asked to keep source anchors so that expansion can trace the claim back to source:memory_events:00000000-0000-4000-8000-000000300001.";
+    output.user_requests = [
+      "Keep source anchors because expand needs source:memory_events:00000000-0000-4000-8000-000000300001 to trace the claim."
+    ];
+    output.facts = [
+      "The referenced source anchor is source:memory_events:00000000-0000-4000-8000-000000300001."
+    ];
+    output.provenance_hints = [
+      "source:memory_events:00000000-0000-4000-8000-000000300001"
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "field:expand-needs-anchor"
+      )
+    ).toMatchObject({
+      score: 2
+    });
+    expect(score.criticalFailure).toBe(false);
   });
 });
 

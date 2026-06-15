@@ -69,12 +69,28 @@ describe("LCM summary worker", () => {
       expect(prompt).toContain('"user_requests"');
       expect(prompt).toContain('"decisions"');
       expect(prompt).toContain('"provenance_hints"');
+      expect(prompt).toContain("Do not reproduce API tokens");
+      expect(prompt).toContain(
+        "redaction rule overrides the instruction to preserve exact identifiers"
+      );
       expect(prompt).toContain("Return only one JSON object");
     }
 
     const rollupPrompt = buildLcmSummaryPrompt({ ...node, kind: "rollup" });
     expect(rollupPrompt).toContain("Roll up these child LCM summaries");
     expect(rollupPrompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
+    expect(rollupPrompt).toContain("Do not reproduce API tokens");
+    expect(rollupPrompt).toContain(
+      "When ordered source items or child summaries conflict, prefer the later item"
+    );
+    expect(rollupPrompt).toContain(
+      "older conflicting items only as superseded context"
+    );
+
+    const reducePrompt = buildLcmSummaryPrompt(node, "reduce");
+    expect(reducePrompt).toContain(
+      "When ordered source items or child summaries conflict, prefer the later item"
+    );
   });
 
   it("keeps payload metadata out of LCM prompts while preserving source anchors", () => {

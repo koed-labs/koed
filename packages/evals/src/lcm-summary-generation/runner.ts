@@ -96,7 +96,7 @@ const reportRedactions = (cases: LcmSummaryBenchmarkCase[]): string[] => [
       (benchmarkCase) =>
         benchmarkCase.expected.forbiddenClaims
           ?.filter((claim) => claim.redactInReports === true)
-          .flatMap((claim) => [claim.text, ...(claim.aliases ?? [])]) ?? []
+          .flatMap((claim) => claim.match.exactPhrases ?? []) ?? []
     )
   )
 ];
