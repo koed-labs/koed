@@ -7,16 +7,17 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "eval": "tsc -p tsconfig.json && node dist/index.js",
-    "eval:memory-recall:live": "tsc -p tsconfig.json && node dist/memory-recall/live-runner.js",
-    "eval:tool-choice": "tsc -p tsconfig.json && node dist/tool-choice/index.js",
-    "eval:tool-choice:live": "tsc -p tsconfig.json && node dist/tool-choice/live-runner.js",
-    "eval:retrieval-success": "tsc -p tsconfig.json && node dist/retrieval-success/index.js",
-    "eval:retrieval-success:live": "tsc -p tsconfig.json && node dist/retrieval-success/live-runner.js",
-    "eval:workers": "tsc -p tsconfig.json && node dist/worker-json/index.js",
-    "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -b tsconfig.json",
+    "eval": "tsc -b tsconfig.json && node dist/index.js",
+    "eval:memory-recall:live": "tsc -b tsconfig.json && node dist/memory-recall/live-runner.js",
+    "eval:tool-choice": "tsc -b tsconfig.json && node dist/tool-choice/index.js",
+    "eval:tool-choice:live": "tsc -b tsconfig.json && node dist/tool-choice/live-runner.js",
+    "eval:lcm-summary:live": "tsc -b tsconfig.json && node dist/lcm-summary-generation/live-runner.js",
+    "eval:retrieval-success": "tsc -b tsconfig.json && node dist/retrieval-success/index.js",
+    "eval:retrieval-success:live": "tsc -b tsconfig.json && node dist/retrieval-success/live-runner.js",
+    "eval:workers": "tsc -b tsconfig.json && node dist/worker-json/index.js",
+    "test": "tsc -b tsconfig.json && vitest run --passWithNoTests",
+    "typecheck": "tsc -b tsconfig.json --noEmit"
   },
   "dependencies": {
     "@koed/core": "workspace:*",

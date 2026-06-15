@@ -24,6 +24,7 @@
     "db:migrate:smoke": "pnpm --filter @koed/db migrate:smoke",
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
     "eval": "pnpm --filter @koed/evals eval",
+    "eval:lcm-summary": "pnpm --filter @koed/evals eval:lcm-summary:live",
     "changeset": "changeset",
     "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets",
     "release:notes": "node scripts/product-release-notes.mjs",

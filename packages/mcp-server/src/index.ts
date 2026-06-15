@@ -12,6 +12,20 @@ import {
   lcmSummaryLockState,
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
+export {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  buildLcmSummaryPrompt,
+  parseStructuredLcmSummary,
+  runCodexAppServerLcmSummary,
+  resolveLcmSummaryWorkerConfig
+} from "./lcm-summary-worker.js";
+export type {
+  CodexLcmSummaryRunner,
+  LcmSummaryNode,
+  LcmSummaryPromptResult,
+  LcmSummaryWorkerConfig,
+  StructuredLcmSummary
+} from "./lcm-summary-worker.js";
 
 export type RetrievalScope = "personal";
 

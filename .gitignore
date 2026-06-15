@@ -18,6 +18,7 @@ coverage/
 .DS_Store
 *.tsbuildinfo
 packages/evals/reports/*.json
+packages/evals/benchmarks/
 apps/history-browser/*
 !apps/history-browser/Dockerfile
 !apps/history-browser/package.json

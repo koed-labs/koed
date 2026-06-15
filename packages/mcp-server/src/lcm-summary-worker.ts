@@ -76,7 +76,7 @@ export interface LcmSummaryResult {
   error?: string;
 }
 
-type LcmSummaryPromptResult = {
+export type LcmSummaryPromptResult = {
   text: string;
   structuredSummary?: StructuredLcmSummary;
   model: string;
@@ -406,7 +406,7 @@ const stripJsonFence = (text: string): string => {
     : unfenced;
 };
 
-const parseStructuredLcmSummary = (text: string): StructuredLcmSummary =>
+export const parseStructuredLcmSummary = (text: string): StructuredLcmSummary =>
   structuredLcmSummarySchema.parse(JSON.parse(stripJsonFence(text)));
 
 const objectPayload = (payload: unknown): Record<string, unknown> =>
