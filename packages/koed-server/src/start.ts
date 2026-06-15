@@ -207,7 +207,14 @@ export const startKoedServer = async ({
     paths,
     "Start Koed container dependencies",
     "docker",
-    ["compose", "up", "-d", "--build", ...dependencyServices],
+    [
+      "compose",
+      "up",
+      "-d",
+      "--build",
+      "--remove-orphans",
+      ...dependencyServices
+    ],
     refreshedEnv,
     spawnSync
   );
@@ -252,8 +259,9 @@ export const startKoedServer = async ({
       [
         "--filter",
         "@koed/explorer",
+        "exec",
+        "vite",
         "preview",
-        "--",
         "--host",
         "127.0.0.1",
         "--port",

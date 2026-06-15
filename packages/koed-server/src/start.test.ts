@@ -79,13 +79,13 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "compose up -d --build postgres redis embedding-service",
+      "compose up -d --build --remove-orphans postgres redis embedding-service",
       "--filter @koed/api --filter @koed/worker --filter @koed/explorer build"
     ]);
     expect(spawned.map((entry) => entry.args.join(" "))).toEqual([
       "--filter @koed/api start",
       "--filter @koed/worker start",
-      "--filter @koed/explorer preview -- --host 127.0.0.1 --port 5174"
+      "--filter @koed/explorer exec vite preview --host 127.0.0.1 --port 5174"
     ]);
   });
 });
