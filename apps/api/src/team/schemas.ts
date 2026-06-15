@@ -13,6 +13,13 @@ export const teamMemberParamsSchema = z.object({
   userId: z.string().uuid()
 });
 
+export const teamAuditEventsQuerySchema = z
+  .object({
+    action: z.string().trim().min(1).max(120).optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional()
+  })
+  .strict();
+
 export const createTeamSchema = z
   .object({
     name: z.string().trim().min(1).max(120)

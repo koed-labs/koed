@@ -1,5 +1,9 @@
-import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { auditEventValues } from "./audit-repository.js";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import {
+  auditEventValues,
+  auditLimit,
+  mapAuditEventRecord
+} from "./audit-repository.js";
 import type { KoedDb } from "./connection.js";
 import {
   auditEvents,
@@ -13,6 +17,8 @@ import {
 import type {
   AcceptedTeamInviteRecord,
   ActorContext,
+  AuditEventRecord,
+  ListTeamAuditEventsInput,
   TeamInviteRecord,
   TeamMembershipRecord,
   TeamMembershipStatus,
@@ -277,7 +283,18 @@ export const createTeamAccessRepository = (db: KoedDb) => {
           acceptedAt: sql`now()`
         });
 
-        return mapTeamRecord(team);
+        const record = mapTeamRecord(team);
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.created",
+          targetTable: "teams",
+          targetId: record.id,
+          metadata: {
+            teamId: record.id
+          }
+        });
+
+        return record;
       });
     },
 
@@ -399,17 +416,29 @@ export const createTeamAccessRepository = (db: KoedDb) => {
           .insert(teamWorkspaces)
           .values({ teamId: input.teamId, name: input.name })
           .returning();
-        const workspace = rows[0]!;
+        const workspaceRow = rows[0]!;
 
         await tx.insert(teamWorkspaceAccessGrants).values({
-          teamWorkspaceId: workspace.id,
-          teamId: workspace.teamId,
+          teamWorkspaceId: workspaceRow.id,
+          teamId: workspaceRow.teamId,
           userId: actor.userId,
           access: "write",
           grantedByUserId: actor.userId
         });
 
-        return mapWorkspaceRecord(workspace);
+        const workspace = mapWorkspaceRecord(workspaceRow);
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.workspace.created",
+          targetTable: "team_workspaces",
+          targetId: workspace.id,
+          metadata: {
+            teamId: workspace.teamId,
+            teamWorkspaceId: workspace.id
+          }
+        });
+
+        return workspace;
       });
     },
 
@@ -786,31 +815,97 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         return null;
       }
 
-      await db
-        .insert(teamWorkspaceAccessGrants)
-        .values({
-          teamWorkspaceId: input.teamWorkspaceId,
-          teamId: accessContext.teamId,
-          userId: input.userId,
-          access: input.access,
-          grantedByUserId: actor.userId
-        })
-        .onConflictDoUpdate({
-          target: [
-            teamWorkspaceAccessGrants.teamWorkspaceId,
-            teamWorkspaceAccessGrants.userId
-          ],
-          set: {
+      await db.transaction(async (tx) => {
+        const existingGrants = await tx
+          .select()
+          .from(teamWorkspaceAccessGrants)
+          .where(
+            and(
+              eq(
+                teamWorkspaceAccessGrants.teamWorkspaceId,
+                input.teamWorkspaceId
+              ),
+              eq(teamWorkspaceAccessGrants.teamId, accessContext.teamId),
+              eq(teamWorkspaceAccessGrants.userId, input.userId)
+            )
+          )
+          .limit(1);
+        const previousAccess = existingGrants[0]?.access ?? "disabled";
+
+        await tx
+          .insert(teamWorkspaceAccessGrants)
+          .values({
+            teamWorkspaceId: input.teamWorkspaceId,
+            userId: input.userId,
+            teamId: accessContext.teamId,
             access: input.access,
-            grantedByUserId: actor.userId,
-            updatedAt: sql`now()`
+            grantedByUserId: actor.userId
+          })
+          .onConflictDoUpdate({
+            target: [
+              teamWorkspaceAccessGrants.teamWorkspaceId,
+              teamWorkspaceAccessGrants.userId
+            ],
+            set: {
+              access: input.access,
+              grantedByUserId: actor.userId,
+              updatedAt: sql`now()`
+            }
+          });
+
+        const action =
+          input.access === "disabled"
+            ? "team.workspace_access.removed"
+            : existingGrants[0]
+              ? "team.workspace_access.updated"
+              : "team.workspace_access.created";
+
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action,
+          targetTable: "team_workspace_access_grants",
+          targetId: input.teamWorkspaceId,
+          metadata: {
+            teamId: accessContext.teamId,
+            teamWorkspaceId: input.teamWorkspaceId,
+            userId: input.userId,
+            access: input.access,
+            previousAccess
           }
         });
+      });
 
       return getTeamWorkspaceAccess(
         { userId: input.userId },
         input.teamWorkspaceId
       );
+    },
+
+    async listTeamAuditEvents(
+      actor: ActorContext,
+      input: ListTeamAuditEventsInput
+    ): Promise<AuditEventRecord[] | null> {
+      const manager = await getManagingMembership(actor, input.teamId);
+      if (!membershipManages(manager)) {
+        return null;
+      }
+
+      const conditions = [
+        sql`${auditEvents.metadata} ->> 'teamId' = ${input.teamId}`,
+        sql`${auditEvents.action} like 'team.%'`
+      ];
+      if (input.action) {
+        conditions.push(eq(auditEvents.action, input.action));
+      }
+
+      const rows = await db
+        .select()
+        .from(auditEvents)
+        .where(and(...conditions))
+        .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
+        .limit(auditLimit(input.limit));
+
+      return rows.map(mapAuditEventRecord);
     },
 
     getTeamWorkspaceAccess

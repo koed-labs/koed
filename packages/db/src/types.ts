@@ -163,6 +163,12 @@ export interface ListAuditEventsInput {
   limit?: number;
 }
 
+export interface ListTeamAuditEventsInput {
+  teamId: string;
+  action?: string;
+  limit?: number;
+}
+
 export interface CreateMemoryNodeInput {
   visibility: Visibility;
   summaryText: string;
@@ -751,6 +757,10 @@ export interface MemorySourceRepository
     actor: ActorContext,
     teamWorkspaceId: string
   ): Promise<TeamWorkspaceAccessRecord | null>;
+  listTeamAuditEvents(
+    actor: ActorContext,
+    input: ListTeamAuditEventsInput
+  ): Promise<AuditEventRecord[] | null>;
   createSession(
     userId: string,
     sessionHash: string,

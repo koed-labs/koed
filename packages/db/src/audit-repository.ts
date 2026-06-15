@@ -13,12 +13,12 @@ import type {
 const timestampIso = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 
-const auditLimit = (limit?: number): number => {
+export const auditLimit = (limit?: number): number => {
   const requested = Number.isFinite(limit) ? Math.trunc(limit!) : 50;
   return Math.min(Math.max(requested, 1), 200);
 };
 
-const mapAuditEventRecord = (row: {
+export const mapAuditEventRecord = (row: {
   id: string;
   actorUserId: string | null;
   ownerUserId: string | null;

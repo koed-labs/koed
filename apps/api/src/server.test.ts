@@ -117,6 +117,14 @@ type TeamWorkspaceAccessResponse = {
     canCreateShare: boolean;
   };
 };
+type TeamAuditEventsResponse = {
+  auditEvents: Array<{
+    action: string;
+    targetTable: string | null;
+    targetId: string | null;
+    metadata: Record<string, unknown>;
+  }>;
+};
 
 type CaptureResponse = {
   event: {
@@ -229,6 +237,25 @@ const createFakeRepository = (): MemorySourceRepository => {
     string,
     LocalMemoryAgentSettingRecord
   >();
+  const pushTeamAudit = (input: {
+    actorUserId: string;
+    action: string;
+    targetTable: string;
+    targetId: string;
+    metadata: Record<string, unknown>;
+  }) => {
+    auditEvents.push({
+      id: randomUUID(),
+      actorUserId: input.actorUserId,
+      ownerUserId: input.actorUserId,
+      visibility: null,
+      action: input.action,
+      targetTable: input.targetTable,
+      targetId: input.targetId,
+      metadata: input.metadata,
+      createdAt: new Date().toISOString()
+    });
+  };
 
   return {
     health: async () => true,
@@ -277,6 +304,13 @@ const createFakeRepository = (): MemorySourceRepository => {
       };
       teams.set(team.id, team);
       teamMemberships.set(`${team.id}:${actor.userId}`, membership);
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action: "team.created",
+        targetTable: "teams",
+        targetId: team.id,
+        metadata: { teamId: team.id }
+      });
       return team;
     },
     async getTeamMembership(actor, teamId) {
@@ -314,6 +348,23 @@ const createFakeRepository = (): MemorySourceRepository => {
         disabledAt: status === "disabled" ? now : null
       };
       teamMemberships.set(`${input.teamId}:${input.userId}`, membership);
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action:
+          status === "disabled"
+            ? "team.member.disabled"
+            : status === "enabled"
+              ? "team.member.enabled"
+              : "team.member.upserted",
+        targetTable: "team_memberships",
+        targetId: membership.id,
+        metadata: {
+          teamId: input.teamId,
+          userId: input.userId,
+          role: input.role,
+          status
+        }
+      });
       return membership;
     },
     async createTeamWorkspace(actor, input) {
@@ -347,6 +398,16 @@ const createFakeRepository = (): MemorySourceRepository => {
         canRecall: true,
         canCreateShare: true
       });
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action: "team.workspace.created",
+        targetTable: "team_workspaces",
+        targetId: workspace.id,
+        metadata: {
+          teamId: workspace.teamId,
+          teamWorkspaceId: workspace.id
+        }
+      });
       return workspace;
     },
     async createTeamInvite(actor, input) {
@@ -378,6 +439,18 @@ const createFakeRepository = (): MemorySourceRepository => {
         tokenHash: input.tokenHash
       };
       teamInvites.set(input.tokenHash, invite);
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action: "team.invite.created",
+        targetTable: "team_invites",
+        targetId: invite.id,
+        metadata: {
+          teamId: input.teamId,
+          email: invite.email,
+          role: input.role,
+          existingUser: false
+        }
+      });
 
       const invitedUser = [...users.values()].find(
         (user) => user.email === invite.email
@@ -472,6 +545,32 @@ const createFakeRepository = (): MemorySourceRepository => {
         disabledAt: null
       };
       teamMemberships.set(`${invite.teamId}:${user.id}`, membership);
+      pushTeamAudit({
+        actorUserId: user.id,
+        action: "team.invite.accepted",
+        targetTable: "team_invites",
+        targetId: invite.id,
+        metadata: {
+          teamId: invite.teamId,
+          email: invite.email,
+          role: invite.role,
+          userId: user.id,
+          createdUser
+        }
+      });
+      pushTeamAudit({
+        actorUserId: user.id,
+        action: "team.member.enabled",
+        targetTable: "team_memberships",
+        targetId: membership.id,
+        metadata: {
+          teamId: invite.teamId,
+          userId: user.id,
+          role: membership.role,
+          status: membership.status,
+          source: "invite_acceptance"
+        }
+      });
 
       const result: AcceptedTeamInviteRecord = {
         invite,
@@ -515,6 +614,18 @@ const createFakeRepository = (): MemorySourceRepository => {
         `${input.teamId}:${input.userId}`,
         disabledMembership
       );
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action: "team.member.disabled",
+        targetTable: "team_memberships",
+        targetId: disabledMembership.id,
+        metadata: {
+          teamId: input.teamId,
+          userId: input.userId,
+          role: disabledMembership.role,
+          status: disabledMembership.status
+        }
+      });
       return disabledMembership;
     },
     async setTeamWorkspaceAccess(actor, input) {
@@ -531,6 +642,9 @@ const createFakeRepository = (): MemorySourceRepository => {
       if (!membership) {
         return null;
       }
+      const previousAccess =
+        teamWorkspaceAccess.get(`${workspace.id}:${input.userId}`)?.access ??
+        "disabled";
       const access: TeamWorkspaceAccessRecord = {
         teamWorkspaceId: workspace.id,
         teamId: workspace.teamId,
@@ -552,12 +666,50 @@ const createFakeRepository = (): MemorySourceRepository => {
           membership.status === "enabled" && input.access === "write"
       };
       teamWorkspaceAccess.set(`${workspace.id}:${input.userId}`, access);
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action:
+          input.access === "disabled"
+            ? "team.workspace_access.removed"
+            : previousAccess === "disabled"
+              ? "team.workspace_access.created"
+              : "team.workspace_access.updated",
+        targetTable: "team_workspace_access_grants",
+        targetId: workspace.id,
+        metadata: {
+          teamId: workspace.teamId,
+          teamWorkspaceId: workspace.id,
+          userId: input.userId,
+          access: input.access,
+          previousAccess
+        }
+      });
       return access;
     },
     async getTeamWorkspaceAccess(actor, teamWorkspaceId) {
       return (
         teamWorkspaceAccess.get(`${teamWorkspaceId}:${actor.userId}`) ?? null
       );
+    },
+    async listTeamAuditEvents(actor, input) {
+      const membership = teamMemberships.get(`${input.teamId}:${actor.userId}`);
+      if (
+        !membership ||
+        membership.status !== "enabled" ||
+        !["owner", "admin"].includes(membership.role)
+      ) {
+        return null;
+      }
+      const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+      return auditEvents
+        .filter(
+          (event) =>
+            event.action.startsWith("team.") &&
+            event.metadata.teamId === input.teamId &&
+            (!input.action || event.action === input.action)
+        )
+        .slice(-limit)
+        .reverse();
     },
     async createSession(userId: string, sessionHash: string) {
       sessions.set(sessionHash, userId);
@@ -2597,6 +2749,11 @@ describe("account and access flows", () => {
       url: `/v1/team-workspaces/${teamWorkspace.id}/access`,
       headers: { cookie: memberCookie }
     });
+    const teamAuditEvents = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/audit-events`,
+      headers: { cookie: ownerCookie }
+    });
 
     const rejectedMemberInvite = await app.inject({
       method: "POST",
@@ -2606,6 +2763,11 @@ describe("account and access flows", () => {
         email: "other-member@example.com",
         role: "member"
       }
+    });
+    const rejectedMemberAudit = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/audit-events`,
+      headers: { cookie: memberCookie }
     });
     await app.close();
 
@@ -2650,7 +2812,42 @@ describe("account and access flows", () => {
       access: "read",
       canRecall: true
     });
+    expect(teamAuditEvents.statusCode).toBe(200);
+    const auditEvents =
+      jsonBody<TeamAuditEventsResponse>(teamAuditEvents).auditEvents;
+    expect(auditEvents.map((event) => event.action)).toEqual(
+      expect.arrayContaining([
+        "team.created",
+        "team.workspace.created",
+        "team.invite.created",
+        "team.invite.accepted",
+        "team.member.enabled",
+        "team.workspace_access.created"
+      ])
+    );
+    expect(
+      auditEvents.find(
+        (event) => event.action === "team.workspace_access.created"
+      )
+    ).toMatchObject({
+      targetTable: "team_workspace_access_grants",
+      targetId: teamWorkspace.id,
+      metadata: {
+        teamId: team.id,
+        teamWorkspaceId: teamWorkspace.id,
+        userId: accepted.user.id,
+        access: "read",
+        previousAccess: "disabled"
+      }
+    });
+    expect(
+      JSON.stringify(auditEvents.map((event) => event.metadata))
+    ).not.toContain(invite.inviteToken);
+    expect(
+      JSON.stringify(auditEvents.map((event) => event.metadata))
+    ).not.toContain("password123");
     expect(rejectedMemberInvite.statusCode).toBe(403);
+    expect(rejectedMemberAudit.statusCode).toBe(403);
   });
 
   it("does not grant API-token access to team management routes", async () => {

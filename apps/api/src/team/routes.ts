@@ -8,6 +8,7 @@ import {
   createTeamSchema,
   createTeamWorkspaceSchema,
   setTeamWorkspaceAccessSchema,
+  teamAuditEventsQuerySchema,
   teamIdParamsSchema,
   teamMemberParamsSchema,
   teamWorkspaceIdParamsSchema,
@@ -66,6 +67,29 @@ export const registerTeamRoutes = (
         });
       }
       return { membership };
+    }
+  );
+
+  app.get(
+    "/v1/teams/:teamId/audit-events",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateSession(request);
+      const params = teamIdParamsSchema.parse(request.params);
+      const query = teamAuditEventsQuerySchema.parse(request.query);
+      const auditEvents = await repo.listTeamAuditEvents(
+        { userId: user.id },
+        {
+          teamId: params.teamId,
+          action: query.action,
+          limit: query.limit
+        }
+      );
+      if (!auditEvents) {
+        throw forbidden("Team audit events cannot be viewed");
+      }
+      return { auditEvents };
     }
   );
 
