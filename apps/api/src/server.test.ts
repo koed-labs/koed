@@ -17,6 +17,10 @@ import type {
   MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
+  TeamMembershipRecord,
+  TeamRecord,
+  TeamWorkspaceAccessRecord,
+  TeamWorkspaceRecord,
   UserRecord,
   Visibility
 } from "@koed/db";
@@ -176,6 +180,10 @@ const createFakeRepository = (): MemorySourceRepository => {
     updatedAt: string;
   }> = [];
   const capturedSessions = new Map<string, CapturedSessionRecord>();
+  const teams = new Map<string, TeamRecord>();
+  const teamMemberships = new Map<string, TeamMembershipRecord>();
+  const teamWorkspaces = new Map<string, TeamWorkspaceRecord>();
+  const teamWorkspaceAccess = new Map<string, TeamWorkspaceAccessRecord>();
   const auditEvents: AuditEventRecord[] = [];
   const events: MemoryEventRecord[] = [];
   const eventIdempotencyKeys = new Map<string, string>();
@@ -214,6 +222,142 @@ const createFakeRepository = (): MemorySourceRepository => {
     },
     async getUser(userId: string) {
       return users.get(userId) ?? null;
+    },
+    async createTeam(actor, input) {
+      const now = new Date().toISOString();
+      const team: TeamRecord = {
+        id: randomUUID(),
+        name: input.name,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null
+      };
+      const membership: TeamMembershipRecord = {
+        id: randomUUID(),
+        teamId: team.id,
+        userId: actor.userId,
+        role: "owner",
+        status: "enabled",
+        createdAt: now,
+        updatedAt: now,
+        acceptedAt: now,
+        disabledAt: null
+      };
+      teams.set(team.id, team);
+      teamMemberships.set(`${team.id}:${actor.userId}`, membership);
+      return team;
+    },
+    async getTeamMembership(actor, teamId) {
+      return teamMemberships.get(`${teamId}:${actor.userId}`) ?? null;
+    },
+    async upsertTeamMember(actor, input) {
+      const actorMembership = teamMemberships.get(
+        `${input.teamId}:${actor.userId}`
+      );
+      if (
+        !actorMembership ||
+        actorMembership.status !== "enabled" ||
+        !["owner", "admin"].includes(actorMembership.role)
+      ) {
+        return null;
+      }
+      if (input.role === "owner" && actorMembership.role !== "owner") {
+        return null;
+      }
+      const now = new Date().toISOString();
+      const status = input.status ?? "enabled";
+      const membership: TeamMembershipRecord = {
+        id:
+          teamMemberships.get(`${input.teamId}:${input.userId}`)?.id ??
+          randomUUID(),
+        teamId: input.teamId,
+        userId: input.userId,
+        role: input.role,
+        status,
+        createdAt:
+          teamMemberships.get(`${input.teamId}:${input.userId}`)?.createdAt ??
+          now,
+        updatedAt: now,
+        acceptedAt: status === "enabled" ? now : null,
+        disabledAt: status === "disabled" ? now : null
+      };
+      teamMemberships.set(`${input.teamId}:${input.userId}`, membership);
+      return membership;
+    },
+    async createTeamWorkspace(actor, input) {
+      const membership = teamMemberships.get(`${input.teamId}:${actor.userId}`);
+      if (
+        !membership ||
+        membership.status !== "enabled" ||
+        !["owner", "admin"].includes(membership.role)
+      ) {
+        return null;
+      }
+      const now = new Date().toISOString();
+      const workspace: TeamWorkspaceRecord = {
+        id: randomUUID(),
+        teamId: input.teamId,
+        name: input.name,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null
+      };
+      teamWorkspaces.set(workspace.id, workspace);
+      teamWorkspaceAccess.set(`${workspace.id}:${actor.userId}`, {
+        teamWorkspaceId: workspace.id,
+        teamId: workspace.teamId,
+        userId: actor.userId,
+        role: membership.role,
+        membershipStatus: membership.status,
+        access: "write",
+        canManageTeam: true,
+        canManageWorkspace: true,
+        canRecall: true,
+        canCreateShare: true
+      });
+      return workspace;
+    },
+    async setTeamWorkspaceAccess(actor, input) {
+      const actorAccess = teamWorkspaceAccess.get(
+        `${input.teamWorkspaceId}:${actor.userId}`
+      );
+      const workspace = teamWorkspaces.get(input.teamWorkspaceId);
+      if (!workspace || !actorAccess?.canManageWorkspace) {
+        return null;
+      }
+      const membership = teamMemberships.get(
+        `${workspace.teamId}:${input.userId}`
+      );
+      if (!membership) {
+        return null;
+      }
+      const access: TeamWorkspaceAccessRecord = {
+        teamWorkspaceId: workspace.id,
+        teamId: workspace.teamId,
+        userId: input.userId,
+        role: membership.role,
+        membershipStatus: membership.status,
+        access: input.access,
+        canManageTeam:
+          membership.status === "enabled" &&
+          ["owner", "admin"].includes(membership.role),
+        canManageWorkspace:
+          membership.status === "enabled" &&
+          input.access === "write" &&
+          ["owner", "admin"].includes(membership.role),
+        canRecall:
+          membership.status === "enabled" &&
+          (input.access === "read" || input.access === "write"),
+        canCreateShare:
+          membership.status === "enabled" && input.access === "write"
+      };
+      teamWorkspaceAccess.set(`${workspace.id}:${input.userId}`, access);
+      return access;
+    },
+    async getTeamWorkspaceAccess(actor, teamWorkspaceId) {
+      return (
+        teamWorkspaceAccess.get(`${teamWorkspaceId}:${actor.userId}`) ?? null
+      );
     },
     async createSession(userId: string, sessionHash: string) {
       sessions.set(sessionHash, userId);
