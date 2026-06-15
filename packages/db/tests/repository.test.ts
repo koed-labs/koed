@@ -350,6 +350,23 @@ describeDb("memory repository visibility", () => {
         { teamId: team.id, userId: member.id, role: "owner" }
       )
     ).resolves.toBeNull();
+    await expect(
+      repo.upsertTeamMember(
+        { userId: admin.id },
+        {
+          teamId: team.id,
+          userId: owner.id,
+          role: "member",
+          status: "disabled"
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembership({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      role: "owner",
+      status: "enabled"
+    });
 
     const workspace = await repo.createTeamWorkspace(
       { userId: admin.id },

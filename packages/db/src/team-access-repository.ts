@@ -240,6 +240,20 @@ export const createTeamAccessRepository = (db: KoedDb) => {
       }
 
       const status = input.status ?? "enabled";
+      const existing = await db
+        .select()
+        .from(teamMemberships)
+        .where(
+          and(
+            eq(teamMemberships.teamId, input.teamId),
+            eq(teamMemberships.userId, input.userId)
+          )
+        )
+        .limit(1);
+      if (existing[0]?.role === "owner" && manager!.role !== "owner") {
+        return null;
+      }
+
       const rows = await db
         .insert(teamMemberships)
         .values({
