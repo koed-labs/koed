@@ -17,7 +17,7 @@
     "eval:retrieval-success:live": "tsc -b tsconfig.json && node dist/retrieval-success/live-runner.js",
     "eval:workers": "tsc -b tsconfig.json && node dist/worker-json/index.js",
     "test": "tsc -b tsconfig.json && vitest run --passWithNoTests",
-    "typecheck": "tsc -b tsconfig.json --noEmit"
+    "typecheck": "tsc -b tsconfig.json"
   },
   "dependencies": {
     "@koed/core": "workspace:*",

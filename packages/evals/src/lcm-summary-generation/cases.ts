@@ -19,6 +19,7 @@ export interface LcmSummaryRequiredClaim {
   aliases?: string[];
   fields: LcmSummaryField[];
   critical?: boolean;
+  fuzzy?: boolean;
 }
 
 export interface LcmSummaryForbiddenClaim {
@@ -89,12 +90,20 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "backend-evidence-only",
           text: "backend returns Evidence Bundles only",
+          aliases: [
+            "backend should return Evidence Bundles only",
+            "Use the backend only for Evidence Bundles"
+          ],
           fields: ["decisions"],
           critical: true
         },
         {
           id: "ai-client-synthesis",
           text: "Answer Synthesis remains in the connected AI Client",
+          aliases: [
+            "Answer Synthesis should remain in the connected AI Client",
+            "keep Answer Synthesis in the connected AI Client"
+          ],
           fields: ["decisions"],
           critical: true
         }
@@ -152,6 +161,10 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "typescript-supported",
           text: "support only the TypeScript Codex Capture Hook",
+          aliases: [
+            "Support only the TypeScript Codex Capture Hook",
+            "only the TypeScript Codex Capture Hook was to be supported"
+          ],
           fields: ["decisions"],
           critical: true
         },
@@ -215,6 +228,10 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "pending-error",
           text: "projection_status stuck at pending",
+          aliases: [
+            "projection_status stayed pending",
+            "projection_status remained pending"
+          ],
           fields: ["errors"],
           critical: true
         },
@@ -271,6 +288,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "migration-reset",
           text: "migration 0012_memory_nodes_backfill is the first migration that requires a fresh local reset",
+          aliases: [
+            "Migration 0012_memory_nodes_backfill was identified as the first migration requiring a fresh local reset"
+          ],
           fields: ["facts"],
           critical: true
         }
@@ -389,12 +409,18 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "team-memory-undecided",
           text: "team memory is visible in Memory Answer by default",
+          aliases: [
+            "team memory should be visible in Memory Answer by default"
+          ],
           fields: ["unresolved_questions"],
           critical: true
         },
         {
           id: "scope-domain-open",
           text: "Search Domain and Retrieval Scope interact with future team memory",
+          aliases: [
+            "Search Domain and Retrieval Scope should interact with future team memory"
+          ],
           fields: ["unresolved_questions"],
           critical: true
         }
@@ -451,6 +477,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "rollups-child-summaries",
           text: "rollups summarize child LCM summaries",
+          aliases: ["Rollups summarize child LCM summaries"],
           fields: ["facts"],
           critical: true
         }
@@ -552,6 +579,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "lifecycle-raw",
           text: "lifecycle noise should remain raw records unless there is a deliberate retrieval reason",
+          aliases: [
+            "keep lifecycle noise as raw records unless there is a deliberate retrieval reason"
+          ],
           fields: ["decisions"],
           critical: true
         }
@@ -694,6 +724,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "token-rotated",
           text: "API Token was rotated",
+          aliases: ["API token was rotated", "The token was rotated"],
           fields: ["facts", "tool_outcomes"],
           critical: true
         },

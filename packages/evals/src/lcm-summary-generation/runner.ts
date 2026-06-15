@@ -38,6 +38,15 @@ const selectedCases = (
   caseIds: string[] | undefined
 ): LcmSummaryBenchmarkCase[] => {
   const selected = new Set(caseIds ?? []);
+  const known = new Set(
+    lcmSummaryBenchmarkCases.map((benchmarkCase) => benchmarkCase.id)
+  );
+  const unknown = [...selected].filter((caseId) => !known.has(caseId));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown LCM summary benchmark case id(s): ${unknown.join(", ")}`
+    );
+  }
   const cases =
     selected.size > 0
       ? lcmSummaryBenchmarkCases.filter((benchmarkCase) =>

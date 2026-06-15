@@ -13,6 +13,10 @@ import {
   type LcmSummaryBenchmarkCase,
   type LcmSummaryField
 } from "./cases.js";
+import {
+  parseLcmSummaryRunsOption,
+  parseLcmSummaryThresholdOption
+} from "./cli-options.js";
 import { runLcmSummaryBenchmark } from "./runner.js";
 
 const caseById = new Map(
@@ -208,6 +212,32 @@ describe("LCM summary generation scoring", () => {
     });
   });
 
+  it("does not pass negated critical required claims through token overlap", () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Backend no longer returns Evidence Bundles only.",
+      "It is false that Answer Synthesis remains in the connected AI Client."
+    ];
+    output.summary_text = output.decisions.join(" ");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(score.criticalFailure).toBe(true);
+    expect(score.passed).toBe(false);
+    expect(
+      score.details.find(
+        (detail) => detail.name === "required:backend-evidence-only"
+      )
+    ).toMatchObject({
+      score: 0
+    });
+  });
+
   it("fails wrong field placement for critical claims", () => {
     const benchmarkCase = mustCase("exact-identifiers-files-commands-env");
     const output = passingOutput(benchmarkCase);
@@ -266,5 +296,45 @@ describe("LCM summary generation live runner", () => {
     expect(report.cases).toEqual([benchmarkCase.id]);
     expect(report.runInputs).toHaveLength(1);
     expect(report.passed).toBe(true);
+  });
+
+  it("rejects unknown selected case ids", async () => {
+    await expect(
+      runLcmSummaryBenchmark({
+        caseIds: ["accepted-decision-ai-client-synthesis", "typo"],
+        runs: 1,
+        config: resolveLcmSummaryWorkerConfig(process.env, {
+          model: "codex-app-server:test"
+        }),
+        runner: async () => ({
+          text: JSON.stringify(
+            passingOutput(mustCase("accepted-decision-ai-client-synthesis"))
+          ),
+          model: "codex-app-server:test"
+        })
+      })
+    ).rejects.toThrow("Unknown LCM summary benchmark case id(s): typo");
+  });
+});
+
+describe("LCM summary generation CLI options", () => {
+  it("validates runs", () => {
+    expect(parseLcmSummaryRunsOption(undefined)).toBeUndefined();
+    expect(parseLcmSummaryRunsOption("1")).toBe(1);
+    expect(parseLcmSummaryRunsOption("3")).toBe(3);
+    expect(() => parseLcmSummaryRunsOption("0")).toThrow("--runs");
+    expect(() => parseLcmSummaryRunsOption("-1")).toThrow("--runs");
+    expect(() => parseLcmSummaryRunsOption("1.5")).toThrow("--runs");
+    expect(() => parseLcmSummaryRunsOption("nope")).toThrow("--runs");
+  });
+
+  it("validates threshold", () => {
+    expect(parseLcmSummaryThresholdOption(undefined)).toBeUndefined();
+    expect(parseLcmSummaryThresholdOption("0")).toBe(0);
+    expect(parseLcmSummaryThresholdOption("0.9")).toBe(0.9);
+    expect(parseLcmSummaryThresholdOption("1")).toBe(1);
+    expect(() => parseLcmSummaryThresholdOption("-0.1")).toThrow("--threshold");
+    expect(() => parseLcmSummaryThresholdOption("1.1")).toThrow("--threshold");
+    expect(() => parseLcmSummaryThresholdOption("nope")).toThrow("--threshold");
   });
 });

@@ -70,6 +70,22 @@ const normalized = (value: string): string =>
 const includesPhrase = (haystack: string, phrase: string): boolean =>
   normalized(haystack).includes(normalized(phrase));
 
+const includesAffirmativePhrase = (
+  haystack: string,
+  phrase: string
+): boolean => {
+  const normalizedHaystack = normalized(haystack);
+  const normalizedPhrase = normalized(phrase);
+  const index = normalizedHaystack.indexOf(normalizedPhrase);
+  if (index < 0) {
+    return false;
+  }
+  const before = normalizedHaystack.slice(Math.max(0, index - 50), index);
+  return !/\b(no|not|never|false|incorrect|wrong)\b\s*(\w+\s+){0,5}$/.test(
+    before
+  );
+};
+
 const stopWords = new Set([
   "a",
   "an",
@@ -177,7 +193,11 @@ const claimPhrases = (
 ): string[] => [claim.text, ...(claim.aliases ?? [])];
 
 const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
-  claimPhrases(claim).some((phrase) => containsClaim(text, phrase));
+  claimPhrases(claim).some((phrase) =>
+    claim.fuzzy === true && claim.critical !== true
+      ? containsClaim(text, phrase)
+      : includesAffirmativePhrase(text, phrase)
+  );
 
 const forbiddenPresent = (
   text: string,

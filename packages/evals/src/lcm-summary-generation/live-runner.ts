@@ -2,6 +2,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveLcmSummaryWorkerConfig } from "@koed/mcp-server";
+import {
+  parseLcmSummaryRunsOption,
+  parseLcmSummaryThresholdOption
+} from "./cli-options.js";
 import { runLcmSummaryBenchmark } from "./runner.js";
 
 const args = process.argv.slice(2);
@@ -16,12 +20,8 @@ const selectedCaseIds = optionValue("--case")
   .map((value) => value.trim())
   .filter(Boolean);
 
-const runsOverride = optionValue("--runs")
-  ? Number.parseInt(optionValue("--runs")!, 10)
-  : undefined;
-const threshold = optionValue("--threshold")
-  ? Number.parseFloat(optionValue("--threshold")!)
-  : undefined;
+const runsOverride = parseLcmSummaryRunsOption(optionValue("--runs"));
+const threshold = parseLcmSummaryThresholdOption(optionValue("--threshold"));
 const model =
   optionValue("--model") ??
   process.env.MEMORY_LCM_SUMMARY_MODEL ??
@@ -55,7 +55,7 @@ const config = resolveLcmSummaryWorkerConfig(process.env, {
 const report = await runLcmSummaryBenchmark({
   config,
   caseIds: selectedCaseIds,
-  runs: Number.isFinite(runsOverride) ? runsOverride : undefined,
+  runs: runsOverride,
   threshold
 });
 
