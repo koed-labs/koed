@@ -21,14 +21,8 @@ const selectedCaseIds = optionValue("--case")
 
 const runsOverride = parseLcmSummaryRunsOption(optionValue("--runs"));
 const threshold = parseLcmSummaryThresholdOption(optionValue("--threshold"));
-const model =
-  optionValue("--model") ??
-  process.env.MEMORY_LCM_SUMMARY_MODEL ??
-  "gpt-5.4-mini";
-const reasoningEffort =
-  optionValue("--reasoning-effort") ??
-  process.env.MEMORY_LCM_SUMMARY_REASONING_EFFORT ??
-  "medium";
+const model = optionValue("--model");
+const reasoningEffort = optionValue("--reasoning-effort");
 const codexBinary =
   optionValue("--codex") ?? process.env.MEMORY_LCM_CODEX_BINARY;
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
@@ -46,8 +40,8 @@ const outputPath =
   );
 
 const config = resolveLcmSummaryWorkerConfig(process.env, {
-  model,
-  reasoningEffort,
+  ...(model ? { model } : {}),
+  ...(reasoningEffort ? { reasoningEffort } : {}),
   ...(codexBinary ? { appServerBinary: codexBinary } : {})
 });
 

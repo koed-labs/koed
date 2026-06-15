@@ -85,6 +85,7 @@ const textForMatch = (
 ): string =>
   [
     ...(claim.match.exactPhrases ?? []),
+    ...(claim.match.phraseGroups?.map((group) => group[0] ?? "") ?? []),
     ...(claim.match.allTerms ?? []),
     ...(claim.match.anyTermGroups?.map((group) => group[0] ?? "") ?? [])
   ]
@@ -248,6 +249,150 @@ describe("LCM summary generation scoring", () => {
     ).toMatchObject({
       score: 0
     });
+    expect(
+      score.details.find(
+        (detail) => detail.name === "required:ai-client-synthesis"
+      )
+    ).toMatchObject({
+      score: 0
+    });
+  });
+
+  it("accepts required claims expressed across compact clauses", () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "The backend returns Evidence Bundles only.",
+      "Answer Synthesis is not in the backend; it remains in the connected AI Client."
+    ];
+    output.summary_text = output.decisions.join(" ");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "required:ai-client-synthesis"
+      )
+    ).toMatchObject({
+      score: 4
+    });
+    expect(
+      score.details.find(
+        (detail) => detail.name === "field:ai-client-synthesis"
+      )
+    ).toMatchObject({
+      score: 2
+    });
+    expect(score.criticalFailure).toBe(false);
+  });
+
+  it("rejects opposite Answer Synthesis placement despite shared tokens", () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Backend returns Evidence Bundles only.",
+      "Answer Synthesis moved away from the connected AI Client."
+    ];
+    output.summary_text = output.decisions.join(" ");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "required:ai-client-synthesis"
+      )
+    ).toMatchObject({
+      score: 0
+    });
+    expect(score.criticalFailure).toBe(true);
+    expect(score.passed).toBe(false);
+  });
+
+  it("requires run wording to preserve AI Client placement", () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    const accepted = passingOutput(benchmarkCase);
+    accepted.decisions = [
+      "Backend returns Evidence Bundles only.",
+      "Answer Synthesis runs within the connected AI Client."
+    ];
+
+    const acceptedScore = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output: accepted
+    });
+
+    expect(
+      acceptedScore.details.find(
+        (detail) => detail.name === "required:ai-client-synthesis"
+      )
+    ).toMatchObject({
+      score: 4
+    });
+    expect(acceptedScore.criticalFailure).toBe(false);
+
+    for (const goodPlacement of [
+      "Answer Synthesis should run in the connected AI Client.",
+      "Answer Synthesis must run within the connected AI Client."
+    ]) {
+      const modalAccepted = passingOutput(benchmarkCase);
+      modalAccepted.decisions = [
+        "Backend returns Evidence Bundles only.",
+        goodPlacement
+      ];
+      modalAccepted.summary_text = modalAccepted.decisions.join(" ");
+
+      const modalScore = scoreLcmSummaryRun(benchmarkCase, {
+        caseId: benchmarkCase.id,
+        runIndex: 0,
+        output: modalAccepted
+      });
+
+      expect(
+        modalScore.details.find(
+          (detail) => detail.name === "required:ai-client-synthesis"
+        )
+      ).toMatchObject({
+        score: 4
+      });
+      expect(modalScore.criticalFailure).toBe(false);
+    }
+
+    for (const badPlacement of [
+      "Answer Synthesis does not run in the connected AI Client.",
+      "Answer Synthesis runs outside the connected AI Client.",
+      "Answer Synthesis runs away from the connected AI Client."
+    ]) {
+      const rejected = passingOutput(benchmarkCase);
+      rejected.decisions = [
+        "Backend returns Evidence Bundles only.",
+        badPlacement
+      ];
+      rejected.summary_text = rejected.decisions.join(" ");
+
+      const rejectedScore = scoreLcmSummaryRun(benchmarkCase, {
+        caseId: benchmarkCase.id,
+        runIndex: 0,
+        output: rejected
+      });
+
+      expect(
+        rejectedScore.details.find(
+          (detail) => detail.name === "required:ai-client-synthesis"
+        )
+      ).toMatchObject({
+        score: 0
+      });
+      expect(rejectedScore.criticalFailure).toBe(true);
+    }
   });
 
   it("accepts explicit required-term variants without broad fuzzy matching", () => {
@@ -379,6 +524,56 @@ describe("LCM summary generation scoring", () => {
       score: 6
     });
     expect(score.criticalFailure).toBe(false);
+  });
+
+  it("allows forbidden claims when superseded context is separated by a colon", () => {
+    const benchmarkCase = mustCase("rollup-conflict-latest-wins");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Diagnostic low-level memory tools stay hidden unless explicitly enabled.",
+      "Superseded earlier: enabled by default for all users."
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:diagnostic-default"
+      )
+    ).toMatchObject({
+      score: 6
+    });
+    expect(score.criticalFailure).toBe(false);
+  });
+
+  it("does not let unrelated allowed context suppress active forbidden claims", () => {
+    const benchmarkCase = mustCase("rollup-conflict-latest-wins");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Diagnostic low-level memory tools stay hidden unless explicitly enabled.",
+      "Diagnostic low-level memory tools are enabled by default for all users.",
+      "An earlier unrelated child summary was superseded."
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:diagnostic-default"
+      )
+    ).toMatchObject({
+      score: 0,
+      critical: true
+    });
+    expect(score.criticalFailure).toBe(true);
   });
 
   it("does not treat unresolved team-memory visibility as a forbidden decision", () => {

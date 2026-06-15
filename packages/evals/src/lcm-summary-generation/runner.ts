@@ -146,7 +146,7 @@ export const runLcmSummaryBenchmark = async (
   const runInputs: LcmSummaryBenchmarkRunInput[] = [];
 
   for (const benchmarkCase of cases) {
-    const runs = options.runs ?? benchmarkCase.runs;
+    const runs = options.runs ?? benchmarkCase.runs ?? 1;
     for (let runIndex = 0; runIndex < runs; runIndex += 1) {
       runInputs.push(
         await runLcmSummaryBenchmarkCase(benchmarkCase, runIndex, {

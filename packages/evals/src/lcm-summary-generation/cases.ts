@@ -15,6 +15,7 @@ export type LcmSummaryField =
 
 export interface LcmSummaryTermMatch {
   exactPhrases?: string[];
+  phraseGroups?: string[][];
   allTerms?: string[];
   anyTermGroups?: string[][];
 }
@@ -40,7 +41,7 @@ export interface LcmSummaryForbiddenClaim {
 export interface LcmSummaryBenchmarkCase {
   id: string;
   name: string;
-  runs: number;
+  runs?: number;
   node: LcmSummaryNode;
   expected: {
     requiredClaims: LcmSummaryRequiredClaim[];
@@ -61,7 +62,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "accepted-decision-ai-client-synthesis",
     name: "Accepted AI Client synthesis decision",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100001",
       visibility: "personal",
@@ -109,7 +109,18 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           id: "ai-client-synthesis",
           label: "Answer Synthesis remains in the connected AI Client",
           match: {
-            allTerms: ["Answer Synthesis", "connected AI Client"]
+            allTerms: ["Answer Synthesis"],
+            phraseGroups: [
+              [
+                "remains in the connected AI Client",
+                "stays in the connected AI Client",
+                "is kept in the connected AI Client",
+                "run in the connected AI Client",
+                "run within the connected AI Client",
+                "runs in the connected AI Client",
+                "runs within the connected AI Client"
+              ]
+            ]
           },
           fields: ["decisions"],
           critical: true
@@ -138,7 +149,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "superseded-decision-typescript-hook",
     name: "Superseded capture hook decision",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100002",
       visibility: "personal",
@@ -223,7 +233,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "error-then-fix-projection-status",
     name: "Projection error then fix",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100003",
       visibility: "personal",
@@ -285,7 +294,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "long-tool-output-one-durable-fact",
     name: "Long tool output durable fact",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100004",
       visibility: "personal",
@@ -349,7 +357,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "exact-identifiers-files-commands-env",
     name: "Exact files commands and env vars",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100005",
       visibility: "personal",
@@ -420,7 +427,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "unresolved-team-memory-question",
     name: "Unresolved team memory question",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100006",
       visibility: "personal",
@@ -495,7 +501,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "rollup-child-summaries",
     name: "Rollup child summaries",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100007",
       visibility: "personal",
@@ -555,7 +560,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "rollup-conflict-latest-wins",
     name: "Rollup conflict latest wins",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100008",
       visibility: "personal",
@@ -615,7 +619,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "noisy-lifecycle-items",
     name: "Noisy lifecycle items",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100009",
       visibility: "personal",
@@ -673,7 +676,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "model-name-preservation",
     name: "Model name preservation",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100010",
       visibility: "personal",
@@ -724,7 +726,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "provenance-source-anchor",
     name: "Provenance source anchor",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100011",
       visibility: "personal",
@@ -776,7 +777,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
   {
     id: "secret-like-value-redaction",
     name: "Secret-like value redaction",
-    runs: 1,
     node: {
       id: "00000000-0000-4000-8000-000000100012",
       visibility: "personal",
@@ -823,10 +823,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           label: "literal secret should be redacted",
           match: {
             allTerms: ["secret"],
-            anyTermGroups: [
-              ["redact", "redacted", "redacting"],
-              ["literal", "secret-like", "pasted"]
-            ]
+            anyTermGroups: [["redact", "redacted", "redacting"]]
           },
           fields: ["summary_text", "facts"],
           critical: true

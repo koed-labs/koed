@@ -152,9 +152,29 @@ const tokenCoverage = (haystack: string, phrase: string): number => {
   return expected.filter((token) => actual.has(token)).length / expected.length;
 };
 
+const negationCue =
+  /\b(no longer|not|never|false that|false|incorrect|wrong|does not|do not|did not|cannot|can't|is not|are not|was not|were not)\b/;
+
+const hasNegationBeforeTerm = (haystack: string, term: string): boolean => {
+  const normalizedHaystack = normalized(haystack);
+  const firstToken = significantTokens(term)
+    .map((token) => normalizedHaystack.indexOf(token))
+    .filter((index) => index >= 0)
+    .sort((left, right) => left - right)[0];
+  if (firstToken === undefined) {
+    return false;
+  }
+  return negationCue.test(
+    normalizedHaystack.slice(Math.max(0, firstToken - 80), firstToken)
+  );
+};
+
 const containsTerm = (haystack: string, term: string): boolean => {
   if (includesAffirmativePhrase(haystack, term)) {
     return true;
+  }
+  if (hasNegationBeforeTerm(haystack, term)) {
+    return false;
   }
   const expected = significantTokens(term);
   if (expected.length === 0) {
@@ -201,33 +221,65 @@ const allSummaryText = (summary: StructuredLcmSummary): string =>
     ...summary.provenance_hints
   ].join("\n");
 
-const matchPresent = (
+const localTextUnits = (text: string): string[] =>
+  text
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((unit) => unit.trim())
+    .filter(Boolean);
+
+const requiredMatchPresent = (
   text: string,
-  match: LcmSummaryTermMatch,
-  mode: "required" | "forbidden"
+  match: LcmSummaryTermMatch
 ): boolean => {
   const exactPhrases = match.exactPhrases ?? [];
+  const phraseGroups = match.phraseGroups ?? [];
   const allTerms = match.allTerms ?? [];
   const anyTermGroups = match.anyTermGroups ?? [];
-  const contains =
-    mode === "required"
-      ? containsTerm
-      : (haystack: string, term: string) =>
-          includesPhrase(haystack, term) || containsFuzzyTerm(haystack, term);
 
   return (
-    exactPhrases.every((phrase) =>
-      mode === "required"
-        ? includesAffirmativePhrase(text, phrase)
-        : includesPhrase(text, phrase)
+    exactPhrases.every((phrase) => includesAffirmativePhrase(text, phrase)) &&
+    phraseGroups.every((group) =>
+      group.some((phrase) => includesAffirmativePhrase(text, phrase))
     ) &&
-    allTerms.every((term) => contains(text, term)) &&
-    anyTermGroups.every((group) => group.some((term) => contains(text, term)))
+    allTerms.every((term) => containsTerm(text, term)) &&
+    anyTermGroups.every((group) =>
+      group.some((term) => containsTerm(text, term))
+    )
   );
 };
 
+const containsForbiddenTerm = (haystack: string, term: string): boolean =>
+  includesPhrase(haystack, term) || containsFuzzyTerm(haystack, term);
+
+const forbiddenMatchPresent = (
+  text: string,
+  match: LcmSummaryTermMatch
+): boolean => {
+  const exactPhrases = match.exactPhrases ?? [];
+  const phraseGroups = match.phraseGroups ?? [];
+  const allTerms = match.allTerms ?? [];
+  const anyTermGroups = match.anyTermGroups ?? [];
+
+  return (
+    exactPhrases.every((phrase) => includesPhrase(text, phrase)) &&
+    phraseGroups.every((group) =>
+      group.some((phrase) => includesPhrase(text, phrase))
+    ) &&
+    allTerms.every((term) => containsForbiddenTerm(text, term)) &&
+    anyTermGroups.every((group) =>
+      group.some((term) => containsForbiddenTerm(text, term))
+    )
+  );
+};
+
+const forbiddenMatchingSpans = (
+  text: string,
+  match: LcmSummaryTermMatch
+): string[] =>
+  localTextUnits(text).filter((span) => forbiddenMatchPresent(span, match));
+
 const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
-  matchPresent(text, claim.match, "required");
+  requiredMatchPresent(text, claim.match);
 
 const forbiddenPresent = (
   summary: StructuredLcmSummary,
@@ -237,11 +289,15 @@ const forbiddenPresent = (
     claim.fields && claim.fields.length > 0
       ? claim.fields.map((field) => fieldValue(summary, field)).join("\n")
       : allSummaryText(summary);
-  if (!matchPresent(text, claim.match, "forbidden")) {
+  const spans = forbiddenMatchingSpans(text, claim.match);
+  if (spans.length === 0) {
     return false;
   }
-  return !(claim.allowedContextTerms ?? []).some((term) =>
-    containsTerm(text, term)
+  return spans.some(
+    (span) =>
+      !(claim.allowedContextTerms ?? []).some((term) =>
+        includesPhrase(span, term)
+      )
   );
 };
 
