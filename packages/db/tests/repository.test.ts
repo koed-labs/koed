@@ -134,6 +134,10 @@ describeDb("memory repository visibility", () => {
       `
         truncate table
           audit_events,
+          team_workspace_access_grants,
+          team_workspaces,
+          team_memberships,
+          teams,
           api_tokens,
           memory_questions,
           memory_embeddings_3072,
@@ -284,6 +288,142 @@ describeDb("memory repository visibility", () => {
     expect(await repo.revokeApiToken(user.id, token.id)).toBe(false);
     expect(await repo.listApiTokens(user.id)).toEqual([]);
     expect(await repo.getApiTokenUser(tokenHash)).toBeNull();
+  });
+
+  it("enforces Team roles and Workspace access at request time", async () => {
+    const owner = await repo.createUser({
+      email: `team-owner-${randomUUID()}@example.com`,
+      displayName: "Team Owner"
+    });
+    const admin = await repo.createUser({
+      email: `team-admin-${randomUUID()}@example.com`,
+      displayName: "Team Admin"
+    });
+    const member = await repo.createUser({
+      email: `team-member-${randomUUID()}@example.com`,
+      displayName: "Team Member"
+    });
+    const outsider = await repo.createUser({
+      email: `team-outsider-${randomUUID()}@example.com`,
+      displayName: "Team Outsider"
+    });
+
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Launch Team" }
+    );
+    const ownerMembership = await repo.getTeamMembership(
+      { userId: owner.id },
+      team.id
+    );
+    expect(ownerMembership).toMatchObject({
+      teamId: team.id,
+      userId: owner.id,
+      role: "owner",
+      status: "enabled"
+    });
+
+    await expect(
+      repo.upsertTeamMember(
+        { userId: outsider.id },
+        { teamId: team.id, userId: member.id, role: "member" }
+      )
+    ).resolves.toBeNull();
+
+    const adminMembership = await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: admin.id, role: "admin" }
+    );
+    const memberMembership = await repo.upsertTeamMember(
+      { userId: admin.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+    expect(adminMembership).toMatchObject({ role: "admin", status: "enabled" });
+    expect(memberMembership).toMatchObject({
+      role: "member",
+      status: "enabled"
+    });
+
+    await expect(
+      repo.upsertTeamMember(
+        { userId: admin.id },
+        { teamId: team.id, userId: member.id, role: "owner" }
+      )
+    ).resolves.toBeNull();
+
+    const workspace = await repo.createTeamWorkspace(
+      { userId: admin.id },
+      { teamId: team.id, name: "Memory OS" }
+    );
+    expect(workspace).toMatchObject({ teamId: team.id, name: "Memory OS" });
+
+    await expect(
+      repo.createTeamWorkspace(
+        { userId: member.id },
+        { teamId: team.id, name: "Member-created Workspace" }
+      )
+    ).resolves.toBeNull();
+
+    const readAccess = await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+    expect(readAccess).toMatchObject({
+      access: "read",
+      canRecall: true,
+      canCreateShare: false,
+      canManageWorkspace: false
+    });
+
+    const writeAccess = await repo.setTeamWorkspaceAccess(
+      { userId: admin.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "write"
+      }
+    );
+    expect(writeAccess).toMatchObject({
+      access: "write",
+      canRecall: true,
+      canCreateShare: true
+    });
+
+    await expect(
+      repo.setTeamWorkspaceAccess(
+        { userId: member.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: outsider.id,
+          access: "read"
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: outsider.id }, workspace!.id)
+    ).resolves.toBeNull();
+
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: member.id,
+        role: "member",
+        status: "disabled"
+      }
+    );
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      membershipStatus: "disabled",
+      access: "disabled",
+      canRecall: false,
+      canCreateShare: false
+    });
   });
 
   it("rolls back API token lifecycle changes when audit insertion fails", async () => {

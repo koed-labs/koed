@@ -26,6 +26,7 @@ export {
   localRerankingEnabled
 } from "./repository.js";
 export { createSettingsRepository } from "./settings-repository.js";
+export { createTeamAccessRepository } from "./team-access-repository.js";
 export {
   createUserApiTokenRepository,
   mapUserRecord

@@ -25,6 +25,7 @@ import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-r
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
+import { createTeamAccessRepository } from "./team-access-repository.js";
 import {
   isGenericDevelopmentActivity,
   presentMemoryText
@@ -2626,6 +2627,7 @@ export const createMemorySourceRepository = (
   ...createSettingsRepository(createDb(pool)),
   ...createAuthSessionRepository(createDb(pool)),
   ...createAuditRepository(createDb(pool)),
+  ...createTeamAccessRepository(createDb(pool)),
   ...createCapturedSessionRepository(pool),
   ...createConversationItemRepository(pool),
   ...createLocalEmbeddingStatusRepository(),

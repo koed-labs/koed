@@ -63,6 +63,17 @@ export const memorySearchDomain = pgEnum("memory_search_domain", [
   "project",
   "session"
 ]);
+export const teamRole = pgEnum("team_role", ["owner", "admin", "member"]);
+export const teamMembershipStatus = pgEnum("team_membership_status", [
+  "invited",
+  "enabled",
+  "disabled"
+]);
+export const teamWorkspaceAccess = pgEnum("team_workspace_access", [
+  "disabled",
+  "read",
+  "write"
+]);
 
 export const users = pgTable("users", {
   id: id(),
@@ -73,6 +84,90 @@ export const users = pgTable("users", {
   updatedAt: updatedNow(),
   disabledAt: timestamp("disabled_at", { withTimezone: true })
 });
+
+export const teams = pgTable(
+  "teams",
+  {
+    id: id(),
+    name: text("name").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true })
+  },
+  (table) => [
+    index("teams_active_idx")
+      .on(table.createdAt.desc())
+      .where(sql`${table.archivedAt} is null`)
+  ]
+);
+
+export const teamMemberships = pgTable(
+  "team_memberships",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: teamRole("role").notNull(),
+    status: teamMembershipStatus("status").notNull().default("enabled"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    disabledAt: timestamp("disabled_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("team_memberships_team_user_unique").on(table.teamId, table.userId),
+    index("team_memberships_user_idx").on(table.userId, table.status),
+    index("team_memberships_team_idx").on(table.teamId, table.role)
+  ]
+);
+
+export const teamWorkspaces = pgTable(
+  "team_workspaces",
+  {
+    id: id(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    archivedAt: timestamp("archived_at", { withTimezone: true })
+  },
+  (table) => [
+    index("team_workspaces_team_idx")
+      .on(table.teamId, table.createdAt.desc())
+      .where(sql`${table.archivedAt} is null`)
+  ]
+);
+
+export const teamWorkspaceAccessGrants = pgTable(
+  "team_workspace_access_grants",
+  {
+    teamWorkspaceId: uuid("team_workspace_id")
+      .notNull()
+      .references(() => teamWorkspaces.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    access: teamWorkspaceAccess("access").notNull().default("disabled"),
+    grantedByUserId: uuid("granted_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({ columns: [table.teamWorkspaceId, table.userId] }),
+    index("team_workspace_access_grants_user_idx").on(
+      table.userId,
+      table.access
+    )
+  ]
+);
 
 export const workspaces = pgTable(
   "workspaces",

@@ -49,6 +49,54 @@ export interface UserRecord {
   passwordHash: string | null;
 }
 
+export type TeamRole = "owner" | "admin" | "member";
+
+export type TeamMembershipStatus = "invited" | "enabled" | "disabled";
+
+export type TeamWorkspaceAccessLevel = "disabled" | "read" | "write";
+
+export interface TeamRecord {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+export interface TeamMembershipRecord {
+  id: string;
+  teamId: string;
+  userId: string;
+  role: TeamRole;
+  status: TeamMembershipStatus;
+  createdAt: string;
+  updatedAt: string;
+  acceptedAt: string | null;
+  disabledAt: string | null;
+}
+
+export interface TeamWorkspaceRecord {
+  id: string;
+  teamId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+export interface TeamWorkspaceAccessRecord {
+  teamWorkspaceId: string;
+  teamId: string;
+  userId: string;
+  role: TeamRole | null;
+  membershipStatus: TeamMembershipStatus | null;
+  access: TeamWorkspaceAccessLevel;
+  canManageTeam: boolean;
+  canManageWorkspace: boolean;
+  canRecall: boolean;
+  canCreateShare: boolean;
+}
+
 export interface ApiTokenRecord {
   id: string;
   ownerUserId: string;
@@ -629,6 +677,36 @@ export interface MemorySourceRepository
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
   getUser(userId: string): Promise<UserRecord | null>;
+  createTeam(actor: ActorContext, input: { name: string }): Promise<TeamRecord>;
+  getTeamMembership(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamMembershipRecord | null>;
+  upsertTeamMember(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      userId: string;
+      role: TeamRole;
+      status?: TeamMembershipStatus;
+    }
+  ): Promise<TeamMembershipRecord | null>;
+  createTeamWorkspace(
+    actor: ActorContext,
+    input: { teamId: string; name: string }
+  ): Promise<TeamWorkspaceRecord | null>;
+  setTeamWorkspaceAccess(
+    actor: ActorContext,
+    input: {
+      teamWorkspaceId: string;
+      userId: string;
+      access: TeamWorkspaceAccessLevel;
+    }
+  ): Promise<TeamWorkspaceAccessRecord | null>;
+  getTeamWorkspaceAccess(
+    actor: ActorContext,
+    teamWorkspaceId: string
+  ): Promise<TeamWorkspaceAccessRecord | null>;
   createSession(
     userId: string,
     sessionHash: string,
