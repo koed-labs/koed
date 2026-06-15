@@ -17,6 +17,7 @@ export interface LcmSummaryRequiredClaim {
   id: string;
   text: string;
   aliases?: string[];
+  requiredTerms?: string[];
   fields: LcmSummaryField[];
   critical?: boolean;
   fuzzy?: boolean;
@@ -27,6 +28,7 @@ export interface LcmSummaryForbiddenClaim {
   text: string;
   aliases?: string[];
   critical?: boolean;
+  redactInReports?: boolean;
 }
 
 export interface LcmSummaryBenchmarkCase {
@@ -163,6 +165,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           text: "support only the TypeScript Codex Capture Hook",
           aliases: [
             "Support only the TypeScript Codex Capture Hook",
+            "supporting only the TypeScript Codex Capture Hook",
             "only the TypeScript Codex Capture Hook was to be supported"
           ],
           fields: ["decisions"],
@@ -289,7 +292,13 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           id: "migration-reset",
           text: "migration 0012_memory_nodes_backfill is the first migration that requires a fresh local reset",
           aliases: [
+            "migration 0012_memory_nodes_backfill as the first migration that requires a fresh local reset",
             "Migration 0012_memory_nodes_backfill was identified as the first migration requiring a fresh local reset"
+          ],
+          requiredTerms: [
+            "migration 0012_memory_nodes_backfill",
+            "first migration",
+            "fresh local reset"
           ],
           fields: ["facts"],
           critical: true
@@ -410,6 +419,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           id: "team-memory-undecided",
           text: "team memory is visible in Memory Answer by default",
           aliases: [
+            "Should team memory be visible in Memory Answer by default",
             "team memory should be visible in Memory Answer by default"
           ],
           fields: ["unresolved_questions"],
@@ -731,7 +741,11 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "literal-redacted",
           text: "redact the literal secret",
-          aliases: ["literal secret should be redacted"],
+          aliases: [
+            "literal secret should be redacted",
+            "redact the secret",
+            "redacting the secret"
+          ],
           fields: ["summary_text", "facts"],
           critical: true
         }
@@ -740,7 +754,8 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
         {
           id: "literal-token",
           text: "koed_live_secret_abc123",
-          critical: true
+          critical: true,
+          redactInReports: true
         }
       ],
       requiredNonEmptyFields: ["facts"],

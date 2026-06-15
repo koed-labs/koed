@@ -14,6 +14,7 @@ import {
   type LcmSummaryField
 } from "./cases.js";
 import {
+  lcmSummaryOptionValue,
   parseLcmSummaryRunsOption,
   parseLcmSummaryThresholdOption
 } from "./cli-options.js";
@@ -238,6 +239,27 @@ describe("LCM summary generation scoring", () => {
     });
   });
 
+  it("accepts explicit required-term variants without broad fuzzy matching", () => {
+    const benchmarkCase = mustCase("long-tool-output-one-durable-fact");
+    const output = passingOutput(benchmarkCase);
+    output.facts = [
+      "The smoke output explicitly labeled migration 0012_memory_nodes_backfill as the first migration that requires a fresh local reset in the MVP branch."
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(score.criticalFailure).toBe(false);
+    expect(
+      score.details.find((detail) => detail.name === "required:migration-reset")
+    ).toMatchObject({
+      score: 4
+    });
+  });
+
   it("fails wrong field placement for critical claims", () => {
     const benchmarkCase = mustCase("exact-identifiers-files-commands-env");
     const output = passingOutput(benchmarkCase);
@@ -275,6 +297,28 @@ describe("LCM summary generation scoring", () => {
     expect(summary.validJsonRate).toBe(0.5);
     expect(summary.criticalFailureCount).toBe(1);
     expect(summary.passed).toBe(false);
+  });
+
+  it("weights non-critical forbidden claims below critical forbidden claims", () => {
+    const benchmarkCase = mustCase("long-tool-output-one-durable-fact");
+    const output = passingOutput(benchmarkCase);
+    output.facts.push("checking table 001 ok");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:all-tables-important"
+      )
+    ).toMatchObject({
+      score: 0,
+      maxScore: 2,
+      critical: false
+    });
   });
 });
 
@@ -315,9 +359,49 @@ describe("LCM summary generation live runner", () => {
       })
     ).rejects.toThrow("Unknown LCM summary benchmark case id(s): typo");
   });
+
+  it("redacts configured forbidden literals from reports without hiding failures", async () => {
+    const benchmarkCase = mustCase("secret-like-value-redaction");
+    const report = await runLcmSummaryBenchmark({
+      caseIds: [benchmarkCase.id],
+      runs: 1,
+      config: resolveLcmSummaryWorkerConfig(process.env, {
+        model: "codex-app-server:test"
+      }),
+      runner: async () => ({
+        text: JSON.stringify({
+          ...passingOutput(benchmarkCase),
+          facts: ["koed_live_secret_abc123"]
+        }),
+        model: "codex-app-server:test"
+      })
+    });
+
+    const serialized = JSON.stringify(report);
+    expect(report.passed).toBe(false);
+    expect(serialized).not.toContain("koed_live_secret_abc123");
+    expect(serialized).toContain("[REDACTED]");
+    expect(
+      report.runs[0]?.details.find(
+        (detail) => detail.name === "forbidden:literal-token"
+      )
+    ).toMatchObject({
+      score: 0
+    });
+  });
 });
 
 describe("LCM summary generation CLI options", () => {
+  it("requires values for value-taking flags", () => {
+    expect(lcmSummaryOptionValue(["--case", "one"], "--case")).toBe("one");
+    expect(() => lcmSummaryOptionValue(["--case"], "--case")).toThrow(
+      "--case requires a value"
+    );
+    expect(() =>
+      lcmSummaryOptionValue(["--case", "--runs", "1"], "--case")
+    ).toThrow("--case requires a value");
+  });
+
   it("validates runs", () => {
     expect(parseLcmSummaryRunsOption(undefined)).toBeUndefined();
     expect(parseLcmSummaryRunsOption("1")).toBe(1);

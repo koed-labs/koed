@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveLcmSummaryWorkerConfig } from "@koed/mcp-server";
 import {
+  lcmSummaryOptionValue,
   parseLcmSummaryRunsOption,
   parseLcmSummaryThresholdOption
 } from "./cli-options.js";
@@ -10,10 +11,8 @@ import { runLcmSummaryBenchmark } from "./runner.js";
 
 const args = process.argv.slice(2);
 
-const optionValue = (name: string): string | undefined => {
-  const index = args.indexOf(name);
-  return index >= 0 ? args[index + 1] : undefined;
-};
+const optionValue = (name: string): string | undefined =>
+  lcmSummaryOptionValue(args, name);
 
 const selectedCaseIds = optionValue("--case")
   ?.split(",")

@@ -192,12 +192,21 @@ const claimPhrases = (
   claim: LcmSummaryRequiredClaim | LcmSummaryForbiddenClaim
 ): string[] => [claim.text, ...(claim.aliases ?? [])];
 
-const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
-  claimPhrases(claim).some((phrase) =>
+const claimPresent = (
+  text: string,
+  claim: LcmSummaryRequiredClaim
+): boolean => {
+  if (claim.requiredTerms && claim.requiredTerms.length > 0) {
+    return claim.requiredTerms.every((term) =>
+      includesAffirmativePhrase(text, term)
+    );
+  }
+  return claimPhrases(claim).some((phrase) =>
     claim.fuzzy === true && claim.critical !== true
       ? containsClaim(text, phrase)
       : includesAffirmativePhrase(text, phrase)
   );
+};
 
 const forbiddenPresent = (
   text: string,
@@ -274,10 +283,11 @@ const forbiddenClaimDetail = (
   claim: LcmSummaryForbiddenClaim
 ): LcmSummaryScoreDetail => {
   const present = forbiddenPresent(allSummaryText(summary), claim);
+  const maxScore = claim.critical === true ? 6 : 2;
   return {
     name: `forbidden:${claim.id}`,
-    score: present ? 0 : 6,
-    maxScore: 6,
+    score: present ? 0 : maxScore,
+    maxScore,
     reason: present ? "forbidden claim present" : "forbidden claim absent",
     actual: claim.text,
     critical: claim.critical ?? false

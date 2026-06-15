@@ -59,6 +59,48 @@ const selectedCases = (
   return cases;
 };
 
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const redactString = (value: string, redactions: string[]): string =>
+  redactions.reduce(
+    (current, redaction) =>
+      current.replace(new RegExp(escapeRegExp(redaction), "gi"), "[REDACTED]"),
+    value
+  );
+
+const redactValue = (value: unknown, redactions: string[]): unknown => {
+  if (redactions.length === 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return redactString(value, redactions);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactValue(item, redactions));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        redactValue(item, redactions)
+      ])
+    );
+  }
+  return value;
+};
+
+const reportRedactions = (cases: LcmSummaryBenchmarkCase[]): string[] => [
+  ...new Set(
+    cases.flatMap(
+      (benchmarkCase) =>
+        benchmarkCase.expected.forbiddenClaims
+          ?.filter((claim) => claim.redactInReports === true)
+          .flatMap((claim) => [claim.text, ...(claim.aliases ?? [])]) ?? []
+    )
+  )
+];
+
 export const runLcmSummaryBenchmarkCase = async (
   benchmarkCase: LcmSummaryBenchmarkCase,
   runIndex: number,
@@ -126,13 +168,24 @@ export const runLcmSummaryBenchmark = async (
       threshold: options.threshold
     })
   );
+  const summary = summarizeLcmSummaryBenchmark(scores, {
+    threshold: options.threshold
+  });
+  const redactions = reportRedactions(cases);
+  const redactedSummary = redactValue(
+    summary,
+    redactions
+  ) as LcmSummaryBenchmarkSummary;
   return {
     benchmark: "lcm-summary-generation",
     generatedAt: new Date().toISOString(),
     model: config.model,
     reasoningEffort: config.reasoningEffort,
     cases: cases.map((benchmarkCase) => benchmarkCase.id),
-    runInputs,
-    ...summarizeLcmSummaryBenchmark(scores, { threshold: options.threshold })
+    runInputs: redactValue(
+      runInputs,
+      redactions
+    ) as LcmSummaryBenchmarkRunInput[],
+    ...redactedSummary
   };
 };
