@@ -705,6 +705,35 @@ describeDb("memory repository visibility", () => {
       status: "enabled"
     });
 
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: existingUser.id, role: "admin" }
+    );
+    const lowerRoleInviteHash = `lower-role-${randomUUID()}-${randomUUID()}`;
+    await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: existingUserEmail,
+        role: "member",
+        tokenHash: lowerRoleInviteHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: lowerRoleInviteHash,
+        userId: existingUser.id
+      })
+    ).resolves.toMatchObject({
+      membership: {
+        teamId: team.id,
+        userId: existingUser.id,
+        role: "admin",
+        status: "enabled"
+      }
+    });
+
     await repo.setTeamWorkspaceAccess(
       { userId: owner.id },
       {
@@ -721,6 +750,17 @@ describeDb("memory repository visibility", () => {
       canCreateShare: true
     });
 
+    const staleInviteHash = `stale-${randomUUID()}-${randomUUID()}`;
+    await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: existingUserEmail,
+        role: "member",
+        tokenHash: staleInviteHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
     const disabled = await repo.disableTeamMember(
       { userId: owner.id },
       { teamId: team.id, userId: existingUser.id }
@@ -737,6 +777,18 @@ describeDb("memory repository visibility", () => {
       access: "disabled",
       canRecall: false,
       canCreateShare: false
+    });
+    await expect(
+      repo.acceptTeamInvite({
+        tokenHash: staleInviteHash,
+        userId: existingUser.id
+      })
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembership({ userId: existingUser.id }, team.id)
+    ).resolves.toMatchObject({
+      role: "admin",
+      status: "disabled"
     });
 
     const newUserEmail = `new-member-${randomUUID()}@example.com`;

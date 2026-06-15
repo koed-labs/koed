@@ -551,12 +551,32 @@ export const createTeamAccessRepository = (db: KoedDb) => {
           return null;
         }
 
+        const existingMembershipRows = await tx
+          .select()
+          .from(teamMemberships)
+          .where(
+            and(
+              eq(teamMemberships.teamId, inviteRow.teamId),
+              eq(teamMemberships.userId, user.id)
+            )
+          )
+          .limit(1)
+          .for("update");
+        const existingMembership = existingMembershipRows[0];
+        if (existingMembership?.status === "disabled") {
+          return null;
+        }
+        const acceptedRole =
+          existingMembership?.status === "enabled"
+            ? existingMembership.role
+            : inviteRow.role;
+
         const membershipRows = await tx
           .insert(teamMemberships)
           .values({
             teamId: inviteRow.teamId,
             userId: user.id,
-            role: inviteRow.role,
+            role: acceptedRole,
             status: "enabled",
             acceptedAt: sql`now()`,
             disabledAt: null
@@ -564,7 +584,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
           .onConflictDoUpdate({
             target: [teamMemberships.teamId, teamMemberships.userId],
             set: {
-              role: inviteRow.role,
+              role: acceptedRole,
               status: "enabled",
               acceptedAt: sql`now()`,
               disabledAt: null,
