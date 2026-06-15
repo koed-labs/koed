@@ -114,20 +114,26 @@ export const runClientsBootstrap = async ({
     cwd: bootstrapRootDir
   });
 
-  await runCommandFn({
-    label: "Start Koed dependency containers",
-    command: "docker",
-    args: [
-      "compose",
-      "up",
-      "-d",
-      "--build",
-      "postgres",
-      "redis",
-      "embedding-service"
-    ],
-    cwd: bootstrapRootDir
-  });
+  if (environment.KOED_SERVER_MANAGED === "1") {
+    console.log(
+      "> Koed dependency containers already managed by koed-server; skipping container startup"
+    );
+  } else {
+    await runCommandFn({
+      label: "Start Koed dependency containers",
+      command: "docker",
+      args: [
+        "compose",
+        "up",
+        "-d",
+        "--build",
+        "postgres",
+        "redis",
+        "embedding-service"
+      ],
+      cwd: bootstrapRootDir
+    });
+  }
 
   const apiUrl = resolveApiUrl(environment);
   await waitForApiReadyFn({ apiUrl });

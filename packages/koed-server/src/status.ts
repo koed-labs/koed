@@ -4,7 +4,7 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
-import { loadExplorerCredential } from "./credentials.js";
+import { loadExplorerCredential, resolveLocalApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import {
   ensureKoedHome,
@@ -277,11 +277,8 @@ export const dockerComposePs = (
 const inspectApiToken = (
   repoEnv: Record<string, string>
 ): KoedServerStatus["apiToken"] => {
-  const token =
-    repoEnv.MEMORY_API_TOKEN ??
-    repoEnv.CODEX_MEMORY_API_TOKEN ??
-    repoEnv.VITE_KOED_API_TOKEN;
-  if (!token || token.startsWith("replace_with_")) {
+  const token = resolveLocalApiToken({}, repoEnv);
+  if (!token) {
     return {
       ...notConfigured(
         "No local API Token is configured for Koed integrations.",
@@ -375,11 +372,8 @@ const inspectMcp = (
       "Run pnpm --filter @koed/mcp-server build or koed-server setup codex --json."
     );
   }
-  const token =
-    repoEnv.MEMORY_API_TOKEN ??
-    repoEnv.CODEX_MEMORY_API_TOKEN ??
-    repoEnv.VITE_KOED_API_TOKEN;
-  if (!token || token.startsWith("replace_with_")) {
+  const token = resolveLocalApiToken({}, repoEnv)?.token;
+  if (!token) {
     return notConfigured(
       "MCP Server needs a local API Token.",
       "Run koed-server setup codex --json."

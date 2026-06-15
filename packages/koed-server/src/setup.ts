@@ -50,7 +50,8 @@ export const setupCodex = ({
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...repoEnv,
-    ...environment
+    ...environment,
+    KOED_SERVER_MANAGED: "1"
   };
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
@@ -110,6 +111,20 @@ export const setupCodex = ({
           action:
             "Review stdout/stderr, fix the reported setup failure, then rerun koed-server setup codex --json."
         };
+
+  if (payload.ok) {
+    const refreshedApiToken = resolveLocalApiToken(
+      environment,
+      loadRepoEnv(paths.repoRoot)
+    );
+    if (refreshedApiToken) {
+      writeExplorerCredential(paths, {
+        apiToken: refreshedApiToken.token,
+        provisionedAt: checkedAt,
+        source: refreshedApiToken.source
+      });
+    }
+  }
 
   writeFileSync(
     paths.lastVerificationPath,

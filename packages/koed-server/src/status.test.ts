@@ -140,7 +140,10 @@ describe("status and doctor JSON contracts", () => {
     mkdirSync(resolve(root, ".codex"), { recursive: true });
     mkdirSync(resolve(root, "hook"), { recursive: true });
     mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
-    writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=token\n");
+    writeFileSync(
+      resolve(root, ".env"),
+      "MEMORY_API_TOKEN=replace_with_token_from_pnpm_api_token_create\nVITE_KOED_API_TOKEN=token\n"
+    );
     writeFileSync(
       resolve(root, ".codex/config.toml"),
       "# >>> koed\n[mcp_servers.koed]\n"

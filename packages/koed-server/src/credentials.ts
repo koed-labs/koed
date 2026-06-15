@@ -7,24 +7,41 @@ export interface ExplorerCredential {
   source: "environment" | "repo-env";
 }
 
+const usableToken = (value: string | undefined): string | null => {
+  const trimmed = value?.trim();
+  return trimmed && !trimmed.startsWith("replace_with_") ? trimmed : null;
+};
+
+const tokenFrom = (values: Array<string | undefined>): string | null => {
+  for (const value of values) {
+    const token = usableToken(value);
+    if (token) {
+      return token;
+    }
+  }
+  return null;
+};
+
 export const resolveLocalApiToken = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>
 ): { token: string; source: "environment" | "repo-env" } | null => {
-  const envToken =
-    environment.MEMORY_API_TOKEN ??
-    environment.CODEX_MEMORY_API_TOKEN ??
-    environment.VITE_KOED_API_TOKEN;
-  if (envToken?.trim() && !envToken.trim().startsWith("replace_with_")) {
-    return { token: envToken.trim(), source: "environment" };
+  const envToken = tokenFrom([
+    environment.MEMORY_API_TOKEN,
+    environment.CODEX_MEMORY_API_TOKEN,
+    environment.VITE_KOED_API_TOKEN
+  ]);
+  if (envToken) {
+    return { token: envToken, source: "environment" };
   }
 
-  const repoToken =
-    repoEnv.MEMORY_API_TOKEN ??
-    repoEnv.CODEX_MEMORY_API_TOKEN ??
-    repoEnv.VITE_KOED_API_TOKEN;
-  if (repoToken?.trim() && !repoToken.trim().startsWith("replace_with_")) {
-    return { token: repoToken.trim(), source: "repo-env" };
+  const repoToken = tokenFrom([
+    repoEnv.MEMORY_API_TOKEN,
+    repoEnv.CODEX_MEMORY_API_TOKEN,
+    repoEnv.VITE_KOED_API_TOKEN
+  ]);
+  if (repoToken) {
+    return { token: repoToken, source: "repo-env" };
   }
 
   return null;

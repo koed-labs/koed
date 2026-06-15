@@ -50,6 +50,7 @@ describe("Codex setup wrapper", () => {
     expect(call!.command).toBe(process.execPath);
     expect(call!.args[0]).toBe(resolve(root, "scripts/clients-bootstrap.mjs"));
     expect(call!.env?.KOED_HOME).toBe(root);
+    expect(call!.env?.KOED_SERVER_MANAGED).toBe("1");
   });
 
   it("returns actionable failure JSON on bootstrap error", () => {
