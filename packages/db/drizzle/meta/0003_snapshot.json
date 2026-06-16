@@ -4084,6 +4084,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "user_id": {
           "name": "user_id",
           "type": "uuid",
@@ -4149,6 +4155,24 @@
           "tableTo": "team_workspaces",
           "columnsFrom": ["team_workspace_id"],
           "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "team_workspace_access_grants_workspace_team_fk": {
+          "name": "team_workspace_access_grants_workspace_team_fk",
+          "tableFrom": "team_workspace_access_grants",
+          "tableTo": "team_workspaces",
+          "columnsFrom": ["team_workspace_id", "team_id"],
+          "columnsTo": ["id", "team_id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "team_workspace_access_grants_membership_fk": {
+          "name": "team_workspace_access_grants_membership_fk",
+          "tableFrom": "team_workspace_access_grants",
+          "tableTo": "team_memberships",
+          "columnsFrom": ["team_id", "user_id"],
+          "columnsTo": ["team_id", "user_id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -4262,7 +4286,13 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "team_workspaces_id_team_unique": {
+          "name": "team_workspaces_id_team_unique",
+          "nullsNotDistinct": false,
+          "columns": ["id", "team_id"]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

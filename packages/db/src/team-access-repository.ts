@@ -586,7 +586,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
             set: {
               role: acceptedRole,
               status: "enabled",
-              acceptedAt: sql`now()`,
+              acceptedAt: sql`coalesce(${teamMemberships.acceptedAt}, now())`,
               disabledAt: null,
               updatedAt: sql`now()`
             }
