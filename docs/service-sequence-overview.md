@@ -19,8 +19,35 @@ MCP-side workers.
 - **Embedding Service**: local service that turns memory text into retrieval
   vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
-  rows, Memory Events, Memory Nodes, embeddings, questions, token usage, and
-  Team Workspace access records.
+  rows, Memory Events, Memory Nodes, embeddings, questions, token usage,
+  Team Workspace access records, and Team audit events.
+- **Koed Server Control Plane**: the local `koed-server` supervisor surface
+  that owns `KOED_HOME`, starts local services, and reports setup/readiness
+  status for headless and desktop use.
+
+## Local Service Startup
+
+1. The Operator or Koed Desktop starts `koed-server`.
+2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
+   directories, provisions the Explorer credential inside `KOED_HOME`, and
+   starts Docker-backed dependencies.
+3. Docker Compose is now limited to dependency services that still need
+   containers in this build: Postgres/pgvector, Redis/queues, and the Embedding
+   Service/model runtime. The API, Worker, and Explorer run as local app
+   processes supervised by `koed-server`.
+4. `koed-server status --json` and `koed-server doctor --json` poll the API
+   readiness endpoint, Docker dependency state, local Worker process state,
+   local API Token configuration, MCP Server doctor output, Supported Capture
+   Hook config, Codex config, LCM Summary Service availability, and last
+   verification metadata.
+5. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+   Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
+   Explorer credential, verification, and doctor setup can be invoked through
+   the control plane.
+6. Koed Desktop can start/connect to the same headless command surface, run
+   the first-launch Codex bootstrap and health-check sequence, poll status,
+   and embed Explorer without requiring the Operator to invoke repo-local
+   scripts directly.
 
 ## Ingestion
 
@@ -300,6 +327,7 @@ sequenceDiagram
 - LCM Summary Service: `packages/mcp-server/src/lcm-summary-service.ts`
 - LCM summary worker: `packages/mcp-server/src/lcm-summary-worker.ts`
 - LCM API routes: `apps/api/src/memory/lcm-routes.ts`
+- Koed Server control plane: `packages/koed-server/src/cli.ts`
 - MCP `memory_answer`: `packages/mcp-server/src/cli.ts`
 - Memory answer worker: `packages/mcp-server/src/answer-worker.ts`
 - Recall API routes: `apps/api/src/memory/recall-routes.ts`
