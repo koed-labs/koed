@@ -343,6 +343,8 @@ describeDb("memory repository visibility", () => {
       role: "member",
       status: "enabled"
     });
+    expect(memberMembership?.acceptedAt).toEqual(expect.any(String));
+    const memberAcceptedAt = memberMembership!.acceptedAt;
 
     await expect(
       repo.upsertTeamMember(
@@ -381,6 +383,41 @@ describeDb("memory repository visibility", () => {
       canCreateShare: true,
       canManageWorkspace: true
     });
+
+    const otherTeam = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Other Team" }
+    );
+    await expect(
+      pool.query(
+        `
+          insert into team_workspace_access_grants (
+            team_workspace_id,
+            team_id,
+            user_id,
+            access,
+            granted_by_user_id
+          )
+          values ($1, $2, $3, 'read', $4)
+        `,
+        [workspace!.id, team.id, outsider.id, owner.id]
+      )
+    ).rejects.toThrow();
+    await expect(
+      pool.query(
+        `
+          insert into team_workspace_access_grants (
+            team_workspace_id,
+            team_id,
+            user_id,
+            access,
+            granted_by_user_id
+          )
+          values ($1, $2, $3, 'read', $4)
+        `,
+        [workspace!.id, otherTeam.id, owner.id, owner.id]
+      )
+    ).rejects.toThrow();
 
     await expect(
       repo.createTeamWorkspace(
@@ -470,6 +507,49 @@ describeDb("memory repository visibility", () => {
       canManageWorkspace: false
     });
 
+    await pool.query(
+      "update team_workspaces set archived_at = now() where id = $1",
+      [workspace!.id]
+    );
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      access: "disabled",
+      canManageTeam: false,
+      canManageWorkspace: false,
+      canRecall: false,
+      canCreateShare: false
+    });
+    await pool.query(
+      "update team_workspaces set archived_at = null where id = $1",
+      [workspace!.id]
+    );
+    await pool.query("update teams set archived_at = now() where id = $1", [
+      team.id
+    ]);
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      access: "disabled",
+      canManageTeam: false,
+      canManageWorkspace: false,
+      canRecall: false,
+      canCreateShare: false
+    });
+    await expect(
+      repo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: member.id,
+          access: "read"
+        }
+      )
+    ).resolves.toBeNull();
+    await pool.query("update teams set archived_at = null where id = $1", [
+      team.id
+    ]);
+
     await expect(
       repo.setTeamWorkspaceAccess(
         { userId: member.id },
@@ -484,7 +564,7 @@ describeDb("memory repository visibility", () => {
       repo.getTeamWorkspaceAccess({ userId: outsider.id }, workspace!.id)
     ).resolves.toBeNull();
 
-    await repo.upsertTeamMember(
+    const disabledMember = await repo.upsertTeamMember(
       { userId: owner.id },
       {
         teamId: team.id,
@@ -493,6 +573,10 @@ describeDb("memory repository visibility", () => {
         status: "disabled"
       }
     );
+    expect(disabledMember).toMatchObject({
+      status: "disabled",
+      acceptedAt: memberAcceptedAt
+    });
     await expect(
       repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
     ).resolves.toMatchObject({
@@ -500,6 +584,20 @@ describeDb("memory repository visibility", () => {
       access: "disabled",
       canRecall: false,
       canCreateShare: false
+    });
+    const reenabledMember = await repo.upsertTeamMember(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: member.id,
+        role: "member",
+        status: "enabled"
+      }
+    );
+    expect(reenabledMember).toMatchObject({
+      status: "enabled",
+      acceptedAt: memberAcceptedAt,
+      disabledAt: null
     });
   });
 

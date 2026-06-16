@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { KoedDb } from "./connection.js";
 import {
   teamMemberships,
@@ -98,10 +98,15 @@ const buildAccessRecord = (row: {
   role: TeamRole | null;
   membershipStatus: TeamMembershipStatus | null;
   membershipDisabledAt: Date | string | null;
+  teamArchivedAt: Date | string | null;
+  workspaceArchivedAt: Date | string | null;
   access: TeamWorkspaceAccessLevel | null;
 }): TeamWorkspaceAccessRecord => {
+  const workspaceActive = !row.teamArchivedAt && !row.workspaceArchivedAt;
   const membershipEnabled =
-    row.membershipStatus === "enabled" && row.membershipDisabledAt === null;
+    workspaceActive &&
+    row.membershipStatus === "enabled" &&
+    row.membershipDisabledAt === null;
   const access = membershipEnabled ? (row.access ?? "disabled") : "disabled";
   const canManageTeam =
     membershipEnabled && (row.role === "owner" || row.role === "admin");
@@ -128,17 +133,19 @@ export const createTeamAccessRepository = (db: KoedDb) => {
     const rows = await db
       .select()
       .from(teamMemberships)
+      .innerJoin(teams, eq(teams.id, teamMemberships.teamId))
       .where(
         and(
           eq(teamMemberships.teamId, teamId),
           eq(teamMemberships.userId, actor.userId),
           inArray(teamMemberships.role, ["owner", "admin"]),
-          eq(teamMemberships.status, "enabled")
+          eq(teamMemberships.status, "enabled"),
+          isNull(teams.archivedAt)
         )
       )
       .limit(1);
 
-    return rows[0] ?? null;
+    return rows[0]?.team_memberships ?? null;
   };
 
   const getTeamWorkspaceAccess = async (
@@ -153,9 +160,12 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         role: teamMemberships.role,
         membershipStatus: teamMemberships.status,
         membershipDisabledAt: teamMemberships.disabledAt,
+        teamArchivedAt: teams.archivedAt,
+        workspaceArchivedAt: teamWorkspaces.archivedAt,
         access: teamWorkspaceAccessGrants.access
       })
       .from(teamWorkspaces)
+      .innerJoin(teams, eq(teams.id, teamWorkspaces.teamId))
       .leftJoin(
         teamMemberships,
         and(
@@ -167,6 +177,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         teamWorkspaceAccessGrants,
         and(
           eq(teamWorkspaceAccessGrants.teamWorkspaceId, teamWorkspaces.id),
+          eq(teamWorkspaceAccessGrants.teamId, teamWorkspaces.teamId),
           eq(teamWorkspaceAccessGrants.userId, actor.userId)
         )
       )
@@ -271,7 +282,10 @@ export const createTeamAccessRepository = (db: KoedDb) => {
             role: input.role,
             status,
             updatedAt: sql`now()`,
-            acceptedAt: status === "enabled" ? sql`now()` : null,
+            acceptedAt:
+              status === "enabled"
+                ? sql`coalesce(${teamMemberships.acceptedAt}, now())`
+                : sql`${teamMemberships.acceptedAt}`,
             disabledAt: status === "disabled" ? sql`now()` : null
           }
         })
@@ -298,6 +312,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
 
         await tx.insert(teamWorkspaceAccessGrants).values({
           teamWorkspaceId: workspace.id,
+          teamId: workspace.teamId,
           userId: actor.userId,
           access: "write",
           grantedByUserId: actor.userId
@@ -341,6 +356,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         .insert(teamWorkspaceAccessGrants)
         .values({
           teamWorkspaceId: input.teamWorkspaceId,
+          teamId: accessContext.teamId,
           userId: input.userId,
           access: input.access,
           grantedByUserId: actor.userId

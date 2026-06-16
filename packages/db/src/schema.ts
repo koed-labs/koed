@@ -138,6 +138,7 @@ export const teamWorkspaces = pgTable(
     archivedAt: timestamp("archived_at", { withTimezone: true })
   },
   (table) => [
+    unique("team_workspaces_id_team_unique").on(table.id, table.teamId),
     index("team_workspaces_team_idx")
       .on(table.teamId, table.createdAt.desc())
       .where(sql`${table.archivedAt} is null`)
@@ -150,6 +151,7 @@ export const teamWorkspaceAccessGrants = pgTable(
     teamWorkspaceId: uuid("team_workspace_id")
       .notNull()
       .references(() => teamWorkspaces.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id").notNull(),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -162,6 +164,16 @@ export const teamWorkspaceAccessGrants = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.teamWorkspaceId, table.userId] }),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId],
+      name: "team_workspace_access_grants_workspace_team_fk"
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.teamId, table.userId],
+      foreignColumns: [teamMemberships.teamId, teamMemberships.userId],
+      name: "team_workspace_access_grants_membership_fk"
+    }).onDelete("cascade"),
     index("team_workspace_access_grants_user_idx").on(
       table.userId,
       table.access
