@@ -268,7 +268,9 @@ const forbiddenMatchPresent = (
     claim.redactInReports === true ? includesPhrase : includesForbiddenPhrase;
 
   return (
-    exactPhrases.every((phrase) => containsExactForbiddenPhrase(text, phrase)) &&
+    exactPhrases.every((phrase) =>
+      containsExactForbiddenPhrase(text, phrase)
+    ) &&
     phraseGroups.every((group) =>
       group.some((phrase) => includesForbiddenPhrase(text, phrase))
     ) &&
