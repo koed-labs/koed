@@ -41,3 +41,9 @@ export function readConfiguredAnswerBridgeUrl() {
     import.meta.env.VITE_KOED_ANSWER_BRIDGE_URL ?? "http://localhost:3210"
   ).replace(/\/$/, "");
 }
+
+export function readConfiguredAnswerBridgeUrl() {
+  return (
+    import.meta.env.VITE_KOED_ANSWER_BRIDGE_URL ?? "http://localhost:3210"
+  ).replace(/\/$/, "");
+}

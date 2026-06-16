@@ -15,7 +15,7 @@ const usageText = `Usage: pnpm explorer:bootstrap [options]
 
 Options:
   --token <token>         Koed API token used to prefill Explorer config.
-  --skip-refresh          Skip rebuilding and restarting the Explorer container.
+  --skip-refresh          Skip rebuilding local Explorer assets.
   --help                  Show this help.
 
 Environment:
@@ -116,7 +116,7 @@ export const runExplorerBootstrap = async ({
     console.log(`Root .env token: ${result.paths.rootEnvPath}`);
     console.log(`Explorer local token: ${result.paths.explorerEnvPath}`);
     console.log(
-      `Explorer refresh: ${result.args.skipRefresh ? "skipped" : "restarted"}`
+      `Explorer refresh: ${result.args.skipRefresh ? "skipped" : "rebuilt"}`
     );
   }
 } = {}) => {
@@ -130,9 +130,9 @@ export const runExplorerBootstrap = async ({
 
   if (!args.skipRefresh) {
     await runCommandFn({
-      label: "Refresh Explorer Docker image",
-      command: "docker",
-      args: ["compose", "up", "-d", "--build", "explorer"],
+      label: "Build Explorer assets",
+      command: "pnpm",
+      args: ["--filter", "@koed/explorer", "build"],
       cwd: bootstrapRootDir
     });
   }
