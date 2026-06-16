@@ -144,6 +144,11 @@ _Avoid_: Visibility, search domain, access level
 The boundary that limits recall to one session, one workspace, or all visible memory.
 _Avoid_: Retrieval scope, visibility, access level
 
+**Access Suspension**:
+A lifecycle state that restricts access or ingestion without deleting retained
+Memory, Team records, Workspace records, or Share Grants.
+_Avoid_: Deletion, archive, share revocation
+
 **Share Grant**:
 An access record that allows Team recall of a user-owned Captured Session within
 a Workspace.
@@ -178,6 +183,11 @@ _Avoid_: Personal deletion, share revocation, legal hold
 User-owned Memory made recallable to Team members through an active Share Grant.
 _Avoid_: Team-owned memory, public memory, copied memory
 
+**Soft Delete**:
+A retained lifecycle state that hides a resource from normal active flows while
+preserving it for audit, restore, retention, or authorized archived search.
+_Avoid_: Hard delete, access suspension, share revocation
+
 **User**:
 A human account authenticated inside a Koed deployment.
 _Avoid_: Account, customer, operator
@@ -189,6 +199,10 @@ _Avoid_: Project, repository, filepath, branch, cwd
 **Workspace Access**:
 A User's ability to recall or share Team-shared Memory for a Workspace.
 _Avoid_: Project metadata, Team membership, API token permission
+
+**Workspace Archive**:
+The Soft Delete state for a Workspace.
+_Avoid_: Share revocation, Team suspension, Project removal
 
 ## Relationships
 
@@ -204,6 +218,10 @@ _Avoid_: Project metadata, Team membership, API token permission
 - A **Workspace** has one stable shared ID for memories
 - A **User** may have **Workspace Access** through a **Team**
 - A **Project** may resolve to one **Workspace**
+- **Access Suspension** may restrict recall, sharing, ingestion, or management
+  without deleting retained **Memory**
+- A **Workspace Archive** hides a **Workspace** from normal active flows without
+  deleting retained **Team-shared Memory**
 - In the current build, one **API Token** may be used by the **MCP Server** and **Supported Capture Hook**
 - A **Project** may provide local context for zero or more **Conversations**
 - An **AI Client** produces one or more **Conversations**
@@ -225,6 +243,10 @@ _Avoid_: Project metadata, Team membership, API token permission
 - A **Share Grant** makes one **Captured Session** recallable to one **Team** in
   one **Workspace**
 - A **Share Grant** may allow summary-only recall or source-detail expansion
+- Removing a **User** from a **Team** or **Workspace** removes future access but
+  does not delete retained **Team-shared Memory**
+- A **Share Grant** revocation, **Workspace Archive**, **Access Suspension**,
+  **Soft Delete**, and hard purge are separate lifecycle operations
 - **Memory** is composed from one or more **Memory Events**
 - **Projection** transforms captured source activity into Koed semantic memory structures such as **Memory Events**
 - A **Memory Node** summarizes one or more **Memory Events** or **Memory Nodes**
@@ -260,6 +282,9 @@ _Avoid_: Project metadata, Team membership, API token permission
 > **Dev:** "Does sharing a session move it into Team ownership?"
 > **Domain expert:** "No — **Team-shared Memory** remains user-owned and is recallable through a **Share Grant**."
 
+> **Dev:** "If a Team stops paying, do we delete its memories?"
+> **Domain expert:** "No — use **Access Suspension** or ingestion gating. Retained **Memory** is not deleted."
+
 ## Flagged Ambiguities
 
 - "fact" sounds like Koed extracts standalone truths; resolved: use **Memory Event** for captured source material and **Memory Node** for summarized retrieval units.
@@ -274,3 +299,7 @@ _Avoid_: Project metadata, Team membership, API token permission
 - "team memory" can sound like the Team owns the memory; resolved:
   **Team-shared Memory** remains owned by the originating **User** and is
   accessed through a **Share Grant**.
+- "deleted" can mean many things; resolved: use **Soft Delete** or
+  **Workspace Archive** for retained resources, **Access Suspension** for
+  temporary or policy-driven access restrictions, and hard purge only for
+  irreversible deletion.

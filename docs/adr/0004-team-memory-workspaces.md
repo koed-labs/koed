@@ -33,9 +33,16 @@ explicit Share Grants.
 - API Tokens remain user-owned. Team and Workspace authority is derived from
   the owning User's current Team Membership and Workspace Access at request
   time.
-- Team admin "delete" means stop sharing for the Team. It revokes the Share
-  Grant and does not delete, invalidate, or modify the underlying user-owned
-  memory.
+- Removing a User from a Team or Workspace changes future access only. It does
+  not delete, invalidate, or modify the user's previous Team-shared Memory.
+- Share Grant revocation, Workspace archive, Team access suspension, personal
+  deletion, retention hold, and hard purge are separate lifecycle operations.
+- A Workspace archive is a soft delete: the Workspace leaves normal active
+  flows, but retained Team-shared Memory, audit history, grants, and provenance
+  remain available for restore, retention, and authorized archived search.
+- Team access suspension is a separate gate from Team deletion. For example,
+  billing failure may block ingestion, recall, sharing, management, or some
+  combination of those actions without deleting Team data.
 - Personal deletion removes the Captured Session from the owner's Personal
   Memory recall surface, but does not revoke active Team sharing in the first
   version.
@@ -44,16 +51,27 @@ explicit Share Grants.
 
 ## Consequences
 
-Authorization must be enforced during retrieval candidate selection, not only as
-a final response filter. Vector search, lexical search, graph lookup,
-expansion, fallback retrieval, diagnostics, and reranking must constrain
-candidates to memory visible to the caller through Personal Memory and active
-Team / Workspace Share Grants.
+Authorization and lifecycle gates must be enforced during retrieval candidate
+selection, not only as a final response filter. Vector search, lexical search,
+graph lookup, expansion, fallback retrieval, diagnostics, and reranking must
+constrain candidates to memory visible to the caller through Personal Memory and
+active Team / Workspace Share Grants. Archived or suspended data must be
+included only when the caller, product mode, and retention policy explicitly
+allow archived search.
 
 Share revocation, personal deletion, global invalidation, owner account
-deletion, Team retention, and audit must remain separate states or events. This
-keeps future Team Retention Policy, hosted/SaaS retention controls, legal hold,
-and deletion request workflows possible without redefining ownership.
+deletion, Team retention, Workspace archive, Team suspension, ingestion gating,
+and audit must remain separate states or events. This keeps future Team
+Retention Policy, hosted/SaaS retention controls, legal hold, billing policy
+changes, and deletion request workflows possible without redefining ownership.
+
+The first implementation should prefer explicit nullable lifecycle fields over a
+single overloaded status. Expected examples include `archived_at` for retained
+Workspace soft deletion, `disabled_at` plus a reason for Team or membership
+access suspension, `revoked_at` for Share Grants, and future `purge_after`
+fields only where hard deletion eligibility is intentional. The exact billing
+behavior can then evolve from "read-only after grace period" to "recall blocked
+but ingestion allowed" or another policy without a schema rewrite.
 
 Local path, repository remote, branch, ref, package name, and cwd changes must
 not change Team authorization. Those Project fields are resolution and display

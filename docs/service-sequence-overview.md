@@ -162,12 +162,18 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
 2. The API authenticates the API Token as the owning User.
 3. The API verifies Team Membership and Workspace Access for the User.
 4. The API creates or revokes the Share Grant and writes an audit event.
-5. Recall uses active Share Grants at request time. Personal deletion removes
-   memory from the owner's Personal Memory recall surface but does not revoke an
-   active Team / Workspace Share Grant in the first version.
-6. If a local Project context is supplied during recall, the API resolves it to
+5. Recall uses active Share Grants at request time, plus independent lifecycle
+   gates for Team access suspension, Workspace archive state, membership state,
+   and Workspace Access.
+6. Personal deletion removes memory from the owner's Personal Memory recall
+   surface but does not revoke an active Team / Workspace Share Grant in the
+   first version.
+7. If a local Project context is supplied during recall, the API resolves it to
    a Workspace before Team-shared retrieval. Local Project metadata is not a
    durable authorization key.
+8. Archived search is an explicit mode, not the default active recall path. It
+   may include retained Workspaces or suspended Teams only when the caller and
+   retention policy allow it.
 
 ## Retrieval
 
@@ -183,6 +189,7 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
 4. The API authenticates the API Token and calls the core recall path.
 5. The repository validates the Search Domain, applies Personal Memory and
    active Team / Workspace Share Grant authorization during candidate selection,
+   applies lifecycle gates such as Team suspension and Workspace archive state,
    and runs retrieval stages over Memory Nodes, fresh pending Memory Events,
    raw fallback evidence, and lexical matches. Semantic stages use local
    embedding search and may be reranked when configured.
