@@ -19,7 +19,8 @@ MCP-side workers.
 - **Embedding Service**: local service that turns memory text into retrieval
   vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
-  rows, Memory Events, Memory Nodes, embeddings, questions, and token usage.
+  rows, Memory Events, Memory Nodes, embeddings, questions, token usage, and
+  Team Workspace access records.
 
 ## Ingestion
 
@@ -71,6 +72,38 @@ sequenceDiagram
   Worker->>Embed: Embed Memory Event text
   Embed-->>Worker: Vectors
   Worker->>DB: Store embeddings and LCM placeholders
+```
+
+## Team Workspace Access Foundation
+
+The Team SaaS storage foundation keeps Memory ownership separate from
+Team Workspace visibility. Team membership identifies whether a User can manage
+team-level settings, while a Team Workspace access grant controls whether that
+User can recall from, share into, or manage a specific Team Workspace.
+
+1. A User with enabled owner/admin membership creates a Team Workspace.
+2. The API stores the `team_workspaces` row and a creator self-grant with
+   `write` access in one transaction.
+3. Workspace access checks resolve enabled membership and the Workspace grant at
+   request time. A missing grant is treated as `disabled`.
+4. Recall and share decisions use the resolved Workspace grant: `read` can
+   recall, `write` can recall and create shares, and `disabled` can do neither.
+5. Workspace grant management requires both enabled owner/admin membership and a
+   `write` grant on that Team Workspace, so Workspace-level downgrades take
+   effect without rotating credentials.
+
+```mermaid
+sequenceDiagram
+  participant User as User
+  participant API as API
+  participant DB as Database
+
+  User->>API: Create Team Workspace
+  API->>DB: Insert team_workspaces row
+  API->>DB: Insert creator write grant
+  User->>API: Recall, share, or manage Workspace
+  API->>DB: Resolve membership and Workspace grant
+  DB-->>API: Request-time access profile
 ```
 
 ## LCM Summarisation

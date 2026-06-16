@@ -369,10 +369,18 @@ describeDb("memory repository visibility", () => {
     });
 
     const workspace = await repo.createTeamWorkspace(
-      { userId: admin.id },
+      { userId: owner.id },
       { teamId: team.id, name: "Memory OS" }
     );
     expect(workspace).toMatchObject({ teamId: team.id, name: "Memory OS" });
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: owner.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      access: "write",
+      canRecall: true,
+      canCreateShare: true,
+      canManageWorkspace: true
+    });
 
     await expect(
       repo.createTeamWorkspace(
@@ -396,7 +404,58 @@ describeDb("memory repository visibility", () => {
       canManageWorkspace: false
     });
 
+    await expect(
+      repo.setTeamWorkspaceAccess(
+        { userId: admin.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: outsider.id,
+          access: "read"
+        }
+      )
+    ).resolves.toBeNull();
+
+    const disabledAdminAccess = await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "disabled"
+      }
+    );
+    expect(disabledAdminAccess).toMatchObject({
+      access: "disabled",
+      canRecall: false,
+      canCreateShare: false,
+      canManageWorkspace: false
+    });
+    await expect(
+      repo.setTeamWorkspaceAccess(
+        { userId: admin.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: outsider.id,
+          access: "read"
+        }
+      )
+    ).resolves.toBeNull();
+
     const writeAccess = await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: admin.id,
+        access: "write"
+      }
+    );
+    expect(writeAccess).toMatchObject({
+      access: "write",
+      canRecall: true,
+      canCreateShare: true,
+      canManageWorkspace: true
+    });
+
+    const memberWriteAccess = await repo.setTeamWorkspaceAccess(
       { userId: admin.id },
       {
         teamWorkspaceId: workspace!.id,
@@ -404,10 +463,11 @@ describeDb("memory repository visibility", () => {
         access: "write"
       }
     );
-    expect(writeAccess).toMatchObject({
+    expect(memberWriteAccess).toMatchObject({
       access: "write",
       canRecall: true,
-      canCreateShare: true
+      canCreateShare: true,
+      canManageWorkspace: false
     });
 
     await expect(

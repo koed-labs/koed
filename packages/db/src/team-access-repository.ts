@@ -107,6 +107,7 @@ const buildAccessRecord = (row: {
     membershipEnabled && (row.role === "owner" || row.role === "admin");
   const canRecall = accessRank(access) >= accessRank("read");
   const canCreateShare = access === "write";
+  const canManageWorkspace = canManageTeam && access === "write";
 
   return {
     teamWorkspaceId: row.teamWorkspaceId,
@@ -116,7 +117,7 @@ const buildAccessRecord = (row: {
     membershipStatus: row.membershipStatus,
     access,
     canManageTeam,
-    canManageWorkspace: canManageTeam,
+    canManageWorkspace,
     canRecall,
     canCreateShare
   };
@@ -288,12 +289,22 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         return null;
       }
 
-      const rows = await db
-        .insert(teamWorkspaces)
-        .values({ teamId: input.teamId, name: input.name })
-        .returning();
+      return db.transaction(async (tx) => {
+        const rows = await tx
+          .insert(teamWorkspaces)
+          .values({ teamId: input.teamId, name: input.name })
+          .returning();
+        const workspace = rows[0]!;
 
-      return mapWorkspaceRecord(rows[0]!);
+        await tx.insert(teamWorkspaceAccessGrants).values({
+          teamWorkspaceId: workspace.id,
+          userId: actor.userId,
+          access: "write",
+          grantedByUserId: actor.userId
+        });
+
+        return mapWorkspaceRecord(workspace);
+      });
     },
 
     async setTeamWorkspaceAccess(
