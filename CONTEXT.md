@@ -123,8 +123,9 @@ Memory visible only to the owning user.
 _Avoid_: Private memory, individual memory
 
 **Project**:
-A codebase or working directory boundary used to group memory.
-_Avoid_: Workspace, repository, folder
+A local AI-client or code context such as a repository, working directory,
+filepath, ref, branch, or cwd.
+_Avoid_: Workspace, stable shared memory ID
 
 **Projection**:
 The transformation from captured source activity into Koed semantic memory
@@ -136,12 +137,17 @@ Retrieving relevant memory evidence for an AI client.
 _Avoid_: Synthesis, answer generation, summarization
 
 **Retrieval Scope**:
-The caller's choice of whether recall searches personal memory.
+The caller's choice of which visible memory classes recall may search.
 _Avoid_: Visibility, search domain, access level
 
 **Search Domain**:
-The boundary that limits recall to one session, one project, or all visible memory.
+The boundary that limits recall to one session, one workspace, or all visible memory.
 _Avoid_: Retrieval scope, visibility, access level
+
+**Share Grant**:
+An access record that allows Team recall of a user-owned Captured Session within
+a Workspace.
+_Avoid_: Ownership transfer, copy, export
 
 **Supported AI Client Integration**:
 An AI-client integration that supports both automatic capture through a capture hook and recall through Koed memory tools.
@@ -155,9 +161,34 @@ _Avoid_: Python capture hook, fallback hook, MCP capture endpoint
 Producing natural-language answers or summaries from evidence.
 _Avoid_: Recall, retrieval, embedding
 
+**Team**:
+A collaboration boundary for shared memory access.
+_Avoid_: Operator, customer, account
+
+**Team Membership**:
+A User's participation state and role within a Team.
+_Avoid_: Workspace access, API token permission
+
+**Team Retention Policy**:
+A Team-level rule that may decide how Team-shared Memory behaves after an
+owning User removes it from Personal Memory.
+_Avoid_: Personal deletion, share revocation, legal hold
+
+**Team-shared Memory**:
+User-owned Memory made recallable to Team members through an active Share Grant.
+_Avoid_: Team-owned memory, public memory, copied memory
+
 **User**:
 A human account authenticated inside a Koed deployment.
 _Avoid_: Account, customer, operator
+
+**Workspace**:
+A stable shared ID for memories within a Team.
+_Avoid_: Project, repository, filepath, branch, cwd
+
+**Workspace Access**:
+A User's ability to recall or share Team-shared Memory for a Workspace.
+_Avoid_: Project metadata, Team membership, API token permission
 
 ## Relationships
 
@@ -165,9 +196,16 @@ _Avoid_: Account, customer, operator
 - An **Operator** may use **Local Operator Scripts** to create user API tokens
 - One **Operator** may create one or more **Users**
 - A **User** owns zero or more **API Tokens**
-- An **API Token** allows an AI-client integration to access the owning **User's** **Personal Memory**
+- An **API Token** allows an AI-client integration to access memory visible to
+  the owning **User**
+- An **API Token** does not own **Team** or **Workspace Access** directly
+- A **User** may have **Team Membership** in zero or more **Teams**
+- A **Team** may have one or more **Workspaces**
+- A **Workspace** has one stable shared ID for memories
+- A **User** may have **Workspace Access** through a **Team**
+- A **Project** may resolve to one **Workspace**
 - In the current build, one **API Token** may be used by the **MCP Server** and **Supported Capture Hook**
-- A **Project** may have zero or more **Conversations**
+- A **Project** may provide local context for zero or more **Conversations**
 - An **AI Client** produces one or more **Conversations**
 - A **Supported AI Client Integration** requires one **Capture Hook**
 - A **Supported AI Client Integration** requires recall through Koed memory tools
@@ -183,13 +221,17 @@ _Avoid_: Account, customer, operator
 - **Memory Answer** supplies an **Evidence Bundle** for **Answer Synthesis**
 - An **AI Client** performs **Synthesis** from recalled evidence
 - **Personal Memory** belongs to exactly one **User**
+- **Team-shared Memory** remains owned by the originating **User**
+- A **Share Grant** makes one **Captured Session** recallable to one **Team** in
+  one **Workspace**
+- A **Share Grant** may allow summary-only recall or source-detail expansion
 - **Memory** is composed from one or more **Memory Events**
 - **Projection** transforms captured source activity into Koed semantic memory structures such as **Memory Events**
 - A **Memory Node** summarizes one or more **Memory Events** or **Memory Nodes**
 - An **LCM Leaf** is a **Memory Node** summarized from one or more **Memory Events**
 - An **LCM Rollup** is a **Memory Node** summarized from one or more **LCM Leaves**
 - An **LCM Summary** may complete either an **LCM Leaf** or an **LCM Rollup**
-- A **Retrieval Scope** currently includes **Personal Memory**
+- A **Retrieval Scope** may include **Personal Memory** and **Team-shared Memory**
 - A **Search Domain** narrows recall within the selected **Retrieval Scope**
 - A **User** owns one or more **Capture Policies**
 - A **Capture Policy** applies to one **Capture Target**
@@ -212,6 +254,12 @@ _Avoid_: Account, customer, operator
 > **Dev:** "Does **Memory Answer** mean the backend generated the final answer?"
 > **Domain expert:** "No — **Memory Answer** is the supported recall entry point; **Answer Synthesis** belongs to the **AI Client**."
 
+> **Dev:** "Can we use the local repo path as the Team memory boundary?"
+> **Domain expert:** "No — a **Project** is local context. **Workspace** is the stable shared ID for memories."
+
+> **Dev:** "Does sharing a session move it into Team ownership?"
+> **Domain expert:** "No — **Team-shared Memory** remains user-owned and is recallable through a **Share Grant**."
+
 ## Flagged Ambiguities
 
 - "fact" sounds like Koed extracts standalone truths; resolved: use **Memory Event** for captured source material and **Memory Node** for summarized retrieval units.
@@ -220,3 +268,9 @@ _Avoid_: Account, customer, operator
 - "ask" in a **Capture Policy** can sound like a backend prompt; resolved: it blocks automatic capture unless an AI client implements the consent step.
 - "visibility" and "scope" are easy to conflate; resolved: **Personal Memory** describes stored memory visibility, while **Retrieval Scope** describes a recall request.
 - "global" can sound like all stored memory; resolved: a global **Search Domain** still only searches memory visible under the selected **Retrieval Scope**.
+- "project" and "workspace" are easy to conflate; resolved: **Project** is
+  local AI-client/code context, while **Workspace** is the stable shared ID for
+  memories.
+- "team memory" can sound like the Team owns the memory; resolved:
+  **Team-shared Memory** remains owned by the originating **User** and is
+  accessed through a **Share Grant**.

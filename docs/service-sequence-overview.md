@@ -151,6 +151,24 @@ sequenceDiagram
   Worker->>DB: Store Memory Node embedding
 ```
 
+## Team Sharing
+
+Team-shared Memory remains user-owned. Sharing is represented by a Share Grant
+from one Captured Session to one Team and one Workspace. A Workspace is the
+stable shared ID for memories; Project context such as local repo, filepath,
+ref, branch, or cwd is used only to resolve or display a Workspace.
+
+1. The User selects a Captured Session, Team, Workspace, and expansion level.
+2. The API authenticates the API Token as the owning User.
+3. The API verifies Team Membership and Workspace Access for the User.
+4. The API creates or revokes the Share Grant and writes an audit event.
+5. Recall uses active Share Grants at request time. Personal deletion removes
+   memory from the owner's Personal Memory recall surface but does not revoke an
+   active Team / Workspace Share Grant in the first version.
+6. If a local Project context is supplied during recall, the API resolves it to
+   a Workspace before Team-shared retrieval. Local Project metadata is not a
+   durable authorization key.
+
 ## Retrieval
 
 1. The AI Client calls the MCP Server's `memory_answer` tool with a query,
@@ -159,14 +177,15 @@ sequenceDiagram
    The worker is given only Koed dynamic RAG tools: `scan`, `search`, and
    `expand`.
 3. The local memory-answer worker calls API search through the MCP client's
-   dynamic tools. Project search defaults to the current project path; session
-   search requires a captured-session id; global search still only searches
-   visible Personal Memory.
+   dynamic tools. Project context may resolve to a Workspace for Team-shared
+   search; session search requires a captured-session id; global search still
+   only searches memory visible through the selected Retrieval Scope.
 4. The API authenticates the API Token and calls the core recall path.
-5. The repository validates the Search Domain and runs retrieval stages over
-   Memory Nodes, fresh pending Memory Events, raw fallback evidence, and lexical
-   matches. Semantic stages use local embedding search and may be reranked when
-   configured.
+5. The repository validates the Search Domain, applies Personal Memory and
+   active Team / Workspace Share Grant authorization during candidate selection,
+   and runs retrieval stages over Memory Nodes, fresh pending Memory Events,
+   raw fallback evidence, and lexical matches. Semantic stages use local
+   embedding search and may be reranked when configured.
 6. The API returns hits, citations, and retrieval metadata. When a promising
    Memory Node needs more detail, the local memory-answer worker can call
    `expand` to fetch underlying source items.
