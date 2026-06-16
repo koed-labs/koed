@@ -17,6 +17,7 @@
     "paths": {
       "@koed/core": ["packages/core/src/index.ts"],
       "@koed/db": ["packages/db/src/index.ts"],
+      "@koed/koed-server": ["packages/koed-server/src/index.ts"],
       "@koed/mcp-server": ["packages/mcp-server/src/index.ts"],
       "@koed/shared": ["packages/shared/src/index.ts"]
     },
