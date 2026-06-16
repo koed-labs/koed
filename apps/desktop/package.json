@@ -1,0 +1,23 @@
+{
+  "name": "@koed/desktop",
+  "productName": "Koed",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "prestart": "pnpm --filter @koed/koed-server build",
+    "start": "pnpm build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@koed/koed-server": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7"
+  }
+}
