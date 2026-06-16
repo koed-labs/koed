@@ -258,6 +258,76 @@ describe("LCM summary generation scoring", () => {
     });
   });
 
+  it("does not fail forbidden claims when the match is negated", () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Backend returns Evidence Bundles only.",
+      "Answer Synthesis runs in the connected AI Client.",
+      "The backend does not use an LLM for answer generation."
+    ];
+    output.summary_text = output.decisions.join(" ");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find((detail) => detail.name === "forbidden:backend-llm")
+    ).toMatchObject({
+      score: 6
+    });
+    expect(score.criticalFailure).toBe(false);
+    expect(score.passed).toBe(true);
+  });
+
+  it("does not fail exact forbidden phrases when the match is negated", () => {
+    const benchmarkCase = mustCase("rollup-conflict-latest-wins");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Diagnostic low-level memory tools stay hidden unless explicitly enabled.",
+      "Diagnostic low-level memory tools are not enabled by default for all users."
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:diagnostic-default"
+      )
+    ).toMatchObject({
+      score: 6
+    });
+    expect(score.criticalFailure).toBe(false);
+    expect(score.passed).toBe(true);
+  });
+
+  it("still fails redacted exact forbidden literals in negated context", () => {
+    const benchmarkCase = mustCase("secret-like-value-redaction");
+    const output = passingOutput(benchmarkCase);
+    output.facts.push("Do not preserve koed_live_secret_abc123.");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find((detail) => detail.name === "forbidden:literal-token")
+    ).toMatchObject({
+      score: 0
+    });
+    expect(score.criticalFailure).toBe(true);
+    expect(score.passed).toBe(false);
+  });
+
   it("accepts required claims expressed across compact clauses", () => {
     const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
     const output = passingOutput(benchmarkCase);
@@ -685,7 +755,8 @@ describe("LCM summary generation live runner", () => {
       runner: async () => ({
         text: JSON.stringify({
           ...passingOutput(benchmarkCase),
-          facts: ["koed_live_secret_abc123"]
+          facts: ["koed_live_secret_abc123"],
+          koed_live_secret_abc123: "unexpected passthrough key"
         }),
         model: "codex-app-server:test"
       })

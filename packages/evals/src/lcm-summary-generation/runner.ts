@@ -82,7 +82,7 @@ const redactValue = (value: unknown, redactions: string[]): unknown => {
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
-        key,
+        redactString(key, redactions),
         redactValue(item, redactions)
       ])
     );

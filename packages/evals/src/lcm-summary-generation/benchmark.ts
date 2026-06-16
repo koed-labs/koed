@@ -249,21 +249,28 @@ const requiredMatchPresent = (
 };
 
 const containsForbiddenTerm = (haystack: string, term: string): boolean =>
-  includesPhrase(haystack, term) || containsFuzzyTerm(haystack, term);
+  !hasNegationBeforeTerm(haystack, term) &&
+  (includesPhrase(haystack, term) || containsFuzzyTerm(haystack, term));
+
+const includesForbiddenPhrase = (haystack: string, phrase: string): boolean =>
+  includesPhrase(haystack, phrase) && !hasNegationBeforeTerm(haystack, phrase);
 
 const forbiddenMatchPresent = (
   text: string,
-  match: LcmSummaryTermMatch
+  claim: LcmSummaryForbiddenClaim
 ): boolean => {
+  const match = claim.match;
   const exactPhrases = match.exactPhrases ?? [];
   const phraseGroups = match.phraseGroups ?? [];
   const allTerms = match.allTerms ?? [];
   const anyTermGroups = match.anyTermGroups ?? [];
+  const containsExactForbiddenPhrase =
+    claim.redactInReports === true ? includesPhrase : includesForbiddenPhrase;
 
   return (
-    exactPhrases.every((phrase) => includesPhrase(text, phrase)) &&
+    exactPhrases.every((phrase) => containsExactForbiddenPhrase(text, phrase)) &&
     phraseGroups.every((group) =>
-      group.some((phrase) => includesPhrase(text, phrase))
+      group.some((phrase) => includesForbiddenPhrase(text, phrase))
     ) &&
     allTerms.every((term) => containsForbiddenTerm(text, term)) &&
     anyTermGroups.every((group) =>
@@ -274,9 +281,9 @@ const forbiddenMatchPresent = (
 
 const forbiddenMatchingSpans = (
   text: string,
-  match: LcmSummaryTermMatch
+  claim: LcmSummaryForbiddenClaim
 ): string[] =>
-  localTextUnits(text).filter((span) => forbiddenMatchPresent(span, match));
+  localTextUnits(text).filter((span) => forbiddenMatchPresent(span, claim));
 
 const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
   requiredMatchPresent(text, claim.match);
@@ -289,7 +296,7 @@ const forbiddenPresent = (
     claim.fields && claim.fields.length > 0
       ? claim.fields.map((field) => fieldValue(summary, field)).join("\n")
       : allSummaryText(summary);
-  const spans = forbiddenMatchingSpans(text, claim.match);
+  const spans = forbiddenMatchingSpans(text, claim);
   if (spans.length === 0) {
     return false;
   }

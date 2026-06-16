@@ -188,7 +188,9 @@ sequenceDiagram
 4. The API returns LCM nodes plus ordered source items and marks the work as
    local-only; the backend does not call an LLM for LCM summaries.
 5. The local LCM worker builds token-bounded prompts from exact source items or
-   child summaries.
+   child summaries. The prompt requires secret-like literal redaction and, when
+   ordered source items or child summaries conflict, prefers later items while
+   preserving older conflicts only as superseded context.
 6. The LCM worker runs Codex app-server mode locally under the user's Codex
    subscription and parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
