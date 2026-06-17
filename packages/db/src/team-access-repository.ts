@@ -433,6 +433,33 @@ export const createTeamAccessRepository = (db: KoedDb) => {
 
       return db.transaction(async (tx) => {
         const email = input.email.toLowerCase();
+        const existingUsers = await tx
+          .select()
+          .from(users)
+          .where(eq(users.email, email))
+          .limit(1);
+        const existingUser = existingUsers[0];
+        if (existingUser) {
+          const existingMembershipRows = await tx
+            .select()
+            .from(teamMemberships)
+            .where(
+              and(
+                eq(teamMemberships.teamId, input.teamId),
+                eq(teamMemberships.userId, existingUser.id)
+              )
+            )
+            .limit(1)
+            .for("update");
+          const existingMembership = existingMembershipRows[0];
+          if (
+            existingMembership?.role === "owner" &&
+            manager!.role !== "owner"
+          ) {
+            return null;
+          }
+        }
+
         const inviteRows = await tx
           .insert(teamInvites)
           .values({
@@ -446,12 +473,6 @@ export const createTeamAccessRepository = (db: KoedDb) => {
           .returning();
         const invite = mapInviteRecord(inviteRows[0]!);
 
-        const existingUsers = await tx
-          .select()
-          .from(users)
-          .where(eq(users.email, email))
-          .limit(1);
-        const existingUser = existingUsers[0];
         if (existingUser) {
           await tx
             .insert(teamMemberships)
@@ -542,9 +563,21 @@ export const createTeamAccessRepository = (db: KoedDb) => {
               displayName: input.displayName ?? null,
               passwordHash: input.passwordHash ?? null
             })
+            .onConflictDoNothing({ target: users.email })
             .returning();
-          user = userRows[0]!;
-          createdUser = true;
+          user = userRows[0];
+          createdUser = Boolean(user);
+          if (!user) {
+            userRows = await tx
+              .select()
+              .from(users)
+              .where(eq(users.email, inviteEmail))
+              .limit(1);
+            user = userRows[0];
+          }
+          if (!user) {
+            return null;
+          }
         }
 
         if (user.email.toLowerCase() !== inviteEmail) {

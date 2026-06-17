@@ -734,6 +734,39 @@ describeDb("memory repository visibility", () => {
       }
     });
 
+    const invitedOwnerEmail = `invited-owner-${randomUUID()}@example.com`;
+    const invitedOwner = await repo.createUser({
+      email: invitedOwnerEmail,
+      displayName: "Invited Owner"
+    });
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: invitedOwner.id,
+        role: "owner",
+        status: "invited"
+      }
+    );
+    await expect(
+      repo.createTeamInvite(
+        { userId: existingUser.id },
+        {
+          teamId: team.id,
+          email: invitedOwnerEmail,
+          role: "member",
+          tokenHash: `owner-downgrade-${randomUUID()}-${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembership({ userId: invitedOwner.id }, team.id)
+    ).resolves.toMatchObject({
+      role: "owner",
+      status: "invited"
+    });
+
     await repo.setTeamWorkspaceAccess(
       { userId: owner.id },
       {
@@ -827,6 +860,48 @@ describeDb("memory repository visibility", () => {
         status: "enabled"
       }
     });
+
+    const concurrentEmail = `concurrent-member-${randomUUID()}@example.com`;
+    const concurrentHashA = `concurrent-a-${randomUUID()}-${randomUUID()}`;
+    const concurrentHashB = `concurrent-b-${randomUUID()}-${randomUUID()}`;
+    await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: concurrentEmail,
+        role: "member",
+        tokenHash: concurrentHashA,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: concurrentEmail,
+        role: "member",
+        tokenHash: concurrentHashB,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    const concurrentAccepted = await Promise.all([
+      repo.acceptTeamInvite({
+        tokenHash: concurrentHashA,
+        email: concurrentEmail,
+        displayName: "Concurrent Member"
+      }),
+      repo.acceptTeamInvite({
+        tokenHash: concurrentHashB,
+        email: concurrentEmail,
+        displayName: "Concurrent Member"
+      })
+    ]);
+    expect(concurrentAccepted).toHaveLength(2);
+    expect(concurrentAccepted[0]?.user.id).toBe(concurrentAccepted[1]?.user.id);
+    expect(
+      concurrentAccepted.filter((accepted) => accepted?.createdUser).length
+    ).toBe(1);
+
     await expect(
       repo.disableTeamMember(
         { userId: acceptedNewUser!.user.id },
