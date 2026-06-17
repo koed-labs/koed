@@ -163,7 +163,7 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
 3. The API verifies Team Membership and Workspace Access for the User.
 4. The API creates or revokes the Share Grant and writes an audit event.
 5. Recall uses active Share Grants at request time, plus independent lifecycle
-   gates for Team access suspension, Workspace archive state, membership state,
+   gates for Access Suspension, Workspace archive state, membership state,
    and Workspace Access.
 6. Personal deletion removes memory from the owner's Personal Memory recall
    surface but does not revoke an active Team / Workspace Share Grant in the
@@ -172,8 +172,9 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
    a Workspace before Team-shared retrieval. Local Project metadata is not a
    durable authorization key.
 8. Archived search is an explicit mode, not the default active recall path. It
-   may include retained Workspaces or suspended Teams only when the caller and
-   retention policy allow it.
+   may include retained Workspaces only when the caller and retention policy
+   allow it. Access-suspended Team data belongs to a separate admin, legal, or
+   Operator mode, not ordinary archived search.
 
 ## Retrieval
 
@@ -183,13 +184,14 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
    The worker is given only Koed dynamic RAG tools: `scan`, `search`, and
    `expand`.
 3. The local memory-answer worker calls API search through the MCP client's
-   dynamic tools. Project context may resolve to a Workspace for Team-shared
-   search; session search requires a captured-session id; global search still
-   only searches memory visible through the selected Retrieval Scope.
+   dynamic tools. Project search defaults to the current project path, and that
+   Project context may resolve to a Workspace for Team-shared search; session
+   search requires a captured-session id; global search still only searches
+   memory visible through the selected Retrieval Scope.
 4. The API authenticates the API Token and calls the core recall path.
 5. The repository validates the Search Domain, applies Personal Memory and
    active Team / Workspace Share Grant authorization during candidate selection,
-   applies lifecycle gates such as Team suspension and Workspace archive state,
+   applies lifecycle gates such as Access Suspension and Workspace archive state,
    and runs retrieval stages over Memory Nodes, fresh pending Memory Events,
    raw fallback evidence, and lexical matches. Semantic stages use local
    embedding search and may be reranked when configured.

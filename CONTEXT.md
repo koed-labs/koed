@@ -141,7 +141,8 @@ The caller's choice of which visible memory classes recall may search.
 _Avoid_: Visibility, search domain, access level
 
 **Search Domain**:
-The boundary that limits recall to one session, one workspace, or all visible memory.
+The boundary that limits recall to one session, the current Project or resolved
+Workspace context, or all visible memory.
 _Avoid_: Retrieval scope, visibility, access level
 
 **Access Suspension**:
@@ -197,12 +198,12 @@ A stable shared ID for memories within a Team.
 _Avoid_: Project, repository, filepath, branch, cwd
 
 **Workspace Access**:
-A User's ability to recall or share Team-shared Memory for a Workspace.
+A User's ability to recall, share, or manage Team-shared Memory for a Workspace.
 _Avoid_: Project metadata, Team membership, API token permission
 
 **Workspace Archive**:
 The Soft Delete state for a Workspace.
-_Avoid_: Share revocation, Team suspension, Project removal
+_Avoid_: Share revocation, Access Suspension, Project removal
 
 ## Relationships
 
