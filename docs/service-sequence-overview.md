@@ -106,6 +106,43 @@ sequenceDiagram
   DB-->>API: Request-time access profile
 ```
 
+## Team Audit Log
+
+Team audit events record Team and Workspace control-plane changes without
+copying or re-owning Memory. The audit surface is manager-only and scoped by
+Team id stored in audit metadata, so Team managers can inspect Team changes
+without gaining direct access to unrelated personal records.
+
+1. Team creation writes an audit event with `metadata.teamId` set to the new
+   Team id.
+2. Team Workspace creation writes an audit event after the Workspace row and
+   creator access grant are persisted.
+3. Workspace Access create, update, and removal flows write audit events after
+   the access mutation is stored.
+4. A User requests `GET /v1/teams/:teamId/audit-events`.
+5. The API authenticates the API Token, resolves Team Membership, and allows
+   the listing only for enabled Team managers.
+6. The repository lists audit rows whose `metadata.teamId` matches the
+   requested Team id, optionally filtered by action and limit.
+7. The API returns audit records without exposing sensitive invite or password
+   fields in metadata.
+
+```mermaid
+sequenceDiagram
+  participant User as User
+  participant API as API
+  participant DB as Database
+
+  User->>API: Create Team, Workspace, or Workspace Access change
+  API->>DB: Persist mutation
+  API->>DB: Insert audit event with metadata.teamId
+  User->>API: GET Team audit events
+  API->>DB: Resolve enabled manager membership
+  API->>DB: List audit events by metadata.teamId
+  DB-->>API: Team-scoped audit rows
+  API-->>User: Audit events
+```
+
 ## LCM Summarisation
 
 1. Projection and compaction create LCM Placeholder Memory Nodes from
@@ -268,3 +305,5 @@ sequenceDiagram
 - Recall API routes: `apps/api/src/memory/recall-routes.ts`
 - Core recall contract: `packages/core/src/index.ts`
 - Repository retrieval stages: `packages/db/src/repository.ts`
+- Team routes: `apps/api/src/team/routes.ts`
+- Team audit repository: `packages/db/src/audit-repository.ts`
