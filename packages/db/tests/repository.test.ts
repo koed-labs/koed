@@ -649,6 +649,7 @@ describeDb("memory repository visibility", () => {
         sessionId: session.id,
         actor: "user",
         eventType: "captured",
+        rawEventType: "user_prompt",
         content: "The billing grace period decision stays with the workspace."
       }
     );
