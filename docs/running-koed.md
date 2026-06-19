@@ -25,7 +25,7 @@ docker compose up --build
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=3001 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3001 docker compose up --build
 ```
 
 Finish the Codex integration after the API migrations have run; `pnpm codex:bootstrap`

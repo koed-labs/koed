@@ -23,6 +23,7 @@ export interface HookPayload {
   agent_transcript_path?: string;
   cwd?: string;
   hook_event_name?: string;
+  hook_observed_at?: string;
   model?: string;
   prompt?: string;
   last_assistant_message?: string;
@@ -77,17 +78,6 @@ type RawConversationItemRequest = {
 interface CaptureState {
   seen: Record<string, true>;
   rawSeen: Record<string, true>;
-  immediatePrompts?: Record<
-    string,
-    {
-      sourceHash: string;
-      externalSessionId?: string;
-      externalTurnId?: string;
-      actor: "user" | "agent";
-      prompt: string;
-      capturedAt: number;
-    }
-  >;
   transcriptOffsets?: Record<
     string,
     {
@@ -245,6 +235,9 @@ const positiveIntEnv = (name: string, fallback: number): number => {
 
 const hookTranscriptTailBytes = (): number =>
   positiveIntEnv("MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES", 1_000_000);
+
+const transcriptFirstContactGraceMs = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_FIRST_CONTACT_GRACE_MS", 30_000);
 
 const foregroundTranscriptTailBytes = (): number =>
   positiveIntEnv("MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES", 128_000);
@@ -1326,6 +1319,7 @@ export const parseTranscriptFileRecords = (input: {
   state: CaptureState;
   stateScope: string;
   maxBytes?: number;
+  firstContactAfter?: string;
 }): {
   records: unknown[];
   indexOffset: number;
@@ -1341,19 +1335,15 @@ export const parseTranscriptFileRecords = (input: {
   const prior = input.state.transcriptOffsets?.[key];
   const maxBytes = input.maxBytes ?? hookTranscriptTailBytes();
   const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
-  if (!hasUsableCheckpoint && stat.size > 0) {
-    return {
-      records: [],
-      indexOffset: 0,
-      checkpoint: {
-        key,
-        offset: stat.size,
-        lineCount: 0,
-        size: stat.size
-      }
-    };
-  }
-  const start = prior && hasUsableCheckpoint ? Math.max(0, prior.offset) : 0;
+  const liveFirstContact = Boolean(
+    !hasUsableCheckpoint && input.firstContactAfter
+  );
+  const start =
+    prior && hasUsableCheckpoint
+      ? Math.max(0, prior.offset)
+      : liveFirstContact
+        ? Math.max(0, stat.size - maxBytes)
+        : 0;
   const indexOffset =
     prior && hasUsableCheckpoint && start > 0 ? prior.lineCount : 0;
   const end = Math.min(stat.size, start + maxBytes);
@@ -1382,8 +1372,22 @@ export const parseTranscriptFileRecords = (input: {
     buffer.toString("utf8"),
     end >= stat.size
   );
+  const parsedRecords = parseTranscriptLineRecords(lines, start);
+  const firstContactAfterMs =
+    !hasUsableCheckpoint && input.firstContactAfter
+      ? Date.parse(input.firstContactAfter)
+      : Number.NaN;
+  const records =
+    Number.isNaN(firstContactAfterMs)
+      ? parsedRecords
+      : parsedRecords.filter((record) => {
+          const eventTime = rawEventTime(record);
+          const eventTimeMs = eventTime ? Date.parse(eventTime) : Number.NaN;
+          return !Number.isNaN(eventTimeMs) && eventTimeMs >= firstContactAfterMs;
+        });
+
   return {
-    records: parseTranscriptLineRecords(lines, start),
+    records,
     indexOffset,
     checkpoint: {
       key,
@@ -1545,6 +1549,18 @@ const rawEventTime = (record: unknown): string | undefined => {
   return undefined;
 };
 
+const transcriptFirstContactAfterForPayload = (
+  payload: HookPayload
+): string | undefined => {
+  const observedAt = parseRawEventTime(payload.hook_observed_at);
+  if (!observedAt) {
+    return undefined;
+  }
+  return new Date(
+    Date.parse(observedAt) - transcriptFirstContactGraceMs()
+  ).toISOString();
+};
+
 const rawExternalItemId = (record: unknown): string | undefined => {
   const payload = rawRecordPayload(record);
   return (
@@ -1586,266 +1602,28 @@ const sourceHashForRawRecord = (input: {
       }
   });
 
-const immediatePromptActor = (
-  effectiveContext: EffectiveCaptureContext
-): "user" | "agent" => (effectiveContext.isSubagent ? "agent" : "user");
-
-const sourceHashForImmediatePrompt = (input: {
-  externalSessionId?: string;
-  turnId?: string;
-  actor: "user" | "agent";
-  prompt: string;
-}): string =>
-  hash({
-    externalSessionId: input.externalSessionId,
-    turnId: input.turnId,
-    actor: input.actor,
-    hookPrompt: input.prompt
-  });
-
-const sourceHashForImmediatePromptSupportingContext = (input: {
-  externalSessionId?: string;
-  turnId?: string;
-  actor: "user" | "agent";
-  context: string;
-}): string =>
-  hash({
-    externalSessionId: input.externalSessionId,
-    turnId: input.turnId,
-    actor: input.actor,
-    hookPromptSupportingContext: input.context
-  });
-
-const isImmediateUserPromptSubmit = (
-  payload: HookPayload
-): payload is HookPayload & { prompt: string } =>
-  payload.hook_event_name === "UserPromptSubmit" &&
-  typeof payload.prompt === "string" &&
-  payload.prompt.trim().length > 0;
-
-const promptAlreadyRepresented = (
-  items: RawConversationItemRequest[],
-  hookPromptItem: RawConversationItemRequest
-): boolean => {
-  if (
-    items.some(
-      (item) =>
-        item.sourceHash === hookPromptItem.sourceHash ||
-        item.idempotencyKey === hookPromptItem.idempotencyKey
-    )
-  ) {
-    return true;
-  }
-
-  const hookPrompt = immediatePromptInfo(hookPromptItem);
-  if (!hookPrompt) {
-    return false;
-  }
-
-  const matchingTranscriptIndexes = items.flatMap((item, index) => {
-    const prompt = transcriptPromptInfo(item);
-    return prompt &&
-      prompt.externalSessionId === hookPrompt.externalSessionId &&
-      prompt.externalTurnId === hookPrompt.externalTurnId &&
-      prompt.actor === hookPrompt.actor &&
-      prompt.prompt === hookPrompt.prompt
-      ? [index]
-      : [];
-  });
-  return matchingTranscriptIndexes.at(-1) === items.length - 1;
-};
-
-const immediatePromptInfo = (
-  item: RawConversationItemRequest
-): {
-  externalSessionId?: string;
-  externalTurnId?: string;
-  actor: "user" | "agent";
-  prompt: string;
-} | null => {
-  if (
-    item.metadata?.immediateHookPrompt !== true ||
-    typeof item.rawText !== "string" ||
-    !item.rawText.trim()
-  ) {
-    return null;
-  }
-  return {
-    externalSessionId: item.externalSessionId,
-    externalTurnId: item.externalTurnId,
-    actor: item.metadata.threadKind === "subagent" ? "agent" : "user",
-    prompt: item.rawText
-  };
-};
-
-const transcriptPromptInfo = (
-  item: RawConversationItemRequest
-): {
-  externalSessionId?: string;
-  externalTurnId?: string;
-  actor: "user" | "agent";
-  prompt: string;
-} | null => {
-  if (
-    item.sourceRecordType === "hook_payload" ||
-    typeof item.rawText !== "string" ||
-    !item.rawText.trim()
-  ) {
-    return null;
-  }
-  const transcriptType =
-    typeof item.metadata?.transcriptType === "string"
-      ? item.metadata.transcriptType
-      : item.sourceEventType;
-  if (!/user/i.test(transcriptType ?? "")) {
-    return null;
-  }
-  return {
-    externalSessionId: item.externalSessionId,
-    externalTurnId: item.externalTurnId,
-    actor: item.metadata?.threadKind === "subagent" ? "agent" : "user",
-    prompt: item.rawText
-  };
-};
-
-const immediatePromptStateKey = (
-  stateScope: string,
-  input: {
-    externalSessionId?: string;
-    externalTurnId?: string;
-    actor: "user" | "agent";
-    prompt: string;
-  }
-): string =>
-  scopedStateKey(
-    stateScope,
-    hash({
-      externalSessionId: input.externalSessionId,
-      externalTurnId: input.externalTurnId,
-      actor: input.actor,
-      prompt: input.prompt
-    })
-  );
-
-const rememberImmediatePrompt = (
-  state: CaptureState,
-  stateScope: string,
-  item: RawConversationItemRequest
-): void => {
-  const prompt = immediatePromptInfo(item);
-  if (!prompt) {
-    return;
-  }
-  const key = immediatePromptStateKey(stateScope, prompt);
-  state.immediatePrompts = {
-    ...(state.immediatePrompts ?? {}),
-    [key]: {
-      sourceHash: item.sourceHash,
-      ...prompt,
-      capturedAt: Date.now()
-    }
-  };
-};
-
-const immediatePromptMatchesTranscript = (
-  immediate: NonNullable<CaptureState["immediatePrompts"]>[string],
-  transcript: NonNullable<ReturnType<typeof transcriptPromptInfo>>
-): boolean => {
-  if (
-    immediate.externalSessionId !== transcript.externalSessionId ||
-    immediate.actor !== transcript.actor ||
-    immediate.prompt !== transcript.prompt
-  ) {
-    return false;
-  }
-  if (immediate.externalTurnId && transcript.externalTurnId) {
-    return immediate.externalTurnId === transcript.externalTurnId;
-  }
-  return true;
-};
-
-export const filterTranscriptItemsAlreadyCapturedFromImmediatePrompts = (
-  state: CaptureState,
-  stateScope: string,
-  items: RawConversationItemRequest[]
-): RawConversationItemRequest[] => {
-  const immediatePrompts = Object.entries(state.immediatePrompts ?? {}).filter(
-    ([key]) => key.startsWith(`${stateScope}:`)
-  );
-  if (immediatePrompts.length === 0) {
-    return items;
-  }
-
-  const suppressedIndexes = new Set<number>();
-  for (const [, immediate] of immediatePrompts) {
-    const matchingIndexes = items.flatMap((item, index) => {
-      const transcript = transcriptPromptInfo(item);
-      return transcript &&
-        immediatePromptMatchesTranscript(immediate, transcript)
-        ? [index]
-        : [];
-    });
-    let index: number | undefined;
-    for (
-      let candidateIndex = matchingIndexes.length - 1;
-      candidateIndex >= 0;
-      candidateIndex -= 1
-    ) {
-      const candidate = matchingIndexes[candidateIndex];
-      if (candidate === undefined) {
-        continue;
-      }
-      if (!suppressedIndexes.has(candidate)) {
-        index = candidate;
-        break;
-      }
-    }
-    if (index !== undefined) {
-      suppressedIndexes.add(index);
-    }
-  }
-
-  return items.filter((_, index) => !suppressedIndexes.has(index));
-};
-
-const hookPromptMetadata = (
-  payload: HookPayload,
-  effectiveContext: EffectiveCaptureContext
-): Record<string, unknown> => ({
-  ...hookPayloadMetadata(payload, effectiveContext),
-  immediateHookPrompt: true
-});
-
-const hookPromptSupportingContextMetadata = (
-  payload: HookPayload,
-  effectiveContext: EffectiveCaptureContext
-): Record<string, unknown> => ({
-  ...hookPayloadMetadata(payload, effectiveContext),
-  transcriptType: "ide_context",
-  contextKind: "ide_client_context",
-  contextSource: "vscode_codex",
-  sourceRole: "supporting_context",
-  contextEncoding: "codex_rendered_prompt_wrapper"
-});
-
 const buildRawHookConversationItem = (input: {
   sessionId?: string;
   effectiveContext: EffectiveCaptureContext;
   payload: HookPayload;
 }): RawConversationItemRequest => {
-  const sourceHash = isImmediateUserPromptSubmit(input.payload)
-    ? sourceHashForImmediatePrompt({
-        externalSessionId: input.effectiveContext.externalSessionId,
-        turnId: input.payload.turn_id,
-        actor: immediatePromptActor(input.effectiveContext),
-        prompt: input.payload.prompt
-      })
-    : hash({
-        externalSessionId: input.effectiveContext.externalSessionId,
-        hookEventName: input.payload.hook_event_name,
-        turnId: input.payload.turn_id,
-        payload: input.payload
-      });
+  const {
+    prompt: _prompt,
+    last_assistant_message: _lastAssistantMessage,
+    tool_input: _toolInput,
+    tool_response: _toolResponse,
+    ...controlPayload
+  } = input.payload;
+  const sourceHash = hash({
+    externalSessionId: input.effectiveContext.externalSessionId,
+    hookEventName: input.payload.hook_event_name,
+    turnId: input.payload.turn_id,
+    payload: controlPayload
+  });
+  void _prompt;
+  void _lastAssistantMessage;
+  void _toolInput;
+  void _toolResponse;
   return {
     sessionId: input.sessionId,
     sourceKind: "codex",
@@ -1856,16 +1634,15 @@ const buildRawHookConversationItem = (input: {
     externalTurnId: input.payload.turn_id,
     sourceRecordType: "hook_payload",
     sourceEventType: input.payload.hook_event_name ?? "hook_payload",
-    rawJson: input.payload,
-    rawText:
-      input.payload.prompt ?? input.payload.last_assistant_message ?? undefined,
+    rawJson: controlPayload,
     sourceHash,
     idempotencyKey: sourceHash,
     projectionStatus: "pending",
     projectionVersion: "codex-hook-v1",
-    metadata: isImmediateUserPromptSubmit(input.payload)
-      ? hookPromptMetadata(input.payload, input.effectiveContext)
-      : hookPayloadMetadata(input.payload, input.effectiveContext)
+    metadata: {
+      ...hookPayloadMetadata(input.payload, input.effectiveContext),
+      hookPayloadContentOmitted: true
+    }
   };
 };
 
@@ -1874,70 +1651,10 @@ const buildRawHookConversationItems = (input: {
   effectiveContext: EffectiveCaptureContext;
   payload: HookPayload;
 }): RawConversationItemRequest[] => {
-  if (!isImmediateUserPromptSubmit(input.payload)) {
+  if (/^(Stop|SubagentStop)$/i.test(input.payload.hook_event_name ?? "")) {
     return [buildRawHookConversationItem(input)];
   }
-  const split = splitCodexIdePrompt(input.payload.prompt);
-  if (!split) {
-    return [buildRawHookConversationItem(input)];
-  }
-  const actor = immediatePromptActor(input.effectiveContext);
-  const contextHash = sourceHashForImmediatePromptSupportingContext({
-    externalSessionId: input.effectiveContext.externalSessionId,
-    turnId: input.payload.turn_id,
-    actor,
-    context: split.ideContext
-  });
-  const promptHash = sourceHashForImmediatePrompt({
-    externalSessionId: input.effectiveContext.externalSessionId,
-    turnId: input.payload.turn_id,
-    actor,
-    prompt: split.userPrompt
-  });
-  return [
-    {
-      sessionId: input.sessionId,
-      sourceKind: "codex",
-      sourceAdapterVersion: "codex-hook-v1",
-      sourceTransport: "hook",
-      externalSessionId: input.effectiveContext.externalSessionId,
-      externalThreadId: input.effectiveContext.externalSessionId,
-      externalTurnId: input.payload.turn_id,
-      sourceRecordType: "hook_payload",
-      sourceEventType: input.payload.hook_event_name ?? "hook_payload",
-      rawJson: input.payload,
-      rawText: split.ideContext,
-      sourceHash: contextHash,
-      idempotencyKey: contextHash,
-      projectionStatus: "pending",
-      projectionVersion: "codex-hook-v1",
-      metadata: hookPromptSupportingContextMetadata(
-        input.payload,
-        input.effectiveContext
-      )
-    },
-    {
-      sessionId: input.sessionId,
-      sourceKind: "codex",
-      sourceAdapterVersion: "codex-hook-v1",
-      sourceTransport: "hook",
-      externalSessionId: input.effectiveContext.externalSessionId,
-      externalThreadId: input.effectiveContext.externalSessionId,
-      externalTurnId: input.payload.turn_id,
-      sourceRecordType: "hook_payload",
-      sourceEventType: input.payload.hook_event_name ?? "hook_payload",
-      rawJson: input.payload,
-      rawText: split.userPrompt,
-      sourceHash: promptHash,
-      idempotencyKey: promptHash,
-      projectionStatus: "pending",
-      projectionVersion: "codex-hook-v1",
-      metadata: {
-        ...hookPromptMetadata(input.payload, input.effectiveContext),
-        contextEncoding: "codex_rendered_prompt_wrapper"
-      }
-    }
-  ];
+  return [];
 };
 
 export const selectRawConversationItemsForHook = (input: {
@@ -1961,32 +1678,13 @@ export const selectRawConversationItemsForHook = (input: {
         })
       : [];
 
-  if (input.mode !== "foreground") {
-    return transcriptItems;
-  }
-
-  const hookItems = buildRawHookConversationItems({
+  const controlHookItems = buildRawHookConversationItems({
     sessionId: input.sessionId,
     effectiveContext: input.effectiveContext,
     payload: input.payload
   });
-  const promptHookItem = hookItems.find((item) => immediatePromptInfo(item));
 
-  if (input.transcriptRecords.length === 0) {
-    return hookItems;
-  }
-
-  if (!isImmediateUserPromptSubmit(input.payload)) {
-    return transcriptItems;
-  }
-
-  if (!promptHookItem) {
-    return transcriptItems;
-  }
-
-  return promptAlreadyRepresented(transcriptItems, promptHookItem)
-    ? transcriptItems
-    : [...transcriptItems, ...hookItems];
+  return [...transcriptItems, ...controlHookItems];
 };
 
 export const buildRawTranscriptConversationItems = (input: {
@@ -2011,7 +1709,10 @@ export const buildRawTranscriptConversationItems = (input: {
 
   return input.records.flatMap((record, index) => {
     const sourceLineNumber = index + (input.indexOffset ?? 0);
-    const sourceSequenceBase = safeSourceSequence(sourceLineNumber * 2);
+    const transcriptByteOffset = transcriptRecordPosition(record);
+    const sourceSequenceBase = safeSourceSequence(
+      (transcriptByteOffset ?? sourceLineNumber) * 2
+    );
     const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
       preferEventMessages,
       context
@@ -2064,6 +1765,10 @@ export const buildRawTranscriptConversationItems = (input: {
         projectionVersion: "codex-transcript-v1",
         metadata: {
           ...(parsedItem.item?.metadata ?? {}),
+          ...(transcriptByteOffset === undefined
+            ? {}
+            : { transcriptByteOffset }),
+          transcriptSourceLineNumber: sourceLineNumber,
           hookEventName: input.payload.hook_event_name,
           threadKind: input.effectiveContext.isSubagent
             ? "subagent"
@@ -2075,115 +1780,14 @@ export const buildRawTranscriptConversationItems = (input: {
   });
 };
 
-export const fallbackItems = (
-  payload: HookPayload,
-  effectiveContext = effectiveCaptureContext(payload)
-): CaptureItem[] => {
-  const metadata = hookPayloadMetadata(payload, effectiveContext);
-
-  if (payload.prompt) {
-    const split = splitCodexIdePrompt(payload.prompt);
-    if (split) {
-      return [
-        {
-          actor: "system",
-          eventType: "codex_transcript_ide_context",
-          content: split.ideContext,
-          metadata: {
-            ...metadata,
-            transcriptType: "ide_context",
-            contextKind: "ide_client_context",
-            contextSource: "vscode_codex",
-            sourceRole: "supporting_context",
-            contextEncoding: "codex_rendered_prompt_wrapper"
-          }
-        },
-        {
-          actor: effectiveContext.isSubagent ? "agent" : "user",
-          eventType: "codex_user_prompt",
-          content: split.userPrompt,
-          metadata
-        }
-      ];
-    }
-    return [
-      {
-        actor: effectiveContext.isSubagent ? "agent" : "user",
-        eventType: "codex_user_prompt",
-        content: payload.prompt,
-        metadata
-      }
-    ];
-  }
-
-  if (payload.last_assistant_message) {
-    return [
-      {
-        actor: effectiveContext.isSubagent ? "subagent" : "agent",
-        eventType: "codex_agent_message",
-        content: payload.last_assistant_message,
-        metadata
-      }
-    ];
-  }
-
-  if (payload.tool_name) {
-    const toolCall = {
-      kind: "hook",
-      name: payload.tool_name,
-      ...(payload.tool_input !== undefined
-        ? { input: payload.tool_input }
-        : {}),
-      ...(payload.tool_response !== undefined
-        ? { output: payload.tool_response }
-        : {})
-    };
-    const summary = `Tool result: ${payload.tool_name}`;
-    return [
-      {
-        actor: "tool",
-        eventType: "codex_tool_result",
-        content: [
-          summary,
-          payload.tool_input !== undefined
-            ? `Input:\n${compactDisplay(payload.tool_input, 800)}`
-            : "",
-          payload.tool_response !== undefined
-            ? `Output:\n${compactDisplay(payload.tool_response, 1200)}`
-            : ""
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-        metadata: {
-          ...metadata,
-          toolName: payload.tool_name,
-          ...(payload.tool_use_id ? { toolUseId: payload.tool_use_id } : {}),
-          toolSummary: summary,
-          toolCall: {
-            ...toolCall,
-            ...(payload.tool_use_id ? { id: payload.tool_use_id } : {})
-          }
-        }
-      }
-    ];
-  }
-
-  return [];
-};
-
 export const selectCaptureItems = (
   transcriptItems: CaptureItem[],
   payload: HookPayload,
   effectiveContext = effectiveCaptureContext(payload)
 ): CaptureItem[] => {
-  const fallback = fallbackItems(payload, effectiveContext);
-  if (transcriptItems.length === 0) {
-    return fallback;
-  }
-  return [
-    ...transcriptItems,
-    ...fallback.filter((item) => item.actor === "tool")
-  ];
+  void payload;
+  void effectiveContext;
+  return transcriptItems;
 };
 
 const statePath = (): string =>
@@ -2288,24 +1892,6 @@ export const resetHookBreaker = (
   delete state.foregroundFailures[key];
 };
 
-const shouldTriggerBreakerCatchup = (
-  entry: HookBreakerEntry | undefined,
-  now = Date.now()
-): boolean =>
-  !entry?.lastDetachedCatchupAt ||
-  now - entry.lastDetachedCatchupAt >= hookBreakerCooldownMs();
-
-const markBreakerCatchupTriggered = (
-  state: HookBreakerState,
-  key: string,
-  now = Date.now()
-): void => {
-  const entry = state.foregroundFailures[key];
-  if (entry) {
-    entry.lastDetachedCatchupAt = now;
-  }
-};
-
 const loadState = (): CaptureState => {
   try {
     const state = JSON.parse(
@@ -2314,14 +1900,12 @@ const loadState = (): CaptureState => {
     return {
       seen: state.seen ?? {},
       rawSeen: state.rawSeen ?? {},
-      immediatePrompts: state.immediatePrompts ?? {},
       transcriptOffsets: state.transcriptOffsets ?? {}
     };
   } catch {
     return {
       seen: {},
       rawSeen: {},
-      immediatePrompts: {},
       transcriptOffsets: {}
     };
   }
@@ -2338,9 +1922,6 @@ const saveState = (state: CaptureState): void => {
         seen: Object.fromEntries(Object.entries(state.seen).slice(-5000)),
         rawSeen: Object.fromEntries(
           Object.entries(state.rawSeen).slice(-20_000)
-        ),
-        immediatePrompts: Object.fromEntries(
-          Object.entries(state.immediatePrompts ?? {}).slice(-5_000)
         ),
         transcriptOffsets: Object.fromEntries(
           Object.entries(state.transcriptOffsets ?? {}).slice(-2_000)
@@ -2420,9 +2001,13 @@ const triggerDetachedTranscriptCatchup = (
 
   const catchupPayload: HookPayload = {
     hook_event_name: payload.hook_event_name,
+    hook_observed_at: new Date().toISOString(),
     session_id: payload.session_id,
     agent_id: payload.agent_id,
     agent_type: payload.agent_type,
+    turn_id: payload.turn_id,
+    tool_use_id: payload.tool_use_id,
+    tool_name: payload.tool_name,
     transcript_path: payload.transcript_path,
     agent_transcript_path: payload.agent_transcript_path,
     cwd: payload.cwd,
@@ -2634,7 +2219,8 @@ const runCapturePass = async (input: {
             transcriptPath: captureTranscriptPath,
             state,
             stateScope,
-            maxBytes: hookTranscriptTailBytes()
+            maxBytes: hookTranscriptTailBytes(),
+            firstContactAfter: transcriptFirstContactAfterForPayload(payload)
           }),
           backgroundCatchupNeeded: false,
           backlogBytes: 0
@@ -2709,20 +2295,15 @@ const runCapturePass = async (input: {
     };
   }
 
-  const rawItemsRequest =
-    filterTranscriptItemsAlreadyCapturedFromImmediatePrompts(
-      state,
-      stateScope,
-      selectRawConversationItemsForHook({
-        transcriptRecords,
-        indexOffset: transcriptFile.indexOffset,
-        sessionId: session?.session?.id,
-        effectiveContext,
-        transcriptPath: captureTranscriptPath,
-        payload,
-        mode
-      })
-    );
+  const rawItemsRequest = selectRawConversationItemsForHook({
+    transcriptRecords,
+    indexOffset: transcriptFile.indexOffset,
+    sessionId: session?.session?.id,
+    effectiveContext,
+    transcriptPath: captureTranscriptPath,
+    payload,
+    mode
+  });
   const rawItemsToSend = rawItemsForCapture(
     rawItemsRequest,
     scopedRawSeen(state.rawSeen, stateScope, rawItemsRequest),
@@ -2744,9 +2325,6 @@ const runCapturePass = async (input: {
         );
   for (const item of rawItemsResponse) {
     state.rawSeen[scopedStateKey(stateScope, item.idempotencyKey)] = true;
-  }
-  for (const item of rawItemsToSend) {
-    rememberImmediatePrompt(state, stateScope, item);
   }
   if (!rawItemsResult.completed) {
     console.error(
@@ -2807,113 +2385,19 @@ const runCapturePass = async (input: {
   };
 };
 
-const captureUnavailableMessage =
-  "Koed API unavailable; capture will retry from transcript later. MCP recall may still work once the API is back.";
-
-const maybeTriggerBreakerCatchup = (
-  input: {
-    configPath?: string;
-    payload: HookPayload;
-    state: HookBreakerState;
-    breakerKey: string;
-  },
-  now = Date.now()
-): void => {
-  if (!captureTranscriptPathForPayload(input.payload)) {
-    return;
-  }
-  const entry = input.state.foregroundFailures[input.breakerKey];
-  if (!shouldTriggerBreakerCatchup(entry, now)) {
-    return;
-  }
-  triggerDetachedTranscriptCatchup(input.configPath, input.payload);
-  markBreakerCatchupTriggered(input.state, input.breakerKey, now);
-};
-
-export const runForegroundCapturePass = async (input: {
+export const runForegroundCapturePass = (input: {
   configPath?: string;
   payload: HookPayload;
-  runPass?: typeof runCapturePass;
-  healthCheck?: () => Promise<unknown>;
+  triggerCatchup?: typeof triggerDetachedTranscriptCatchup;
 }): Promise<Awaited<ReturnType<typeof runCapturePass>>> => {
   const { configPath, payload } = input;
-  const runPass = input.runPass ?? runCapturePass;
-  const config = loadConfig(configPath, "foreground");
-  const breakerKey = hookBreakerKey(config);
-  let breakerState = loadHookBreakerState();
-  const entry = breakerState.foregroundFailures[breakerKey];
-
-  if (hookBreakerEntryIsOpen(entry)) {
-    maybeTriggerBreakerCatchup({
-      configPath,
-      payload,
-      state: breakerState,
-      breakerKey
-    });
-    saveHookBreakerState(breakerState);
-    console.error(captureUnavailableMessage);
-    return {
-      rawItemsStored: 0,
-      transcriptBacklogRemaining: Boolean(
-        captureTranscriptPathForPayload(payload)
-      ),
-      transcriptCheckpointAdvanced: false
-    };
-  }
-
-  if (hookBreakerEntryCanRetryHealth(entry)) {
-    const client = new MemoryApiClient(config);
-    try {
-      await (input.healthCheck ?? (() => client.accessCheck()))();
-      resetHookBreaker(breakerState, breakerKey);
-      saveHookBreakerState(breakerState);
-    } catch (error) {
-      if (!isRetryableTranscriptCatchupError(error)) {
-        resetHookBreaker(breakerState, breakerKey);
-        saveHookBreakerState(breakerState);
-        throw error;
-      }
-      recordHookBreakerFailure(breakerState, breakerKey, error);
-      maybeTriggerBreakerCatchup({
-        configPath,
-        payload,
-        state: breakerState,
-        breakerKey
-      });
-      saveHookBreakerState(breakerState);
-      console.error(captureUnavailableMessage);
-      return {
-        rawItemsStored: 0,
-        transcriptBacklogRemaining: Boolean(
-          captureTranscriptPathForPayload(payload)
-        ),
-        transcriptCheckpointAdvanced: false
-      };
-    }
-  }
-
-  try {
-    const result = await runPass({ configPath, payload, mode: "foreground" });
-    breakerState = loadHookBreakerState();
-    resetHookBreaker(breakerState, breakerKey);
-    saveHookBreakerState(breakerState);
-    return result;
-  } catch (error) {
-    if (isRetryableTranscriptCatchupError(error)) {
-      breakerState = loadHookBreakerState();
-      const failure = recordHookBreakerFailure(breakerState, breakerKey, error);
-      if (failure.openedAt) {
-        maybeTriggerBreakerCatchup({
-          configPath,
-          payload,
-          state: breakerState,
-          breakerKey
-        });
-      }
-      saveHookBreakerState(breakerState);
-    }
-    throw error;
-  }
+  const triggerCatchup = input.triggerCatchup ?? triggerDetachedTranscriptCatchup;
+  triggerCatchup(configPath, payload);
+  return Promise.resolve({
+    rawItemsStored: 0,
+    transcriptBacklogRemaining: Boolean(captureTranscriptPathForPayload(payload)),
+    transcriptCheckpointAdvanced: false
+  });
 };
 
 const runTranscriptCatchup = async (
@@ -2958,7 +2442,16 @@ const runTranscriptCatchup = async (
     return;
   }
   const stateScope = stateScopeKey(config, workspaceId, access.user.id);
-  const lock = acquireCatchupLock({ stateScope, transcriptPath });
+  let lock: ReturnType<typeof acquireCatchupLock> | null = null;
+  while (Date.now() < stopAt) {
+    lock = acquireCatchupLock({ stateScope, transcriptPath });
+    if (lock) {
+      break;
+    }
+    if (!(await sleepUntilCatchupStop(250, stopAt))) {
+      return;
+    }
+  }
   if (!lock) {
     return;
   }

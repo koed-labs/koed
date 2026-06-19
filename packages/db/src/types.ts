@@ -605,7 +605,6 @@ export interface ConversationProjectionResult {
   rawItemsScanned: number;
   rawItemsProjected: number;
   rawItemsWaitingForAgentSeal: number;
-  rawItemsSuppressedAsFallback: number;
   messagesCreated: number;
   toolEventsCreated: number;
   memoryEventsCreated: number;

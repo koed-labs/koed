@@ -13,7 +13,7 @@ const scriptPath = path.join(
   "configure-codex.mjs"
 );
 
-test("codex configure writes short hook timeout config and command timeouts", async () => {
+test("codex configure writes hook timeout config and command timeouts", async () => {
   const dir = path.join(
     tmpdir(),
     `koed-configure-codex-${process.pid}-${Date.now()}`
@@ -30,7 +30,7 @@ test("codex configure writes short hook timeout config and command timeouts", as
       env: {
         ...process.env,
         MEMORY_API_TOKEN: "cmt_test",
-        MEMORY_API_URL: "http://127.0.0.1:3300",
+        MEMORY_API_URL: "http://127.0.0.1:3000",
         MEMORY_NODE_COMMAND: "node",
         MEMORY_HOOK_CONFIG: hookConfigPath,
         CODEX_CONFIG_PATH: codexConfigPath
@@ -38,7 +38,7 @@ test("codex configure writes short hook timeout config and command timeouts", as
     });
 
     assert.deepEqual(JSON.parse(readFileSync(hookConfigPath, "utf8")), {
-      apiUrl: "http://127.0.0.1:3300",
+      apiUrl: "http://127.0.0.1:3000",
       apiToken: "cmt_test",
       captureEnabled: true,
       requestTimeoutMs: 1500
@@ -53,7 +53,7 @@ test("codex configure writes short hook timeout config and command timeouts", as
       assert.match(
         codexConfig,
         new RegExp(
-          `\\[\\[hooks\\.${eventName}\\.hooks\\]\\][\\s\\S]*?timeout = 3`
+          `\\[\\[hooks\\.${eventName}\\.hooks\\]\\][\\s\\S]*?timeout = 10`
         )
       );
     }
@@ -61,7 +61,7 @@ test("codex configure writes short hook timeout config and command timeouts", as
       assert.match(
         codexConfig,
         new RegExp(
-          `\\[\\[hooks\\.${eventName}\\.hooks\\]\\][\\s\\S]*?timeout = 10`
+          `\\[\\[hooks\\.${eventName}\\.hooks\\]\\][\\s\\S]*?timeout = 30`
         )
       );
     }

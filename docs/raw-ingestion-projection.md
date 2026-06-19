@@ -36,6 +36,18 @@ lifecycle noise. Adapters may submit background workflow telemetry as
 projection target. Pending and errored raw rows can be run through the
 projection endpoint again for deterministic catch-up.
 
+Projection uses the DB-backed `projection_policy_rules` table as the explicit
+positive allowlist for Codex transcript item types. The seeded defaults preserve
+the current behavior: user, agent, subagent, tool call/result, and reasoning
+summary items are projected to the UI and embedded semantic memory; system,
+developer, context, lifecycle, token-usage, error, raw reasoning, and unknown
+items remain raw provenance only. Canonical transcript `function_call` and
+`function_call_output` rows are the tool items used for rendering and semantic
+memory; lower-level MCP and patch lifecycle event rows are retained only as raw
+provenance. In the current product model, UI projection and embedding selection
+intentionally match for every rule. Unlisted transcript item types default to
+raw provenance only until a policy row deliberately opts them in.
+
 ## Current Codex Adapters
 
 Codex transcript hooks use `sourceAdapterVersion=codex-transcript-v1` and
@@ -97,13 +109,14 @@ source rows remain the audit trail for exact Codex payloads and future
 re-projection.
 
 Agent-turn `memory_events` are sealed only on a semantic flush condition:
-turn-complete hook, next user prompt/interruption, session/turn/thread/workspace
-boundary change, a token-limit rollover, or the stale catch-up timeout. Foreground
-projection may continue creating idempotent `messages` and `tool_events` while
-leaving an incomplete agent bundle pending until one of those seal conditions
-arrives. The stale catch-up timeout is based on the newest source item in the
-pending bundle, so an active long turn does not seal merely because its first
-item is old. If adding the next complete source item would cross
+turn-complete hook control, next user prompt/interruption,
+session/turn/thread/workspace boundary change, a token-limit rollover, or the
+stale catch-up timeout. Detached transcript catch-up may continue creating
+idempotent `messages` and `tool_events` while leaving an incomplete agent bundle
+pending until one of those seal conditions arrives. The stale catch-up timeout is
+based on the newest source item in the pending bundle, so an active long turn
+does not seal merely because its first item is old. If adding the next complete
+source item would cross
 `MEMORY_EVENT_MAX_TOKENS`, projection seals the current bundle and rolls the
 overflowing item into the next `agent_turn` bundle. `MEMORY_EVENT_MAX_TOKENS` is
 a soft bundle target: it is not a reason to split a single source item. If one

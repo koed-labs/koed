@@ -205,7 +205,7 @@ export const normalizeApiUrl = (apiUrl: string): string =>
   apiUrl.replace(/\/+$/, "");
 
 export const defaultConfig = (): McpServerConfig => ({
-  apiUrl: process.env.MEMORY_API_URL ?? "http://localhost:3300",
+  apiUrl: process.env.MEMORY_API_URL ?? "http://localhost:3000",
   apiToken: process.env.MEMORY_API_TOKEN,
   requestTimeoutMs: positiveIntEnv("MEMORY_API_REQUEST_TIMEOUT_MS", 60_000)
 });

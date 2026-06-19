@@ -1,4 +1,8 @@
-import type { MemoryAnswerWorkerResponse } from "./answer-worker.js";
+import {
+  compactMemoryAnswerPayload,
+  type MemoryAnswerResponseDetail,
+  type MemoryAnswerWorkerResponse
+} from "./answer-worker.js";
 
 export const evidenceFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
   answer.evidenceBundle?.evidence ?? answer.evidence;
@@ -46,6 +50,18 @@ export const persistedAnswerResponse = (
   }
   return compact as MemoryAnswerWorkerResponse;
 };
+
+export const toolAnswerResponse = (
+  answer: MemoryAnswerWorkerResponse,
+  responseDetail: MemoryAnswerResponseDetail
+): MemoryAnswerWorkerResponse =>
+  compactMemoryAnswerPayload(
+    {
+      ...answer,
+      localMemoryWorker: stripAppServerEvents(answer.localMemoryWorker)
+    },
+    responseDetail
+  );
 
 export const answerMarkdownFromAnswer = (answer: MemoryAnswerWorkerResponse) =>
   answer.markdown?.trim() || "No matching memory evidence found.";

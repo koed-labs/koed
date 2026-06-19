@@ -21,7 +21,7 @@ Runs the guided Koed bootstrap path:
 const hasHelpArg = (argv) =>
   argv.some((arg) => arg === "--help" || arg === "-h");
 
-const defaultApiUrl = "http://localhost:3300";
+const defaultApiUrl = "http://localhost:3000";
 
 const resolveApiUrl = (environment) =>
   (

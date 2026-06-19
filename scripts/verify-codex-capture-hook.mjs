@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const apiUrl = (process.env.MEMORY_API_URL ?? "http://localhost:3300").replace(
+const apiUrl = (process.env.MEMORY_API_URL ?? "http://localhost:3000").replace(
   /\/+$/,
   ""
 );
@@ -23,6 +23,7 @@ const promptText = `Koed capture hook verification prompt: ${marker}`;
 const toolCallPurpose = `Koed capture hook verification tool call: ${marker}`;
 const toolResultText = `Koed capture hook verification tool result: ${marker}`;
 const finalText = `Koed capture hook verification final response: ${marker}`;
+let transcriptTimestampOffset = 0;
 
 if (!apiToken) {
   console.error(
@@ -61,6 +62,31 @@ const requestJson = async (pathName, init = {}) => {
   return body;
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitFor = async (description, fn, timeoutMs = 30000) => {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const result = await fn();
+      if (result) {
+        return result;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `${description} did not complete within ${timeoutMs}ms${
+      lastError
+        ? `: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+        : ""
+    }`
+  );
+};
+
 const runHook = async (payload) => {
   const hook = spawn(nodeCommand, [hookPath], {
     cwd: process.cwd(),
@@ -92,10 +118,20 @@ const runHook = async (payload) => {
 };
 
 const turnId = randomUUID();
+const transcriptTimestamp = () =>
+  new Date(Date.now() + transcriptTimestampOffset++).toISOString();
 const transcriptRecord = (payload) =>
-  JSON.stringify({ type: "event_msg", payload });
+  JSON.stringify({
+    timestamp: transcriptTimestamp(),
+    type: "event_msg",
+    payload
+  });
 const responseItem = (payload) =>
-  JSON.stringify({ type: "response_item", payload });
+  JSON.stringify({
+    timestamp: transcriptTimestamp(),
+    type: "response_item",
+    payload
+  });
 const appendTranscriptRecords = (records) => {
   writeFileSync(transcriptPath, `${records.join("\n")}\n`, { flag: "a" });
 };
@@ -175,111 +211,131 @@ try {
     })
   );
 
-  const search = await requestJson("/v1/memory/search", {
-    method: "POST",
-    body: JSON.stringify({
-      query: marker,
-      retrieval_scope: "personal",
-      search_domain: "project",
-      workspace_id: process.cwd(),
-      limit: 5
-    })
-  });
-
-  const hit = Array.isArray(search.hits)
-    ? search.hits.find((item) => JSON.stringify(item).includes(marker))
-    : null;
-
-  if (!hit) {
-    throw new Error(
-      `Capture Hook ran but marker was not found in memory: ${marker}`
-    );
-  }
-
+  let verifiedWithDatabase = false;
   if (process.env.DATABASE_URL) {
     const { Client } = requireFromDbPackage("pg");
     const client = new Client({ connectionString: process.env.DATABASE_URL });
     await client.connect();
     try {
-      const raw = await client.query(
-        `
-          select source_adapter_version, source_event_type, count(*)::int as count
-          from conversation_items
-          where external_session_id = $1
-            and (
-              source_adapter_version = 'codex-hook-v1'
-              or source_adapter_version = 'codex-transcript-v1'
-            )
-          group by source_adapter_version, source_event_type
-        `,
-        [marker]
-      );
-      const rawCounts = new Map(
-        raw.rows.map((row) => [
-          `${row.source_adapter_version}:${row.source_event_type}`,
-          Number(row.count)
-        ])
-      );
-      const expectedRawCounts = new Map([
-        ["codex-hook-v1:UserPromptSubmit", 1],
-        ["codex-transcript-v1:function_call", 1],
-        ["codex-transcript-v1:function_call_output", 1],
-        ["codex-transcript-v1:agent_message", 1]
-      ]);
-      for (const [key, expectedCount] of expectedRawCounts) {
-        if (rawCounts.get(key) !== expectedCount) {
-          throw new Error(
-            `Expected ${expectedCount} raw ${key} item(s) for ${marker}; got ${
-              rawCounts.get(key) ?? 0
-            }`
-          );
-        }
-      }
-
-      const rawDuplicates = await client.query(
-        `
-          select source_adapter_version, source_event_type, source_hash, idempotency_key, count(*)::int as count
-          from conversation_items
-          where external_session_id = $1
-          group by source_adapter_version, source_event_type, source_hash, idempotency_key
-          having count(*) > 1
-        `,
-        [marker]
-      );
-      if (rawDuplicates.rowCount > 0) {
-        throw new Error(
-          `Duplicate raw conversation item source/idempotency keys found for ${marker}`
-        );
-      }
-
-      const memoryEvents = await client.query(
-        `
-          select payload ->> 'content' as content
-          from memory_events
-          where session_id in (
-            select distinct session_id
+      await waitFor("Capture Hook DB projection", async () => {
+        const raw = await client.query(
+          `
+            select source_adapter_version, source_event_type, count(*)::int as count
             from conversation_items
             where external_session_id = $1
-              and session_id is not null
-          )
-            and payload ->> 'content' ilike '%' || $2 || '%'
-        `,
-        [marker, marker]
-      );
-      const matchingMemoryEventCount = (snippet) =>
-        memoryEvents.rows.filter((row) => row.content?.includes(snippet))
-          .length;
-      for (const snippet of [promptText, toolResultText, finalText]) {
-        const count = matchingMemoryEventCount(snippet);
-        if (count !== 1) {
+              and (
+                source_adapter_version = 'codex-hook-v1'
+                or source_adapter_version = 'codex-transcript-v1'
+              )
+            group by source_adapter_version, source_event_type
+          `,
+          [marker]
+        );
+        const rawCounts = new Map(
+          raw.rows.map((row) => [
+            `${row.source_adapter_version}:${row.source_event_type}`,
+            Number(row.count)
+          ])
+        );
+        const expectedRawCounts = new Map([
+          ["codex-transcript-v1:user_message", 1],
+          ["codex-transcript-v1:function_call", 1],
+          ["codex-transcript-v1:function_call_output", 1],
+          ["codex-transcript-v1:agent_message", 1],
+          ["codex-hook-v1:Stop", 1]
+        ]);
+        for (const [key, expectedCount] of expectedRawCounts) {
+          if (rawCounts.get(key) !== expectedCount) {
+            throw new Error(
+              `Expected ${expectedCount} raw ${key} item(s) for ${marker}; got ${
+                rawCounts.get(key) ?? 0
+              }`
+            );
+          }
+        }
+
+        const rawDuplicates = await client.query(
+          `
+            select source_adapter_version, source_event_type, source_hash, idempotency_key, count(*)::int as count
+            from conversation_items
+            where external_session_id = $1
+            group by source_adapter_version, source_event_type, source_hash, idempotency_key
+            having count(*) > 1
+          `,
+          [marker]
+        );
+        if (rawDuplicates.rowCount > 0) {
           throw new Error(
-            `Expected exactly one projected memory event containing "${snippet}" for ${marker}; got ${count}`
+            `Duplicate raw conversation item source/idempotency keys found for ${marker}`
           );
         }
-      }
+
+        const missingTranscriptTimes = await client.query(
+          `
+            select count(*)::int as count
+            from conversation_items
+            where external_session_id = $1
+              and source_adapter_version = 'codex-transcript-v1'
+              and event_time is null
+          `,
+          [marker]
+        );
+        if (Number(missingTranscriptTimes.rows[0]?.count ?? 0) !== 0) {
+          throw new Error(
+            `Transcript rows without source event timestamps found for ${marker}`
+          );
+        }
+
+        const memoryEvents = await client.query(
+          `
+            select payload ->> 'content' as content
+            from memory_events
+            where session_id in (
+              select distinct session_id
+              from conversation_items
+              where external_session_id = $1
+                and session_id is not null
+            )
+              and payload ->> 'content' ilike '%' || $2 || '%'
+          `,
+          [marker, marker]
+        );
+        const matchingMemoryEventCount = (snippet) =>
+          memoryEvents.rows.filter((row) => row.content?.includes(snippet))
+            .length;
+        for (const snippet of [promptText, toolResultText, finalText]) {
+          const count = matchingMemoryEventCount(snippet);
+          if (count !== 1) {
+            throw new Error(
+              `Expected exactly one projected memory event containing "${snippet}" for ${marker}; got ${count}`
+            );
+          }
+        }
+        return true;
+      });
+      verifiedWithDatabase = true;
     } finally {
       await client.end();
     }
+  }
+
+  if (!verifiedWithDatabase) {
+    await waitFor("Capture Hook semantic search", async () => {
+      const search = await requestJson("/v1/memory/search", {
+        method: "POST",
+        body: JSON.stringify({
+          query: marker,
+          retrieval_scope: "personal",
+          search_domain: "project",
+          workspace_id: process.cwd(),
+          limit: 5
+        })
+      });
+
+      return Array.isArray(search.hits)
+        ? search.hits.find((item) => JSON.stringify(item).includes(marker))
+        : null;
+    });
   }
 
   console.log("Codex Capture Hook verification passed.");

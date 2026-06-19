@@ -518,9 +518,6 @@ const projectionIsExplicitReasoningSummaryLabel = (label: string): boolean =>
     label
   );
 
-const projectionIsReasoningSummaryLabel = (label: string): boolean =>
-  projectionIsReasoningLabel(label) && !projectionIsRawReasoningLabel(label);
-
 const tokenUsageBreakdown = (
   value: unknown
 ): {
@@ -873,6 +870,19 @@ type ConversationProjectionPolicy = {
   reason: string;
 };
 
+type ConversationProjectionPolicyRule = {
+  sourceKind: string;
+  sourceAdapterVersion: string;
+  transcriptType: string;
+  projectToUi: boolean;
+  createMessage: boolean;
+  createToolEvent: boolean;
+  createMemoryEvent: boolean;
+  includeInEmbedding: boolean;
+  includeInLcm: boolean;
+  enabled: boolean;
+};
+
 type ConversationProjectionCandidate = {
   logicalItem: LogicalConversationProjectionItem;
   row: ConversationProjectionRawRow;
@@ -915,6 +925,85 @@ const projectionLabelForConversationItem = (row: {
   ]
     .filter((value): value is string => Boolean(value))
     .join(" ");
+};
+
+const normalizeProjectionRuleKey = (value: string | null | undefined): string =>
+  value?.trim().toLowerCase() ?? "";
+
+const projectionRuleKeyForConversationItem = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+}): string =>
+  normalizeProjectionRuleKey(
+    stringField(row.metadata ?? {}, "transcriptType") ??
+      row.source_event_type ??
+      row.source_record_type
+  );
+
+const projectionRuleLookupKeysForConversationItem = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata: Record<string, unknown> | null;
+}): string[] =>
+  uniqueOrderedStrings(
+    [
+      projectionRuleKeyForConversationItem(row),
+      stringField(row.metadata ?? {}, "toolEventKind"),
+      row.source_event_type,
+      row.source_record_type
+    ].map(normalizeProjectionRuleKey)
+  ).filter(Boolean);
+
+const loadConversationProjectionPolicyRules = async (
+  pool: pg.Pool
+): Promise<Map<string, ConversationProjectionPolicyRule>> => {
+  const rows = await pool.query<{
+    source_kind: string;
+    source_adapter_version: string;
+    transcript_type: string;
+    project_to_ui: boolean;
+    create_message: boolean;
+    create_tool_event: boolean;
+    create_memory_event: boolean;
+    include_in_embedding: boolean;
+    include_in_lcm: boolean;
+    enabled: boolean;
+  }>(
+    `
+      select
+        source_kind,
+        source_adapter_version,
+        transcript_type,
+        project_to_ui,
+        create_message,
+        create_tool_event,
+        create_memory_event,
+        include_in_embedding,
+        include_in_lcm,
+        enabled
+      from projection_policy_rules
+      where source_kind = 'codex'
+        and source_adapter_version = 'codex-transcript-v1'
+    `
+  );
+  return new Map(
+    rows.rows.map((row) => [
+      normalizeProjectionRuleKey(row.transcript_type),
+      {
+        sourceKind: row.source_kind,
+        sourceAdapterVersion: row.source_adapter_version,
+        transcriptType: row.transcript_type,
+        projectToUi: row.project_to_ui,
+        createMessage: row.create_message,
+        createToolEvent: row.create_tool_event,
+        createMemoryEvent: row.create_memory_event,
+        includeInEmbedding: row.include_in_embedding,
+        includeInLcm: row.include_in_lcm,
+        enabled: row.enabled
+      }
+    ])
+  );
 };
 
 const projectionWorkflowIsInternal = (
@@ -961,41 +1050,20 @@ const projectionIsSystemContext = (row: {
   );
 };
 
-const projectionIsSemanticAllowlisted = (row: {
-  source_event_type: string | null;
-  source_record_type: string;
-  metadata: Record<string, unknown> | null;
-}): boolean => {
-  const label = projectionLabelForConversationItem(row);
-  return (
-    /user_message|assistant_message|agent_message|agentMessage|subagent|function_call|custom_tool|codex_transcript_(user|agent|subagent|tool)|codex_tool_result/i.test(
-      label
-    ) || projectionIsReasoningSummaryLabel(label)
-  );
-};
-
-const projectionIsHookSemanticFallback = (row: {
-  source_record_type: string;
-  raw_json: unknown;
-}): boolean => {
-  if (row.source_record_type !== "hook_payload" || !isRecord(row.raw_json)) {
-    return false;
-  }
-  return (
-    typeof row.raw_json.prompt === "string" ||
-    typeof row.raw_json.last_assistant_message === "string" ||
-    typeof row.raw_json.tool_name === "string"
-  );
-};
-
 const classifyConversationItemProjection = (
   row: {
+    source_kind: string;
+    source_adapter_version: string;
     source_event_type: string | null;
     source_record_type: string;
     metadata: Record<string, unknown> | null;
     raw_json: unknown;
   },
-  input: { actorType: MemoryActor | null; content: string | null }
+  input: {
+    actorType: MemoryActor | null;
+    content: string | null;
+    projectionRules: Map<string, ConversationProjectionPolicyRule>;
+  }
 ): ConversationProjectionPolicy => {
   const base = {
     createMessage: false,
@@ -1009,6 +1077,9 @@ const classifyConversationItemProjection = (
   if (!input.content || !input.actorType) {
     return { ...base, reason: "missing-content-or-actor" };
   }
+  if (row.source_record_type === "hook_payload") {
+    return { ...base, reason: "hook-control-record" };
+  }
   if (projectionWorkflowIsInternal(row.metadata)) {
     return { ...base, reason: "internal-worker-workflow" };
   }
@@ -1019,17 +1090,42 @@ const classifyConversationItemProjection = (
     return { ...base, reason: "system-or-context-record" };
   }
 
-  const createMessage = Boolean(messageRoleForActor(input.actorType));
-  const createToolEvent = input.actorType === "tool";
-  const createSemanticEvent =
-    projectionIsSemanticAllowlisted(row) ||
-    projectionIsHookSemanticFallback(row) ||
-    input.actorType === "tool";
+  const matchedRule = projectionRuleLookupKeysForConversationItem(row)
+    .map((key) => input.projectionRules.get(key))
+    .find((rule): rule is ConversationProjectionPolicyRule => Boolean(rule));
+  if (matchedRule) {
+    if (!matchedRule.enabled) {
+      return {
+        ...base,
+        reason: `projection-policy-disabled:${matchedRule.transcriptType}`
+      };
+    }
+    const createMessage = Boolean(
+      matchedRule.projectToUi &&
+      matchedRule.createMessage &&
+      messageRoleForActor(input.actorType)
+    );
+    const createToolEvent = Boolean(
+      matchedRule.projectToUi &&
+      matchedRule.createToolEvent &&
+      input.actorType === "tool"
+    );
+    const createSemanticEvent = Boolean(
+      matchedRule.createMemoryEvent && matchedRule.includeInEmbedding
+    );
+    return {
+      createMessage,
+      createSemanticEvent,
+      createToolEvent,
+      reason: createSemanticEvent
+        ? `projection-policy:${matchedRule.transcriptType}`
+        : `projection-policy-raw-only:${matchedRule.transcriptType}`
+    };
+  }
+
   return {
-    createMessage,
-    createSemanticEvent,
-    createToolEvent,
-    reason: createSemanticEvent ? "projectable" : "not-semantic-allowlisted"
+    ...base,
+    reason: `projection-policy-missing:${projectionRuleKeyForConversationItem(row) || "unknown"}`
   };
 };
 
@@ -1269,11 +1365,6 @@ const conversationProjectionScopeKey = (
   row: ConversationProjectionRawRow
 ): string => conversationProjectionBoundary(row).scopeKey;
 
-const conversationSemanticBoundaryUnitKey = (
-  boundary: ConversationProjectionBoundary,
-  unitType: ConversationSemanticUnitType
-): string => `${unitType}:${boundary.key}`;
-
 const conversationItemToolPayload = (
   raw: Record<string, unknown>
 ): Record<string, unknown> => {
@@ -1289,6 +1380,17 @@ const conversationItemToolCallId = (
   stringField(metadata, "toolCallId") ??
   stringField(metadata, "callId") ??
   stringField(toolCall, "id");
+
+const conversationItemToolEventIdentity = (
+  row: ConversationProjectionRawRow,
+  logicalItem: LogicalConversationProjectionItem,
+  callId: string | null
+): string => {
+  if (row.session_id && callId) {
+    return `tool-call:${row.session_id}:${callId}`;
+  }
+  return logicalItem.sourceIdentity;
+};
 
 const conversationItemToolName = (
   raw: Record<string, unknown>,
@@ -2145,6 +2247,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
 
   const processedSourceIdentities = new Set<string>();
   const semanticItems: ConversationSemanticProjectionItem[] = [];
+  const projectionRules = await loadConversationProjectionPolicyRules(pool);
   for (const sourceRow of sourceRows.rows) {
     const logicalItem = await loadLogicalConversationProjectionItem(
       pool,
@@ -2159,7 +2262,8 @@ const rebuiltSemanticMemoryEventsFromSources = async (
     const actorType = actorFromConversationItem(row);
     const projectionPolicy = classifyConversationItemProjection(row, {
       actorType,
-      content
+      content,
+      projectionRules
     });
     if (!content || !actorType || !projectionPolicy.createSemanticEvent) {
       continue;
@@ -2356,6 +2460,33 @@ const invalidateSemanticMemoryForDisplayEvent = async (
             and ds.transcript_item_id is not null
             and ci.source_sequence is not null
             and ds.transcript_item_id = ci.source_sequence::text
+          )
+          or (
+            $3 = 'tool'
+            and ds.session_id is not null
+            and ci.session_id = ds.session_id
+            and (
+              ds.idempotency_key = concat(
+                'tool:tool-call:',
+                ds.session_id::text,
+                ':',
+                coalesce(
+                  ci.metadata ->> 'toolCallId',
+                  ci.metadata ->> 'callId',
+                  ci.metadata #>> '{toolCall,id}'
+                )
+              )
+              or ds.source_hash = concat(
+                'tool:tool-call:',
+                ds.session_id::text,
+                ':',
+                coalesce(
+                  ci.metadata ->> 'toolCallId',
+                  ci.metadata ->> 'callId',
+                  ci.metadata #>> '{toolCall,id}'
+                )
+              )
+            )
           )
         )
       ),
@@ -2661,7 +2792,6 @@ export const createMemorySourceRepository = (
         rawItemsScanned: 0,
         rawItemsProjected: 0,
         rawItemsWaitingForAgentSeal: 0,
-        rawItemsSuppressedAsFallback: 0,
         messagesCreated: 0,
         toolEventsCreated: 0,
         memoryEventsCreated: 0,
@@ -2678,7 +2808,6 @@ export const createMemorySourceRepository = (
       rawItemsScanned: 0,
       rawItemsProjected: 0,
       rawItemsWaitingForAgentSeal: 0,
-      rawItemsSuppressedAsFallback: 0,
       messagesCreated: 0,
       toolEventsCreated: 0,
       memoryEventsCreated: 0,
@@ -2811,6 +2940,7 @@ export const createMemorySourceRepository = (
 
     const processedSourceIdentities = new Set<string>();
     const candidates: ConversationProjectionCandidate[] = [];
+    const projectionRules = await loadConversationProjectionPolicyRules(pool);
     for (const sourceRow of rows.rows) {
       result.rawItemsScanned += 1;
       let sourceIds = [sourceRow.id];
@@ -2841,7 +2971,8 @@ export const createMemorySourceRepository = (
         });
         const projectionPolicy = classifyConversationItemProjection(row, {
           actorType,
-          content
+          content,
+          projectionRules
         });
         const semanticUnitType =
           content && actorType && projectionPolicy.createSemanticEvent
@@ -2886,27 +3017,6 @@ export const createMemorySourceRepository = (
         await markProjectionError(sourceIds, error);
       }
     }
-
-    const currentBatchNonHookSemanticBoundaries = new Set(
-      candidates
-        .filter(
-          (
-            candidate
-          ): candidate is ConversationProjectionCandidate & {
-            semanticUnitType: ConversationSemanticUnitType;
-          } =>
-            Boolean(
-              candidate.row.source_record_type !== "hook_payload" &&
-              candidate.semanticUnitType
-            )
-        )
-        .map((candidate) =>
-          conversationSemanticBoundaryUnitKey(
-            candidate.boundary,
-            candidate.semanticUnitType
-          )
-        )
-    );
 
     const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
     const pendingSupportingContextsByBoundary = new Map<
@@ -3253,6 +3363,18 @@ export const createMemorySourceRepository = (
       } = candidate;
       try {
         const ownerUserId = actor.userId;
+        const requiresTranscriptSourceTime =
+          row.source_transport === "hook" && row.source_kind === "codex";
+        if (
+          requiresTranscriptSourceTime &&
+          (projectionPolicy.createMessage ||
+            projectionPolicy.createToolEvent) &&
+          !row.event_time
+        ) {
+          throw new Error(
+            "Transcript display projection requires source event timestamp"
+          );
+        }
         if (projectionPolicy.reason === "ide-client-supporting-context") {
           if (content) {
             const supportingContext: SupportingContextProjectionItem = {
@@ -3380,20 +3502,102 @@ export const createMemorySourceRepository = (
           content &&
           projectionPolicy.createMessage
         ) {
-          const inserted = await pool.query<{ id: string }>(
+          const inserted = await pool.query<{ id: string; inserted: boolean }>(
             `
-              insert into messages (
-                session_id, turn_id, owner_user_id, visibility,
-                role, content, content_json, source_runtime, capture_method,
-                codex_transcript_path, transcript_item_id, idempotency_key,
-                source_hash, token_count, captured_at
+              with existing as (
+                update messages
+                set
+                  turn_id = coalesce($2::uuid, messages.turn_id),
+                  role = $5,
+                  content = $6,
+                  content_json = $7,
+                  source_runtime = $8,
+                  capture_method = $9,
+                  codex_transcript_path = coalesce(
+                    $10,
+                    messages.codex_transcript_path
+                  ),
+                  transcript_item_id = coalesce(
+                    $11,
+                    messages.transcript_item_id
+                  ),
+                  idempotency_key = coalesce($12, messages.idempotency_key),
+                  source_hash = coalesce($13, messages.source_hash),
+                  token_count = $14,
+                  source_event_time = $15,
+                  captured_at = least(messages.captured_at, $16)
+                where id = (
+                  select id
+                  from messages
+                  where owner_user_id = $3
+                    and visibility = $4::visibility_scope
+                    and (
+                      ($12::text is not null and idempotency_key = $12)
+                      or ($13::text is not null and source_hash = $13)
+                      or (
+                        $11::text is not null
+                        and session_id = $1
+                        and transcript_item_id = $11
+                      )
+                    )
+                  order by
+                    case
+                      when $12::text is not null and idempotency_key = $12 then 0
+                      when $13::text is not null and source_hash = $13 then 1
+                      else 2
+                    end,
+                    created_at asc,
+                    id asc
+                  limit 1
+                )
+                returning id, false as inserted
+              ),
+              inserted as (
+                insert into messages (
+                  session_id, turn_id, owner_user_id, visibility,
+                  role, content, content_json, source_runtime, capture_method,
+                  codex_transcript_path, transcript_item_id, idempotency_key,
+                  source_hash, token_count, source_event_time, captured_at
+                )
+                select
+                  $1, $2, $3, $4, $5, $6, $7,
+                  $8, $9, $10, $11, $12, $13, $14, $15, $16
+                where not exists (select 1 from existing)
+                on conflict do nothing
+                returning id, true as inserted
+              ),
+              fallback as (
+                select id, false as inserted
+                from messages
+                where not exists (select 1 from existing)
+                  and not exists (select 1 from inserted)
+                  and owner_user_id = $3
+                  and visibility = $4::visibility_scope
+                  and (
+                    ($12::text is not null and idempotency_key = $12)
+                    or ($13::text is not null and source_hash = $13)
+                    or (
+                      $11::text is not null
+                      and session_id = $1
+                      and transcript_item_id = $11
+                    )
+                  )
+                order by
+                  case
+                    when $12::text is not null and idempotency_key = $12 then 0
+                    when $13::text is not null and source_hash = $13 then 1
+                    else 2
+                  end,
+                  created_at asc,
+                  id asc
+                limit 1
               )
-              values (
-                $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10, $11, $12, $13, $14, $15
-              )
-              on conflict do nothing
-              returning id
+              select * from existing
+              union all
+              select * from inserted
+              union all
+              select * from fallback
+              limit 1
             `,
             [
               row.session_id,
@@ -3412,10 +3616,11 @@ export const createMemorySourceRepository = (
               `message:${logicalItem.sourceIdentity}`,
               `message:${logicalItem.sourceHash}`,
               estimateTokens(content),
-              row.event_time ?? row.observed_at
+              row.event_time,
+              row.observed_at
             ]
           );
-          if ((inserted.rowCount ?? 0) > 0) {
+          if (inserted.rows.some((message) => message.inserted)) {
             result.messagesCreated += 1;
           }
         }
@@ -3430,20 +3635,131 @@ export const createMemorySourceRepository = (
             row,
             callId
           );
-          const inserted = await pool.query<{ id: string }>(
+          const toolEventIdentity = conversationItemToolEventIdentity(
+            row,
+            logicalItem,
+            callId
+          );
+          const inserted = await pool.query<{ id: string; inserted: boolean }>(
             `
-              insert into tool_events (
-                session_id, turn_id, owner_user_id, visibility,
-                tool_name, tool_input, tool_response, status, source_runtime,
-                capture_method, codex_transcript_path, transcript_item_id,
-                idempotency_key, source_hash, captured_at
+              with existing as (
+                update tool_events
+                set
+                  turn_id = coalesce($2::uuid, tool_events.turn_id),
+                  tool_name = case
+                    when $5 <> 'tool' or tool_events.tool_name = 'tool'
+                      then $5
+                    else tool_events.tool_name
+                  end,
+                  tool_input = coalesce($6::jsonb, tool_events.tool_input),
+                  tool_response = coalesce($7::jsonb, tool_events.tool_response),
+                  status = coalesce($8, tool_events.status),
+                  source_runtime = $9,
+                  capture_method = $10,
+                  codex_transcript_path = coalesce(
+                    $11,
+                    tool_events.codex_transcript_path
+                  ),
+                  transcript_item_id = case
+                    when tool_events.transcript_item_id is null then $12
+                    when $12::text is null then tool_events.transcript_item_id
+                    when tool_events.transcript_item_id ~ '^[0-9]+$'
+                      and $12::text ~ '^[0-9]+$'
+                      then least(
+                        tool_events.transcript_item_id::bigint,
+                        $12::bigint
+                      )::text
+                    else tool_events.transcript_item_id
+                  end,
+                  idempotency_key = coalesce($13, tool_events.idempotency_key),
+                  source_hash = coalesce($14, tool_events.source_hash),
+                  source_event_time = least(tool_events.source_event_time, $15),
+                  captured_at = least(tool_events.captured_at, $16),
+                  started_at = case
+                    when $6::jsonb is not null
+                      then coalesce(tool_events.started_at, $15)
+                    else tool_events.started_at
+                  end,
+                  completed_at = case
+                    when $7::jsonb is not null
+                      then coalesce(tool_events.completed_at, $15)
+                    else tool_events.completed_at
+                  end
+                where id = (
+                  select id
+                  from tool_events
+                  where owner_user_id = $3
+                    and visibility = $4::visibility_scope
+                    and (
+                      ($13::text is not null and idempotency_key = $13)
+                      or ($14::text is not null and source_hash = $14)
+                      or (
+                        $12::text is not null
+                        and session_id = $1
+                        and transcript_item_id = $12
+                      )
+                    )
+                  order by
+                    case
+                      when $13::text is not null and idempotency_key = $13 then 0
+                      when $14::text is not null and source_hash = $14 then 1
+                      else 2
+                    end,
+                    created_at asc,
+                    id asc
+                  limit 1
+                )
+                returning id, false as inserted
+              ),
+              inserted as (
+                insert into tool_events (
+                  session_id, turn_id, owner_user_id, visibility,
+                  tool_name, tool_input, tool_response, status, source_runtime,
+                  capture_method, codex_transcript_path, transcript_item_id,
+                  idempotency_key, source_hash, source_event_time, captured_at,
+                  started_at, completed_at
+                )
+                select
+                  $1, $2, $3, $4, $5, $6, $7,
+                  $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                  case when $6::jsonb is not null then $15 else null end,
+                  case when $7::jsonb is not null then $15 else null end
+                where not exists (select 1 from existing)
+                on conflict do nothing
+                returning id, true as inserted
+              ),
+              fallback as (
+                select id, false as inserted
+                from tool_events
+                where not exists (select 1 from existing)
+                  and not exists (select 1 from inserted)
+                  and owner_user_id = $3
+                  and visibility = $4::visibility_scope
+                  and (
+                    ($13::text is not null and idempotency_key = $13)
+                    or ($14::text is not null and source_hash = $14)
+                    or (
+                      $12::text is not null
+                      and session_id = $1
+                      and transcript_item_id = $12
+                    )
+                  )
+                order by
+                  case
+                    when $13::text is not null and idempotency_key = $13 then 0
+                    when $14::text is not null and source_hash = $14 then 1
+                    else 2
+                  end,
+                  created_at asc,
+                  id asc
+                limit 1
               )
-              values (
-                $1, $2, $3, $4, $5, $6, $7,
-                $8, $9, $10, $11, $12, $13, $14, $15
-              )
-              on conflict do nothing
-              returning id
+              select * from existing
+              union all
+              select * from inserted
+              union all
+              select * from fallback
+              limit 1
             `,
             [
               row.session_id,
@@ -3465,12 +3781,13 @@ export const createMemorySourceRepository = (
               }),
               row.source_path,
               row.source_sequence === null ? null : String(row.source_sequence),
-              `tool:${logicalItem.sourceIdentity}`,
-              `tool:${logicalItem.sourceHash}`,
-              row.event_time ?? row.observed_at
+              `tool:${toolEventIdentity}`,
+              `tool:${toolEventIdentity}`,
+              row.event_time,
+              row.observed_at
             ]
           );
-          if ((inserted.rowCount ?? 0) > 0) {
+          if (inserted.rows.some((toolEvent) => toolEvent.inserted)) {
             result.toolEventsCreated += 1;
           }
         }
@@ -3498,21 +3815,10 @@ export const createMemorySourceRepository = (
               await markProjected(sourceIds);
               break;
             }
-            if (
-              await shouldSuppressHookSemanticFallback(
-                semanticItem,
-                boundary,
-                semanticUnitType
-              )
-            ) {
-              result.rawItemsSuppressedAsFallback += sourceIds.length;
-              await markProjected(sourceIds);
-            } else {
-              const queueResult = await queueAgentSemanticItem(semanticItem);
-              if (queueResult === "waiting_for_agent_seal") {
-                for (const sourceId of sourceIds) {
-                  waitingForAgentSealSourceIds.add(sourceId);
-                }
+            const queueResult = await queueAgentSemanticItem(semanticItem);
+            if (queueResult === "waiting_for_agent_seal") {
+              for (const sourceId of sourceIds) {
+                waitingForAgentSealSourceIds.add(sourceId);
               }
             }
             break;
@@ -4277,7 +4583,7 @@ export const createMemorySourceRepository = (
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
-            null::timestamptz as source_event_time,
+            msg.source_event_time,
             case
               when msg.transcript_item_id ~ '^[0-9]+$'
                 then msg.transcript_item_id::bigint
@@ -4285,7 +4591,7 @@ export const createMemorySourceRepository = (
             end as source_sequence,
             msg.captured_at,
             msg.created_at,
-            msg.captured_at as order_at,
+            coalesce(msg.source_event_time, msg.captured_at) as order_at,
             msg.visibility,
             msg.invalidated_at,
             msg.invalidation_reason,
@@ -4309,9 +4615,9 @@ export const createMemorySourceRepository = (
             and ($7::text is null or msg.content ilike '%' || $7 || '%' or msg.id::text = $7)
             and (
               $8::timestamptz is null
-              or msg.captured_at < $8::timestamptz
+              or coalesce(msg.source_event_time, msg.captured_at) < $8::timestamptz
               or (
-                msg.captured_at = $8::timestamptz
+                coalesce(msg.source_event_time, msg.captured_at) = $8::timestamptz
                 and (
                   (
                     co.source_sequence is null
@@ -4400,7 +4706,7 @@ export const createMemorySourceRepository = (
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
-            null::timestamptz as source_event_time,
+            te.source_event_time,
             case
               when te.transcript_item_id ~ '^[0-9]+$'
                 then te.transcript_item_id::bigint
@@ -4408,7 +4714,7 @@ export const createMemorySourceRepository = (
             end as source_sequence,
             te.captured_at,
             te.created_at,
-            te.captured_at as order_at,
+            coalesce(te.source_event_time, te.captured_at) as order_at,
             te.visibility,
             te.invalidated_at,
             te.invalidation_reason,
@@ -4459,9 +4765,9 @@ export const createMemorySourceRepository = (
             )
             and (
               $8::timestamptz is null
-              or te.captured_at < $8::timestamptz
+              or coalesce(te.source_event_time, te.captured_at) < $8::timestamptz
               or (
-                te.captured_at = $8::timestamptz
+                coalesce(te.source_event_time, te.captured_at) = $8::timestamptz
                 and (
                   (
                     co.source_sequence is null
@@ -5502,28 +5808,62 @@ export const createMemorySourceRepository = (
 
     const result = await pool.query<MemoryEventRow>(
       `
-        insert into memory_events (
-          actor_user_id,
-          owner_user_id,
-          visibility,
-          event_type,
-          source_runtime,
-          capture_method,
-          codex_transcript_path,
-          session_id,
-          turn_id,
-          idempotency_key,
-          source_hash,
-          payload,
-          token_count,
-          seal_reason,
-          captured_at,
-          source_event_time,
-          source_sequence
+        with refreshed as (
+          update memory_events
+          set
+            source_runtime = $5,
+            capture_method = $6,
+            codex_transcript_path = coalesce($7, memory_events.codex_transcript_path),
+            session_id = coalesce($8, memory_events.session_id),
+            turn_id = coalesce($9, memory_events.turn_id),
+            source_hash = $11,
+            payload = $12,
+            token_count = $13,
+            seal_reason = coalesce($14, memory_events.seal_reason),
+            captured_at = coalesce($15::timestamptz, now()),
+            source_event_time = coalesce($16, memory_events.source_event_time),
+            source_sequence = coalesce($17, memory_events.source_sequence)
+          where $10::text like 'projection:%'
+            and memory_events.idempotency_key = $10
+            and memory_events.visibility = $3::visibility_scope
+            and memory_events.owner_user_id = $2
+            and memory_events.invalidated_at is null
+          returning
+            id, owner_user_id, visibility, event_type, session_id, turn_id,
+            token_count, seal_reason, payload, created_at
+        ),
+        inserted as (
+          insert into memory_events (
+            actor_user_id,
+            owner_user_id,
+            visibility,
+            event_type,
+            source_runtime,
+            capture_method,
+            codex_transcript_path,
+            session_id,
+            turn_id,
+            idempotency_key,
+            source_hash,
+            payload,
+            token_count,
+            seal_reason,
+            captured_at,
+            source_event_time,
+            source_sequence
+          )
+          select
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+            coalesce($15::timestamptz, now()), $16, $17
+          where not exists (select 1 from refreshed)
+          on conflict do nothing
+          returning
+            id, owner_user_id, visibility, event_type, session_id, turn_id,
+            token_count, seal_reason, payload, created_at
         )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, coalesce($15::timestamptz, now()), $16, $17)
-        on conflict do nothing
-        returning id, owner_user_id, visibility, event_type, session_id, turn_id, token_count, seal_reason, payload, created_at
+        select * from refreshed
+        union all
+        select * from inserted
       `,
       [
         actor.userId,
