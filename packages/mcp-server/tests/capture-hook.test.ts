@@ -22,6 +22,7 @@ import {
   rawItemRequestChunks,
   recordHookBreakerFailure,
   runForegroundCapturePass,
+  runTranscriptCatchup,
   selectRawConversationItemsForHook,
   selectCaptureItems,
   shouldReadTranscriptForHook,
@@ -29,6 +30,50 @@ import {
   transcriptCatchupApiRequestTimeoutMs,
   transcriptCatchupRetryDelayMs
 } from "../src/capture-hook.js";
+
+const withHookStateFile = async (
+  run: (input: { dir: string; statePath: string }) => Promise<void>
+): Promise<void> => {
+  const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
+  const priorApiUrl = process.env.MEMORY_API_URL;
+  const priorApiToken = process.env.MEMORY_API_TOKEN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
+  const statePath = path.join(dir, "hook-state.json");
+  process.env.MEMORY_HOOK_STATE_PATH = statePath;
+  process.env.MEMORY_API_URL = "http://127.0.0.1:3000";
+  process.env.MEMORY_API_TOKEN = "test-token";
+  try {
+    await run({ dir, statePath });
+  } finally {
+    if (priorStatePath === undefined) {
+      delete process.env.MEMORY_HOOK_STATE_PATH;
+    } else {
+      process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
+    }
+    if (priorApiUrl === undefined) {
+      delete process.env.MEMORY_API_URL;
+    } else {
+      process.env.MEMORY_API_URL = priorApiUrl;
+    }
+    if (priorApiToken === undefined) {
+      delete process.env.MEMORY_API_TOKEN;
+    } else {
+      process.env.MEMORY_API_TOKEN = priorApiToken;
+    }
+    fs.rmSync(dir, { force: true, recursive: true });
+  }
+};
+
+const readOnlyTranscriptCatchupStatus = (
+  statePath: string
+): Record<string, unknown> => {
+  const parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+    transcriptCatchups?: Record<string, Record<string, unknown>>;
+  };
+  const statuses = Object.values(parsed.transcriptCatchups ?? {});
+  expect(statuses).toHaveLength(1);
+  return statuses[0]!;
+};
 
 describe("Codex capture hook transcript parsing", () => {
   it("uses a short hook API timeout without changing the MCP default timeout", () => {
@@ -190,8 +235,160 @@ describe("Codex capture hook transcript parsing", () => {
     });
     expect(result).toEqual({
       rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptPath,
       transcriptBacklogRemaining: true,
       transcriptCheckpointAdvanced: false
+    });
+  });
+
+  it("records successful detached transcript catch-up breadcrumbs", async () => {
+    await withHookStateFile(async ({ dir, statePath }) => {
+      const transcriptPath = path.join(dir, "transcript.jsonl");
+      fs.writeFileSync(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          payload: { type: "user_message", message: "hello" }
+        })}\n`
+      );
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "session-status-success",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => ({
+              ok: true,
+              auth: "bearer_api_token",
+              user: {
+                id: "user-status-success",
+                email: "user@example.com",
+                displayName: null
+              },
+              canWritePersonal: true
+            })
+          },
+          acquireCatchupLock: () => ({
+            heartbeat() {},
+            release() {}
+          }),
+          runCapturePass: async () => ({
+            rawItemsStored: 2,
+            rawItemsProjected: 2,
+            transcriptPath,
+            transcriptCheckpointOffset: 123,
+            transcriptSize: 456,
+            transcriptBacklogBytes: 333,
+            transcriptBacklogRemaining: false,
+            transcriptCheckpointAdvanced: true
+          }),
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      const status = readOnlyTranscriptCatchupStatus(statePath);
+      expect(typeof status.lastStartedAt).toBe("string");
+      expect(typeof status.lastSucceededAt).toBe("string");
+      expect(status).toMatchObject({
+        transcriptPath,
+        lastError: null,
+        checkpointOffset: 123,
+        transcriptSize: 456,
+        backlogBytes: 333,
+        rawItemsStored: 2,
+        rawItemsProjected: 2
+      });
+    });
+  });
+
+  it("records retryable detached catch-up failures and supersedes them on later success", async () => {
+    await withHookStateFile(async ({ dir, statePath }) => {
+      const transcriptPath = path.join(dir, "transcript.jsonl");
+      fs.writeFileSync(transcriptPath, "");
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "session-status-retry",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => {
+              throw new MemoryApiError("rate limited", { status: 429 });
+            }
+          },
+          sleepUntilCatchupStop: async () => false,
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      const failedStatus = readOnlyTranscriptCatchupStatus(statePath);
+      expect(typeof failedStatus.lastStartedAt).toBe("string");
+      expect(typeof failedStatus.lastFailedAt).toBe("string");
+      expect(failedStatus).toMatchObject({
+        transcriptPath,
+        lastError: "rate limited"
+      });
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "session-status-retry",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => ({
+              ok: true,
+              auth: "bearer_api_token",
+              user: {
+                id: "user-status-retry",
+                email: "user@example.com",
+                displayName: null
+              },
+              canWritePersonal: true
+            })
+          },
+          acquireCatchupLock: () => ({
+            heartbeat() {},
+            release() {}
+          }),
+          runCapturePass: async () => ({
+            rawItemsStored: 1,
+            rawItemsProjected: 1,
+            transcriptPath,
+            transcriptCheckpointOffset: 50,
+            transcriptSize: 50,
+            transcriptBacklogBytes: 0,
+            transcriptBacklogRemaining: false,
+            transcriptCheckpointAdvanced: true
+          }),
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      const recoveredStatus = readOnlyTranscriptCatchupStatus(statePath);
+      expect(typeof recoveredStatus.lastFailedAt).toBe("string");
+      expect(typeof recoveredStatus.lastSucceededAt).toBe("string");
+      expect(recoveredStatus).toMatchObject({
+        transcriptPath,
+        lastError: null,
+        checkpointOffset: 50,
+        rawItemsStored: 1,
+        rawItemsProjected: 1
+      });
     });
   });
 
@@ -206,6 +403,7 @@ describe("Codex capture hook transcript parsing", () => {
     expect(triggerCatchup).toHaveBeenCalledOnce();
     expect(result).toEqual({
       rawItemsStored: 0,
+      rawItemsProjected: 0,
       transcriptBacklogRemaining: false,
       transcriptCheckpointAdvanced: false
     });
@@ -276,12 +474,148 @@ describe("Codex capture hook transcript parsing", () => {
     });
   });
 
+  it("assigns transcript rows to their real Codex turns instead of the hook payload turn", () => {
+    const payload = {
+      hook_event_name: "Stop" as const,
+      cwd: "/repo",
+      session_id: "hook-session",
+      turn_id: "hook-signal-turn"
+    };
+    const records = [
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:00.000Z",
+        payload: { type: "task_started", turn_id: "turn-a" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:01.000Z",
+        payload: { type: "user_message", message: "Prompt A" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:02.000Z",
+        payload: { type: "agent_message", message: "Reply A" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:03.000Z",
+        payload: { type: "task_complete", turn_id: "turn-a" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:04.000Z",
+        payload: { type: "task_started", turn_id: "turn-b" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:05.000Z",
+        payload: { type: "user_message", message: "Prompt B" }
+      }
+    ];
+
+    const items = buildRawTranscriptConversationItems({
+      records,
+      transcriptPath: "/tmp/session.jsonl",
+      effectiveContext: effectiveCaptureContext(payload),
+      payload
+    });
+
+    expect(
+      items.map((item) => ({
+        rawText: item.rawText,
+        sourceEventType: item.sourceEventType,
+        externalTurnId: item.externalTurnId
+      }))
+    ).toEqual([
+      {
+        rawText: "",
+        sourceEventType: "task_started",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "Prompt A",
+        sourceEventType: "user_message",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "Reply A",
+        sourceEventType: "agent_message",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "",
+        sourceEventType: "task_complete",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "",
+        sourceEventType: "task_started",
+        externalTurnId: "turn-b"
+      },
+      {
+        rawText: "Prompt B",
+        sourceEventType: "user_message",
+        externalTurnId: "turn-b"
+      }
+    ]);
+    expect(
+      items.some((item) => item.externalTurnId === "hook-signal-turn")
+    ).toBe(false);
+  });
+
+  it("starts a fresh semantic turn for each transcript user prompt when Codex omits turn ids", () => {
+    const payload = {
+      hook_event_name: "Stop" as const,
+      cwd: "/repo",
+      session_id: "session-no-turns"
+    };
+    const items = buildRawTranscriptConversationItems({
+      records: [
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:00.000Z",
+          payload: { type: "user_message", message: "First prompt" }
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:01.000Z",
+          payload: { type: "agent_message", message: "First reply" }
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:02.000Z",
+          payload: { type: "user_message", message: "Second prompt" }
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:03.000Z",
+          payload: { type: "agent_message", message: "Second reply" }
+        }
+      ],
+      transcriptPath: "/tmp/session-no-turns.jsonl",
+      effectiveContext: effectiveCaptureContext(payload),
+      payload
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "First prompt",
+      "First reply",
+      "Second prompt",
+      "Second reply"
+    ]);
+    expect(items[0]!.externalTurnId).toBe(items[1]!.externalTurnId);
+    expect(items[2]!.externalTurnId).toBe(items[3]!.externalTurnId);
+    expect(items[0]!.externalTurnId).not.toBe(items[2]!.externalTurnId);
+  });
+
   it("uses stable raw transcript idempotency across foreground and catch-up offsets", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: {
           type: "agent_message",
           message
@@ -290,12 +624,14 @@ describe("Codex capture hook transcript parsing", () => {
     fs.writeFileSync(
       transcriptPath,
       [
-        line("first checkpoint line"),
-        line("same duplicate message"),
-        line("same duplicate message")
+        line("first checkpoint line", "2026-05-01T10:00:00.000Z"),
+        line("same duplicate message", "2026-05-01T10:00:01.000Z"),
+        line("same duplicate message", "2026-05-01T10:00:02.000Z")
       ].join("")
     );
-    const firstLineBytes = Buffer.byteLength(line("first checkpoint line"));
+    const firstLineBytes = Buffer.byteLength(
+      line("first checkpoint line", "2026-05-01T10:00:00.000Z")
+    );
     const context = effectiveCaptureContext({
       hook_event_name: "PostToolUse",
       cwd: "/repo",
@@ -323,7 +659,9 @@ describe("Codex capture hook transcript parsing", () => {
         transcriptPath,
         state,
         stateScope: "scope",
-        foregroundMaxBytes: Buffer.byteLength(line("same duplicate message"))
+        foregroundMaxBytes: Buffer.byteLength(
+          line("same duplicate message", "2026-05-01T10:00:02.000Z")
+        )
       });
       const catchup = parseTranscriptFileRecords({
         transcriptPath,
@@ -365,14 +703,18 @@ describe("Codex capture hook transcript parsing", () => {
   it("can scan an existing transcript from the start without a first-contact cutoff", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
     fs.writeFileSync(
       transcriptPath,
-      `${line("old message one")}${line("old message two")}`
+      `${line("old message one", "2026-05-01T10:00:00.000Z")}${line(
+        "old message two",
+        "2026-05-01T10:00:01.000Z"
+      )}`
     );
     const size = fs.statSync(transcriptPath).size;
 
@@ -454,17 +796,169 @@ describe("Codex capture hook transcript parsing", () => {
     }
   });
 
+  it("keeps first-contact live rows and interpolates missing timestamps between source timestamps", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp?: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        ...(timestamp ? { timestamp } : {}),
+        payload: { type: "agent_message", message }
+      })}\n`;
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        line("old transcript history", "2026-01-01T00:00:00.000Z"),
+        line("live source timestamp", "2026-01-01T00:10:00.000Z"),
+        line("missing timestamp inside live window"),
+        line("next source timestamp", "2026-01-01T00:10:04.000Z")
+      ].join("")
+    );
+    const size = fs.statSync(transcriptPath).size;
+
+    try {
+      const result = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        firstContactAfter: "2026-01-01T00:05:00.000Z",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const rawItems = buildRawTranscriptConversationItems({
+        records: result.records,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          hook_event_name: "Stop",
+          session_id: "live-interpolation"
+        }),
+        payload: { hook_event_name: "Stop", session_id: "live-interpolation" }
+      });
+
+      expect(rawItems.map((item) => item.rawText)).toEqual([
+        "live source timestamp",
+        "missing timestamp inside live window",
+        "next source timestamp"
+      ]);
+      expect(rawItems.map((item) => item.eventTime)).toEqual([
+        "2026-01-01T00:10:00.000Z",
+        "2026-01-01T00:10:02.000Z",
+        "2026-01-01T00:10:04.000Z"
+      ]);
+      expect(rawItems[1]!.metadata).toMatchObject({
+        sourceEventTimeAccuracy: "interpolated_between_sources"
+      });
+      expect(result.checkpoint).toMatchObject({
+        offset: size,
+        lineCount: 4,
+        size,
+        lastEventTime: "2026-01-01T00:10:04.000Z"
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("holds a stampless transcript tail until a later source timestamp anchors it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp?: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        ...(timestamp ? { timestamp } : {}),
+        payload: { type: "agent_message", message }
+      })}\n`;
+    const previousLine = line(
+      "previous timestamped row",
+      "2026-01-01T00:10:00.000Z"
+    );
+    const missingLine = line("stampless tail row");
+    fs.writeFileSync(transcriptPath, previousLine + missingLine);
+    const previousSize = Buffer.byteLength(previousLine);
+    const state = {
+      seen: {},
+      rawSeen: {},
+      transcriptOffsets: {
+        [`scope:${transcriptPath}`]: {
+          offset: previousSize,
+          lineCount: 1,
+          size: previousSize,
+          lastEventTime: "2026-01-01T00:10:00.000Z"
+        }
+      }
+    };
+
+    try {
+      const held = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      expect(held.records).toEqual([]);
+      expect(held.checkpoint).toMatchObject({
+        offset: previousSize,
+        lineCount: 1,
+        lastEventTime: "2026-01-01T00:10:00.000Z"
+      });
+
+      fs.appendFileSync(
+        transcriptPath,
+        line("later timestamped row", "2026-01-01T00:10:04.000Z")
+      );
+      const anchored = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const rawItems = buildRawTranscriptConversationItems({
+        records: anchored.records,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          hook_event_name: "Stop",
+          session_id: "stampless-tail"
+        }),
+        payload: { hook_event_name: "Stop", session_id: "stampless-tail" }
+      });
+
+      expect(rawItems.map((item) => item.rawText)).toEqual([
+        "stampless tail row",
+        "later timestamped row"
+      ]);
+      expect(rawItems.map((item) => item.eventTime)).toEqual([
+        "2026-01-01T00:10:02.000Z",
+        "2026-01-01T00:10:04.000Z"
+      ]);
+      expect(rawItems[0]!.metadata).toMatchObject({
+        sourceEventTimeAccuracy: "interpolated_between_sources"
+      });
+      expect(anchored.checkpoint).toMatchObject({
+        lineCount: 3,
+        lastEventTime: "2026-01-01T00:10:04.000Z"
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
   it("reads only appended transcript records after the initial checkpoint", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
-    fs.writeFileSync(transcriptPath, line("old message"));
+    fs.writeFileSync(
+      transcriptPath,
+      line("old message", "2026-05-01T10:00:00.000Z")
+    );
     const initialSize = fs.statSync(transcriptPath).size;
-    fs.appendFileSync(transcriptPath, line("new message"));
+    fs.appendFileSync(
+      transcriptPath,
+      line("new message", "2026-05-01T10:00:01.000Z")
+    );
     const finalSize = fs.statSync(transcriptPath).size;
 
     try {
@@ -501,14 +995,18 @@ describe("Codex capture hook transcript parsing", () => {
     process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES = "140";
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
     fs.writeFileSync(
       transcriptPath,
-      `${line("first message")}${line("second message")}${line("third message")}`
+      `${line("first message", "2026-05-01T10:00:00.000Z")}${line(
+        "second message",
+        "2026-05-01T10:00:01.000Z"
+      )}${line("third message", "2026-05-01T10:00:02.000Z")}`
     );
     const size = fs.statSync(transcriptPath).size;
 
@@ -541,21 +1039,24 @@ describe("Codex capture hook transcript parsing", () => {
   it("lets foreground hooks read the latest tail while leaving backlog checkpointing to background catch-up", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
     fs.writeFileSync(
       transcriptPath,
       [
-        line("first backlog message"),
-        line("second backlog message"),
-        line("third backlog message"),
-        line("latest foreground message")
+        line("first backlog message", "2026-05-01T10:00:00.000Z"),
+        line("second backlog message", "2026-05-01T10:00:01.000Z"),
+        line("third backlog message", "2026-05-01T10:00:02.000Z"),
+        line("latest foreground message", "2026-05-01T10:00:03.000Z")
       ].join("")
     );
-    const firstLineBytes = Buffer.byteLength(line("first backlog message"));
+    const firstLineBytes = Buffer.byteLength(
+      line("first backlog message", "2026-05-01T10:00:00.000Z")
+    );
 
     try {
       const result = parseForegroundTranscriptFileRecords({
@@ -572,7 +1073,9 @@ describe("Codex capture hook transcript parsing", () => {
           }
         },
         stateScope: "scope",
-        foregroundMaxBytes: Buffer.byteLength(line("latest foreground message"))
+        foregroundMaxBytes: Buffer.byteLength(
+          line("latest foreground message", "2026-05-01T10:00:03.000Z")
+        )
       });
 
       expect(result.backgroundCatchupNeeded).toBe(true);
@@ -598,7 +1101,9 @@ describe("Codex capture hook transcript parsing", () => {
           }
         },
         stateScope: "scope",
-        maxBytes: Buffer.byteLength(line("second backlog message"))
+        maxBytes: Buffer.byteLength(
+          line("second backlog message", "2026-05-01T10:00:01.000Z")
+        )
       });
 
       expect(JSON.stringify(background.records)).toContain(

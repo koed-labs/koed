@@ -45,8 +45,10 @@ items remain raw provenance only. Canonical transcript `function_call` and
 `function_call_output` rows are the tool items used for rendering and semantic
 memory; lower-level MCP and patch lifecycle event rows are retained only as raw
 provenance. In the current product model, UI projection and embedding selection
-intentionally match for every rule. Unlisted transcript item types default to
-raw provenance only until a policy row deliberately opts them in.
+intentionally match for every rule. The same policy row also controls whether a
+projected Memory Event may become an LCM source through `include_in_lcm`.
+Unlisted transcript item types default to raw provenance only until a policy row
+deliberately opts them in.
 
 ## Current Codex Adapters
 
@@ -54,7 +56,11 @@ Codex transcript hooks use `sourceAdapterVersion=codex-transcript-v1` and
 `sourceTransport=hook`. Each transcript line becomes one raw
 `conversation_items` row before selected records are projected into
 `memory_events`. Hooks do not write semantic `memory_events` directly; the raw
-projection endpoint is the only hook-backed path that derives chat memory.
+projection endpoint is the only hook-backed path that derives chat memory. Hook
+payloads are capture signals, not semantic content sources; transcript JSONL
+timestamps define source chronology. If an otherwise readable transcript row is
+missing a timestamp, catch-up holds it at the current checkpoint until a later
+timestamped row allows deterministic interpolation.
 
 Codex app-server workers use `sourceAdapterVersion=codex-app-server-v1` and
 `sourceTransport=app_server`. Koed records app-server thread/turn calls and

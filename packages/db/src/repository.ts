@@ -867,6 +867,7 @@ type ConversationProjectionPolicy = {
   createMessage: boolean;
   createSemanticEvent: boolean;
   createToolEvent: boolean;
+  includeInLcm: boolean;
   reason: string;
 };
 
@@ -1069,6 +1070,7 @@ const classifyConversationItemProjection = (
     createMessage: false,
     createSemanticEvent: false,
     createToolEvent: false,
+    includeInLcm: false,
     reason: "not-projectable"
   };
   if (projectionIsIdeClientContext(row)) {
@@ -1117,6 +1119,7 @@ const classifyConversationItemProjection = (
       createMessage,
       createSemanticEvent,
       createToolEvent,
+      includeInLcm: matchedRule.includeInLcm,
       reason: createSemanticEvent
         ? `projection-policy:${matchedRule.transcriptType}`
         : `projection-policy-raw-only:${matchedRule.transcriptType}`
@@ -1135,6 +1138,9 @@ const conversationItemIsTurnCompleteSignal = (row: {
   raw_json: unknown;
   metadata?: Record<string, unknown> | null;
 }): boolean => {
+  if (row.source_record_type !== "hook_payload") {
+    return false;
+  }
   if (/^(Stop|SubagentStop)$/i.test(row.source_event_type ?? "")) {
     return true;
   }
@@ -2279,6 +2285,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
       sourceHash: logicalItem.sourceHash,
       actorType,
       content,
+      includeInLcm: projectionPolicy.includeInLcm,
       projectionMetadata: canonicalProjectMetadata({
         metadata: row.metadata,
         sessionMetadata: row.session_metadata,
@@ -2312,6 +2319,9 @@ const rebuiltSemanticMemoryEventsFromSources = async (
   const allSourceIds = uniqueOrderedStrings(
     semanticItems.flatMap((item) => item.sourceIds)
   );
+  const includeInLcmBySourceIdentity = new Map(
+    semanticItems.map((item) => [item.sourceIdentity, item.includeInLcm])
+  );
   const supportingSources = await pool.query<{ id: string }>(
     `
       select distinct ci.id
@@ -2335,6 +2345,10 @@ const rebuiltSemanticMemoryEventsFromSources = async (
     "source_event_rebuild";
 
   for (const chunk of chunks) {
+    const includeInLcm = chunk.sourceIdentities.some(
+      (sourceIdentity) =>
+        includeInLcmBySourceIdentity.get(sourceIdentity) === true
+    );
     const unitHash = createHash("sha256")
       .update(
         JSON.stringify({
@@ -2380,6 +2394,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           sourceActors,
           unitType,
           sealedReason: originalSealReason,
+          includeInLcm,
           projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
           model,
           rebuild: {
@@ -2841,7 +2856,11 @@ export const createMemorySourceRepository = (
               s.cwd,
               'unknown-project'
             ) as boundary_workspace,
-            coalesce(ci.event_time, ci.observed_at) as boundary_order_at
+            coalesce(ci.event_time, ci.observed_at) as boundary_order_at,
+            (
+              ci.source_record_type = 'hook_payload'
+              and lower(coalesce(ci.source_event_type, ci.raw_json ->> 'hook_event_name', ci.metadata ->> 'hookEventName', '')) in ('stop', 'subagentstop')
+            ) as is_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
           where ci.projection_status in ('pending', 'error')
@@ -2860,6 +2879,7 @@ export const createMemorySourceRepository = (
             boundary_turn,
             boundary_thread,
             boundary_workspace,
+            bool_or(is_turn_complete_signal) as has_turn_complete_signal,
             min(boundary_order_at) as oldest_at,
             min(id::text) as oldest_id
           from pending_items
@@ -2879,12 +2899,20 @@ export const createMemorySourceRepository = (
           pi.transport_chunk_text, pi.transport_chunk_encoding,
           pi.source_hash, pi.idempotency_key, pi.metadata, pi.observed_at,
           pi.session_workspace_id, pi.session_cwd, pi.session_metadata
-        from pending_items pi
-        join selected_boundaries sb
-          on sb.boundary_session = pi.boundary_session
-          and sb.boundary_turn = pi.boundary_turn
-          and sb.boundary_thread = pi.boundary_thread
-          and sb.boundary_workspace = pi.boundary_workspace
+	      from pending_items pi
+	      join selected_boundaries sb
+	          on (
+	            sb.boundary_session = pi.boundary_session
+	            and sb.boundary_turn = pi.boundary_turn
+	            and sb.boundary_thread = pi.boundary_thread
+	            and sb.boundary_workspace = pi.boundary_workspace
+	          )
+	          or (
+	            sb.has_turn_complete_signal
+	            and sb.boundary_session = pi.boundary_session
+	            and sb.boundary_thread = pi.boundary_thread
+	            and sb.boundary_workspace = pi.boundary_workspace
+	          )
         order by
           sb.oldest_at asc,
           sb.oldest_id asc,
@@ -2987,6 +3015,7 @@ export const createMemorySourceRepository = (
                 sourceHash: logicalItem.sourceHash,
                 actorType,
                 content,
+                includeInLcm: projectionPolicy.includeInLcm,
                 projectionMetadata
               }
             : null;
@@ -3052,6 +3081,9 @@ export const createMemorySourceRepository = (
       const allSourceIds = uniqueOrderedStrings(
         items.flatMap((item) => item.sourceIds)
       );
+      const includeInLcmBySourceIdentity = new Map(
+        items.map((item) => [item.sourceIdentity, item.includeInLcm])
+      );
       const boundaryKey = conversationSemanticBoundaryKey(first);
       const supportingContexts =
         unitType === "user_turn"
@@ -3066,6 +3098,10 @@ export const createMemorySourceRepository = (
       const createdEventIds: string[] = [];
 
       for (const chunk of chunks) {
+        const includeInLcm = chunk.sourceIdentities.some(
+          (sourceIdentity) =>
+            includeInLcmBySourceIdentity.get(sourceIdentity) === true
+        );
         const unitHash = createHash("sha256")
           .update(
             JSON.stringify({
@@ -3109,6 +3145,7 @@ export const createMemorySourceRepository = (
               sourceActors,
               unitType,
               sealedReason,
+              includeInLcm,
               projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
               model
             }),
@@ -3828,7 +3865,7 @@ export const createMemorySourceRepository = (
             await markProjected(sourceIds);
         }
         if (turnCompleteSignal) {
-          await flushAgentBundle(boundary.key, "stop_hook");
+          await flushAgentBundlesForScope(boundary.scopeKey, "stop_hook");
         }
       } catch (error) {
         await markProjectionError(sourceIds, error);
@@ -7530,6 +7567,7 @@ export const createMemorySourceRepository = (
           where me.invalidated_at is null and me.personal_deleted_at is null
             and me.visibility = $1
             and me.owner_user_id = $2
+            and coalesce((me.payload #>> '{metadata,includeInLcm}')::boolean, true)
             and not exists (
               select 1
               from memory_node_sources mns

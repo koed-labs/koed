@@ -3865,6 +3865,130 @@ describeDb("memory repository visibility", () => {
     }
   });
 
+  it("uses projection policy rules to keep semantic events out of LCM", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-policy-lcm-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const transcriptType = `projection_policy_lcm_user_${randomUUID().replaceAll("-", "_")}`;
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Projection Policy LCM Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-policy-lcm-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `projection-policy-lcm-session-${randomUUID()}`
+      }
+    );
+
+    await pool.query(
+      `
+        insert into projection_policy_rules (
+          transcript_type,
+          description,
+          project_to_ui,
+          create_message,
+          create_tool_event,
+          create_memory_event,
+          include_in_embedding,
+          include_in_lcm
+        )
+        values (
+          $1,
+          'Temporary LCM exclusion projection policy rule.',
+          true,
+          true,
+          false,
+          true,
+          true,
+          false
+        )
+      `,
+      [transcriptType]
+    );
+
+    try {
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: Array.from({ length: 5 }, (_, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: `projection-policy-lcm-turn-${index}`,
+            sourceRecordType: "event_msg",
+            sourceEventType: transcriptType,
+            sourceSequence: index + 1,
+            eventTime: `2026-04-01T12:00:0${index}.000Z`,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: transcriptType,
+                role: "user",
+                content: `LCM-excluded semantic event ${index + 1}.`
+              }
+            },
+            rawText: `LCM-excluded semantic event ${index + 1}.`,
+            sourceHash: `projection-policy-lcm-${index}-${randomUUID()}`,
+            idempotencyKey: `projection-policy-lcm-${index}-${randomUUID()}`,
+            projectionStatus: "pending" as const,
+            metadata: {
+              workspaceId,
+              transcriptType
+            }
+          }))
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const memoryEvents = await pool.query<{ include_in_lcm: string | null }>(
+        `
+          select payload #>> '{metadata,includeInLcm}' as include_in_lcm
+          from memory_events
+          where session_id = $1
+          order by captured_at asc
+        `,
+        [session.id]
+      );
+      const compacted = await repo.createLcmNodes(
+        { userId: alice.id },
+        { visibility: "personal" }
+      );
+
+      expect(projection).toMatchObject({
+        messagesCreated: 5,
+        memoryEventsCreated: 5
+      });
+      expect(memoryEvents.rows.map((row) => row.include_in_lcm)).toEqual([
+        "false",
+        "false",
+        "false",
+        "false",
+        "false"
+      ]);
+      expect(compacted.leafNodeIds).toEqual([]);
+    } finally {
+      await pool.query(
+        "delete from projection_policy_rules where transcript_type = $1",
+        [transcriptType]
+      );
+    }
+  });
+
   it("uses raw-only projection policy rows to suppress fallback tool projection", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-policy-raw-only-${randomUUID()}@example.com`
@@ -4305,6 +4429,74 @@ describeDb("memory repository visibility", () => {
       ])
     );
     expect(memoryEvents.rows[0]?.count).toBe("1");
+  });
+
+  it("does not assign canonical content identity to transcript lifecycle rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lifecycle-canonical-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Lifecycle Canonical Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `lifecycle-canonical-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `lifecycle-canonical-session-${randomUUID()}`
+      }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "lifecycle-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_started",
+            sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_started", turn_id: "lifecycle-turn" }
+            },
+            rawText: "Task started",
+            sourceHash: `lifecycle-start-${randomUUID()}`,
+            idempotencyKey: `lifecycle-start-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              workspaceId,
+              transcriptType: "task_started"
+            }
+          }
+        ]
+      }
+    );
+
+    const rawRows = await pool.query<{ canonical_key: string | null }>(
+      `
+        select metadata ->> 'canonicalConversationItemKey' as canonical_key
+        from conversation_items
+        where session_id = $1
+      `,
+      [session.id]
+    );
+
+    expect(rawRows.rows).toEqual([{ canonical_key: null }]);
   });
 
   it("updates existing message projections when source hash wins the conflict", async () => {
@@ -8672,7 +8864,7 @@ describeDb("memory repository visibility", () => {
     }
   });
 
-  it("seals transcript-derived agent bundles on Stop hook metadata", async () => {
+  it("seals same-scope transcript agent bundles when only a mismatched Stop hook control record is projected", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-stop-metadata-${randomUUID()}@example.com`
     });
@@ -8693,7 +8885,7 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "hook",
-            externalTurnId: "stop-metadata-turn",
+            externalTurnId: "transcript-assigned-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
             sourceSequence: 0,
@@ -8709,7 +8901,7 @@ describeDb("memory repository visibility", () => {
             sourceHash: `projection-stop-metadata-agent-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-agent-${randomUUID()}`,
             metadata: {
-              hookEventName: "Stop",
+              hookEventName: "UserPromptSubmit",
               transcriptType: "agent_message"
             }
           },
@@ -8718,7 +8910,7 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "hook",
-            externalTurnId: "stop-metadata-turn",
+            externalTurnId: "transcript-assigned-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "token_count",
             sourceSequence: 1,
@@ -8741,15 +8933,42 @@ describeDb("memory repository visibility", () => {
             rawText: "",
             sourceHash: `projection-stop-metadata-token-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-token-${randomUUID()}`,
+            metadata: { hookEventName: "UserPromptSubmit" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "hook-payload-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 2,
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "stop-metadata-turn"
+            },
+            sourceHash: `projection-stop-metadata-control-${randomUUID()}`,
+            idempotencyKey: `projection-stop-metadata-control-${randomUUID()}`,
             metadata: { hookEventName: "Stop" }
           }
         ]
       }
     );
+    const stopControl = await pool.query<{ id: string }>(
+      `
+        select id
+        from conversation_items
+        where session_id = $1
+          and source_adapter_version = 'codex-hook-v1'
+          and source_event_type = 'Stop'
+      `,
+      [session.id]
+    );
 
     const projection = await repo.projectPendingConversationItems(
       { userId: alice.id },
-      { limit: 10 }
+      { conversationItemIds: [stopControl.rows[0]!.id], limit: 1 }
     );
     const events = await pool.query<{
       content: string;
@@ -8794,7 +9013,7 @@ describeDb("memory repository visibility", () => {
       }
     ]);
     expect(statuses.rows).toEqual([
-      { projection_status: "projected", count: "2" }
+      { projection_status: "projected", count: "3" }
     ]);
   });
 

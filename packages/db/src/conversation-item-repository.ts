@@ -246,7 +246,7 @@ const canonicalConversationItemIdentity = (
 } | null => {
   if (
     item.sourceRecordType === "hook_payload" ||
-    !/^codex-(hook|transcript)-v/i.test(item.sourceAdapterVersion)
+    item.sourceAdapterVersion !== "codex-transcript-v1"
   ) {
     return null;
   }
@@ -281,6 +281,14 @@ const canonicalConversationItemIdentity = (
     return null;
   }
   const kind = canonicalConversationKind(item, actor);
+  if (
+    kind !== "message" &&
+    kind !== "reasoning_summary" &&
+    kind !== "tool_call" &&
+    kind !== "tool_result"
+  ) {
+    return null;
+  }
   const contentHash = normalizedContentHash(content);
   if (item.sourcePath && typeof item.sourceSequence === "number") {
     const key = `conversation-item:${sha256({

@@ -262,13 +262,21 @@ describe("memory answer worker", () => {
       {
         ...payload,
         markdown: "Answer",
+        retrieval: {
+          evidenceCount: 1
+        },
         localMemoryWorker: {
           provider: "codex",
           promptVersion: MEMORY_ANSWER_PROMPT_VERSION,
           jobId: "job-1",
           model: "gpt-5.4-mini",
           usedFallback: false,
-          appServerEvents: [{ method: "item/tool/call" }],
+          appServerEvents: [
+            {
+              method: "item/tool/call",
+              observedAt: "2026-06-01T12:00:00.000Z"
+            }
+          ],
           appServerExecutions: [
             {
               model: "gpt-5.4-mini",
@@ -276,7 +284,12 @@ describe("memory answer worker", () => {
                 last: { totalTokens: 10 },
                 total: { totalTokens: 10 }
               },
-              rawEvents: [{ method: "item/tool/call/response" }]
+              rawEvents: [
+                {
+                  method: "item/tool/call/response",
+                  observedAt: "2026-06-01T12:00:01.000Z"
+                }
+              ]
             }
           ]
         }
@@ -284,12 +297,14 @@ describe("memory answer worker", () => {
       "with_citations"
     );
 
-    const worker = response.localMemoryWorker as Record<string, unknown>;
+    const worker = response.localMemoryWorker as unknown as Record<
+      string,
+      unknown
+    >;
     expect(worker.appServerEvents).toBeUndefined();
     expect(
-      (
-        (worker.appServerExecutions as Array<Record<string, unknown>>) ?? []
-      )[0]?.rawEvents
+      ((worker.appServerExecutions as Array<Record<string, unknown>>) ?? [])[0]
+        ?.rawEvents
     ).toBeUndefined();
   });
 

@@ -51,7 +51,10 @@ being enumerated as unsupported by this public self-hosted build.
    last checkpoint up to the latest complete JSONL line. If live capture sees
    an existing transcript with no checkpoint, it baselines to the current end of
    file after ingesting only timestamped rows in the first-contact grace window;
-   older transcript history requires an explicit historical import.
+   older transcript history requires an explicit historical import. Rows without
+   source timestamps are held at the checkpoint until a later timestamped row
+   lets Koed interpolate their source time without reordering transcript
+   chronology.
 4. Catch-up converts Codex transcript records into canonical raw
    `conversation_items` observations with source adapter metadata, idempotency
    keys, source hashes, and `projectionStatus=pending`. `Stop` and
@@ -94,6 +97,7 @@ sequenceDiagram
   Client->>Hook: Supported hook event and transcript path
   Hook-->>Hook: Start detached transcript catch-up
   Hook-->>Client: Return without waiting for capture work
+  Hook->>DB: Update local catch-up status breadcrumbs
   Hook->>API: Background access check and raw conversation_items
   API->>DB: Persist or reconcile transcript rows idempotently
   Worker->>DB: Catch up pending raw rows
