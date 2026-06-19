@@ -730,6 +730,9 @@ describeDb("memory repository visibility", () => {
       `,
       [owner.id]
     );
+    await expect(
+      pool.query("delete from users where id = $1", [owner.id])
+    ).rejects.toThrow();
 
     const retained = await pool.query<{
       id: string;
@@ -761,6 +764,21 @@ describeDb("memory repository visibility", () => {
       retention_reason: "active_team_share"
     });
     expect(retained.rows[0]!.personal_deleted_at).toBeInstanceOf(Date);
+    const retainedSources = await pool.query<{
+      session_exists: string;
+      memory_event_exists: string;
+    }>(
+      `
+        select
+          exists(select 1 from sessions where id = $1)::text as session_exists,
+          exists(select 1 from memory_events where id = $2)::text as memory_event_exists
+      `,
+      [session.id, event.id]
+    );
+    expect(retainedSources.rows[0]).toEqual({
+      session_exists: "true",
+      memory_event_exists: "true"
+    });
     await expect(
       repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
     ).resolves.toMatchObject({

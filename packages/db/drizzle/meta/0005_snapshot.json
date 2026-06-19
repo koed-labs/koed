@@ -1,5 +1,5 @@
 {
-  "id": "152d9c13-29de-4b4c-a30b-19d683574fc7",
+  "id": "23f2a0e7-2995-42ff-8159-50ef8e0974a6",
   "prevId": "4c60cbb1-b35d-4622-a2e3-21a84ca05b91",
   "version": "7",
   "dialect": "postgresql",
@@ -918,7 +918,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "conversation_items_session_id_sessions_id_fk": {
@@ -1443,7 +1443,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "memory_embeddings_personal_deleted_by_user_id_users_id_fk": {
@@ -2158,7 +2158,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "memory_events_session_id_sessions_id_fk": {
@@ -2820,7 +2820,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "memory_nodes_created_by_user_id_users_id_fk": {
@@ -3424,7 +3424,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -3901,7 +3901,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         },
         "sessions_workspace_id_workspaces_id_fk": {
@@ -5025,7 +5025,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -5273,7 +5273,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -6035,7 +6035,7 @@
           "tableTo": "users",
           "columnsFrom": ["owner_user_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },

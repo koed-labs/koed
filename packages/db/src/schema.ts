@@ -225,9 +225,7 @@ export const workspaces = pgTable(
   "workspaces",
   {
     id: id(),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull(),
     name: text("name").notNull(),
     rootPath: text("root_path"),
@@ -248,9 +246,7 @@ export const sessions = pgTable(
   "sessions",
   {
     id: id(),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     workspaceId: uuid("workspace_id").references(() => workspaces.id, {
       onDelete: "set null"
     }),
@@ -321,9 +317,7 @@ export const turns = pgTable(
     sessionId: uuid("session_id")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull().default("personal"),
     externalTurnId: text("external_turn_id"),
     turnIndex: integer("turn_index"),
@@ -376,9 +370,7 @@ export const messages = pgTable(
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
     turnId: uuid("turn_id").references(() => turns.id, { onDelete: "cascade" }),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull().default("personal"),
     role: text("role").notNull(),
     content: text("content").notNull(),
@@ -429,9 +421,7 @@ export const toolEvents = pgTable(
     messageId: uuid("message_id").references(() => messages.id, {
       onDelete: "set null"
     }),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull().default("personal"),
     toolName: text("tool_name").notNull(),
     toolInput: jsonb("tool_input").$type<unknown>(),
@@ -476,9 +466,7 @@ export const memoryEvents = pgTable(
     actorUserId: uuid("actor_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull(),
     eventType: memoryEventType("event_type").notNull(),
     sourceRuntime: sourceRuntime("source_runtime"),
@@ -576,9 +564,7 @@ export const memoryNodes = pgTable(
   "memory_nodes",
   {
     id: id(),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     createdByUserId: uuid("created_by_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
@@ -740,9 +726,7 @@ export const memoryEmbeddings = pgTable(
     messageId: uuid("message_id").references(() => messages.id, {
       onDelete: "cascade"
     }),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull(),
     embeddingModel: text("embedding_model").notNull(),
     embeddingDimensions: integer("embedding_dimensions").notNull(),
@@ -1018,9 +1002,7 @@ export const conversationItems = pgTable(
   "conversation_items",
   {
     id: id(),
-    ownerUserId: uuid("owner_user_id").references(() => users.id, {
-      onDelete: "cascade"
-    }),
+    ownerUserId: uuid("owner_user_id").references(() => users.id),
     visibility: visibilityScope("visibility").notNull().default("personal"),
     sessionId: uuid("session_id").references(() => sessions.id, {
       onDelete: "set null"
