@@ -96,6 +96,194 @@ export interface StatusGroupDefinition {
   action?: StatusGroupAction;
 }
 
+export type StatusCardActionCommand =
+  | "status"
+  | "start"
+  | "setup_codex"
+  | "doctor"
+  | "open_explorer"
+  | "copy_diagnostics";
+
+export interface StatusCardAction {
+  label: string;
+  command: StatusCardActionCommand;
+  timeoutMs?: number;
+  primary?: boolean;
+}
+
+export interface StatusCardDefinition {
+  id: string;
+  title: string;
+  role: string;
+  impact: string;
+  componentKeys: readonly StatusComponentKey[];
+  primaryAction: StatusCardAction;
+  secondaryActions: readonly StatusCardAction[];
+}
+
+export const statusCards = [
+  {
+    id: "controlPlane",
+    title: "Koed Control Plane",
+    role: "Supervises KOED_HOME plus local API, Worker, and Explorer processes.",
+    impact:
+      "Local startup and process supervision are blocked when this is down.",
+    componentKeys: ["api", "workerQueues", "explorer"],
+    primaryAction: {
+      label: "Start Koed",
+      command: "start",
+      timeoutMs: 180_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
+    id: "api",
+    title: "Core API",
+    role: "HTTP API used by Explorer, Capture Hook, MCP Server, and recall.",
+    impact:
+      "Capture, recall, settings, and Explorer calls fail when unreachable.",
+    componentKeys: ["api"],
+    primaryAction: {
+      label: "Ensure API is running",
+      command: "start",
+      timeoutMs: 180_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Refresh", command: "status", timeoutMs: 10_000 },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 }
+    ]
+  },
+  {
+    id: "memoryStore",
+    title: "Memory Store",
+    role: "Postgres/pgvector storage for users, tokens, memory, and embeddings.",
+    impact: "Durable memory capture and recall are unavailable without it.",
+    componentKeys: ["database"],
+    primaryAction: {
+      label: "Start dependencies",
+      command: "start",
+      timeoutMs: 180_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
+    id: "queueWorker",
+    title: "Queue + Worker",
+    role: "Redis queues and Worker process for projection, embeddings, and compaction.",
+    impact:
+      "Captured memory may remain raw or unembedded when this is degraded.",
+    componentKeys: ["redis", "workerQueues"],
+    primaryAction: {
+      label: "Ensure worker stack",
+      command: "start",
+      timeoutMs: 180_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Refresh", command: "status", timeoutMs: 10_000 },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 }
+    ]
+  },
+  {
+    id: "embeddingEngine",
+    title: "Embedding Engine",
+    role: "Local model runtime that turns memory text into retrieval vectors.",
+    impact: "Semantic recall and new memory indexing are degraded without it.",
+    componentKeys: ["embeddingService"],
+    primaryAction: {
+      label: "Ensure embedding stack",
+      command: "start",
+      timeoutMs: 180_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Refresh", command: "status", timeoutMs: 10_000 },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 }
+    ]
+  },
+  {
+    id: "aiClientIntegration",
+    title: "AI Client Integration",
+    role: "API Token, Codex config, and MCP Server used for Memory Answer recall.",
+    impact:
+      "The AI Client cannot call Koed memory tools when this is incomplete.",
+    componentKeys: ["apiToken", "mcpServer", "codex"],
+    primaryAction: {
+      label: "Setup Codex",
+      command: "setup_codex",
+      timeoutMs: 300_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
+    id: "capturePath",
+    title: "Capture Path",
+    role: "Supported Capture Hook and credentials used to turn AI-client activity into memory.",
+    impact:
+      "New conversations will not be captured automatically when this is blocked.",
+    componentKeys: ["captureHook", "apiToken", "api"],
+    primaryAction: {
+      label: "Verify capture setup",
+      command: "setup_codex",
+      timeoutMs: 300_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Refresh", command: "status", timeoutMs: 10_000 }
+    ]
+  },
+  {
+    id: "memoryProcessing",
+    title: "Memory Processing",
+    role: "LCM Summary Service and verification that keep captured memory compact and useful.",
+    impact:
+      "Recall still works, but summaries and titles can be stale when degraded.",
+    componentKeys: ["lcmSummaryService", "lastVerification"],
+    primaryAction: {
+      label: "Run diagnostics",
+      command: "doctor",
+      timeoutMs: 90_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Setup Codex", command: "setup_codex", timeoutMs: 300_000 },
+      { label: "Copy diagnostics", command: "copy_diagnostics" }
+    ]
+  },
+  {
+    id: "explorer",
+    title: "Explorer",
+    role: "Embedded UI for browsing captured memory and local settings.",
+    impact: "Inspection UI is unavailable when this local surface is down.",
+    componentKeys: ["explorer"],
+    primaryAction: {
+      label: "Open Explorer",
+      command: "open_explorer",
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Ensure Explorer", command: "start", timeoutMs: 180_000 },
+      { label: "Refresh", command: "status", timeoutMs: 10_000 }
+    ]
+  }
+] as const satisfies readonly StatusCardDefinition[];
+
+export type StatusCardId = (typeof statusCards)[number]["id"];
+
 export const statusGroups = [
   {
     id: "services",

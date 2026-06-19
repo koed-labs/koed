@@ -1,11 +1,11 @@
 import koedMarkUrl from "../../explorer/src/koed/assets/koed-mark.svg";
 import "./styles.css";
 import {
-  componentDefinitions,
   stateLabels,
-  statusGroups,
-  type StatusComponentKey,
-  type StatusGroupId
+  statusCards,
+  type StatusCardAction,
+  type StatusCardId,
+  type StatusComponentKey
 } from "./status-model.js";
 import type {
   ComponentState,
@@ -77,12 +77,36 @@ let startupRunning = false;
 let rendered = false;
 let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
-let lastStartupLogEntry = "";
 type StartupLogLine = {
   key?: string;
   text: string;
 };
-const startupLogLines: StartupLogLine[] = [];
+const startupStepLogs: Record<StartupStepId, StartupLogLine[]> = {
+  status: [],
+  start: [],
+  setup: [],
+  health: []
+};
+const readinessCheckLogs: Record<StartupStepId, StartupLogLine[]> = {
+  status: [],
+  start: [],
+  setup: [],
+  health: []
+};
+const lastStartupLogEntry: Partial<Record<StartupStepId, string>> = {};
+const lastReadinessLogEntry: Partial<Record<StartupStepId, string>> = {};
+const startupStepExpanded: Partial<Record<StartupStepId, boolean>> = {};
+const readinessCheckExpanded: Partial<Record<StartupStepId, boolean>> = {};
+const readinessCheckedAt: Partial<Record<StartupStepId, string>> = {};
+const statusCardExpanded: Partial<Record<StatusCardId, boolean>> = {};
+const statusCardCheckedAt: Partial<Record<StatusCardId, string>> = {};
+const statusCardActionLogs = Object.fromEntries(
+  statusCards.map((card) => [card.id, [] as StartupLogLine[]])
+) as Record<StatusCardId, StartupLogLine[]>;
+const lastStatusCardActionLogEntry: Partial<Record<StatusCardId, string>> = {};
+let syncingStartupStepOpen = false;
+let syncingReadinessCheckOpen = false;
+let syncingStatusCardOpen = false;
 const desktopStartLogSeen = new Set<string>();
 const startupProbeCounts: Partial<Record<StartupStepId, number>> = {};
 const startupProbeLimits: Partial<Record<StartupStepId, number>> = {};
@@ -129,6 +153,24 @@ const escapeHtml = (value: string): string =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+const copyText = async (value: string): Promise<void> => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+};
+
 const timestamp = (): string =>
   new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -136,42 +178,126 @@ const timestamp = (): string =>
     second: "2-digit"
   }).format(new Date());
 
-const appendStartupLog = (message: string, key?: string): void => {
+const appendReadinessLog = (
+  step: StartupStepId,
+  message: string,
+  key?: string
+): void => {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  const lines = readinessCheckLogs[step];
+  const text = `${timestamp()}  ${trimmed}`;
+  if (key) {
+    const existing = lines.find((line) => line.key === key);
+    if (existing) {
+      existing.text = text;
+      lastReadinessLogEntry[step] = trimmed;
+      return;
+    }
+  } else if (trimmed === lastReadinessLogEntry[step]) {
+    return;
+  }
+  lastReadinessLogEntry[step] = trimmed;
+  lines.push({ key, text });
+  while (lines.length > 80) {
+    lines.shift();
+  }
+};
+
+const appendStatusCardLog = (
+  cardId: StatusCardId,
+  message: string,
+  key?: string
+): void => {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  const lines = statusCardActionLogs[cardId];
+  const text = `${timestamp()}  ${trimmed}`;
+  if (key) {
+    const existing = lines.find((line) => line.key === key);
+    if (existing) {
+      existing.text = text;
+      lastStatusCardActionLogEntry[cardId] = trimmed;
+      return;
+    }
+  } else if (trimmed === lastStatusCardActionLogEntry[cardId]) {
+    return;
+  }
+  lastStatusCardActionLogEntry[cardId] = trimmed;
+  lines.push({ key, text });
+  while (lines.length > 24) {
+    lines.shift();
+  }
+};
+
+const appendStartupLog = (
+  message: string,
+  key?: string,
+  step: StartupStepId = currentStartupStep() ?? "status"
+): void => {
   const trimmed = message.trim();
   if (!trimmed) {
     return;
   }
 
+  const lines = startupStepLogs[step];
   const text = `${timestamp()}  ${trimmed}`;
   if (key) {
-    const existing = startupLogLines.find((line) => line.key === key);
+    const existing = lines.find((line) => line.key === key);
     if (existing) {
       existing.text = text;
-      lastStartupLogEntry = trimmed;
+      lastStartupLogEntry[step] = trimmed;
+      appendReadinessLog(step, trimmed, key);
       return;
     }
-  } else if (trimmed === lastStartupLogEntry) {
+  } else if (trimmed === lastStartupLogEntry[step]) {
     return;
   }
 
-  lastStartupLogEntry = trimmed;
-  startupLogLines.push({ key, text });
-  while (startupLogLines.length > 80) {
-    startupLogLines.shift();
+  lastStartupLogEntry[step] = trimmed;
+  lines.push({ key, text });
+  while (lines.length > 80) {
+    lines.shift();
+  }
+  appendReadinessLog(step, trimmed, key);
+};
+
+const removeStartupLog = (key: string, step?: StartupStepId): void => {
+  const targets = step ? [step] : startupSteps.map((entry) => entry.id);
+  for (const target of targets) {
+    const lines = startupStepLogs[target];
+    const index = lines.findIndex((line) => line.key === key);
+    if (index >= 0) {
+      lines.splice(index, 1);
+    }
   }
 };
 
-const removeStartupLog = (key: string): void => {
-  const index = startupLogLines.findIndex((line) => line.key === key);
-  if (index >= 0) {
-    startupLogLines.splice(index, 1);
-  }
+const startupLogText = (step: StartupStepId): string => {
+  const lines = startupStepLogs[step];
+  return lines.length > 0
+    ? lines.map((line) => line.text).join("\n")
+    : `${timestamp()}  Waiting for ${startupStepLabels[step]}…`;
 };
 
-const startupLogText = (): string =>
-  startupLogLines.length > 0
-    ? startupLogLines.map((line) => line.text).join("\n")
-    : `${timestamp()}  Preparing startup sequence…`;
+const readinessLogText = (step: StartupStepId): string => {
+  const lines = readinessCheckLogs[step];
+  return lines.length > 0
+    ? lines.map((line) => line.text).join("\n")
+    : `${timestamp()}  No output recorded for ${startupStepLabels[step]} yet.`;
+};
+
+const checkedAtLabel = (step: StartupStepId): string => {
+  const checkedAt = readinessCheckedAt[step] ?? status?.generatedAt;
+  if (!checkedAt) {
+    return "Not checked yet";
+  }
+  return `Checked ${new Date(checkedAt).toLocaleTimeString()}`;
+};
 
 const formatDesktopStartLogLine = (line: string): string | null => {
   const trimmed = line.trim();
@@ -224,12 +350,16 @@ const formatDesktopStartLogLine = (line: string): string | null => {
     const statusCode = parsed.response?.status_code;
     const isSuccessfulAccessLog =
       parsed.service === "koed-api" &&
-      (parsed.msg === "incoming request" || parsed.msg === "request completed") &&
+      (parsed.msg === "incoming request" ||
+        parsed.msg === "request completed") &&
       (statusCode === undefined || statusCode < 400);
     if (isSuccessfulAccessLog) {
       return null;
     }
-    if (parsed.service === "koed-api" && parsed.msg?.startsWith("Server listening")) {
+    if (
+      parsed.service === "koed-api" &&
+      parsed.msg?.startsWith("Server listening")
+    ) {
       return `API: ${parsed.msg}`;
     }
     if (parsed.service === "koed-worker" && parsed.msg) {
@@ -237,7 +367,9 @@ const formatDesktopStartLogLine = (line: string): string | null => {
     }
     if (parsed.level && parsed.level >= 40) {
       return `api ${parsed.msg ?? "log"}${
-        parsed.request?.path ? ` ${parsed.request.method ?? ""} ${parsed.request.path}` : ""
+        parsed.request?.path
+          ? ` ${parsed.request.method ?? ""} ${parsed.request.path}`
+          : ""
       }${statusCode ? ` (${statusCode})` : ""}`;
     }
     return null;
@@ -259,7 +391,7 @@ const appendDesktopStartLog = (nextStatus: KoedServerStatus): void => {
     desktopStartLogSeen.add(line);
     const formatted = formatDesktopStartLogLine(line);
     if (formatted) {
-      appendStartupLog(formatted);
+      appendStartupLog(formatted, undefined, "start");
     }
   }
 };
@@ -267,15 +399,93 @@ const appendDesktopStartLog = (nextStatus: KoedServerStatus): void => {
 const componentMessage = (component: ComponentStatus): string =>
   component.message ?? component.action ?? "No details.";
 
+const formatCheckTime = (checkedAt?: string): string => {
+  if (!checkedAt) {
+    return "Not checked yet";
+  }
+  return `Checked ${new Date(checkedAt).toLocaleTimeString()}`;
+};
+
+const componentLabel = (key: StatusComponentKey): string => {
+  switch (key) {
+    case "api":
+      return "API";
+    case "explorer":
+      return "Explorer";
+    case "database":
+      return "Postgres";
+    case "redis":
+      return "Redis";
+    case "workerQueues":
+      return "Worker/queues";
+    case "embeddingService":
+      return "Embedding Service";
+    case "apiToken":
+      return "API Token";
+    case "mcpServer":
+      return "MCP Server";
+    case "captureHook":
+      return "Capture Hook";
+    case "codex":
+      return "Codex";
+    case "lcmSummaryService":
+      return "LCM Summary Service";
+    case "lastVerification":
+      return "Last verification";
+  }
+};
+
+const compactDetail = (value: unknown): string => {
+  if (value === null || value === undefined) {
+    return "not available";
+  }
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(
+        ([, entryValue]) => entryValue !== null && entryValue !== undefined
+      )
+      .slice(0, 3)
+      .map(([key, entryValue]) => `${key}=${compactDetail(entryValue)}`);
+    return entries.length > 0 ? entries.join(" · ") : "available";
+  }
+  return String(value);
+};
+
 const apiIsHealthy = (): boolean => status?.api.state === "healthy";
 
 const explorerCredentialProvisioned = (): boolean =>
   status?.explorer.details?.appCredentialProvisioned === true;
 
-const desktopReady = (): boolean =>
-  status?.state === "healthy" &&
-  status.explorer.state === "healthy" &&
-  explorerCredentialProvisioned();
+const desktopReady = (): boolean => {
+  if (
+    !status ||
+    status.explorer.state !== "healthy" ||
+    !explorerCredentialProvisioned()
+  ) {
+    return false;
+  }
+  return [
+    status.api,
+    status.database,
+    status.redis,
+    status.workerQueues,
+    status.embeddingService,
+    status.apiToken,
+    status.mcpServer,
+    status.captureHook,
+    status.codex
+  ].every((component) => component.state === "healthy");
+};
 
 const commandResultError = (value: unknown): string | null => {
   if (typeof value !== "object" || value === null || !("error" in value)) {
@@ -442,7 +652,9 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
     componentKeys: ["apiToken", "mcpServer", "captureHook", "codex"],
     probeMessage: (attempt, blocker) =>
       `status probe ${attempt}: checking Codex/MCP/capture hook${
-        friendlyBlocker(blocker) ? `; blocked by ${friendlyBlocker(blocker)}` : ""
+        friendlyBlocker(blocker)
+          ? `; blocked by ${friendlyBlocker(blocker)}`
+          : ""
       }`,
     actions: () =>
       stepHasExhaustedProbes("setup")
@@ -450,7 +662,8 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
             {
               id: "keep-waiting",
               label: "Keep waiting",
-              title: "Continue checking integration readiness for another batch",
+              title:
+                "Continue checking integration readiness for another batch",
               primary: true
             },
             {
@@ -479,7 +692,9 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
     ],
     probeMessage: (attempt, blocker) =>
       `status probe ${attempt}: final readiness check${
-        friendlyBlocker(blocker) ? `; blocked by ${friendlyBlocker(blocker)}` : ""
+        friendlyBlocker(blocker)
+          ? `; blocked by ${friendlyBlocker(blocker)}`
+          : ""
       }`,
     actions: () =>
       supportActions([
@@ -492,6 +707,65 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
       ])
   }
 };
+
+type ReadinessCheckDefinition = {
+  id: StartupStepId;
+  title: string;
+  description: string;
+  componentKeys: readonly StatusComponentKey[];
+  action?: {
+    label: string;
+    command: string;
+    timeoutMs: number;
+  };
+};
+
+const readinessChecks: readonly ReadinessCheckDefinition[] = [
+  {
+    id: "status",
+    title: "Local status",
+    description: "Latest koed-server status snapshot.",
+    componentKeys: [],
+    action: {
+      label: "Refresh status",
+      command: "status",
+      timeoutMs: 10_000
+    }
+  },
+  {
+    id: "start",
+    title: "Local services",
+    description: "Docker dependencies plus API, worker, and Explorer.",
+    componentKeys: startupLiveConfig.start.componentKeys,
+    action: {
+      label: "Ensure services are running",
+      command: "start",
+      timeoutMs: 180_000
+    }
+  },
+  {
+    id: "setup",
+    title: "Codex integration",
+    description: "API token, MCP Server, Capture Hook, and Codex settings.",
+    componentKeys: startupLiveConfig.setup.componentKeys,
+    action: {
+      label: "Run setup",
+      command: "setup_codex",
+      timeoutMs: 300_000
+    }
+  },
+  {
+    id: "health",
+    title: "Health checks",
+    description: "Final readiness, diagnostics, and memory services.",
+    componentKeys: startupLiveConfig.health.componentKeys,
+    action: {
+      label: "Run diagnostics",
+      command: "doctor",
+      timeoutMs: 90_000
+    }
+  }
+];
 
 const componentsForStep = (step: StartupStepId): ComponentStatus[] =>
   startupLiveConfig[step].componentKeys
@@ -534,19 +808,10 @@ const assertStartupStepReady = (step: StartupStepId): void => {
   }
 };
 
-const getStartupSupport = (): StartupSupport | null => {
-  if (!startupVisible) {
-    return null;
-  }
-
-  const activeStep = currentStartupStep();
-  if (!activeStep) {
-    return null;
-  }
-
-  if (startupError) {
+const getStartupSupportForStep = (step: StartupStepId): StartupSupport => {
+  if (stepStates[step] === "error" && startupError) {
     return {
-      title: `${startupStepLabels[activeStep]} needs attention`,
+      title: `${startupStepLabels[step]} needs attention`,
       body: startupError,
       actions: supportActions([
         {
@@ -559,12 +824,14 @@ const getStartupSupport = (): StartupSupport | null => {
     };
   }
 
-  const liveConfig = startupLiveConfig[activeStep];
-  const blocker = primaryBlocker(describeBlockingComponents(componentsForStep(activeStep)));
+  const liveConfig = startupLiveConfig[step];
+  const blocker = friendlyBlocker(
+    primaryBlocker(describeBlockingComponents(componentsForStep(step)))
+  );
   return {
     title: liveConfig.liveTitle,
     body: blocker ?? liveConfig.liveBody,
-    actions: liveConfig.actions()
+    actions: stepStates[step] === "running" ? liveConfig.actions() : []
   };
 };
 
@@ -600,32 +867,184 @@ const statusComponent = (
   key: StatusComponentKey
 ): ComponentStatus | undefined => status?.[key] as ComponentStatus | undefined;
 
-const groupState = (groupId: StatusGroupId): ComponentState => {
-  const group = statusGroups.find((entry) => entry.id === groupId);
-  if (!group) {
+const rawStatusCardState = (cardId: StatusCardId): ComponentState => {
+  if (!status) {
     return "starting";
   }
-  const states = group.componentKeys.map(
+  const card = statusCards.find((entry) => entry.id === cardId);
+  if (!card) {
+    return status.state;
+  }
+  const states = card.componentKeys.map(
     (key) => statusComponent(key)?.state ?? "starting"
   );
+  if (cardId === "controlPlane") {
+    if (status.explorer.state !== "healthy") {
+      return status.explorer.state;
+    }
+    if (status.api.state !== "healthy") {
+      return status.api.state;
+    }
+  }
   return aggregateGroupState(states);
 };
 
-const groupStatusSummary = (
-  componentKeys: readonly StatusComponentKey[]
-): string => {
-  if (!status) {
-    return `${componentKeys.length} ${componentKeys.length === 1 ? "check" : "checks"}`;
+const statusCardState = (cardId: StatusCardId): ComponentState => {
+  const state = rawStatusCardState(cardId);
+  const startupInProgress = startupVisible && startupRunning && !startupError;
+  if (
+    startupInProgress &&
+    (state === "needs_attention" || state === "not_configured")
+  ) {
+    return "starting";
   }
+  return state;
+};
 
-  const components = componentKeys.map((key) => statusComponent(key));
+const statusCardResultCue = (cardId: StatusCardId): string => {
+  if (!status) {
+    return "Waiting for first status";
+  }
+  const state = statusCardState(cardId);
+  if (state === "healthy") {
+    return "Reachable";
+  }
+  if (state === "starting") {
+    return startupVisible && startupRunning && !startupError
+      ? "Waiting for startup"
+      : "Starting";
+  }
+  const card = statusCards.find((entry) => entry.id === cardId);
+  const firstUnhealthy = card?.componentKeys
+    .map((key) => statusComponent(key))
+    .find((component) => component && component.state !== "healthy");
+  if (firstUnhealthy) {
+    return componentMessage(firstUnhealthy);
+  }
+  return stateLabels[state];
+};
+
+const statusCardSummary = (cardId: StatusCardId): string => {
+  const checkedAt = statusCardCheckedAt[cardId] ?? status?.generatedAt;
+  return `${formatCheckTime(checkedAt)} · ${statusCardResultCue(cardId)}`;
+};
+
+const statusCardMeta = (cardId: StatusCardId): string => {
+  if (!status) {
+    return "Awaiting local control-plane status.";
+  }
+  if (cardId === "controlPlane") {
+    const workerPid = status.workerQueues.details?.workerPid;
+    return `KOED_HOME ${status.koedHome} · worker ${workerPid ? `pid ${workerPid}` : "pending"}`;
+  }
+  if (cardId === "api") {
+    return status.api.url;
+  }
+  if (cardId === "explorer") {
+    return `${status.explorer.url} · credential ${
+      explorerCredentialProvisioned() ? "provisioned" : "missing"
+    }`;
+  }
+  if (cardId === "aiClientIntegration") {
+    return `API Token ${status.apiToken.configured ? "configured" : "missing"} · Codex ${
+      status.codex.configured ? "configured" : "missing"
+    }`;
+  }
+  if (cardId === "memoryProcessing") {
+    return `Last verification ${status.lastVerification.checkedAt ?? "not recorded"}`;
+  }
+  const card = statusCards.find((entry) => entry.id === cardId);
+  const healthyCount = card?.componentKeys.filter(
+    (key) => statusComponent(key)?.state === "healthy"
+  ).length;
+  return card
+    ? `${healthyCount ?? 0}/${card.componentKeys.length} dependencies healthy`
+    : "";
+};
+
+const statusCardLiveOutput = (cardId: StatusCardId): string => {
+  const card = statusCards.find((entry) => entry.id === cardId);
+  const checkedAt = statusCardCheckedAt[cardId] ?? status?.generatedAt;
+  const lines: string[] = [];
+  const time = checkedAt
+    ? new Date(checkedAt).toLocaleTimeString()
+    : new Date().toLocaleTimeString();
+  if (!status || !card) {
+    lines.push(`${time}  Waiting for koed-server status --json`);
+  } else {
+    lines.push(
+      `${time}  ${card.title}: ${stateLabels[statusCardState(cardId)]}`
+    );
+    lines.push(`${time}  Impact: ${card.impact}`);
+    if (cardId === "controlPlane") {
+      lines.push(`${time}  KOED_HOME: ${status.koedHome}`);
+      lines.push(`${time}  API: ${status.api.state} at ${status.api.url}`);
+      lines.push(`${time}  Worker/queues: ${status.workerQueues.state}`);
+      lines.push(
+        `${time}  Explorer: ${status.explorer.state} at ${status.explorer.url}`
+      );
+    } else {
+      for (const key of card.componentKeys) {
+        const component = statusComponent(key);
+        const message = component
+          ? `${componentLabel(key)}: ${stateLabels[component.state]}${
+              component.message ? ` — ${component.message}` : ""
+            }`
+          : `${componentLabel(key)}: waiting`;
+        lines.push(`${time}  ${message}`);
+        if (component?.action && component.state !== "healthy") {
+          lines.push(`${time}  action: ${component.action}`);
+        }
+        if (component?.details) {
+          lines.push(`${time}  details: ${compactDetail(component.details)}`);
+        }
+      }
+    }
+  }
+  for (const entry of statusCardActionLogs[cardId]) {
+    lines.push(entry.text);
+  }
+  return lines.join("\n");
+};
+
+const readinessCheckState = (
+  check: ReadinessCheckDefinition
+): ComponentState => {
+  if (check.id === "status") {
+    return status?.state ?? "starting";
+  }
+  const states = check.componentKeys.map(
+    (key) => statusComponent(key)?.state ?? "starting"
+  );
+  const state = aggregateGroupState(states);
+  if (
+    check.id === "setup" &&
+    state === "healthy" &&
+    !explorerCredentialProvisioned()
+  ) {
+    return "needs_attention";
+  }
+  return state;
+};
+
+const readinessCheckSummary = (check: ReadinessCheckDefinition): string => {
+  if (!status) {
+    return `${checkedAtLabel(check.id)} · Waiting for first status.`;
+  }
+  if (check.id === "status") {
+    return `${checkedAtLabel(check.id)} · Overall ${stateLabels[status.state]}.`;
+  }
+  const components = check.componentKeys.map((key) => statusComponent(key));
   const healthyCount = components.filter(
     (component) => component?.state === "healthy"
   ).length;
   const firstUnhealthy = components.find(
     (component) => component && component.state !== "healthy"
   );
-  const base = `${healthyCount}/${componentKeys.length} healthy`;
+  if (check.id === "setup" && !explorerCredentialProvisioned()) {
+    return `${checkedAtLabel(check.id)} · Explorer credential is not provisioned.`;
+  }
+  const base = `${checkedAtLabel(check.id)} · ${healthyCount}/${check.componentKeys.length} healthy`;
   return firstUnhealthy
     ? `${base} · ${componentMessage(firstUnhealthy)}`
     : base;
@@ -668,6 +1087,68 @@ const getStartupHint = (): string => {
     : "";
 };
 
+const renderStatusCardActions = (cardId: StatusCardId): string => {
+  const card = statusCards.find((entry) => entry.id === cardId);
+  if (!card) {
+    return "";
+  }
+  const actions = [card.primaryAction, ...card.secondaryActions];
+  return actions
+    .map(
+      (action, index) => `
+        <button
+          type="button"
+          class="${"primary" in action && action.primary ? "primary" : "secondary"}"
+          data-status-card-action="${card.id}"
+          data-status-card-action-index="${index}"
+          ${busyAction ? "disabled" : ""}
+        >${escapeHtml(action.label)}</button>
+      `
+    )
+    .join("");
+};
+
+const renderStatusCards = (variant: "startup" | "sidebar"): string => `
+  <div class="dependency-cards ${variant}" data-status-card-list="${variant}">
+    ${statusCards
+      .map((card) => {
+        const state = statusCardState(card.id);
+        const liveOutputClass =
+          variant === "sidebar" ? "status-card-live-output" : "readiness-log";
+        return `
+          <details class="status-group dependency-card ${state}" data-status-card="${card.id}">
+            <summary>
+              <div class="status-group-summary">
+                <div class="status-group-title-row">
+                  <span class="status-group-disclosure" aria-hidden="true"></span>
+                  <strong>${escapeHtml(card.title)}</strong>
+                  <span data-status-card-state="${card.id}">${stateLabels[state]}</span>
+                </div>
+                <p class="status-card-meta" data-status-card-meta="${card.id}">${escapeHtml(
+                  statusCardMeta(card.id)
+                )}</p>
+              </div>
+            </summary>
+            <div class="status-group-body">
+              <p class="status-card-role">${escapeHtml(card.role)}</p>
+              <p class="status-card-checkline" data-status-card-summary="${card.id}">${escapeHtml(
+                statusCardSummary(card.id)
+              )}</p>
+              <p class="status-card-impact">${escapeHtml(card.impact)}</p>
+              <div class="status-card-live-heading">Live output</div>
+              <div class="${liveOutputClass}" data-status-card-log="${card.id}"></div>
+              <div class="status-card-live-heading">Actions</div>
+              <div class="status-group-actions status-card-actions" data-status-card-actions="${card.id}">
+                ${renderStatusCardActions(card.id)}
+              </div>
+            </div>
+          </details>
+        `;
+      })
+      .join("")}
+  </div>
+`;
+
 const renderShell = () => {
   if (rendered) {
     return;
@@ -688,26 +1169,8 @@ const renderShell = () => {
             <h2 data-startup-phase>${escapeHtml(startupPhase)}</h2>
             <small data-startup-detail>${escapeHtml(startupDetail)}</small>
           </div>
-          <div class="startup-steps" data-startup-steps>
-            ${startupSteps
-              .map(
-                (step) => `
-                  <div class="startup-step pending" data-startup-step="${step.id}">
-                    <strong>${escapeHtml(step.label)}</strong>
-                    <span data-startup-step-state="${step.id}">${startupStatusLabel(
-                      stepStates[step.id]
-                    )}</span>
-                  </div>
-                `
-              )
-              .join("")}
-          </div>
+          ${renderStatusCards("startup")}
           <p class="hint" data-startup-hint>${escapeHtml(getStartupHint())}</p>
-          <section class="startup-help" data-startup-help hidden>
-            <p class="startup-help-title" data-startup-help-title>Live output</p>
-            <pre class="startup-help-body" data-startup-help-body></pre>
-            <div class="startup-help-actions" data-startup-help-actions></div>
-          </section>
         </div>
       </section>
 
@@ -736,46 +1199,7 @@ const renderShell = () => {
             ></span>
           </div>
           <div class="status-groups">
-            ${statusGroups
-              .map((group) => {
-                const buttonHtml = group.action
-                  ? `<button type="button" data-group-action="${group.id}" ${busyAction ? "disabled" : ""}>${escapeHtml(group.action.label)}</button>`
-                  : "";
-                return `
-                  <details class="status-group" data-status-group="${group.id}">
-                    <summary>
-                      <div class="status-group-summary">
-                        <div class="status-group-title-row">
-                          <span class="status-group-disclosure" aria-hidden="true"></span>
-                          <strong>${escapeHtml(group.title)}</strong>
-                          <span data-group-state="${group.id}">${stateLabels.starting}</span>
-                        </div>
-                        <p>
-                          ${escapeHtml(group.description)}
-                          <span class="status-group-count" data-group-summary="${group.id}">${escapeHtml(
-                            groupStatusSummary(group.componentKeys)
-                          )}</span>
-                        </p>
-                      </div>
-                    </summary>
-                    <div class="status-group-body">
-                      ${group.componentKeys
-                        .map(
-                          (key) => `
-                            <article class="component starting" data-component-card="${key}">
-                              <strong>${escapeHtml(componentDefinitions[key].label)}</strong>
-                              <span data-component-state="${key}">${stateLabels.starting}</span>
-                              ${group.id === "services" ? "" : `<p data-component-message="${key}">Waiting for first status.</p>`}
-                            </article>
-                          `
-                        )
-                        .join("")}
-                      ${buttonHtml ? `<div class="status-group-actions">${buttonHtml}</div>` : ""}
-                    </div>
-                  </details>
-                `;
-              })
-              .join("")}
+            ${renderStatusCards("sidebar")}
           </div>
           <div class="sidebar-footer">
             <button
@@ -828,17 +1252,60 @@ const syncSidebar = () => {
 const syncStartupSteps = () => {
   for (const step of startupSteps) {
     const stepState = stepStates[step.id];
-    const node = app.querySelector<HTMLElement>(
+    const support = getStartupSupportForStep(step.id);
+    const details = app.querySelector<HTMLDetailsElement>(
       `[data-startup-step="${step.id}"]`
     );
     const stateNode = app.querySelector<HTMLElement>(
       `[data-startup-step-state="${step.id}"]`
     );
-    if (node) {
-      node.className = `startup-step ${stepState}`;
+    const summaryNode = app.querySelector<HTMLElement>(
+      `[data-startup-step-summary="${step.id}"]`
+    );
+    const logNode = app.querySelector<HTMLElement>(
+      `[data-startup-step-log="${step.id}"]`
+    );
+    const actionsNode = app.querySelector<HTMLElement>(
+      `[data-startup-step-actions="${step.id}"]`
+    );
+    if (details) {
+      details.className = `startup-step ${stepState}`;
+      const shouldOpen = startupStepExpanded[step.id] === true;
+      if (details.open !== shouldOpen) {
+        syncingStartupStepOpen = true;
+        details.open = shouldOpen;
+        queueMicrotask(() => {
+          syncingStartupStepOpen = false;
+        });
+      }
     }
     if (stateNode) {
       stateNode.textContent = startupStatusLabel(stepState);
+    }
+    if (summaryNode) {
+      summaryNode.textContent = support.body;
+    }
+    if (logNode) {
+      logNode.textContent = startupLogText(step.id);
+      requestAnimationFrame(() => {
+        logNode.scrollTop = logNode.scrollHeight;
+      });
+    }
+    if (actionsNode) {
+      actionsNode.innerHTML = support.actions
+        .map(
+          (action) => `
+            <button
+              type="button"
+              data-startup-action="${action.id}"
+              class="${action.primary ? "primary" : "secondary"}"
+              title="${escapeHtml(action.title)}"
+            >
+              ${escapeHtml(action.label)}
+            </button>
+          `
+        )
+        .join("");
     }
   }
 };
@@ -886,52 +1353,92 @@ const syncStatusCards = () => {
     hintStartup.textContent = hint;
     hintStartup.hidden = !hint;
   }
-  for (const group of statusGroups) {
-    const state = groupState(group.id);
+  for (const card of statusCards) {
+    const state = statusCardState(card.id);
+    const detailsNodes = app.querySelectorAll<HTMLDetailsElement>(
+      `[data-status-card="${card.id}"]`
+    );
+    const stateNodes = app.querySelectorAll<HTMLElement>(
+      `[data-status-card-state="${card.id}"]`
+    );
+    const summaryNodes = app.querySelectorAll<HTMLElement>(
+      `[data-status-card-summary="${card.id}"]`
+    );
+    const metaNodes = app.querySelectorAll<HTMLElement>(
+      `[data-status-card-meta="${card.id}"]`
+    );
+    const logNodes = app.querySelectorAll<HTMLElement>(
+      `[data-status-card-log="${card.id}"]`
+    );
+    const actionsNodes = app.querySelectorAll<HTMLElement>(
+      `[data-status-card-actions="${card.id}"]`
+    );
+    for (const details of detailsNodes) {
+      details.className = `status-group dependency-card ${state}`;
+      const shouldOpen = statusCardExpanded[card.id] === true;
+      if (details.open !== shouldOpen) {
+        syncingStatusCardOpen = true;
+        details.open = shouldOpen;
+        queueMicrotask(() => {
+          syncingStatusCardOpen = false;
+        });
+      }
+    }
+    for (const stateNode of stateNodes) {
+      stateNode.textContent = stateLabels[state];
+    }
+    for (const summaryNode of summaryNodes) {
+      summaryNode.textContent = statusCardSummary(card.id);
+    }
+    for (const metaNode of metaNodes) {
+      metaNode.textContent = statusCardMeta(card.id);
+    }
+    for (const logNode of logNodes) {
+      logNode.textContent = statusCardLiveOutput(card.id);
+      requestAnimationFrame(() => {
+        logNode.scrollTop = logNode.scrollHeight;
+      });
+    }
+    for (const actionsNode of actionsNodes) {
+      actionsNode.innerHTML = renderStatusCardActions(card.id);
+    }
+  }
+  for (const check of readinessChecks) {
+    const state = readinessCheckState(check);
     const details = app.querySelector<HTMLDetailsElement>(
-      `[data-status-group="${group.id}"]`
+      `[data-readiness-check="${check.id}"]`
     );
     const stateNode = app.querySelector<HTMLElement>(
-      `[data-group-state="${group.id}"]`
+      `[data-readiness-state="${check.id}"]`
     );
     const summaryNode = app.querySelector<HTMLElement>(
-      `[data-group-summary="${group.id}"]`
+      `[data-readiness-summary="${check.id}"]`
+    );
+    const logNode = app.querySelector<HTMLElement>(
+      `[data-readiness-log="${check.id}"]`
     );
     if (details) {
       details.className = `status-group ${state}`;
+      const shouldOpen = readinessCheckExpanded[check.id] === true;
+      if (details.open !== shouldOpen) {
+        syncingReadinessCheckOpen = true;
+        details.open = shouldOpen;
+        queueMicrotask(() => {
+          syncingReadinessCheckOpen = false;
+        });
+      }
     }
     if (stateNode) {
       stateNode.textContent = stateLabels[state];
     }
     if (summaryNode) {
-      summaryNode.textContent = groupStatusSummary(group.componentKeys);
+      summaryNode.textContent = readinessCheckSummary(check);
     }
-  }
-
-  for (const [key] of statusGroups.flatMap((group) =>
-    group.componentKeys.map((componentKey) => [componentKey] as const)
-  )) {
-    const component = statusComponent(key);
-    const card = app.querySelector<HTMLElement>(
-      `[data-component-card="${key}"]`
-    );
-    const stateNode = app.querySelector<HTMLElement>(
-      `[data-component-state="${key}"]`
-    );
-    const messageNode = app.querySelector<HTMLElement>(
-      `[data-component-message="${key}"]`
-    );
-    const state = component?.state ?? "starting";
-    if (card) {
-      card.className = `component ${state}`;
-    }
-    if (stateNode) {
-      stateNode.textContent = stateLabels[state];
-    }
-    if (messageNode) {
-      messageNode.textContent = component
-        ? componentMessage(component)
-        : "Waiting for first status.";
+    if (logNode) {
+      logNode.textContent = readinessLogText(check.id);
+      requestAnimationFrame(() => {
+        logNode.scrollTop = logNode.scrollHeight;
+      });
     }
   }
 
@@ -966,50 +1473,20 @@ const syncUI = () => {
   syncStatusCards();
   syncSidebar();
 
-  const startupHelp = app.querySelector<HTMLElement>("[data-startup-help]");
-  const startupHelpTitle = app.querySelector<HTMLElement>(
-    "[data-startup-help-title]"
-  );
-  const startupHelpBody = app.querySelector<HTMLElement>(
-    "[data-startup-help-body]"
-  );
-  const startupHelpActions = app.querySelector<HTMLElement>(
-    "[data-startup-help-actions]"
-  );
-  const support = getStartupSupport();
-  if (startupHelp && startupHelpTitle && startupHelpBody && startupHelpActions) {
-    startupHelp.hidden = !support;
-    if (support) {
-      startupHelpTitle.textContent = "Live output";
-      startupHelpBody.textContent = startupLogText();
-      requestAnimationFrame(() => {
-        startupHelpBody.scrollTop = startupHelpBody.scrollHeight;
-      });
-      startupHelpActions.innerHTML = support.actions
-        .map(
-          (action) => `
-            <button
-              type="button"
-              data-startup-action="${action.id}"
-              class="${action.primary ? "primary" : "secondary"}"
-              title="${escapeHtml(action.title)}"
-            >
-              ${escapeHtml(action.label)}
-            </button>
-          `
-        )
-        .join("");
-    }
-  }
-
   app
-    .querySelectorAll<HTMLButtonElement>("[data-group-action]")
+    .querySelectorAll<HTMLButtonElement>("[data-readiness-action]")
     .forEach((button) => {
       button.disabled = Boolean(busyAction);
     });
 
   app
     .querySelectorAll<HTMLButtonElement>("[data-startup-action]")
+    .forEach((button) => {
+      button.disabled = Boolean(busyAction);
+    });
+
+  app
+    .querySelectorAll<HTMLButtonElement>("[data-status-card-action]")
     .forEach((button) => {
       button.disabled = Boolean(busyAction);
     });
@@ -1027,6 +1504,17 @@ const refreshStatus = async () => {
   )
     .then((nextStatus) => {
       status = nextStatus;
+      for (const check of readinessChecks) {
+        readinessCheckedAt[check.id] = nextStatus.generatedAt;
+      }
+      for (const card of statusCards) {
+        statusCardCheckedAt[card.id] = nextStatus.generatedAt;
+      }
+      appendReadinessLog(
+        "status",
+        `status result: overall ${stateLabels[nextStatus.state]}`,
+        "latest-status"
+      );
       appendDesktopStartLog(nextStatus);
       syncUI();
     })
@@ -1050,7 +1538,7 @@ const setStartupStep = (step: StartupStepId, state: StartupStepState) => {
     startupProbeLimits[step] = DEFAULT_PROBE_LIMIT;
     appendStartupLog(`${startupStepLabels[step]}: ${startupDetail}`);
   } else if (state === "done" || state === "skipped" || state === "error") {
-    removeStartupLog(`probe:${step}`);
+    removeStartupLog(`probe:${step}`, step);
     appendStartupLog(
       state === "error" && startupError
         ? `${startupStepLabels[step]}: Failed — ${startupError}`
@@ -1064,13 +1552,23 @@ const resetStartupSteps = () => {
   for (const step of startupSteps) {
     stepStates[step.id] = "pending";
   }
-  startupLogLines.length = 0;
-  desktopStartLogSeen.clear();
-  lastStartupLogEntry = "";
   for (const step of startupSteps) {
+    startupStepLogs[step.id].length = 0;
+    readinessCheckLogs[step.id].length = 0;
+    delete lastStartupLogEntry[step.id];
+    delete lastReadinessLogEntry[step.id];
+    delete startupStepExpanded[step.id];
+    delete readinessCheckExpanded[step.id];
+    delete readinessCheckedAt[step.id];
     delete startupProbeCounts[step.id];
     delete startupProbeLimits[step.id];
   }
+  for (const card of statusCards) {
+    statusCardActionLogs[card.id].length = 0;
+    delete lastStatusCardActionLogEntry[card.id];
+    delete statusCardCheckedAt[card.id];
+  }
+  desktopStartLogSeen.clear();
   startupError = "";
   startupPhase = startupPhaseLabels.status;
   startupDetail = "Checking whether the local stack is already ready.";
@@ -1108,10 +1606,13 @@ const waitForStartupStepReady = async (
 };
 
 const appendStartupProbe = (step: StartupStepId): void => {
-  const blocker = primaryBlocker(describeBlockingComponents(componentsForStep(step)));
+  const blocker = primaryBlocker(
+    describeBlockingComponents(componentsForStep(step))
+  );
   appendStartupLog(
     startupLiveConfig[step].probeMessage(nextProbeAttempt(step), blocker),
-    `probe:${step}`
+    `probe:${step}`,
+    step
   );
 };
 
@@ -1229,7 +1730,9 @@ const runStartupSequence = async () => {
 
     startupDetail = "Waiting for every required component to report healthy.";
     setStartupStep("health", "running");
-    appendStartupLog("checking: API, Explorer credential, MCP, capture hook, queues, memory services");
+    appendStartupLog(
+      "checking: API, Explorer credential, MCP, capture hook, queues, memory services"
+    );
     await waitForDesktopReady();
     startupDetail = "Running one final verification before opening Explorer.";
     appendStartupLog("command: koed-server doctor --json");
@@ -1273,6 +1776,100 @@ const runAction = async (label: string, action: () => Promise<unknown>) => {
   }
 };
 
+const runReadinessAction = async (
+  check: ReadinessCheckDefinition,
+  action: NonNullable<ReadinessCheckDefinition["action"]>
+): Promise<void> => {
+  busyAction = action.label;
+  readinessCheckedAt[check.id] = new Date().toISOString();
+  appendReadinessLog(check.id, `command: ${action.command}`);
+  syncUI();
+  try {
+    const result = await invokeWithTimeout(
+      action.command,
+      undefined,
+      action.timeoutMs
+    );
+    const error = commandResultError(result);
+    if (error) {
+      appendReadinessLog(check.id, `failed: ${error}`);
+    } else {
+      appendReadinessLog(check.id, "command completed");
+    }
+    await refreshStatus();
+  } catch (error) {
+    appendReadinessLog(
+      check.id,
+      `failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    readinessCheckedAt[check.id] = new Date().toISOString();
+    busyAction = null;
+    syncUI();
+  }
+};
+
+const runStatusCardAction = async (
+  cardId: StatusCardId,
+  action: StatusCardAction
+): Promise<void> => {
+  busyAction = action.label;
+  statusCardCheckedAt[cardId] = new Date().toISOString();
+  appendStatusCardLog(cardId, `command: ${action.command}`);
+  syncUI();
+  try {
+    if (action.command === "copy_diagnostics") {
+      const payload = JSON.stringify(
+        {
+          card: cardId,
+          generatedAt: new Date().toISOString(),
+          status
+        },
+        null,
+        2
+      );
+      await copyText(payload);
+      appendStatusCardLog(cardId, "copied diagnostics to clipboard");
+    } else if (action.command === "open_explorer") {
+      const url = status?.explorer.url;
+      if (!url) {
+        throw new Error("Explorer URL is not available yet.");
+      }
+      await invokeWithTimeout(
+        "open_external",
+        { url },
+        action.timeoutMs ?? 10_000
+      );
+      appendStatusCardLog(cardId, `opened ${url}`);
+    } else if (action.command === "status") {
+      await refreshStatus();
+      appendStatusCardLog(cardId, "status refreshed");
+    } else {
+      const result = await invokeWithTimeout(
+        action.command,
+        undefined,
+        action.timeoutMs ?? 90_000
+      );
+      const error = commandResultError(result);
+      if (error) {
+        appendStatusCardLog(cardId, `failed: ${error}`);
+      } else {
+        appendStatusCardLog(cardId, "command completed");
+      }
+      await refreshStatus();
+    }
+  } catch (error) {
+    appendStatusCardLog(
+      cardId,
+      `failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    statusCardCheckedAt[cardId] = new Date().toISOString();
+    busyAction = null;
+    syncUI();
+  }
+};
+
 const registerHandlers = () => {
   app
     .querySelector<HTMLElement>("[data-sidebar]")
@@ -1294,14 +1891,71 @@ const registerHandlers = () => {
       })
     );
 
+  app.addEventListener(
+    "toggle",
+    (event) => {
+      if (syncingStartupStepOpen) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof HTMLDetailsElement)) {
+        return;
+      }
+      const step = target.dataset.startupStep as StartupStepId | undefined;
+      if (step) {
+        startupStepExpanded[step] = target.open;
+        return;
+      }
+      if (syncingStatusCardOpen) {
+        return;
+      }
+      const card = target.dataset.statusCard as StatusCardId | undefined;
+      if (card) {
+        statusCardExpanded[card] = target.open;
+        return;
+      }
+      if (syncingReadinessCheckOpen) {
+        return;
+      }
+      const check = target.dataset.readinessCheck as StartupStepId | undefined;
+      if (check) {
+        readinessCheckExpanded[check] = target.open;
+      }
+    },
+    true
+  );
+
   app.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
       return;
     }
 
+    const statusCardButton = target.closest<HTMLButtonElement>(
+      "[data-status-card-action]"
+    );
+    if (statusCardButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const cardId = statusCardButton.dataset.statusCardAction as
+        | StatusCardId
+        | undefined;
+      const actionIndex = Number.parseInt(
+        statusCardButton.dataset.statusCardActionIndex ?? "0",
+        10
+      );
+      const card = statusCards.find((entry) => entry.id === cardId);
+      const action = card
+        ? [card.primaryAction, ...card.secondaryActions][actionIndex]
+        : undefined;
+      if (cardId && action) {
+        void runStatusCardAction(cardId, action);
+      }
+      return;
+    }
+
     const startupButton = target.closest<HTMLButtonElement>(
-      '[data-startup-action]'
+      "[data-startup-action]"
     );
     if (startupButton) {
       event.preventDefault();
@@ -1339,7 +1993,9 @@ const registerHandlers = () => {
           if (activeStep) {
             extendProbeLimit(activeStep);
             appendStartupLog(
-              `probe budget extended: will keep checking ${startupStepLabels[activeStep]} for ${DEFAULT_PROBE_LIMIT} more tries`
+              `probe budget extended: will keep checking ${startupStepLabels[activeStep]} for ${DEFAULT_PROBE_LIMIT} more tries`,
+              undefined,
+              activeStep
             );
             syncUI();
           }
@@ -1350,26 +2006,20 @@ const registerHandlers = () => {
   });
 
   app
-    .querySelectorAll<HTMLButtonElement>("[data-group-action]")
+    .querySelectorAll<HTMLButtonElement>("[data-readiness-action]")
     .forEach((buttonEl) => {
       buttonEl.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        const groupId = buttonEl.dataset.groupAction as
-          | StatusGroupId
+        const checkId = buttonEl.dataset.readinessAction as
+          | StartupStepId
           | undefined;
-        const group = statusGroups.find((entry) => entry.id === groupId);
-        const actionConfig = group?.action;
-        if (!actionConfig) {
+        const check = readinessChecks.find((entry) => entry.id === checkId);
+        const actionConfig = check?.action;
+        if (!check || !actionConfig) {
           return;
         }
-        void runAction(actionConfig.label, () =>
-          invokeWithTimeout(
-            actionConfig.command,
-            undefined,
-            actionConfig.timeoutMs
-          )
-        );
+        void runReadinessAction(check, actionConfig);
       });
     });
 };
