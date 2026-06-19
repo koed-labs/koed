@@ -4,10 +4,7 @@ import { resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 describe("local URL resolution", () => {
   it("lets one-shot environment port overrides win over repo .env ports", () => {
     expect(
-      resolveApiUrl(
-        { API_HOST_PORT: "4545" },
-        { API_HOST_PORT: "3300" }
-      )
+      resolveApiUrl({ API_HOST_PORT: "4545" }, { API_HOST_PORT: "3300" })
     ).toBe("http://localhost:4545");
     expect(
       resolveExplorerUrl(

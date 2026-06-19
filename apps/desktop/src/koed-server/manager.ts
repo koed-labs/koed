@@ -76,7 +76,10 @@ const withDesktopStartLog = (
   };
 };
 
-const summarizeStartFailure = (outputLines: string[], fallback: string): string =>
+const summarizeStartFailure = (
+  outputLines: string[],
+  fallback: string
+): string =>
   [...outputLines]
     .reverse()
     .find(
@@ -147,7 +150,9 @@ export const createKoedServerManager = ({
               state: "needs_attention",
               error:
                 error?.message ??
-                (stderr.trim() || stdout.trim() || "koed-server command failed."),
+                (stderr.trim() ||
+                  stdout.trim() ||
+                  "koed-server command failed."),
               stdout: stdout.trim(),
               stderr: stderr.trim()
             });
@@ -236,7 +241,8 @@ export const createKoedServerManager = ({
 
   return {
     handlers: {
-      status: async () => withDesktopStartLog(await runJson(["status"]), startOutputLines),
+      status: async () =>
+        withDesktopStartLog(await runJson(["status"]), startOutputLines),
       doctor: () => runJson(["doctor"], 45_000),
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       start,

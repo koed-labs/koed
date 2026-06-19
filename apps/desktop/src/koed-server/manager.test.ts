@@ -105,7 +105,11 @@ describe("Koed server desktop manager", () => {
           null,
           JSON.stringify(
             statusCalls === 1
-              ? { ok: false, state: "needs_attention", api: { state: "needs_attention" } }
+              ? {
+                  ok: false,
+                  state: "needs_attention",
+                  api: { state: "needs_attention" }
+                }
               : { ok: true, state: "healthy", api: { state: "healthy" } }
           ),
           ""

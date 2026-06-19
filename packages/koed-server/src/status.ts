@@ -561,9 +561,7 @@ export const collectKoedServerDoctor = async (
     ...(component as KoedServerComponentStatus)
   }));
   const failed = checks.filter((check) => check.state === "needs_attention");
-  const missing = checks.filter(
-    (check) => check.state === "not_configured"
-  );
+  const missing = checks.filter((check) => check.state === "not_configured");
   const summary =
     failed[0]?.message ??
     missing[0]?.message ??

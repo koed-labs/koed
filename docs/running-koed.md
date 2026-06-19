@@ -17,6 +17,7 @@ pnpm env:setup
 docker compose up -d --build
 pnpm desktop:start
 ```
+
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
 Codex bootstrap when needed, and keeps the startup screen visible until the
 system is ready.

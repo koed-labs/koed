@@ -78,16 +78,16 @@ embedding settings, logging options, AI client values, and production notes.
 
 Koed is composed of the following primary services:
 
-| Path                     | Role                                                                                            |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
-| `apps/api`               | API for auth, capture policy, memory capture, recall, graph inspection, export, and diagnostics |
-| `apps/worker`            | Background memory and embedding jobs                                                            |
-| `apps/embedding-service` | Local embedding and reranking service                                                           |
-| `apps/explorer`          | Explorer UI for inspecting captured Koed memory                                                 |
+| Path                     | Role                                                                                                |
+| ------------------------ | --------------------------------------------------------------------------------------------------- |
+| `apps/api`               | API for auth, capture policy, memory capture, recall, graph inspection, export, and diagnostics     |
+| `apps/worker`            | Background memory and embedding jobs                                                                |
+| `apps/embedding-service` | Local embedding and reranking service                                                               |
+| `apps/explorer`          | Explorer UI for inspecting captured Koed memory                                                     |
 | `apps/desktop`           | Electron control surface that starts/monitors `koed-server`, runs setup/doctor, and embeds Explorer |
-| `packages/koed-server`   | Local control-plane CLI/supervisor for `KOED_HOME`, service status, setup, and startup          |
-| `packages/mcp-server`    | MCP Server, local answer bridge, and Codex Capture Hook                                         |
-| `packages/db`            | Postgres repositories, migrations, and operator scripts                                         |
+| `packages/koed-server`   | Local control-plane CLI/supervisor for `KOED_HOME`, service status, setup, and startup              |
+| `packages/mcp-server`    | MCP Server, local answer bridge, and Codex Capture Hook                                             |
+| `packages/db`            | Postgres repositories, migrations, and operator scripts                                             |
 
 ## Security Notes
 
