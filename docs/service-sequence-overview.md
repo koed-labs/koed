@@ -120,7 +120,7 @@ without gaining direct access to unrelated personal records.
 3. Workspace Access create, update, and removal flows write audit events after
    the access mutation is stored.
 4. A User requests `GET /v1/teams/:teamId/audit-events`.
-5. The API authenticates the API Token, resolves Team Membership, and allows
+5. The API authenticates the User session, resolves Team Membership, and allows
    the listing only for enabled Team managers.
 6. The repository lists audit rows whose `metadata.teamId` matches the
    requested Team id, optionally filtered by action and limit.

@@ -105,7 +105,7 @@ export const createAuditRepository = (db: KoedDb) => ({
       .select()
       .from(auditEvents)
       .where(and(...conditions))
-      .orderBy(desc(auditEvents.createdAt))
+      .orderBy(desc(auditEvents.createdAt), desc(auditEvents.auditSequence))
       .limit(auditLimit(input.limit));
 
     return rows.map(mapAuditEventRecord);

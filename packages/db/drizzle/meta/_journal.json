@@ -29,6 +29,13 @@
       "when": 1781531947150,
       "tag": "0003_polite_vindicator",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781866399219,
+      "tag": "0004_white_paper_doll",
+      "breakpoints": true
     }
   ]
 }

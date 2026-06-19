@@ -856,9 +856,9 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         const action =
           input.access === "disabled"
             ? "team.workspace_access.removed"
-            : existingGrants[0]
-              ? "team.workspace_access.updated"
-              : "team.workspace_access.created";
+            : previousAccess === "disabled"
+              ? "team.workspace_access.created"
+              : "team.workspace_access.updated";
 
         await insertTeamAudit(tx, {
           actorUserId: actor.userId,
@@ -902,7 +902,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         .select()
         .from(auditEvents)
         .where(and(...conditions))
-        .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
+        .orderBy(desc(auditEvents.createdAt), desc(auditEvents.auditSequence))
         .limit(auditLimit(input.limit));
 
       return rows.map(mapAuditEventRecord);

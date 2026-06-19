@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   boolean,
   check,
   foreignKey,
@@ -889,6 +890,7 @@ export const auditEvents = pgTable(
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
+    auditSequence: bigserial("audit_sequence", { mode: "number" }).notNull(),
     createdAt: now()
   },
   (table) => [
@@ -899,7 +901,16 @@ export const auditEvents = pgTable(
     index("audit_events_owner_idx").on(
       table.ownerUserId,
       table.createdAt.desc()
-    )
+    ),
+    index("audit_events_team_metadata_idx")
+      .on(
+        sql`(${table.metadata} ->> 'teamId')`,
+        table.createdAt.desc(),
+        table.auditSequence.desc()
+      )
+      .where(
+        sql`${table.action} like 'team.%' and ${table.metadata} ? 'teamId'`
+      )
   ]
 );
 

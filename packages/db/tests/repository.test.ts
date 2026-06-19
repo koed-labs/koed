@@ -797,6 +797,21 @@ describeDb("memory repository visibility", () => {
       canRecall: false,
       canCreateShare: false
     });
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: existingUser.id,
+        access: "read"
+      }
+    );
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: existingUser.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      access: "read",
+      canRecall: true,
+      canCreateShare: false
+    });
 
     const staleInviteHash = `stale-${randomUUID()}-${randomUUID()}`;
     await repo.createTeamInvite(
@@ -927,12 +942,13 @@ describeDb("memory repository visibility", () => {
     const auditRows = await pool.query<{
       action: string;
       metadata: Record<string, unknown>;
+      audit_sequence: string;
     }>(
       `
-        select action, metadata
+        select action, metadata, audit_sequence
         from audit_events
         where action like 'team.%'
-        order by created_at asc, id asc
+        order by created_at asc, audit_sequence asc
       `
     );
     expect(auditRows.rows.map((row) => row.action)).toEqual(
@@ -968,6 +984,35 @@ describeDb("memory repository visibility", () => {
       access: "disabled",
       previousAccess: "write"
     });
+    const accessEvents = auditRows.rows.filter(
+      (row) =>
+        row.metadata.teamWorkspaceId === workspace!.id &&
+        row.metadata.userId === existingUser.id
+    );
+    expect(accessEvents.map((row) => row.action)).toEqual([
+      "team.workspace_access.created",
+      "team.workspace_access.removed",
+      "team.workspace_access.created"
+    ]);
+    expect(accessEvents.at(-1)?.metadata).toMatchObject({
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id,
+      userId: existingUser.id,
+      access: "read",
+      previousAccess: "disabled"
+    });
+    const acceptedAuditIndex = auditRows.rows.findIndex(
+      (row) =>
+        row.action === "team.invite.accepted" &&
+        row.metadata.userId === acceptedNewUser!.user.id
+    );
+    const enabledAuditIndex = auditRows.rows.findIndex(
+      (row) =>
+        row.action === "team.member.enabled" &&
+        row.metadata.userId === acceptedNewUser!.user.id
+    );
+    expect(acceptedAuditIndex).toBeGreaterThanOrEqual(0);
+    expect(enabledAuditIndex).toBeGreaterThan(acceptedAuditIndex);
     for (const row of auditRows.rows) {
       expect(JSON.stringify(row.metadata)).not.toContain(existingTokenHash);
       expect(JSON.stringify(row.metadata)).not.toContain(newUserTokenHash);
@@ -982,6 +1027,9 @@ describeDb("memory repository visibility", () => {
     const removedAccessAudit = teamAuditEvents?.find(
       (event) => event.action === "team.workspace_access.removed"
     );
+    expect(teamAuditEvents?.[0]).toMatchObject({
+      action: "team.member.enabled"
+    });
     expect(removedAccessAudit).toMatchObject({
       action: "team.workspace_access.removed"
     });
