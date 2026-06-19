@@ -134,6 +134,7 @@ describeDb("memory repository visibility", () => {
       `
         truncate table
           audit_events,
+          team_session_share_grants,
           team_workspace_access_grants,
           team_invites,
           team_workspaces,
@@ -600,6 +601,176 @@ describeDb("memory repository visibility", () => {
       acceptedAt: memberAcceptedAt,
       disabledAt: null
     });
+  });
+
+  it("retains Team session share grants through personal deletion and member exit", async () => {
+    const owner = await repo.createUser({
+      email: `retention-owner-${randomUUID()}@example.com`,
+      displayName: "Retention Owner"
+    });
+    const member = await repo.createUser({
+      email: `retention-member-${randomUUID()}@example.com`,
+      displayName: "Retention Member"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Retention Team" }
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Retained Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "retention-project",
+        externalSessionId: `retained-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        workspaceId: "retention-project",
+        sessionId: session.id,
+        actor: "user",
+        eventType: "captured",
+        content: "The billing grace period decision stays with the workspace."
+      }
+    );
+
+    const grant = await pool.query<{ id: string }>(
+      `
+        insert into team_session_share_grants (
+          owner_user_id,
+          session_id,
+          team_id,
+          team_workspace_id,
+          granted_by_user_id
+        )
+        values ($1, $2, $3, $4, $5)
+        returning id
+      `,
+      [owner.id, session.id, team.id, workspace!.id, owner.id]
+    );
+    const grantId = grant.rows[0]!.id;
+
+    await pool.query(
+      `
+        update sessions
+        set
+          personal_deleted_at = now(),
+          personal_deleted_by_user_id = $1,
+          personal_deletion_reason = 'user_deleted'
+        where id = $2
+      `,
+      [owner.id, session.id]
+    );
+    await pool.query(
+      `
+        update memory_events
+        set
+          personal_deleted_at = now(),
+          personal_deleted_by_user_id = $1,
+          personal_deletion_reason = 'user_deleted'
+        where id = $2
+      `,
+      [owner.id, event.id]
+    );
+    await pool.query(
+      `
+        update team_session_share_grants
+        set
+          personal_deleted_at = now(),
+          personal_deleted_by_user_id = $1,
+          personal_deletion_reason = 'user_deleted'
+        where id = $2
+      `,
+      [owner.id, grantId]
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: member.id,
+        role: "member",
+        status: "disabled"
+      }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "disabled"
+      }
+    );
+    await pool.query(
+      `
+        update users
+        set
+          deleted_at = now(),
+          deletion_reason = 'account_deleted'
+        where id = $1
+      `,
+      [owner.id]
+    );
+
+    const retained = await pool.query<{
+      id: string;
+      session_id: string;
+      owner_user_id: string;
+      personal_deleted_at: Date | null;
+      revoked_at: Date | null;
+      retention_reason: string;
+    }>(
+      `
+        select
+          id,
+          session_id,
+          owner_user_id,
+          personal_deleted_at,
+          revoked_at,
+          retention_reason
+        from team_session_share_grants
+        where id = $1
+      `,
+      [grantId]
+    );
+    expect(retained.rows).toHaveLength(1);
+    expect(retained.rows[0]).toMatchObject({
+      id: grantId,
+      session_id: session.id,
+      owner_user_id: owner.id,
+      revoked_at: null,
+      retention_reason: "active_team_share"
+    });
+    expect(retained.rows[0]!.personal_deleted_at).toBeInstanceOf(Date);
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      membershipStatus: "disabled",
+      access: "disabled",
+      canRecall: false,
+      canCreateShare: false
+    });
+    await expect(
+      pool.query("delete from team_workspaces where id = $1", [workspace!.id])
+    ).rejects.toThrow();
   });
 
   it("handles Team invites, acceptance, disablement, and audit boundaries", async () => {

@@ -203,8 +203,9 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
    gates for Access Suspension, Workspace archive state, membership state,
    and Workspace Access.
 6. Personal deletion removes memory from the owner's Personal Memory recall
-   surface but does not revoke an active Team / Workspace Share Grant in the
-   first version.
+   surface through `personal_deleted_at` lifecycle markers. It is not the same
+   as global invalidation and does not revoke an active Team / Workspace Share
+   Grant in the first version.
 7. If a local Project context is supplied during recall, the API resolves it to
    a Workspace before Team-shared retrieval. Local Project metadata is not a
    durable authorization key.
@@ -212,6 +213,11 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
    may include retained Workspaces only when the caller and retention policy
    allow it. Access-suspended Team data belongs to a separate admin, legal, or
    Operator mode, not ordinary archived search.
+9. A retained Team session Share Grant keeps references to the owning User and
+   Captured Session nullable rather than cascading. User account deletion is
+   represented by a User tombstone, and retained Team knowledge remains tied to
+   the Team and Workspace retention record for audit, restore, and future
+   authorized Team recall.
 
 ## Retrieval
 
