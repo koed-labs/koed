@@ -1,6 +1,21 @@
 import { getEncoding, type Tiktoken } from "js-tiktoken";
 import { z } from "zod";
 
+export {
+  assessTeamVisibleSourceBoundary,
+  requireAuthorizedTeamVisibleSourceBoundary,
+  teamVisibleSourceItemSessionId
+} from "./team-source-boundary.js";
+export type {
+  AuthorizedTeamVisibleSourceItem,
+  RejectedTeamVisibleSourceItem,
+  TeamVisibleShareGrantBoundary,
+  TeamVisibleSourceBoundary,
+  TeamVisibleSourceBoundaryAssessment,
+  TeamVisibleSourceBoundaryRejectionReason,
+  TeamVisibleSummaryProvenance
+} from "./team-source-boundary.js";
+
 export type TokenizerEncoding = "o200k_base" | "cl100k_base";
 export type TokenizerName = "js-tiktoken" | "heuristic";
 
