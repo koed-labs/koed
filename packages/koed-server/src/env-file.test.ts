@@ -13,4 +13,16 @@ describe("local URL resolution", () => {
       )
     ).toBe("http://localhost:5574");
   });
+
+  it("prefers the configured Explorer web port over derived API base URLs", () => {
+    expect(
+      resolveExplorerUrl(
+        {},
+        {
+          EXPLORER_WEB_HOST_PORT: "5574",
+          EXPLORER_API_BASE_URL: "http://localhost:3300"
+        }
+      )
+    ).toBe("http://localhost:5574");
+  });
 });

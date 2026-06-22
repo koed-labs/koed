@@ -68,9 +68,9 @@ export const resolveExplorerUrl = (
     (environment.EXPLORER_WEB_HOST_PORT
       ? `http://localhost:${environment.EXPLORER_WEB_HOST_PORT}`
       : null) ??
-    repoEnv.EXPLORER_API_BASE_URL?.replace(/:3300\/?$/, ":5174") ??
     (repoEnv.EXPLORER_WEB_HOST_PORT
       ? `http://localhost:${repoEnv.EXPLORER_WEB_HOST_PORT}`
       : null) ??
+    repoEnv.EXPLORER_API_BASE_URL?.replace(/:3300\/?$/, ":5174") ??
     "http://localhost:5174"
   ).trim();

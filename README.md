@@ -42,11 +42,18 @@ The Explorer runs beside the API and is embedded by Koed Desktop:
 http://localhost:5174
 ```
 
-If you want the lower-level control-plane commands directly, use:
+If you want the lower-level control-plane commands directly, start the
+long-running supervisor in one terminal:
 
 ```bash
 pnpm --filter @koed/koed-server build
 node packages/koed-server/dist/cli.js start
+```
+
+After `koed-server start` reports that the API is ready, run setup from another
+terminal:
+
+```bash
 node packages/koed-server/dist/cli.js setup codex --json
 ```
 
