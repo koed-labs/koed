@@ -292,6 +292,29 @@ describeDb("memory repository visibility", () => {
     expect(await repo.getApiTokenUser(tokenHash)).toBeNull();
   });
 
+  it("rejects tombstoned users from account and API token authentication", async () => {
+    const email = `deleted-api-token-${randomUUID()}@example.com`;
+    const user = await repo.createUser({
+      email,
+      displayName: "Deleted API Token User"
+    });
+    const tokenHash = `hash-${randomUUID()}-${randomUUID()}`;
+    await repo.createApiToken({
+      ownerUserId: user.id,
+      name: "Deleted User Token",
+      tokenHash,
+      tokenPrefix: "cmt_deleted"
+    });
+
+    await pool.query("update users set deleted_at = now() where id = $1", [
+      user.id
+    ]);
+
+    await expect(repo.getUser(user.id)).resolves.toBeNull();
+    await expect(repo.findUserByEmail(email)).resolves.toBeNull();
+    await expect(repo.getApiTokenUser(tokenHash)).resolves.toBeNull();
+  });
+
   it("enforces Team roles and Workspace access at request time", async () => {
     const owner = await repo.createUser({
       email: `team-owner-${randomUUID()}@example.com`,
@@ -442,6 +465,30 @@ describeDb("memory repository visibility", () => {
       canCreateShare: false,
       canManageWorkspace: false
     });
+    await pool.query(
+      `
+        update team_workspace_access_grants
+        set disabled_at = now(), disabled_reason = 'billing_suspended'
+        where team_workspace_id = $1 and user_id = $2
+      `,
+      [workspace!.id, member.id]
+    );
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      access: "disabled",
+      canRecall: false,
+      canCreateShare: false,
+      canManageWorkspace: false
+    });
+    await pool.query(
+      `
+        update team_workspace_access_grants
+        set disabled_at = null, disabled_reason = null
+        where team_workspace_id = $1 and user_id = $2
+      `,
+      [workspace!.id, member.id]
+    );
 
     await expect(
       repo.setTeamWorkspaceAccess(
@@ -1326,6 +1373,20 @@ describeDb("memory repository visibility", () => {
       user.id
     ]);
     expect(await repo.getSessionUser(disabledHash)).toBeNull();
+
+    const deletedUser = await repo.createUser({
+      email: `auth-session-deleted-${randomUUID()}@example.com`
+    });
+    const deletedHash = `${randomUUID()}-${randomUUID()}`;
+    await repo.createSession(
+      deletedUser.id,
+      deletedHash,
+      new Date(Date.now() + 60_000)
+    );
+    await pool.query("update users set deleted_at = now() where id = $1", [
+      deletedUser.id
+    ]);
+    expect(await repo.getSessionUser(deletedHash)).toBeNull();
   });
 
   it("records user-scoped audit events through the Drizzle-backed repository slice", async () => {
@@ -2758,6 +2819,35 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow("above threshold");
   });
 
+  it("excludes personal-deleted memory events from Personal Memory recall", async () => {
+    const alice = await repo.createUser({
+      email: `alice-personal-deleted-recall-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = `workspace-personal-deleted-${randomUUID()}`;
+    const event = await captureUserEvent(engine, alice.id, {
+      workspaceId,
+      content: "The private launch codename is Violet Harbor."
+    });
+
+    await pool.query(
+      "update memory_events set personal_deleted_at = now() where id = $1",
+      [event.id]
+    );
+
+    const recall = await engine.searchMemory({
+      requesterContext: { userId: alice.id },
+      query: "Violet Harbor",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId,
+      retrievalStage: "lexical_search",
+      limit: 5
+    });
+
+    expect(recall.results).toEqual([]);
+  });
+
   it("ranks original lexical story evidence above later question and tool echoes", async () => {
     const alice = await repo.createUser({
       email: `alice-lexical-echo-${randomUUID()}@example.com`
@@ -3597,6 +3687,73 @@ describeDb("memory repository visibility", () => {
       "Hook-only assistant reply should be retained.",
       "Hook-only prompt should be retained."
     ]);
+  });
+
+  it("skips personal-deleted raw conversation items during semantic projection", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-personal-delete-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Projection Personal Delete Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-personal-delete-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const [rawItem] = await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "deleted-turn-1",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "UserPromptSubmit",
+            sourceSequence: 1,
+            rawJson: {
+              hook_event_name: "UserPromptSubmit",
+              prompt: "This deleted raw prompt must not be projected."
+            },
+            rawText: "This deleted raw prompt must not be projected.",
+            sourceHash: `deleted-raw-prompt-${randomUUID()}`,
+            idempotencyKey: `deleted-raw-prompt-${randomUUID()}`,
+            projectionStatus: "pending"
+          }
+        ]
+      }
+    );
+    await pool.query(
+      "update conversation_items set personal_deleted_at = now() where id = $1",
+      [rawItem!.id]
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const events = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_events where session_id = $1",
+      [session.id]
+    );
+
+    expect(projection.rawItemsScanned).toBe(0);
+    expect(projection.memoryEventsCreated).toBe(0);
+    expect(events.rows[0]?.count).toBe("0");
   });
 
   it("exposes transcript source chronology for projected graph events", async () => {

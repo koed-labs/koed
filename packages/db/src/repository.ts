@@ -1929,7 +1929,7 @@ const invalidateDerivedMemoryForMemoryEvents = async (
         invalidation_reason = coalesce(mn.invalidation_reason, 'source_event_deleted'),
         updated_at = now()
       where mn.id in (select id from affected_nodes)
-        and mn.invalidated_at is null
+        and mn.invalidated_at is null and mn.personal_deleted_at is null
       returning mn.id
     `,
     [uniqueEventIds]
@@ -2380,7 +2380,7 @@ const invalidateSemanticMemoryForDisplayEvent = async (
         where mes.conversation_item_id = any($1::uuid[])
           and me.visibility = 'personal'
           and me.owner_user_id = $2
-          and me.invalidated_at is null
+          and me.invalidated_at is null and me.personal_deleted_at is null
       )
       update memory_events me
       set
@@ -2565,7 +2565,7 @@ const mapLcmNodeForSummarization = async (
         from memory_node_children mnc
         join memory_nodes child on child.id = mnc.child_memory_node_id
         where mnc.parent_memory_node_id = $1
-          and child.invalidated_at is null
+          and child.invalidated_at is null and child.personal_deleted_at is null
         order by mnc.child_order asc
       `,
       [row.id]
@@ -2701,6 +2701,7 @@ export const createMemorySourceRepository = (
           left join sessions s on s.id = ci.session_id
           where ci.projection_status in ('pending', 'error')
             and ci.memory_excluded_at is null
+            and ci.personal_deleted_at is null
             and ($4::visibility_scope is null or ci.visibility = $4)
             and (
               ci.transport_chunk_count = 1
@@ -3055,7 +3056,7 @@ export const createMemorySourceRepository = (
                 'threadless'
               ) = $5
               and coalesce(me.payload ->> 'workspaceId', 'unknown-project') = $6
-              and me.invalidated_at is null
+              and me.invalidated_at is null and me.personal_deleted_at is null
               and mes.source_role = $7
               and me.payload #>> '{metadata,semanticUnitType}' = $8
               and ci.source_record_type <> 'hook_payload'
@@ -3714,7 +3715,7 @@ export const createMemorySourceRepository = (
             count(*) filter (where memory_event_id is not null)::text as memory_events,
             count(*) filter (where message_id is not null)::text as messages
           from memory_embeddings me
-          where me.invalidated_at is null
+          where me.invalidated_at is null and me.personal_deleted_at is null
             and (
               exists (
                 select 1 from memory_nodes mn
@@ -3817,9 +3818,9 @@ export const createMemorySourceRepository = (
         ) first_source on true
         left join memory_events ev on ev.id = first_source.memory_event_id
         left join sessions s on s.id = ev.session_id
-        left join memory_embeddings me on me.memory_node_id = mn.id and me.invalidated_at is null
+        left join memory_embeddings me on me.memory_node_id = mn.id and me.invalidated_at is null and me.personal_deleted_at is null
         where mn.kind in ('leaf', 'rollup')
-          and ($2::boolean = true or mn.invalidated_at is null)
+          and ($2::boolean = true or mn.invalidated_at is null and mn.personal_deleted_at is null)
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
           and ($4::text is null or coalesce(
             case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
@@ -4066,7 +4067,7 @@ export const createMemorySourceRepository = (
           from memory_events me
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
-          where ($2::boolean = true or me.invalidated_at is null)
+          where ($2::boolean = true or me.invalidated_at is null and me.personal_deleted_at is null)
             and ($6::uuid is not null or me.session_id is null or me.capture_method = 'api')
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(
@@ -4448,7 +4449,7 @@ export const createMemorySourceRepository = (
             me.payload ->> 'content' as content
           from memory_events me
           left join sessions s on s.id = me.session_id
-          where ($2::boolean = true or me.invalidated_at is null)
+          where ($2::boolean = true or me.invalidated_at is null and me.personal_deleted_at is null)
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(
               case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
@@ -4758,7 +4759,7 @@ export const createMemorySourceRepository = (
             end as text,
             mn.created_at
           from memory_nodes mn
-          where mn.invalidated_at is null
+          where mn.invalidated_at is null and mn.personal_deleted_at is null
 
           union all
 
@@ -4770,7 +4771,7 @@ export const createMemorySourceRepository = (
             coalesce(me.payload ->> 'content', '') as text,
             me.captured_at as created_at
           from memory_events me
-          where me.invalidated_at is null
+          where me.invalidated_at is null and me.personal_deleted_at is null
         )
         select source_type, source_id, owner_user_id, visibility, text
         from sources s
@@ -4778,7 +4779,7 @@ export const createMemorySourceRepository = (
           and not exists (
             select 1
             from memory_embeddings me
-            where me.invalidated_at is null
+            where me.invalidated_at is null and me.personal_deleted_at is null
               and me.embedding_model = $1
               and me.embedding_dimensions = $2
               and me.embedding_version = $3
@@ -4831,7 +4832,7 @@ export const createMemorySourceRepository = (
               else btrim(mn.summary_text || ' ' || mn.body_text)
             end as text
           from memory_nodes mn
-          where mn.invalidated_at is null
+          where mn.invalidated_at is null and mn.personal_deleted_at is null
 
           union all
 
@@ -4842,7 +4843,7 @@ export const createMemorySourceRepository = (
             me.visibility,
             coalesce(me.payload ->> 'content', '') as text
           from memory_events me
-          where me.invalidated_at is null
+          where me.invalidated_at is null and me.personal_deleted_at is null
         )
         select source_type, source_id, owner_user_id, visibility, text
         from sources
@@ -4917,7 +4918,7 @@ export const createMemorySourceRepository = (
           mn.summary_structured_schema_version,
           mn.lcm_algorithm_version
         from memory_nodes mn
-        where mn.invalidated_at is null
+        where mn.invalidated_at is null and mn.personal_deleted_at is null
           and mn.kind in ('leaf', 'rollup')
           and mn.summary_model is null
           and (
@@ -4927,7 +4928,7 @@ export const createMemorySourceRepository = (
               from memory_node_children mnc
               join memory_nodes child on child.id = mnc.child_memory_node_id
               where mnc.parent_memory_node_id = mn.id
-                and child.invalidated_at is null
+                and child.invalidated_at is null and child.personal_deleted_at is null
                 and child.summary_model is null
             )
           )
@@ -4964,7 +4965,7 @@ export const createMemorySourceRepository = (
           mn.lcm_algorithm_version
         from memory_nodes mn
         where mn.id = $2
-          and mn.invalidated_at is null
+          and mn.invalidated_at is null and mn.personal_deleted_at is null
           and mn.kind in ('leaf', 'rollup')
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
@@ -5717,7 +5718,7 @@ export const createMemorySourceRepository = (
                   nullif(source_ev.payload ->> 'projectName', '') as project_name,
                   coalesce(nullif(source_ev.payload ->> 'projectPath', ''), nullif(source_ev.payload ->> 'workspaceId', ''), nullif(source_msg_session.cwd, '')) as project_path
                 from memory_node_sources source_mns
-                left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
+                left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
                 left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
                 left join sessions source_msg_session on source_msg_session.id = source_msg.session_id
                 where source_mns.memory_node_id = mn.id
@@ -5744,7 +5745,7 @@ export const createMemorySourceRepository = (
                   and ($9::timestamptz is null or coalesce(source_ev.captured_at, source_msg.captured_at) < $9::timestamptz)
               ) source_row
             ) filtered_sources on true
-            where mn.invalidated_at is null
+            where mn.invalidated_at is null and mn.personal_deleted_at is null
               and mn.visibility = 'personal'
               and mn.owner_user_id = $1
               and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
@@ -5780,7 +5781,7 @@ export const createMemorySourceRepository = (
                 else 0.05
               end::double precision as source_rank
             from memory_events me
-            where me.invalidated_at is null
+            where me.invalidated_at is null and me.personal_deleted_at is null
               and me.visibility = 'personal'
               and me.owner_user_id = $1
               and ($2::visibility_scope is null or me.visibility = $2::visibility_scope)
@@ -6028,7 +6029,7 @@ export const createMemorySourceRepository = (
                     then exists (
                       select 1
                       from memory_node_sources boundary_mns
-                      left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null
+                      left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null and boundary_ev.personal_deleted_at is null
                       left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null
                       left join sessions boundary_msg_session on boundary_msg_session.id = boundary_msg.session_id
                       where boundary_mns.memory_node_id = me.memory_node_id
@@ -6084,7 +6085,7 @@ export const createMemorySourceRepository = (
                           nullif(time_ev.payload ->> 'projectName', '') as project_name,
                           coalesce(nullif(time_ev.payload ->> 'projectPath', ''), nullif(time_ev.payload ->> 'workspaceId', ''), nullif(time_msg_session.cwd, '')) as project_path
                         from memory_node_sources time_mns
-                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null
+                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
                         left join sessions time_msg_session on time_msg_session.id = time_msg.session_id
                         where time_mns.memory_node_id = me.memory_node_id
@@ -6137,7 +6138,7 @@ export const createMemorySourceRepository = (
                       when me.memory_node_id is not null then (
                         select max(coalesce(source_ev.captured_at, source_msg.captured_at))
                         from memory_node_sources source_mns
-                        left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
+                        left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
                         left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
                         where source_mns.memory_node_id = me.memory_node_id
                       )
@@ -6153,13 +6154,13 @@ export const createMemorySourceRepository = (
                   me.source_chunk_count
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
-                left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null
-                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null
+                left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
+                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null and ev.personal_deleted_at is null
                 left join messages msg on msg.id = me.message_id and msg.invalidated_at is null
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
-                left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null
-                where me.invalidated_at is null
+                left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null and linked_mn.personal_deleted_at is null
+                where me.invalidated_at is null and me.personal_deleted_at is null
                   and me.embedding_model = $5
                   and me.embedding_dimensions = $6
                   and me.embedding_version = $7
@@ -6181,7 +6182,7 @@ export const createMemorySourceRepository = (
                         or exists (
                           select 1
                           from memory_node_sources filter_mns
-                          left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null
+                          left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
                           left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (filter_ev.session_id = $9::uuid or filter_msg.session_id = $9::uuid)
@@ -6196,7 +6197,7 @@ export const createMemorySourceRepository = (
                         or exists (
                           select 1
                           from memory_node_sources filter_mns
-                          left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null
+                          left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
                           left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null
                           left join sessions filter_msg_session on filter_msg_session.id = filter_msg.session_id
                           where filter_mns.memory_node_id = me.memory_node_id
@@ -6215,7 +6216,7 @@ export const createMemorySourceRepository = (
                       and exists (
                         select 1
                         from memory_node_sources time_mns
-                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null
+                        left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
                         where time_mns.memory_node_id = me.memory_node_id
                           and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
@@ -6238,7 +6239,7 @@ export const createMemorySourceRepository = (
                     or exists (
                       select 1
                       from memory_node_sources source_mns
-                      left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
+                      left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
                       left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
                       left join sessions source_msg_session on source_msg_session.id = source_msg.session_id
                       where source_mns.memory_node_id = me.memory_node_id
@@ -6292,7 +6293,7 @@ export const createMemorySourceRepository = (
                             from memory_node_sources linked_source
                             join memory_nodes linked_node on linked_node.id = linked_source.memory_node_id
                             where linked_source.memory_event_id = me.memory_event_id
-                              and linked_node.invalidated_at is null
+                              and linked_node.invalidated_at is null and linked_node.personal_deleted_at is null
                               and linked_node.kind = 'leaf'
                           )
                         )
@@ -6303,7 +6304,7 @@ export const createMemorySourceRepository = (
                             from memory_node_sources linked_source
                             join memory_nodes linked_node on linked_node.id = linked_source.memory_node_id
                             where linked_source.message_id = me.message_id
-                              and linked_node.invalidated_at is null
+                              and linked_node.invalidated_at is null and linked_node.personal_deleted_at is null
                               and linked_node.kind = 'leaf'
                           )
                         )
@@ -6788,7 +6789,7 @@ export const createMemorySourceRepository = (
             me.payload,
             me.captured_at
           from memory_events me
-          where me.invalidated_at is null
+          where me.invalidated_at is null and me.personal_deleted_at is null
             and me.visibility = $1
             and me.owner_user_id = $2
             and not exists (
@@ -6797,7 +6798,7 @@ export const createMemorySourceRepository = (
               join memory_nodes mn on mn.id = mns.memory_node_id
               where mns.memory_event_id = me.id
                 and mn.kind = 'leaf'
-                and mn.invalidated_at is null
+                and mn.invalidated_at is null and mn.personal_deleted_at is null
             )
           order by me.captured_at asc, me.id asc
         `,
@@ -6966,7 +6967,7 @@ export const createMemorySourceRepository = (
           select mn.id, mn.depth, mn.summary_text, mn.source_items_json
           from memory_nodes mn
           left join memory_node_children mnc on mnc.child_memory_node_id = mn.id
-          where mn.invalidated_at is null
+          where mn.invalidated_at is null and mn.personal_deleted_at is null
             and mn.kind = 'leaf'
             and mn.depth = 0
             and mnc.parent_memory_node_id is null
@@ -7150,7 +7151,7 @@ export const createMemorySourceRepository = (
         select mn.id, mn.visibility, mn.source_items_json
         from memory_nodes mn
         where mn.id = $2
-          and mn.invalidated_at is null
+          and mn.invalidated_at is null and mn.personal_deleted_at is null
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
         limit 1
@@ -7184,7 +7185,7 @@ export const createMemorySourceRepository = (
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
         where mns.memory_node_id = $1
-          and me.invalidated_at is null
+          and me.invalidated_at is null and me.personal_deleted_at is null
           and me.visibility = 'personal'
           and me.owner_user_id = $2
           and ($3::timestamptz is null or me.captured_at >= $3::timestamptz)

@@ -150,13 +150,17 @@ const buildAccessRecord = (row: {
   teamArchivedAt: Date | string | null;
   workspaceArchivedAt: Date | string | null;
   access: TeamWorkspaceAccessLevel | null;
+  accessDisabledAt: Date | string | null;
 }): TeamWorkspaceAccessRecord => {
   const workspaceActive = !row.teamArchivedAt && !row.workspaceArchivedAt;
   const membershipEnabled =
     workspaceActive &&
     row.membershipStatus === "enabled" &&
     row.membershipDisabledAt === null;
-  const access = membershipEnabled ? (row.access ?? "disabled") : "disabled";
+  const access =
+    membershipEnabled && row.accessDisabledAt === null
+      ? (row.access ?? "disabled")
+      : "disabled";
   const canManageTeam =
     membershipEnabled && (row.role === "owner" || row.role === "admin");
   const canRecall = accessRank(access) >= accessRank("read");
@@ -211,7 +215,8 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         membershipDisabledAt: teamMemberships.disabledAt,
         teamArchivedAt: teams.archivedAt,
         workspaceArchivedAt: teamWorkspaces.archivedAt,
-        access: teamWorkspaceAccessGrants.access
+        access: teamWorkspaceAccessGrants.access,
+        accessDisabledAt: teamWorkspaceAccessGrants.disabledAt
       })
       .from(teamWorkspaces)
       .innerJoin(teams, eq(teams.id, teamWorkspaces.teamId))

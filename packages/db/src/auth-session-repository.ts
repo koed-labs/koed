@@ -32,7 +32,8 @@ export const createAuthSessionRepository = (db: KoedDb) => ({
           eq(userSessions.sessionHash, sessionHash),
           isNull(userSessions.revokedAt),
           gt(userSessions.expiresAt, sql`now()`),
-          isNull(users.disabledAt)
+          isNull(users.disabledAt),
+          isNull(users.deletedAt)
         )
       )
       .limit(1);

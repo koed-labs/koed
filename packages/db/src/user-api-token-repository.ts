@@ -67,7 +67,13 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
         passwordHash: users.passwordHash
       })
       .from(users)
-      .where(and(eq(users.id, userId), isNull(users.disabledAt)))
+      .where(
+        and(
+          eq(users.id, userId),
+          isNull(users.disabledAt),
+          isNull(users.deletedAt)
+        )
+      )
       .limit(1);
 
     return rows[0] ? mapUserRecord(rows[0]) : null;
@@ -97,7 +103,11 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
         })
         .from(users)
         .where(
-          and(eq(users.email, email.toLowerCase()), isNull(users.disabledAt))
+          and(
+            eq(users.email, email.toLowerCase()),
+            isNull(users.disabledAt),
+            isNull(users.deletedAt)
+          )
         )
         .limit(1);
 
@@ -110,7 +120,7 @@ export const createUserApiTokenRepository = (db: KoedDb) => {
       const rows = await db
         .select({ count: sql<string>`count(*)` })
         .from(users)
-        .where(isNull(users.disabledAt));
+        .where(and(isNull(users.disabledAt), isNull(users.deletedAt)));
 
       return Number(rows[0]?.count ?? 0);
     },
