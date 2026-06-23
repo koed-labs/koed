@@ -49,7 +49,9 @@ export const resolveApiEnv = (
   }
 
   return {
-    host: environment.API_HOST ?? "0.0.0.0",
+    host:
+      environment.API_HOST ??
+      (nodeEnv === "production" ? "0.0.0.0" : "127.0.0.1"),
     port: intEnv(environment, "API_PORT", 3000),
     nodeEnv,
     production: nodeEnv === "production"

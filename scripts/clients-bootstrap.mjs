@@ -9,9 +9,9 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const usageText = `Usage: pnpm clients:bootstrap
 
-Runs the guided Koed bootstrap path:
+Runs the guided Koed client bootstrap path after koed-server has started:
   1. Prepare the environment
-  2. Start backend services
+  2. Ensure dependency containers are running
   3. Create or reuse the API token
   4. Configure Codex
   5. Write Explorer token config
@@ -114,22 +114,26 @@ export const runClientsBootstrap = async ({
     cwd: bootstrapRootDir
   });
 
-  await runCommandFn({
-    label: "Start Koed backend services",
-    command: "docker",
-    args: [
-      "compose",
-      "up",
-      "-d",
-      "--build",
-      "postgres",
-      "redis",
-      "embedding-service",
-      "api",
-      "worker"
-    ],
-    cwd: bootstrapRootDir
-  });
+  if (environment.KOED_SERVER_MANAGED === "1") {
+    console.log(
+      "> Koed dependency containers already managed by koed-server; skipping container startup"
+    );
+  } else {
+    await runCommandFn({
+      label: "Start Koed dependency containers",
+      command: "docker",
+      args: [
+        "compose",
+        "up",
+        "-d",
+        "--build",
+        "postgres",
+        "redis",
+        "embedding-service"
+      ],
+      cwd: bootstrapRootDir
+    });
+  }
 
   const apiUrl = resolveApiUrl(environment);
   await waitForApiReadyFn({ apiUrl });

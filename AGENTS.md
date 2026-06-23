@@ -10,6 +10,16 @@ If you are helping an Operator or User get started in a fresh clone, begin here:
 4. `docs/configuration.md` → environment and deployment settings
 5. `CONTEXT.md` → product language and canonical terms
 
+Fresh-clone bootstrap should assume Docker Desktop (or another running Docker daemon) is required before Koed startup. The happy path is:
+
+```bash
+pnpm env:setup
+docker compose up -d --build
+pnpm desktop:start
+```
+
+If Docker is unavailable, surface that first instead of proceeding to Koed startup.
+
 If you are making code changes, keep using the contributor guidance below.
 
 ## Domain Language

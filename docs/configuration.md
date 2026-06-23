@@ -24,7 +24,8 @@ values and adds any missing keys from
 - `POSTGRES_HOST_PORT`: host port mapped to the Postgres container.
 - `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`. Docker Compose derives service-internal database URLs from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
 - `API_NODE_ENV`: runtime environment for the API service. Use `production` for deployed compose runs.
-- `API_HOST_PORT`: host port mapped to the API container. The API container listens on internal port `3000`.
+- `API_HOST`: API bind host for direct local runs. Defaults to `127.0.0.1` in development and `0.0.0.0` in production. Override only when you intentionally want LAN access.
+- `API_HOST_PORT`: host port used by the local API process supervised by `koed-server`. The API listens on process-local `API_PORT`.
 - `API_LOG_LEVEL`: API log level. See [observability](observability.md) for
   the structured API log schema and redaction rules.
 - `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
@@ -47,8 +48,10 @@ values and adds any missing keys from
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
 - `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
-- `EXPLORER_WEB_HOST_PORT`: host port mapped to the Explorer. The Explorer container listens on internal port `5174`.
-- `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app and Docker-built Explorer image. `pnpm clients:bootstrap` writes this automatically; `pnpm explorer:bootstrap` writes it when passed an existing API Token.
+- `EXPLORER_WEB_HOST_PORT`: host port used by the local Explorer preview process supervised by `koed-server`.
+- `REDIS_HOST_PORT`: host port mapped to the Redis dependency container for local API and Worker processes. Default `16379`.
+- `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container for local API and Worker processes. Default `3800`.
+- `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app. `koed-server` also writes the app-provisioned Explorer credential under `KOED_HOME/config/explorer-token.json` so status can report whether the desktop happy path has a credential without exposing the API Token.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
