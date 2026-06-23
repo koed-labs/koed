@@ -24,6 +24,7 @@ values and adds any missing keys from
 - `POSTGRES_HOST_PORT`: host port mapped to the Postgres container.
 - `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`. Docker Compose derives service-internal database URLs from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
 - `API_NODE_ENV`: runtime environment for the API service. Use `production` for deployed compose runs.
+- `API_HOST`: API bind host for direct local runs. Defaults to `127.0.0.1` in development and `0.0.0.0` in production. Override only when you intentionally want LAN access.
 - `API_HOST_PORT`: host port used by the local API process supervised by `koed-server`. The API listens on process-local `API_PORT`.
 - `API_LOG_LEVEL`: API log level. See [observability](observability.md) for
   the structured API log schema and redaction rules.
