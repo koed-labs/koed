@@ -150,9 +150,33 @@ A lifecycle state that restricts access or ingestion without deleting retained
 Memory, Team records, Workspace records, or Share Grants.
 _Avoid_: Deletion, archive, share revocation
 
+**Content Inventory**:
+A deduplicated index of external content known to a Koed deployment.
+_Avoid_: Upload folder, memory store, document list
+
+**Content Object**:
+An external source item such as a file, URL, repository reference, meeting note,
+or other uploaded material that can be ingested into memory.
+_Avoid_: Memory Event, Captured Session, attachment
+
+**Cross-Identity Sync**:
+A policy-controlled sync relationship that keeps one logical memory lifespan
+available across identities or deployments, such as a personal Koed identity
+and a Team-side personal identity.
+_Avoid_: Fork, import, copy, ownership transfer
+
+**Fork/Import**:
+An explicit operation that creates a separate memory lifespan from an existing
+memory source.
+_Avoid_: Share, Cross-Identity Sync, migration
+
+**Knowledge Collection**:
+A grantable set of Content Objects prepared for future Memory Inbox recall.
+_Avoid_: Workspace, Project, Team, folder
+
 **Share Grant**:
-An access record that allows Team recall of a user-owned Captured Session within
-a Workspace.
+An access record that allows Team recall of a user-owned memory source within a
+Workspace.
 _Avoid_: Ownership transfer, copy, export
 
 **Supported AI Client Integration**:
@@ -183,6 +207,16 @@ _Avoid_: Personal deletion, share revocation, legal hold
 **Team-shared Memory**:
 User-owned Memory made recallable to Team members through an active Share Grant.
 _Avoid_: Team-owned memory, public memory, copied memory
+
+**Memory Inbox**:
+A future ingestion surface for external Content Objects and Knowledge
+Collections.
+_Avoid_: Conversation capture, file browser, cloud drive
+
+**Offload**:
+Moving storage or processing work to a hosted Koed service while preserving the
+memory's policy and provenance boundary.
+_Avoid_: Share, Fork/Import, backup
 
 **Soft Delete**:
 A retained lifecycle state that hides a resource from normal active flows while
@@ -219,6 +253,12 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **Workspace** has one stable shared ID for memories
 - A **User** may have **Workspace Access** through a **Team**
 - A **Project** may resolve to one **Workspace**
+- **Cross-Identity Sync** keeps one logical memory lifespan available across
+  identities or deployments without creating a fork
+- **Fork/Import** creates a separate memory lifespan only when explicitly
+  requested
+- **Offload** changes where storage or processing happens; it does not by itself
+  create a **Share Grant**
 - **Access Suspension** may restrict recall, sharing, ingestion, or management
   without deleting retained **Memory**
 - A **Workspace Archive** hides a **Workspace** from normal active flows without
@@ -241,14 +281,19 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - An **AI Client** performs **Synthesis** from recalled evidence
 - **Personal Memory** belongs to exactly one **User**
 - **Team-shared Memory** remains owned by the originating **User**
-- A **Share Grant** makes one **Captured Session** recallable to one **Team** in
-  one **Workspace**
+- A **Share Grant** makes one user-owned memory source recallable to one
+  **Team** in one **Workspace**; the first implemented source is a
+  **Captured Session**
 - A **Share Grant** may allow summary-only recall or source-detail expansion
 - Removing a **User** from a **Team** or **Workspace** removes future access but
   does not delete retained **Team-shared Memory**
 - A **Share Grant** revocation, **Workspace Archive**, **Access Suspension**,
   **Soft Delete**, and hard purge are separate lifecycle operations
 - **Memory** is composed from one or more **Memory Events**
+- A **Memory Inbox** may ingest **Content Objects** into **Knowledge
+  Collections**
+- A **Knowledge Collection** may be granted to one or more authorized groups
+  without duplicating the underlying **Content Objects**
 - **Projection** transforms captured source activity into Koed semantic memory structures such as **Memory Events**
 - A **Memory Node** summarizes one or more **Memory Events** or **Memory Nodes**
 - An **LCM Leaf** is a **Memory Node** summarized from one or more **Memory Events**
@@ -283,6 +328,9 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 > **Dev:** "Does sharing a session move it into Team ownership?"
 > **Domain expert:** "No — **Team-shared Memory** remains user-owned and is recallable through a **Share Grant**."
 
+> **Dev:** "If I share personal memory into my Team identity, is that a fork?"
+> **Domain expert:** "No — use **Cross-Identity Sync** when the same logical memory lifespan should continue across identities."
+
 > **Dev:** "If a Team stops paying, do we delete its memories?"
 > **Domain expert:** "No — use **Access Suspension** or ingestion gating. Retained **Memory** is not deleted."
 
@@ -300,6 +348,13 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - "team memory" can sound like the Team owns the memory; resolved:
   **Team-shared Memory** remains owned by the originating **User** and is
   accessed through a **Share Grant**.
+- "sharing", "syncing", and "importing" can sound interchangeable; resolved:
+  **Share Grant** changes recall authorization, **Cross-Identity Sync** keeps one
+  logical memory lifespan available across identities, and **Fork/Import**
+  creates a separate memory lifespan.
+- "Memory Inbox" can sound like a second memory ownership model; resolved:
+  **Memory Inbox** adds external **Content Objects** and **Knowledge
+  Collections**, while access still flows through grants and policy.
 - "deleted" can mean many things; resolved: use **Soft Delete** or
   **Workspace Archive** for retained resources, **Access Suspension** for
   temporary or policy-driven access restrictions, and hard purge only for

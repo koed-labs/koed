@@ -191,11 +191,13 @@ sequenceDiagram
 ## Team Sharing
 
 Team-shared Memory remains user-owned. Sharing is represented by a Share Grant
-from one Captured Session to one Team and one Workspace. A Workspace is the
-stable shared ID for memories; Project context such as local repo, filepath,
-ref, branch, or cwd is used only to resolve or display a Workspace.
+from a user-owned memory source to one Team and one Workspace. The first
+implemented source type is a Captured Session. A Workspace is the stable shared
+ID for memories; Project context such as local repo, filepath, ref, branch, or
+cwd is used only to resolve or display a Workspace.
 
-1. The User selects a Captured Session, Team, Workspace, and expansion level.
+1. The User selects a user-owned memory source, Team, Workspace, and expansion
+   level. In the first implementation the source is a Captured Session.
 2. The API authenticates the API Token as the owning User.
 3. The API verifies Team Membership and Workspace Access for the User.
 4. The API creates or revokes the Share Grant and writes an audit event.
@@ -218,6 +220,53 @@ ref, branch, or cwd is used only to resolve or display a Workspace.
    represented by a User tombstone, and retained Team knowledge remains tied to
    the Team and Workspace retention record for audit, restore, and future
    authorized Team recall.
+10. Team-visible derived memory is built only from source items inside the
+    authorized Team and Workspace boundary. Private personal summaries, graph
+    edges, embeddings, or rollups cannot become Team-visible by label change
+    when they include unrelated private source material.
+
+## Cross-Identity Sync And Offload
+
+Cross-Identity Sync covers cases where the same logical memory lifespan must be
+available across identities or deployments, such as a personal Koed identity
+and a Team-side personal identity. It is not a fork or import. A policy-aware
+synced replica may exist for availability, indexing, and Team recall, but the
+product treats it as the same logical memory lifespan until an explicit
+Fork/Import operation is introduced.
+
+1. The source identity authorizes sync of a memory source to a target identity
+   or deployment.
+2. The target side stores enough synced source material, provenance, and sync
+   state to support recall even when the source device is temporarily offline.
+3. Team sharing from the target identity still requires a Share Grant and the
+   caller's current Team Membership and Workspace Access.
+4. Sync revocation stops future propagation. Data already made Team-visible is
+   then governed by the target Team, Workspace, Share Grant, and retention
+   policy.
+5. Fork/Import remains a separate future operation for intentionally creating a
+   new, independently evolving memory lifespan.
+6. Offload moves storage or processing to a hosted Koed service; it does not by
+   itself grant Team visibility or create a fork.
+
+## Future Memory Inbox
+
+Memory Inbox is a future ingestion surface for external Content Objects such as
+files, URLs, repository references, meeting notes, or other uploaded material.
+It is not part of the first Team memory core, but Team architecture reserves
+room for it so external knowledge can use the same flat ownership and
+grant-based visibility model.
+
+1. A Content Object is identified and checked against Content Inventory before
+   ingestion so duplicate uploads can reuse the existing object where policy
+   allows.
+2. Ingestion jobs transform approved Content Objects into memory with
+   provenance, processing state, and quota/entitlement metadata.
+3. Related Content Objects may be grouped into a Knowledge Collection.
+4. A Knowledge Collection can be granted to multiple authorized groups without
+   re-ingesting the same underlying Content Objects.
+5. Recall treats Memory Inbox outputs like any other source class: candidates
+   must pass authorization, lifecycle, and provenance checks before ranking,
+   expansion, summarization, graph traversal, or export.
 
 ## Retrieval
 
