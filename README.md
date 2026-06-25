@@ -16,7 +16,7 @@ that memory available through MCP recall.
 - Seamless recall for prior conversations, project history, and remembered context.
 - Explorer for inspecting captured Koed memory.
 - Postgres + pgvector storage under your control.
-- Local embedding, reranking, and Redis-backed memory processing.
+- Local embedding, reranking, and BullMQ or Postgres-backed memory processing.
 
 ## Quickstart
 
@@ -35,9 +35,10 @@ pnpm desktop:start
 
 `pnpm desktop:start` opens Koed Desktop, auto-starts `koed-server`, and runs
 the full Codex bootstrap + health-check sequence before showing the Explorer.
-`koed-server` connects to the Postgres, Redis/BullMQ, and Embedding Service
-endpoints from `.env`/environment or `KOED_HOME/config/server.json`; it does
-not start or stop Docker Compose dependencies in external mode.
+`koed-server` connects to Postgres, the configured work queue backend, and
+Embedding Service endpoints from `.env`/environment or
+`KOED_HOME/config/server.json`; it does not start or stop Docker Compose
+dependencies in external mode.
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.
 

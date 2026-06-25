@@ -4,6 +4,7 @@ import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import type { WorkerEnvConfig } from "./env-config.js";
 
 const workerEnv: WorkerEnvConfig = {
+  queueBackend: "bullmq",
   redisUrl: "redis://localhost:6379",
   databaseConfigured: true,
   databaseUrl: "postgres://local",

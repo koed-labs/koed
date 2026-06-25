@@ -9,6 +9,7 @@ export interface DbConfig {
   connectionString?: string;
 }
 
+export type DbPool = pg.Pool;
 export type KoedDb = NodePgDatabase<typeof schema>;
 
 export const createDbPool = (config: DbConfig = {}): pg.Pool =>

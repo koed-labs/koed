@@ -27,6 +27,10 @@ type SpawnSyncLike = (
   options?: Parameters<typeof nodeSpawnSync>[2]
 ) => SpawnSyncReturns<string>;
 
+const resolveWorkQueueBackend = (
+  value: string | undefined
+): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
+
 export interface KoedServerStatusDependencies {
   fetch?: typeof fetch;
   spawnSync?: SpawnSyncLike;
@@ -480,14 +484,29 @@ export const collectKoedServerStatus = async (
     serverConfig.external?.redisUrl ??
     environment.REDIS_URL ??
     repoEnv.REDIS_URL;
+  const queueBackend = resolveWorkQueueBackend(
+    environment.WORK_QUEUE_BACKEND ?? repoEnv.WORK_QUEUE_BACKEND
+  );
+  const localQueueRedisBypass = healthy(
+    "Postgres-backed local queue does not require Redis.",
+    { backend: queueBackend }
+  );
+  const redisStatus =
+    serverConfig.dependencyMode === "external" && queueBackend === "local"
+      ? apiReady.redis.state === "starting"
+        ? localQueueRedisBypass
+        : apiReady.redis
+      : apiReady.redis;
   const queueDependency =
     serverConfig.dependencyMode === "external"
-      ? externalRedisUrl
-        ? apiReady.redis
-        : needsAttention(
-            "External dependency mode requires an Operator-managed Redis URL for BullMQ queues.",
-            "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL."
-          )
+      ? queueBackend === "local"
+        ? localQueueRedisBypass
+        : externalRedisUrl
+          ? apiReady.redis
+          : needsAttention(
+              "External dependency mode requires an Operator-managed Redis URL for BullMQ queues.",
+              "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL, or set WORK_QUEUE_BACKEND=local."
+            )
       : dockerComposePs(paths, deps.spawnSync);
   const workerPid = runtime?.processes?.worker;
   const workerRunning = workerPid ? deps.checkPid(workerPid) : false;
@@ -534,9 +553,7 @@ export const collectKoedServerStatus = async (
     api: { ...apiReady.api, url: apiUrl },
     database: apiReady.database,
     redis:
-      serverConfig.dependencyMode === "external"
-        ? queueDependency
-        : apiReady.redis,
+      serverConfig.dependencyMode === "external" ? redisStatus : apiReady.redis,
     workerQueues,
     embeddingService: apiReady.embeddingService,
     apiToken,

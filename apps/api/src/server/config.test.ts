@@ -11,6 +11,7 @@ describe("resolveApiServerConfig", () => {
       test: false,
       logLevel: "info",
       requestBodyLimitBytes: 4 * 1024 * 1024,
+      queueBackend: "bullmq",
       cookieSecure: true,
       publicRegistrationEnabled: false,
       rateLimit: {
@@ -80,6 +81,14 @@ describe("resolveApiServerConfig", () => {
       redisUrl: "redis://default:6379",
       graphCacheTtlSeconds: 30
     });
+  });
+
+  it("accepts local queue backend override", () => {
+    expect(
+      resolveApiServerConfig({
+        WORK_QUEUE_BACKEND: "local"
+      }).queueBackend
+    ).toBe("local");
   });
 
   it("uses the documented root reranker key for server config", () => {

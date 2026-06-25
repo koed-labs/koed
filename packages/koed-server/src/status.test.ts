@@ -125,6 +125,52 @@ describe("status and doctor JSON contracts", () => {
     expect(status.state).toBe("not_configured");
   });
 
+  it("treats external local work queue as Redis-free", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(true, 200, { checks: [] }),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.redis.state).toBe("healthy");
+    expect(status.redis.message).toBe(
+      "Postgres-backed local queue does not require Redis."
+    );
+    expect(status.workerQueues.state).toBe("starting");
+  });
+
+  it("preserves Redis errors in local queue mode when API reports Redis", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () =>
+          response(true, 200, {
+            checks: [{ service: "redis", status: "error" }]
+          }),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.redis.state).toBe("needs_attention");
+    expect(status.workerQueues.state).toBe("starting");
+  });
+
   it("formats doctor result with actionable checks", async () => {
     const root = tempDir();
     const doctor = await collectKoedServerDoctor(

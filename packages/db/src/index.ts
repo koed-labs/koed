@@ -8,11 +8,17 @@ export {
   createDbPool,
   waitForDbMigrations,
   type DbConfig,
+  type DbPool,
   type KoedDb,
   type WaitForDbMigrationsOptions
 } from "./connection.js";
 export { createConversationItemRepository } from "./conversation-item-repository.js";
 export { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
+export {
+  createLocalWorkQueueRepository,
+  type LocalWorkQueueJobRecord,
+  type LocalWorkQueueRepository
+} from "./local-work-queue-repository.js";
 export { createMemoryNodeRepository } from "./memory-node-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {

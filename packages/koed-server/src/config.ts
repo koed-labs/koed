@@ -41,8 +41,7 @@ const runtimeMode = (
 
 const dependencyMode = (
   value: string | undefined
-): KoedDependencyMode | undefined =>
-  value === "bundled-local" || value === "external" ? value : undefined;
+): KoedDependencyMode | undefined => (value === "external" ? value : undefined);
 
 const readConfig = (
   paths: KoedServerPaths,

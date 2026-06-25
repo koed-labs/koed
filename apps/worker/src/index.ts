@@ -1,4 +1,3 @@
-import { Queue, Worker } from "bullmq";
 import {
   createDbPool,
   createMemorySourceRepository,
@@ -7,13 +6,16 @@ import {
 } from "@koed/db";
 import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
+import { lcmEmbedQueueName, workerQueueNames } from "@koed/shared";
 import {
   createWorkerJobWorkflow,
   enqueueLcmNodeEmbeddings,
-  workerQueueNames,
-  type EmbeddingQueueJobData,
-  type WorkerQueueName
+  type EmbeddingQueueJobData
 } from "./job-workflows.js";
+import {
+  createWorkerQueueProducer,
+  createWorkerQueueRuntime
+} from "./queue.js";
 import { createWorkerLogger } from "./logging.js";
 import { createRawProjectionService } from "./raw-projection-service.js";
 
@@ -26,11 +28,6 @@ const logger = createWorkerLogger({
   logDestination: workerEnv.logDestination
 });
 
-const connection = {
-  url: workerEnv.redisUrl,
-  maxRetriesPerRequest: null
-};
-
 const pool = workerEnv.databaseUrl
   ? createDbPool({ connectionString: workerEnv.databaseUrl })
   : null;
@@ -38,10 +35,6 @@ if (pool) {
   await waitForCurrentDbMigrations(pool);
 }
 const repository = pool ? createMemorySourceRepository(pool) : null;
-const lcmEmbedQueue = new Queue<EmbeddingQueueJobData>("lcm-embed", {
-  connection
-});
-
 const requireRepository = (): MemorySourceRepository => {
   if (!repository) {
     throw new Error("DATABASE_URL is required for worker business logic");
@@ -61,118 +54,29 @@ const embeddingWorkflow = createEmbeddingWorkflow({
   repository: requireRepository
 });
 
+const lcmEmbedQueue = createWorkerQueueProducer<EmbeddingQueueJobData>(
+  lcmEmbedQueueName,
+  {
+    backend: workerEnv.queueBackend,
+    redisUrl: workerEnv.redisUrl,
+    pool
+  }
+);
+
 const handleJob = createWorkerJobWorkflow({
   embeddingWorkflow,
   lcmEmbedQueue,
   repository: requireRepository
 });
 
-const workers = workerQueueNames.map((queueName: WorkerQueueName) => {
-  const worker = new Worker<unknown>(
-    queueName,
-    async (job) => {
-      try {
-        return await handleJob(queueName, job.data);
-      } catch (error) {
-        if (isTransientError(error)) {
-          logger.warn(
-            {
-              event: {
-                name: "worker.job.transient_failure",
-                category: "job"
-              },
-              queue: { name: queueName },
-              job: {
-                id: String(job.id ?? "unknown"),
-                name: job.name,
-                attempts_made: job.attemptsMade
-              },
-              err: error
-            },
-            "worker job transient failure; BullMQ will retry"
-          );
-        }
-        throw error;
-      }
-    },
-    {
-      connection,
-      lockDuration: 10 * 60 * 1000,
-      settings: {
-        backoffStrategy: (_attemptsMade, _type, error) =>
-          isTransientError(error) ? 5_000 : 0
-      }
-    }
-  );
-
-  worker.on("completed", (job) => {
-    logger.info(
-      {
-        event: {
-          name: "worker.job.completed",
-          category: "job"
-        },
-        queue: { name: queueName },
-        job: {
-          id: String(job.id ?? "unknown"),
-          name: job.name,
-          attempts_made: job.attemptsMade
-        }
-      },
-      "worker job completed"
-    );
-  });
-
-  worker.on("failed", (job, error) => {
-    logger.error(
-      {
-        event: {
-          name: "worker.job.failed",
-          category: "job"
-        },
-        queue: { name: queueName },
-        job: job
-          ? {
-              id: String(job.id ?? "unknown"),
-              name: job.name,
-              attempts_made: job.attemptsMade
-            }
-          : undefined,
-        err: error
-      },
-      "worker job failed"
-    );
-  });
-
-  worker.on("stalled", (jobId) => {
-    logger.warn(
-      {
-        event: {
-          name: "worker.job.stalled",
-          category: "job"
-        },
-        queue: { name: queueName },
-        job: { id: String(jobId) }
-      },
-      "worker job stalled"
-    );
-  });
-
-  worker.on("error", (error) => {
-    logger.error(
-      {
-        event: {
-          name: "worker.queue.error",
-          category: "queue"
-        },
-        queue: { name: queueName },
-        err: error
-      },
-      "worker queue error"
-    );
-  });
-
-  return worker;
+const queueRuntime = createWorkerQueueRuntime({
+  backend: workerEnv.queueBackend,
+  redisUrl: workerEnv.redisUrl,
+  pool,
+  logger,
+  lcmEmbedQueue,
+  handleJob,
+  isTransientError
 });
 
 logger.info(
@@ -181,6 +85,7 @@ logger.info(
       name: "worker.started",
       category: "lifecycle"
     },
+    queueBackend: workerEnv.queueBackend,
     queues: workerQueueNames
   },
   "worker listening on queues"
@@ -211,8 +116,7 @@ const shutdown = async () => {
     "worker shutting down"
   );
   rawProjectionService?.stop();
-  await Promise.all(workers.map((worker) => worker.close()));
-  await lcmEmbedQueue.close();
+  await queueRuntime.close();
   await pool?.end();
   logger.info(
     {

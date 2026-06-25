@@ -2,17 +2,42 @@ import { describe, expect, it } from "vitest";
 import {
   configFlagEnabled,
   createHealth,
+  memoryEmbedQueueName,
   metadataWithStorageSanitization,
   requireEnv,
+  resolveKoedQueueBackend,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
-  sanitizeForPostgresStorage
+  sanitizeForPostgresStorage,
+  workerQueueNames
 } from "./index.js";
 
 describe("createHealth", () => {
   it("creates an ok health payload", () => {
     expect(createHealth("test").status).toBe("ok");
+  });
+});
+
+describe("resolveKoedQueueBackend", () => {
+  it("uses bullmq default and keeps known values", () => {
+    expect(resolveKoedQueueBackend(undefined)).toBe("bullmq");
+    expect(resolveKoedQueueBackend("local")).toBe("local");
+  });
+
+  it("falls back for unsupported queue backends", () => {
+    expect(resolveKoedQueueBackend("unsupported", "local")).toBe("local");
+  });
+});
+
+describe("workerQueueNames", () => {
+  it("keeps memory embed queue name stable", () => {
+    expect(memoryEmbedQueueName).toBe("memory-embed");
+    expect(workerQueueNames).toEqual([
+      "memory-embed",
+      "lcm-compact",
+      "lcm-embed"
+    ]);
   });
 });
 

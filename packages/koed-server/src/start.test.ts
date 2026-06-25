@@ -84,6 +84,40 @@ describe("start supervisor", () => {
     );
   });
 
+  it("does not require Redis URL for external mode with local work queue", async () => {
+    const root = tempDir();
+    const spawned: Array<{ command: string; args: string[] }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        DATABASE_URL: "postgres://operator/db",
+        EMBEDDING_SERVICE_URL: "http://operator:8000",
+        WORK_QUEUE_BACKEND: "local"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: () => spawnResult(),
+      spawn: (command, args) => {
+        spawned.push({ command, args });
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = spawned.length;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(spawned.map((entry) => entry.args.join(" "))).toContain(
+      "--filter @koed/worker start"
+    );
+  });
+
   it("starts app services without managing external dependencies", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];

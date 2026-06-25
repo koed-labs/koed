@@ -14,8 +14,9 @@ MCP-side workers.
   memory-answer work, and runs the LCM Summary Service.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
   records, runs Projection, and serves recall endpoints.
-- **Worker**: the BullMQ/background process that performs catch-up projection,
-  embedding work, and LCM node embedding.
+- **Worker**: the background process that consumes BullMQ or Postgres-backed
+  local queue jobs, performs catch-up Projection, embedding work, and LCM node
+  embedding.
 - **Embedding Service**: Operator-managed service in external dependency mode
   that turns memory text into retrieval vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
@@ -40,7 +41,10 @@ MCP-side workers.
    values. `koed-server` does not start, stop, or inspect Docker Compose in
    external mode.
 4. The API, Worker, and Explorer run as local app processes supervised by
-   `koed-server` and connect to those configured dependency URLs.
+   `koed-server` and connect to those configured dependency URLs. API/Worker
+   job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
+   `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
+   table.
 5. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
@@ -76,10 +80,12 @@ MCP-side workers.
    tool events, Memory Events, source links, and token usage where available.
    Agent work is bundled into semantic `agent_turn` Memory Events only when a
    seal condition is reached.
-7. The API schedules processing for newly projected Memory Events. The Worker
-   also runs a catch-up loop over pending or failed raw rows.
-8. The Worker embeds Memory Events by calling the Embedding Service and then
-   upserts source embeddings.
+7. The API schedules processing for newly projected Memory Events through the
+   configured work queue backend. The Worker also runs a catch-up loop over
+   pending or failed raw rows.
+8. The Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`,
+   embeds Memory Events by calling the Embedding Service, and then upserts
+   source embeddings.
 9. The Worker schedules compaction, creating or updating LCM Placeholder Memory
    Nodes from Memory Events and child nodes, then queues Memory Node embedding.
 10. Pending LCM placeholders remain available as degraded evidence until local

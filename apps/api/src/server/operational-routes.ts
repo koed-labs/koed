@@ -7,9 +7,9 @@ import { createDbPool, type MemorySourceRepository } from "@koed/db";
 import {
   createHealth,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig
+  resolveSupportedRerankerModelConfig,
+  type KoedJobQueue
 } from "@koed/shared";
-import type { Queue } from "bullmq";
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
 import type { ApiRouteContext } from "./context.js";
@@ -18,8 +18,8 @@ import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
 
 interface OperationalRouteOptions {
   repository: MemorySourceRepository | null;
-  embeddingQueue: Queue | null;
-  compactionQueue: Queue | null;
+  embeddingQueue: KoedJobQueue<unknown> | null;
+  compactionQueue: KoedJobQueue<unknown> | null;
   runCompactionInline(
     repo: MemorySourceRepository,
     requesterContext: { userId: string },
@@ -77,14 +77,24 @@ export const registerOperationalRoutes = (
         checks.push(
           publicHealth("postgres", (await repo.health()) ? "ok" : "error")
         );
+        // API startup runs migrations before routes are registered. If the
+        // repository is available here, migration gating has passed.
+        checks.push(publicHealth("migrations"));
       } catch {
         checks.push(publicHealth("postgres", "error"));
+        checks.push(publicHealth("migrations", "error"));
       }
     } else if (config.databaseUrl) {
       checks.push(publicHealth("postgres", "error"));
+      checks.push(publicHealth("migrations", "error"));
     }
 
-    if (config.redisUrl) {
+    const redisRequired =
+      config.queueBackend === "bullmq" ||
+      config.rateLimit.store === "redis" ||
+      config.cache.store === "redis";
+
+    if (config.redisUrl && redisRequired) {
       const redis = new Redis(config.redisUrl, {
         lazyConnect: true,
         maxRetriesPerRequest: 1
@@ -175,7 +185,10 @@ export const registerOperationalRoutes = (
             status: config.redisUrl ? "configured" : "not_configured"
           },
           embeddingService: { status: "not_disclosed" },
-          workerQueues: { status: "not_disclosed" }
+          workerQueues: {
+            status: "not_disclosed",
+            backend: config.queueBackend
+          }
         },
         redacted: true
       };
@@ -209,6 +222,7 @@ export const registerOperationalRoutes = (
         },
         embeddingService: embedding,
         workerQueues: {
+          backend: config.queueBackend,
           embedding: embeddingJobs ?? { status: "not_configured" },
           compaction: compactionJobs ?? { status: "not_configured" }
         }
@@ -243,6 +257,7 @@ export const registerOperationalRoutes = (
         apiPort: config.apiPort ?? null,
         databaseConfigured: Boolean(config.databaseUrl),
         redisConfigured: Boolean(config.redisUrl),
+        queueBackend: config.queueBackend,
         dataEncryptionKeyConfigured: config.dataEncryptionKeyConfigured,
         apiTokenPepperConfigured: config.apiTokenPepperConfigured
       },

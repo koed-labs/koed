@@ -1,6 +1,10 @@
 import { scheduleCompaction, type Visibility } from "@koed/core";
 import type { MemorySourceRepository } from "@koed/db";
-import type { Queue } from "bullmq";
+import {
+  lcmCompactQueueName,
+  memoryEmbedQueueName,
+  type KoedJobQueue
+} from "@koed/shared";
 import { withTimeout } from "../server/utils.js";
 
 export type EmbeddingSourceType = "memory_node" | "memory_event" | "message";
@@ -8,7 +12,7 @@ export type EmbeddingSourceType = "memory_node" | "memory_event" | "message";
 export interface MemoryJobStatus {
   queued: boolean;
   inline: boolean;
-  jobId?: string;
+  jobId?: string | number;
   reason?: string;
   compaction?: {
     leafNodeIds: string[];
@@ -16,9 +20,19 @@ export interface MemoryJobStatus {
   };
 }
 
+interface EmbeddingQueueJobData {
+  sourceType: EmbeddingSourceType;
+  sourceId: string;
+}
+
+interface CompactionQueueJobData {
+  userId: string;
+  visibility: Visibility;
+}
+
 interface MemoryJobSchedulerOptions {
-  embeddingQueue: Queue | null;
-  compactionQueue: Queue | null;
+  embeddingQueue: KoedJobQueue<EmbeddingQueueJobData> | null;
+  compactionQueue: KoedJobQueue<CompactionQueueJobData> | null;
   runMemoryJobsInlineForTests?: boolean;
   log: {
     warn(bindings: Record<string, unknown>, message: string): void;
@@ -51,7 +65,7 @@ export const createMemoryJobScheduler = ({
         {
           event: { name: "job.enqueue.unavailable", category: "queue" },
           component: "memory_jobs",
-          queue: { name: "memory-embed" },
+          queue: { name: memoryEmbedQueueName },
           job: { name: "embed-source" },
           resource: { type: sourceType, id: sourceId }
         },
@@ -85,7 +99,7 @@ export const createMemoryJobScheduler = ({
         {
           event: { name: "job.enqueue.failed", category: "queue" },
           component: "memory_jobs",
-          queue: { name: "memory-embed" },
+          queue: { name: memoryEmbedQueueName },
           job: { name: "embed-source" },
           resource: { type: sourceType, id: sourceId },
           err: error
@@ -115,7 +129,7 @@ export const createMemoryJobScheduler = ({
         {
           event: { name: "job.enqueue.unavailable", category: "queue" },
           component: "memory_jobs",
-          queue: { name: "lcm-compact" },
+          queue: { name: lcmCompactQueueName },
           job: { name: "compact-scope" },
           actor: { user_id: requesterContext.userId },
           resource: { type: "compaction_scope", visibility }
@@ -150,7 +164,7 @@ export const createMemoryJobScheduler = ({
         {
           event: { name: "job.enqueue.failed", category: "queue" },
           component: "memory_jobs",
-          queue: { name: "lcm-compact" },
+          queue: { name: lcmCompactQueueName },
           job: { name: "compact-scope" },
           actor: { user_id: requesterContext.userId },
           resource: { type: "compaction_scope", visibility },

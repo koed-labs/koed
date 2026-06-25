@@ -111,6 +111,10 @@ const waitForHealthyOrReady = async ({
   return lastStatus;
 };
 
+const resolveWorkQueueBackend = (
+  value: string | undefined
+): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
+
 const localServiceEnv = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
@@ -229,11 +233,19 @@ export const startKoedServer = async ({
   );
 
   if (config.dependencyMode === "external") {
-    const missing = [
+    const queueBackend = resolveWorkQueueBackend(
+      refreshedEnv.WORK_QUEUE_BACKEND
+    );
+    const requiredExternalServices: Array<[string, unknown]> = [
       ["DATABASE_URL", refreshedEnv.DATABASE_URL],
-      ["REDIS_URL", refreshedEnv.REDIS_URL],
+      ...(queueBackend === "bullmq"
+        ? [["REDIS_URL", refreshedEnv.REDIS_URL] as [string, unknown]]
+        : []),
       ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
-    ].flatMap(([name, value]) => (String(value ?? "").trim() ? [] : [name]));
+    ];
+    const missing = requiredExternalServices.flatMap(([name, value]) =>
+      String(value ?? "").trim() ? [] : [name]
+    );
     if (missing.length > 0) {
       throw new Error(
         `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`

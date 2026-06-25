@@ -41,6 +41,21 @@ describe("koed-server config", () => {
     });
   });
 
+  it("ignores reserved bundled-local mode until implementation lands", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ dependencyMode: "bundled-local" })
+    );
+
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        KOED_DEPENDENCY_MODE: "bundled-local"
+      })
+    ).toMatchObject({ dependencyMode: "external" });
+  });
+
   it("loads server config and lets environment override it", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });
