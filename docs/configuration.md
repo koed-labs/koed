@@ -83,8 +83,10 @@ Example `KOED_HOME/config/server.json`:
 - `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
 - `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
 - `EXPLORER_WEB_HOST_PORT`: host port used by the local Explorer preview process supervised by `koed-server`.
-- `REDIS_HOST_PORT`: host port mapped to the Redis dependency container for local API and Worker processes. Default `16379`.
-- `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container for local API and Worker processes. Default `3800`.
+- `REDIS_HOST_PORT`: host port mapped to the Redis dependency container when using the Docker Compose starter. Default `16379`.
+- `REDIS_URL`: explicit Redis/BullMQ URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `redis://localhost:${REDIS_HOST_PORT}`.
+- `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
+- `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app. `koed-server` also writes the app-provisioned Explorer credential under `KOED_HOME/config/explorer-token.json` so status can report whether the desktop happy path has a credential without exposing the API Token.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.

@@ -51,10 +51,11 @@ the Compose stack, then let `koed-server` connect to the service URLs. Advanced
 Operators can provide the same URLs from `KOED_HOME/config/server.json` instead
 of Docker Compose.
 
-If ports conflict with another local app:
+If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
 ```bash
-API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 node packages/koed-server/dist/cli.js start
+REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose up -d --build
+API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
 ```
 
 The Explorer frontend is available at `http://localhost:5174`, or the host port you selected, and is embedded by Koed Desktop.
