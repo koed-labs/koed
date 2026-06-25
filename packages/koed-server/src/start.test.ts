@@ -51,6 +51,39 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("requires explicit external service URLs without localhost fallbacks", async () => {
+    const root = tempDir();
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_HOST_PORT: "16379",
+          EMBEDDING_SERVICE_HOST_PORT: "3800"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args) => {
+          commands.push({ command, args });
+          return spawnResult();
+        },
+        collectStatus: async () => healthyStatus(root)
+      })
+    ).rejects.toThrow(
+      "External dependency mode requires Operator-managed service configuration: REDIS_URL, EMBEDDING_SERVICE_URL"
+    );
+
+    expect(commands.map((command) => command.args.join(" "))).toEqual([
+      resolve(root, "scripts/setup-env.mjs")
+    ]);
+    expect(commands.some((command) => command.command === "docker")).toBe(
+      false
+    );
+  });
+
   it("starts app services without managing external dependencies", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];

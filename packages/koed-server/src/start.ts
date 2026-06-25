@@ -137,24 +137,30 @@ const localServiceEnv = (
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     API_PORT: apiPort,
     DATABASE_URL:
-      serverConfig.external?.databaseUrl ??
-      repoEnv.DATABASE_URL ??
-      environment.DATABASE_URL,
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.databaseUrl ??
+          environment.DATABASE_URL ??
+          repoEnv.DATABASE_URL)
+        : (repoEnv.DATABASE_URL ?? environment.DATABASE_URL),
     REDIS_URL:
-      serverConfig.external?.redisUrl ??
-      environment.REDIS_URL ??
-      repoEnv.REDIS_URL ??
-      redisUrl,
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.redisUrl ??
+          environment.REDIS_URL ??
+          repoEnv.REDIS_URL)
+        : (environment.REDIS_URL ?? repoEnv.REDIS_URL ?? redisUrl),
     RATE_LIMIT_REDIS_URL: repoEnv.API_RATE_LIMIT_REDIS_URL ?? "",
     CACHE_REDIS_URL: repoEnv.API_CACHE_REDIS_URL ?? "",
     DATA_ENCRYPTION_KEY:
       repoEnv.API_DATA_ENCRYPTION_KEY ?? environment.DATA_ENCRYPTION_KEY,
     API_TOKEN_PEPPER: repoEnv.API_TOKEN_PEPPER ?? environment.API_TOKEN_PEPPER,
     EMBEDDING_SERVICE_URL:
-      serverConfig.external?.embeddingServiceUrl ??
-      environment.EMBEDDING_SERVICE_URL ??
-      repoEnv.EMBEDDING_SERVICE_URL ??
-      embeddingServiceUrl,
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.embeddingServiceUrl ??
+          environment.EMBEDDING_SERVICE_URL ??
+          repoEnv.EMBEDDING_SERVICE_URL)
+        : (environment.EMBEDDING_SERVICE_URL ??
+          repoEnv.EMBEDDING_SERVICE_URL ??
+          embeddingServiceUrl),
     EMBEDDING_SERVICE_TOKEN:
       repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL: repoEnv.EMBEDDING_MODEL_KEY ?? environment.EMBEDDING_MODEL,
