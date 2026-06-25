@@ -61,7 +61,7 @@ export const createMemoryJobQueue = <TJobData>(
           backoffMs: jobOptions?.backoff?.delay
         }),
       getJobCounts: (...statuses) => getLocalJobCounts(repository, statuses),
-      close: async () => undefined
+      close: () => Promise.resolve()
     };
   }
 

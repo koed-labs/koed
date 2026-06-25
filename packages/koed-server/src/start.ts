@@ -236,15 +236,20 @@ export const startKoedServer = async ({
     const queueBackend = resolveWorkQueueBackend(
       refreshedEnv.WORK_QUEUE_BACKEND
     );
-    const requiredExternalServices: Array<[string, unknown]> = [
+    const requiredExternalServices: Array<[string, string | undefined]> = [
       ["DATABASE_URL", refreshedEnv.DATABASE_URL],
       ...(queueBackend === "bullmq"
-        ? [["REDIS_URL", refreshedEnv.REDIS_URL] as [string, unknown]]
+        ? [
+            ["REDIS_URL", refreshedEnv.REDIS_URL] as [
+              string,
+              string | undefined
+            ]
+          ]
         : []),
       ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
     ];
     const missing = requiredExternalServices.flatMap(([name, value]) =>
-      String(value ?? "").trim() ? [] : [name]
+      value?.trim() ? [] : [name]
     );
     if (missing.length > 0) {
       throw new Error(

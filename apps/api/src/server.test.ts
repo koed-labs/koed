@@ -46,6 +46,8 @@ afterEach(() => {
     "MEMORY_RECALL_RATE_LIMIT_MAX",
     "RATE_LIMIT_STORE",
     "RATE_LIMIT_REDIS_URL",
+    "REDIS_URL",
+    "WORK_QUEUE_BACKEND",
     "CACHE_STORE",
     "CACHE_REDIS_URL",
     "GRAPH_CACHE_TTL_SECONDS",
@@ -2424,6 +2426,7 @@ describe("api health", () => {
 
   it("keeps public status probes coarse and requires auth for details", async () => {
     process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
+    process.env.WORK_QUEUE_BACKEND = "local";
     const app = await buildServer({ repository: createFakeRepository() });
     const ready = await app.inject({ method: "GET", url: "/ready" });
     const details = await app.inject({ method: "GET", url: "/health/details" });
@@ -2451,6 +2454,28 @@ describe("api health", () => {
     expect(publicStatus.body).not.toContain("/sensitive/local/path");
     expect(privateStatus.statusCode).toBe(200);
     expect(privateStatus.body).not.toContain("/sensitive/local/path");
+  });
+
+  it("reports readiness error when BullMQ queue backend lacks Redis", async () => {
+    delete process.env.REDIS_URL;
+    process.env.WORK_QUEUE_BACKEND = "bullmq";
+    const app = await buildServer({ repository: createFakeRepository() });
+
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    await app.close();
+
+    const body = jsonBody<{
+      status: "error";
+      checks: Array<{ service: string; status: string; checkedAt: string }>;
+    }>(ready);
+
+    expect(ready.statusCode).toBe(503);
+    expect(body.status).toBe("error");
+    expect(body.checks).toContainEqual({
+      service: "redis",
+      status: "error",
+      checkedAt: expect.any(String) as string
+    });
   });
 
   it("does not advertise planned AI clients in self-host status", async () => {

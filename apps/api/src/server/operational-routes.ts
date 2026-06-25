@@ -94,19 +94,23 @@ export const registerOperationalRoutes = (
       config.rateLimit.store === "redis" ||
       config.cache.store === "redis";
 
-    if (config.redisUrl && redisRequired) {
-      const redis = new Redis(config.redisUrl, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1
-      });
-      try {
-        await redis.connect();
-        await redis.ping();
-        checks.push(publicHealth("redis"));
-      } catch {
+    if (redisRequired) {
+      if (config.redisUrl) {
+        const redis = new Redis(config.redisUrl, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1
+        });
+        try {
+          await redis.connect();
+          await redis.ping();
+          checks.push(publicHealth("redis"));
+        } catch {
+          checks.push(publicHealth("redis", "error"));
+        } finally {
+          redis.disconnect();
+        }
+      } else {
         checks.push(publicHealth("redis", "error"));
-      } finally {
-        redis.disconnect();
       }
     }
 

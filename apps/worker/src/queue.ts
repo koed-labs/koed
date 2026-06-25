@@ -91,7 +91,7 @@ export const createWorkerQueueProducer = <TJobData>(
           backoffMs: jobOptions?.backoff?.delay
         }),
       getJobCounts: (...statuses) => getLocalJobCounts(repository, statuses),
-      close: async () => undefined
+      close: () => Promise.resolve()
     };
   }
 
