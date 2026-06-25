@@ -17,6 +17,7 @@ const boundary = (
     teamId: input.teamId ?? "team-a",
     teamWorkspaceId: input.teamWorkspaceId ?? "workspace-a",
     sessionId,
+    isActive: true,
     ownerUserId: "bob"
   }))
 });
@@ -128,6 +129,38 @@ describe("team-visible source boundary", () => {
         }
       ]
     });
+  });
+
+  it("rejects retained but inactive Share Grants", () => {
+    const activeBoundary = boundary(["shared-session"]);
+    const assessment = assessTeamVisibleSourceBoundary(
+      [sourceItem("shared-session")],
+      {
+        ...activeBoundary,
+        shareGrants: activeBoundary.shareGrants.map((grant) => ({
+          ...grant,
+          isActive: false
+        }))
+      }
+    );
+
+    expect(assessment.state).toBe("empty");
+    expect(assessment.rejected[0]?.reason).toBe("unshared_session");
+    expect(assessment.provenance).toBeNull();
+  });
+
+  it("reads snake_case session ids from expanded source item payloads", () => {
+    const assessment = assessTeamVisibleSourceBoundary(
+      [
+        sourceItem("shared-session", {
+          payload: { session_id: "shared-session" }
+        })
+      ],
+      boundary(["shared-session"])
+    );
+
+    expect(assessment.state).toBe("authorized");
+    expect(assessment.authorized[0]?.sessionId).toBe("shared-session");
   });
 
   it("fails closed for derived child summaries until they are expanded to raw authorized sources", () => {

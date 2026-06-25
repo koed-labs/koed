@@ -11,6 +11,7 @@ export interface TeamVisibleShareGrantBoundary {
   teamId: string;
   teamWorkspaceId: string;
   sessionId: string;
+  isActive: boolean;
   ownerUserId?: string | null;
 }
 
@@ -70,7 +71,13 @@ export const teamVisibleSourceItemSessionId = (
 ): string | null => {
   const payload = sourceItemPayload(sourceItem);
   const sessionId = payload.sessionId;
-  return typeof sessionId === "string" && sessionId.trim() ? sessionId : null;
+  if (typeof sessionId === "string" && sessionId.trim()) {
+    return sessionId;
+  }
+  const snakeCaseSessionId = payload.session_id;
+  return typeof snakeCaseSessionId === "string" && snakeCaseSessionId.trim()
+    ? snakeCaseSessionId
+    : null;
 };
 
 export const assessTeamVisibleSourceBoundary = (
@@ -81,6 +88,7 @@ export const assessTeamVisibleSourceBoundary = (
     boundary.shareGrants
       .filter(
         (grant) =>
+          grant.isActive &&
           grant.teamId === boundary.teamId &&
           grant.teamWorkspaceId === boundary.teamWorkspaceId
       )

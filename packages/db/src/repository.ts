@@ -7282,7 +7282,7 @@ export const createMemorySourceRepository = (
         turnId: source.turn_id,
         createdAt: source.captured_at.toISOString(),
         text: codexIdePromptUserText(source.payload.content ?? ""),
-        payload: source.payload,
+        payload: lcmSourcePayloadForEvent(source),
         ...(supportingContextByEventId.has(source.id)
           ? {
               supportingContext: supportingContextByEventId.get(source.id)
