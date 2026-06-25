@@ -4,6 +4,7 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
+import { resolveKoedServerConfig } from "./config.js";
 import { loadExplorerCredential, resolveLocalApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import {
@@ -138,7 +139,8 @@ interface ApiReadyPayload {
 
 export const statusFromApiReady = async (
   apiUrl: string,
-  fetcher: typeof fetch = globalThis.fetch.bind(globalThis)
+  fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
+  options: { dependencyMode?: "bundled-local" | "external" } = {}
 ) => {
   const readyUrl = new URL("/ready", apiUrl).toString();
   const response = await fetchJson<ApiReadyPayload>(readyUrl, fetcher);
@@ -146,7 +148,9 @@ export const statusFromApiReady = async (
     return {
       api: needsAttention(
         `API is not ready at ${readyUrl}${response.error ? ` (${response.error})` : response.status ? ` (HTTP ${response.status})` : ""}`,
-        "Run koed-server start and check Docker Desktop is running."
+        options.dependencyMode === "external"
+          ? "Run koed-server start and check Operator-managed services are reachable."
+          : "Run koed-server start and check local dependencies."
       ),
       database: starting(
         "Waiting for API readiness to confirm database state."
@@ -454,6 +458,10 @@ export const collectKoedServerStatus = async (
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   const repoEnv = loadRepoEnv(paths.repoRoot);
+  const serverConfig = resolveKoedServerConfig(paths, environment, {
+    existsSync: deps.existsSync,
+    readFileSync: deps.readFileSync
+  });
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
   const runtime = readJsonFile<KoedServerRuntimeState>(
@@ -461,24 +469,38 @@ export const collectKoedServerStatus = async (
     deps.readFileSync
   );
   const runtimeProcessRunning = runtime ? deps.checkPid(runtime.pid) : false;
-  const apiReady = await statusFromApiReady(apiUrl, deps.fetch);
+  const apiReady = await statusFromApiReady(apiUrl, deps.fetch, {
+    dependencyMode: serverConfig.dependencyMode
+  });
   const apiToken = inspectApiToken(environment, repoEnv);
   const codex = inspectCodex(environment, deps);
   const captureHook = inspectCaptureHook(environment, deps);
   const mcpServer = inspectMcp(apiUrl, environment, repoEnv, paths, deps);
-  const queueDependency = dockerComposePs(paths, deps.spawnSync);
+  const externalRedisUrl =
+    serverConfig.external?.redisUrl ??
+    environment.REDIS_URL ??
+    repoEnv.REDIS_URL;
+  const queueDependency =
+    serverConfig.dependencyMode === "external"
+      ? externalRedisUrl
+        ? apiReady.redis
+        : needsAttention(
+            "External dependency mode requires an Operator-managed Redis URL for BullMQ queues.",
+            "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL."
+          )
+      : dockerComposePs(paths, deps.spawnSync);
   const workerPid = runtime?.processes?.worker;
   const workerRunning = workerPid ? deps.checkPid(workerPid) : false;
   const workerQueues =
     queueDependency.state !== "healthy"
       ? queueDependency
       : workerRunning
-        ? healthy("Redis queue dependency and Worker process are running.", {
-            redis: queueDependency.details,
+        ? healthy("Queue dependency and Worker process are running.", {
+            queue: queueDependency.details,
             workerPid
           })
         : starting("Worker process has not reported as running yet.", {
-            redis: queueDependency.details,
+            queue: queueDependency.details,
             workerPid: workerPid ?? null
           });
   const lcmSummaryService =
@@ -507,9 +529,12 @@ export const collectKoedServerStatus = async (
     state: "starting" as KoedServerComponentState,
     koedHome: paths.koedHome,
     generatedAt: deps.now().toISOString(),
+    runtimeMode: serverConfig.runtimeMode,
+    dependencyMode: serverConfig.dependencyMode,
     api: { ...apiReady.api, url: apiUrl },
     database: apiReady.database,
-    redis: apiReady.redis,
+    redis:
+      serverConfig.dependencyMode === "external" ? queueDependency : apiReady.redis,
     workerQueues,
     embeddingService: apiReady.embeddingService,
     apiToken,
@@ -572,6 +597,8 @@ export const collectKoedServerDoctor = async (
     summary,
     koedHome: status.koedHome,
     generatedAt: status.generatedAt,
+    runtimeMode: status.runtimeMode,
+    dependencyMode: status.dependencyMode,
     checks
   };
 };

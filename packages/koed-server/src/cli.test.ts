@@ -15,6 +15,8 @@ const status: KoedServerStatus = {
   state: "healthy",
   koedHome: "/tmp/koed",
   generatedAt: "2026-01-01T00:00:00.000Z",
+  runtimeMode: "developer",
+  dependencyMode: "external",
   api: { state: "healthy", url: "http://localhost:3300" },
   database: { state: "healthy" },
   redis: { state: "healthy" },
@@ -35,6 +37,8 @@ const doctor: KoedServerDoctorResult = {
   summary: "API is not ready",
   koedHome: "/tmp/koed",
   generatedAt: "2026-01-01T00:00:00.000Z",
+  runtimeMode: "developer",
+  dependencyMode: "external",
   checks: [{ id: "api", label: "API", state: "needs_attention" }]
 };
 
