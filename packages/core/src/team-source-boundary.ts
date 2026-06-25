@@ -4,7 +4,8 @@ export type TeamVisibleSourceBoundaryRejectionReason =
   | "missing_source_id"
   | "missing_session_id"
   | "unshared_session"
-  | "derived_child_requires_expansion";
+  | "derived_child_requires_expansion"
+  | "supporting_context_requires_expansion";
 
 export interface TeamVisibleShareGrantBoundary {
   shareGrantId: string;
@@ -102,6 +103,17 @@ export const assessTeamVisibleSourceBoundary = (
       rejected.push({
         sourceItem,
         reason: "derived_child_requires_expansion"
+      });
+      continue;
+    }
+
+    if (
+      sourceItem.supportingContext &&
+      sourceItem.supportingContext.length > 0
+    ) {
+      rejected.push({
+        sourceItem,
+        reason: "supporting_context_requires_expansion"
       });
       continue;
     }

@@ -163,6 +163,31 @@ describe("team-visible source boundary", () => {
     expect(assessment.authorized[0]?.sessionId).toBe("shared-session");
   });
 
+  it("fails closed when expanded source items include supporting context", () => {
+    const assessment = assessTeamVisibleSourceBoundary(
+      [
+        sourceItem("shared-session", {
+          supportingContext: [
+            {
+              sourceId: "conversation-item-1",
+              sourceRole: "supporting_context",
+              contextKind: "ide_client_context",
+              label: "IDE/client context",
+              text: "Unreviewed adjacent IDE state"
+            }
+          ]
+        })
+      ],
+      boundary(["shared-session"])
+    );
+
+    expect(assessment.state).toBe("empty");
+    expect(assessment.rejected[0]?.reason).toBe(
+      "supporting_context_requires_expansion"
+    );
+    expect(assessment.provenance).toBeNull();
+  });
+
   it("fails closed for derived child summaries until they are expanded to raw authorized sources", () => {
     const assessment = assessTeamVisibleSourceBoundary(
       [
