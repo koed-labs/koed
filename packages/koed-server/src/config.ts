@@ -32,12 +32,16 @@ const trim = (value: string | undefined): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
-const runtimeMode = (value: string | undefined): KoedServerRuntimeMode | undefined =>
+const runtimeMode = (
+  value: string | undefined
+): KoedServerRuntimeMode | undefined =>
   value === "local-personal" || value === "external" || value === "developer"
     ? value
     : undefined;
 
-const dependencyMode = (value: string | undefined): KoedDependencyMode | undefined =>
+const dependencyMode = (
+  value: string | undefined
+): KoedDependencyMode | undefined =>
   value === "bundled-local" || value === "external" ? value : undefined;
 
 const readConfig = (
@@ -48,7 +52,9 @@ const readConfig = (
     return {};
   }
   try {
-    return JSON.parse(deps.readFileSync(paths.serverConfigPath, "utf8") as string) as Partial<KoedServerConfig>;
+    return JSON.parse(
+      deps.readFileSync(paths.serverConfigPath, "utf8") as string
+    ) as Partial<KoedServerConfig>;
   } catch {
     return {};
   }

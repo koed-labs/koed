@@ -88,7 +88,9 @@ describe("start supervisor", () => {
       resolve(root, "scripts/setup-env.mjs"),
       "--filter @koed/api --filter @koed/worker --filter @koed/explorer build"
     ]);
-    expect(commands.some((command) => command.command === "docker")).toBe(false);
+    expect(commands.some((command) => command.command === "docker")).toBe(
+      false
+    );
     expect(spawned.map((entry) => entry.args.join(" "))).toEqual([
       "--filter @koed/api start",
       "--filter @koed/worker start",

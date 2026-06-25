@@ -534,7 +534,9 @@ export const collectKoedServerStatus = async (
     api: { ...apiReady.api, url: apiUrl },
     database: apiReady.database,
     redis:
-      serverConfig.dependencyMode === "external" ? queueDependency : apiReady.redis,
+      serverConfig.dependencyMode === "external"
+        ? queueDependency
+        : apiReady.redis,
     workerQueues,
     embeddingService: apiReady.embeddingService,
     apiToken,
