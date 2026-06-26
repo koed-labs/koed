@@ -1442,7 +1442,10 @@ export const parseTranscriptFileRecords = (input: {
         key,
         offset: start,
         lineCount: indexOffset,
-        size: stat.size
+        size: stat.size,
+        ...(prior?.lastEventTime
+          ? { lastEventTime: prior.lastEventTime }
+          : {})
       }
     };
   }

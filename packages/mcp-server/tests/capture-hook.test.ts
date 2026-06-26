@@ -941,6 +941,91 @@ describe("Codex capture hook transcript parsing", () => {
     }
   });
 
+  it("preserves the prior timestamp anchor across empty transcript polls", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp?: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        ...(timestamp ? { timestamp } : {}),
+        payload: { type: "agent_message", message }
+      })}\n`;
+    const previousLine = line(
+      "previous timestamped row",
+      "2026-01-01T00:10:00.000Z"
+    );
+    fs.writeFileSync(transcriptPath, previousLine);
+    const previousSize = fs.statSync(transcriptPath).size;
+    const state = {
+      seen: {},
+      rawSeen: {},
+      transcriptOffsets: {
+        [`scope:${transcriptPath}`]: {
+          offset: previousSize,
+          lineCount: 1,
+          size: previousSize,
+          lastEventTime: "2026-01-01T00:10:00.000Z"
+        }
+      }
+    };
+
+    try {
+      const emptyPoll = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+
+      expect(emptyPoll.records).toEqual([]);
+      expect(emptyPoll.checkpoint).toMatchObject({
+        offset: previousSize,
+        lineCount: 1,
+        size: previousSize,
+        lastEventTime: "2026-01-01T00:10:00.000Z"
+      });
+
+      const nextState = {
+        seen: {},
+        rawSeen: {},
+        transcriptOffsets: {
+          [`scope:${transcriptPath}`]: emptyPoll.checkpoint!
+        }
+      };
+      fs.appendFileSync(
+        transcriptPath,
+        line("stampless row after empty poll") +
+          line("later timestamped row", "2026-01-01T00:10:04.000Z")
+      );
+      const anchored = parseTranscriptFileRecords({
+        transcriptPath,
+        state: nextState,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const rawItems = buildRawTranscriptConversationItems({
+        records: anchored.records,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          hook_event_name: "Stop",
+          session_id: "empty-poll-anchor"
+        }),
+        payload: { hook_event_name: "Stop", session_id: "empty-poll-anchor" }
+      });
+
+      expect(rawItems.map((item) => item.rawText)).toEqual([
+        "stampless row after empty poll",
+        "later timestamped row"
+      ]);
+      expect(rawItems.map((item) => item.eventTime)).toEqual([
+        "2026-01-01T00:10:02.000Z",
+        "2026-01-01T00:10:04.000Z"
+      ]);
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
   it("reads only appended transcript records after the initial checkpoint", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
