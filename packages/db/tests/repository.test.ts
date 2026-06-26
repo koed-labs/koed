@@ -3324,11 +3324,7 @@ describeDb("memory repository visibility", () => {
         content: `LCM include metadata source ${index}`,
         metadata: {
           includeInLcm:
-            index === 1
-              ? false
-              : index === 2
-                ? { malformed: true }
-                : true
+            index === 1 ? false : index === 2 ? { malformed: true } : true
         }
       });
     }
