@@ -46,21 +46,24 @@ MCP-side workers.
    are installed out of band with `koed-server models install`, which requires
    configured artifact URLs and SHA-256 checksums before writing to
    `KOED_HOME/models`.
-5. The API, Worker, and Explorer run as local app processes supervised by
+5. `pnpm smoke:bundled-local -- --json` can verify this path with an isolated
+   temporary `KOED_HOME`, unique Compose project name, and temporary host ports
+   before Operators rely on it for local development or packaging checks.
+6. The API, Worker, and Explorer run as local app processes supervised by
    `koed-server` and connect to those configured dependency URLs. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
    table.
-6. `koed-server status --json` and `koed-server doctor --json` poll the API
+7. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
    output, Supported Capture Hook config, Codex config, LCM Summary Service
    availability, and last verification metadata.
-7. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+8. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
    the control plane.
-8. Koed Desktop can start/connect to the same headless command surface, run
+9. Koed Desktop can start/connect to the same headless command surface, run
    the first-launch Codex bootstrap and health-check sequence, poll status,
    and embed Explorer without requiring the Operator to invoke repo-local
    scripts directly.

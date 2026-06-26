@@ -72,6 +72,19 @@ node packages/koed-server/dist/cli.js models install --kind embedding --json
 Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
 `KOED_RERANKER_MODEL_SHA256` when enabling reranking.
 
+Run the bundled-local smoke workflow to verify the control-plane path with an
+isolated temporary `KOED_HOME`, unique Compose project name, and temporary host
+ports:
+
+```bash
+pnpm smoke:bundled-local -- --json
+```
+
+The smoke workflow skips explicit model installation unless
+`KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured.
+Use `WORK_QUEUE_BACKEND=bullmq pnpm smoke:bundled-local -- --json` to verify
+the Redis/BullMQ override path.
+
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
 ```bash

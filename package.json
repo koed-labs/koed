@@ -39,6 +39,7 @@
     "env:sync": "node scripts/sync-app-env-examples.mjs",
     "env:sync:check": "node scripts/sync-app-env-examples.mjs --check",
     "smoke:lcm": "node scripts/lcm-smoke-test.mjs",
+    "smoke:bundled-local": "node scripts/bundled-local-smoke.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 test",
     "test:python": "node scripts/python-check.mjs",
     "setup:python": "node scripts/python-setup.mjs",

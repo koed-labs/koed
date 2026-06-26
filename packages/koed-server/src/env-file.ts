@@ -26,7 +26,9 @@ export const parseEnvFile = (content: string): Record<string, string> => {
 };
 
 export const loadRepoEnv = (repoRoot: string): Record<string, string> => {
-  const envPath = resolve(repoRoot, ".env");
+  const envPath = process.env.KOED_ENV_PATH?.trim()
+    ? resolve(process.env.KOED_ENV_PATH)
+    : resolve(repoRoot, ".env");
   if (!existsSync(envPath)) {
     return {};
   }

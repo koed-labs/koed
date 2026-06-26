@@ -50,6 +50,12 @@ KOED_EMBEDDING_MODEL_SHA256=<64-hex-sha256> \
 node packages/koed-server/dist/cli.js models install --kind embedding --json
 ```
 
+To verify the bundled-local path with isolated ports and a temporary `KOED_HOME`, run:
+
+```bash
+pnpm smoke:bundled-local -- --json
+```
+
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.
 

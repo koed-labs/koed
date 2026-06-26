@@ -5,7 +5,9 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseEnv, renderSetupEnv } from "./setup-env-lib.mjs";
 
-const envPath = resolve(process.cwd(), ".env");
+const envPath = process.env.KOED_ENV_PATH?.trim()
+  ? resolve(process.env.KOED_ENV_PATH)
+  : resolve(process.cwd(), ".env");
 const examplePath = resolve(process.cwd(), ".env.example");
 
 if (!existsSync(examplePath)) {
