@@ -104,11 +104,17 @@ describe("start supervisor", () => {
     }> = [];
     const spawned: Array<{ command: string; args: string[] }> = [];
 
+    writeFileSync(
+      resolve(root, ".env"),
+      "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong\n"
+    );
+
     await startKoedServer({
       environment: {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        KOED_DEPENDENCY_MODE: "bundled-local"
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        POSTGRES_HOST_PORT: "25432"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
@@ -144,6 +150,9 @@ describe("start supervisor", () => {
     expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
       "/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
     );
+    expect(buildEnv?.DATABASE_URL).toBe(
+      "postgres://koed:koed-local-postgres@127.0.0.1:25432/koed"
+    );
     expect(buildEnv?.EMBEDDING_SERVICE_URL).toBe("http://localhost:3800");
     expect(spawned.map((entry) => entry.args.join(" "))).toContain(
       "--filter @koed/worker start"
@@ -159,6 +168,42 @@ describe("start supervisor", () => {
       "worker",
       "explorer"
     ]);
+  });
+
+  it("stops started bundled-local compose services when startup fails", async () => {
+    const root = tempDir();
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args) => {
+          commands.push({ command, args });
+          if (args.includes("@koed/api")) {
+            return {
+              stdout: "",
+              stderr: "build failed",
+              status: 1,
+              signal: null,
+              pid: 1,
+              output: []
+            } as never;
+          }
+          return spawnResult();
+        },
+        collectStatus: async () => healthyStatus(root)
+      })
+    ).rejects.toThrow("Build Koed server apps failed");
+
+    expect(commands.map((command) => command.args.join(" "))).toContain(
+      "compose stop postgres embedding-service"
+    );
   });
 
   it("mounts a custom reranker-only model directory", async () => {

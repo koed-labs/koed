@@ -82,7 +82,7 @@ describe("restartKoedServer", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome);
     const signals: Array<[number, NodeJS.Signals]> = [];
-    let forced = false;
+    const running = new Set([10, 11, 12]);
     let started = false;
 
     const result = await restartKoedServer({
@@ -90,10 +90,10 @@ describe("restartKoedServer", () => {
       kill: (pid, signal) => {
         signals.push([pid, signal]);
         if (signal === "SIGKILL") {
-          forced = true;
+          running.delete(pid);
         }
       },
-      checkPid: () => !forced,
+      checkPid: (pid) => running.has(pid),
       waitForExitMs: 0,
       pollIntervalMs: 0,
       sleep: async () => undefined,
@@ -106,10 +106,10 @@ describe("restartKoedServer", () => {
     expect(started).toBe(true);
     expect(signals).toEqual([
       [12, "SIGTERM"],
-      [11, "SIGTERM"],
-      [10, "SIGTERM"],
       [12, "SIGKILL"],
+      [11, "SIGTERM"],
       [11, "SIGKILL"],
+      [10, "SIGTERM"],
       [10, "SIGKILL"]
     ]);
   });
