@@ -206,39 +206,121 @@ describe("Codex capture hook transcript parsing", () => {
   });
 
   it("signals detached transcript ingestion from foreground hooks", async () => {
-    const triggerCatchup = vi.fn();
-    const transcriptPath = path.join(
-      os.tmpdir(),
-      `koed-transcript-${process.pid}-${Date.now()}.jsonl`
-    );
+    await withHookStateFile(async () => {
+      const triggerCatchup = vi.fn();
+      const transcriptPath = path.join(
+        os.tmpdir(),
+        `koed-transcript-${process.pid}-${Date.now()}.jsonl`
+      );
 
-    const result = await runForegroundCapturePass({
-      configPath: "/tmp/koed-config.json",
-      payload: {
+      const result = await runForegroundCapturePass({
+        payload: {
+          hook_event_name: "PostToolUse",
+          session_id: "session-open",
+          turn_id: "turn-open",
+          tool_use_id: "tool-use-open",
+          tool_name: "Read",
+          transcript_path: transcriptPath
+        },
+        triggerCatchup
+      });
+
+      expect(triggerCatchup).toHaveBeenCalledWith(undefined, {
         hook_event_name: "PostToolUse",
         session_id: "session-open",
         turn_id: "turn-open",
         tool_use_id: "tool-use-open",
         tool_name: "Read",
         transcript_path: transcriptPath
-      },
-      triggerCatchup
+      });
+      expect(result).toEqual({
+        rawItemsStored: 0,
+        rawItemsProjected: 0,
+        transcriptPath,
+        transcriptBacklogRemaining: true,
+        transcriptCheckpointAdvanced: false
+      });
     });
+  });
 
-    expect(triggerCatchup).toHaveBeenCalledWith("/tmp/koed-config.json", {
-      hook_event_name: "PostToolUse",
-      session_id: "session-open",
-      turn_id: "turn-open",
-      tool_use_id: "tool-use-open",
-      tool_name: "Read",
-      transcript_path: transcriptPath
-    });
-    expect(result).toEqual({
-      rawItemsStored: 0,
-      rawItemsProjected: 0,
-      transcriptPath,
-      transcriptBacklogRemaining: true,
-      transcriptCheckpointAdvanced: false
+  it("runs foreground transcript capture when detached catch-up is disabled", async () => {
+    const priorTrigger = process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
+    process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = "false";
+    try {
+      await withHookStateFile(async () => {
+        const triggerCatchup = vi.fn();
+        const runPass = vi.fn(async () => ({
+          rawItemsStored: 2,
+          rawItemsProjected: 2,
+          transcriptPath: "/tmp/koed-disabled-catchup.jsonl",
+          transcriptBacklogRemaining: false,
+          transcriptCheckpointAdvanced: true
+        }));
+
+        const result = await runForegroundCapturePass({
+          payload: {
+            hook_event_name: "PostToolUse",
+            session_id: "session-disabled-catchup",
+            transcript_path: "/tmp/koed-disabled-catchup.jsonl"
+          },
+          runPass,
+          triggerCatchup
+        });
+
+        expect(triggerCatchup).not.toHaveBeenCalled();
+        expect(runPass).toHaveBeenCalledWith({
+          configPath: undefined,
+          payload: {
+            hook_event_name: "PostToolUse",
+            session_id: "session-disabled-catchup",
+            transcript_path: "/tmp/koed-disabled-catchup.jsonl"
+          },
+          mode: "foreground"
+        });
+        expect(result).toMatchObject({
+          rawItemsStored: 2,
+          rawItemsProjected: 2,
+          transcriptBacklogRemaining: false,
+          transcriptCheckpointAdvanced: true
+        });
+      });
+    } finally {
+      if (priorTrigger === undefined) {
+        delete process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
+      } else {
+        process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = priorTrigger;
+      }
+    }
+  });
+
+  it("throttles duplicate detached catch-up spawns for an in-flight transcript", async () => {
+    await withHookStateFile(async () => {
+      const triggerCatchup = vi.fn();
+      const payload = {
+        hook_event_name: "PostToolUse" as const,
+        session_id: "session-throttled-catchup",
+        transcript_path: "/tmp/koed-throttled-catchup.jsonl",
+        cwd: "/repo"
+      };
+
+      const first = await runForegroundCapturePass({
+        payload,
+        triggerCatchup
+      });
+      const second = await runForegroundCapturePass({
+        payload,
+        triggerCatchup
+      });
+
+      expect(triggerCatchup).toHaveBeenCalledTimes(1);
+      expect(first).toMatchObject({
+        transcriptPath: payload.transcript_path,
+        transcriptBacklogRemaining: true
+      });
+      expect(second).toMatchObject({
+        transcriptPath: payload.transcript_path,
+        transcriptBacklogRemaining: true
+      });
     });
   });
 
@@ -400,7 +482,7 @@ describe("Codex capture hook transcript parsing", () => {
       triggerCatchup
     });
 
-    expect(triggerCatchup).toHaveBeenCalledOnce();
+    expect(triggerCatchup).not.toHaveBeenCalled();
     expect(result).toEqual({
       rawItemsStored: 0,
       rawItemsProjected: 0,

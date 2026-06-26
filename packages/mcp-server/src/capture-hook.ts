@@ -106,6 +106,7 @@ export interface HookBreakerEntry {
 export interface TranscriptCatchupStatus {
   transcriptPath: string;
   lastStartedAt?: string;
+  lastFinishedAt?: string;
   lastSucceededAt?: string;
   lastFailedAt?: string;
   lastError?: string | null;
@@ -2355,10 +2356,6 @@ const triggerDetachedTranscriptCatchup = (
   configPath: string | undefined,
   payload: HookPayload
 ): void => {
-  if (!hookTriggersTranscriptCatchup()) {
-    return;
-  }
-
   const catchupPayload: HookPayload = {
     hook_event_name: payload.hook_event_name,
     hook_observed_at: new Date().toISOString(),
@@ -2389,6 +2386,60 @@ const triggerDetachedTranscriptCatchup = (
     windowsHide: true
   });
   child.unref();
+};
+
+const shouldTriggerDetachedTranscriptCatchup = (
+  configPath: string | undefined,
+  payload: HookPayload,
+  now = Date.now()
+): boolean => {
+  if (!hookTriggersTranscriptCatchup()) {
+    return false;
+  }
+  const transcriptPath = captureTranscriptPathForPayload(payload);
+  if (!transcriptPath) {
+    return false;
+  }
+  const config = loadConfig(configPath, "foreground");
+  if (
+    config.captureEnabled === false ||
+    pausedUntilActive(config.capturePausedUntil)
+  ) {
+    return false;
+  }
+  const catchupStatusKey = transcriptCatchupStatusKey({
+    config,
+    transcriptPath
+  });
+  const state = loadHookBreakerState();
+  const status = state.transcriptCatchups?.[catchupStatusKey];
+  const lastStartedAt = status?.lastStartedAt
+    ? Date.parse(status.lastStartedAt)
+    : Number.NaN;
+  const lastFinishedAt = status?.lastFinishedAt
+    ? Date.parse(status.lastFinishedAt)
+    : Number.NaN;
+  if (
+    Number.isFinite(lastStartedAt) &&
+    (!Number.isFinite(lastFinishedAt) || lastFinishedAt < lastStartedAt)
+  ) {
+    return false;
+  }
+  if (
+    status?.lastError &&
+    Number.isFinite(lastFinishedAt) &&
+    now - lastFinishedAt < hookBreakerCooldownMs()
+  ) {
+    return false;
+  }
+
+  updateTranscriptCatchupStatus(state, catchupStatusKey, {
+    transcriptPath,
+    lastStartedAt: new Date(now).toISOString(),
+    lastError: null
+  });
+  saveHookBreakerState(state);
+  return true;
 };
 
 const sleep = (ms: number): Promise<void> =>
@@ -2736,7 +2787,8 @@ const runCapturePass = async (input: {
   if (
     mode === "foreground" &&
     "backgroundCatchupNeeded" in transcriptFile &&
-    transcriptFile.backgroundCatchupNeeded
+    transcriptFile.backgroundCatchupNeeded &&
+    shouldTriggerDetachedTranscriptCatchup(configPath, payload)
   ) {
     triggerDetachedTranscriptCatchup(configPath, payload);
   }
@@ -2769,21 +2821,36 @@ const runCapturePass = async (input: {
 export const runForegroundCapturePass = (input: {
   configPath?: string;
   payload: HookPayload;
+  runPass?: typeof runCapturePass;
   triggerCatchup?: typeof triggerDetachedTranscriptCatchup;
 }): Promise<Awaited<ReturnType<typeof runCapturePass>>> => {
   const { configPath, payload } = input;
+  const transcriptPath = captureTranscriptPathForPayload(payload);
+  if (!transcriptPath) {
+    return Promise.resolve({
+      rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    });
+  }
+  if (!hookTriggersTranscriptCatchup()) {
+    return (input.runPass ?? runCapturePass)({
+      configPath,
+      payload,
+      mode: "foreground"
+    });
+  }
   const triggerCatchup =
     input.triggerCatchup ?? triggerDetachedTranscriptCatchup;
-  triggerCatchup(configPath, payload);
+  if (shouldTriggerDetachedTranscriptCatchup(configPath, payload)) {
+    triggerCatchup(configPath, payload);
+  }
   return Promise.resolve({
     rawItemsStored: 0,
     rawItemsProjected: 0,
-    ...(captureTranscriptPathForPayload(payload)
-      ? { transcriptPath: captureTranscriptPathForPayload(payload) }
-      : {}),
-    transcriptBacklogRemaining: Boolean(
-      captureTranscriptPathForPayload(payload)
-    ),
+    transcriptPath,
+    transcriptBacklogRemaining: true,
     transcriptCheckpointAdvanced: false
   });
 };
@@ -2825,98 +2892,28 @@ export const runTranscriptCatchup = async (
   saveHookBreakerState(startedState);
   const stopAt =
     Date.now() + (options.maxRuntimeMs ?? transcriptCatchupMaxRuntimeMs());
-  const sleepUntilStop = options.sleepUntilCatchupStop ?? sleepUntilCatchupStop;
-  const acquireLock = options.acquireCatchupLock ?? acquireCatchupLock;
-  const runPass = options.runCapturePass ?? runCapturePass;
-  let access: Awaited<ReturnType<MemoryApiClient["accessCheck"]>> | undefined;
-  let accessRetryAttempt = 0;
-  while (Date.now() < stopAt) {
-    try {
-      access = await client.accessCheck();
-      const breakerState = loadHookBreakerState();
-      resetHookBreaker(breakerState, breakerKey);
-      saveHookBreakerState(breakerState);
-      break;
-    } catch (error) {
-      if (!isRetryableTranscriptCatchupError(error)) {
-        throw error;
-      }
-      const delayMs = transcriptCatchupRetryDelayMs(accessRetryAttempt);
-      accessRetryAttempt += 1;
-      console.error(
-        `koed transcript catch-up waiting ${delayMs}ms for memory API to recover: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-      const breakerState = loadHookBreakerState();
-      updateTranscriptCatchupStatus(breakerState, catchupStatusKey, {
-        transcriptPath,
-        lastFailedAt: new Date().toISOString(),
-        lastError: error instanceof Error ? error.message : String(error)
-      });
-      saveHookBreakerState(breakerState);
-      if (!(await sleepUntilStop(delayMs, stopAt))) {
-        return;
-      }
-    }
-  }
-  if (!access) {
-    return;
-  }
-  const stateScope = stateScopeKey(config, workspaceId, access.user.id);
-  let lock: ReturnType<typeof acquireCatchupLock> | null = null;
-  while (Date.now() < stopAt) {
-    lock = acquireLock({ stateScope, transcriptPath });
-    if (lock) {
-      break;
-    }
-    if (!(await sleepUntilStop(250, stopAt))) {
-      return;
-    }
-  }
-  if (!lock) {
-    return;
-  }
-
-  let passRetryAttempt = 0;
   try {
+    const sleepUntilStop =
+      options.sleepUntilCatchupStop ?? sleepUntilCatchupStop;
+    const acquireLock = options.acquireCatchupLock ?? acquireCatchupLock;
+    const runPass = options.runCapturePass ?? runCapturePass;
+    let access: Awaited<ReturnType<MemoryApiClient["accessCheck"]>> | undefined;
+    let accessRetryAttempt = 0;
     while (Date.now() < stopAt) {
-      lock.heartbeat();
-      let result: Awaited<ReturnType<typeof runCapturePass>>;
       try {
-        result = await runPass({
-          configPath,
-          payload,
-          mode: "catchup"
-        });
+        access = await client.accessCheck();
         const breakerState = loadHookBreakerState();
         resetHookBreaker(breakerState, breakerKey);
-        updateTranscriptCatchupStatus(breakerState, catchupStatusKey, {
-          transcriptPath,
-          lastSucceededAt: new Date().toISOString(),
-          lastError: null,
-          ...(result.transcriptCheckpointOffset === undefined
-            ? {}
-            : { checkpointOffset: result.transcriptCheckpointOffset }),
-          ...(result.transcriptSize === undefined
-            ? {}
-            : { transcriptSize: result.transcriptSize }),
-          ...(result.transcriptBacklogBytes === undefined
-            ? {}
-            : { backlogBytes: result.transcriptBacklogBytes }),
-          rawItemsStored: result.rawItemsStored,
-          rawItemsProjected: result.rawItemsProjected
-        });
         saveHookBreakerState(breakerState);
-        passRetryAttempt = 0;
+        break;
       } catch (error) {
         if (!isRetryableTranscriptCatchupError(error)) {
           throw error;
         }
-        const delayMs = transcriptCatchupRetryDelayMs(passRetryAttempt);
-        passRetryAttempt += 1;
+        const delayMs = transcriptCatchupRetryDelayMs(accessRetryAttempt);
+        accessRetryAttempt += 1;
         console.error(
-          `koed transcript catch-up retrying after transient memory API failure in ${delayMs}ms: ${
+          `koed transcript catch-up waiting ${delayMs}ms for memory API to recover: ${
             error instanceof Error ? error.message : String(error)
           }`
         );
@@ -2927,25 +2924,109 @@ export const runTranscriptCatchup = async (
           lastError: error instanceof Error ? error.message : String(error)
         });
         saveHookBreakerState(breakerState);
-        lock.heartbeat();
         if (!(await sleepUntilStop(delayMs, stopAt))) {
-          break;
+          return;
         }
-        continue;
-      }
-      if (!result.transcriptBacklogRemaining) {
-        break;
-      }
-      if (!result.transcriptCheckpointAdvanced && result.rawItemsStored === 0) {
-        break;
-      }
-      lock.heartbeat();
-      if (!(await sleepUntilStop(100, stopAt))) {
-        break;
       }
     }
+    if (!access) {
+      return;
+    }
+    const stateScope = stateScopeKey(config, workspaceId, access.user.id);
+    let lock: ReturnType<typeof acquireCatchupLock> | null = null;
+    while (Date.now() < stopAt) {
+      lock = acquireLock({ stateScope, transcriptPath });
+      if (lock) {
+        break;
+      }
+      if (!(await sleepUntilStop(250, stopAt))) {
+        return;
+      }
+    }
+    if (!lock) {
+      return;
+    }
+
+    let passRetryAttempt = 0;
+    try {
+      while (Date.now() < stopAt) {
+        lock.heartbeat();
+        let result: Awaited<ReturnType<typeof runCapturePass>>;
+        try {
+          result = await runPass({
+            configPath,
+            payload,
+            mode: "catchup"
+          });
+          const breakerState = loadHookBreakerState();
+          resetHookBreaker(breakerState, breakerKey);
+          updateTranscriptCatchupStatus(breakerState, catchupStatusKey, {
+            transcriptPath,
+            lastSucceededAt: new Date().toISOString(),
+            lastError: null,
+            ...(result.transcriptCheckpointOffset === undefined
+              ? {}
+              : { checkpointOffset: result.transcriptCheckpointOffset }),
+            ...(result.transcriptSize === undefined
+              ? {}
+              : { transcriptSize: result.transcriptSize }),
+            ...(result.transcriptBacklogBytes === undefined
+              ? {}
+              : { backlogBytes: result.transcriptBacklogBytes }),
+            rawItemsStored: result.rawItemsStored,
+            rawItemsProjected: result.rawItemsProjected
+          });
+          saveHookBreakerState(breakerState);
+          passRetryAttempt = 0;
+        } catch (error) {
+          if (!isRetryableTranscriptCatchupError(error)) {
+            throw error;
+          }
+          const delayMs = transcriptCatchupRetryDelayMs(passRetryAttempt);
+          passRetryAttempt += 1;
+          console.error(
+            `koed transcript catch-up retrying after transient memory API failure in ${delayMs}ms: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+          const breakerState = loadHookBreakerState();
+          updateTranscriptCatchupStatus(breakerState, catchupStatusKey, {
+            transcriptPath,
+            lastFailedAt: new Date().toISOString(),
+            lastError: error instanceof Error ? error.message : String(error)
+          });
+          saveHookBreakerState(breakerState);
+          lock.heartbeat();
+          if (!(await sleepUntilStop(delayMs, stopAt))) {
+            break;
+          }
+          continue;
+        }
+        lock.heartbeat();
+        if (!result.transcriptBacklogRemaining) {
+          break;
+        }
+        if (
+          !result.transcriptCheckpointAdvanced &&
+          result.rawItemsStored === 0
+        ) {
+          break;
+        }
+        lock.heartbeat();
+        if (!(await sleepUntilStop(100, stopAt))) {
+          break;
+        }
+      }
+    } finally {
+      lock.release();
+    }
   } finally {
-    lock.release();
+    const finishedState = loadHookBreakerState();
+    updateTranscriptCatchupStatus(finishedState, catchupStatusKey, {
+      transcriptPath,
+      lastFinishedAt: new Date().toISOString()
+    });
+    saveHookBreakerState(finishedState);
   }
 };
 
