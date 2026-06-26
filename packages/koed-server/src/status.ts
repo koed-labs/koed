@@ -8,6 +8,10 @@ import { resolveKoedServerConfig } from "./config.js";
 import { loadExplorerCredential, resolveLocalApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import {
+  collectLocalEmbeddingRuntimeStatus,
+  resolveBundledEmbeddingMode
+} from "./local-embedding-runtime.js";
+import {
   collectLocalPostgresRuntimeStatus,
   resolveBundledPostgresMode
 } from "./local-postgres-runtime.js";
@@ -524,6 +528,10 @@ export const collectKoedServerStatus = async (
     serverConfig.dependencyMode === "bundled-local" &&
     resolveBundledPostgresMode(paths, serviceEnvironment, deps.existsSync) ===
       "native";
+  const useNativeEmbedding =
+    serverConfig.dependencyMode === "bundled-local" &&
+    resolveBundledEmbeddingMode(paths, serviceEnvironment, deps.existsSync) ===
+      "native";
   const apiToken = inspectApiToken(environment, repoEnv);
   const codex = inspectCodex(environment, deps);
   const captureHook = inspectCaptureHook(environment, deps);
@@ -556,10 +564,17 @@ export const collectKoedServerStatus = async (
           spawnSync: deps.spawnSync
         })
       : apiReady.database;
+  const embeddingStatus =
+    useNativeEmbedding && apiReady.embeddingService.state === "starting"
+      ? await collectLocalEmbeddingRuntimeStatus(paths, serviceEnvironment, {
+          existsSync: deps.existsSync,
+          fetch: deps.fetch
+        })
+      : apiReady.embeddingService;
   const localDependencyServices = [
     ...(useNativePostgres ? [] : ["postgres"]),
     ...(queueBackend === "bullmq" ? ["redis"] : []),
-    "embedding-service"
+    ...(useNativeEmbedding ? [] : ["embedding-service"])
   ];
   const queueDependency =
     queueBackend === "local"
@@ -618,7 +633,7 @@ export const collectKoedServerStatus = async (
     database: databaseStatus,
     redis: redisStatus,
     workerQueues,
-    embeddingService: apiReady.embeddingService,
+    embeddingService: embeddingStatus,
     apiToken,
     mcpServer,
     captureHook,

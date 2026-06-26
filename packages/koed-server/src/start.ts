@@ -12,6 +12,10 @@ import {
   writeExplorerCredential
 } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import {
+  resolveBundledEmbeddingMode,
+  startLocalEmbeddingRuntime
+} from "./local-embedding-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import {
   resolveBundledPostgresMode,
@@ -75,11 +79,12 @@ const spawnManagedProcess = (
   command: string,
   args: string[],
   environment: NodeJS.ProcessEnv,
-  spawn: SpawnLike
+  spawn: SpawnLike,
+  cwd = paths.repoRoot
 ): ChildProcess => {
   console.log(`> Start ${label}`);
   const child = spawn(command, args, {
-    cwd: paths.repoRoot,
+    cwd,
     env: environment,
     stdio: "inherit"
   });
@@ -160,7 +165,8 @@ const localServiceEnv = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
   apiToken: ReturnType<typeof resolveLocalApiToken> | null,
-  paths: KoedServerPaths
+  paths: KoedServerPaths,
+  options: { nativeEmbedding?: boolean } = {}
 ): NodeJS.ProcessEnv => {
   const apiPort = environment.API_HOST_PORT ?? repoEnv.API_HOST_PORT ?? "3300";
   const redisPort =
@@ -202,10 +208,14 @@ const localServiceEnv = (
     );
   }
   const localEmbeddingModelPath = existsSync(embeddingModel.modelPath)
-    ? `/models/${basename(embeddingModel.modelPath)}`
+    ? options.nativeEmbedding
+      ? embeddingModel.modelPath
+      : `/models/${basename(embeddingModel.modelPath)}`
     : undefined;
   const localRerankerModelPath = existsSync(rerankerModel.modelPath)
-    ? `/models/${basename(rerankerModel.modelPath)}`
+    ? options.nativeEmbedding
+      ? rerankerModel.modelPath
+      : `/models/${basename(rerankerModel.modelPath)}`
     : undefined;
   const mountedModelsDir = installedModelPaths[0]
     ? dirname(installedModelPaths[0])
@@ -248,17 +258,111 @@ const localServiceEnv = (
           embeddingServiceUrl),
     EMBEDDING_SERVICE_TOKEN:
       repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
-    EMBEDDING_MODEL: repoEnv.EMBEDDING_MODEL_KEY ?? environment.EMBEDDING_MODEL,
+    EMBEDDING_MODEL:
+      repoEnv.EMBEDDING_MODEL_KEY ??
+      environment.EMBEDDING_MODEL_KEY ??
+      environment.EMBEDDING_MODEL,
+    MODEL_KEY:
+      repoEnv.EMBEDDING_MODEL_KEY ??
+      environment.EMBEDDING_MODEL_KEY ??
+      environment.MODEL_KEY ??
+      environment.EMBEDDING_MODEL,
     EMBEDDING_MODEL_PATH:
       serverConfig.dependencyMode === "bundled-local"
         ? localEmbeddingModelPath
         : environment.EMBEDDING_MODEL_PATH,
-    RERANKER_KEY: repoEnv.EMBEDDING_RERANKER_KEY ?? environment.RERANKER_KEY,
+    MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local" && options.nativeEmbedding
+        ? localEmbeddingModelPath
+        : (environment.EMBEDDING_MODEL_PATH ?? environment.MODEL_PATH),
+    RERANKER_KEY:
+      repoEnv.EMBEDDING_RERANKER_KEY ??
+      environment.EMBEDDING_RERANKER_KEY ??
+      environment.RERANKER_KEY,
     EMBEDDING_RERANKER_MODEL_PATH:
       serverConfig.dependencyMode === "bundled-local"
         ? localRerankerModelPath
         : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
           environment.EMBEDDING_RERANKER_MODEL_PATH),
+    RERANKER_MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local" && options.nativeEmbedding
+        ? localRerankerModelPath
+        : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
+          environment.EMBEDDING_RERANKER_MODEL_PATH ??
+          repoEnv.RERANKER_MODEL_PATH ??
+          environment.RERANKER_MODEL_PATH),
+    LLAMA_SERVER_BINARY:
+      environment.LLAMA_SERVER_BINARY ??
+      repoEnv.EMBEDDING_LLAMA_SERVER_BINARY ??
+      environment.EMBEDDING_LLAMA_SERVER_BINARY,
+    LLAMA_N_CTX:
+      repoEnv.EMBEDDING_LLAMA_N_CTX ??
+      environment.EMBEDDING_LLAMA_N_CTX ??
+      environment.LLAMA_N_CTX,
+    LLAMA_N_THREADS:
+      repoEnv.EMBEDDING_LLAMA_N_THREADS ??
+      environment.EMBEDDING_LLAMA_N_THREADS ??
+      environment.LLAMA_N_THREADS,
+    LLAMA_N_BATCH:
+      repoEnv.EMBEDDING_LLAMA_N_BATCH ??
+      environment.EMBEDDING_LLAMA_N_BATCH ??
+      environment.LLAMA_N_BATCH,
+    LLAMA_BATCH_TOKEN_HEADROOM:
+      repoEnv.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM ??
+      environment.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM ??
+      environment.LLAMA_BATCH_TOKEN_HEADROOM,
+    LLAMA_N_UBATCH:
+      repoEnv.EMBEDDING_LLAMA_N_UBATCH ??
+      environment.EMBEDDING_LLAMA_N_UBATCH ??
+      environment.LLAMA_N_UBATCH,
+    LLAMA_PARALLEL:
+      repoEnv.EMBEDDING_LLAMA_PARALLEL ??
+      environment.EMBEDDING_LLAMA_PARALLEL ??
+      environment.LLAMA_PARALLEL,
+    LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS:
+      repoEnv.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
+      environment.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
+      environment.LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS,
+    LLAMA_EMBEDDING_SERVER_PORT:
+      repoEnv.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
+      environment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
+      environment.LLAMA_EMBEDDING_SERVER_PORT,
+    RERANKER_BATCH_LIMIT:
+      repoEnv.EMBEDDING_RERANKER_BATCH_LIMIT ??
+      environment.EMBEDDING_RERANKER_BATCH_LIMIT ??
+      environment.RERANKER_BATCH_LIMIT,
+    RERANKER_CONTEXT_PER_SLOT:
+      repoEnv.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
+      environment.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
+      environment.RERANKER_CONTEXT_PER_SLOT,
+    LLAMA_RERANKER_SERVER_PORT:
+      repoEnv.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
+      environment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
+      environment.LLAMA_RERANKER_SERVER_PORT,
+    RERANKER_LLAMA_N_CTX:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_CTX ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_CTX ??
+      environment.RERANKER_LLAMA_N_CTX,
+    RERANKER_LLAMA_N_THREADS:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
+      environment.RERANKER_LLAMA_N_THREADS,
+    RERANKER_LLAMA_N_BATCH:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
+      environment.RERANKER_LLAMA_N_BATCH,
+    RERANKER_LLAMA_N_UBATCH:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
+      environment.RERANKER_LLAMA_N_UBATCH,
+    RERANKER_PARALLEL:
+      repoEnv.EMBEDDING_RERANKER_PARALLEL ??
+      environment.EMBEDDING_RERANKER_PARALLEL ??
+      environment.RERANKER_PARALLEL,
+    RERANKER_PROMPT_CACHE_ENABLED:
+      repoEnv.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
+      environment.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
+      environment.RERANKER_PROMPT_CACHE_ENABLED,
     CORS_ORIGINS: repoEnv.API_CORS_ORIGINS ?? environment.CORS_ORIGINS,
     COOKIE_SECURE: repoEnv.API_COOKIE_SECURE ?? environment.COOKIE_SECURE,
     EXPLORER_API_BASE_URL: resolveApiUrl(environment, repoEnv),
@@ -307,13 +411,16 @@ export const startKoedServer = async ({
   const useNativePostgres =
     config.dependencyMode === "bundled-local" &&
     resolveBundledPostgresMode(paths, initialServiceEnv) === "native";
+  const useNativeEmbedding =
+    config.dependencyMode === "bundled-local" &&
+    resolveBundledEmbeddingMode(paths, initialServiceEnv) === "native";
   const dependencyServices =
     config.dependencyMode === "external"
       ? []
       : [
           ...(useNativePostgres ? [] : ["postgres"]),
           ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
-          "embedding-service"
+          ...(useNativeEmbedding ? [] : ["embedding-service"])
         ];
   const runtimeServices =
     config.dependencyMode === "external"
@@ -321,7 +428,7 @@ export const startKoedServer = async ({
       : [
           useNativePostgres ? "postgres-native" : "postgres",
           ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
-          "embedding-service"
+          useNativeEmbedding ? "embedding-service-native" : "embedding-service"
         ];
   const appServices = ["api", "worker", "explorer"];
   const childEnv = initialServiceEnv;
@@ -348,7 +455,8 @@ export const startKoedServer = async ({
     environment,
     refreshedRepoEnv,
     refreshedApiToken,
-    paths
+    paths,
+    { nativeEmbedding: useNativeEmbedding }
   );
 
   if (config.dependencyMode === "external") {
@@ -389,6 +497,20 @@ export const startKoedServer = async ({
     }
   }
 
+  let nativeEmbeddingProcess: ChildProcess | undefined;
+  if (useNativeEmbedding) {
+    const result = startLocalEmbeddingRuntime(paths, refreshedEnv, {
+      spawn
+    });
+    Object.assign(refreshedEnv, result.env);
+    nativeEmbeddingProcess = result.process;
+    if (!result.ok) {
+      throw new Error(
+        `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+      );
+    }
+  }
+
   if (config.dependencyMode !== "external" && dependencyServices.length > 0) {
     runCommand(
       paths,
@@ -424,6 +546,9 @@ export const startKoedServer = async ({
   );
 
   const children = {
+    ...(nativeEmbeddingProcess
+      ? { embeddingService: nativeEmbeddingProcess }
+      : {}),
     api: spawnManagedProcess(
       paths,
       "API",
@@ -472,6 +597,9 @@ export const startKoedServer = async ({
     dependencyMode: config.dependencyMode,
     services: [...runtimeServices, ...appServices],
     processes: {
+      ...(nativeEmbeddingProcess
+        ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
+        : {}),
       api: children.api.pid ?? 0,
       worker: children.worker.pid ?? 0,
       explorer: children.explorer.pid ?? 0

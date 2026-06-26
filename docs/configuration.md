@@ -110,6 +110,10 @@ Example bundled-local `KOED_HOME/config/server.json`:
 - `KOED_BUNDLED_POSTGRES_MODE`: optional bundled-local Postgres runtime mode. Leave blank for auto mode, set `native` to require native Postgres binaries, or `compose` to force the Compose scaffold.
 - `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, and `psql` binaries for bundled-local Postgres. Individual binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`.
 - `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
+- `KOED_BUNDLED_EMBEDDING_MODE`: optional bundled-local Embedding Service runtime mode. Leave blank for auto mode, set `native` to require the direct supervised Python/llama-server process, or `compose` to force the Compose scaffold.
+- `KOED_EMBEDDING_PYTHON_BIN`: Python executable for the native bundled-local Embedding Service. Defaults to `apps/embedding-service/.venv/bin/python`.
+- `KOED_EMBEDDING_LLAMA_SERVER_BIN`: llama-server executable for the native bundled-local Embedding Service. Defaults to `vendor/llama.cpp/llama-server`; the Docker default `EMBEDDING_LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server` is ignored for native auto-detection unless overridden with this setting.
+- `KOED_EMBEDDING_HOST`, `KOED_EMBEDDING_PORT`: host and port for the native bundled-local Embedding Service. Defaults to `127.0.0.1` and `EMBEDDING_SERVICE_HOST_PORT`/`3800`.
 - `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app. `koed-server` also writes the app-provisioned Explorer credential under `KOED_HOME/config/explorer-token.json` so status can report whether the desktop happy path has a credential without exposing the API Token.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.

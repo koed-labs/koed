@@ -303,6 +303,91 @@ describe("start supervisor", () => {
     expect(runtime.services).not.toContain("postgres");
   });
 
+  it("starts native bundled-local Embedding Service when native runtime is configured", async () => {
+    const root = tempDir();
+    const appDir = resolve(root, "apps", "embedding-service");
+    const venvBin = resolve(appDir, ".venv", "bin");
+    const llamaBin = resolve(root, "vendor", "llama.cpp");
+    mkdirSync(venvBin, { recursive: true });
+    mkdirSync(llamaBin, { recursive: true });
+    writeFileSync(resolve(appDir, "app.py"), "");
+    writeFileSync(resolve(venvBin, "python"), "");
+    writeFileSync(resolve(llamaBin, "llama-server"), "");
+    writeFileSync(
+      resolve(root, ".env"),
+      "EMBEDDING_LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server\n"
+    );
+    mkdirSync(resolve(root, "models"));
+    writeFileSync(
+      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+      "model"
+    );
+    const commands: Array<{ command: string; args: string[] }> = [];
+    const spawned: Array<{
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_BUNDLED_EMBEDDING_MODE: "native",
+        EMBEDDING_MODEL_KEY: "qwen3-0.6b",
+        EMBEDDING_RERANKER_KEY: "qwen3-reranker-0.6b",
+        EMBEDDING_LLAMA_N_CTX: "4096",
+        EMBEDDING_RERANKER_BATCH_LIMIT: "12"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (command, args) => {
+        commands.push({ command, args });
+        return spawnResult();
+      },
+      spawn: (command, args, options) => {
+        spawned.push({ command, args, env: options?.env });
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = spawned.length;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(commands.map((command) => command.args.join(" "))).toContain(
+      "compose up -d --build --remove-orphans postgres"
+    );
+    expect(
+      commands.find((command) => command.command === "docker")?.args
+    ).not.toContain("embedding-service");
+    expect(spawned[0]?.command).toBe(resolve(venvBin, "python"));
+    expect(spawned[0]?.args.join(" ")).toBe(
+      "-m uvicorn app:app --host 127.0.0.1 --port 3800"
+    );
+    expect(spawned[0]?.env?.MODEL_PATH).toBe(
+      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
+    );
+    expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(
+      resolve(llamaBin, "llama-server")
+    );
+    expect(spawned[0]?.env?.MODEL_KEY).toBe("qwen3-0.6b");
+    expect(spawned[0]?.env?.RERANKER_KEY).toBe("qwen3-reranker-0.6b");
+    expect(spawned[0]?.env?.LLAMA_N_CTX).toBe("4096");
+    expect(spawned[0]?.env?.RERANKER_BATCH_LIMIT).toBe("12");
+    const runtime = JSON.parse(
+      readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+    ) as { services?: string[]; processes?: Record<string, number> };
+    expect(runtime.services).toContain("embedding-service-native");
+    expect(runtime.services).not.toContain("embedding-service");
+    expect(runtime.processes?.embeddingService).toBe(1);
+  });
+
   it("honors bundled-local BullMQ override from .env", async () => {
     const root = tempDir();
     writeFileSync(

@@ -228,6 +228,39 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
+  it("uses native Embedding Service status before API readiness", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_BUNDLED_EMBEDDING_MODE: "native"
+      },
+      {
+        existsSync: (filePath) =>
+          String(filePath).endsWith("app.py") ||
+          String(filePath).endsWith("python") ||
+          String(filePath).endsWith("llama-server"),
+        fetch: async (url) =>
+          String(url).endsWith(":3800/health")
+            ? response(true, 200, { status: "ok" })
+            : response(false, 503, {}),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.embeddingService.state).toBe("healthy");
+    expect(status.embeddingService.message).toContain(
+      "native Embedding Service"
+    );
+    expect(status.embeddingService.details?.healthUrl).toBe(
+      "http://127.0.0.1:3800/health"
+    );
+  });
+
   it("honors bundled-local BullMQ override from .env", async () => {
     const root = tempDir();
     writeFileSync(

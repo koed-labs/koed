@@ -7,6 +7,13 @@ export { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 export { setupCodex } from "./setup.js";
 export { startKoedServer } from "./start.js";
 export {
+  collectLocalEmbeddingRuntimeStatus,
+  localEmbeddingRuntimeAvailable,
+  resolveBundledEmbeddingMode,
+  resolveLocalEmbeddingRuntimePaths,
+  startLocalEmbeddingRuntime
+} from "./local-embedding-runtime.js";
+export {
   collectLocalModelStatus,
   installLocalModel,
   resolveLocalModelManifest
@@ -24,6 +31,11 @@ export type {
   KoedServerConfig,
   KoedServerRuntimeMode
 } from "./config.js";
+export type {
+  LocalEmbeddingRuntimePaths,
+  LocalEmbeddingRuntimeStartResult,
+  LocalEmbeddingRuntimeStatus
+} from "./local-embedding-runtime.js";
 export type {
   LocalPostgresRuntimePaths,
   LocalPostgresRuntimeStartResult,

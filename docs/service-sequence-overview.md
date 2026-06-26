@@ -43,11 +43,13 @@ MCP-side workers.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
    starts native Postgres under `KOED_HOME` when bundled Postgres binaries are
    available or required by configuration; otherwise it starts the local
-   Postgres/pgvector and Embedding Service Compose scaffolds. It defaults job
-   processing to the Postgres-backed local queue. Model assets
-   are installed out of band with `koed-server models install`, which requires
-   configured artifact URLs and SHA-256 checksums before writing to
-   `KOED_HOME/models`.
+   Postgres/pgvector Compose scaffold. It starts the Embedding Service as a
+   direct supervised Python/llama-server process when native assets are
+   available or required by configuration; otherwise it starts the
+   `embedding-service` Compose scaffold. It defaults job processing to the
+   Postgres-backed local queue. Model assets are installed out of band with
+   `koed-server models install`, which requires configured artifact URLs and
+   SHA-256 checksums before writing to `KOED_HOME/models`.
 5. `pnpm smoke:bundled-local -- --json` can verify this path with an isolated
    temporary `KOED_HOME`, unique Compose project name, and temporary host ports
    before Operators rely on it for local development or packaging checks.
