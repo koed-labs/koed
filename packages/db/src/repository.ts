@@ -7495,7 +7495,13 @@ export const createMemorySourceRepository = (
           where me.invalidated_at is null and me.personal_deleted_at is null
             and me.visibility = $1
             and me.owner_user_id = $2
-            and coalesce((me.payload #>> '{metadata,includeInLcm}')::boolean, true)
+            and case jsonb_typeof(me.payload #> '{metadata,includeInLcm}')
+              when 'boolean'
+                then (me.payload #>> '{metadata,includeInLcm}')::boolean
+              when 'string'
+                then lower(me.payload #>> '{metadata,includeInLcm}') <> 'false'
+              else true
+            end
             and not exists (
               select 1
               from memory_node_sources mns

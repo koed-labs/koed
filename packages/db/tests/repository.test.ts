@@ -3304,6 +3304,60 @@ describeDb("memory repository visibility", () => {
     expect(new Set(nodeSessions.rows.map((row) => row.sessions)).size).toBe(2);
   });
 
+  it("ignores only explicit includeInLcm false metadata during LCM compaction", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lcm-include-metadata-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'LCM Metadata Include Project')
+      `,
+      [workspaceId, alice.id]
+    );
+
+    for (let index = 1; index <= 6; index += 1) {
+      await captureUserEvent(engine, alice.id, {
+        workspaceId,
+        content: `LCM include metadata source ${index}`,
+        metadata: {
+          includeInLcm:
+            index === 1
+              ? false
+              : index === 2
+                ? { malformed: true }
+                : true
+        }
+      });
+    }
+
+    const compacted = await repo.createLcmNodes(
+      { userId: alice.id },
+      { visibility: "personal" }
+    );
+    const leafSources = await pool.query<{ content: string }>(
+      `
+        select me.payload ->> 'content' as content
+        from memory_node_sources mns
+        join memory_events me on me.id = mns.memory_event_id
+        where mns.memory_node_id = $1
+        order by mns.source_order asc
+      `,
+      [compacted.leafNodeIds[0]]
+    );
+
+    expect(compacted.leafNodeIds).toHaveLength(1);
+    expect(leafSources.rows.map((row) => row.content)).toEqual([
+      "LCM include metadata source 2",
+      "LCM include metadata source 3",
+      "LCM include metadata source 4",
+      "LCM include metadata source 5",
+      "LCM include metadata source 6"
+    ]);
+  });
+
   it("persists personal memory questions as shells and hydrated detail", async () => {
     const alice = await repo.createUser({
       email: `alice-question-${randomUUID()}@example.com`
