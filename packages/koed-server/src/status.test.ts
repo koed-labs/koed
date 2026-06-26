@@ -104,7 +104,12 @@ describe("status and doctor JSON contracts", () => {
   it("maps missing config to not_configured", async () => {
     const root = tempDir();
     const status = await collectKoedServerStatus(
-      { KOED_HOME: root, KOED_REPO_ROOT: root, HOME: root },
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        REDIS_URL: "redis://operator:6379"
+      },
       {
         fetch: async () => response(true, 200, { checks: [] }),
         spawnSync: () => spawnResult("", 0),
@@ -113,6 +118,8 @@ describe("status and doctor JSON contracts", () => {
     );
 
     expect(status.koedHome).toBe(root);
+    expect(status.runtimeMode).toBe("developer");
+    expect(status.dependencyMode).toBe("external");
     expect(status.codex.configured).toBe(false);
     expect(status.captureHook.state).toBe("not_configured");
     expect(status.state).toBe("not_configured");
@@ -200,7 +207,8 @@ describe("status and doctor JSON contracts", () => {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
         HOME: root,
-        MEMORY_HOOK_CONFIG: resolve(root, "hook/config.json")
+        MEMORY_HOOK_CONFIG: resolve(root, "hook/config.json"),
+        REDIS_URL: "redis://operator:6379"
       },
       {
         fetch: async () =>
@@ -223,6 +231,8 @@ describe("status and doctor JSON contracts", () => {
       }
     );
 
+    expect(status.runtimeMode).toBe("developer");
+    expect(status.dependencyMode).toBe("external");
     expect(status.state).toBe("healthy");
     expect(status.explorer.state).toBe("starting");
   });

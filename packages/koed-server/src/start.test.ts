@@ -28,6 +28,8 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   state: "healthy",
   koedHome: root,
   generatedAt: "2026-01-01T00:00:00.000Z",
+  runtimeMode: "developer",
+  dependencyMode: "external",
   api: { state: "healthy", url: "http://localhost:3300" },
   database: { state: "healthy" },
   redis: { state: "healthy" },
@@ -49,13 +51,52 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
-  it("starts services in order and follows logs", async () => {
+  it("requires explicit external service URLs without localhost fallbacks", async () => {
+    const root = tempDir();
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_HOST_PORT: "16379",
+          EMBEDDING_SERVICE_HOST_PORT: "3800"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args) => {
+          commands.push({ command, args });
+          return spawnResult();
+        },
+        collectStatus: async () => healthyStatus(root)
+      })
+    ).rejects.toThrow(
+      "External dependency mode requires Operator-managed service configuration: REDIS_URL, EMBEDDING_SERVICE_URL"
+    );
+
+    expect(commands.map((command) => command.args.join(" "))).toEqual([
+      resolve(root, "scripts/setup-env.mjs")
+    ]);
+    expect(commands.some((command) => command.command === "docker")).toBe(
+      false
+    );
+  });
+
+  it("starts app services without managing external dependencies", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];
     const spawned: Array<{ command: string; args: string[] }> = [];
 
     await startKoedServer({
-      environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        DATABASE_URL: "postgres://operator/db",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://operator:8000"
+      },
       timeoutMs: 1,
       pollIntervalMs: 1,
       spawnSync: (command, args) => {
@@ -78,9 +119,11 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "compose up -d --build --remove-orphans postgres redis embedding-service",
       "--filter @koed/api --filter @koed/worker --filter @koed/explorer build"
     ]);
+    expect(commands.some((command) => command.command === "docker")).toBe(
+      false
+    );
     expect(spawned.map((entry) => entry.args.join(" "))).toEqual([
       "--filter @koed/api start",
       "--filter @koed/worker start",

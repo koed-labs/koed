@@ -16,6 +16,8 @@ export interface KoedServerStatus {
   state: KoedServerComponentState;
   koedHome: string;
   generatedAt: string;
+  runtimeMode: "local-personal" | "external" | "developer";
+  dependencyMode: "bundled-local" | "external";
   api: KoedServerComponentStatus & { url: string };
   database: KoedServerComponentStatus;
   redis: KoedServerComponentStatus;
@@ -41,12 +43,16 @@ export interface KoedServerDoctorResult {
   summary: string;
   koedHome: string;
   generatedAt: string;
+  runtimeMode: "local-personal" | "external" | "developer";
+  dependencyMode: "bundled-local" | "external";
   checks: KoedServerDoctorCheck[];
 }
 
 export interface KoedServerRuntimeState {
   pid: number;
   startedAt: string;
+  runtimeMode?: "local-personal" | "external" | "developer";
+  dependencyMode?: "bundled-local" | "external" | "managed";
   repoRoot: string;
   apiUrl: string;
   explorerUrl: string;

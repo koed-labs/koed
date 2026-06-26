@@ -21,9 +21,11 @@ that memory available through MCP recall.
 ## Quickstart
 
 > [!IMPORTANT]  
+> The `epic/electron-control-refactor` branch is experimental. It splits Koed Desktop/`koed-server` supervision from Operator-managed dependency lifecycle. Docker Compose remains a useful external dependency starter, but `koed-server` no longer owns Compose lifecycle in external dependency mode.
+>
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
-For the shortest full setup from a fresh clone, run:
+For the shortest full setup from a fresh clone, start the external dependency stack first, then run Desktop:
 
 ```bash
 pnpm env:setup
@@ -33,6 +35,9 @@ pnpm desktop:start
 
 `pnpm desktop:start` opens Koed Desktop, auto-starts `koed-server`, and runs
 the full Codex bootstrap + health-check sequence before showing the Explorer.
+`koed-server` connects to the Postgres, Redis/BullMQ, and Embedding Service
+endpoints from `.env`/environment or `KOED_HOME/config/server.json`; it does
+not start or stop Docker Compose dependencies in external mode.
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.
 
