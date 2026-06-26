@@ -697,7 +697,8 @@ describeDb("memory repository visibility", () => {
         actor: "user",
         eventType: "captured",
         rawEventType: "user_prompt",
-        content: "The billing grace period decision stays with the workspace."
+        content: "The billing grace period decision stays with the workspace.",
+        captureMethod: "api"
       }
     );
     const retainedNode = await repo.createMemoryNode(
