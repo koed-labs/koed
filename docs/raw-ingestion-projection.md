@@ -44,8 +44,10 @@ developer, context, lifecycle, token-usage, error, raw reasoning, and unknown
 items remain raw provenance only. Canonical transcript `function_call` and
 `function_call_output` rows are the tool items used for rendering and semantic
 memory; lower-level MCP and patch lifecycle event rows are retained only as raw
-provenance. In the current product model, UI projection and embedding selection
-intentionally match for every rule. The same policy row also controls whether a
+provenance. The seeded defaults keep UI projection and embedding selection
+matched for current product behavior, but the policy fields are deliberately
+independent so future rules can represent display-only or recall-only transcript
+rows without a schema change. The same policy row also controls whether a
 projected Memory Event may become an LCM source through `include_in_lcm`.
 Unlisted transcript item types default to raw provenance only until a policy row
 deliberately opts them in.

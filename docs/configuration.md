@@ -163,7 +163,9 @@ Projection selection is configured through the DB-backed
 `projection_policy_rules` table, not `.env`. These rows define which Codex
 transcript item types are projected into the Explorer UI, semantic Memory
 Events, embeddings, and LCM sources. The seeded defaults keep UI projection and
-embedding selection matched for every transcript type in the current build.
+embedding selection matched for every transcript type in the current build, but
+the fields are independent so future policy rows can support display-only or
+recall-only transcript types without a schema change.
 
 ## Data At Rest
 

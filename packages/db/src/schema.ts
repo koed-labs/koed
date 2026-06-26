@@ -1576,10 +1576,6 @@ export const projectionPolicyRules = pgTable(
     check(
       "projection_policy_rules_lcm_memory_check",
       sql`${table.includeInLcm} = false or ${table.createMemoryEvent} = true`
-    ),
-    check(
-      "projection_policy_rules_ui_embedding_match_check",
-      sql`${table.projectToUi} = ${table.includeInEmbedding}`
     )
   ]
 );

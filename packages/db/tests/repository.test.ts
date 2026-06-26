@@ -3669,7 +3669,7 @@ describeDb("memory repository visibility", () => {
     expect(events.map((graphEvent) => graphEvent.id)).toEqual([event.id]);
   });
 
-  it("seeds explicit projection policy rows with matching UI and embedding selection", async () => {
+  it("seeds explicit projection policy rows while allowing independent display and recall policy", async () => {
     const rows = await pool.query<{
       transcript_type: string;
       project_to_ui: boolean;
@@ -3719,6 +3719,51 @@ describeDb("memory repository visibility", () => {
     expect(
       rows.rows.every((row) => row.project_to_ui === row.include_in_embedding)
     ).toBe(true);
+    const displayOnlyType = `display_only_${randomUUID().replaceAll("-", "_")}`;
+    const recallOnlyType = `recall_only_${randomUUID().replaceAll("-", "_")}`;
+    try {
+      await pool.query(
+        `
+          insert into projection_policy_rules (
+            transcript_type,
+            description,
+            project_to_ui,
+            create_message,
+            create_tool_event,
+            create_memory_event,
+            include_in_embedding,
+            include_in_lcm
+          )
+          values
+            (
+              $1,
+              'Temporary display-only policy rule.',
+              true,
+              true,
+              false,
+              false,
+              false,
+              false
+            ),
+            (
+              $2,
+              'Temporary recall-only policy rule.',
+              false,
+              false,
+              false,
+              true,
+              true,
+              false
+            )
+        `,
+        [displayOnlyType, recallOnlyType]
+      );
+    } finally {
+      await pool.query(
+        "delete from projection_policy_rules where transcript_type = any($1)",
+        [[displayOnlyType, recallOnlyType]]
+      );
+    }
     expect(byType.get("user_message")).toMatchObject({
       project_to_ui: true,
       include_in_embedding: true,
