@@ -22,6 +22,21 @@ MCP-side workers.
   rows, Memory Events, Memory Nodes, embeddings, questions, token usage, and
   Team Workspace access records.
 
+## Capability Discovery
+
+The API exposes `GET /v1/capabilities` as the stable discovery boundary for
+clients that can target more than one Koed backend. The endpoint is
+unauthenticated and intentionally static for this self-hosted distribution: it
+does not inspect Memory, emit diagnostics, disclose local paths, or expose
+deployment secrets.
+
+Clients should use the capability contract before enabling backend-specific
+surfaces. The self-hosted response advertises supported local capabilities such
+as Personal Memory capture, MCP recall, graph inspection, and local LCM
+summaries. It also marks cloud-only or future paid surfaces such as billing,
+Memory Inbox, managed connectors, Cross-Identity Sync, and Team memory recall as
+unsupported until those backend contracts exist.
+
 ## Ingestion
 
 1. Codex emits supported hook events such as `SessionStart`,

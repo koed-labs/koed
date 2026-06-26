@@ -1,4 +1,5 @@
 const openApiEndpoints: Array<[string, string]> = [
+  ["GET", "/v1/capabilities"],
   ["GET", "/v1/access/check"],
   ["GET", "/v1/capture-policy/effective"],
   ["GET", "/v1/capture-policies"],
@@ -52,7 +53,7 @@ export const openApiDocument = {
       {
         [method.toLowerCase()]: {
           responses: { "200": { description: "OK" } },
-          security: [{ bearerApiToken: [] }]
+          security: path === "/v1/capabilities" ? [] : [{ bearerApiToken: [] }]
         }
       }
     ])

@@ -91,6 +91,27 @@ type AccessResponse = {
   auth?: string;
   providerConfigSupported?: boolean;
 };
+type CapabilitiesResponse = {
+  product: string;
+  apiVersion: string;
+  deployment: {
+    mode: string;
+    distribution: string;
+    managedBy: string;
+  };
+  auth: {
+    modes: string[];
+  };
+  clients: {
+    supportedAiClients: string[];
+    electronApp: {
+      backendTarget: string;
+      guidedClientSetup: string;
+    };
+  };
+  features: Record<string, string>;
+  endpointGroups: Record<string, Record<string, string>>;
+};
 type TeamResponse = {
   team: { id: string; name: string };
 };
@@ -2353,6 +2374,7 @@ describe("api health", () => {
         health: "/health",
         readiness: "/ready",
         publicStatus: "/self-host/status",
+        capabilities: "/v1/capabilities",
         openapi: "/openapi.json"
       },
       explorer: {
@@ -2374,6 +2396,51 @@ describe("api health", () => {
 
     expect(generated.headers["x-request-id"]).toEqual(expect.any(String));
     expect(provided.headers["x-request-id"]).toBe("operator-request-1");
+  });
+
+  it("publishes a safe unauthenticated capability contract", async () => {
+    process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
+    const app = await buildServer();
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await app.close();
+
+    const capabilities = jsonBody<CapabilitiesResponse>(response);
+
+    expect(response.statusCode).toBe(200);
+    expect(capabilities).toMatchObject({
+      product: "koed",
+      apiVersion: "v1",
+      deployment: {
+        mode: "self_hosted",
+        distribution: "source_available",
+        managedBy: "operator"
+      },
+      clients: {
+        supportedAiClients: ["codex"],
+        electronApp: {
+          backendTarget: "supported",
+          guidedClientSetup: "planned"
+        }
+      },
+      features: {
+        personalMemory: "supported",
+        teamWorkspaceManagement: "partial",
+        teamMemoryRecall: "unsupported",
+        shareGrants: "unsupported",
+        billing: "unsupported",
+        memoryInbox: "unsupported",
+        managedConnectors: "unsupported"
+      }
+    });
+    expect(capabilities.auth.modes).toEqual(
+      expect.arrayContaining(["session_cookie", "api_token"])
+    );
+    expect(response.body).not.toContain("/sensitive/local/path");
+    expect(response.body).not.toContain("DATABASE_URL");
+    expect(response.body).not.toContain("API_TOKEN");
   });
 
   it("allows browser write preflight requests", async () => {
@@ -5418,5 +5485,12 @@ describe("account and access flows", () => {
     expect(
       jsonBody<OpenApiResponse>(openapi).paths["/v1/memory/answer"]
     ).toBeDefined();
+    expect(
+      jsonBody<OpenApiResponse>(openapi).paths["/v1/capabilities"]
+    ).toMatchObject({
+      get: {
+        security: []
+      }
+    });
   });
 });

@@ -31,6 +31,77 @@ interface OperationalRouteOptions {
   ): Promise<MemoryJobStatus>;
 }
 
+const koedReleaseVersion = "0.2.0";
+
+const selfHostedCapabilities = {
+  product: "koed",
+  apiVersion: "v1",
+  releaseVersion: koedReleaseVersion,
+  deployment: {
+    mode: "self_hosted",
+    distribution: "source_available",
+    managedBy: "operator"
+  },
+  auth: {
+    modes: ["session_cookie", "api_token"],
+    browserSessionSetup: "operator_bootstrap",
+    apiTokenBootstrap: "local_operator_script"
+  },
+  clients: {
+    supportedAiClients: ["codex"],
+    electronApp: {
+      backendTarget: "supported",
+      guidedClientSetup: "planned"
+    }
+  },
+  features: {
+    personalMemory: "supported",
+    captureHook: "supported",
+    mcpRecall: "supported",
+    localLcmSummaries: "supported",
+    teamManagement: "partial",
+    teamWorkspaceManagement: "partial",
+    teamMemoryRecall: "unsupported",
+    shareGrants: "unsupported",
+    crossIdentitySync: "unsupported",
+    billing: "unsupported",
+    memoryInbox: "unsupported",
+    managedConnectors: "unsupported",
+    cloudOperations: "unsupported"
+  },
+  endpointGroups: {
+    operations: {
+      status: "supported",
+      diagnostics: "authenticated"
+    },
+    auth: {
+      localUsers: "supported",
+      sso: "unsupported"
+    },
+    memory: {
+      capture: "supported",
+      recall: "supported",
+      graph: "supported",
+      export: "supported"
+    },
+    teams: {
+      membership: "partial",
+      invites: "partial",
+      workspaces: "partial"
+    },
+    cloud: {
+      billing: "unsupported",
+      entitlements: "unsupported",
+      managedIngestion: "unsupported",
+      analytics: "unsupported"
+    }
+  },
+  notes: [
+    "This endpoint describes the capabilities of the current backend instance.",
+    "Unsupported cloud-only capabilities are listed explicitly so clients can hide or disable those surfaces without probing private endpoints."
+  ]
+} as const;
+
 export const registerOperationalRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext,
@@ -52,6 +123,7 @@ export const registerOperationalRoutes = (
       health: "/health",
       readiness: "/ready",
       publicStatus: "/self-host/status",
+      capabilities: "/v1/capabilities",
       openapi: "/openapi.json"
     },
     explorer: {
@@ -120,6 +192,8 @@ export const registerOperationalRoutes = (
   });
 
   app.get("/openapi.json", () => openApiDocument);
+
+  app.get("/v1/capabilities", () => selfHostedCapabilities);
 
   app.get("/health/details", async (request) => {
     await auth.authenticateSession(request);
