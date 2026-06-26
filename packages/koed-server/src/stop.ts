@@ -1,0 +1,263 @@
+import {
+  existsSync as nodeExistsSync,
+  readFileSync,
+  rmSync,
+  type PathLike
+} from "node:fs";
+import {
+  spawnSync as nodeSpawnSync,
+  type SpawnSyncReturns
+} from "node:child_process";
+import {
+  resolveBundledPostgresMode,
+  stopLocalPostgresRuntime
+} from "./local-postgres-runtime.js";
+import { resolveKoedServerPaths } from "./paths.js";
+import type { KoedServerRuntimeState } from "./types.js";
+
+type SpawnSyncLike = (
+  command: string,
+  args: string[],
+  options?: Parameters<typeof nodeSpawnSync>[2]
+) => SpawnSyncReturns<string>;
+
+export interface KoedServerStopResult {
+  ok: boolean;
+  state: "healthy" | "not_configured" | "needs_attention";
+  koedHome: string;
+  message: string;
+  stoppedPids: number[];
+  missingPids: number[];
+  stoppedServices: string[];
+  missingServices: string[];
+  errors?: Array<{ target: string; error: string }>;
+}
+
+export interface KoedServerStopOptions {
+  environment?: NodeJS.ProcessEnv;
+  existsSync?: typeof nodeExistsSync;
+  readFileSync?: typeof readFileSync;
+  rmSync?: typeof rmSync;
+  spawnSync?: SpawnSyncLike;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  checkPid?: (pid: number) => boolean;
+}
+
+const APP_PROCESS_ORDER = ["explorer", "worker", "api"] as const;
+const COMPOSE_SCAFFOLD_SERVICES = [
+  "postgres",
+  "redis",
+  "embedding-service"
+] as const;
+
+const readRuntimeState = (
+  path: string,
+  deps: Pick<Required<KoedServerStopOptions>, "existsSync" | "readFileSync">
+): KoedServerRuntimeState | null => {
+  if (!deps.existsSync(path)) {
+    return null;
+  }
+  try {
+    return JSON.parse(
+      String(deps.readFileSync(path, "utf8"))
+    ) as KoedServerRuntimeState;
+  } catch {
+    return null;
+  }
+};
+
+const defaultCheckPid = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const errorCode = (error: unknown): string =>
+  typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const stopPid = (
+  label: string,
+  pid: number | undefined,
+  deps: Pick<Required<KoedServerStopOptions>, "kill" | "checkPid">
+): {
+  stoppedPids: number[];
+  missingPids: number[];
+  errors: Array<{ target: string; error: string }>;
+} => {
+  if (!pid || pid <= 0) {
+    return { stoppedPids: [], missingPids: [], errors: [] };
+  }
+  try {
+    deps.kill(pid, "SIGTERM");
+    return { stoppedPids: [pid], missingPids: [], errors: [] };
+  } catch (error) {
+    if (errorCode(error) === "ESRCH" || !deps.checkPid(pid)) {
+      return { stoppedPids: [], missingPids: [pid], errors: [] };
+    }
+    return {
+      stoppedPids: [],
+      missingPids: [],
+      errors: [{ target: `${label} (${pid})`, error: errorMessage(error) }]
+    };
+  }
+};
+
+const shouldStopNativePostgres = (
+  runtime: KoedServerRuntimeState,
+  environment: NodeJS.ProcessEnv,
+  existsSync: typeof nodeExistsSync
+): boolean => {
+  if (runtime.dependencyMode !== "bundled-local") {
+    return false;
+  }
+  if (runtime.services.includes("postgres-native")) {
+    return true;
+  }
+  const paths = resolveKoedServerPaths(environment);
+  return (
+    resolveBundledPostgresMode(paths, environment, existsSync) === "native"
+  );
+};
+
+export const stopKoedServer = ({
+  environment = process.env,
+  existsSync: pathExists = nodeExistsSync,
+  readFileSync: readFile = readFileSync,
+  rmSync: remove = rmSync,
+  spawnSync = nodeSpawnSync as SpawnSyncLike,
+  kill = (pid, signal) => {
+    process.kill(pid, signal);
+  },
+  checkPid = defaultCheckPid
+}: KoedServerStopOptions = {}): KoedServerStopResult => {
+  const paths = resolveKoedServerPaths(environment);
+  const runtime = readRuntimeState(paths.runtimeStatePath, {
+    existsSync: pathExists,
+    readFileSync: readFile
+  });
+
+  if (!runtime) {
+    return {
+      ok: true,
+      state: "not_configured",
+      koedHome: paths.koedHome,
+      message: "No koed-server runtime state was found.",
+      stoppedPids: [],
+      missingPids: [],
+      stoppedServices: [],
+      missingServices: []
+    };
+  }
+
+  const stoppedPids: number[] = [];
+  const missingPids: number[] = [];
+  const stoppedServices: string[] = [];
+  const missingServices: string[] = [];
+  const errors: Array<{ target: string; error: string }> = [];
+
+  for (const name of APP_PROCESS_ORDER) {
+    const pid = runtime.processes?.[name];
+    if (!pid || pid <= 0) {
+      missingServices.push(name);
+      continue;
+    }
+    const stopped = stopPid(name, pid, { kill, checkPid });
+    stoppedPids.push(...stopped.stoppedPids);
+    missingPids.push(...stopped.missingPids);
+    if (stopped.missingPids.length > 0) {
+      missingServices.push(name);
+    } else if (stopped.stoppedPids.length > 0) {
+      stoppedServices.push(name);
+    }
+    errors.push(...stopped.errors);
+  }
+
+  if (runtime.dependencyMode === "bundled-local") {
+    const embeddingPid = runtime.processes?.embeddingService;
+    if (runtime.services.includes("embedding-service-native")) {
+      if (!embeddingPid || embeddingPid <= 0) {
+        missingServices.push("embedding-service-native");
+      } else {
+        const stopped = stopPid("embedding-service-native", embeddingPid, {
+          kill,
+          checkPid
+        });
+        stoppedPids.push(...stopped.stoppedPids);
+        missingPids.push(...stopped.missingPids);
+        errors.push(...stopped.errors);
+        if (stopped.missingPids.length > 0) {
+          missingServices.push("embedding-service-native");
+        } else if (stopped.stoppedPids.length > 0) {
+          stoppedServices.push("embedding-service-native");
+        }
+      }
+    }
+
+    if (shouldStopNativePostgres(runtime, environment, pathExists)) {
+      const stopped = stopLocalPostgresRuntime(paths, environment, {
+        existsSync: pathExists,
+        spawnSync
+      });
+      if (stopped.ok) {
+        stoppedServices.push("postgres-native");
+      } else {
+        errors.push({
+          target: "postgres-native",
+          error: stopped.error ?? stopped.message
+        });
+      }
+    }
+
+    const composeServices = COMPOSE_SCAFFOLD_SERVICES.filter((service) =>
+      runtime.services.includes(service)
+    );
+    if (composeServices.length > 0) {
+      const result = spawnSync(
+        "docker",
+        ["compose", "stop", ...composeServices],
+        {
+          cwd: runtime.repoRoot || paths.repoRoot,
+          env: environment,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"]
+        }
+      );
+      if (result.status === 0) {
+        stoppedServices.push(...composeServices);
+      } else {
+        errors.push({
+          target: "docker compose",
+          error:
+            result.error?.message ?? result.stderr?.trim() ?? "unknown error"
+        });
+      }
+    }
+  }
+
+  if (errors.length === 0) {
+    remove(paths.runtimeStatePath as PathLike, { force: true });
+  }
+
+  return {
+    ok: errors.length === 0,
+    state: errors.length === 0 ? "healthy" : "needs_attention",
+    koedHome: paths.koedHome,
+    message:
+      errors.length === 0
+        ? "Koed server stop completed."
+        : "Koed server stop encountered errors.",
+    stoppedPids,
+    missingPids,
+    stoppedServices,
+    missingServices,
+    ...(errors.length > 0 ? { errors } : {})
+  };
+};

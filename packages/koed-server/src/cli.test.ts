@@ -143,6 +143,54 @@ describe("JSON command output", () => {
     );
   });
 
+  it("prints stop --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["stop", "--json"], {
+      stdout: stdout.stream,
+      stop: () => ({
+        ok: true,
+        state: "healthy",
+        koedHome: "/tmp/koed",
+        message: "Koed server stop completed.",
+        stoppedPids: [12, 11, 10],
+        missingPids: [],
+        stoppedServices: ["explorer", "worker", "api"],
+        missingServices: []
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      stoppedPids: [12, 11, 10]
+    });
+  });
+
+  it("prints restart --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["restart", "--json"], {
+      stdout: stdout.stream,
+      restart: async () => ({
+        ok: true,
+        state: "starting",
+        koedHome: "/tmp/koed",
+        message: "Koed server restarted.",
+        stoppedPids: [12, 11, 10],
+        missingPids: [],
+        stoppedServices: ["explorer", "worker", "api"],
+        missingServices: []
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      stoppedPids: [12, 11, 10]
+    });
+  });
+
   it("prints status --json", async () => {
     const stdout = writer();
 

@@ -4,8 +4,10 @@ export {
   writeKoedServerConfig
 } from "./config.js";
 export { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
+export { restartKoedServer } from "./restart.js";
 export { setupCodex } from "./setup.js";
 export { startKoedServer } from "./start.js";
+export { stopKoedServer } from "./stop.js";
 export {
   collectLocalEmbeddingRuntimeStatus,
   localEmbeddingRuntimeAvailable,
@@ -23,7 +25,8 @@ export {
   localPostgresRuntimeAvailable,
   resolveBundledPostgresMode,
   resolveLocalPostgresRuntimePaths,
-  startLocalPostgresRuntime
+  startLocalPostgresRuntime,
+  stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export type {
@@ -39,7 +42,8 @@ export type {
 export type {
   LocalPostgresRuntimePaths,
   LocalPostgresRuntimeStartResult,
-  LocalPostgresRuntimeStatus
+  LocalPostgresRuntimeStatus,
+  LocalPostgresRuntimeStopResult
 } from "./local-postgres-runtime.js";
 export type {
   LocalModelInstallResult,

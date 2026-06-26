@@ -2,7 +2,9 @@
 import { loadRepoEnv } from "./env-file.js";
 import { setupCodex } from "./setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
+import { restartKoedServer } from "./restart.js";
 import { startKoedServer } from "./start.js";
+import { stopKoedServer } from "./stop.js";
 import {
   collectLocalModelStatus,
   installLocalModel,
@@ -14,6 +16,8 @@ export const usageText = `Usage: koed-server <command> [options]
 
 Commands:
   start                  Start and supervise local Koed services
+  stop --json            Stop supervised local Koed services
+  restart --json         Restart supervised local Koed services
   status --json          Print machine-readable local service state
   doctor --json          Print actionable setup/dependency diagnostics
   setup codex --json     Configure the supported Codex integration
@@ -33,6 +37,8 @@ export interface KoedServerCliDependencies {
   collectStatus?: typeof collectKoedServerStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
   start?: typeof startKoedServer;
+  stop?: typeof stopKoedServer;
+  restart?: typeof restartKoedServer;
   setupCodex?: typeof setupCodex;
   collectModelStatus?: typeof collectLocalModelStatus;
   installModel?: typeof installLocalModel;
@@ -55,6 +61,8 @@ export const runKoedServerCli = async (
     collectStatus = collectKoedServerStatus,
     collectDoctor = collectKoedServerDoctor,
     start = startKoedServer,
+    stop = stopKoedServer,
+    restart = restartKoedServer,
     setupCodex: setup = setupCodex,
     collectModelStatus = collectLocalModelStatus,
     installModel = installLocalModel,
@@ -102,6 +110,26 @@ export const runKoedServerCli = async (
     if (command === "start") {
       await start();
       return 0;
+    }
+
+    if (command === "stop") {
+      const result = stop();
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "restart") {
+      const result = await restart();
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
     }
 
     if (command === "setup" && subcommand === "codex") {

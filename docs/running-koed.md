@@ -32,12 +32,16 @@ system is ready.
 local app processes, and records runtime state under `KOED_HOME/run`. Docker
 Compose is treated as Operator-managed external infrastructure in this mode.
 
-Check service state from any headless shell:
+Check service state or stop/restart supervised local processes from any headless shell:
 
 ```bash
 node packages/koed-server/dist/cli.js status --json
 node packages/koed-server/dist/cli.js doctor --json
+node packages/koed-server/dist/cli.js stop --json
+node packages/koed-server/dist/cli.js restart --json
 ```
+
+`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops API, Worker, Explorer, native Embedding Service, native Postgres via `pg_ctl stop -D <dataDir> -m fast`, and only Compose scaffold services recorded in runtime state. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
 Run Codex setup through the same surface after `koed-server start` has made the
 API ready:

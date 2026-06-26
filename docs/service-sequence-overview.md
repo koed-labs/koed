@@ -58,19 +58,20 @@ MCP-side workers.
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
    table.
-7. `koed-server status --json` and `koed-server doctor --json` poll the API
+7. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, native Postgres through `pg_ctl stop`, then only the Compose scaffold services recorded in runtime state. It treats stale process IDs as an idempotent no-op and does not stop Operator-managed dependencies in external dependency mode. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
+8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
    output, Supported Capture Hook config, Codex config, LCM Summary Service
    availability, and last verification metadata.
-8. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
    the control plane.
-9. Koed Desktop can start/connect to the same headless command surface, run
-   the first-launch Codex bootstrap and health-check sequence, poll status,
-   and embed Explorer without requiring the Operator to invoke repo-local
-   scripts directly.
+10. Koed Desktop can start/connect to the same headless command surface, run
+    the first-launch Codex bootstrap and health-check sequence, poll status,
+    and embed Explorer without requiring the Operator to invoke repo-local
+    scripts directly.
 
 ## Ingestion
 

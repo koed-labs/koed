@@ -43,6 +43,13 @@ export interface LocalPostgresRuntimeStartResult {
   env: NodeJS.ProcessEnv;
 }
 
+export interface LocalPostgresRuntimeStopResult {
+  ok: boolean;
+  message: string;
+  stopped: boolean;
+  error?: string;
+}
+
 export interface LocalPostgresRuntimeDependencies {
   existsSync?: typeof existsSync;
   spawnSync?: SpawnSyncLike;
@@ -233,6 +240,64 @@ export const collectLocalPostgresRuntimeStatus = (
     message: "Bundled-local native Postgres is not running yet.",
     details: { exitCode: status.status, stderr: status.stderr },
     paths: safeRuntimePaths(runtime)
+  };
+};
+
+export const stopLocalPostgresRuntime = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv = process.env,
+  dependencies: LocalPostgresRuntimeDependencies = {}
+): LocalPostgresRuntimeStopResult => {
+  const exists = dependencies.existsSync ?? existsSync;
+  const spawnSync = dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike);
+  const runtime = resolveLocalPostgresRuntimePaths(paths, environment);
+  if (!exists(runtime.pgCtlBin)) {
+    return {
+      ok: false,
+      stopped: false,
+      message: "Bundled-local native Postgres pg_ctl binary was not found.",
+      error: `${runtime.pgCtlBin} does not exist`
+    };
+  }
+  if (!exists(resolve(runtime.dataDir, "PG_VERSION"))) {
+    return {
+      ok: true,
+      stopped: false,
+      message:
+        "Bundled-local native Postgres data directory was not initialized."
+    };
+  }
+  const status = run(
+    runtime.pgCtlBin,
+    ["status", "-D", runtime.dataDir],
+    environment,
+    spawnSync
+  );
+  if (status.status !== 0) {
+    return {
+      ok: true,
+      stopped: false,
+      message: "Bundled-local native Postgres was not running."
+    };
+  }
+  const stopped = run(
+    runtime.pgCtlBin,
+    ["stop", "-D", runtime.dataDir, "-m", "fast"],
+    environment,
+    spawnSync
+  );
+  if (stopped.status !== 0) {
+    return {
+      ok: false,
+      stopped: false,
+      message: "Could not stop bundled-local native Postgres.",
+      error: stopped.stderr.trim() || `exit code ${stopped.status ?? 1}`
+    };
+  }
+  return {
+    ok: true,
+    stopped: true,
+    message: "Bundled-local native Postgres stopped."
   };
 };
 
