@@ -31,6 +31,11 @@ export const registerGraphRoutes = (
       memoryWrite: memoryWriteRateLimit
     }
   } = context;
+  const authenticateGraphRead = async (
+    request: Parameters<typeof authenticate>[0],
+    teamWorkspaceId?: string
+  ) => (teamWorkspaceId ? authenticateSession(request) : authenticate(request));
+
   app.get(
     "/v1/memory/clusters",
     { preHandler: memoryReadRateLimit },
@@ -107,8 +112,8 @@ export const registerGraphRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
       const query = graphNodesQuerySchema.parse(request.query);
+      const user = await authenticateGraphRead(request, query.teamWorkspaceId);
       return {
         nodes: await repo.listLcmGraphNodes(
           { userId: user.id },
@@ -126,9 +131,9 @@ export const registerGraphRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
       const params = nodeIdParamsSchema.parse(request.params);
       const query = graphEventDetailQuerySchema.parse(request.query);
+      const user = await authenticateGraphRead(request, query.teamWorkspaceId);
       const node = await repo.getLcmGraphNode(
         { userId: user.id },
         params.nodeId,
@@ -150,8 +155,8 @@ export const registerGraphRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
       const query = graphEventsQuerySchema.parse(request.query);
+      const user = await authenticateGraphRead(request, query.teamWorkspaceId);
       return {
         events: await repo.listLcmGraphEvents({ userId: user.id }, query)
       };
@@ -163,8 +168,8 @@ export const registerGraphRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
       const query = graphQuerySchema.parse(request.query);
+      const user = await authenticateGraphRead(request, query.teamWorkspaceId);
       if (query.teamWorkspaceId) {
         return {
           projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
@@ -192,9 +197,9 @@ export const registerGraphRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request, reply) => {
       const repo = requireRepository();
-      const user = await authenticate(request);
       const params = graphEventParamsSchema.parse(request.params);
       const query = graphEventDetailQuerySchema.parse(request.query);
+      const user = await authenticateGraphRead(request, query.teamWorkspaceId);
       const event = await repo.getLcmGraphEvent(
         { userId: user.id },
         params.eventId,

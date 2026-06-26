@@ -3858,7 +3858,7 @@ export const createMemorySourceRepository = (
         left join sessions s on s.id = ev.session_id
         left join memory_embeddings me on me.memory_node_id = mn.id and me.invalidated_at is null and me.personal_deleted_at is null
         where mn.kind in ('leaf', 'rollup')
-          and ($2::boolean = true or mn.invalidated_at is null and mn.personal_deleted_at is null)
+          and ($2::boolean = true or mn.invalidated_at is null)
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
           and ($4::text is null or coalesce(
             case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
@@ -3870,7 +3870,7 @@ export const createMemorySourceRepository = (
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
           and mn.visibility = 'personal'
           and (
-            mn.owner_user_id = $1
+            (mn.owner_user_id = $1 and ($2::boolean = true or mn.personal_deleted_at is null))
             or (
               $9::uuid is not null
               and exists (
@@ -3881,7 +3881,7 @@ export const createMemorySourceRepository = (
               and not exists (
                 select 1
                 from memory_node_sources auth_mns
-                left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null and auth_ev.personal_deleted_at is null
+                left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
                 left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
                 where auth_mns.memory_node_id = mn.id
                   and not exists (
@@ -4196,7 +4196,7 @@ export const createMemorySourceRepository = (
           from memory_events me
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
-          where ($2::boolean = true or me.invalidated_at is null and me.personal_deleted_at is null)
+          where ($2::boolean = true or me.invalidated_at is null)
             and ($6::uuid is not null or me.session_id is null or me.capture_method = 'api')
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(
@@ -4239,7 +4239,7 @@ export const createMemorySourceRepository = (
             )
             and me.visibility = 'personal'
             and (
-              me.owner_user_id = $1
+              (me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
               or (
                 $12::uuid is not null
                 and exists (
@@ -4641,7 +4641,7 @@ export const createMemorySourceRepository = (
             me.payload ->> 'content' as content
           from memory_events me
           left join sessions s on s.id = me.session_id
-          where ($2::boolean = true or me.invalidated_at is null and me.personal_deleted_at is null)
+          where ($2::boolean = true or me.invalidated_at is null)
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and ($4::text is null or coalesce(
               case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
@@ -4659,7 +4659,7 @@ export const createMemorySourceRepository = (
             )
             and me.visibility = 'personal'
             and (
-              me.owner_user_id = $1
+              (me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
               or (
                 $9::uuid is not null
                 and exists (
@@ -7571,10 +7571,10 @@ export const createMemorySourceRepository = (
         select mn.id, mn.visibility, mn.source_items_json
         from memory_nodes mn
         where mn.id = $2
-          and mn.invalidated_at is null and mn.personal_deleted_at is null
+          and mn.invalidated_at is null
           and mn.visibility = 'personal'
           and (
-            mn.owner_user_id = $1
+            (mn.owner_user_id = $1 and mn.personal_deleted_at is null)
             or (
               $3::uuid is not null
               and exists (
@@ -7585,7 +7585,7 @@ export const createMemorySourceRepository = (
               and not exists (
                 select 1
                 from memory_node_sources auth_mns
-                left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null and auth_ev.personal_deleted_at is null
+                left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
                 left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
                 where auth_mns.memory_node_id = mn.id
                   and not exists (
@@ -7635,10 +7635,10 @@ export const createMemorySourceRepository = (
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
         where mns.memory_node_id = $1
-          and me.invalidated_at is null and me.personal_deleted_at is null
+          and me.invalidated_at is null
           and me.visibility = 'personal'
           and (
-            me.owner_user_id = $2
+            (me.owner_user_id = $2 and me.personal_deleted_at is null)
             or (
               $8::uuid is not null
               and exists (

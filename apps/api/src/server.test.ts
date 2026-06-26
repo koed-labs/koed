@@ -3675,6 +3675,68 @@ describe("account and access flows", () => {
     ]);
   });
 
+  it("keeps Team Workspace graph APIs behind session authentication", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "team-graph-token@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const token = jsonBody<TokenResponse>(createdToken).token;
+    const headers = { authorization: `Bearer ${token}` };
+    const teamWorkspaceId = randomUUID();
+    const nodeId = randomUUID();
+    const eventId = randomUUID();
+
+    const responses = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/nodes?teamWorkspaceId=${teamWorkspaceId}`,
+        headers
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/events?teamWorkspaceId=${teamWorkspaceId}`,
+        headers
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/threads?teamWorkspaceId=${teamWorkspaceId}`,
+        headers
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/nodes/${nodeId}?teamWorkspaceId=${teamWorkspaceId}`,
+        headers
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/events/${eventId}?teamWorkspaceId=${teamWorkspaceId}`,
+        headers
+      })
+    ]);
+    await app.close();
+
+    expect(responses.map((response) => response.statusCode)).toEqual([
+      401, 401, 401, 401, 401
+    ]);
+    for (const response of responses) {
+      expect(jsonBody<{ error: string }>(response).error).toBe(
+        "Session cookie required"
+      );
+    }
+  });
+
   it("rejects unsupported capture policy visibility for API-token setup", async () => {
     const app = await buildServer({
       repository: createFakeRepository(),

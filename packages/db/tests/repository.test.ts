@@ -700,6 +700,23 @@ describeDb("memory repository visibility", () => {
         content: "The billing grace period decision stays with the workspace."
       }
     );
+    const retainedNode = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText: "Retained Team decision summary.",
+        captureMethod: "hook",
+        sourceRuntime: "codex",
+        sourceHash: `retained-team-node-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0)
+      `,
+      [retainedNode.id, event.id]
+    );
 
     const grant = await pool.query<{ id: string }>(
       `
@@ -741,6 +758,17 @@ describeDb("memory repository visibility", () => {
     );
     await pool.query(
       `
+        update memory_nodes
+        set
+          personal_deleted_at = now(),
+          personal_deleted_by_user_id = $1,
+          personal_deletion_reason = 'user_deleted'
+        where id = $2
+      `,
+      [owner.id, retainedNode.id]
+    );
+    await pool.query(
+      `
         update team_session_share_grants
         set
           personal_deleted_at = now(),
@@ -750,6 +778,50 @@ describeDb("memory repository visibility", () => {
       `,
       [owner.id, grantId]
     );
+    const retainedGraphEvents = await repo.listLcmGraphEvents(
+      { userId: member.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        includeContent: true
+      }
+    );
+    expect(retainedGraphEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: event.id,
+          content: "The billing grace period decision stays with the workspace."
+        })
+      ])
+    );
+    const retainedThreads = await repo.listLcmGraphThreads(
+      { userId: member.id },
+      { teamWorkspaceId: workspace!.id }
+    );
+    expect(retainedThreads.flatMap((project) => project.threads)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sessionId: session.id })
+      ])
+    );
+    await expect(
+      repo.getLcmGraphNode({ userId: member.id }, retainedNode.id, {
+        teamWorkspaceId: workspace!.id
+      })
+    ).resolves.toMatchObject({
+      id: retainedNode.id,
+      sources: [expect.objectContaining({ id: event.id })]
+    });
+    await expect(
+      repo.expandMemoryNode(
+        retainedNode.id,
+        { userId: member.id },
+        {
+          teamWorkspaceId: workspace!.id
+        }
+      )
+    ).resolves.toMatchObject({
+      nodeId: retainedNode.id,
+      sources: [expect.objectContaining({ id: event.id })]
+    });
     await repo.upsertTeamMember(
       { userId: owner.id },
       {
