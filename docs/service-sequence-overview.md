@@ -42,8 +42,10 @@ MCP-side workers.
    external mode.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
    starts the local Postgres/pgvector and Embedding Service Compose scaffolds
-   and defaults job processing to the Postgres-backed local queue. This mode is
-   runtime scaffolding only; asset/model installers remain separate work.
+   and defaults job processing to the Postgres-backed local queue. Model assets
+   are installed out of band with `koed-server models install`, which requires
+   configured artifact URLs and SHA-256 checksums before writing to
+   `KOED_HOME/models`.
 5. The API, Worker, and Explorer run as local app processes supervised by
    `koed-server` and connect to those configured dependency URLs. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or

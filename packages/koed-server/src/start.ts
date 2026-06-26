@@ -4,14 +4,15 @@ import {
   type ChildProcess,
   type SpawnSyncReturns
 } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveLocalApiToken,
   writeExplorerCredential
 } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import {
   ensureKoedHome,
   resolveKoedServerPaths,
@@ -175,6 +176,36 @@ const localServiceEnv = (
     environment,
     repoEnv
   );
+  const modelEnvironment = { ...repoEnv, ...environment };
+  const embeddingModel = resolveLocalModelManifest(
+    paths,
+    "embedding",
+    modelEnvironment
+  );
+  const rerankerModel = resolveLocalModelManifest(
+    paths,
+    "reranker",
+    modelEnvironment
+  );
+  const installedModelPaths = [
+    embeddingModel.modelPath,
+    rerankerModel.modelPath
+  ].filter((modelPath) => existsSync(modelPath));
+  const mountedModelDirs = new Set(installedModelPaths.map(dirname));
+  if (mountedModelDirs.size > 1) {
+    throw new Error(
+      `Bundled-local model paths must be in one directory so Docker Compose can mount them under /models. Move installed model files into ${paths.modelsDir} or set KOED_EMBEDDING_MODEL_PATH and KOED_RERANKER_MODEL_PATH to files in the same directory.`
+    );
+  }
+  const localEmbeddingModelPath = existsSync(embeddingModel.modelPath)
+    ? `/models/${basename(embeddingModel.modelPath)}`
+    : undefined;
+  const localRerankerModelPath = existsSync(rerankerModel.modelPath)
+    ? `/models/${basename(rerankerModel.modelPath)}`
+    : undefined;
+  const mountedModelsDir = installedModelPaths[0]
+    ? dirname(installedModelPaths[0])
+    : paths.modelsDir;
   return {
     ...process.env,
     ...repoEnv,
@@ -183,6 +214,7 @@ const localServiceEnv = (
     NODE_ENV: repoEnv.API_NODE_ENV ?? environment.NODE_ENV ?? "production",
     LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
     WORK_QUEUE_BACKEND: queueBackend,
+    KOED_MODELS_DIR: mountedModelsDir,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     API_PORT: apiPort,
     DATABASE_URL:
@@ -213,7 +245,16 @@ const localServiceEnv = (
     EMBEDDING_SERVICE_TOKEN:
       repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL: repoEnv.EMBEDDING_MODEL_KEY ?? environment.EMBEDDING_MODEL,
+    EMBEDDING_MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local"
+        ? localEmbeddingModelPath
+        : environment.EMBEDDING_MODEL_PATH,
     RERANKER_KEY: repoEnv.EMBEDDING_RERANKER_KEY ?? environment.RERANKER_KEY,
+    EMBEDDING_RERANKER_MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local"
+        ? localRerankerModelPath
+        : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
+          environment.EMBEDDING_RERANKER_MODEL_PATH),
     CORS_ORIGINS: repoEnv.API_CORS_ORIGINS ?? environment.CORS_ORIGINS,
     COOKIE_SECURE: repoEnv.API_COOKIE_SECURE ?? environment.COOKIE_SECURE,
     EXPLORER_API_BASE_URL: resolveApiUrl(environment, repoEnv),

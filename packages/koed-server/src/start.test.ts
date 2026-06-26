@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -86,6 +92,11 @@ describe("start supervisor", () => {
 
   it("starts bundled-local Postgres and Embedding Service scaffolds without Redis", async () => {
     const root = tempDir();
+    mkdirSync(resolve(root, "models"));
+    writeFileSync(
+      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf"),
+      "model"
+    );
     const commands: Array<{
       command: string;
       args: string[];
@@ -129,6 +140,10 @@ describe("start supervisor", () => {
     ).not.toContain("redis");
     const buildEnv = commands.at(-1)?.env;
     expect(buildEnv?.WORK_QUEUE_BACKEND).toBe("local");
+    expect(buildEnv?.KOED_MODELS_DIR).toBe(resolve(root, "models"));
+    expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
+      "/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    );
     expect(buildEnv?.EMBEDDING_SERVICE_URL).toBe("http://localhost:3800");
     expect(spawned.map((entry) => entry.args.join(" "))).toContain(
       "--filter @koed/worker start"
@@ -144,6 +159,82 @@ describe("start supervisor", () => {
       "worker",
       "explorer"
     ]);
+  });
+
+  it("mounts a custom reranker-only model directory", async () => {
+    const root = tempDir();
+    const rerankerDir = resolve(root, "custom-reranker");
+    mkdirSync(rerankerDir);
+    writeFileSync(resolve(rerankerDir, "reranker.gguf"), "model");
+    const commands: Array<{
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_RERANKER_MODEL_PATH: resolve(rerankerDir, "reranker.gguf")
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (command, args, options) => {
+        commands.push({ command, args, env: options?.env });
+        return spawnResult();
+      },
+      spawn: () => {
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = 1;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    const buildEnv = commands.at(-1)?.env;
+    expect(buildEnv?.KOED_MODELS_DIR).toBe(rerankerDir);
+    expect(buildEnv?.EMBEDDING_MODEL_PATH).toBeUndefined();
+    expect(buildEnv?.EMBEDDING_RERANKER_MODEL_PATH).toBe(
+      "/models/reranker.gguf"
+    );
+  });
+
+  it("rejects installed bundled-local models split across directories", async () => {
+    const root = tempDir();
+    const embeddingDir = resolve(root, "embedding");
+    const rerankerDir = resolve(root, "reranker");
+    mkdirSync(embeddingDir);
+    mkdirSync(rerankerDir);
+    writeFileSync(resolve(embeddingDir, "embedding.gguf"), "model");
+    writeFileSync(resolve(rerankerDir, "reranker.gguf"), "model");
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_DEPENDENCY_MODE: "bundled-local",
+          KOED_EMBEDDING_MODEL_PATH: resolve(embeddingDir, "embedding.gguf"),
+          KOED_RERANKER_MODEL_PATH: resolve(rerankerDir, "reranker.gguf")
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args) => {
+          commands.push({ command, args });
+          return spawnResult();
+        },
+        collectStatus: async () => healthyStatus(root)
+      })
+    ).rejects.toThrow("Bundled-local model paths must be in one directory");
+    expect(commands).toEqual([]);
   });
 
   it("honors bundled-local BullMQ override from .env", async () => {

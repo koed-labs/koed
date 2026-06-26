@@ -21,7 +21,7 @@ that memory available through MCP recall.
 ## Quickstart
 
 > [!IMPORTANT]  
-> The `epic/electron-control-refactor` branch is experimental. It splits Koed Desktop/`koed-server` supervision from dependency lifecycle. Docker Compose remains a useful external dependency starter; `koed-server` does not own Compose lifecycle in external dependency mode. `bundled-local` mode can start local Postgres + Embedding Service scaffolds, but does not install assets or models.
+> The `epic/electron-control-refactor` branch is experimental. It splits Koed Desktop/`koed-server` supervision from dependency lifecycle. Docker Compose remains a useful external dependency starter; `koed-server` does not own Compose lifecycle in external dependency mode. `bundled-local` mode can start local Postgres + Embedding Service scaffolds; model downloads are explicit `koed-server models install` steps with SHA-256 verification.
 >
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
@@ -41,6 +41,15 @@ Embedding Service endpoints from `.env`/environment or
 dependencies in external mode. Set `KOED_DEPENDENCY_MODE=bundled-local` to let
 `koed-server start` launch the local Postgres + Embedding Service scaffolds and
 use the Postgres-backed local queue by default.
+
+Bundled-local model installers are opt-in and require artifact URLs plus expected SHA-256 checksums:
+
+```bash
+KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \
+KOED_EMBEDDING_MODEL_SHA256=<64-hex-sha256> \
+node packages/koed-server/dist/cli.js models install --kind embedding --json
+```
+
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.
 

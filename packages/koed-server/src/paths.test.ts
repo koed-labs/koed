@@ -27,7 +27,7 @@ describe("KOED_HOME resolution", () => {
     expect(resolveKoedHome({ KOED_HOME: home })).toBe(resolve(home));
   });
 
-  it("creates owned config, logs, run, and data directories", () => {
+  it("creates owned config, logs, run, data, model, and cache directories", () => {
     const home = tempDir();
     const paths = resolveKoedServerPaths({
       KOED_HOME: home,
@@ -40,5 +40,7 @@ describe("KOED_HOME resolution", () => {
     expect(paths.logsDir).toBe(resolve(home, "logs"));
     expect(paths.runDir).toBe(resolve(home, "run"));
     expect(paths.dataDir).toBe(resolve(home, "data"));
+    expect(paths.modelsDir).toBe(resolve(home, "models"));
+    expect(paths.cacheDir).toBe(resolve(home, "cache"));
   });
 });

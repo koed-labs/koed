@@ -59,10 +59,18 @@ local Compose `postgres` and `embedding-service` services and default the
 API/Worker queue backend to `local`. Redis is not required for queues in this
 mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set.
 
-Bundled-local mode is runtime scaffolding only. It does not install Docker,
-Postgres, pgvector, llama.cpp, model assets, Homebrew packages, or system
-services. Keep using the current local setup path for required images, binaries,
-and model files.
+Bundled-local mode starts runtime scaffolds only. Docker, Postgres images,
+pgvector, llama.cpp, Homebrew packages, and system services remain Operator
+prerequisites. Model assets are installed separately with explicit checksums:
+
+```bash
+KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \
+KOED_EMBEDDING_MODEL_SHA256=<64-hex-sha256> \
+node packages/koed-server/dist/cli.js models install --kind embedding --json
+```
+
+Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
+`KOED_RERANKER_MODEL_SHA256` when enabling reranking.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 

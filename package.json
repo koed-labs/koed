@@ -27,6 +27,8 @@
     "db:migrate:check": "pnpm --filter @koed/db migrate:check",
     "db:migrate:smoke": "pnpm --filter @koed/db migrate:smoke",
     "embeddings:backfill": "pnpm --filter @koed/worker embeddings:backfill",
+    "assets:embedding": "pnpm --filter @koed/koed-server exec koed-server models install --kind embedding",
+    "assets:reranker": "pnpm --filter @koed/koed-server exec koed-server models install --kind reranker",
     "eval": "pnpm --filter @koed/evals eval",
     "changeset": "changeset",
     "release:version": "changeset version && node scripts/sync-product-release.mjs --consume-changesets",

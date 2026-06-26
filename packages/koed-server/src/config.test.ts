@@ -18,6 +18,8 @@ const paths = (root: string): KoedServerPaths => ({
   logsDir: resolve(root, "logs"),
   runDir: resolve(root, "run"),
   dataDir: resolve(root, "data"),
+  modelsDir: resolve(root, "models"),
+  cacheDir: resolve(root, "cache"),
   runtimeStatePath: resolve(root, "run/koed-server.json"),
   lastVerificationPath: resolve(root, "run/last-verification.json"),
   serverConfigPath: resolve(root, "config/server.json"),

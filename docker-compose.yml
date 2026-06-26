@@ -35,6 +35,7 @@ services:
       - "127.0.0.1:${EMBEDDING_SERVICE_HOST_PORT:-3800}:8000"
     environment:
       MODEL_KEY: ${EMBEDDING_MODEL_KEY}
+      MODEL_PATH: ${EMBEDDING_MODEL_PATH:-}
       EMBEDDING_BATCH_LIMIT: ${EMBEDDING_BATCH_LIMIT}
       EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS}
       EMBEDDING_MAX_TEXT_CHARS: ${EMBEDDING_MAX_TEXT_CHARS}
@@ -63,6 +64,7 @@ services:
       RERANKER_PROMPT_CACHE_ENABLED: ${EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED:-true}
     volumes:
       - embedding-model-cache:/root/.cache/huggingface
+      - ${KOED_MODELS_DIR:-./models}:/models:ro
     healthcheck:
       test:
         [

@@ -43,6 +43,106 @@ const doctor: KoedServerDoctorResult = {
 };
 
 describe("JSON command output", () => {
+  it("prints models status --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["models", "status", "--json"], {
+      stdout: stdout.stream,
+      resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+      loadEnvironment: () => ({}),
+      collectModelStatus: async () => ({
+        state: "missing",
+        message: "missing",
+        action: "install",
+        modelPath: "/tmp/model.gguf",
+        manifest: {
+          kind: "embedding",
+          key: "qwen3-0.6b",
+          filename: "model.gguf",
+          modelPath: "/tmp/model.gguf",
+          urlEnv: "KOED_EMBEDDING_MODEL_URL",
+          sha256Env: "KOED_EMBEDDING_MODEL_SHA256",
+          pathEnv: "KOED_EMBEDDING_MODEL_PATH"
+        }
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      state: "missing",
+      modelPath: "/tmp/model.gguf"
+    });
+  });
+
+  it("prints models install --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["models", "install", "--json"], {
+      stdout: stdout.stream,
+      resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+      loadEnvironment: () => ({}),
+      installModel: async () => ({
+        ok: true,
+        state: "installed",
+        message: "installed",
+        modelPath: "/tmp/model.gguf",
+        manifest: {
+          kind: "embedding",
+          key: "qwen3-0.6b",
+          filename: "model.gguf",
+          modelPath: "/tmp/model.gguf",
+          urlEnv: "KOED_EMBEDDING_MODEL_URL",
+          sha256Env: "KOED_EMBEDDING_MODEL_SHA256",
+          pathEnv: "KOED_EMBEDDING_MODEL_PATH"
+        }
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "installed"
+    });
+  });
+
+  it("passes repo .env values to model install commands", async () => {
+    const stdout = writer();
+    const seen: NodeJS.ProcessEnv[] = [];
+
+    const exitCode = await runKoedServerCli(["models", "install", "--json"], {
+      stdout: stdout.stream,
+      resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+      loadEnvironment: () => ({
+        KOED_EMBEDDING_MODEL_URL: "https://example.test/model.gguf",
+        KOED_EMBEDDING_MODEL_SHA256:
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }),
+      installModel: async (_paths, _kind, environment) => {
+        seen.push(environment ?? {});
+        return {
+          ok: true,
+          state: "installed",
+          message: "installed",
+          modelPath: "/tmp/model.gguf",
+          manifest: {
+            kind: "embedding",
+            key: "qwen3-0.6b",
+            filename: "model.gguf",
+            modelPath: "/tmp/model.gguf",
+            urlEnv: "KOED_EMBEDDING_MODEL_URL",
+            sha256Env: "KOED_EMBEDDING_MODEL_SHA256",
+            pathEnv: "KOED_EMBEDDING_MODEL_PATH"
+          }
+        };
+      }
+    });
+
+    expect(exitCode).toBe(0);
+    expect(seen[0]?.KOED_EMBEDDING_MODEL_URL).toBe(
+      "https://example.test/model.gguf"
+    );
+  });
+
   it("prints status --json", async () => {
     const stdout = writer();
 
