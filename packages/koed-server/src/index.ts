@@ -11,12 +11,24 @@ export {
   installLocalModel,
   resolveLocalModelManifest
 } from "./local-models-runtime.js";
+export {
+  collectLocalPostgresRuntimeStatus,
+  localPostgresRuntimeAvailable,
+  resolveBundledPostgresMode,
+  resolveLocalPostgresRuntimePaths,
+  startLocalPostgresRuntime
+} from "./local-postgres-runtime.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export type {
   KoedDependencyMode,
   KoedServerConfig,
   KoedServerRuntimeMode
 } from "./config.js";
+export type {
+  LocalPostgresRuntimePaths,
+  LocalPostgresRuntimeStartResult,
+  LocalPostgresRuntimeStatus
+} from "./local-postgres-runtime.js";
 export type {
   LocalModelInstallResult,
   LocalModelKind,

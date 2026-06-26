@@ -14,6 +14,10 @@ import {
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import {
+  resolveBundledPostgresMode,
+  startLocalPostgresRuntime
+} from "./local-postgres-runtime.js";
+import {
   ensureKoedHome,
   resolveKoedServerPaths,
   type KoedServerPaths
@@ -294,16 +298,33 @@ export const startKoedServer = async ({
     environment,
     repoEnv
   );
+  const initialServiceEnv = localServiceEnv(
+    environment,
+    repoEnv,
+    apiToken,
+    paths
+  );
+  const useNativePostgres =
+    config.dependencyMode === "bundled-local" &&
+    resolveBundledPostgresMode(paths, initialServiceEnv) === "native";
   const dependencyServices =
     config.dependencyMode === "external"
       ? []
       : [
-          "postgres",
+          ...(useNativePostgres ? [] : ["postgres"]),
+          ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
+          "embedding-service"
+        ];
+  const runtimeServices =
+    config.dependencyMode === "external"
+      ? []
+      : [
+          useNativePostgres ? "postgres-native" : "postgres",
           ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
           "embedding-service"
         ];
   const appServices = ["api", "worker", "explorer"];
-  const childEnv = localServiceEnv(environment, repoEnv, apiToken, paths);
+  const childEnv = initialServiceEnv;
 
   runCommand(
     paths,
@@ -356,7 +377,19 @@ export const startKoedServer = async ({
     }
   }
 
-  if (config.dependencyMode !== "external") {
+  if (useNativePostgres) {
+    const result = startLocalPostgresRuntime(paths, refreshedEnv, {
+      spawnSync
+    });
+    Object.assign(refreshedEnv, result.env);
+    if (!result.ok) {
+      throw new Error(
+        `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+      );
+    }
+  }
+
+  if (config.dependencyMode !== "external" && dependencyServices.length > 0) {
     runCommand(
       paths,
       "Start Koed container dependencies",
@@ -437,7 +470,7 @@ export const startKoedServer = async ({
     explorerUrl,
     runtimeMode: config.runtimeMode,
     dependencyMode: config.dependencyMode,
-    services: [...dependencyServices, ...appServices],
+    services: [...runtimeServices, ...appServices],
     processes: {
       api: children.api.pid ?? 0,
       worker: children.worker.pid ?? 0,

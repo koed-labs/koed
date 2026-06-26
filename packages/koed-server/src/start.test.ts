@@ -237,6 +237,72 @@ describe("start supervisor", () => {
     expect(commands).toEqual([]);
   });
 
+  it("starts native bundled-local Postgres when native runtime is configured", async () => {
+    const root = tempDir();
+    const bin = resolve(root, "vendor", "postgres", "bin");
+    mkdirSync(bin, { recursive: true });
+    for (const name of ["initdb", "pg_ctl", "psql"]) {
+      writeFileSync(resolve(bin, name), "");
+    }
+    const commands: Array<{
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_BUNDLED_POSTGRES_MODE: "native",
+        KOED_POSTGRES_BIN_DIR: bin
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (command, args, options) => {
+        commands.push({ command, args, env: options?.env });
+        if (command.endsWith("pg_ctl") && args.includes("status")) {
+          return {
+            stdout: "",
+            stderr: "not running",
+            status: 1,
+            signal: null,
+            pid: 1,
+            output: []
+          } as never;
+        }
+        return spawnResult();
+      },
+      spawn: () => {
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = 1;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(commands.map((command) => command.command)).toContain(
+      resolve(bin, "pg_ctl")
+    );
+    expect(commands.map((command) => command.args.join(" "))).toContain(
+      "compose up -d --build --remove-orphans embedding-service"
+    );
+    expect(
+      commands.find((command) => command.command === "docker")?.args
+    ).not.toContain("postgres");
+    const runtime = JSON.parse(
+      readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+    ) as { services?: string[] };
+    expect(runtime.services).toContain("postgres-native");
+    expect(runtime.services).not.toContain("postgres");
+  });
+
   it("honors bundled-local BullMQ override from .env", async () => {
     const root = tempDir();
     writeFileSync(

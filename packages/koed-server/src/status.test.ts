@@ -35,6 +35,9 @@ const paths = (repoRoot: string): KoedServerPaths => ({
   dataDir: resolve(repoRoot, "data"),
   modelsDir: resolve(repoRoot, "models"),
   cacheDir: resolve(repoRoot, "cache"),
+  postgresDataDir: resolve(repoRoot, "data", "postgres"),
+  postgresRunDir: resolve(repoRoot, "run", "postgres"),
+  postgresLogPath: resolve(repoRoot, "logs", "postgres.log"),
   runtimeStatePath: resolve(repoRoot, "run", "koed-server.json"),
   lastVerificationPath: resolve(repoRoot, "run", "last-verification.json"),
   serverConfigPath: resolve(repoRoot, "config", "server.json"),
@@ -192,6 +195,37 @@ describe("status and doctor JSON contracts", () => {
       "Postgres-backed local queue does not require Redis."
     );
     expect(status.workerQueues.state).toBe("starting");
+  });
+
+  it("uses native Postgres status before API readiness", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_BUNDLED_POSTGRES_MODE: "native",
+        KOED_POSTGRES_BIN_DIR: resolve(root, "bin")
+      },
+      {
+        existsSync: (filePath) =>
+          String(filePath).includes("/bin/") ||
+          String(filePath).endsWith("PG_VERSION"),
+        fetch: async () => response(false, 503, {}),
+        spawnSync: (command, args) =>
+          command.endsWith("pg_ctl") && args.includes("status")
+            ? spawnResult("", 0)
+            : spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.database.state).toBe("healthy");
+    expect(status.database.message).toContain("native Postgres");
+    expect(status.database.details?.dataDir).toBe(
+      resolve(root, "data", "postgres")
+    );
   });
 
   it("honors bundled-local BullMQ override from .env", async () => {

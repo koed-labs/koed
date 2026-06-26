@@ -41,8 +41,10 @@ MCP-side workers.
    values. `koed-server` does not start, stop, or inspect Docker Compose in
    external mode.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
-   starts the local Postgres/pgvector and Embedding Service Compose scaffolds
-   and defaults job processing to the Postgres-backed local queue. Model assets
+   starts native Postgres under `KOED_HOME` when bundled Postgres binaries are
+   available or required by configuration; otherwise it starts the local
+   Postgres/pgvector and Embedding Service Compose scaffolds. It defaults job
+   processing to the Postgres-backed local queue. Model assets
    are installed out of band with `koed-server models install`, which requires
    configured artifact URLs and SHA-256 checksums before writing to
    `KOED_HOME/models`.

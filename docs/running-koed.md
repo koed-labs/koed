@@ -59,9 +59,14 @@ local Compose `postgres` and `embedding-service` services and default the
 API/Worker queue backend to `local`. Redis is not required for queues in this
 mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set.
 
-Bundled-local mode starts runtime scaffolds only. Docker, Postgres images,
-pgvector, llama.cpp, Homebrew packages, and system services remain Operator
-prerequisites. Model assets are installed separately with explicit checksums:
+Bundled-local mode starts runtime scaffolds by default. If native Postgres
+binaries are available under `vendor/postgres/bin` or `KOED_POSTGRES_BIN_DIR`,
+`koed-server` can run bundled-local Postgres directly under `KOED_HOME` instead
+of the Compose Postgres scaffold. Set `KOED_BUNDLED_POSTGRES_MODE=native` to
+require that native path, or `compose` to force the scaffold. Docker, Postgres
+images, pgvector, llama.cpp, Homebrew packages, and system services remain
+Operator prerequisites for scaffold-based runs. Model assets are installed
+separately with explicit checksums:
 
 ```bash
 KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \

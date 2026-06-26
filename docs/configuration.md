@@ -107,6 +107,9 @@ Example bundled-local `KOED_HOME/config/server.json`:
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. Install writes to `KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
 - `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. Install writes to `KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
+- `KOED_BUNDLED_POSTGRES_MODE`: optional bundled-local Postgres runtime mode. Leave blank for auto mode, set `native` to require native Postgres binaries, or `compose` to force the Compose scaffold.
+- `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, and `psql` binaries for bundled-local Postgres. Individual binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`.
+- `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
 - `VITE_KOED_API_TOKEN`: optional Explorer build-time token used to prefill the browser app. `koed-server` also writes the app-provisioned Explorer credential under `KOED_HOME/config/explorer-token.json` so status can report whether the desktop happy path has a credential without exposing the API Token.
 - `WORKER_NODE_ENV`: runtime environment for the worker service.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
