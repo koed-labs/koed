@@ -618,7 +618,7 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
   start: {
     liveTitle: "Live: local services",
     liveBody:
-      "Runs koed-server start: ensure Docker deps, build apps, then spawn API/worker/Explorer.",
+      "Runs koed-server start: connect to configured dependencies, build apps, then spawn API/worker/Explorer.",
     componentKeys: [
       "api",
       "explorer",

@@ -6,6 +6,7 @@ import {
 } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { resolveKoedServerConfig } from "./config.js";
 import {
   resolveLocalApiToken,
   writeExplorerCredential
@@ -113,7 +114,8 @@ const waitForHealthyOrReady = async ({
 const localServiceEnv = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
-  apiToken: ReturnType<typeof resolveLocalApiToken> | null
+  apiToken: ReturnType<typeof resolveLocalApiToken> | null,
+  paths: KoedServerPaths
 ): NodeJS.ProcessEnv => {
   const apiPort = environment.API_HOST_PORT ?? repoEnv.API_HOST_PORT ?? "3300";
   const redisPort =
@@ -124,6 +126,7 @@ const localServiceEnv = (
     "3800";
   const redisUrl = `redis://localhost:${redisPort}`;
   const embeddingServiceUrl = `http://localhost:${embeddingPort}`;
+  const serverConfig = resolveKoedServerConfig(paths, environment);
   return {
     ...process.env,
     ...repoEnv,
@@ -133,14 +136,31 @@ const localServiceEnv = (
     LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     API_PORT: apiPort,
-    DATABASE_URL: repoEnv.DATABASE_URL ?? environment.DATABASE_URL,
-    REDIS_URL: redisUrl,
+    DATABASE_URL:
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.databaseUrl ??
+          environment.DATABASE_URL ??
+          repoEnv.DATABASE_URL)
+        : (repoEnv.DATABASE_URL ?? environment.DATABASE_URL),
+    REDIS_URL:
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.redisUrl ??
+          environment.REDIS_URL ??
+          repoEnv.REDIS_URL)
+        : (environment.REDIS_URL ?? repoEnv.REDIS_URL ?? redisUrl),
     RATE_LIMIT_REDIS_URL: repoEnv.API_RATE_LIMIT_REDIS_URL ?? "",
     CACHE_REDIS_URL: repoEnv.API_CACHE_REDIS_URL ?? "",
     DATA_ENCRYPTION_KEY:
       repoEnv.API_DATA_ENCRYPTION_KEY ?? environment.DATA_ENCRYPTION_KEY,
     API_TOKEN_PEPPER: repoEnv.API_TOKEN_PEPPER ?? environment.API_TOKEN_PEPPER,
-    EMBEDDING_SERVICE_URL: embeddingServiceUrl,
+    EMBEDDING_SERVICE_URL:
+      serverConfig.dependencyMode === "external"
+        ? (serverConfig.external?.embeddingServiceUrl ??
+          environment.EMBEDDING_SERVICE_URL ??
+          repoEnv.EMBEDDING_SERVICE_URL)
+        : (environment.EMBEDDING_SERVICE_URL ??
+          repoEnv.EMBEDDING_SERVICE_URL ??
+          embeddingServiceUrl),
     EMBEDDING_SERVICE_TOKEN:
       repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL: repoEnv.EMBEDDING_MODEL_KEY ?? environment.EMBEDDING_MODEL,
@@ -175,9 +195,13 @@ export const startKoedServer = async ({
   }
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const dependencyServices = ["postgres", "redis", "embedding-service"];
+  const config = resolveKoedServerConfig(paths, environment);
+  const dependencyServices =
+    config.dependencyMode === "external"
+      ? []
+      : ["postgres", "redis", "embedding-service"];
   const appServices = ["api", "worker", "explorer"];
-  const childEnv = localServiceEnv(environment, repoEnv, apiToken);
+  const childEnv = localServiceEnv(environment, repoEnv, apiToken, paths);
 
   runCommand(
     paths,
@@ -200,24 +224,40 @@ export const startKoedServer = async ({
   const refreshedEnv = localServiceEnv(
     environment,
     refreshedRepoEnv,
-    refreshedApiToken
+    refreshedApiToken,
+    paths
   );
 
-  runCommand(
-    paths,
-    "Start Koed container dependencies",
-    "docker",
-    [
-      "compose",
-      "up",
-      "-d",
-      "--build",
-      "--remove-orphans",
-      ...dependencyServices
-    ],
-    refreshedEnv,
-    spawnSync
-  );
+  if (config.dependencyMode === "external") {
+    const missing = [
+      ["DATABASE_URL", refreshedEnv.DATABASE_URL],
+      ["REDIS_URL", refreshedEnv.REDIS_URL],
+      ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
+    ].flatMap(([name, value]) => (String(value ?? "").trim() ? [] : [name]));
+    if (missing.length > 0) {
+      throw new Error(
+        `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`
+      );
+    }
+  }
+
+  if (config.dependencyMode !== "external") {
+    runCommand(
+      paths,
+      "Start Koed container dependencies",
+      "docker",
+      [
+        "compose",
+        "up",
+        "-d",
+        "--build",
+        "--remove-orphans",
+        ...dependencyServices
+      ],
+      refreshedEnv,
+      spawnSync
+    );
+  }
   runCommand(
     paths,
     "Build Koed server apps",
@@ -280,6 +320,8 @@ export const startKoedServer = async ({
     repoRoot: paths.repoRoot,
     apiUrl,
     explorerUrl,
+    runtimeMode: config.runtimeMode,
+    dependencyMode: config.dependencyMode,
     services: [...dependencyServices, ...appServices],
     processes: {
       api: children.api.pid ?? 0,

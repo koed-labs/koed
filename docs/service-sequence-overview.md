@@ -16,35 +16,41 @@ MCP-side workers.
   records, runs Projection, and serves recall endpoints.
 - **Worker**: the BullMQ/background process that performs catch-up projection,
   embedding work, and LCM node embedding.
-- **Embedding Service**: local service that turns memory text into retrieval
-  vectors.
+- **Embedding Service**: Operator-managed service in external dependency mode
+  that turns memory text into retrieval vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
   rows, Memory Events, Memory Nodes, embeddings, questions, token usage,
   Team Workspace access records, and Team audit events.
 - **Koed Server Control Plane**: the local `koed-server` supervisor surface
-  that owns `KOED_HOME`, starts local services, and reports setup/readiness
-  status for headless and desktop use.
+  that owns `KOED_HOME`, starts Koed app processes, connects to configured
+  dependency endpoints, and reports setup/readiness status for headless and
+  desktop use.
 
 ## Local Service Startup
 
 1. The Operator or Koed Desktop starts `koed-server`.
 2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
    directories, provisions the Explorer credential inside `KOED_HOME`, and
-   starts Docker-backed dependencies.
-3. Docker Compose is now limited to dependency services that still need
-   containers in this build: Postgres/pgvector, Redis/queues, and the Embedding
-   Service/model runtime. The API, Worker, and Explorer run as local app
-   processes supervised by `koed-server`.
-4. `koed-server status --json` and `koed-server doctor --json` poll the API
-   readiness endpoint, Docker dependency state, local Worker process state,
-   local API Token configuration, MCP Server doctor output, Supported Capture
-   Hook config, Codex config, LCM Summary Service availability, and last
-   verification metadata.
-5. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+   resolves runtime/dependency mode from `KOED_HOME/config/server.json` and
+   environment overrides.
+3. In the current source-checkout path, `koed-server` defaults to external
+   dependency mode. The Operator starts Postgres/pgvector, Redis/BullMQ, and
+   the Embedding Service separately, for example with Docker Compose, and
+   provides explicit `DATABASE_URL`, `REDIS_URL`, and `EMBEDDING_SERVICE_URL`
+   values. `koed-server` does not start, stop, or inspect Docker Compose in
+   external mode.
+4. The API, Worker, and Explorer run as local app processes supervised by
+   `koed-server` and connect to those configured dependency URLs.
+5. `koed-server status --json` and `koed-server doctor --json` poll the API
+   readiness endpoint, dependency readiness as reported by the API, local
+   Worker process state, local API Token configuration, MCP Server doctor
+   output, Supported Capture Hook config, Codex config, LCM Summary Service
+   availability, and last verification metadata.
+6. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
    the control plane.
-6. Koed Desktop can start/connect to the same headless command surface, run
+7. Koed Desktop can start/connect to the same headless command surface, run
    the first-launch Codex bootstrap and health-check sequence, poll status,
    and embed Explorer without requiring the Operator to invoke repo-local
    scripts directly.
