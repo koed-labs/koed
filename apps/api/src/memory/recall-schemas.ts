@@ -12,6 +12,7 @@ export const searchMemorySchema = z
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
     workspace_id: z.string().min(1).optional(),
+    team_workspace_id: z.string().uuid().optional(),
     limit: z.coerce.number().int().positive().max(50).default(10),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),

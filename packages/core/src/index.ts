@@ -6,6 +6,7 @@ export {
   requireAuthorizedTeamVisibleSourceBoundary,
   teamVisibleSourceItemSessionId
 } from "./team-source-boundary.js";
+export { resolveTeamWorkspaceAuthorization } from "./team-workspace-authorization.js";
 export type {
   AuthorizedTeamVisibleSourceItem,
   RejectedTeamVisibleSourceItem,
@@ -15,6 +16,11 @@ export type {
   TeamVisibleSourceBoundaryRejectionReason,
   TeamVisibleSummaryProvenance
 } from "./team-source-boundary.js";
+export type {
+  TeamWorkspaceAccessBoundary,
+  TeamWorkspaceAuthorizationDecision,
+  TeamWorkspaceAuthorizationRejectionReason
+} from "./team-workspace-authorization.js";
 
 export type TokenizerEncoding = "o200k_base" | "cl100k_base";
 export type TokenizerName = "js-tiktoken" | "heuristic";
@@ -436,6 +442,7 @@ export interface SearchMemoryInput {
   searchDomain?: MemorySearchDomain;
   sessionId?: string;
   workspaceId?: string;
+  teamWorkspaceId?: string;
   limit?: number;
   recentDays?: number;
   sourceAfter?: string;
@@ -575,6 +582,7 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       workspaceId?: string;
+      teamWorkspaceId?: string;
       limit?: number;
       recentDays?: number;
       sourceAfter?: string;
@@ -598,6 +606,7 @@ export interface MemoryEngineRepository {
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       workspaceId?: string;
+      teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -689,6 +698,7 @@ export const expandMemoryNode = async (
     searchDomain?: MemorySearchDomain;
     sessionId?: string;
     workspaceId?: string;
+    teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -699,6 +709,7 @@ export const expandMemoryNode = async (
     searchDomain: requesterContext.searchDomain,
     sessionId: requesterContext.sessionId,
     workspaceId: requesterContext.workspaceId,
+    teamWorkspaceId: requesterContext.teamWorkspaceId,
     recentDays: requesterContext.recentDays,
     sourceAfter: requesterContext.sourceAfter,
     sourceBefore: requesterContext.sourceBefore
@@ -726,6 +737,7 @@ export const createMemoryEngine = (repository: MemoryEngineRepository) => ({
       searchDomain?: MemorySearchDomain;
       sessionId?: string;
       workspaceId?: string;
+      teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;

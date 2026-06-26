@@ -13,6 +13,19 @@ describe("searchMemorySchema", () => {
     expect(parsed.source_before).toBeUndefined();
   });
 
+  it("keeps Team Workspace authorization separate from project workspace matching", () => {
+    const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
+    const parsed = searchMemorySchema.parse({
+      query: "What can this Workspace see?",
+      search_domain: "project",
+      workspace_id: "/Users/jacobo/Coding/koed",
+      team_workspace_id: teamWorkspaceId
+    });
+
+    expect(parsed.workspace_id).toBe("/Users/jacobo/Coding/koed");
+    expect(parsed.team_workspace_id).toBe(teamWorkspaceId);
+  });
+
   it("rejects ambiguous recency and explicit source date bounds", () => {
     expect(() =>
       searchMemorySchema.parse({

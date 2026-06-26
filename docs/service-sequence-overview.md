@@ -287,6 +287,14 @@ grant-based visibility model.
    and runs retrieval stages over Memory Nodes, fresh pending Memory Events,
    raw fallback evidence, and lexical matches. Semantic stages use local
    embedding search and may be reranked when configured.
+   Team Workspace recall uses an explicit Team Workspace id separate from local
+   Project matching. The repository resolves the caller's enabled Team
+   Membership and Workspace Access before query execution, then admits only the
+   caller's Personal Memory plus rows whose sessions have active Share Grants to
+   that Team Workspace. Derived Memory Nodes are admitted only when their linked
+   source rows are all inside the authorized personal or Team Workspace
+   boundary, so unauthorized rows never reach semantic ranking, lexical
+   selection, expansion, or reranking inputs.
 6. The API returns hits, citations, and retrieval metadata. When a promising
    Memory Node needs more detail, the local memory-answer worker can call
    `expand` to fetch underlying source items.

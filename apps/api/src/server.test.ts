@@ -3536,6 +3536,7 @@ describe("account and access flows", () => {
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
     const parentNodeId = randomUUID();
+    const teamWorkspaceId = randomUUID();
 
     const search = await app.inject({
       method: "POST",
@@ -3546,6 +3547,7 @@ describe("account and access flows", () => {
         retrieval_scope: "personal",
         retrieval_stage: "lexical_search",
         parent_node_ids: [parentNodeId],
+        team_workspace_id: teamWorkspaceId,
         strict_limit: "false",
         limit: 2
       }
@@ -3570,7 +3572,8 @@ describe("account and access flows", () => {
       retrievalStage: "lexical_search",
       parentNodeIds: [parentNodeId],
       strictLimit: false,
-      limit: 2
+      limit: 2,
+      teamWorkspaceId
     });
     expect(recallInputs[1]).toMatchObject({
       retrievalStage: "score_scan",

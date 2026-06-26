@@ -837,6 +837,7 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
+      teamWorkspaceId?: string;
       threadId?: string;
       nodeIds?: string[];
       includeInvalidated?: boolean;
@@ -846,7 +847,7 @@ export interface MemorySourceRepository
   getLcmGraphNode(
     actor: ActorContext,
     nodeId: string,
-    input?: { includeInvalidated?: boolean }
+    input?: { includeInvalidated?: boolean; teamWorkspaceId?: string }
   ): Promise<LcmGraphNodeDetail | null>;
   updateLcmGraphNode(
     actor: ActorContext,
@@ -861,6 +862,7 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
+      teamWorkspaceId?: string;
       threadId?: string;
       cursorTimestamp?: string;
       cursorSourceSequence?: number;
@@ -877,6 +879,7 @@ export interface MemorySourceRepository
       query?: string;
       visibility?: Visibility;
       projectId?: string;
+      teamWorkspaceId?: string;
       threadId?: string;
       includeInvalidated?: boolean;
       limit?: number;
@@ -886,7 +889,11 @@ export interface MemorySourceRepository
   getLcmGraphEvent(
     actor: ActorContext,
     eventId: string,
-    input?: { includeInvalidated?: boolean; includeRaw?: boolean }
+    input?: {
+      includeInvalidated?: boolean;
+      includeRaw?: boolean;
+      teamWorkspaceId?: string;
+    }
   ): Promise<LcmGraphEvent | null>;
   updateLcmGraphEvent(
     actor: ActorContext,

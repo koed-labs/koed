@@ -6,6 +6,7 @@ export const memoryBrowserQuerySchema = z.object({
   query: z.string().min(1).optional(),
   visibility: visibilitySchema.optional(),
   projectId: z.string().min(1).optional(),
+  teamWorkspaceId: z.string().uuid().optional(),
   threadId: z.string().min(1).optional(),
   pinned: queryBooleanSchema.optional(),
   limit: z.coerce.number().int().positive().max(100).default(50)
@@ -31,6 +32,7 @@ export const graphQuerySchema = z.object({
   query: z.string().min(1).optional(),
   visibility: visibilitySchema.optional(),
   projectId: z.string().min(1).optional(),
+  teamWorkspaceId: z.string().uuid().optional(),
   threadId: z.string().min(1).optional(),
   includeInvalidated: queryBooleanSchema.default(false),
   limit: z.coerce.number().int().positive().max(500).default(100),
@@ -72,7 +74,8 @@ export const graphEventParamsSchema = z.object({ eventId: z.string().uuid() });
 
 export const graphEventDetailQuerySchema = z.object({
   includeInvalidated: queryBooleanSchema.default(false),
-  includeRaw: queryBooleanSchema.default(false)
+  includeRaw: queryBooleanSchema.default(false),
+  teamWorkspaceId: z.string().uuid().optional()
 });
 
 export const graphEventPatchSchema = z.object({
@@ -95,6 +98,7 @@ export const expandMemoryNodeQuerySchema = z
     search_domain: searchDomainSchema.default("global"),
     session_id: z.string().uuid().optional(),
     workspace_id: z.string().min(1).optional(),
+    team_workspace_id: z.string().uuid().optional(),
     recent_days: z.coerce.number().int().positive().max(36500).optional(),
     source_after: z.coerce.date().optional(),
     source_before: z.coerce.date().optional()
