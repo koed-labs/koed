@@ -165,6 +165,11 @@ export const registerGraphRoutes = (
       const repo = requireRepository();
       const user = await authenticate(request);
       const query = graphQuerySchema.parse(request.query);
+      if (query.teamWorkspaceId) {
+        return {
+          projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
+        };
+      }
       const cacheKey = `koed:graph:threads:${user.id}:${hashCacheKey(
         JSON.stringify(query)
       )}`;

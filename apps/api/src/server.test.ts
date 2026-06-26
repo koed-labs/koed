@@ -2571,9 +2571,27 @@ describe("api health", () => {
       url: "/v1/memory/graph/overview",
       headers: { cookie }
     });
+    const regularThreads = await app.inject({
+      method: "GET",
+      url: "/v1/memory/graph/threads",
+      headers: { cookie }
+    });
+    const threadCacheReadsBeforeTeam = cacheReads.filter((key) =>
+      key.startsWith("koed:graph:threads:")
+    ).length;
+    const threadCacheWritesBeforeTeam = cacheWrites.filter((key) =>
+      key.startsWith("koed:graph:threads:")
+    ).length;
+    const teamThreads = await app.inject({
+      method: "GET",
+      url: `/v1/memory/graph/threads?teamWorkspaceId=${randomUUID()}`,
+      headers: { cookie }
+    });
     await app.close();
 
     expect(overview.statusCode).toBe(200);
+    expect(regularThreads.statusCode).toBe(200);
+    expect(teamThreads.statusCode).toBe(200);
     expect(rateLimitKeys.some((key) => key.startsWith("memoryRead:"))).toBe(
       true
     );
@@ -2583,6 +2601,14 @@ describe("api health", () => {
     expect(
       cacheWrites.some((key) => key.startsWith("koed:graph:overview:"))
     ).toBe(true);
+    expect(threadCacheReadsBeforeTeam).toBe(1);
+    expect(threadCacheWritesBeforeTeam).toBe(1);
+    expect(
+      cacheReads.filter((key) => key.startsWith("koed:graph:threads:")).length
+    ).toBe(threadCacheReadsBeforeTeam);
+    expect(
+      cacheWrites.filter((key) => key.startsWith("koed:graph:threads:")).length
+    ).toBe(threadCacheWritesBeforeTeam);
   });
 });
 

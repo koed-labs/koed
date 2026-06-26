@@ -4077,7 +4077,20 @@ export const createMemorySourceRepository = (
                 select me.id, me.source_sequence
                 from memory_events me
                 where me.visibility = 'personal'
-                  and me.owner_user_id = $1
+                  and (
+                    me.owner_user_id = $1
+                    or (
+                      $12::uuid is not null
+                      and exists (
+                        select 1
+                        from team_session_share_grants cursor_grant
+                        where cursor_grant.session_id = me.session_id
+                          and cursor_grant.team_workspace_id = $12::uuid
+                          and cursor_grant.team_id = $13::uuid
+                          and cursor_grant.revoked_at is null
+                      )
+                    )
+                  )
                 union all
                 select
                   msg.id,
@@ -4088,7 +4101,20 @@ export const createMemorySourceRepository = (
                   end as source_sequence
                 from messages msg
                 where msg.visibility = 'personal'
-                  and msg.owner_user_id = $1
+                  and (
+                    msg.owner_user_id = $1
+                    or (
+                      $12::uuid is not null
+                      and exists (
+                        select 1
+                        from team_session_share_grants cursor_grant
+                        where cursor_grant.session_id = msg.session_id
+                          and cursor_grant.team_workspace_id = $12::uuid
+                          and cursor_grant.team_id = $13::uuid
+                          and cursor_grant.revoked_at is null
+                      )
+                    )
+                  )
                 union all
                 select
                   te.id,
@@ -4099,7 +4125,20 @@ export const createMemorySourceRepository = (
                   end as source_sequence
                 from tool_events te
                 where te.visibility = 'personal'
-                  and te.owner_user_id = $1
+                  and (
+                    te.owner_user_id = $1
+                    or (
+                      $12::uuid is not null
+                      and exists (
+                        select 1
+                        from team_session_share_grants cursor_grant
+                        where cursor_grant.session_id = te.session_id
+                          and cursor_grant.team_workspace_id = $12::uuid
+                          and cursor_grant.team_id = $13::uuid
+                          and cursor_grant.revoked_at is null
+                      )
+                    )
+                  )
               ) cursor_event
               where cursor_event.id = $10::uuid
               limit 1
@@ -5963,7 +6002,7 @@ export const createMemorySourceRepository = (
                   and not exists (
                     select 1
                     from memory_node_sources auth_mns
-                    left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null and auth_ev.personal_deleted_at is null
+                    left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
                     left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
                     where auth_mns.memory_node_id = mn.id
                       and not exists (
@@ -6010,10 +6049,10 @@ export const createMemorySourceRepository = (
                 else 0.05
               end::double precision as source_rank
             from memory_events me
-            where me.invalidated_at is null and me.personal_deleted_at is null
+            where me.invalidated_at is null
               and me.visibility = 'personal'
               and (
-                me.owner_user_id = $1
+                (me.owner_user_id = $1 and me.personal_deleted_at is null)
                 or (
                   $13::uuid is not null
                   and exists (
@@ -6393,7 +6432,7 @@ export const createMemorySourceRepository = (
                           and not exists (
                             select 1
                             from memory_node_sources rerank_mns
-                            left join memory_events rerank_ev on rerank_ev.id = rerank_mns.memory_event_id and rerank_ev.invalidated_at is null and rerank_ev.personal_deleted_at is null
+                            left join memory_events rerank_ev on rerank_ev.id = rerank_mns.memory_event_id and rerank_ev.invalidated_at is null
                             left join messages rerank_msg on rerank_msg.id = rerank_mns.message_id and rerank_msg.invalidated_at is null
                             where rerank_mns.memory_node_id = linked_mn.id
                               and not exists (
@@ -6422,7 +6461,7 @@ export const createMemorySourceRepository = (
                       when me.memory_node_id is not null then (
                         select max(coalesce(source_ev.captured_at, source_msg.captured_at))
                         from memory_node_sources source_mns
-                        left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
+                        left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
                         left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
                         where source_mns.memory_node_id = me.memory_node_id
                       )
@@ -6439,18 +6478,39 @@ export const createMemorySourceRepository = (
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
-                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null and ev.personal_deleted_at is null
+                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null
                 left join messages msg on msg.id = me.message_id and msg.invalidated_at is null
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
                 left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null and linked_mn.personal_deleted_at is null
-                where me.invalidated_at is null and me.personal_deleted_at is null
+                where me.invalidated_at is null
                   and me.embedding_model = $5
                   and me.embedding_dimensions = $6
                   and me.embedding_version = $7
                   and (
-                    (me.memory_node_id is not null and mn.id is not null)
-                    or (me.memory_event_id is not null and ev.id is not null)
+                    (
+                      me.memory_node_id is not null
+                      and mn.id is not null
+                      and me.personal_deleted_at is null
+                    )
+                    or (
+                      me.memory_event_id is not null
+                      and ev.id is not null
+                      and (
+                        me.personal_deleted_at is null
+                        or (
+                          $15::uuid is not null
+                          and exists (
+                            select 1
+                            from team_session_share_grants auth_grant
+                            where auth_grant.session_id = ev.session_id
+                              and auth_grant.team_workspace_id = $15::uuid
+                              and auth_grant.team_id = $16::uuid
+                              and auth_grant.revoked_at is null
+                          )
+                        )
+                      )
+                    )
                     or (me.message_id is not null and msg.id is not null)
                   )
                   and me.visibility = 'personal'
@@ -6469,7 +6529,7 @@ export const createMemorySourceRepository = (
                           and not exists (
                             select 1
                             from memory_node_sources auth_mns
-                            left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null and auth_ev.personal_deleted_at is null
+                            left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
                             left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
                             where auth_mns.memory_node_id = me.memory_node_id
                               and not exists (
