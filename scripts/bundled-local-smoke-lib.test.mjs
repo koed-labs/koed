@@ -37,6 +37,8 @@ const createDeps = (overrides = {}) => {
     mkdir: async () => undefined,
     rm: async (target) => calls.push({ kind: "rm", target }),
     writeFile: async () => undefined,
+    readFile: async () =>
+      "DATABASE_URL=postgres://koed:pw@127.0.0.1:15432/koed\nAPI_TOKEN_PEPPER=pepper\n",
     fileExists: () => false,
     setTimeout: async () => undefined,
     now: (() => {
@@ -71,9 +73,16 @@ const createDeps = (overrides = {}) => {
 
 test("parses smoke CLI options", () => {
   assert.deepEqual(
-    parseBundledLocalSmokeArgs(["--", "--json", "--timeout-ms", "50"]),
+    parseBundledLocalSmokeArgs([
+      "--",
+      "--json",
+      "--full",
+      "--timeout-ms",
+      "50"
+    ]),
     {
       json: true,
+      full: true,
       timeoutMs: 50,
       pollIntervalMs: 2000
     }
@@ -103,6 +112,22 @@ test("builds isolated bundled-local environment with unique ports and compose pr
   assert.equal(new Set(Object.values(context.ports)).size, 5);
 });
 
+test("full preflight does not require Docker", () => {
+  const deps = createDeps({
+    spawnSync: (command, args) => {
+      deps.calls.push({ kind: "spawnSync", command, args });
+      if (command === "docker") return failure("daemon down");
+      return success();
+    }
+  });
+
+  preflightBundledLocalSmoke(deps, { full: true });
+  assert.equal(
+    deps.calls.some((call) => call.command === "docker"),
+    false
+  );
+});
+
 test("preflight reports missing Docker clearly", () => {
   const deps = createDeps({
     spawnSync: (command, args) =>
@@ -128,6 +153,7 @@ test("run skips model install when model URL or checksum env is absent", async (
             api: { state: "healthy" },
             database: { state: "healthy" },
             embeddingService: { state: "healthy" },
+            workerQueues: { state: "healthy" },
             redis: { state: "healthy", details: { backend: "local" } }
           })
         );
@@ -174,6 +200,7 @@ test("run installs and verifies model when model env is present", async () => {
             api: { state: "healthy" },
             database: { state: "healthy" },
             embeddingService: { state: "healthy" },
+            workerQueues: { state: "healthy" },
             redis: { state: "healthy", details: { backend: "local" } }
           })
         );
@@ -214,6 +241,123 @@ test("wait fails fast when child exits before health", async () => {
       pollIntervalMs: 1
     }),
     /exited before healthy status.*boom/s
+  );
+});
+
+test("full smoke fails clearly when native resources are missing", async () => {
+  const deps = createDeps({
+    spawnSync: (command, args) => {
+      deps.calls.push({ kind: "spawnSync", command, args });
+      if (args.includes("status")) {
+        return success(
+          JSON.stringify({
+            dependencyMode: "bundled-local",
+            api: { state: "healthy" },
+            database: { state: "healthy" },
+            embeddingService: { state: "healthy" },
+            workerQueues: { state: "healthy" },
+            redis: { state: "healthy", details: { backend: "local" } }
+          })
+        );
+      }
+      return success("{}");
+    },
+    fileExists: () => false
+  });
+
+  const result = await runBundledLocalSmoke({
+    root: "/repo",
+    deps,
+    env: {},
+    json: true,
+    full: true
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Native bundled-local smoke resources missing/);
+});
+
+test("full smoke creates API Token and calls personal capture recall path", async () => {
+  const deps = createDeps({
+    fileExists: () => true,
+    spawnSync: (command, args, options) => {
+      deps.calls.push({ kind: "spawnSync", command, args, options });
+      if (args.includes("api-token:create")) {
+        assert.match(options.env.DATABASE_URL, /:4103\/koed$/);
+        return success("Created Koed API token.\nToken: cmt_smoke\n");
+      }
+      if (args.includes("status")) {
+        return success(
+          JSON.stringify({
+            dependencyMode: "bundled-local",
+            api: { state: "healthy" },
+            database: { state: "healthy" },
+            embeddingService: { state: "healthy" },
+            workerQueues: { state: "healthy" },
+            redis: { state: "healthy", details: { backend: "local" } }
+          })
+        );
+      }
+      return success("{}");
+    },
+    fetch: async (url) => {
+      deps.calls.push({ kind: "fetch", url });
+      if (String(url).endsWith("/self-host/smoke-test")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              marker: "koed-marker",
+              queueDrain: {
+                embedding: { waiting: 0, active: 0, delayed: 0, failed: 0 },
+                compaction: { waiting: 0, active: 0, delayed: 0, failed: 0 }
+              },
+              recall: { hits: 1, topHit: { text: "koed-marker" } }
+            })
+        };
+      }
+      if (String(url).endsWith("/self-host/status")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              components: {
+                workerQueues: {
+                  embedding: { waiting: 0, active: 0, delayed: 0, failed: 0 },
+                  compaction: { waiting: 0, active: 0, delayed: 0, failed: 0 }
+                }
+              }
+            })
+        };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    }
+  });
+
+  const result = await runBundledLocalSmoke({
+    root: "/repo",
+    deps,
+    env: {
+      KOED_EMBEDDING_MODEL_PATH: "/model.gguf",
+      KOED_EMBEDDING_MODEL_SHA256: "a".repeat(64)
+    },
+    json: true,
+    full: true
+  });
+
+  assert.equal(result.ok, true, result.error);
+  assert.equal(
+    result.steps.find((step) => step.step === "personal-capture-recall")?.state,
+    "passed"
+  );
+  assert.equal(
+    deps.calls.some(
+      (call) => call.kind === "spawnSync" && call.args?.includes("stop")
+    ),
+    true
   );
 });
 

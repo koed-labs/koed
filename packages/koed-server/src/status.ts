@@ -146,17 +146,27 @@ const fetchJson = async <T>(
 
 interface ApiReadyPayload {
   status?: string;
-  checks?: Array<{ service?: string; status?: string }>;
+  checks?: Array<{
+    service?: string;
+    status?: string;
+    details?: Record<string, unknown>;
+  }>;
 }
 
 export const statusFromApiReady = async (
   apiUrl: string,
   fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
   options: { dependencyMode?: "bundled-local" | "external" } = {}
-) => {
+): Promise<{
+  api: KoedServerComponentStatus;
+  database: KoedServerComponentStatus;
+  redis: KoedServerComponentStatus;
+  workerQueues: KoedServerComponentStatus;
+  embeddingService: KoedServerComponentStatus;
+}> => {
   const readyUrl = new URL("/ready", apiUrl).toString();
   const response = await fetchJson<ApiReadyPayload>(readyUrl, fetcher);
-  if (!response.ok || !response.body) {
+  if (!response.body) {
     return {
       api: needsAttention(
         `API is not ready at ${readyUrl}${response.error ? ` (${response.error})` : response.status ? ` (HTTP ${response.status})` : ""}`,
@@ -168,6 +178,9 @@ export const statusFromApiReady = async (
         "Waiting for API readiness to confirm database state."
       ),
       redis: starting("Waiting for API readiness to confirm Redis state."),
+      workerQueues: starting(
+        "Waiting for API readiness to confirm work queue state."
+      ),
       embeddingService: starting(
         "Waiting for API readiness to confirm Embedding Service state."
       )
@@ -175,36 +188,94 @@ export const statusFromApiReady = async (
   }
 
   const checks = response.body.checks ?? [];
-  const serviceStatus = (service: string): string | undefined =>
-    checks.find((check) => check.service === service)?.status;
+  const serviceCheck = (service: string) =>
+    checks.find((check) => check.service === service);
+  const actionFor = (service: string, fallback: string): string => {
+    if (service === "migrations") {
+      return "Run pnpm db:migrate:check or restart koed-server so startup migrations run.";
+    }
+    if (service === "pgvector") {
+      return "Install and enable pgvector in the Koed database.";
+    }
+    if (service === "postgres-version") {
+      return "Upgrade Postgres to a Koed-compatible version.";
+    }
+    if (service === "embedding-model") {
+      return "Fix the bundled-local Embedding Service model or configured embedding dimensions.";
+    }
+    if (service === "work-queue") {
+      return "Set WORK_QUEUE_BACKEND=local or configure Redis for BullMQ queues.";
+    }
+    return fallback;
+  };
   const component = (
     service: string,
     label: string
   ): KoedServerComponentStatus => {
-    const value = serviceStatus(service);
+    const check = serviceCheck(service);
+    const value = check?.status;
     if (value === "ok") {
-      return healthy();
+      return healthy(undefined, check?.details);
     }
     if (value === "degraded") {
       return needsAttention(
         `${label} is degraded.`,
-        "Run koed-server doctor --json for details."
+        actionFor(service, "Run koed-server doctor --json for details."),
+        check?.details
       );
     }
     if (value === "error") {
       return needsAttention(
-        `${label} is unavailable.`,
-        "Run koed-server start or inspect Koed logs."
+        `${label} is unavailable or incompatible.`,
+        actionFor(service, "Run koed-server start or inspect Koed logs."),
+        check?.details
       );
     }
     return starting(`${label} status is not available yet.`);
   };
+  const aggregateComponent = (
+    services: Array<[string, string]>,
+    healthyMessage: string
+  ): KoedServerComponentStatus => {
+    const components = services.map(([service, label]) =>
+      component(service, label)
+    );
+    const state = aggregateState(components);
+    if (state === "healthy") {
+      return healthy(healthyMessage, {
+        checks: services
+          .map(([service]) => serviceCheck(service))
+          .filter((check): check is NonNullable<typeof check> => Boolean(check))
+      });
+    }
+    return components.find((entry) => entry.state === state) ?? components[0]!;
+  };
 
   return {
-    api: healthy(undefined, { readyUrl }),
-    database: component("postgres", "Database"),
+    api: response.ok
+      ? healthy(undefined, { readyUrl })
+      : starting("API is reachable but readiness checks have not passed.", {
+          readyUrl,
+          httpStatus: response.status
+        }),
+    database: aggregateComponent(
+      [
+        ["postgres", "Database"],
+        ["postgres-version", "Postgres version"],
+        ["migrations", "Database migrations"],
+        ["pgvector", "pgvector"]
+      ],
+      "Database, migrations, Postgres version, and pgvector are ready."
+    ),
     redis: component("redis", "Redis"),
-    embeddingService: component("embedding-service", "Embedding Service")
+    workerQueues: component("work-queue", "Work queue"),
+    embeddingService: aggregateComponent(
+      [
+        ["embedding-service", "Embedding Service"],
+        ["embedding-model", "Embedding model"]
+      ],
+      "Embedding Service model and dimensions are ready."
+    )
   };
 };
 
@@ -551,6 +622,13 @@ export const collectKoedServerStatus = async (
     "Postgres-backed local queue does not require Redis.",
     { backend: queueBackend }
   );
+  const localQueueStatus =
+    apiReady.workerQueues.state === "healthy"
+      ? healthy("Postgres-backed local queue is ready.", {
+          backend: queueBackend,
+          readiness: apiReady.workerQueues.details
+        })
+      : apiReady.workerQueues;
   const redisStatus =
     queueBackend === "local"
       ? apiReady.redis.state === "starting"
@@ -578,7 +656,7 @@ export const collectKoedServerStatus = async (
   ];
   const queueDependency =
     queueBackend === "local"
-      ? localQueueRedisBypass
+      ? localQueueStatus
       : serverConfig.dependencyMode === "external"
         ? externalRedisUrl
           ? apiReady.redis

@@ -14,7 +14,12 @@ const defaultRoot = path.resolve(
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const parseBundledLocalSmokeArgs = (argv) => {
-  const options = { json: false, timeoutMs: 180_000, pollIntervalMs: 2_000 };
+  const options = {
+    json: false,
+    full: false,
+    timeoutMs: 180_000,
+    pollIntervalMs: 2_000
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--") {
@@ -22,6 +27,10 @@ export const parseBundledLocalSmokeArgs = (argv) => {
     }
     if (value === "--json") {
       options.json = true;
+      continue;
+    }
+    if (value === "--full") {
+      options.full = true;
       continue;
     }
     if (value === "--timeout-ms") {
@@ -53,6 +62,7 @@ export const bundledLocalSmokeUsage = `Usage: pnpm smoke:bundled-local -- [optio
 
 Options:
   --json                    Emit JSON result
+  --full                    Run native local personal capture/recall smoke
   --timeout-ms <number>     Max wait for healthy status (default 180000)
   --poll-interval-ms <num>  Poll interval (default 2000)
   --help, -h                Show this help
@@ -66,6 +76,7 @@ export const createBundledLocalSmokeDeps = () => ({
   rm: fsp.rm,
   writeFile: fsp.writeFile,
   mkdir: fsp.mkdir,
+  readFile: fsp.readFile,
   fileExists: (filePath) => fs.existsSync(filePath),
   setTimeout: sleep,
   now: () => Date.now(),
@@ -107,9 +118,11 @@ const assertCommand = (deps, command, args, label, options = {}) => {
   }
 };
 
-export const preflightBundledLocalSmoke = (deps) => {
-  assertCommand(deps, "docker", ["--version"], "Docker CLI preflight");
-  assertCommand(deps, "docker", ["info"], "Docker daemon preflight");
+export const preflightBundledLocalSmoke = (deps, options = {}) => {
+  if (!options.full) {
+    assertCommand(deps, "docker", ["--version"], "Docker CLI preflight");
+    assertCommand(deps, "docker", ["info"], "Docker daemon preflight");
+  }
   assertCommand(deps, "pnpm", ["--version"], "pnpm preflight");
 };
 
@@ -118,7 +131,8 @@ export const buildBundledLocalSmokeEnvironment = async ({
   deps = createBundledLocalSmokeDeps(),
   baseEnv = process.env,
   koedHome,
-  composeProjectName
+  composeProjectName,
+  full = false
 } = {}) => {
   const id = deps.randomUUID().slice(0, 8);
   const home =
@@ -141,11 +155,22 @@ export const buildBundledLocalSmokeEnvironment = async ({
     KOED_REPO_ROOT: root,
     KOED_ENV_PATH: envPath,
     KOED_DEPENDENCY_MODE: "bundled-local",
+    ...(full
+      ? {
+          KOED_BUNDLED_POSTGRES_MODE: "native",
+          KOED_BUNDLED_EMBEDDING_MODE: "native"
+        }
+      : {}),
     WORK_QUEUE_BACKEND: queueBackend,
     COMPOSE_PROJECT_NAME: composeProject,
     API_HOST_PORT: String(ports.api),
     EXPLORER_WEB_HOST_PORT: String(ports.explorer),
     POSTGRES_HOST_PORT: String(ports.postgres),
+    KOED_POSTGRES_HOST: "127.0.0.1",
+    KOED_POSTGRES_PORT: String(ports.postgres),
+    KOED_POSTGRES_DATA_DIR: path.join(home, "data", "postgres"),
+    KOED_POSTGRES_RUN_DIR: path.join(home, "run", "postgres"),
+    KOED_POSTGRES_LOG_PATH: path.join(home, "logs", "postgres.log"),
     REDIS_HOST_PORT: String(ports.redis),
     EMBEDDING_SERVICE_HOST_PORT: String(ports.embedding),
     MEMORY_API_URL: `http://localhost:${ports.api}`,
@@ -213,6 +238,81 @@ const modelInstallConfigured = (env) =>
     env.KOED_EMBEDDING_MODEL_SHA256?.trim()
   );
 
+const defaultEmbeddingModelPath = (context) =>
+  path.join(context.koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
+
+export const assertNativeBundledLocalResources = ({ deps, context }) => {
+  const env = context.env;
+  const postgresBinDir = env.KOED_POSTGRES_BIN_DIR;
+  const required = [
+    [
+      "Postgres initdb",
+      env.KOED_POSTGRES_INITDB_BIN ??
+        path.join(
+          postgresBinDir ??
+            path.join(context.root, "vendor", "postgres", "bin"),
+          "initdb"
+        )
+    ],
+    [
+      "Postgres pg_ctl",
+      env.KOED_POSTGRES_PG_CTL_BIN ??
+        path.join(
+          postgresBinDir ??
+            path.join(context.root, "vendor", "postgres", "bin"),
+          "pg_ctl"
+        )
+    ],
+    [
+      "Postgres psql",
+      env.KOED_POSTGRES_PSQL_BIN ??
+        path.join(
+          postgresBinDir ??
+            path.join(context.root, "vendor", "postgres", "bin"),
+          "psql"
+        )
+    ],
+    [
+      "Embedding Service app",
+      path.join(context.root, "apps", "embedding-service", "app.py")
+    ],
+    [
+      "Embedding Service Python",
+      env.KOED_EMBEDDING_PYTHON_BIN ??
+        path.join(
+          context.root,
+          "apps",
+          "embedding-service",
+          ".venv",
+          "bin",
+          "python"
+        )
+    ],
+    [
+      "llama-server",
+      env.KOED_EMBEDDING_LLAMA_SERVER_BIN ??
+        env.LLAMA_SERVER_BINARY ??
+        env.EMBEDDING_LLAMA_SERVER_BINARY ??
+        path.join(context.root, "vendor", "llama.cpp", "llama-server")
+    ]
+  ];
+  const missing = required.filter(([, filePath]) => !deps.fileExists(filePath));
+  const modelPath =
+    env.KOED_EMBEDDING_MODEL_PATH ?? defaultEmbeddingModelPath(context);
+  if (!deps.fileExists(modelPath) && !modelInstallConfigured(env)) {
+    missing.push(["Embedding model", modelPath]);
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Native bundled-local smoke resources missing: ${missing
+        .map(([label, filePath]) => `${label} (${filePath})`)
+        .join(
+          ", "
+        )}. Install native resources or set KOED_* overrides before running --full.`
+    );
+  }
+};
+
 export const maybeInstallEmbeddingModel = ({ deps, context, steps }) => {
   if (!modelInstallConfigured(context.env)) {
     steps.push({
@@ -268,7 +368,7 @@ const assertHealthyStatus = (status, context) => {
   const failures = [];
   if (status.dependencyMode !== "bundled-local")
     failures.push("dependencyMode");
-  for (const key of ["api", "database", "embeddingService"]) {
+  for (const key of ["api", "database", "workerQueues", "embeddingService"]) {
     if (status[key]?.state !== "healthy") failures.push(key);
   }
   if (context.queueBackend === "local") {
@@ -333,7 +433,204 @@ export const waitForBundledLocalHealthy = async ({
   );
 };
 
+const parseCreatedToken = (output) => {
+  const match = /^Token:\s*(\S+)$/m.exec(output);
+  if (!match) {
+    throw new Error(
+      `Could not parse API Token from bootstrap output: ${output}`
+    );
+  }
+  return match[1];
+};
+
+const parseEnvContents = (contents) => {
+  const values = {};
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (match)
+      values[match[1]] = match[2].trim().replace(/^(["'])(.*)\1$/, "$2");
+  }
+  return values;
+};
+
+const localPostgresDatabaseUrl = (env) => {
+  const user = env.POSTGRES_USER?.trim() || "koed";
+  const password =
+    env.POSTGRES_PASSWORD?.trim() ||
+    env.KOED_BUNDLED_POSTGRES_PASSWORD?.trim() ||
+    "koed-local-postgres";
+  const database = env.POSTGRES_DB?.trim() || "koed";
+  const host = env.KOED_POSTGRES_HOST?.trim() || "127.0.0.1";
+  const port =
+    env.KOED_POSTGRES_PORT?.trim() || env.POSTGRES_HOST_PORT?.trim() || "15432";
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+};
+
+const refreshContextEnvFromEnvPath = async ({ deps, context }) => {
+  if (!context.envPath || !deps.fileExists(context.envPath)) return;
+  const contents = await deps.readFile(context.envPath, "utf8");
+  Object.assign(context.env, parseEnvContents(contents));
+  Object.assign(context.env, {
+    API_HOST_PORT: String(context.ports.api),
+    EXPLORER_WEB_HOST_PORT: String(context.ports.explorer),
+    POSTGRES_HOST_PORT: String(context.ports.postgres),
+    KOED_POSTGRES_HOST: "127.0.0.1",
+    KOED_POSTGRES_PORT: String(context.ports.postgres),
+    KOED_POSTGRES_DATA_DIR: path.join(context.koedHome, "data", "postgres"),
+    KOED_POSTGRES_RUN_DIR: path.join(context.koedHome, "run", "postgres"),
+    KOED_POSTGRES_LOG_PATH: path.join(context.koedHome, "logs", "postgres.log"),
+    REDIS_HOST_PORT: String(context.ports.redis),
+    EMBEDDING_SERVICE_HOST_PORT: String(context.ports.embedding),
+    MEMORY_API_URL: `http://localhost:${context.ports.api}`,
+    EMBEDDING_SERVICE_URL: `http://localhost:${context.ports.embedding}`
+  });
+  if (context.env.KOED_DEPENDENCY_MODE === "bundled-local") {
+    context.env.DATABASE_URL = localPostgresDatabaseUrl(context.env);
+  }
+};
+
+export const createSmokeApiToken = async ({ deps, context }) => {
+  await refreshContextEnvFromEnvPath({ deps, context });
+  if (!context.env.DATABASE_URL?.trim()) {
+    throw new Error(
+      `Full smoke could not resolve isolated DATABASE_URL from ${context.envPath}.`
+    );
+  }
+  const result = deps.spawnSync(
+    "pnpm",
+    [
+      "api-token:create",
+      "--owner-email",
+      `smoke-${context.id}@koed.local`,
+      "--name",
+      "Bundled Local Smoke"
+    ],
+    {
+      cwd: context.root,
+      env: context.env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  if (result.error) {
+    throw new Error(`API Token bootstrap failed: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `API Token bootstrap failed with exit code ${result.status ?? 1}: ${String(result.stderr ?? result.stdout ?? "").trim()}`
+    );
+  }
+  return parseCreatedToken(result.stdout ?? "");
+};
+
+const fetchJson = async (deps, url, options = {}) => {
+  const response = await deps.fetch(url, options);
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} from ${url}: ${text}`);
+  }
+  return body;
+};
+
+const assertSmokeQueueDrain = (queueDrain) => {
+  if (!queueDrain || typeof queueDrain !== "object") {
+    throw new Error("Full smoke response did not include queue drain counts.");
+  }
+  for (const label of ["embedding", "compaction"]) {
+    const counts = queueDrain[label];
+    if (!counts || typeof counts !== "object") {
+      throw new Error(`Full smoke queue drain missing ${label} counts.`);
+    }
+    for (const key of ["waiting", "active", "delayed", "failed"]) {
+      if (!Number.isFinite(counts[key])) {
+        throw new Error(
+          `Full smoke queue drain missing numeric ${label}.${key}.`
+        );
+      }
+    }
+    if (counts.failed > 0) {
+      throw new Error(
+        `Full smoke queue ${label} has ${counts.failed} failed job(s).`
+      );
+    }
+    const pending = counts.waiting + counts.active + counts.delayed;
+    if (pending > 0) {
+      throw new Error(
+        `Full smoke queue ${label} still has ${pending} pending job(s).`
+      );
+    }
+  }
+};
+
+export const runFullPersonalSmoke = async ({ deps, context, steps }) => {
+  const token = await createSmokeApiToken({ deps, context });
+  context.env.MEMORY_API_TOKEN = token;
+  context.env.VITE_KOED_API_TOKEN = token;
+  steps.push({ step: "api-token", state: "created" });
+
+  const apiUrl = context.env.MEMORY_API_URL.replace(/\/+$/, "");
+  const smoke = await fetchJson(deps, `${apiUrl}/self-host/smoke-test`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` }
+  });
+  if (!smoke.ok) {
+    throw new Error(
+      `Full personal smoke recall failed: ${JSON.stringify(smoke)}`
+    );
+  }
+  const marker = smoke.marker;
+  const evidenceText = JSON.stringify(smoke.recall ?? smoke);
+  if (!marker || !evidenceText.includes(marker)) {
+    throw new Error(
+      `Full personal smoke Evidence Bundle did not contain marker ${marker}.`
+    );
+  }
+  steps.push({
+    step: "personal-capture-recall",
+    state: "passed",
+    marker,
+    hits: smoke.recall?.hits ?? null
+  });
+
+  assertSmokeQueueDrain(smoke.queueDrain);
+  steps.push({
+    step: "queue-embedding-drain",
+    state: "passed",
+    workerQueues: smoke.queueDrain
+  });
+
+  await fetchJson(
+    deps,
+    context.env.VITE_KOED_API_BASE_URL ?? context.env.MEMORY_API_URL
+  );
+  const explorer = await deps.fetch(
+    `http://localhost:${context.ports.explorer}`
+  );
+  if (!explorer.ok) {
+    throw new Error(`Explorer was not reachable: HTTP ${explorer.status}`);
+  }
+  steps.push({ step: "explorer", state: "reachable" });
+  return smoke;
+};
+
 export const cleanupBundledLocalSmoke = async ({ deps, context, child }) => {
+  const cli = path.join(
+    context.root,
+    "packages",
+    "koed-server",
+    "dist",
+    "cli.js"
+  );
+  if (deps.fileExists(cli)) {
+    deps.spawnSync(process.execPath, [cli, "stop", "--json"], {
+      cwd: context.root,
+      env: context.env,
+      stdio: "ignore"
+    });
+  }
   if (child && child.exitCode === null) {
     child.kill("SIGTERM");
     await Promise.race([
@@ -362,6 +659,7 @@ export const runBundledLocalSmoke = async ({
   timeoutMs = 180_000,
   pollIntervalMs = 2_000,
   json = false,
+  full = false,
   deps = createBundledLocalSmokeDeps(),
   echo = json ? undefined : console.log
 } = {}) => {
@@ -370,12 +668,13 @@ export const runBundledLocalSmoke = async ({
   let child = null;
   const logs = [];
   try {
-    preflightBundledLocalSmoke(deps);
-    steps.push({ step: "preflight", state: "passed" });
+    preflightBundledLocalSmoke(deps, { full });
+    steps.push({ step: "preflight", state: "passed", full });
     context = await buildBundledLocalSmokeEnvironment({
       root,
       deps,
-      baseEnv: env
+      baseEnv: env,
+      full
     });
     await deps.mkdir(context.koedHome, { recursive: true });
     steps.push({
@@ -395,6 +694,10 @@ export const runBundledLocalSmoke = async ({
       { cwd: context.root, env: context.env }
     );
     steps.push({ step: "koed-server-build", state: "passed" });
+    if (full) {
+      assertNativeBundledLocalResources({ deps, context });
+      steps.push({ step: "native-resources", state: "present" });
+    }
     maybeInstallEmbeddingModel({ deps, context, steps });
 
     const cli = path.join(
@@ -426,13 +729,23 @@ export const runBundledLocalSmoke = async ({
       pollIntervalMs
     });
     steps.push({ step: "status", state: "healthy" });
+    const fullSmoke = full
+      ? await runFullPersonalSmoke({
+          deps,
+          context,
+          steps,
+          timeoutMs,
+          pollIntervalMs
+        })
+      : null;
     return {
       ok: true,
       state: "passed",
       koedHome: context.koedHome,
       composeProject: context.composeProject,
       steps,
-      status
+      status,
+      ...(fullSmoke ? { fullSmoke } : {})
     };
   } catch (error) {
     return {

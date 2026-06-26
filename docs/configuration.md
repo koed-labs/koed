@@ -27,10 +27,14 @@ systemd, Homebrew, managed infrastructure, or another Operator-managed path.
 does not start or stop Docker Compose in this mode.
 
 Bundled-local dependency mode is a local runtime scaffold for Postgres/pgvector
-and the Embedding Service. In this mode, `koed-server start` starts the local
-Compose `postgres` and `embedding-service` services and defaults API/Worker jobs
-to `WORK_QUEUE_BACKEND=local`, so Redis is not required for queues unless the
-Operator explicitly sets `WORK_QUEUE_BACKEND=bullmq`. This is not an asset,
+and the Embedding Service. In this mode, `koed-server start` starts native
+Postgres and Embedding Service runtimes when packaged resources are installed,
+otherwise it can use the local Compose `postgres` and `embedding-service`
+scaffolds. API/Worker jobs default to `WORK_QUEUE_BACKEND=local`, so Redis is
+not required for queues unless the Operator explicitly sets
+`WORK_QUEUE_BACKEND=bullmq`. Native local personal mode stores data, queue
+state, logs, model files, Postgres data, and runtime state under `KOED_HOME` and
+does not require Docker when those resources are present. This is not an asset,
 model, Docker, Homebrew, or system-service installer; required binaries, images,
 and model files still need to exist through the current local setup path.
 
@@ -64,6 +68,13 @@ Example bundled-local `KOED_HOME/config/server.json`:
   "dependencyMode": "bundled-local"
 }
 ```
+
+`koed-server status --json` and `doctor --json` report healthy only after
+Postgres is reachable, Postgres version is compatible, migrations are current,
+pgvector is enabled, the configured work queue backend is ready, and the
+Embedding Service reports the expected model and dimensions. Doctor repair
+actions point to migrations, pgvector setup, dependency URLs, queue backend, or
+model/runtime mismatch.
 
 ## Required Deployment Values
 

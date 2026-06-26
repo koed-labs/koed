@@ -72,8 +72,13 @@ describe("process status/probe mapping", () => {
       response(true, 200, {
         checks: [
           { service: "postgres", status: "ok" },
+          { service: "postgres-version", status: "ok" },
+          { service: "migrations", status: "ok" },
+          { service: "pgvector", status: "ok" },
           { service: "redis", status: "ok" },
-          { service: "embedding-service", status: "ok" }
+          { service: "work-queue", status: "ok" },
+          { service: "embedding-service", status: "ok" },
+          { service: "embedding-model", status: "ok" }
         ]
       })
     );
@@ -82,6 +87,27 @@ describe("process status/probe mapping", () => {
     expect(result.database.state).toBe("healthy");
     expect(result.redis.state).toBe("healthy");
     expect(result.embeddingService.state).toBe("healthy");
+    expect(result.workerQueues.state).toBe("healthy");
+  });
+
+  it("maps 503 readiness details to component actions", async () => {
+    const result = await statusFromApiReady("http://localhost:3300", async () =>
+      response(false, 503, {
+        checks: [
+          { service: "postgres", status: "ok" },
+          { service: "postgres-version", status: "ok" },
+          { service: "migrations", status: "error" },
+          { service: "pgvector", status: "ok" },
+          { service: "work-queue", status: "ok" },
+          { service: "embedding-service", status: "ok" },
+          { service: "embedding-model", status: "ok" }
+        ]
+      })
+    );
+
+    expect(result.api.state).toBe("starting");
+    expect(result.database.state).toBe("needs_attention");
+    expect(result.database.action).toContain("migrations");
   });
 
   it("maps unhealthy dependency checks to needs_attention", async () => {
@@ -181,7 +207,12 @@ describe("status and doctor JSON contracts", () => {
           response(true, 200, {
             checks: [
               { service: "postgres", status: "ok" },
-              { service: "embedding-service", status: "ok" }
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
             ]
           }),
         spawnSync: () => spawnResult("", 0),
@@ -278,8 +309,13 @@ describe("status and doctor JSON contracts", () => {
           response(true, 200, {
             checks: [
               { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
               { service: "redis", status: "ok" },
-              { service: "embedding-service", status: "ok" }
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
             ]
           }),
         spawnSync: () =>
@@ -333,7 +369,7 @@ describe("status and doctor JSON contracts", () => {
 
     expect(doctor.ok).toBe(false);
     expect(doctor.state).toBe("needs_attention");
-    expect(doctor.summary).toContain("API is not ready");
+    expect(doctor.summary).toContain("Operator-managed Redis URL");
     expect(doctor.checks.map((check) => check.id)).toContain("mcpServer");
   });
 
@@ -410,8 +446,13 @@ describe("status and doctor JSON contracts", () => {
           response(true, 200, {
             checks: [
               { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
               { service: "redis", status: "ok" },
-              { service: "embedding-service", status: "ok" }
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
             ]
           }),
         spawnSync: (_command, args) =>

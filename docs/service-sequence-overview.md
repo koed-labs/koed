@@ -51,8 +51,12 @@ MCP-side workers.
    `koed-server models install`, which requires configured artifact URLs and
    SHA-256 checksums before writing to `KOED_HOME/models`.
 5. `pnpm smoke:bundled-local -- --json` can verify this path with an isolated
-   temporary `KOED_HOME`, unique Compose project name, and temporary host ports
-   before Operators rely on it for local development or packaging checks.
+   temporary `KOED_HOME`, unique Compose project name, and temporary host ports.
+   `pnpm smoke:bundled-local -- --full --json` requires native resources and
+   verifies API Token creation, Capture Hook-like personal ingestion,
+   Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer
+   reachability, and stop-based cleanup before Operators rely on it for local
+   development or packaging checks.
 6. The API, Worker, and Explorer run as local app processes supervised by
    `koed-server` and connect to those configured dependency URLs. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
@@ -63,7 +67,10 @@ MCP-side workers.
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
    output, Supported Capture Hook config, Codex config, LCM Summary Service
-   availability, and last verification metadata.
+   availability, and last verification metadata. Readiness gates include
+   Postgres reachability and version, current migrations, pgvector, local or
+   BullMQ queue backend availability, and Embedding Service model/dimension
+   compatibility.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through

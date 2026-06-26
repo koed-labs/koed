@@ -25,12 +25,18 @@ that memory available through MCP recall.
 >
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
-For the shortest full setup from a fresh clone, start the external dependency stack first, then run Desktop:
+For local personal use with native bundled resources installed, `koed-server start` can run without Docker, external Postgres, or external Redis. From a fresh clone, Docker Compose remains the developer/external scaffold fallback:
 
 ```bash
 pnpm env:setup
 docker compose up -d --build
 pnpm desktop:start
+```
+
+For native bundled-local validation without Docker, set `KOED_DEPENDENCY_MODE=bundled-local`, ensure native Postgres, pgvector, llama-server, Python, and model assets are present, then run:
+
+```bash
+pnpm smoke:bundled-local -- --full --json
 ```
 
 `pnpm desktop:start` opens Koed Desktop, auto-starts `koed-server`, and runs
@@ -54,7 +60,10 @@ To verify the bundled-local path with isolated ports and a temporary `KOED_HOME`
 
 ```bash
 pnpm smoke:bundled-local -- --json
+pnpm smoke:bundled-local -- --full --json
 ```
+
+The full smoke requires native bundled resources and verifies API Token creation, Capture Hook-like personal ingestion, Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer reachability, and cleanup through `koed-server stop --json`.
 
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.
