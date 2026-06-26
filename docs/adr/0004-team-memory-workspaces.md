@@ -11,13 +11,18 @@ sharing was deferred because the old proof of concept did not have a clear
 domain model, authorization boundary, token behavior, or migration path.
 
 Team memory sharing is now in scope, but it must not reintroduce ambiguous
-"team project" ownership. The product needs a stable shared memory identity
-that survives local path, repository, branch, ref, and cwd changes.
+"team project" ownership, hidden copies, or team-owned memory by rename. The
+product needs a stable shared memory identity that survives local path,
+repository, branch, ref, and cwd changes. It also needs vocabulary that can
+cover later hosted Team, self-hosted Team, cross-identity sync, and Memory Inbox
+flows without changing the underlying ownership model.
 
 ## Decision
 
-Koed will model team memory sharing as user-owned memory made recallable through
-explicit Share Grants.
+Koed will model Team memory as user-owned memory made recallable through
+explicit grants and policy. The data model remains logically flat: ownership,
+visibility, lifecycle, sync, and retention are separate concerns rather than
+separate physical memory hierarchies.
 
 - Memory Events, Memory Nodes, and Captured Sessions remain owned by the
   originating User.
@@ -28,11 +33,22 @@ explicit Share Grants.
   it is not the durable authorization key.
 - Workspace Access controls whether a User can recall, share, or manage
   Team-shared Memory in a Workspace.
-- A Share Grant links one user-owned Captured Session to one Team and one
-  Workspace.
+- A Share Grant links a user-owned memory source to one Team and one Workspace.
+  The first implemented source type is a Captured Session; future sources may
+  include synced replicas or Memory Inbox content.
 - API Tokens remain user-owned. Team and Workspace authority is derived from
   the owning User's current Team Membership and Workspace Access at request
   time.
+- Sharing changes authorization. It does not move ownership, create a copy, or
+  create an independently evolving memory lifespan.
+- Cross-Identity Sync is the model for personal Koed to Team-personal sharing
+  when the same logical memory lifespan must continue across identities or
+  deployments. It may maintain a policy-aware synced replica for availability,
+  indexing, and Team recall, but the logical memory does not fork.
+- Fork/Import is a separate, explicit future operation for cases where a user
+  intentionally wants a new memory lifespan that can diverge from its source.
+- Offload changes where storage or processing happens, such as using a hosted
+  Koed service. It does not by itself create Team visibility or a fork.
 - Removing a User from a Team or Workspace changes future access only. It does
   not delete, invalidate, or modify the user's previous Team-shared Memory.
 - Share Grant revocation, Workspace archive, Access Suspension, personal
@@ -48,6 +64,11 @@ explicit Share Grants.
   version.
 - Backend LLM synthesis remains out of scope. Koed returns Evidence Bundles and
   the connected AI Client performs Answer Synthesis and LCM Summary synthesis.
+- Memory Inbox is a future ingestion surface, not the V1.0 Team memory core.
+  The Team architecture should still reserve room for Content Objects, Content
+  Inventory, Knowledge Collections, ingestion jobs, provenance, quotas, and
+  collection grants so external content can be added later without redefining
+  Workspace or Project semantics.
 
 ## Consequences
 
@@ -77,6 +98,25 @@ but ingestion allowed" or another policy without a schema rewrite.
 Local path, repository remote, branch, ref, package name, and cwd changes must
 not change Team authorization. Those Project fields are resolution and display
 metadata only; Workspace is the stable shared memory identity.
+
+Team-visible derived memory must be built only from source items authorized for
+that Team and Workspace. A private LCM Summary, rollup, embedding, or graph edge
+must not become Team-visible by relabeling or by pointing to one shared source
+while also carrying unrelated private source material. Source authorization is a
+retrieval and derivation boundary, not only a UI display filter.
+
+Cross-Identity Sync requires sync state and provenance in later implementation
+work. A Team-side replica must be marked as synced, stale, revoked, or otherwise
+policy-gated so recall can distinguish "current enough to use" from "source is
+offline or no longer shared." Revoking the cross-identity sync should stop
+future propagation while preserving the Team-visible data already shared under
+the relevant grant and retention policy.
+
+Memory Inbox implementation must deduplicate Content Objects by content identity
+where possible, keep ingestion provenance separate from recall grants, and allow
+one Knowledge Collection to be granted to multiple groups without re-ingesting
+the same files or URLs. This preserves the same flat ownership and grant model
+for education, support, and non-software Team use cases.
 
 The old multi-user proof of concept must not be revived. New implementation
 work should follow this domain model and the accepted AI-client synthesis
