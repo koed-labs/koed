@@ -98,6 +98,17 @@ describe("process status/probe mapping", () => {
     expect(status.state).toBe("starting");
     expect(status.details?.missing).toEqual(["redis"]);
   });
+
+  it("checks bundled-local compose scaffolds by expected service", () => {
+    const status = dockerComposePs(
+      paths(tempDir()),
+      () => spawnResult('{"Service":"postgres","State":"running"}\n'),
+      ["postgres", "embedding-service"]
+    );
+
+    expect(status.state).toBe("starting");
+    expect(status.details?.missing).toEqual(["embedding-service"]);
+  });
 });
 
 describe("status and doctor JSON contracts", () => {
@@ -146,6 +157,75 @@ describe("status and doctor JSON contracts", () => {
       "Postgres-backed local queue does not require Redis."
     );
     expect(status.workerQueues.state).toBe("starting");
+  });
+
+  it("treats bundled-local mode from .env as Redis-free by default", async () => {
+    const root = tempDir();
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_DEPENDENCY_MODE=bundled-local\n"
+    );
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root
+      },
+      {
+        fetch: async () =>
+          response(true, 200, {
+            checks: [
+              { service: "postgres", status: "ok" },
+              { service: "embedding-service", status: "ok" }
+            ]
+          }),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.dependencyMode).toBe("bundled-local");
+    expect(status.redis.state).toBe("healthy");
+    expect(status.redis.message).toBe(
+      "Postgres-backed local queue does not require Redis."
+    );
+    expect(status.workerQueues.state).toBe("starting");
+  });
+
+  it("honors bundled-local BullMQ override from .env", async () => {
+    const root = tempDir();
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+    );
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root
+      },
+      {
+        fetch: async () =>
+          response(true, 200, {
+            checks: [
+              { service: "postgres", status: "ok" },
+              { service: "redis", status: "ok" },
+              { service: "embedding-service", status: "ok" }
+            ]
+          }),
+        spawnSync: () =>
+          spawnResult(
+            '{"Service":"postgres","State":"running"}\n{"Service":"redis","State":"running"}\n{"Service":"embedding-service","State":"running"}\n'
+          ),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.dependencyMode).toBe("bundled-local");
+    expect(status.redis.state).toBe("healthy");
+    expect(status.redis.message).not.toBe(
+      "Postgres-backed local queue does not require Redis."
+    );
   });
 
   it("preserves Redis errors in local queue mode when API reports Redis", async () => {

@@ -6,7 +6,7 @@ import {
 } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { resolveKoedServerConfig } from "./config.js";
+import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveLocalApiToken,
   writeExplorerCredential
@@ -102,7 +102,8 @@ const waitForHealthyOrReady = async ({
     if (
       lastStatus.api.state === "healthy" &&
       lastStatus.database.state === "healthy" &&
-      lastStatus.redis.state === "healthy"
+      lastStatus.redis.state === "healthy" &&
+      lastStatus.embeddingService.state === "healthy"
     ) {
       return lastStatus;
     }
@@ -114,6 +115,41 @@ const waitForHealthyOrReady = async ({
 const resolveWorkQueueBackend = (
   value: string | undefined
 ): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
+
+const resolveEffectiveWorkQueueBackend = (
+  config: KoedServerConfig,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): "bullmq" | "local" => {
+  if (environment.WORK_QUEUE_BACKEND) {
+    return resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND);
+  }
+  if (repoEnv.WORK_QUEUE_BACKEND) {
+    return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+  }
+  if (config.dependencyMode === "bundled-local") {
+    return "local";
+  }
+  return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+};
+
+const koedServerConfigEnvironment = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): NodeJS.ProcessEnv => ({
+  ...environment,
+  KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? repoEnv.KOED_RUNTIME_MODE,
+  KOED_DEPENDENCY_MODE:
+    environment.KOED_DEPENDENCY_MODE ?? repoEnv.KOED_DEPENDENCY_MODE,
+  KOED_EXTERNAL_DATABASE_URL:
+    environment.KOED_EXTERNAL_DATABASE_URL ??
+    repoEnv.KOED_EXTERNAL_DATABASE_URL,
+  KOED_EXTERNAL_REDIS_URL:
+    environment.KOED_EXTERNAL_REDIS_URL ?? repoEnv.KOED_EXTERNAL_REDIS_URL,
+  KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
+    environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
+    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL
+});
 
 const localServiceEnv = (
   environment: NodeJS.ProcessEnv,
@@ -130,7 +166,15 @@ const localServiceEnv = (
     "3800";
   const redisUrl = `redis://localhost:${redisPort}`;
   const embeddingServiceUrl = `http://localhost:${embeddingPort}`;
-  const serverConfig = resolveKoedServerConfig(paths, environment);
+  const serverConfig = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(environment, repoEnv)
+  );
+  const queueBackend = resolveEffectiveWorkQueueBackend(
+    serverConfig,
+    environment,
+    repoEnv
+  );
   return {
     ...process.env,
     ...repoEnv,
@@ -138,6 +182,7 @@ const localServiceEnv = (
     ...environment,
     NODE_ENV: repoEnv.API_NODE_ENV ?? environment.NODE_ENV ?? "production",
     LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
+    WORK_QUEUE_BACKEND: queueBackend,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     API_PORT: apiPort,
     DATABASE_URL:
@@ -199,11 +244,23 @@ export const startKoedServer = async ({
   }
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const config = resolveKoedServerConfig(paths, environment);
+  const config = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(environment, repoEnv)
+  );
+  const initialQueueBackend = resolveEffectiveWorkQueueBackend(
+    config,
+    environment,
+    repoEnv
+  );
   const dependencyServices =
     config.dependencyMode === "external"
       ? []
-      : ["postgres", "redis", "embedding-service"];
+      : [
+          "postgres",
+          ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
+          "embedding-service"
+        ];
   const appServices = ["api", "worker", "explorer"];
   const childEnv = localServiceEnv(environment, repoEnv, apiToken, paths);
 
@@ -382,7 +439,8 @@ export const startKoedServer = async ({
         state: status.state,
         api: status.api,
         database: status.database,
-        redis: status.redis
+        redis: status.redis,
+        embeddingService: status.embeddingService
       },
       null,
       2

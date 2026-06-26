@@ -40,21 +40,25 @@ MCP-side workers.
    provides explicit `DATABASE_URL`, `REDIS_URL`, and `EMBEDDING_SERVICE_URL`
    values. `koed-server` does not start, stop, or inspect Docker Compose in
    external mode.
-4. The API, Worker, and Explorer run as local app processes supervised by
+4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
+   starts the local Postgres/pgvector and Embedding Service Compose scaffolds
+   and defaults job processing to the Postgres-backed local queue. This mode is
+   runtime scaffolding only; asset/model installers remain separate work.
+5. The API, Worker, and Explorer run as local app processes supervised by
    `koed-server` and connect to those configured dependency URLs. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
    table.
-5. `koed-server status --json` and `koed-server doctor --json` poll the API
+6. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
    output, Supported Capture Hook config, Codex config, LCM Summary Service
    availability, and last verification metadata.
-6. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+7. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
    the control plane.
-7. Koed Desktop can start/connect to the same headless command surface, run
+8. Koed Desktop can start/connect to the same headless command surface, run
    the first-launch Codex bootstrap and health-check sequence, poll status,
    and embed Explorer without requiring the Operator to invoke repo-local
    scripts directly.

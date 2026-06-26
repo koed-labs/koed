@@ -6,12 +6,13 @@
 Koed runs API, Worker, Embedding Service, and Explorer under the local
 `koed-server` control plane. Postgres with pgvector stores Users, API Tokens,
 Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis backs
-BullMQ queues.
+BullMQ queues when `WORK_QUEUE_BACKEND=bullmq`; the Postgres-backed local queue
+is used when `WORK_QUEUE_BACKEND=local`.
 
 On the experimental `epic/electron-control-refactor` branch, `koed-server`
 defaults to external dependency mode for source checkouts. It connects to
 Operator-managed Postgres, Redis/BullMQ, and Embedding Service endpoints; it
-does not start or stop Docker Compose dependencies.
+does not start or stop Docker Compose dependencies in external mode.
 
 ## Local Run
 
@@ -50,6 +51,18 @@ and the Embedding Service/model runtime. Start Docker Desktop before launching
 the Compose stack, then let `koed-server` connect to the service URLs. Advanced
 Operators can provide the same URLs from `KOED_HOME/config/server.json` instead
 of Docker Compose.
+
+### Bundled-local runtime scaffold
+
+Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch the
+local Compose `postgres` and `embedding-service` services and default the
+API/Worker queue backend to `local`. Redis is not required for queues in this
+mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set.
+
+Bundled-local mode is runtime scaffolding only. It does not install Docker,
+Postgres, pgvector, llama.cpp, model assets, Homebrew packages, or system
+services. Keep using the current local setup path for required images, binaries,
+and model files.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 

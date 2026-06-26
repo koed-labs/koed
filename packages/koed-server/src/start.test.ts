@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -82,6 +82,110 @@ describe("start supervisor", () => {
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
+  });
+
+  it("starts bundled-local Postgres and Embedding Service scaffolds without Redis", async () => {
+    const root = tempDir();
+    const commands: Array<{
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+    const spawned: Array<{ command: string; args: string[] }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "bundled-local"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (command, args, options) => {
+        commands.push({ command, args, env: options?.env });
+        return spawnResult();
+      },
+      spawn: (command, args) => {
+        spawned.push({ command, args });
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = spawned.length;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(commands.map((command) => command.args.join(" "))).toEqual([
+      resolve(root, "scripts/setup-env.mjs"),
+      "compose up -d --build --remove-orphans postgres embedding-service",
+      "--filter @koed/api --filter @koed/worker --filter @koed/explorer build"
+    ]);
+    expect(
+      commands.find((command) => command.command === "docker")?.args
+    ).not.toContain("redis");
+    const buildEnv = commands.at(-1)?.env;
+    expect(buildEnv?.WORK_QUEUE_BACKEND).toBe("local");
+    expect(buildEnv?.EMBEDDING_SERVICE_URL).toBe("http://localhost:3800");
+    expect(spawned.map((entry) => entry.args.join(" "))).toContain(
+      "--filter @koed/worker start"
+    );
+    const runtime = JSON.parse(
+      readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+    ) as { dependencyMode?: string; services?: string[] };
+    expect(runtime.dependencyMode).toBe("bundled-local");
+    expect(runtime.services).toEqual([
+      "postgres",
+      "embedding-service",
+      "api",
+      "worker",
+      "explorer"
+    ]);
+  });
+
+  it("honors bundled-local BullMQ override from .env", async () => {
+    const root = tempDir();
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+    );
+    const commands: Array<{
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (command, args, options) => {
+        commands.push({ command, args, env: options?.env });
+        return spawnResult();
+      },
+      spawn: () => {
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = 1;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(commands.map((command) => command.args.join(" "))).toContain(
+      "compose up -d --build --remove-orphans postgres redis embedding-service"
+    );
+    expect(commands.at(-1)?.env?.WORK_QUEUE_BACKEND).toBe("bullmq");
   });
 
   it("does not require Redis URL for external mode with local work queue", async () => {

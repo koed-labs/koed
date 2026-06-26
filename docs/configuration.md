@@ -26,15 +26,23 @@ systemd, Homebrew, managed infrastructure, or another Operator-managed path.
 `koed-server` connects to those services and supervises Koed app processes; it
 does not start or stop Docker Compose in this mode.
 
+Bundled-local dependency mode is a local runtime scaffold for Postgres/pgvector
+and the Embedding Service. In this mode, `koed-server start` starts the local
+Compose `postgres` and `embedding-service` services and defaults API/Worker jobs
+to `WORK_QUEUE_BACKEND=local`, so Redis is not required for queues unless the
+Operator explicitly sets `WORK_QUEUE_BACKEND=bullmq`. This is not an asset,
+model, Docker, Homebrew, or system-service installer; required binaries, images,
+and model files still need to exist through the current local setup path.
+
 Supported mode fields:
 
 - `KOED_RUNTIME_MODE`: `local-personal`, `external`, or `developer`.
-- `KOED_DEPENDENCY_MODE`: `external` today. `bundled-local` is reserved for the future local personal dependency-free path.
-- `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL.
+- `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
+- `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
 - `KOED_EXTERNAL_REDIS_URL` or `REDIS_URL`: Operator-managed Redis/BullMQ URL when the queue backend is `bullmq`.
-- `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL.
+- `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL in external mode.
 
-Example `KOED_HOME/config/server.json`:
+Example external `KOED_HOME/config/server.json`:
 
 ```json
 {
@@ -45,6 +53,15 @@ Example `KOED_HOME/config/server.json`:
     "redisUrl": "redis://127.0.0.1:16379",
     "embeddingServiceUrl": "http://127.0.0.1:3800"
   }
+}
+```
+
+Example bundled-local `KOED_HOME/config/server.json`:
+
+```json
+{
+  "runtimeMode": "developer",
+  "dependencyMode": "bundled-local"
 }
 ```
 

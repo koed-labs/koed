@@ -202,7 +202,8 @@ export const statusFromApiReady = async (
 
 export const dockerComposePs = (
   paths: KoedServerPaths,
-  spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike
+  spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike,
+  expectedServices: string[] = ["redis"]
 ): KoedServerComponentStatus => {
   const result = spawnSync("docker", ["compose", "ps", "--format", "json"], {
     cwd: paths.repoRoot,
@@ -232,12 +233,17 @@ export const dockerComposePs = (
           .map((line) => line.trim())
           .filter(Boolean)
       );
-      return runningServices.has("redis")
+      const missing = expectedServices.filter(
+        (service) => !runningServices.has(service)
+      );
+      return missing.length === 0
         ? healthy(undefined, {
-            services: [{ Service: "redis", State: "running" }]
+            services: [...runningServices]
+              .filter((service) => expectedServices.includes(service))
+              .map((service) => ({ Service: service, State: "running" }))
           })
-        : starting("Redis queue dependency has not started yet.", {
-            missing: ["redis"],
+        : starting("Local dependencies have not all started yet.", {
+            missing,
             services: [...runningServices]
           });
     }
@@ -265,22 +271,51 @@ export const dockerComposePs = (
       return [];
     }
   });
-  const redisService = services.find((service) => service.Service === "redis");
-  if (!redisService) {
-    return starting("Redis queue dependency has not started yet.", {
-      missing: ["redis"],
+  const expected = expectedServices.map((expectedService) => ({
+    expectedService,
+    service: services.find((service) => service.Service === expectedService)
+  }));
+  const missing = expected
+    .filter((entry) => !entry.service)
+    .map((entry) => entry.expectedService);
+  if (missing.length > 0) {
+    return starting("Local dependencies have not all started yet.", {
+      missing,
       services
     });
   }
-  if (redisService.State !== "running") {
+  const notRunning = expected
+    .map((entry) => entry.service!)
+    .filter((service) => service.State !== "running");
+  if (notRunning.length > 0) {
     return needsAttention(
-      "Redis queue dependency is not running.",
+      "Local dependencies are not all running.",
       "Run koed-server start.",
-      { services: [redisService] }
+      { services: notRunning }
     );
   }
-  return healthy(undefined, { services: [redisService] });
+  return healthy(undefined, {
+    services: expected.map((entry) => entry.service!)
+  });
 };
+
+const koedServerConfigEnvironment = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): NodeJS.ProcessEnv => ({
+  ...environment,
+  KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? repoEnv.KOED_RUNTIME_MODE,
+  KOED_DEPENDENCY_MODE:
+    environment.KOED_DEPENDENCY_MODE ?? repoEnv.KOED_DEPENDENCY_MODE,
+  KOED_EXTERNAL_DATABASE_URL:
+    environment.KOED_EXTERNAL_DATABASE_URL ??
+    repoEnv.KOED_EXTERNAL_DATABASE_URL,
+  KOED_EXTERNAL_REDIS_URL:
+    environment.KOED_EXTERNAL_REDIS_URL ?? repoEnv.KOED_EXTERNAL_REDIS_URL,
+  KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
+    environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
+    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL
+});
 
 const inspectApiToken = (
   environment: NodeJS.ProcessEnv,
@@ -462,10 +497,14 @@ export const collectKoedServerStatus = async (
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   const repoEnv = loadRepoEnv(paths.repoRoot);
-  const serverConfig = resolveKoedServerConfig(paths, environment, {
-    existsSync: deps.existsSync,
-    readFileSync: deps.readFileSync
-  });
+  const serverConfig = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(environment, repoEnv),
+    {
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync
+    }
+  );
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
   const runtime = readJsonFile<KoedServerRuntimeState>(
@@ -484,30 +523,39 @@ export const collectKoedServerStatus = async (
     serverConfig.external?.redisUrl ??
     environment.REDIS_URL ??
     repoEnv.REDIS_URL;
-  const queueBackend = resolveWorkQueueBackend(
-    environment.WORK_QUEUE_BACKEND ?? repoEnv.WORK_QUEUE_BACKEND
-  );
+  const queueBackend = environment.WORK_QUEUE_BACKEND
+    ? resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND)
+    : repoEnv.WORK_QUEUE_BACKEND
+      ? resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND)
+      : serverConfig.dependencyMode === "bundled-local"
+        ? "local"
+        : resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
   const localQueueRedisBypass = healthy(
     "Postgres-backed local queue does not require Redis.",
     { backend: queueBackend }
   );
   const redisStatus =
-    serverConfig.dependencyMode === "external" && queueBackend === "local"
+    queueBackend === "local"
       ? apiReady.redis.state === "starting"
         ? localQueueRedisBypass
         : apiReady.redis
       : apiReady.redis;
+  const localDependencyServices = [
+    "postgres",
+    ...(queueBackend === "bullmq" ? ["redis"] : []),
+    "embedding-service"
+  ];
   const queueDependency =
-    serverConfig.dependencyMode === "external"
-      ? queueBackend === "local"
-        ? localQueueRedisBypass
-        : externalRedisUrl
+    queueBackend === "local"
+      ? localQueueRedisBypass
+      : serverConfig.dependencyMode === "external"
+        ? externalRedisUrl
           ? apiReady.redis
           : needsAttention(
               "External dependency mode requires an Operator-managed Redis URL for BullMQ queues.",
               "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL, or set WORK_QUEUE_BACKEND=local."
             )
-      : dockerComposePs(paths, deps.spawnSync);
+        : dockerComposePs(paths, deps.spawnSync, localDependencyServices);
   const workerPid = runtime?.processes?.worker;
   const workerRunning = workerPid ? deps.checkPid(workerPid) : false;
   const workerQueues =
@@ -552,8 +600,7 @@ export const collectKoedServerStatus = async (
     dependencyMode: serverConfig.dependencyMode,
     api: { ...apiReady.api, url: apiUrl },
     database: apiReady.database,
-    redis:
-      serverConfig.dependencyMode === "external" ? redisStatus : apiReady.redis,
+    redis: redisStatus,
     workerQueues,
     embeddingService: apiReady.embeddingService,
     apiToken,
