@@ -24,7 +24,7 @@ export const registerGraphRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticate, authenticateApiToken },
+    auth: { authenticate, authenticateApiToken, authenticateSession },
     graph: { cacheProvider, graphCacheTtlSeconds, hashCacheKey },
     rateLimit: {
       memoryRead: memoryReadRateLimit,
@@ -342,9 +342,11 @@ export const registerGraphRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
       const params = nodeIdParamsSchema.parse(request.params);
       const query = expandMemoryNodeQuerySchema.parse(request.query);
+      const user = query.team_workspace_id
+        ? await authenticateSession(request)
+        : await authenticateApiToken(request);
       const expanded = await repo.expandMemoryNode(
         params.nodeId,
         {

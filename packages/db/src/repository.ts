@@ -6380,7 +6380,34 @@ export const createMemorySourceRepository = (
                   end as summary_text,
                   case
                     when mn.summary_model is not null then mn.summary_text
-                    when linked_mn.summary_model is not null then linked_mn.summary_text
+                    when linked_mn.summary_model is not null
+                      and (
+                        me.owner_user_id = $1
+                        or (
+                          $15::uuid is not null
+                          and exists (
+                            select 1
+                            from memory_node_sources rerank_any_mns
+                            where rerank_any_mns.memory_node_id = linked_mn.id
+                          )
+                          and not exists (
+                            select 1
+                            from memory_node_sources rerank_mns
+                            left join memory_events rerank_ev on rerank_ev.id = rerank_mns.memory_event_id and rerank_ev.invalidated_at is null and rerank_ev.personal_deleted_at is null
+                            left join messages rerank_msg on rerank_msg.id = rerank_mns.message_id and rerank_msg.invalidated_at is null
+                            where rerank_mns.memory_node_id = linked_mn.id
+                              and not exists (
+                                select 1
+                                from team_session_share_grants rerank_grant
+                                where rerank_grant.session_id = coalesce(rerank_ev.session_id, rerank_msg.session_id)
+                                  and rerank_grant.team_workspace_id = $15::uuid
+                                  and rerank_grant.team_id = $16::uuid
+                                  and rerank_grant.revoked_at is null
+                              )
+                          )
+                        )
+                      )
+                    then linked_mn.summary_text
                     else null
                   end as rerank_text,
                   coalesce(mn.summary_model, linked_mn.summary_model) as lcm_summary_model,
