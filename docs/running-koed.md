@@ -41,6 +41,18 @@ Explorer token config separately.
 
 The Explorer frontend is available at `http://localhost:5174`, or the host port you selected.
 
+## LCM Smoke Test
+
+`pnpm smoke:lcm` expects a disposable Docker Compose stack using the small LCM
+smoke profile. The profile lowers the LCM thresholds and raises only the local
+write limit needed for the test; it does not change product defaults.
+
+```bash
+docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis
+pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
+MEMORY_API_TOKEN=<token> pnpm smoke:lcm
+```
+
 ## Production Notes
 
 Keep Postgres, Redis, and the embedding service private. Expose only the API and optional Explorer through your reverse proxy. Set strong `API_DATA_ENCRYPTION_KEY`, `API_TOKEN_PEPPER`, `EMBEDDING_SERVICE_TOKEN`, database password, and Redis password. Use TLS at the reverse proxy if the API or Explorer are reachable beyond localhost.
