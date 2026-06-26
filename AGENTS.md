@@ -49,6 +49,7 @@ If you are making code changes, keep using the contributor guidance below.
 
 - Use the repository pull request template at `.github/pull_request_template.md` when drafting PR descriptions.
 - Before creating a PR, validate that the change satisfies all acceptance criteria for the linked ticket. If any acceptance criterion is not met, state that explicitly in the PR description with the reason.
+- After opening or updating a PR, watch CI with `gh run watch` or equivalent until checks finish, unless the user asks not to wait.
 - Before adding or omitting a changeset, tell the user whether the issue appears release-noteworthy, recommend a bump level, justify the recommendation, and ask for confirmation. Err toward a minor bump for user-visible features, configuration changes, deployment/runtime changes, or meaningful behavior changes. Reserve major bumps for explicit breaking changes, and patch bumps for narrow fixes or documentation-only release notes.
 
 ## Current Product Boundaries
