@@ -26,16 +26,17 @@ MCP-side workers.
 
 The API exposes `GET /v1/capabilities` as the stable discovery boundary for
 clients that can target more than one Koed backend. The endpoint is
-unauthenticated and intentionally static for this self-hosted distribution: it
+unauthenticated and intentionally coarse for this self-hosted distribution: it
 does not inspect Memory, emit diagnostics, disclose local paths, or expose
 deployment secrets.
 
 Clients should use the capability contract before enabling backend-specific
-surfaces. The self-hosted response advertises supported local capabilities such
-as Personal Memory capture, MCP recall, graph inspection, and local LCM
-summaries. It also marks cloud-only or future paid surfaces such as billing,
-Memory Inbox, managed connectors, Cross-Identity Sync, and Team memory recall as
-unsupported until those backend contracts exist.
+surfaces. The self-hosted response is a positive, module-registered capability
+map: it advertises available local capabilities such as Personal Memory capture,
+MCP recall, graph inspection, and local LCM summaries. Clients should treat a
+missing capability as unavailable for the current backend. Cloud-only or private
+SaaS services register their own capabilities in the cloud backend instead of
+being enumerated as unsupported by this public self-hosted build.
 
 ## Ingestion
 

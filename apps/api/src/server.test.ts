@@ -94,6 +94,7 @@ type AccessResponse = {
 type CapabilitiesResponse = {
   product: string;
   apiVersion: string;
+  capabilitySchemaVersion: number;
   deployment: {
     mode: string;
     distribution: string;
@@ -102,15 +103,15 @@ type CapabilitiesResponse = {
   auth: {
     modes: string[];
   };
-  clients: {
-    supportedAiClients: string[];
-    electronApp: {
-      backendTarget: string;
-      guidedClientSetup: string;
-    };
-  };
-  features: Record<string, string>;
-  endpointGroups: Record<string, Record<string, string>>;
+  providers: string[];
+  capabilities: Record<
+    string,
+    {
+      availability: string;
+      description: string;
+      endpoints?: string[];
+    }
+  >;
 };
 type TeamResponse = {
   team: { id: string; name: string };
@@ -2413,34 +2414,63 @@ describe("api health", () => {
     expect(capabilities).toMatchObject({
       product: "koed",
       apiVersion: "v1",
+      capabilitySchemaVersion: 1,
       deployment: {
         mode: "self_hosted",
         distribution: "source_available",
         managedBy: "operator"
       },
-      clients: {
-        supportedAiClients: ["codex"],
-        electronApp: {
-          backendTarget: "supported",
-          guidedClientSetup: "planned"
+      capabilities: {
+        "clients.codex": {
+          availability: "available"
+        },
+        "clients.electronBackendTarget": {
+          availability: "available"
+        },
+        "memory.personal": {
+          availability: "available"
+        },
+        "memory.captureHook": {
+          availability: "available"
+        },
+        "memory.mcpRecall": {
+          availability: "available"
+        },
+        "memory.localLcmSummaries": {
+          availability: "available"
+        },
+        "teams.management": {
+          availability: "partial"
+        },
+        "teams.workspaces": {
+          availability: "partial"
+        },
+        "operations.diagnostics": {
+          availability: "authenticated"
         }
-      },
-      features: {
-        personalMemory: "supported",
-        teamWorkspaceManagement: "partial",
-        teamMemoryRecall: "unsupported",
-        shareGrants: "unsupported",
-        billing: "unsupported",
-        memoryInbox: "unsupported",
-        managedConnectors: "unsupported"
       }
     });
+    expect(capabilities.providers).toEqual(
+      expect.arrayContaining(["operations", "auth", "clients", "memory"])
+    );
     expect(capabilities.auth.modes).toEqual(
       expect.arrayContaining(["session_cookie", "api_token"])
     );
+    for (const privateCapability of [
+      "billing",
+      "memoryInbox",
+      "managedConnectors",
+      "teamMemoryRecall",
+      "shareGrants"
+    ]) {
+      expect(capabilities.capabilities).not.toHaveProperty(privateCapability);
+    }
     expect(response.body).not.toContain("/sensitive/local/path");
     expect(response.body).not.toContain("DATABASE_URL");
     expect(response.body).not.toContain("API_TOKEN");
+    expect(response.body).not.toContain("unsupported");
+    expect(response.body).not.toContain("memoryInbox");
+    expect(response.body).not.toContain("billing");
   });
 
   it("allows browser write preflight requests", async () => {
