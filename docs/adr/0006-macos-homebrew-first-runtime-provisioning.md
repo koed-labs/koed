@@ -105,6 +105,54 @@ as the initial implementation for native bundled-local assets.
 - Linux, Windows, non-Homebrew macOS installs, and fully self-contained native
   runtime packaging remain future work unless separately accepted.
 
+## Future State / Beyond Homebrew
+
+This ADR does not decide the final native asset packaging strategy. The expected
+next step after Homebrew is a Koed-owned, verified runtime bundle installed
+under `KOED_HOME/runtime` through the same `koed-server` runtime status/install
+contracts.
+
+At the high-level architecture boundary, this future bundle should preserve the
+same model proposed by ADR-0005:
+
+```text
+external = Operator-owned dependencies
+bundled-local = Koed-owned native runtime under KOED_HOME
+```
+
+Homebrew is only the first macOS asset source for proving that boundary. A later
+packaged runtime should make the asset source swappable without changing
+Desktop, headless startup, status, doctor, or setup semantics.
+
+A likely future direction is a "stitched upstream" packaging approach. Instead
+of Koed becoming the long-term maintainer of a full PostgreSQL source-build
+pipeline, Koed may reuse trusted upstream-maintained PostgreSQL binary
+distributions for the core database engine, then build, inject, or validate the
+`pgvector` extension against that distribution's `pg_config` and headers during
+Koed's asset-bundling process. This keeps the heavy database-engine maintenance
+burden outside Koed while making Koed's required vector extension compatibility
+explicit and testable.
+
+Current examples that inform this direction include upstream projects that
+package PostgreSQL for embedded or test-runtime use, such as theseus-rs-style or
+zonkyio-style precompiled PostgreSQL distributions. These examples are
+references for the kind of packaging approach Koed may evaluate; this ADR does
+not select one as the accepted supply-chain source.
+
+Any future packaged runtime should preserve these requirements:
+
+- pinned versions and platform/architecture metadata;
+- manifest and SHA-256 verification before install;
+- deterministic validation that bundled-local Postgres can load `pgvector`;
+- relocatable runtime paths so assets can live under `KOED_HOME/runtime`;
+- compatible dynamic library lookup for packaged assets;
+- clear repair/status output through `koed-server`;
+- no dependence on Docker Compose or external Postgres for local personal mode.
+
+The exact build-vs-reuse strategy, upstream binary source, pgvector build or
+injection process, signing/notarization process, and release pipeline should be
+decided in a later ADR after prototype validation.
+
 ## Consequences
 
 The first native bundled-local provisioning implementation can be much smaller
