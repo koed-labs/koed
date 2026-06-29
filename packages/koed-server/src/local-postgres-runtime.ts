@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
@@ -316,6 +316,7 @@ export const startLocalPostgresRuntime = (
   }
   mkdirSync(runtime.dataDir, { recursive: true, mode: 0o700 });
   mkdirSync(runtime.runDir, { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(runtime.logPath), { recursive: true, mode: 0o700 });
   if (!exists(resolve(runtime.dataDir, "PG_VERSION"))) {
     const pwfile = resolve(runtime.runDir, "postgres.pw");
     writeFileSync(pwfile, `${runtime.password}\n`, { mode: 0o600 });
@@ -357,7 +358,7 @@ export const startLocalPostgresRuntime = (
         "-l",
         runtime.logPath,
         "-o",
-        `-h ${runtime.host} -p ${runtime.port} -k ${runtime.runDir}`
+        `-h ${runtime.host} -p ${runtime.port}`
       ],
       env,
       spawnSync

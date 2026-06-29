@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -121,6 +127,13 @@ describe("local Postgres runtime", () => {
       resolve(bin, "psql"),
       resolve(bin, "psql")
     ]);
+    const startArgs = commands.find(
+      (entry) =>
+        entry.command.endsWith("pg_ctl") && entry.args.includes("start")
+    )?.args;
+    expect(startArgs?.join(" ")).toContain("-h 127.0.0.1 -p 15432");
+    expect(startArgs?.join(" ")).not.toContain(" -k ");
+    expect(existsSync(resolve(root, "logs"))).toBe(true);
     expect(commands.at(-2)?.args.join(" ")).toContain("CREATE DATABASE");
     expect(commands.at(-1)?.args.join(" ")).toContain(
       "CREATE EXTENSION IF NOT EXISTS vector"
