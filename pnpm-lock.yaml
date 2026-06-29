@@ -59,6 +59,9 @@ importers:
       '@koed/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@koed/koed':
+        specifier: workspace:*
+        version: link:../../packages/koed
       '@koed/shared':
         specifier: workspace:*
         version: link:../../packages/shared

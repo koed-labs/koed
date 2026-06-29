@@ -1,4 +1,6 @@
-const koedReleaseVersion = "0.2.0";
+import releaseManifest from "@koed/koed/package.json" with { type: "json" };
+
+const koedReleaseVersion = releaseManifest.version;
 
 type CapabilityAvailability = "available" | "partial" | "authenticated";
 

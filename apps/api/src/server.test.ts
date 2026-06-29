@@ -6,6 +6,7 @@ import type {
   MemoryEventRecord,
   MemorySearchResult
 } from "@koed/core";
+import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 import type {
   ActorContext,
   AuditEventRecord,
@@ -95,6 +96,7 @@ type CapabilitiesResponse = {
   product: string;
   apiVersion: string;
   capabilitySchemaVersion: number;
+  releaseVersion: string;
   deployment: {
     mode: string;
     distribution: string;
@@ -2411,6 +2413,7 @@ describe("api health", () => {
     const capabilities = jsonBody<CapabilitiesResponse>(response);
 
     expect(response.statusCode).toBe(200);
+    expect(capabilities.releaseVersion).toBe(releaseManifest.version);
     expect(capabilities).toMatchObject({
       product: "koed",
       apiVersion: "v1",
