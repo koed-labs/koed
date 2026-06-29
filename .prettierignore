@@ -1,5 +1,7 @@
 node_modules
 dist
+apps/desktop/dist-electron
+apps/desktop/dist-types
 coverage
 target
 

@@ -477,8 +477,6 @@ export const startKoedServer = async ({
       source: apiToken.source
     });
   }
-  const apiUrl = resolveApiUrl(environment, repoEnv);
-  const explorerUrl = resolveExplorerUrl(environment, repoEnv);
   const config = resolveKoedServerConfig(
     paths,
     koedServerConfigEnvironment(environment, repoEnv)
@@ -544,6 +542,8 @@ export const startKoedServer = async ({
     paths,
     { nativeEmbedding: useNativeEmbedding }
   );
+  const apiUrl = resolveApiUrl(environment, refreshedRepoEnv);
+  const explorerUrl = resolveExplorerUrl(environment, refreshedRepoEnv);
 
   let startedNativePostgres = false;
   let startedComposeServices: string[] = [];
@@ -684,6 +684,20 @@ export const startKoedServer = async ({
       spawnSync
     );
 
+    const explorerPort = (() => {
+      if (environment.EXPLORER_WEB_HOST_PORT) {
+        return environment.EXPLORER_WEB_HOST_PORT;
+      }
+      if (refreshedRepoEnv.EXPLORER_WEB_HOST_PORT) {
+        return refreshedRepoEnv.EXPLORER_WEB_HOST_PORT;
+      }
+      try {
+        return new URL(explorerUrl).port || "5174";
+      } catch {
+        return "5174";
+      }
+    })();
+
     const children = {
       ...(nativeEmbeddingProcess
         ? { embeddingService: nativeEmbeddingProcess }
@@ -717,9 +731,7 @@ export const startKoedServer = async ({
           "--host",
           "127.0.0.1",
           "--port",
-          refreshedRepoEnv.EXPLORER_WEB_HOST_PORT ??
-            environment.EXPLORER_WEB_HOST_PORT ??
-            "5174"
+          explorerPort
         ],
         refreshedEnv,
         spawn

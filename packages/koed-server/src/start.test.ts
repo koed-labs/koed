@@ -90,6 +90,59 @@ describe("start supervisor", () => {
     );
   });
 
+  it("lets one-shot port overrides win over repo .env URLs when starting external mode", async () => {
+    const root = tempDir();
+    writeFileSync(
+      resolve(root, ".env"),
+      [
+        "API_HOST_PORT=3300",
+        "MEMORY_API_URL=http://localhost:3300",
+        "EXPLORER_WEB_HOST_PORT=5174",
+        "DATABASE_URL=postgres://repo/db",
+        "REDIS_URL=redis://repo:6379",
+        "EMBEDDING_SERVICE_URL=http://repo:3800"
+      ].join("\n")
+    );
+    const spawned: Array<{ command: string; args: string[] }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        API_HOST_PORT: "4545",
+        EXPLORER_WEB_HOST_PORT: "5574",
+        DATABASE_URL: "postgres://operator/db",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://operator:3800"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: () => spawnResult(),
+      spawn: (command, args) => {
+        spawned.push({ command, args });
+        const child = new EventEmitter() as EventEmitter & {
+          pid: number;
+          kill: () => boolean;
+        };
+        child.pid = spawned.length;
+        child.kill = () => true;
+        setTimeout(() => child.emit("exit", 0), 0);
+        return child as never;
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    const runtime = JSON.parse(
+      readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+    ) as { apiUrl?: string; explorerUrl?: string };
+    expect(runtime.apiUrl).toBe("http://localhost:4545");
+    expect(runtime.explorerUrl).toBe("http://localhost:5574");
+    expect(
+      spawned.find((entry) => entry.args.includes("preview"))?.args
+    ).toContain("5574");
+  });
+
   it("starts bundled-local Postgres and Embedding Service scaffolds without Redis", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "models"));
