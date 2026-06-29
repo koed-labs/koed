@@ -9,11 +9,9 @@ import {
   emptyHookBreakerState,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
-  filterTranscriptItemsAlreadyCapturedFromImmediatePrompts,
   hookApiRequestTimeoutMs,
   hookBreakerEntryCanRetryHealth,
   hookBreakerEntryIsOpen,
-  hookBreakerKey,
   isRetryableTranscriptCatchupError,
   loadConfig,
   parseForegroundTranscriptFileRecords,
@@ -24,6 +22,7 @@ import {
   rawItemRequestChunks,
   recordHookBreakerFailure,
   runForegroundCapturePass,
+  runTranscriptCatchup,
   selectRawConversationItemsForHook,
   selectCaptureItems,
   shouldReadTranscriptForHook,
@@ -31,6 +30,50 @@ import {
   transcriptCatchupApiRequestTimeoutMs,
   transcriptCatchupRetryDelayMs
 } from "../src/capture-hook.js";
+
+const withHookStateFile = async (
+  run: (input: { dir: string; statePath: string }) => Promise<void>
+): Promise<void> => {
+  const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
+  const priorApiUrl = process.env.MEMORY_API_URL;
+  const priorApiToken = process.env.MEMORY_API_TOKEN;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
+  const statePath = path.join(dir, "hook-state.json");
+  process.env.MEMORY_HOOK_STATE_PATH = statePath;
+  process.env.MEMORY_API_URL = "http://127.0.0.1:3000";
+  process.env.MEMORY_API_TOKEN = "test-token";
+  try {
+    await run({ dir, statePath });
+  } finally {
+    if (priorStatePath === undefined) {
+      delete process.env.MEMORY_HOOK_STATE_PATH;
+    } else {
+      process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
+    }
+    if (priorApiUrl === undefined) {
+      delete process.env.MEMORY_API_URL;
+    } else {
+      process.env.MEMORY_API_URL = priorApiUrl;
+    }
+    if (priorApiToken === undefined) {
+      delete process.env.MEMORY_API_TOKEN;
+    } else {
+      process.env.MEMORY_API_TOKEN = priorApiToken;
+    }
+    fs.rmSync(dir, { force: true, recursive: true });
+  }
+};
+
+const readOnlyTranscriptCatchupStatus = (
+  statePath: string
+): Record<string, unknown> => {
+  const parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+    transcriptCatchups?: Record<string, Record<string, unknown>>;
+  };
+  const statuses = Object.values(parsed.transcriptCatchups ?? {});
+  expect(statuses).toHaveLength(1);
+  return statuses[0]!;
+};
 
 describe("Codex capture hook transcript parsing", () => {
   it("uses a short hook API timeout without changing the MCP default timeout", () => {
@@ -162,192 +205,290 @@ describe("Codex capture hook transcript parsing", () => {
     expect(hookBreakerEntryCanRetryHealth(entry, 63000)).toBe(true);
   });
 
-  it("short-circuits foreground capture while the hook breaker is open", async () => {
-    const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
-    const priorToken = process.env.MEMORY_API_TOKEN;
-    const priorUrl = process.env.MEMORY_API_URL;
-    const priorCatchup = process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
-    const statePath = path.join(dir, "hook-state.json");
-    process.env.MEMORY_HOOK_STATE_PATH = statePath;
-    process.env.MEMORY_API_TOKEN = "token-open";
-    process.env.MEMORY_API_URL = "http://127.0.0.1:1";
-    process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = "false";
-    const key = hookBreakerKey({
-      apiUrl: process.env.MEMORY_API_URL,
-      apiToken: process.env.MEMORY_API_TOKEN
-    });
-    fs.writeFileSync(
-      statePath,
-      JSON.stringify({
-        version: 1,
-        foregroundFailures: {
-          [key]: {
-            consecutiveFailures: 3,
-            openedAt: Date.now(),
-            retryAfter: Date.now() + 60_000
-          }
-        }
-      })
-    );
-    const runPass = vi.fn();
-    try {
+  it("signals detached transcript ingestion from foreground hooks", async () => {
+    await withHookStateFile(async () => {
+      const triggerCatchup = vi.fn();
+      const transcriptPath = path.join(
+        os.tmpdir(),
+        `koed-transcript-${process.pid}-${Date.now()}.jsonl`
+      );
+
       const result = await runForegroundCapturePass({
         payload: {
           hook_event_name: "PostToolUse",
           session_id: "session-open",
-          transcript_path: path.join(dir, "transcript.jsonl")
+          turn_id: "turn-open",
+          tool_use_id: "tool-use-open",
+          tool_name: "Read",
+          transcript_path: transcriptPath
         },
-        runPass
+        triggerCatchup
       });
 
-      expect(runPass).not.toHaveBeenCalled();
-      expect(result).toMatchObject({
+      expect(triggerCatchup).toHaveBeenCalledWith(undefined, {
+        hook_event_name: "PostToolUse",
+        session_id: "session-open",
+        turn_id: "turn-open",
+        tool_use_id: "tool-use-open",
+        tool_name: "Read",
+        transcript_path: transcriptPath
+      });
+      expect(result).toEqual({
         rawItemsStored: 0,
+        rawItemsProjected: 0,
+        transcriptPath,
         transcriptBacklogRemaining: true,
         transcriptCheckpointAdvanced: false
       });
+    });
+  });
+
+  it("runs foreground transcript capture when detached catch-up is disabled", async () => {
+    const priorTrigger = process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
+    process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = "false";
+    try {
+      await withHookStateFile(async () => {
+        const triggerCatchup = vi.fn();
+        const runPass = vi.fn(async () => ({
+          rawItemsStored: 2,
+          rawItemsProjected: 2,
+          transcriptPath: "/tmp/koed-disabled-catchup.jsonl",
+          transcriptBacklogRemaining: false,
+          transcriptCheckpointAdvanced: true
+        }));
+
+        const result = await runForegroundCapturePass({
+          payload: {
+            hook_event_name: "PostToolUse",
+            session_id: "session-disabled-catchup",
+            transcript_path: "/tmp/koed-disabled-catchup.jsonl"
+          },
+          runPass,
+          triggerCatchup
+        });
+
+        expect(triggerCatchup).not.toHaveBeenCalled();
+        expect(runPass).toHaveBeenCalledWith({
+          configPath: undefined,
+          payload: {
+            hook_event_name: "PostToolUse",
+            session_id: "session-disabled-catchup",
+            transcript_path: "/tmp/koed-disabled-catchup.jsonl"
+          },
+          mode: "foreground"
+        });
+        expect(result).toMatchObject({
+          rawItemsStored: 2,
+          rawItemsProjected: 2,
+          transcriptBacklogRemaining: false,
+          transcriptCheckpointAdvanced: true
+        });
+      });
     } finally {
-      if (priorStatePath === undefined) {
-        delete process.env.MEMORY_HOOK_STATE_PATH;
-      } else {
-        process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
-      }
-      if (priorToken === undefined) {
-        delete process.env.MEMORY_API_TOKEN;
-      } else {
-        process.env.MEMORY_API_TOKEN = priorToken;
-      }
-      if (priorUrl === undefined) {
-        delete process.env.MEMORY_API_URL;
-      } else {
-        process.env.MEMORY_API_URL = priorUrl;
-      }
-      if (priorCatchup === undefined) {
+      if (priorTrigger === undefined) {
         delete process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP;
       } else {
-        process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = priorCatchup;
+        process.env.MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP = priorTrigger;
       }
-      fs.rmSync(dir, { force: true, recursive: true });
     }
   });
 
-  it("uses a successful access check to reset the hook breaker after cooldown", async () => {
-    const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
-    const priorToken = process.env.MEMORY_API_TOKEN;
-    const priorUrl = process.env.MEMORY_API_URL;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
-    const statePath = path.join(dir, "hook-state.json");
-    process.env.MEMORY_HOOK_STATE_PATH = statePath;
-    process.env.MEMORY_API_TOKEN = "token-reset";
-    process.env.MEMORY_API_URL = "http://127.0.0.1:1";
-    const key = hookBreakerKey({
-      apiUrl: process.env.MEMORY_API_URL,
-      apiToken: process.env.MEMORY_API_TOKEN
-    });
-    fs.writeFileSync(
-      statePath,
-      JSON.stringify({
-        version: 1,
-        foregroundFailures: {
-          [key]: {
-            consecutiveFailures: 3,
-            openedAt: Date.now() - 120_000,
-            retryAfter: Date.now() - 1
-          }
-        }
-      })
-    );
-    const runPass = vi.fn(async () => ({
-      rawItemsStored: 1,
-      transcriptBacklogRemaining: false,
-      transcriptCheckpointAdvanced: true
-    }));
-    try {
-      const result = await runForegroundCapturePass({
-        payload: { hook_event_name: "UserPromptSubmit", session_id: "s" },
-        runPass,
-        healthCheck: async () => ({
-          ok: true,
-          auth: "bearer_api_token",
-          user: { id: "user-1", email: "u@example.com" },
-          canWritePersonal: true
-        })
+  it("throttles duplicate detached catch-up spawns for an in-flight transcript", async () => {
+    await withHookStateFile(async () => {
+      const triggerCatchup = vi.fn();
+      const payload = {
+        hook_event_name: "PostToolUse" as const,
+        session_id: "session-throttled-catchup",
+        transcript_path: "/tmp/koed-throttled-catchup.jsonl",
+        cwd: "/repo"
+      };
+
+      const first = await runForegroundCapturePass({
+        payload,
+        triggerCatchup
+      });
+      const second = await runForegroundCapturePass({
+        payload,
+        triggerCatchup
       });
 
-      expect(runPass).toHaveBeenCalledOnce();
-      expect(result.rawItemsStored).toBe(1);
-      const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
-        foregroundFailures?: Record<string, unknown>;
-      };
-      expect(state.foregroundFailures?.[key]).toBeUndefined();
-    } finally {
-      if (priorStatePath === undefined) {
-        delete process.env.MEMORY_HOOK_STATE_PATH;
-      } else {
-        process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
-      }
-      if (priorToken === undefined) {
-        delete process.env.MEMORY_API_TOKEN;
-      } else {
-        process.env.MEMORY_API_TOKEN = priorToken;
-      }
-      if (priorUrl === undefined) {
-        delete process.env.MEMORY_API_URL;
-      } else {
-        process.env.MEMORY_API_URL = priorUrl;
-      }
-      fs.rmSync(dir, { force: true, recursive: true });
-    }
+      expect(triggerCatchup).toHaveBeenCalledTimes(1);
+      expect(first).toMatchObject({
+        transcriptPath: payload.transcript_path,
+        transcriptBacklogRemaining: true
+      });
+      expect(second).toMatchObject({
+        transcriptPath: payload.transcript_path,
+        transcriptBacklogRemaining: true
+      });
+    });
   });
 
-  it("does not open the hook breaker for non-retryable foreground failures", async () => {
-    const priorStatePath = process.env.MEMORY_HOOK_STATE_PATH;
-    const priorToken = process.env.MEMORY_API_TOKEN;
-    const priorUrl = process.env.MEMORY_API_URL;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
-    const statePath = path.join(dir, "hook-state.json");
-    process.env.MEMORY_HOOK_STATE_PATH = statePath;
-    process.env.MEMORY_API_TOKEN = "token-nonretryable";
-    process.env.MEMORY_API_URL = "http://127.0.0.1:1";
-    const key = hookBreakerKey({
-      apiUrl: process.env.MEMORY_API_URL,
-      apiToken: process.env.MEMORY_API_TOKEN
+  it("records successful detached transcript catch-up breadcrumbs", async () => {
+    await withHookStateFile(async ({ dir, statePath }) => {
+      const transcriptPath = path.join(dir, "transcript.jsonl");
+      fs.writeFileSync(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          payload: { type: "user_message", message: "hello" }
+        })}\n`
+      );
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "session-status-success",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => ({
+              ok: true,
+              auth: "bearer_api_token",
+              user: {
+                id: "user-status-success",
+                email: "user@example.com",
+                displayName: null
+              },
+              canWritePersonal: true
+            })
+          },
+          acquireCatchupLock: () => ({
+            heartbeat() {},
+            release() {}
+          }),
+          runCapturePass: async () => ({
+            rawItemsStored: 2,
+            rawItemsProjected: 2,
+            transcriptPath,
+            transcriptCheckpointOffset: 123,
+            transcriptSize: 456,
+            transcriptBacklogBytes: 333,
+            transcriptBacklogRemaining: false,
+            transcriptCheckpointAdvanced: true
+          }),
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      const status = readOnlyTranscriptCatchupStatus(statePath);
+      expect(typeof status.lastStartedAt).toBe("string");
+      expect(typeof status.lastSucceededAt).toBe("string");
+      expect(status).toMatchObject({
+        transcriptPath,
+        lastError: null,
+        checkpointOffset: 123,
+        transcriptSize: 456,
+        backlogBytes: 333,
+        rawItemsStored: 2,
+        rawItemsProjected: 2
+      });
     });
-    const runPass = vi.fn(async () => {
-      throw new MemoryApiError("bad token", { status: 401 });
+  });
+
+  it("records retryable detached catch-up failures and supersedes them on later success", async () => {
+    await withHookStateFile(async ({ dir, statePath }) => {
+      const transcriptPath = path.join(dir, "transcript.jsonl");
+      fs.writeFileSync(transcriptPath, "");
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "session-status-retry",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => {
+              throw new MemoryApiError("rate limited", { status: 429 });
+            }
+          },
+          sleepUntilCatchupStop: async () => false,
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      const failedStatus = readOnlyTranscriptCatchupStatus(statePath);
+      expect(typeof failedStatus.lastStartedAt).toBe("string");
+      expect(typeof failedStatus.lastFailedAt).toBe("string");
+      expect(failedStatus).toMatchObject({
+        transcriptPath,
+        lastError: "rate limited"
+      });
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "session-status-retry",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => ({
+              ok: true,
+              auth: "bearer_api_token",
+              user: {
+                id: "user-status-retry",
+                email: "user@example.com",
+                displayName: null
+              },
+              canWritePersonal: true
+            })
+          },
+          acquireCatchupLock: () => ({
+            heartbeat() {},
+            release() {}
+          }),
+          runCapturePass: async () => ({
+            rawItemsStored: 1,
+            rawItemsProjected: 1,
+            transcriptPath,
+            transcriptCheckpointOffset: 50,
+            transcriptSize: 50,
+            transcriptBacklogBytes: 0,
+            transcriptBacklogRemaining: false,
+            transcriptCheckpointAdvanced: true
+          }),
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      const recoveredStatus = readOnlyTranscriptCatchupStatus(statePath);
+      expect(typeof recoveredStatus.lastFailedAt).toBe("string");
+      expect(typeof recoveredStatus.lastSucceededAt).toBe("string");
+      expect(recoveredStatus).toMatchObject({
+        transcriptPath,
+        lastError: null,
+        checkpointOffset: 50,
+        rawItemsStored: 1,
+        rawItemsProjected: 1
+      });
     });
-    try {
-      await expect(
-        runForegroundCapturePass({
-          payload: { hook_event_name: "UserPromptSubmit", session_id: "s" },
-          runPass
-        })
-      ).rejects.toThrow("bad token");
-      const state = fs.existsSync(statePath)
-        ? (JSON.parse(fs.readFileSync(statePath, "utf8")) as {
-            foregroundFailures?: Record<string, unknown>;
-          })
-        : { foregroundFailures: {} };
-      expect(state.foregroundFailures?.[key]).toBeUndefined();
-    } finally {
-      if (priorStatePath === undefined) {
-        delete process.env.MEMORY_HOOK_STATE_PATH;
-      } else {
-        process.env.MEMORY_HOOK_STATE_PATH = priorStatePath;
-      }
-      if (priorToken === undefined) {
-        delete process.env.MEMORY_API_TOKEN;
-      } else {
-        process.env.MEMORY_API_TOKEN = priorToken;
-      }
-      if (priorUrl === undefined) {
-        delete process.env.MEMORY_API_URL;
-      } else {
-        process.env.MEMORY_API_URL = priorUrl;
-      }
-      fs.rmSync(dir, { force: true, recursive: true });
-    }
+  });
+
+  it("returns quickly when a foreground hook has no transcript path", async () => {
+    const triggerCatchup = vi.fn();
+
+    const result = await runForegroundCapturePass({
+      payload: { hook_event_name: "UserPromptSubmit", session_id: "s" },
+      triggerCatchup
+    });
+
+    expect(triggerCatchup).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    });
   });
 
   it("keeps transcript checkpoints stable when the API token changes", () => {
@@ -415,12 +556,148 @@ describe("Codex capture hook transcript parsing", () => {
     });
   });
 
+  it("assigns transcript rows to their real Codex turns instead of the hook payload turn", () => {
+    const payload = {
+      hook_event_name: "Stop" as const,
+      cwd: "/repo",
+      session_id: "hook-session",
+      turn_id: "hook-signal-turn"
+    };
+    const records = [
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:00.000Z",
+        payload: { type: "task_started", turn_id: "turn-a" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:01.000Z",
+        payload: { type: "user_message", message: "Prompt A" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:02.000Z",
+        payload: { type: "agent_message", message: "Reply A" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:03.000Z",
+        payload: { type: "task_complete", turn_id: "turn-a" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:04.000Z",
+        payload: { type: "task_started", turn_id: "turn-b" }
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-05-01T10:00:05.000Z",
+        payload: { type: "user_message", message: "Prompt B" }
+      }
+    ];
+
+    const items = buildRawTranscriptConversationItems({
+      records,
+      transcriptPath: "/tmp/session.jsonl",
+      effectiveContext: effectiveCaptureContext(payload),
+      payload
+    });
+
+    expect(
+      items.map((item) => ({
+        rawText: item.rawText,
+        sourceEventType: item.sourceEventType,
+        externalTurnId: item.externalTurnId
+      }))
+    ).toEqual([
+      {
+        rawText: "",
+        sourceEventType: "task_started",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "Prompt A",
+        sourceEventType: "user_message",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "Reply A",
+        sourceEventType: "agent_message",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "",
+        sourceEventType: "task_complete",
+        externalTurnId: "turn-a"
+      },
+      {
+        rawText: "",
+        sourceEventType: "task_started",
+        externalTurnId: "turn-b"
+      },
+      {
+        rawText: "Prompt B",
+        sourceEventType: "user_message",
+        externalTurnId: "turn-b"
+      }
+    ]);
+    expect(
+      items.some((item) => item.externalTurnId === "hook-signal-turn")
+    ).toBe(false);
+  });
+
+  it("starts a fresh semantic turn for each transcript user prompt when Codex omits turn ids", () => {
+    const payload = {
+      hook_event_name: "Stop" as const,
+      cwd: "/repo",
+      session_id: "session-no-turns"
+    };
+    const items = buildRawTranscriptConversationItems({
+      records: [
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:00.000Z",
+          payload: { type: "user_message", message: "First prompt" }
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:01.000Z",
+          payload: { type: "agent_message", message: "First reply" }
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:02.000Z",
+          payload: { type: "user_message", message: "Second prompt" }
+        },
+        {
+          type: "event_msg",
+          timestamp: "2026-05-01T10:00:03.000Z",
+          payload: { type: "agent_message", message: "Second reply" }
+        }
+      ],
+      transcriptPath: "/tmp/session-no-turns.jsonl",
+      effectiveContext: effectiveCaptureContext(payload),
+      payload
+    });
+
+    expect(items.map((item) => item.rawText)).toEqual([
+      "First prompt",
+      "First reply",
+      "Second prompt",
+      "Second reply"
+    ]);
+    expect(items[0]!.externalTurnId).toBe(items[1]!.externalTurnId);
+    expect(items[2]!.externalTurnId).toBe(items[3]!.externalTurnId);
+    expect(items[0]!.externalTurnId).not.toBe(items[2]!.externalTurnId);
+  });
+
   it("uses stable raw transcript idempotency across foreground and catch-up offsets", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: {
           type: "agent_message",
           message
@@ -429,12 +706,14 @@ describe("Codex capture hook transcript parsing", () => {
     fs.writeFileSync(
       transcriptPath,
       [
-        line("first checkpoint line"),
-        line("same duplicate message"),
-        line("same duplicate message")
+        line("first checkpoint line", "2026-05-01T10:00:00.000Z"),
+        line("same duplicate message", "2026-05-01T10:00:01.000Z"),
+        line("same duplicate message", "2026-05-01T10:00:02.000Z")
       ].join("")
     );
-    const firstLineBytes = Buffer.byteLength(line("first checkpoint line"));
+    const firstLineBytes = Buffer.byteLength(
+      line("first checkpoint line", "2026-05-01T10:00:00.000Z")
+    );
     const context = effectiveCaptureContext({
       hook_event_name: "PostToolUse",
       cwd: "/repo",
@@ -462,7 +741,9 @@ describe("Codex capture hook transcript parsing", () => {
         transcriptPath,
         state,
         stateScope: "scope",
-        foregroundMaxBytes: Buffer.byteLength(line("same duplicate message"))
+        foregroundMaxBytes: Buffer.byteLength(
+          line("same duplicate message", "2026-05-01T10:00:02.000Z")
+        )
       });
       const catchup = parseTranscriptFileRecords({
         transcriptPath,
@@ -493,24 +774,29 @@ describe("Codex capture hook transcript parsing", () => {
       expect(foregroundItems[0]!.idempotencyKey).toBe(
         catchupItems[1]!.idempotencyKey
       );
-      expect(foregroundItems[0]!.sourceSequence).toBeLessThan(10);
+      expect(foregroundItems[0]!.sourceSequence).toBe(
+        catchupItems[1]!.sourceSequence
+      );
     } finally {
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });
 
-  it("checkpoints an existing transcript on first contact instead of replaying history", () => {
-    process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES = "140";
+  it("can scan an existing transcript from the start without a first-contact cutoff", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
     fs.writeFileSync(
       transcriptPath,
-      `${line("old message one")}${line("old message two")}`
+      `${line("old message one", "2026-05-01T10:00:00.000Z")}${line(
+        "old message two",
+        "2026-05-01T10:00:01.000Z"
+      )}`
     );
     const size = fs.statSync(transcriptPath).size;
 
@@ -521,46 +807,303 @@ describe("Codex capture hook transcript parsing", () => {
         stateScope: "scope"
       });
 
-      expect(result.records).toEqual([]);
+      expect(result.records).toHaveLength(2);
+      expect(JSON.stringify(result.records)).toContain("old message one");
+      expect(JSON.stringify(result.records)).toContain("old message two");
       expect(result.indexOffset).toBe(0);
       expect(result.checkpoint).toMatchObject({
         offset: size,
-        lineCount: 0,
+        lineCount: 2,
         size
       });
     } finally {
-      delete process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES;
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });
 
-  it("does not scan old transcript content when checkpointing first contact", () => {
+  it("baselines first-contact live capture to timestamped records near the hook signal", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
+    const oldTimestamp = "2026-01-01T00:00:00.000Z";
+    const liveTimestamp = "2026-01-01T00:10:00.000Z";
+    const oldLine = JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        timestamp: oldTimestamp,
+        message: "old transcript history"
+      }
+    });
+    const liveLine = JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        timestamp: liveTimestamp,
+        message: "live hook window message"
+      }
+    });
     fs.writeFileSync(
       transcriptPath,
-      `${JSON.stringify({
-        type: "event_msg",
-        payload: {
-          type: "agent_message",
-          message: "already captured elsewhere"
-        }
-      })}\n`
+      [
+        oldLine,
+        oldLine.replace("old transcript history", "older transcript history"),
+        liveLine
+      ].join("\n") + "\n"
     );
+    const size = fs.statSync(transcriptPath).size;
     const openSpy = vi.spyOn(fs, "openSync");
 
     try {
       const result = parseTranscriptFileRecords({
         transcriptPath,
         state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
-        stateScope: "scope"
+        stateScope: "scope",
+        firstContactAfter: "2026-01-01T00:05:00.000Z",
+        maxBytes: Buffer.byteLength(`${liveLine}\n`) + 4
       });
 
-      expect(result.records).toEqual([]);
-      expect(result.checkpoint?.offset).toBe(fs.statSync(transcriptPath).size);
-      expect(openSpy).not.toHaveBeenCalled();
+      expect(result.records).toHaveLength(1);
+      expect(JSON.stringify(result.records[0])).toContain(
+        "live hook window message"
+      );
+      expect(JSON.stringify(result.records)).not.toContain(
+        "old transcript history"
+      );
+      expect(result.checkpoint?.offset).toBe(size);
+      expect(result.checkpoint?.size).toBe(size);
+      expect(openSpy).toHaveBeenCalled();
     } finally {
       openSpy.mockRestore();
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps first-contact live rows and interpolates missing timestamps between source timestamps", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp?: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        ...(timestamp ? { timestamp } : {}),
+        payload: { type: "agent_message", message }
+      })}\n`;
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        line("old transcript history", "2026-01-01T00:00:00.000Z"),
+        line("live source timestamp", "2026-01-01T00:10:00.000Z"),
+        line("missing timestamp inside live window"),
+        line("next source timestamp", "2026-01-01T00:10:04.000Z")
+      ].join("")
+    );
+    const size = fs.statSync(transcriptPath).size;
+
+    try {
+      const result = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        firstContactAfter: "2026-01-01T00:05:00.000Z",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const rawItems = buildRawTranscriptConversationItems({
+        records: result.records,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          hook_event_name: "Stop",
+          session_id: "live-interpolation"
+        }),
+        payload: { hook_event_name: "Stop", session_id: "live-interpolation" }
+      });
+
+      expect(rawItems.map((item) => item.rawText)).toEqual([
+        "live source timestamp",
+        "missing timestamp inside live window",
+        "next source timestamp"
+      ]);
+      expect(rawItems.map((item) => item.eventTime)).toEqual([
+        "2026-01-01T00:10:00.000Z",
+        "2026-01-01T00:10:02.000Z",
+        "2026-01-01T00:10:04.000Z"
+      ]);
+      expect(rawItems[1]!.metadata).toMatchObject({
+        sourceEventTimeAccuracy: "interpolated_between_sources"
+      });
+      expect(result.checkpoint).toMatchObject({
+        offset: size,
+        lineCount: 4,
+        size,
+        lastEventTime: "2026-01-01T00:10:04.000Z"
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("holds a stampless transcript tail until a later source timestamp anchors it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp?: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        ...(timestamp ? { timestamp } : {}),
+        payload: { type: "agent_message", message }
+      })}\n`;
+    const previousLine = line(
+      "previous timestamped row",
+      "2026-01-01T00:10:00.000Z"
+    );
+    const missingLine = line("stampless tail row");
+    fs.writeFileSync(transcriptPath, previousLine + missingLine);
+    const previousSize = Buffer.byteLength(previousLine);
+    const state = {
+      seen: {},
+      rawSeen: {},
+      transcriptOffsets: {
+        [`scope:${transcriptPath}`]: {
+          offset: previousSize,
+          lineCount: 1,
+          size: previousSize,
+          lastEventTime: "2026-01-01T00:10:00.000Z"
+        }
+      }
+    };
+
+    try {
+      const held = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      expect(held.records).toEqual([]);
+      expect(held.checkpoint).toMatchObject({
+        offset: previousSize,
+        lineCount: 1,
+        lastEventTime: "2026-01-01T00:10:00.000Z"
+      });
+
+      fs.appendFileSync(
+        transcriptPath,
+        line("later timestamped row", "2026-01-01T00:10:04.000Z")
+      );
+      const anchored = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const rawItems = buildRawTranscriptConversationItems({
+        records: anchored.records,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          hook_event_name: "Stop",
+          session_id: "stampless-tail"
+        }),
+        payload: { hook_event_name: "Stop", session_id: "stampless-tail" }
+      });
+
+      expect(rawItems.map((item) => item.rawText)).toEqual([
+        "stampless tail row",
+        "later timestamped row"
+      ]);
+      expect(rawItems.map((item) => item.eventTime)).toEqual([
+        "2026-01-01T00:10:02.000Z",
+        "2026-01-01T00:10:04.000Z"
+      ]);
+      expect(rawItems[0]!.metadata).toMatchObject({
+        sourceEventTimeAccuracy: "interpolated_between_sources"
+      });
+      expect(anchored.checkpoint).toMatchObject({
+        lineCount: 3,
+        lastEventTime: "2026-01-01T00:10:04.000Z"
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("preserves the prior timestamp anchor across empty transcript polls", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp?: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        ...(timestamp ? { timestamp } : {}),
+        payload: { type: "agent_message", message }
+      })}\n`;
+    const previousLine = line(
+      "previous timestamped row",
+      "2026-01-01T00:10:00.000Z"
+    );
+    fs.writeFileSync(transcriptPath, previousLine);
+    const previousSize = fs.statSync(transcriptPath).size;
+    const state = {
+      seen: {},
+      rawSeen: {},
+      transcriptOffsets: {
+        [`scope:${transcriptPath}`]: {
+          offset: previousSize,
+          lineCount: 1,
+          size: previousSize,
+          lastEventTime: "2026-01-01T00:10:00.000Z"
+        }
+      }
+    };
+
+    try {
+      const emptyPoll = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+
+      expect(emptyPoll.records).toEqual([]);
+      expect(emptyPoll.checkpoint).toMatchObject({
+        offset: previousSize,
+        lineCount: 1,
+        size: previousSize,
+        lastEventTime: "2026-01-01T00:10:00.000Z"
+      });
+
+      const nextState = {
+        seen: {},
+        rawSeen: {},
+        transcriptOffsets: {
+          [`scope:${transcriptPath}`]: emptyPoll.checkpoint!
+        }
+      };
+      fs.appendFileSync(
+        transcriptPath,
+        line("stampless row after empty poll") +
+          line("later timestamped row", "2026-01-01T00:10:04.000Z")
+      );
+      const anchored = parseTranscriptFileRecords({
+        transcriptPath,
+        state: nextState,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const rawItems = buildRawTranscriptConversationItems({
+        records: anchored.records,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          hook_event_name: "Stop",
+          session_id: "empty-poll-anchor"
+        }),
+        payload: { hook_event_name: "Stop", session_id: "empty-poll-anchor" }
+      });
+
+      expect(rawItems.map((item) => item.rawText)).toEqual([
+        "stampless row after empty poll",
+        "later timestamped row"
+      ]);
+      expect(rawItems.map((item) => item.eventTime)).toEqual([
+        "2026-01-01T00:10:02.000Z",
+        "2026-01-01T00:10:04.000Z"
+      ]);
+    } finally {
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });
@@ -568,14 +1111,21 @@ describe("Codex capture hook transcript parsing", () => {
   it("reads only appended transcript records after the initial checkpoint", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
-    fs.writeFileSync(transcriptPath, line("old message"));
+    fs.writeFileSync(
+      transcriptPath,
+      line("old message", "2026-05-01T10:00:00.000Z")
+    );
     const initialSize = fs.statSync(transcriptPath).size;
-    fs.appendFileSync(transcriptPath, line("new message"));
+    fs.appendFileSync(
+      transcriptPath,
+      line("new message", "2026-05-01T10:00:01.000Z")
+    );
     const finalSize = fs.statSync(transcriptPath).size;
 
     try {
@@ -612,14 +1162,18 @@ describe("Codex capture hook transcript parsing", () => {
     process.env.MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES = "140";
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
     fs.writeFileSync(
       transcriptPath,
-      `${line("first message")}${line("second message")}${line("third message")}`
+      `${line("first message", "2026-05-01T10:00:00.000Z")}${line(
+        "second message",
+        "2026-05-01T10:00:01.000Z"
+      )}${line("third message", "2026-05-01T10:00:02.000Z")}`
     );
     const size = fs.statSync(transcriptPath).size;
 
@@ -652,21 +1206,24 @@ describe("Codex capture hook transcript parsing", () => {
   it("lets foreground hooks read the latest tail while leaving backlog checkpointing to background catch-up", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
     const transcriptPath = path.join(dir, "transcript.jsonl");
-    const line = (message: string) =>
+    const line = (message: string, timestamp: string) =>
       `${JSON.stringify({
         type: "event_msg",
+        timestamp,
         payload: { type: "agent_message", message }
       })}\n`;
     fs.writeFileSync(
       transcriptPath,
       [
-        line("first backlog message"),
-        line("second backlog message"),
-        line("third backlog message"),
-        line("latest foreground message")
+        line("first backlog message", "2026-05-01T10:00:00.000Z"),
+        line("second backlog message", "2026-05-01T10:00:01.000Z"),
+        line("third backlog message", "2026-05-01T10:00:02.000Z"),
+        line("latest foreground message", "2026-05-01T10:00:03.000Z")
       ].join("")
     );
-    const firstLineBytes = Buffer.byteLength(line("first backlog message"));
+    const firstLineBytes = Buffer.byteLength(
+      line("first backlog message", "2026-05-01T10:00:00.000Z")
+    );
 
     try {
       const result = parseForegroundTranscriptFileRecords({
@@ -683,7 +1240,9 @@ describe("Codex capture hook transcript parsing", () => {
           }
         },
         stateScope: "scope",
-        foregroundMaxBytes: Buffer.byteLength(line("latest foreground message"))
+        foregroundMaxBytes: Buffer.byteLength(
+          line("latest foreground message", "2026-05-01T10:00:03.000Z")
+        )
       });
 
       expect(result.backgroundCatchupNeeded).toBe(true);
@@ -709,7 +1268,9 @@ describe("Codex capture hook transcript parsing", () => {
           }
         },
         stateScope: "scope",
-        maxBytes: Buffer.byteLength(line("second backlog message"))
+        maxBytes: Buffer.byteLength(
+          line("second backlog message", "2026-05-01T10:00:01.000Z")
+        )
       });
 
       expect(JSON.stringify(background.records)).toContain(
@@ -909,20 +1470,7 @@ Coffee cardamom sounds interesting - should I cool the coffee first?`;
       mode: "foreground"
     });
 
-    expect(rawItems.map((item) => item.rawText)).toEqual([
-      expect.stringContaining("Context from my IDE setup"),
-      "Coffee cardamom sounds interesting - should I cool the coffee first?"
-    ]);
-    expect(rawItems[0]!.metadata).toMatchObject({
-      contextKind: "ide_client_context",
-      sourceRole: "supporting_context",
-      contextEncoding: "codex_rendered_prompt_wrapper"
-    });
-    expect(rawItems[1]!.metadata).toMatchObject({
-      immediateHookPrompt: true,
-      contextEncoding: "codex_rendered_prompt_wrapper"
-    });
-    expect(rawItems[0]!.sourceHash).not.toBe(rawItems[1]!.sourceHash);
+    expect(rawItems).toEqual([]);
   });
 
   it("splits browser-compatible rendered IDE wrapper variants", () => {
@@ -1007,13 +1555,7 @@ Review the active file.`;
       mode: "foreground"
     });
 
-    expect(rawItems.map((item) => item.rawText)).toEqual([
-      expect.stringContaining("Context from my IDE setup"),
-      "Review the active file."
-    ]);
-    expect(rawItems.map((item) => item.rawText).join("\n")).not.toContain(
-      "<environment_context>"
-    );
+    expect(rawItems).toEqual([]);
   });
 
   it("keeps literal image tags but hides image-only wrapped prompts", () => {
@@ -1085,10 +1627,7 @@ Please explain why <image>logo</image> is invalid HTML in this fixture.`;
       mode: "foreground"
     });
 
-    expect(rawItems.map((item) => item.rawText)).toEqual([
-      expect.stringContaining("Context from my IDE setup"),
-      ""
-    ]);
+    expect(rawItems).toEqual([]);
   });
 
   it("keeps marker-like user-authored prompts as normal user text", () => {
@@ -1293,22 +1832,32 @@ Do the thing.
     });
 
     expect(
-      selectCaptureItems(
-        [],
-        {
+      selectRawConversationItemsForHook({
+        transcriptRecords: [
+          {
+            type: "event_msg",
+            payload: {
+              type: "user_message",
+              message: "Review this change"
+            }
+          }
+        ],
+        payload: {
           session_id: "parent-thread",
           agent_id: "agent-thread-from-hook",
           hook_event_name: "UserPromptSubmit",
           prompt: "Review this change"
         },
-        effectiveContext
-      )
+        effectiveContext,
+        mode: "foreground"
+      })
     ).toMatchObject([
       {
-        actor: "agent",
+        externalSessionId: "child-thread",
+        rawText: "Review this change",
+        sourceRecordType: "event_msg",
         metadata: {
           threadKind: "subagent",
-          externalSessionId: "child-thread",
           parentThreadId: "parent-thread"
         }
       }
@@ -1567,7 +2116,7 @@ Do the thing.
     expect(items[1]?.content).toContain("Success. Updated files");
   });
 
-  it("keeps fallback tool events when transcript messages were found", () => {
+  it("uses transcript messages as the only capture items when hook payloads include tool output", () => {
     const transcriptItems = parseTranscriptText(
       JSON.stringify({
         type: "event_msg",
@@ -1584,22 +2133,8 @@ Do the thing.
       tool_response: "clean"
     });
 
-    expect(items.map((item) => item.actor)).toEqual(["agent", "tool"]);
-    expect(items[1]).toMatchObject({
-      eventType: "codex_tool_result",
-      metadata: {
-        toolName: "exec_command",
-        toolUseId: "toolu-1",
-        toolCall: {
-          kind: "hook",
-          id: "toolu-1",
-          name: "exec_command",
-          input: { cmd: "git status" },
-          output: "clean"
-        }
-      }
-    });
-    expect(items[1]?.content).toContain("Tool result: exec_command");
+    expect(items.map((item) => item.actor)).toEqual(["agent"]);
+    expect(items).toHaveLength(1);
   });
 
   it("reads the transcript tail on PostToolUse so agent commentary is not delayed until Stop", () => {
@@ -1624,24 +2159,17 @@ Do the thing.
     }
   });
 
-  it("uses fallback hook payloads when no transcript messages are available", () => {
+  it("does not create capture items from UserPromptSubmit hook payloads", () => {
     const items = selectCaptureItems([], {
       session_id: "session-b",
       hook_event_name: "UserPromptSubmit",
       prompt: "Capture this prompt"
     });
 
-    expect(items).toMatchObject([
-      {
-        actor: "user",
-        eventType: "codex_user_prompt",
-        content: "Capture this prompt",
-        metadata: { externalSessionId: "session-b" }
-      }
-    ]);
+    expect(items).toEqual([]);
   });
 
-  it("keeps UserPromptSubmit hook payloads when transcript backlog exists without the new prompt", () => {
+  it("keeps only transcript backlog when UserPromptSubmit hook payload has not reached the transcript", () => {
     const effectiveContext = effectiveCaptureContext({
       session_id: "session-userprompt-backlog",
       turn_id: "turn-1",
@@ -1669,17 +2197,86 @@ Do the thing.
     });
 
     expect(items.map((item) => item.rawText)).toEqual([
-      "Older unread transcript backlog",
-      "Immediate prompt from hook"
+      "Older unread transcript backlog"
     ]);
-    expect(items[1]).toMatchObject({
-      sourceRecordType: "hook_payload",
-      sourceEventType: "UserPromptSubmit",
-      rawText: "Immediate prompt from hook"
-    });
+    expect(items).toHaveLength(1);
   });
 
-  it("does not duplicate UserPromptSubmit hook payloads already present in the transcript batch", () => {
+  it("stores Stop hook payloads only as stripped control records", () => {
+    const payload = {
+      session_id: "session-stop-control",
+      turn_id: "turn-stop-control",
+      hook_event_name: "Stop",
+      last_assistant_message: "This must come from the transcript instead.",
+      tool_response: "This must not be captured from the hook."
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      sourceRecordType: "hook_payload",
+      sourceEventType: "Stop",
+      rawJson: {
+        session_id: "session-stop-control",
+        turn_id: "turn-stop-control",
+        hook_event_name: "Stop"
+      },
+      metadata: {
+        hookPayloadContentOmitted: true
+      }
+    });
+    expect(items[0]?.rawText).toBeUndefined();
+    expect(JSON.stringify(items[0]?.rawJson)).not.toContain(
+      "This must come from the transcript instead."
+    );
+    expect(JSON.stringify(items[0]?.rawJson)).not.toContain(
+      "This must not be captured from the hook."
+    );
+  });
+
+  it("keeps transcript content and adds a stripped Stop control record in foreground capture", () => {
+    const payload = {
+      session_id: "session-stop-transcript",
+      turn_id: "turn-stop-transcript",
+      hook_event_name: "Stop",
+      last_assistant_message: "Hook copy must not be stored."
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const items = selectRawConversationItemsForHook({
+      transcriptRecords: [
+        {
+          type: "event_msg",
+          payload: {
+            type: "agent_message",
+            message: "Transcript answer"
+          }
+        }
+      ],
+      payload,
+      effectiveContext,
+      mode: "foreground"
+    });
+
+    expect(items.map((item) => item.sourceRecordType)).toEqual([
+      "event_msg",
+      "hook_payload"
+    ]);
+    expect(items.map((item) => item.rawText)).toEqual([
+      "Transcript answer",
+      undefined
+    ]);
+    expect(JSON.stringify(items[1]?.rawJson)).not.toContain(
+      "Hook copy must not be stored."
+    );
+  });
+
+  it("keeps transcript UserPromptSubmit content when it is present in the transcript batch", () => {
     const payload = {
       session_id: "session-userprompt-present",
       turn_id: "turn-2",
@@ -1708,7 +2305,7 @@ Do the thing.
     expect(items).toHaveLength(1);
   });
 
-  it("does not duplicate UserPromptSubmit hook payloads present after mixed transcript backlog", () => {
+  it("keeps mixed transcript backlog without adding UserPromptSubmit hook content", () => {
     const payload = {
       session_id: "session-userprompt-mixed-present",
       turn_id: "turn-mixed-present",
@@ -1745,7 +2342,7 @@ Do the thing.
     expect(items).toHaveLength(2);
   });
 
-  it("does not suppress a repeated prompt when transcript backlog contains older matching text", () => {
+  it("does not add repeated UserPromptSubmit hook content when transcript backlog contains matching text", () => {
     const payload = {
       session_id: "session-userprompt-repeat",
       turn_id: "turn-repeat",
@@ -1777,16 +2374,12 @@ Do the thing.
 
     expect(items.map((item) => item.rawText)).toEqual([
       "Repeated prompt",
-      "Older backlog after the repeated prompt",
-      "Repeated prompt"
+      "Older backlog after the repeated prompt"
     ]);
-    expect(items[2]).toMatchObject({
-      sourceRecordType: "hook_payload",
-      sourceEventType: "UserPromptSubmit"
-    });
+    expect(items).toHaveLength(2);
   });
 
-  it("deduplicates subagent UserPromptSubmit payloads already present in the transcript batch", () => {
+  it("keeps subagent UserPromptSubmit content when it is present in the transcript batch", () => {
     const payload = {
       session_id: "parent-thread",
       agent_id: "subagent-thread",
@@ -1856,68 +2449,6 @@ Do the thing.
     expect(foregroundTranscript[0]?.idempotencyKey).toBe(
       catchupTranscript[0]?.idempotencyKey
     );
-  });
-
-  it("deduplicates detached catch-up transcript prompts without suppressing older repeated backlog", () => {
-    const stateScope = "scope-detached-prompt";
-    const prompt = "Repeated detached prompt";
-    const payload = {
-      session_id: "session-detached-prompt",
-      hook_event_name: "PostToolUse"
-    };
-    const effectiveContext = effectiveCaptureContext(payload);
-    const transcriptItems = buildRawTranscriptConversationItems({
-      records: [
-        {
-          type: "event_msg",
-          payload: {
-            type: "user_message",
-            message: prompt
-          }
-        },
-        {
-          type: "event_msg",
-          payload: {
-            type: "agent_message",
-            message: "Backlog between repeated prompts"
-          }
-        },
-        {
-          type: "event_msg",
-          payload: {
-            type: "user_message",
-            message: prompt
-          }
-        }
-      ],
-      payload,
-      effectiveContext
-    });
-
-    const filtered = filterTranscriptItemsAlreadyCapturedFromImmediatePrompts(
-      {
-        seen: {},
-        rawSeen: {},
-        immediatePrompts: {
-          [`${stateScope}:immediate-prompt-1`]: {
-            sourceHash: "immediate-source-hash",
-            externalSessionId: "session-detached-prompt",
-            externalTurnId: "turn-immediate-prompt",
-            actor: "user",
-            prompt,
-            capturedAt: Date.now()
-          }
-        },
-        transcriptOffsets: {}
-      },
-      stateScope,
-      transcriptItems
-    );
-
-    expect(filtered.map((item) => item.rawText)).toEqual([
-      prompt,
-      "Backlog between repeated prompts"
-    ]);
   });
 
   it("batches raw conversation items under the configured request budget", () => {
@@ -2078,13 +2609,13 @@ Do the thing.
     ]);
   });
 
-  it("delta-filters raw hook payloads by required source hash when no transcript sequence exists", () => {
+  it("delta-filters raw Stop control records by required source hash when no transcript sequence exists", () => {
     const item = {
       sourceKind: "codex",
       sourceAdapterVersion: "codex-hook-v1",
       sourceTransport: "hook",
       sourceRecordType: "hook_payload",
-      rawJson: { hook_event_name: "PostToolUse" },
+      rawJson: { hook_event_name: "Stop" },
       sourceHash: "hook-raw",
       idempotencyKey: "hook-raw",
       projectionStatus: "pending",

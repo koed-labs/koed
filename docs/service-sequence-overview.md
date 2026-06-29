@@ -43,29 +43,46 @@ being enumerated as unsupported by this public self-hosted build.
 1. Codex emits supported hook events such as `SessionStart`,
    `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and
    `SubagentStop`.
-2. The TypeScript Capture Hook reads the hook payload and transcript tail,
-   resolves local configuration, and checks the effective Capture Policy when
-   needed.
-3. The Capture Hook converts Codex transcript records into canonical raw
-   `conversation_items` with `sourceAdapterVersion=codex-transcript-v1`,
-   `sourceTransport=hook`, idempotency keys, source hashes, and
-   `projectionStatus=pending`.
-4. The API authenticates the API Token and persists the raw items as
+2. The TypeScript Capture Hook treats the hook event as a trigger signal. It
+   starts a detached transcript catch-up process for the transcript path and
+   returns without waiting for API writes, Projection, embeddings, or LCM work.
+3. The detached catch-up process holds a per-transcript lock so multiple hooks
+   coalesce into one active ingestion pass. It drains transcript rows from the
+   last checkpoint up to the latest complete JSONL line. If live capture sees
+   an existing transcript with no checkpoint, it baselines to the current end of
+   file after ingesting only timestamped rows in the first-contact grace window;
+   older transcript history requires an explicit historical import. Rows without
+   source timestamps are held at the checkpoint until a later timestamped row
+   lets Koed interpolate their source time without reordering transcript
+   chronology.
+4. Catch-up converts Codex transcript records into canonical raw
+   `conversation_items` observations with source adapter metadata, idempotency
+   keys, source hashes, and `projectionStatus=pending`. `Stop` and
+   `SubagentStop` hook signals may also be stored as stripped control records so
+   Projection can seal an agent turn, but content-bearing hook fields are
+   omitted before storage. Transcript JSONL records are the source of truth for
+   display and semantic content.
+5. The API authenticates the API Token and persists the raw items as
    `personal` memory through `POST /v1/memory/conversation-items`.
-5. While still inside the hook deadline, the Capture Hook tries foreground
-   projection through `POST /v1/memory/conversation-items/project`. If this is
-   too slow or unavailable, raw rows remain pending for catch-up.
-6. Projection derives Koed semantic rows: Captured Sessions, turns, messages,
+6. During persistence, the API assigns canonical identity only to transcript
+   observations. Hook control records do not become canonical messages, tool
+   events, Memory Events, LCM sources, or embeddings.
+7. Projection reads `projection_policy_rules` to decide which Codex transcript
+   item types become UI rows, tool events, Memory Events, embeddings, and LCM
+   sources. The seeded policy projects user, agent, subagent, tool call/result,
+   and reasoning summary items; context, telemetry, raw reasoning, lifecycle,
+   and unknown items remain raw provenance only.
+8. Projection derives Koed semantic rows: Captured Sessions, turns, messages,
    tool events, Memory Events, source links, and token usage where available.
    Agent work is bundled into semantic `agent_turn` Memory Events only when a
    seal condition is reached.
-7. The API schedules processing for newly projected Memory Events. The Worker
+9. The API schedules processing for newly projected Memory Events. The Worker
    also runs a catch-up loop over pending or failed raw rows.
-8. The Worker embeds Memory Events by calling the Embedding Service and then
-   upserts source embeddings.
-9. The Worker schedules compaction, creating or updating LCM Placeholder Memory
-   Nodes from Memory Events and child nodes, then queues Memory Node embedding.
-10. Pending LCM placeholders remain available as degraded evidence until local
+10. The Worker embeds Memory Events by calling the Embedding Service and then
+    upserts source embeddings.
+11. The Worker schedules compaction, creating or updating LCM Placeholder Memory
+    Nodes from Memory Events and child nodes, then queues Memory Node embedding.
+12. Pending LCM placeholders remain available as degraded evidence until local
     LCM summaries are submitted.
 
 ```mermaid
@@ -78,13 +95,14 @@ sequenceDiagram
   participant Embed as Embedding Service
 
   Client->>Hook: Supported hook event and transcript path
-  Hook->>API: Check effective Capture Policy
-  Hook->>API: POST raw conversation_items
-  API->>DB: Persist raw rows idempotently
-  Hook->>API: POST project pending items
-  API->>DB: Project sessions, turns, messages, Memory Events
-  API-->>Hook: Projection and processing status
+  Hook-->>Hook: Start detached transcript catch-up
+  Hook-->>Client: Return without waiting for capture work
+  Hook->>DB: Update local catch-up status breadcrumbs
+  Hook->>API: Background access check and raw conversation_items
+  API->>DB: Persist or reconcile transcript rows idempotently
   Worker->>DB: Catch up pending raw rows
+  Worker->>DB: Read projection_policy_rules
+  Worker->>DB: Project sessions, turns, messages, Memory Events
   Worker->>Embed: Embed Memory Event text
   Embed-->>Worker: Vectors
   Worker->>DB: Store embeddings and LCM placeholders

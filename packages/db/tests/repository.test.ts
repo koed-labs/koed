@@ -3304,6 +3304,56 @@ describeDb("memory repository visibility", () => {
     expect(new Set(nodeSessions.rows.map((row) => row.sessions)).size).toBe(2);
   });
 
+  it("ignores only explicit includeInLcm false metadata during LCM compaction", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lcm-include-metadata-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'LCM Metadata Include Project')
+      `,
+      [workspaceId, alice.id]
+    );
+
+    for (let index = 1; index <= 6; index += 1) {
+      await captureUserEvent(engine, alice.id, {
+        workspaceId,
+        content: `LCM include metadata source ${index}`,
+        metadata: {
+          includeInLcm:
+            index === 1 ? false : index === 2 ? { malformed: true } : true
+        }
+      });
+    }
+
+    const compacted = await repo.createLcmNodes(
+      { userId: alice.id },
+      { visibility: "personal" }
+    );
+    const leafSources = await pool.query<{ content: string }>(
+      `
+        select me.payload ->> 'content' as content
+        from memory_node_sources mns
+        join memory_events me on me.id = mns.memory_event_id
+        where mns.memory_node_id = $1
+        order by mns.source_order asc
+      `,
+      [compacted.leafNodeIds[0]]
+    );
+
+    expect(compacted.leafNodeIds).toHaveLength(1);
+    expect(leafSources.rows.map((row) => row.content)).toEqual([
+      "LCM include metadata source 2",
+      "LCM include metadata source 3",
+      "LCM include metadata source 4",
+      "LCM include metadata source 5",
+      "LCM include metadata source 6"
+    ]);
+  });
+
   it("persists personal memory questions as shells and hydrated detail", async () => {
     const alice = await repo.createUser({
       email: `alice-question-${randomUUID()}@example.com`
@@ -3669,9 +3719,525 @@ describeDb("memory repository visibility", () => {
     expect(events.map((graphEvent) => graphEvent.id)).toEqual([event.id]);
   });
 
-  it("projects hook-only fallback payloads into semantic memory", async () => {
+  it("seeds explicit projection policy rows while allowing independent display and recall policy", async () => {
+    const rows = await pool.query<{
+      transcript_type: string;
+      project_to_ui: boolean;
+      include_in_embedding: boolean;
+      create_memory_event: boolean;
+    }>(
+      `
+        select
+          transcript_type,
+          project_to_ui,
+          include_in_embedding,
+          create_memory_event
+        from projection_policy_rules
+        where source_kind = 'codex'
+          and source_adapter_version = 'codex-transcript-v1'
+        order by transcript_type asc
+      `
+    );
+    const byType = new Map(rows.rows.map((row) => [row.transcript_type, row]));
+
+    expect([...byType.keys()]).toEqual(
+      expect.arrayContaining([
+        "user_message",
+        "assistant_message",
+        "agent_message",
+        "subagent_message",
+        "message",
+        "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "reasoning_summary",
+        "ide_context",
+        "system_message",
+        "task_started",
+        "task_complete",
+        "turn_context",
+        "context_compacted",
+        "compacted",
+        "thread/tokenusage/updated",
+        "mcp_tool_call_end",
+        "patch_apply_end",
+        "agentmessage/delta",
+        "unknown"
+      ])
+    );
+    expect(
+      rows.rows.every((row) => row.project_to_ui === row.include_in_embedding)
+    ).toBe(true);
+    const displayOnlyType = `display_only_${randomUUID().replaceAll("-", "_")}`;
+    const recallOnlyType = `recall_only_${randomUUID().replaceAll("-", "_")}`;
+    try {
+      await pool.query(
+        `
+          insert into projection_policy_rules (
+            transcript_type,
+            description,
+            project_to_ui,
+            create_message,
+            create_tool_event,
+            create_memory_event,
+            include_in_embedding,
+            include_in_lcm
+          )
+          values
+            (
+              $1,
+              'Temporary display-only policy rule.',
+              true,
+              true,
+              false,
+              false,
+              false,
+              false
+            ),
+            (
+              $2,
+              'Temporary recall-only policy rule.',
+              false,
+              false,
+              false,
+              true,
+              true,
+              false
+            )
+        `,
+        [displayOnlyType, recallOnlyType]
+      );
+    } finally {
+      await pool.query(
+        "delete from projection_policy_rules where transcript_type = any($1)",
+        [[displayOnlyType, recallOnlyType]]
+      );
+    }
+    expect(byType.get("user_message")).toMatchObject({
+      project_to_ui: true,
+      include_in_embedding: true,
+      create_memory_event: true
+    });
+    expect(byType.get("function_call_output")).toMatchObject({
+      project_to_ui: true,
+      include_in_embedding: true,
+      create_memory_event: true
+    });
+    expect(byType.get("ide_context")).toMatchObject({
+      project_to_ui: false,
+      include_in_embedding: false,
+      create_memory_event: false
+    });
+    expect(byType.get("mcp_tool_call_end")).toMatchObject({
+      project_to_ui: false,
+      include_in_embedding: false,
+      create_memory_event: false
+    });
+    expect(byType.get("patch_apply_end")).toMatchObject({
+      project_to_ui: false,
+      include_in_embedding: false,
+      create_memory_event: false
+    });
+  });
+
+  it("uses projection policy rules instead of only the hardcoded semantic allowlist", async () => {
     const alice = await repo.createUser({
-      email: `alice-hook-fallback-${randomUUID()}@example.com`
+      email: `alice-projection-policy-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const transcriptType = `projection_policy_user_${randomUUID().replaceAll("-", "_")}`;
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Projection Policy Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-policy-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `projection-policy-session-${randomUUID()}`
+      }
+    );
+
+    await pool.query(
+      `
+        insert into projection_policy_rules (
+          transcript_type,
+          description,
+          project_to_ui,
+          create_message,
+          create_tool_event,
+          create_memory_event,
+          include_in_embedding,
+          include_in_lcm
+        )
+        values (
+          $1,
+          'Temporary test projection policy rule.',
+          true,
+          true,
+          false,
+          true,
+          true,
+          true
+        )
+      `,
+      [transcriptType]
+    );
+
+    try {
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "projection-policy-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: transcriptType,
+              sourceSequence: 14,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: transcriptType,
+                  role: "user",
+                  content: "Policy table selected this custom transcript type."
+                }
+              },
+              rawText: "Policy table selected this custom transcript type.",
+              sourceHash: `projection-policy-raw-${randomUUID()}`,
+              idempotencyKey: `projection-policy-raw-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: {
+                workspaceId,
+                transcriptType
+              }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const messages = await pool.query<{ content: string }>(
+        "select content from messages where session_id = $1",
+        [session.id]
+      );
+      const memoryEvents = await pool.query<{ content: string }>(
+        "select payload ->> 'content' as content from memory_events where session_id = $1",
+        [session.id]
+      );
+
+      expect(projection).toMatchObject({
+        messagesCreated: 1,
+        memoryEventsCreated: 1
+      });
+      expect(messages.rows.map((row) => row.content)).toEqual([
+        "Policy table selected this custom transcript type."
+      ]);
+      expect(memoryEvents.rows.map((row) => row.content)).toEqual([
+        "Policy table selected this custom transcript type."
+      ]);
+    } finally {
+      await pool.query(
+        "delete from projection_policy_rules where transcript_type = $1",
+        [transcriptType]
+      );
+    }
+  });
+
+  it("uses projection policy rules to keep semantic events out of LCM", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-policy-lcm-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    const transcriptType = `projection_policy_lcm_user_${randomUUID().replaceAll("-", "_")}`;
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Projection Policy LCM Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-policy-lcm-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `projection-policy-lcm-session-${randomUUID()}`
+      }
+    );
+
+    await pool.query(
+      `
+        insert into projection_policy_rules (
+          transcript_type,
+          description,
+          project_to_ui,
+          create_message,
+          create_tool_event,
+          create_memory_event,
+          include_in_embedding,
+          include_in_lcm
+        )
+        values (
+          $1,
+          'Temporary LCM exclusion projection policy rule.',
+          true,
+          true,
+          false,
+          true,
+          true,
+          false
+        )
+      `,
+      [transcriptType]
+    );
+
+    try {
+      await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: Array.from({ length: 5 }, (_, index) => ({
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: `projection-policy-lcm-turn-${index}`,
+            sourceRecordType: "event_msg",
+            sourceEventType: transcriptType,
+            sourceSequence: index + 1,
+            eventTime: `2026-04-01T12:00:0${index}.000Z`,
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: transcriptType,
+                role: "user",
+                content: `LCM-excluded semantic event ${index + 1}.`
+              }
+            },
+            rawText: `LCM-excluded semantic event ${index + 1}.`,
+            sourceHash: `projection-policy-lcm-${index}-${randomUUID()}`,
+            idempotencyKey: `projection-policy-lcm-${index}-${randomUUID()}`,
+            projectionStatus: "pending" as const,
+            metadata: {
+              workspaceId,
+              transcriptType
+            }
+          }))
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const memoryEvents = await pool.query<{ include_in_lcm: string | null }>(
+        `
+          select payload #>> '{metadata,includeInLcm}' as include_in_lcm
+          from memory_events
+          where session_id = $1
+          order by captured_at asc
+        `,
+        [session.id]
+      );
+      const compacted = await repo.createLcmNodes(
+        { userId: alice.id },
+        { visibility: "personal" }
+      );
+
+      expect(projection).toMatchObject({
+        messagesCreated: 5,
+        memoryEventsCreated: 5
+      });
+      expect(memoryEvents.rows.map((row) => row.include_in_lcm)).toEqual([
+        "false",
+        "false",
+        "false",
+        "false",
+        "false"
+      ]);
+      expect(compacted.leafNodeIds).toEqual([]);
+    } finally {
+      await pool.query(
+        "delete from projection_policy_rules where transcript_type = $1",
+        [transcriptType]
+      );
+    }
+  });
+
+  it("uses raw-only projection policy rows to suppress fallback tool projection", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-policy-raw-only-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Raw-only Projection Policy Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `projection-policy-raw-only-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `projection-policy-raw-only-session-${randomUUID()}`
+      }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "projection-policy-raw-only-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "mcp_tool_call_end",
+            sourceSequence: 19,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "mcp_tool_call_end",
+                invocation: {
+                  tool: "memory_answer",
+                  arguments: { query: "This low-level event should stay raw." }
+                },
+                result: {
+                  Ok: {
+                    content: [
+                      {
+                        type: "text",
+                        text: "Raw-only policy should suppress this tool-shaped item."
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            rawText: "Raw-only policy should suppress this tool-shaped item.",
+            sourceHash: `projection-policy-raw-only-${randomUUID()}`,
+            idempotencyKey: `projection-policy-raw-only-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              workspaceId,
+              transcriptType: "mcp_tool_call_end"
+            }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "projection-policy-raw-only-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: `unlisted_tool_result_${randomUUID().replaceAll("-", "_")}`,
+            sourceSequence: 20,
+            eventTime: "2026-04-01T12:00:01.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "unlisted_tool_result",
+                invocation: {
+                  tool: "memory_answer",
+                  arguments: { query: "Unlisted tool-shaped item." }
+                },
+                result: {
+                  Ok: {
+                    content: [
+                      {
+                        type: "text",
+                        text: "Missing policy should suppress this tool-shaped item."
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            rawText: "Missing policy should suppress this tool-shaped item.",
+            sourceHash: `projection-policy-missing-${randomUUID()}`,
+            idempotencyKey: `projection-policy-missing-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              workspaceId,
+              transcriptType: "unlisted_tool_result"
+            }
+          }
+        ]
+      }
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_error: string | null;
+    }>(
+      "select projection_status, projection_error from conversation_items where session_id = $1 order by source_sequence",
+      [session.id]
+    );
+    const messages = await pool.query<{ count: string }>(
+      "select count(*) from messages where session_id = $1",
+      [session.id]
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*) from tool_events where session_id = $1",
+      [session.id]
+    );
+    const memoryEvents = await pool.query<{ count: string }>(
+      "select count(*) from memory_events where session_id = $1",
+      [session.id]
+    );
+
+    expect(projection).toMatchObject({
+      messagesCreated: 0,
+      toolEventsCreated: 0,
+      memoryEventsCreated: 0
+    });
+    expect(statuses.rows).toEqual([
+      { projection_status: "projected", projection_error: null },
+      { projection_status: "projected", projection_error: null }
+    ]);
+    expect(messages.rows[0]?.count).toBe("0");
+    expect(toolEvents.rows[0]?.count).toBe("0");
+    expect(memoryEvents.rows[0]?.count).toBe("0");
+  });
+
+  it("does not project hook-only payload content into semantic memory", async () => {
+    const alice = await repo.createUser({
+      email: `alice-hook-control-only-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
     await pool.query(
@@ -3685,10 +4251,10 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       {
         workspaceId,
-        externalSessionId: `hook-fallback-${randomUUID()}`,
+        externalSessionId: `hook-control-only-${randomUUID()}`,
         sourceRuntime: "codex-cli",
         captureMethod: "hook",
-        idempotencyKey: `hook-fallback-session-${randomUUID()}`
+        idempotencyKey: `hook-control-only-session-${randomUUID()}`
       }
     );
     await repo.createConversationItems(
@@ -3746,6 +4312,153 @@ describeDb("memory repository visibility", () => {
       { userId: alice.id },
       { limit: 10 }
     );
+    const messages = await pool.query<{ count: string }>(
+      "select count(*)::text as count from messages where session_id = $1",
+      [session.id]
+    );
+    const toolEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from tool_events where session_id = $1",
+      [session.id]
+    );
+    const memoryEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_events where session_id = $1",
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      source_event_type: string | null;
+      projection_status: string;
+    }>(
+      `
+        select source_event_type, projection_status
+        from conversation_items
+        where session_id = $1
+        order by source_sequence asc
+      `,
+      [session.id]
+    );
+
+    expect(projection).toMatchObject({
+      rawItemsProjected: 2,
+      messagesCreated: 0,
+      toolEventsCreated: 0,
+      memoryEventsCreated: 0
+    });
+    expect(messages.rows[0]?.count).toBe("0");
+    expect(toolEvents.rows[0]?.count).toBe("0");
+    expect(memoryEvents.rows[0]?.count).toBe("0");
+    expect(statuses.rows).toEqual([
+      { source_event_type: "UserPromptSubmit", projection_status: "projected" },
+      { source_event_type: "Stop", projection_status: "projected" }
+    ]);
+  });
+
+  it("projects transcript prompt messages without using UserPromptSubmit hook content", async () => {
+    const alice = await repo.createUser({
+      email: `alice-live-prompt-dedupe-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Live Prompt Dedupe Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `live-prompt-dedupe-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `live-prompt-dedupe-session-${randomUUID()}`
+      }
+    );
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "immediate-hook-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "UserPromptSubmit",
+            rawJson: {
+              hook_event_name: "UserPromptSubmit",
+              prompt: "Where should duplicate prompts render?"
+            },
+            rawText: "Where should duplicate prompts render?",
+            sourceHash: `live-prompt-hook-${randomUUID()}`,
+            idempotencyKey: `live-prompt-hook-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Live Prompt Dedupe Project" }
+          }
+        ]
+      }
+    );
+
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "immediate-hook-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 12,
+            eventTime: new Date().toISOString(),
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "Where should duplicate prompts render?"
+              }
+            },
+            rawText: "Where should duplicate prompts render?",
+            sourceHash: `live-prompt-transcript-${randomUUID()}`,
+            idempotencyKey: `live-prompt-transcript-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              projectName: "Live Prompt Dedupe Project",
+              transcriptType: "user_message"
+            }
+          }
+        ]
+      }
+    );
+
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const messageRows = await pool.query<{
+      content: string;
+      transcript_item_id: string | null;
+    }>(
+      `
+        select content, transcript_item_id
+        from messages
+        where session_id = $1
+        order by transcript_item_id asc nulls last
+      `,
+      [session.id]
+    );
     const events = await repo.listLcmGraphEvents(
       { userId: alice.id },
       {
@@ -3754,11 +4467,451 @@ describeDb("memory repository visibility", () => {
         limit: 10
       }
     );
+    const rawRows = await pool.query<{
+      source_record_type: string;
+      source_event_type: string | null;
+      source_sequence: number | null;
+      projection_status: string;
+      canonical_key: string | null;
+    }>(
+      `
+        select
+          source_record_type,
+          source_event_type,
+          source_sequence,
+          projection_status,
+          metadata ->> 'canonicalConversationItemKey' as canonical_key
+        from conversation_items
+        where session_id = $1
+      `,
+      [session.id]
+    );
+    const memoryEvents = await pool.query<{ count: string }>(
+      "select count(*)::text as count from memory_events where session_id = $1",
+      [session.id]
+    );
 
-    expect(projection.memoryEventsCreated).toBe(2);
+    expect(messageRows.rows).toEqual([
+      {
+        content: "Where should duplicate prompts render?",
+        transcript_item_id: "12"
+      }
+    ]);
     expect(events.map((event) => event.contentPreview)).toEqual([
-      "Hook-only assistant reply should be retained.",
-      "Hook-only prompt should be retained."
+      "Where should duplicate prompts render?"
+    ]);
+    expect(events[0]?.sourceSequence).toBe(12);
+    expect(rawRows.rows).toHaveLength(2);
+    const transcriptRawRow = rawRows.rows.find(
+      (row) => row.source_record_type === "event_msg"
+    );
+    expect(transcriptRawRow?.canonical_key).toMatch(/^conversation-item:/);
+    expect(rawRows.rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_record_type: "hook_payload",
+          source_event_type: "UserPromptSubmit",
+          projection_status: "projected",
+          canonical_key: null
+        }),
+        expect.objectContaining({
+          source_record_type: "event_msg",
+          source_event_type: "user_message",
+          source_sequence: 12,
+          projection_status: "projected",
+          canonical_key: transcriptRawRow?.canonical_key
+        })
+      ])
+    );
+    expect(memoryEvents.rows[0]?.count).toBe("1");
+  });
+
+  it("does not assign canonical content identity to transcript lifecycle rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-lifecycle-canonical-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Lifecycle Canonical Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `lifecycle-canonical-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `lifecycle-canonical-session-${randomUUID()}`
+      }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "lifecycle-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "task_started",
+            sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:00.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "task_started", turn_id: "lifecycle-turn" }
+            },
+            rawText: "Task started",
+            sourceHash: `lifecycle-start-${randomUUID()}`,
+            idempotencyKey: `lifecycle-start-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              workspaceId,
+              transcriptType: "task_started"
+            }
+          }
+        ]
+      }
+    );
+
+    const rawRows = await pool.query<{ canonical_key: string | null }>(
+      `
+        select metadata ->> 'canonicalConversationItemKey' as canonical_key
+        from conversation_items
+        where session_id = $1
+      `,
+      [session.id]
+    );
+
+    expect(rawRows.rows).toEqual([{ canonical_key: null }]);
+  });
+
+  it("updates existing message projections when source hash wins the conflict", async () => {
+    const alice = await repo.createUser({
+      email: `alice-message-source-hash-conflict-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Message Source Hash Conflict Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `message-source-hash-conflict-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `message-source-hash-conflict-session-${randomUUID()}`
+      }
+    );
+    const sourceHash = `message-source-hash-conflict-${randomUUID()}`;
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "message-source-hash-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            sourceSequence: 42,
+            eventTime: "2026-04-01T12:00:01.000Z",
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "Projection should refresh this message."
+              }
+            },
+            rawText: "Projection should refresh this message.",
+            sourceHash,
+            idempotencyKey: `message-source-hash-raw-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              workspaceId,
+              transcriptType: "user_message"
+            }
+          }
+        ]
+      }
+    );
+
+    await pool.query(
+      `
+        insert into messages (
+          session_id, owner_user_id, visibility, role, content,
+          source_runtime, capture_method, transcript_item_id,
+          idempotency_key, source_hash, source_event_time
+        )
+        values (
+          $1, $2, 'personal', 'user', 'stale content',
+          'codex', 'hook', 'stale-transcript-item',
+          $3, $4, '2026-04-01T12:00:00.000Z'
+        )
+      `,
+      [
+        session.id,
+        alice.id,
+        `stale-message-${randomUUID()}`,
+        `message:${sourceHash}`
+      ]
+    );
+
+    const projection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+    const messages = await pool.query<{
+      content: string;
+      transcript_item_id: string | null;
+      source_hash: string | null;
+    }>(
+      `
+        select content, transcript_item_id, source_hash
+        from messages
+        where session_id = $1
+        order by created_at asc
+      `,
+      [session.id]
+    );
+    const statuses = await pool.query<{
+      projection_status: string;
+      projection_error: string | null;
+    }>(
+      `
+        select projection_status, projection_error
+        from conversation_items
+        where session_id = $1
+      `,
+      [session.id]
+    );
+
+    expect(projection.messagesCreated).toBe(0);
+    expect(messages.rows).toEqual([
+      {
+        content: "Projection should refresh this message.",
+        transcript_item_id: "42",
+        source_hash: `message:${sourceHash}`
+      }
+    ]);
+    expect(statuses.rows).toEqual([
+      { projection_status: "projected", projection_error: null }
+    ]);
+  });
+
+  it("uses Stop hook payloads as seal signals without projecting assistant fallback content", async () => {
+    const alice = await repo.createUser({
+      email: `alice-live-agent-dedupe-${randomUUID()}@example.com`
+    });
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Live Agent Dedupe Project')
+      `,
+      [workspaceId, alice.id]
+    );
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId,
+        externalSessionId: `live-agent-dedupe-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        idempotencyKey: `live-agent-dedupe-session-${randomUUID()}`
+      }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "agent-turn-1",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "agent-turn-1",
+              last_assistant_message:
+                "Transcript assistant content should project."
+            },
+            rawText: "Transcript assistant content should project.",
+            sourceHash: `live-agent-hook-${randomUUID()}`,
+            idempotencyKey: `live-agent-hook-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Live Agent Dedupe Project" }
+          }
+        ]
+      }
+    );
+
+    const hookOnlyProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "agent-turn-1",
+            sourceRecordType: "event_msg",
+            sourceEventType: "agent_message",
+            sourceSequence: 22,
+            eventTime: new Date().toISOString(),
+            rawJson: {
+              type: "event_msg",
+              payload: {
+                type: "agent_message",
+                message: "Transcript assistant content should project."
+              }
+            },
+            rawText: "Transcript assistant content should project.",
+            sourceHash: `live-agent-transcript-${randomUUID()}`,
+            idempotencyKey: `live-agent-transcript-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: {
+              projectName: "Live Agent Dedupe Project",
+              transcriptType: "agent_message"
+            }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalSessionId: session.externalSessionId ?? undefined,
+            externalThreadId: session.externalSessionId ?? undefined,
+            externalTurnId: "agent-turn-1",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 23,
+            rawJson: { hook_event_name: "Stop", turn_id: "agent-turn-1" },
+            sourceHash: `live-agent-stop-${randomUUID()}`,
+            idempotencyKey: `live-agent-stop-${randomUUID()}`,
+            projectionStatus: "pending",
+            metadata: { projectName: "Live Agent Dedupe Project" }
+          }
+        ]
+      }
+    );
+
+    const transcriptProjection = await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 10 }
+    );
+
+    const rawRows = await pool.query<{
+      source_record_type: string;
+      source_event_type: string | null;
+      source_sequence: number | null;
+      canonical_key: string | null;
+    }>(
+      `
+        select
+          source_record_type,
+          source_event_type,
+          source_sequence,
+          metadata ->> 'canonicalConversationItemKey' as canonical_key
+        from conversation_items
+        where session_id = $1
+        order by source_sequence asc nulls last
+      `,
+      [session.id]
+    );
+    const messages = await pool.query<{
+      role: string;
+      content: string;
+      transcript_item_id: string | null;
+    }>(
+      `
+        select role, content, transcript_item_id
+        from messages
+        where session_id = $1
+        order by created_at asc
+      `,
+      [session.id]
+    );
+    const memoryEvents = await pool.query<{ content: string }>(
+      `
+        select payload ->> 'content' as content
+        from memory_events
+        where session_id = $1
+        order by created_at asc
+      `,
+      [session.id]
+    );
+
+    expect(hookOnlyProjection).toMatchObject({
+      messagesCreated: 0,
+      memoryEventsCreated: 0
+    });
+    expect(transcriptProjection).toMatchObject({
+      messagesCreated: 1,
+      memoryEventsCreated: 1
+    });
+    expect(rawRows.rows[0]?.canonical_key).toMatch(/^conversation-item:/);
+    expect(rawRows.rows).toEqual([
+      {
+        source_record_type: "event_msg",
+        source_event_type: "agent_message",
+        source_sequence: 22,
+        canonical_key: rawRows.rows[0]?.canonical_key
+      },
+      {
+        source_record_type: "hook_payload",
+        source_event_type: "Stop",
+        source_sequence: 23,
+        canonical_key: null
+      },
+      {
+        source_record_type: "hook_payload",
+        source_event_type: "Stop",
+        source_sequence: null,
+        canonical_key: null
+      }
+    ]);
+    expect(messages.rows).toEqual([
+      {
+        role: "assistant",
+        content: "Transcript assistant content should project.",
+        transcript_item_id: "22"
+      }
+    ]);
+    expect(memoryEvents.rows.map((row) => row.content)).toEqual([
+      "Transcript assistant content should project."
     ]);
   });
 
@@ -3961,13 +5114,13 @@ describeDb("memory repository visibility", () => {
 
     expect(firstPage[0]).toMatchObject({
       contentPreview: "Older source reply",
-      sourceEventTime: null,
+      sourceEventTime: "2026-04-01T12:00:00.000Z",
       sourceSequence: 2,
       timestamp: "2026-04-01T12:00:00.000Z"
     });
     expect(secondPage[0]).toMatchObject({
       contentPreview: "Older source prompt",
-      sourceEventTime: null,
+      sourceEventTime: "2026-04-01T12:00:00.000Z",
       sourceSequence: 1
     });
     expect(legacyCursorPage[0]?.id).toBe(secondPage[0]!.id);
@@ -4007,23 +5160,29 @@ describeDb("memory repository visibility", () => {
           {
             sessionId: session.id,
             sourceKind: "codex",
-            sourceAdapterVersion: "codex-hook-v1",
+            sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "hook",
             externalSessionId: session.externalSessionId ?? undefined,
             externalThreadId: session.externalSessionId ?? undefined,
             externalTurnId: "display-source-turn",
-            sourceRecordType: "hook_payload",
-            sourceEventType: "UserPromptSubmit",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
             sourceSequence: 1,
             eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
-              hook_event_name: "UserPromptSubmit",
-              prompt: "Display prompt"
+              type: "event_msg",
+              payload: {
+                type: "user_message",
+                message: "Display prompt"
+              }
             },
             rawText: "Display prompt",
             sourceHash: `display-source-user-${randomUUID()}`,
             idempotencyKey: `display-source-user-${randomUUID()}`,
-            metadata: { projectName: "Display Source Project" }
+            metadata: {
+              projectName: "Display Source Project",
+              transcriptType: "user_message"
+            }
           },
           {
             sessionId: session.id,
@@ -4166,28 +5325,19 @@ describeDb("memory repository visibility", () => {
     expect(timelineEvents.map((event) => event.content)).toEqual([
       "Display prompt",
       expect.stringContaining("Tool call: exec_command"),
-      expect.stringContaining("Tool call: exec_command"),
       "Display reply"
     ]);
     expect(timelineEvents.map((event) => event.metadata.sourceTable)).toEqual([
       "messages",
       "tool_events",
-      "tool_events",
       "messages"
     ]);
     expect(timelineEvents[1]).toMatchObject({
       actor: "tool",
-      eventType: "tool_call",
-      metadata: {
-        toolName: "exec_command",
-        input: { cmd: "rg projection" }
-      }
-    });
-    expect(timelineEvents[2]).toMatchObject({
-      actor: "tool",
       eventType: "tool_result",
       metadata: {
         toolName: "exec_command",
+        input: { cmd: "rg projection" },
         output: "projection match"
       }
     });
@@ -4256,7 +5406,7 @@ describeDb("memory repository visibility", () => {
       expect(
         await repo.invalidateLcmGraphEvent(
           { userId: alice.id },
-          timelineEvents[2]!.id
+          timelineEvents[1]!.id
         )
       ).toBe(true);
     } finally {
@@ -4377,8 +5527,8 @@ describeDb("memory repository visibility", () => {
       rebuild_reason: "source_event_deleted",
       invalidated_at: null
     });
-    expect(replacement?.content).toContain('{"cmd":"rg projection"}');
     expect(replacement?.content).toContain("Display reply");
+    expect(replacement?.content).not.toContain('{"cmd":"rg projection"}');
     expect(replacement?.content).not.toContain("projection match");
     const rebuildJob = await pool.query<{
       status: string;
@@ -4421,7 +5571,7 @@ describeDb("memory repository visibility", () => {
         )
         values ($1, $2, 'personal', 'test-model', 384, 'test-version', $3, 0, 1, 'Display reply')
       `,
-      [timelineEvents[3]!.id, alice.id, `display-message-${randomUUID()}`]
+      [timelineEvents[2]!.id, alice.id, `display-message-${randomUUID()}`]
     );
 
     const previousMessageRebuildDebounce =
@@ -4431,7 +5581,7 @@ describeDb("memory repository visibility", () => {
       expect(
         await repo.invalidateLcmGraphEvent(
           { userId: alice.id },
-          timelineEvents[3]!.id
+          timelineEvents[2]!.id
         )
       ).toBe(true);
     } finally {
@@ -4461,7 +5611,7 @@ describeDb("memory repository visibility", () => {
         from memory_events me
         where me.id = $1
       `,
-      [replacementEventId, timelineEvents[3]!.id]
+      [replacementEventId, timelineEvents[2]!.id]
     );
     expect(
       messageDeleteState.rows[0]?.replacement_invalidated_at
@@ -4481,65 +5631,12 @@ describeDb("memory repository visibility", () => {
       jobsClaimed: 1,
       jobsCompleted: 1,
       jobsFailed: 0,
-      memoryEventsCreated: 1
+      memoryEventsCreated: 0,
+      memoryEventIds: []
     });
-    const messageReplacementEventId = messageRebuildResult.memoryEventIds[0];
-    if (!messageReplacementEventId) {
-      throw new Error("Expected replacement after message deletion");
-    }
-    const messageReplacement = await pool.query<{
-      content: string;
-      semantic_unit_type: string | null;
-      rebuilt_from: string | null;
-      rebuild_reason: string | null;
-      invalidated_at: Date | null;
-    }>(
-      `
-        select
-          payload ->> 'content' as content,
-          payload #>> '{metadata,semanticUnitType}' as semantic_unit_type,
-          payload #>> '{metadata,semanticBundleRebuiltFromMemoryEventId}' as rebuilt_from,
-          payload #>> '{metadata,semanticBundleRebuildReason}' as rebuild_reason,
-          invalidated_at
-        from memory_events
-        where id = $1
-      `,
-      [messageReplacementEventId]
-    );
-    expect(messageReplacement.rows[0]).toMatchObject({
-      semantic_unit_type: "agent_turn",
-      rebuilt_from: replacementEventId,
-      rebuild_reason: "source_event_deleted",
-      invalidated_at: null
-    });
-    expect(messageReplacement.rows[0]?.content).toContain(
-      '{"cmd":"rg projection"}'
-    );
-    expect(messageReplacement.rows[0]?.content).not.toContain("Display reply");
-    expect(messageReplacement.rows[0]?.content).not.toContain(
-      "projection match"
-    );
-    const messageReplacementSource = await repo.getEmbeddableSource(
-      "memory_event",
-      messageReplacementEventId
-    );
-    expect(messageReplacementSource?.text).toBe(
-      messageReplacement.rows[0]?.content
-    );
-    if (!messageReplacementSource) {
-      throw new Error("Expected message-deletion replacement to be embeddable");
-    }
-    const messageReplacementEmbedding = await repo.upsertSourceEmbedding({
-      source: messageReplacementSource,
-      model: "test-model",
-      dimensions: 384,
-      version: "test-version",
-      vector: Array.from({ length: 384 }, () => 1)
-    });
-    expect(messageReplacementEmbedding.inserted).toBe(true);
   });
 
-  it("projects hook-only tool payloads into semantic memory and tool events", async () => {
+  it("does not project hook-only tool payloads into semantic memory or tool events", async () => {
     const previousStaleMs = process.env.MEMORY_AGENT_TURN_STALE_MS;
     process.env.MEMORY_AGENT_TURN_STALE_MS = "1";
     try {
@@ -4664,53 +5761,15 @@ describeDb("memory repository visibility", () => {
         [session.id]
       );
 
-      expect(projection.memoryEventsCreated).toBe(2);
-      expect(projection.toolEventsCreated).toBe(2);
-      expect(events.map((event) => event.contentPreview)).toHaveLength(2);
-      expect(events.map((event) => event.contentPreview)).toEqual(
-        expect.arrayContaining([
-          'Tool call: exec_command Input: {"cmd":"git status --short"} Output: clean',
-          'Tool call: exec_command Input: {"cmd":"git status --branch"}'
-        ])
-      );
-      expect(memoryEvents.rows).toEqual(
-        expect.arrayContaining([
-          {
-            actor: "tool",
-            semantic_unit_type: "agent_turn",
-            sealed_reason: "catch_up_stale",
-            content: [
-              "Tool result: exec_command",
-              "",
-              'Input:\n{"cmd":"git status --short"}',
-              "",
-              "Output:\nclean"
-            ].join("\n")
-          },
-          {
-            actor: "tool",
-            semantic_unit_type: "agent_turn",
-            sealed_reason: "catch_up_stale",
-            content: [
-              "Tool result: exec_command",
-              "",
-              'Input:\n{"cmd":"git status --branch"}'
-            ].join("\n")
-          }
-        ])
-      );
-      expect(toolEvents.rows).toEqual([
-        {
-          tool_name: "exec_command",
-          tool_input: { cmd: "git status --short" },
-          tool_response: "clean"
-        },
-        {
-          tool_name: "exec_command",
-          tool_input: { cmd: "git status --branch" },
-          tool_response: null
-        }
-      ]);
+      expect(projection).toMatchObject({
+        rawItemsProjected: 2,
+        messagesCreated: 0,
+        toolEventsCreated: 0,
+        memoryEventsCreated: 0
+      });
+      expect(events.map((event) => event.contentPreview)).toEqual([]);
+      expect(memoryEvents.rows).toEqual([]);
+      expect(toolEvents.rows).toEqual([]);
     } finally {
       if (previousStaleMs === undefined) {
         delete process.env.MEMORY_AGENT_TURN_STALE_MS;
@@ -4983,9 +6042,9 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("suppresses hook fallback semantics after transcript-derived agent memory exists", async () => {
+  it("ignores later hook payload content after transcript-derived agent memory exists", async () => {
     const alice = await repo.createUser({
-      email: `alice-projection-suppress-hook-fallback-${randomUUID()}@example.com`
+      email: `alice-projection-suppress-hook-control-only-${randomUUID()}@example.com`
     });
     const session = await repo.createCapturedSession(
       { userId: alice.id },
@@ -5010,6 +6069,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
             sourceSequence: 0,
+            eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -5127,7 +6187,7 @@ describeDb("memory repository visibility", () => {
 
     expect(transcriptProjection.memoryEventsCreated).toBe(1);
     expect(hookProjection.memoryEventsCreated).toBe(0);
-    expect(hookProjection.toolEventsCreated).toBe(1);
+    expect(hookProjection.toolEventsCreated).toBe(0);
     expect(memoryEvents.rows).toEqual([
       {
         content:
@@ -5136,7 +6196,7 @@ describeDb("memory repository visibility", () => {
         source_records: ["event_msg"]
       }
     ]);
-    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(toolEvents.rows[0]?.count).toBe("0");
     expect(statuses.rows).toEqual([
       { source_event_type: "agent_message", projection_status: "projected" },
       { source_event_type: "Stop", projection_status: "projected" },
@@ -5144,18 +6204,18 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("keeps hook fallback suppression scoped to the full semantic boundary", async () => {
+  it("keeps Stop control records from creating cross-thread fallback memory", async () => {
     const alice = await repo.createUser({
-      email: `alice-projection-boundary-fallback-${randomUUID()}@example.com`
+      email: `alice-projection-boundary-hook-control-${randomUUID()}@example.com`
     });
     const workspaceA = randomUUID();
     const workspaceB = randomUUID();
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        externalSessionId: `projection-boundary-fallback-${randomUUID()}`,
+        externalSessionId: `projection-boundary-hook-control-${randomUUID()}`,
         sourceRuntime: "codex",
-        idempotencyKey: `projection-boundary-fallback-session-${randomUUID()}`
+        idempotencyKey: `projection-boundary-hook-control-session-${randomUUID()}`
       }
     );
     const [transcriptItem] = await repo.createConversationItems(
@@ -5236,9 +6296,9 @@ describeDb("memory repository visibility", () => {
             sourceSequence: 2,
             rawJson: {
               hook_event_name: "Stop",
-              last_assistant_message: "Thread B hook fallback should remain."
+              last_assistant_message: "Thread B hook content must be ignored."
             },
-            rawText: "Thread B hook fallback should remain.",
+            rawText: "Thread B hook content must be ignored.",
             sourceHash: `projection-boundary-stop-b-${randomUUID()}`,
             idempotencyKey: `projection-boundary-stop-b-${randomUUID()}`,
             metadata: {
@@ -5275,18 +6335,12 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(transcriptProjection.memoryEventsCreated).toBe(1);
-    expect(hookProjection.memoryEventsCreated).toBe(1);
+    expect(hookProjection.memoryEventsCreated).toBe(0);
     expect(memoryEvents.rows).toEqual([
       {
         content: "Thread A transcript memory.",
         external_thread_id: "boundary-thread-a",
         workspace_id: workspaceA,
-        seal_reason: "stop_hook"
-      },
-      {
-        content: "Thread B hook fallback should remain.",
-        external_thread_id: "boundary-thread-b",
-        workspace_id: workspaceB,
         seal_reason: "stop_hook"
       }
     ]);
@@ -5922,9 +6976,9 @@ describeDb("memory repository visibility", () => {
       `
         insert into messages (
           session_id, turn_id, owner_user_id, visibility, role, content,
-          source_runtime, capture_method
+          source_runtime, capture_method, source_event_time
         )
-        values ($1, $2, $3, 'personal', 'user', 'Bob private message', 'codex', 'hook')
+        values ($1, $2, $3, 'personal', 'user', 'Bob private message', 'codex', 'hook', '2026-04-01T12:00:00.000Z')
         returning id
       `,
       [bobSession.id, bobRawItem!.turnId, bob.id]
@@ -5933,9 +6987,9 @@ describeDb("memory repository visibility", () => {
       `
         insert into tool_events (
           session_id, turn_id, owner_user_id, visibility, tool_name,
-          source_runtime, capture_method
+          source_runtime, capture_method, source_event_time
         )
-        values ($1, $2, $3, 'personal', 'Bash', 'codex', 'hook')
+        values ($1, $2, $3, 'personal', 'Bash', 'codex', 'hook', '2026-04-01T12:00:00.000Z')
         returning id
       `,
       [bobSession.id, bobRawItem!.turnId, bob.id]
@@ -7060,6 +8114,7 @@ describeDb("memory repository visibility", () => {
               sourceRecordType: "turn_start",
               sourceEventType: "turn_start",
               sourceSequence: 0,
+              eventTime: "2026-04-01T12:00:00.000Z",
               rawJson: {
                 type: "turn_start",
                 payload: {
@@ -7091,6 +8146,7 @@ describeDb("memory repository visibility", () => {
               sourceRecordType: "event_msg",
               sourceEventType: "user_message",
               sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:01.000Z",
               rawJson: {
                 type: "event_msg",
                 payload: {
@@ -7120,6 +8176,7 @@ describeDb("memory repository visibility", () => {
               sourceRecordType: "event_msg",
               sourceEventType: "agent_message",
               sourceSequence: 2,
+              eventTime: "2026-04-01T12:00:02.000Z",
               rawJson: {
                 type: "event_msg",
                 payload: {
@@ -7143,6 +8200,7 @@ describeDb("memory repository visibility", () => {
               sourceRecordType: "event_msg",
               sourceEventType: "user_message",
               sourceSequence: 3,
+              eventTime: "2026-04-01T12:00:03.000Z",
               rawJson: {
                 type: "event_msg",
                 payload: {
@@ -7310,6 +8368,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
             sourceSequence: 0,
+            eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -7331,6 +8390,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
             sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:01.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -7355,6 +8415,7 @@ describeDb("memory repository visibility", () => {
             sourceRecordType: "event_msg",
             sourceEventType: "user_message",
             sourceSequence: 2,
+            eventTime: "2026-04-01T12:00:02.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -7582,6 +8643,7 @@ describeDb("memory repository visibility", () => {
         idempotencyKey: `projection-tool-bundle-session-${randomUUID()}`
       }
     );
+    const callId = `projection-tool-bundle-call-${randomUUID()}`;
     const agentItems = [
       {
         transcriptType: "agent_message",
@@ -7596,6 +8658,7 @@ describeDb("memory repository visibility", () => {
           toolName: "exec_command",
           toolCall: {
             kind: "call",
+            id: callId,
             name: "exec_command",
             input: { cmd: "rg -n projection" }
           }
@@ -7610,6 +8673,7 @@ describeDb("memory repository visibility", () => {
           toolEventKind: "function_call_output",
           toolCall: {
             kind: "output",
+            id: callId,
             name: "exec_command",
             output: "projection entry point found"
           }
@@ -7714,7 +8778,7 @@ describeDb("memory repository visibility", () => {
     );
 
     expect(projection.memoryEventsCreated).toBe(1);
-    expect(projection.toolEventsCreated).toBe(2);
+    expect(projection.toolEventsCreated).toBe(1);
     expect(events.rows.map((row) => row.actor)).toEqual(["agent"]);
     expect(events.rows.map((row) => row.content)).toEqual([
       [
@@ -7743,12 +8807,10 @@ describeDb("memory repository visibility", () => {
       { actor: "agent", kind: "agent_message" }
     ]);
     expect(sourceLinks.rows[0]?.count).toBe("4");
-    expect(toolEvents.rows).toHaveLength(2);
+    expect(toolEvents.rows).toHaveLength(1);
     expect(toolEvents.rows[0]?.tool_name).toBe("exec_command");
     expect(toolEvents.rows[0]?.tool_input).toEqual({ cmd: "rg -n projection" });
-    expect(toolEvents.rows[0]?.tool_response).toBeNull();
-    expect(toolEvents.rows[1]?.tool_input).toBeNull();
-    expect(toolEvents.rows[1]?.tool_response).toBe(
+    expect(toolEvents.rows[0]?.tool_response).toBe(
       "projection entry point found"
     );
   });
@@ -7897,7 +8959,7 @@ describeDb("memory repository visibility", () => {
     }
   });
 
-  it("seals transcript-derived agent bundles on Stop hook metadata", async () => {
+  it("seals same-scope transcript agent bundles when only a mismatched Stop hook control record is projected", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-stop-metadata-${randomUUID()}@example.com`
     });
@@ -7918,10 +8980,11 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "hook",
-            externalTurnId: "stop-metadata-turn",
+            externalTurnId: "transcript-assigned-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "agent_message",
             sourceSequence: 0,
+            eventTime: "2026-04-01T12:00:00.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -7933,7 +8996,7 @@ describeDb("memory repository visibility", () => {
             sourceHash: `projection-stop-metadata-agent-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-agent-${randomUUID()}`,
             metadata: {
-              hookEventName: "Stop",
+              hookEventName: "UserPromptSubmit",
               transcriptType: "agent_message"
             }
           },
@@ -7942,10 +9005,11 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-transcript-v1",
             sourceTransport: "hook",
-            externalTurnId: "stop-metadata-turn",
+            externalTurnId: "transcript-assigned-turn",
             sourceRecordType: "event_msg",
             sourceEventType: "token_count",
             sourceSequence: 1,
+            eventTime: "2026-04-01T12:00:01.000Z",
             rawJson: {
               type: "event_msg",
               payload: {
@@ -7964,15 +9028,42 @@ describeDb("memory repository visibility", () => {
             rawText: "",
             sourceHash: `projection-stop-metadata-token-${randomUUID()}`,
             idempotencyKey: `projection-stop-metadata-token-${randomUUID()}`,
+            metadata: { hookEventName: "UserPromptSubmit" }
+          },
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-hook-v1",
+            sourceTransport: "hook",
+            externalTurnId: "hook-payload-turn",
+            sourceRecordType: "hook_payload",
+            sourceEventType: "Stop",
+            sourceSequence: 2,
+            rawJson: {
+              hook_event_name: "Stop",
+              turn_id: "stop-metadata-turn"
+            },
+            sourceHash: `projection-stop-metadata-control-${randomUUID()}`,
+            idempotencyKey: `projection-stop-metadata-control-${randomUUID()}`,
             metadata: { hookEventName: "Stop" }
           }
         ]
       }
     );
+    const stopControl = await pool.query<{ id: string }>(
+      `
+        select id
+        from conversation_items
+        where session_id = $1
+          and source_adapter_version = 'codex-hook-v1'
+          and source_event_type = 'Stop'
+      `,
+      [session.id]
+    );
 
     const projection = await repo.projectPendingConversationItems(
       { userId: alice.id },
-      { limit: 10 }
+      { conversationItemIds: [stopControl.rows[0]!.id], limit: 1 }
     );
     const events = await pool.query<{
       content: string;
@@ -8017,7 +9108,7 @@ describeDb("memory repository visibility", () => {
       }
     ]);
     expect(statuses.rows).toEqual([
-      { projection_status: "projected", count: "2" }
+      { projection_status: "projected", count: "3" }
     ]);
   });
 
@@ -8396,16 +9487,132 @@ describeDb("memory repository visibility", () => {
       [session.id]
     );
 
-    expect(toolEvents.rows).toHaveLength(2);
+    expect(toolEvents.rows).toHaveLength(1);
     expect(toolEvents.rows[0]).toMatchObject({
       tool_name: "exec_command",
       tool_input: { cmd: "date -u +%s" },
-      tool_response: null
-    });
-    expect(toolEvents.rows[1]).toMatchObject({
-      tool_name: "exec_command",
-      tool_input: null,
       tool_response: "1780026861"
+    });
+    expect(toolEvents.rows[0]?.transcript_item_id).toBe("1");
+  });
+
+  it("merges tool outputs that arrive before the matching call", async () => {
+    const alice = await repo.createUser({
+      email: `alice-projection-output-first-tool-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `projection-output-first-tool-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        idempotencyKey: `projection-output-first-tool-session-${randomUUID()}`
+      }
+    );
+    const callId = `call-output-first-${randomUUID()}`;
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "response_item",
+            sourceEventType: "function_call_output",
+            sourceSequence: 2,
+            rawJson: {
+              type: "response_item",
+              payload: {
+                type: "function_call_output",
+                call_id: callId,
+                output: "clean"
+              }
+            },
+            rawText: "Tool output: clean",
+            sourceHash: `projection-output-first-tool-output-${randomUUID()}`,
+            idempotencyKey: `projection-output-first-tool-output-${randomUUID()}`,
+            metadata: {
+              transcriptType: "function_call_output",
+              toolCall: {
+                kind: "output",
+                id: callId,
+                output: "clean"
+              }
+            }
+          }
+        ]
+      }
+    );
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 1 }
+    );
+
+    await repo.createConversationItems(
+      { userId: alice.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-app-server-v1",
+            sourceTransport: "app_server",
+            sourceRecordType: "response_item",
+            sourceEventType: "function_call",
+            sourceSequence: 1,
+            rawJson: {
+              type: "response_item",
+              payload: {
+                type: "function_call",
+                call_id: callId,
+                name: "exec_command",
+                arguments: { cmd: "git status --short" }
+              }
+            },
+            rawText: "Tool call: exec_command",
+            sourceHash: `projection-output-first-tool-call-${randomUUID()}`,
+            idempotencyKey: `projection-output-first-tool-call-${randomUUID()}`,
+            metadata: {
+              transcriptType: "function_call",
+              toolName: "exec_command",
+              toolCall: {
+                kind: "call",
+                id: callId,
+                name: "exec_command",
+                input: { cmd: "git status --short" }
+              }
+            }
+          }
+        ]
+      }
+    );
+    await repo.projectPendingConversationItems(
+      { userId: alice.id },
+      { limit: 1 }
+    );
+
+    const toolEvents = await pool.query<{
+      tool_name: string;
+      tool_input: unknown;
+      tool_response: unknown;
+      transcript_item_id: string | null;
+    }>(
+      `
+        select tool_name, tool_input, tool_response, transcript_item_id
+        from tool_events
+        where session_id = $1
+        order by transcript_item_id asc nulls last, id asc
+      `,
+      [session.id]
+    );
+
+    expect(toolEvents.rows).toHaveLength(1);
+    expect(toolEvents.rows[0]).toMatchObject({
+      tool_name: "exec_command",
+      tool_input: { cmd: "git status --short" },
+      tool_response: "clean",
+      transcript_item_id: "1"
     });
   });
 
@@ -8688,9 +9895,10 @@ describeDb("memory repository visibility", () => {
         "select count(*)::text as count from memory_event_sources"
       );
 
-      expect(estimateTokens(text, { model: "gpt-5.4-mini" })).toBeGreaterThan(
-        80
-      );
+      const originalItemTokenCount = estimateTokens(text, {
+        model: "gpt-5.4-mini"
+      });
+      expect(originalItemTokenCount).toBeGreaterThan(80);
       expect(projection.memoryEventsCreated).toBeGreaterThan(1);
       expect(events.rows.length).toBeGreaterThan(1);
       expect(events.rows.every((row) => (row.token_count ?? 0) <= 80)).toBe(
@@ -8706,8 +9914,7 @@ describeDb("memory repository visibility", () => {
             manifestItem?.itemSplitReason === "embedding_token_limit" &&
             manifestItem?.itemSplitIndex === index &&
             manifestItem?.itemSplitCount === events.rows.length &&
-            manifestItem?.originalItemTokenCount ===
-              estimateTokens(text, { model: "gpt-5.4-mini" })
+            manifestItem?.originalItemTokenCount === originalItemTokenCount
           );
         })
       ).toBe(true);
@@ -8723,7 +9930,7 @@ describeDb("memory repository visibility", () => {
         process.env.EMBEDDING_MAX_TOKENS = previousEmbeddingMaxTokens;
       }
     }
-  });
+  }, 15_000);
 
   it("reconstructs oversized transport chunks before semantic projection", async () => {
     const alice = await repo.createUser({
@@ -8873,21 +10080,21 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
-  it("suppresses hook fallback semantics when transcript sources are transport chunked", async () => {
+  it("ignores hook payload content when transcript sources are transport chunked", async () => {
     const alice = await repo.createUser({
-      email: `alice-transport-fallback-${randomUUID()}@example.com`
+      email: `alice-transport-hook-control-${randomUUID()}@example.com`
     });
     const workspaceId = randomUUID();
     const session = await repo.createCapturedSession(
       { userId: alice.id },
       {
-        externalSessionId: `transport-fallback-session-${randomUUID()}`,
+        externalSessionId: `transport-hook-control-session-${randomUUID()}`,
         sourceRuntime: "codex",
-        idempotencyKey: `transport-fallback-session-${randomUUID()}`,
+        idempotencyKey: `transport-hook-control-session-${randomUUID()}`,
         metadata: { workspaceId }
       }
     );
-    const logicalSourceId = `transport-fallback-logical-${randomUUID()}`;
+    const logicalSourceId = `transport-hook-control-logical-${randomUUID()}`;
     const reconstructedText =
       "Chunked transcript text should be the only semantic content.";
     const envelope = JSON.stringify({
@@ -8914,8 +10121,8 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-app-server-v1",
             sourceTransport: "app_server",
-            externalThreadId: "transport-fallback-thread",
-            externalTurnId: "transport-fallback-turn",
+            externalThreadId: "transport-hook-control-thread",
+            externalTurnId: "transport-hook-control-turn",
             sourceRecordType: "app_server_notification",
             sourceEventType: "item/completed",
             sourceSequence: index,
@@ -8945,8 +10152,8 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-hook-v1",
             sourceTransport: "hook",
-            externalThreadId: "transport-fallback-thread",
-            externalTurnId: "transport-fallback-turn",
+            externalThreadId: "transport-hook-control-thread",
+            externalTurnId: "transport-hook-control-turn",
             sourceRecordType: "hook_payload",
             sourceEventType: "PostToolUse",
             sourceSequence: chunks.length,
@@ -8954,10 +10161,10 @@ describeDb("memory repository visibility", () => {
               hook_event_name: "PostToolUse",
               tool_name: "exec_command",
               tool_input: { cmd: "echo duplicate" },
-              tool_response: "duplicate hook fallback response"
+              tool_response: "duplicate hook content response"
             },
-            sourceHash: `transport-fallback-hook-${randomUUID()}`,
-            idempotencyKey: `transport-fallback-hook-${randomUUID()}`,
+            sourceHash: `transport-hook-control-hook-${randomUUID()}`,
+            idempotencyKey: `transport-hook-control-hook-${randomUUID()}`,
             metadata: { workspaceId }
           },
           {
@@ -8965,17 +10172,17 @@ describeDb("memory repository visibility", () => {
             sourceKind: "codex",
             sourceAdapterVersion: "codex-hook-v1",
             sourceTransport: "hook",
-            externalThreadId: "transport-fallback-thread",
-            externalTurnId: "transport-fallback-turn",
+            externalThreadId: "transport-hook-control-thread",
+            externalTurnId: "transport-hook-control-turn",
             sourceRecordType: "hook_payload",
             sourceEventType: "Stop",
             sourceSequence: chunks.length + 1,
             rawJson: {
               hook_event_name: "Stop",
-              turn_id: "transport-fallback-turn"
+              turn_id: "transport-hook-control-turn"
             },
-            sourceHash: `transport-fallback-stop-${randomUUID()}`,
-            idempotencyKey: `transport-fallback-stop-${randomUUID()}`,
+            sourceHash: `transport-hook-control-stop-${randomUUID()}`,
+            idempotencyKey: `transport-hook-control-stop-${randomUUID()}`,
             metadata: {
               workspaceId,
               hookEventName: "Stop"
@@ -9030,7 +10237,7 @@ describeDb("memory repository visibility", () => {
         source_count: "2"
       }
     ]);
-    expect(toolEvents.rows[0]?.count).toBe("1");
+    expect(toolEvents.rows[0]?.count).toBe("0");
     expect(statuses.rows).toEqual([
       { projection_status: "projected", count: "4" }
     ]);

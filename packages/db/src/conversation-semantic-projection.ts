@@ -46,6 +46,7 @@ export type ConversationSemanticProjectionItem = {
   sourceHash: string;
   actorType: MemoryActor;
   content: string;
+  includeInLcm: boolean;
   projectionMetadata: Record<string, unknown>;
 };
 
@@ -441,6 +442,7 @@ export const conversationSemanticEventMetadata = (input: {
   sourceActors: string[];
   unitType: ConversationSemanticUnitType;
   sealedReason: string;
+  includeInLcm: boolean;
   projectionVersion: string;
   model?: string | null;
   rebuild?: {
@@ -457,6 +459,7 @@ export const conversationSemanticEventMetadata = (input: {
   semanticUnitType: input.unitType,
   semanticSourceActors: input.sourceActors,
   semanticBundleSealedReason: input.sealedReason,
+  includeInLcm: input.includeInLcm,
   ...(input.rebuild
     ? {
         semanticBundleRebuildReason: input.rebuild.reason,

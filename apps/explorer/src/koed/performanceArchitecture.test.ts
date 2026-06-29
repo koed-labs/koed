@@ -1228,7 +1228,7 @@ describe("KOE-103 performance architecture", () => {
 
   it("publishes full cursor-loaded thread pages to explicit page listeners", async () => {
     const [project] = makeProjects(1, 1);
-    const selectedThread = { ...project!.threads[0]!, eventCount: 3 };
+    const selectedThread = { ...project!.threads[0]!, eventCount: 4 };
     const firstEvent = makeEvent(selectedThread, 0);
     const secondEvent = makeEvent(selectedThread, 1);
     const thirdEvent = makeEvent(selectedThread, 2);
@@ -1712,7 +1712,7 @@ describe("KOE-103 performance architecture", () => {
     }
   });
 
-  it("appends selected stream events without shell or selected-thread reloads", async () => {
+  it("refreshes selected stream events through the timeline endpoint", async () => {
     const [project] = makeProjects(1, 1);
     const selectedThread = { ...project!.threads[0]!, eventCount: 1 };
     const selectedThreadId = threadSelectionKey(selectedThread);
@@ -1730,6 +1730,7 @@ describe("KOE-103 performance architecture", () => {
         streamControllerRef.current = controller;
       }
     });
+    let includeLiveEvent = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/v1/memory/graph/stream")) {
@@ -1739,14 +1740,26 @@ describe("KOE-103 performance architecture", () => {
       }
       if (url.includes("/v1/memory/graph/threads")) {
         return jsonResponse({
-          projects: [{ ...project!, threads: [selectedThread] }]
+          projects: [
+            {
+              ...project!,
+              threads: [
+                {
+                  ...selectedThread,
+                  eventCount: includeLiveEvent ? 2 : 1,
+                  latestAt: includeLiveEvent
+                    ? liveEvent.timestamp
+                    : selectedThread.latestAt
+                }
+              ]
+            }
+          ]
         });
       }
       if (url.includes("/v1/memory/graph/events?")) {
-        return jsonResponse({ events: [initialEvent] });
-      }
-      if (url.includes(`/v1/memory/graph/events/${liveEvent.id}`)) {
-        return jsonResponse({ event: liveEvent });
+        return jsonResponse({
+          events: includeLiveEvent ? [initialEvent, liveEvent] : [initialEvent]
+        });
       }
       if (url.includes("/v1/memory/graph/nodes?")) {
         return jsonResponse({ nodes: [] });
@@ -1779,6 +1792,7 @@ describe("KOE-103 performance architecture", () => {
       });
       await waitFor(() => (latestState?.threadEvents.length ?? 0) === 1);
       fetchMock.mockClear();
+      includeLiveEvent = true;
 
       await act(async () => {
         streamControllerRef.current?.enqueue(
@@ -1807,12 +1821,12 @@ describe("KOE-103 performance architecture", () => {
         urls.filter((url) =>
           url.includes(`/v1/memory/graph/events/${liveEvent.id}`)
         )
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect(urls.some((url) => url.includes("/v1/memory/graph/threads"))).toBe(
-        false
+        true
       );
       expect(urls.some((url) => url.includes("/v1/memory/graph/events?"))).toBe(
-        false
+        true
       );
       expect(latestState?.selectedThread?.eventCount).toBe(2);
 
@@ -1838,9 +1852,14 @@ describe("KOE-103 performance architecture", () => {
       await waitFor(
         () =>
           fetchMock.mock.calls.filter(([input]) =>
-            String(input).includes(`/v1/memory/graph/events/${liveEvent.id}`)
+            String(input).includes("/v1/memory/graph/events?")
           ).length === 1
       );
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes(`/v1/memory/graph/events/${liveEvent.id}`)
+        )
+      ).toBe(false);
 
       expect(latestState?.threadEvents).toHaveLength(2);
       expect(latestState?.selectedThread?.eventCount).toBe(2);
@@ -1998,6 +2017,7 @@ describe("KOE-103 performance architecture", () => {
         streamControllerRef.current = controller;
       }
     });
+    let includeLiveEvent = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/v1/memory/graph/stream")) {
@@ -2007,14 +2027,25 @@ describe("KOE-103 performance architecture", () => {
       }
       if (url.includes("/v1/memory/graph/threads")) {
         return jsonResponse({
-          projects: [{ ...project!, threads: [selectedThread] }]
+          projects: [
+            {
+              ...project!,
+              threads: [
+                {
+                  ...selectedThread,
+                  latestAt: includeLiveEvent
+                    ? liveEvent.timestamp
+                    : selectedThread.latestAt
+                }
+              ]
+            }
+          ]
         });
       }
       if (url.includes("/v1/memory/graph/events?")) {
-        return jsonResponse({ events: [initialEvent] });
-      }
-      if (url.includes(`/v1/memory/graph/events/${liveEvent.id}`)) {
-        return jsonResponse({ event: liveEvent });
+        return jsonResponse({
+          events: includeLiveEvent ? [initialEvent, liveEvent] : [initialEvent]
+        });
       }
       if (url.includes("/v1/memory/graph/nodes?")) {
         return jsonResponse({ nodes: [] });
@@ -2051,6 +2082,7 @@ describe("KOE-103 performance architecture", () => {
       await waitFor(() => onMemoryQuestionUpdate.mock.calls.length >= 1);
       fetchMock.mockClear();
       onMemoryQuestionUpdate.mockClear();
+      includeLiveEvent = true;
 
       await act(async () => {
         streamControllerRef.current?.enqueue(
@@ -2087,6 +2119,11 @@ describe("KOE-103 performance architecture", () => {
       expect(
         fetchMock.mock.calls.some(([input]) =>
           String(input).includes(`/v1/memory/graph/events/${liveEvent.id}`)
+        )
+      ).toBe(false);
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes("/v1/memory/graph/events?")
         )
       ).toBe(true);
 
@@ -2138,9 +2175,8 @@ describe("KOE-103 performance architecture", () => {
       makeEvent(selectedThread, 2)
     ];
     const olderUpdatedEvent = {
-      ...makeEvent(selectedThread, 0),
-      id: "older-updated-event",
-      contentPreview: "older updated event"
+      ...headEvents[1]!,
+      contentPreview: "head event updated from stream refresh"
     };
     const streamControllerRef: {
       current: ReadableStreamDefaultController<Uint8Array> | null;
@@ -2150,6 +2186,7 @@ describe("KOE-103 performance architecture", () => {
         streamControllerRef.current = controller;
       }
     });
+    let includeUpdatedEvent = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/v1/memory/graph/stream")) {
@@ -2163,10 +2200,11 @@ describe("KOE-103 performance architecture", () => {
         });
       }
       if (url.includes("/v1/memory/graph/events?")) {
-        return jsonResponse({ events: headEvents });
-      }
-      if (url.includes(`/v1/memory/graph/events/${olderUpdatedEvent.id}`)) {
-        return jsonResponse({ event: olderUpdatedEvent });
+        return jsonResponse({
+          events: includeUpdatedEvent
+            ? [headEvents[0]!, olderUpdatedEvent]
+            : headEvents
+        });
       }
       if (url.includes("/v1/memory/graph/nodes?")) {
         return jsonResponse({ nodes: [] });
@@ -2199,6 +2237,7 @@ describe("KOE-103 performance architecture", () => {
       });
       await waitFor(() => (latestState?.threadEvents.length ?? 0) === 2);
       fetchMock.mockClear();
+      includeUpdatedEvent = true;
 
       await act(async () => {
         streamControllerRef.current?.enqueue(
@@ -2221,17 +2260,24 @@ describe("KOE-103 performance architecture", () => {
       });
       await waitFor(() =>
         latestState?.threadEvents.some(
-          (event) => event.id === olderUpdatedEvent.id
+          (event) =>
+            event.id === olderUpdatedEvent.id &&
+            event.contentPreview === olderUpdatedEvent.contentPreview
         )
       );
 
       const urls = fetchMock.mock.calls.map(([input]) => String(input));
       expect(latestState?.selectedThread?.eventCount).toBe(3);
+      expect(
+        urls.some((url) =>
+          url.includes(`/v1/memory/graph/events/${olderUpdatedEvent.id}`)
+        )
+      ).toBe(false);
       expect(urls.some((url) => url.includes("/v1/memory/graph/threads"))).toBe(
-        false
+        true
       );
       expect(urls.some((url) => url.includes("/v1/memory/graph/events?"))).toBe(
-        false
+        true
       );
     } finally {
       streamControllerRef.current?.close();
@@ -2264,6 +2310,7 @@ describe("KOE-103 performance architecture", () => {
         streamControllerRef.current = controller;
       }
     });
+    let includeSelectedLiveEvent = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/v1/memory/graph/stream")) {
@@ -2273,14 +2320,35 @@ describe("KOE-103 performance architecture", () => {
       }
       if (url.includes("/v1/memory/graph/threads")) {
         return jsonResponse({
-          projects: [{ ...project!, threads: [selectedThread, otherThread] }]
+          projects: [
+            {
+              ...project!,
+              threads: [
+                {
+                  ...selectedThread,
+                  eventCount: includeSelectedLiveEvent ? 2 : 1,
+                  latestAt: includeSelectedLiveEvent
+                    ? selectedLiveEvent.timestamp
+                    : selectedThread.latestAt
+                },
+                {
+                  ...otherThread,
+                  eventCount: includeSelectedLiveEvent ? 2 : 1,
+                  latestAt: includeSelectedLiveEvent
+                    ? otherLiveEvent.timestamp
+                    : otherThread.latestAt
+                }
+              ]
+            }
+          ]
         });
       }
       if (url.includes("/v1/memory/graph/events?")) {
-        return jsonResponse({ events: [initialEvent] });
-      }
-      if (url.includes(`/v1/memory/graph/events/${selectedLiveEvent.id}`)) {
-        return jsonResponse({ event: selectedLiveEvent });
+        return jsonResponse({
+          events: includeSelectedLiveEvent
+            ? [initialEvent, selectedLiveEvent]
+            : [initialEvent]
+        });
       }
       if (url.includes("/v1/memory/graph/nodes?")) {
         return jsonResponse({ nodes: [] });
@@ -2313,6 +2381,7 @@ describe("KOE-103 performance architecture", () => {
       });
       await waitFor(() => (latestState?.threadEvents.length ?? 0) === 1);
       fetchMock.mockClear();
+      includeSelectedLiveEvent = true;
 
       await act(async () => {
         streamControllerRef.current?.enqueue(
@@ -2348,8 +2417,11 @@ describe("KOE-103 performance architecture", () => {
         urls.filter((url) =>
           url.includes(`/v1/memory/graph/events/${selectedLiveEvent.id}`)
         )
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       expect(urls.some((url) => url.includes("/v1/memory/graph/threads"))).toBe(
+        true
+      );
+      expect(urls.some((url) => url.includes("/v1/memory/graph/events?"))).toBe(
         true
       );
     } finally {
@@ -2361,7 +2433,7 @@ describe("KOE-103 performance architecture", () => {
     }
   });
 
-  it("upgrades pending shell refreshes when selected event detail fetch fails", async () => {
+  it("upgrades pending shell refreshes when selected event refs arrive", async () => {
     const [project] = makeProjects(1, 2);
     const selectedThread = { ...project!.threads[0]!, eventCount: 1 };
     const otherThread = { ...project!.threads[1]!, eventCount: 1 };
@@ -2371,7 +2443,7 @@ describe("KOE-103 performance architecture", () => {
       ...makeEvent(selectedThread, 1),
       id: "selected-fallback-event"
     };
-    const failedEventId = "failed-selected-event";
+    const selectedEventId = "selected-stream-event";
     const streamControllerRef: {
       current: ReadableStreamDefaultController<Uint8Array> | null;
     } = { current: null };
@@ -2394,9 +2466,6 @@ describe("KOE-103 performance architecture", () => {
       }
       if (url.includes("/v1/memory/graph/events?")) {
         return jsonResponse({ events: [initialEvent, fallbackEvent] });
-      }
-      if (url.includes(`/v1/memory/graph/events/${failedEventId}`)) {
-        return jsonResponse({ error: "boom" }, 500);
       }
       if (url.includes("/v1/memory/graph/nodes?")) {
         return jsonResponse({ nodes: [] });
@@ -2453,7 +2522,7 @@ describe("KOE-103 performance architecture", () => {
               operation: "INSERT",
               eventRefs: [
                 {
-                  id: failedEventId,
+                  id: selectedEventId,
                   projectId: selectedThread.projectId,
                   threadId: selectedThread.id
                 }
@@ -2467,14 +2536,14 @@ describe("KOE-103 performance architecture", () => {
       const urls = fetchMock.mock.calls.map(([input]) => String(input));
       expect(
         urls.some((url) =>
-          url.includes(`/v1/memory/graph/events/${failedEventId}`)
+          url.includes(`/v1/memory/graph/events/${selectedEventId}`)
         )
-      ).toBe(true);
+      ).toBe(false);
       expect(urls.some((url) => url.includes("/v1/memory/graph/threads"))).toBe(
         true
       );
       expect(urls.some((url) => url.includes("/v1/memory/graph/events?"))).toBe(
-        false
+        true
       );
     } finally {
       streamControllerRef.current?.close();
@@ -2487,7 +2556,7 @@ describe("KOE-103 performance architecture", () => {
 
   it("keeps partial selected threads eligible for older-page loading after live appends", async () => {
     const [project] = makeProjects(1, 1);
-    const selectedThread = { ...project!.threads[0]!, eventCount: 3 };
+    const selectedThread = { ...project!.threads[0]!, eventCount: 4 };
     const selectedThreadId = threadSelectionKey(selectedThread);
     const olderEvent = makeEvent(selectedThread, 0);
     const headEvents = [
@@ -2507,6 +2576,7 @@ describe("KOE-103 performance architecture", () => {
         streamControllerRef.current = controller;
       }
     });
+    let includeLiveEvent = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/v1/memory/graph/stream")) {
@@ -2524,10 +2594,9 @@ describe("KOE-103 performance architecture", () => {
         if (request.searchParams.get("cursorId")) {
           return jsonResponse({ events: [olderEvent] });
         }
-        return jsonResponse({ events: headEvents });
-      }
-      if (url.includes(`/v1/memory/graph/events/${liveEvent.id}`)) {
-        return jsonResponse({ event: liveEvent });
+        return jsonResponse({
+          events: includeLiveEvent ? [...headEvents, liveEvent] : headEvents
+        });
       }
       if (url.includes("/v1/memory/graph/nodes?")) {
         return jsonResponse({ nodes: [] });
@@ -2559,6 +2628,7 @@ describe("KOE-103 performance architecture", () => {
         root.render(createElement(Harness));
       });
       await waitFor(() => (latestState?.threadEvents.length ?? 0) === 2);
+      includeLiveEvent = true;
 
       await act(async () => {
         streamControllerRef.current?.enqueue(

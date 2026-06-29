@@ -17,29 +17,30 @@ for (let index = 2; index < process.argv.length; index += 1) {
 const apiUrl = (
   args.get("api-url") ??
   process.env.MEMORY_API_URL ??
-  "http://localhost:3300"
+  "http://localhost:3000"
 ).replace(/\/+$/, "");
+const defaultComposeProject = path
+  .basename(process.cwd())
+  .replace(/[^a-zA-Z0-9_-]/g, "")
+  .toLowerCase();
 const composeProject =
-  args.get("compose-project") ?? process.env.COMPOSE_PROJECT_NAME ?? "koed";
+  args.get("compose-project") ??
+  process.env.COMPOSE_PROJECT_NAME ??
+  defaultComposeProject;
 const smokeLeafEventThreshold = Number.parseInt(
   args.get("leaf-event-threshold") ??
     process.env.LCM_SMOKE_LEAF_EVENT_THRESHOLD ??
-    process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD ??
     "6",
   10
 );
 const smokeFreshEventTail = Number.parseInt(
   args.get("fresh-event-tail") ??
     process.env.LCM_SMOKE_FRESH_EVENT_TAIL ??
-    process.env.MEMORY_LCM_FRESH_EVENT_TAIL ??
     "10",
   10
 );
 const smokeDepthOneFanout = Number.parseInt(
-  args.get("depth-one-fanout") ??
-    process.env.LCM_SMOKE_DEPTH1_FANOUT ??
-    process.env.MEMORY_LCM_DEPTH1_FANOUT ??
-    "2",
+  args.get("depth-one-fanout") ?? process.env.LCM_SMOKE_DEPTH1_FANOUT ?? "2",
   10
 );
 const defaultSmokeEvents =
@@ -64,7 +65,7 @@ const summaryModel =
 const summaryReasoningEffort =
   args.get("summary-reasoning-effort") ??
   process.env.LCM_SMOKE_SUMMARY_REASONING_EFFORT ??
-  "medium";
+  "low";
 const existingApiToken =
   args.get("api-token") ??
   process.env.LCM_SMOKE_API_TOKEN ??
@@ -153,6 +154,77 @@ const runCommand = (cmd, commandArgs, options = {}) => {
     );
   }
   return result.stdout;
+};
+
+const readComposeEnv = (service) => {
+  const output = runCommand("docker", [
+    "compose",
+    "-p",
+    composeProject,
+    "exec",
+    "-T",
+    service,
+    "env"
+  ]);
+  return new Map(
+    output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const separator = line.indexOf("=");
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      })
+  );
+};
+
+const assertRunningSmokeProfile = () => {
+  const expected = new Map([
+    ["MEMORY_LCM_LEAF_EVENT_THRESHOLD", String(smokeLeafEventThreshold)],
+    ["MEMORY_LCM_FRESH_EVENT_TAIL", String(smokeFreshEventTail)],
+    ["MEMORY_LCM_DEPTH1_FANOUT", String(smokeDepthOneFanout)]
+  ]);
+  const mismatches = [];
+  const serviceEnvs = new Map();
+  for (const service of ["api", "worker"]) {
+    const env = readComposeEnv(service);
+    serviceEnvs.set(service, env);
+    for (const [name, expectedValue] of expected) {
+      const actualValue = env.get(name);
+      if (actualValue !== expectedValue) {
+        mismatches.push({
+          service,
+          name,
+          expected: expectedValue,
+          actual: actualValue ?? null
+        });
+      }
+    }
+  }
+
+  const apiWriteLimit = Number.parseInt(
+    serviceEnvs.get("api")?.get("MEMORY_WRITE_RATE_LIMIT_MAX") ?? "",
+    10
+  );
+  const minimumWriteLimit = eventCount + 1;
+  if (Number.isFinite(apiWriteLimit) && apiWriteLimit < minimumWriteLimit) {
+    mismatches.push({
+      service: "api",
+      name: "MEMORY_WRITE_RATE_LIMIT_MAX",
+      expected: `>=${minimumWriteLimit}`,
+      actual: String(apiWriteLimit)
+    });
+  }
+
+  assert(
+    mismatches.length === 0,
+    [
+      "Running Docker Compose services do not match the LCM smoke profile.",
+      "Start a smoke-profile stack first:",
+      "docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis"
+    ].join("\n"),
+    { composeProject, mismatches }
+  );
 };
 
 const getDbState = () =>
@@ -337,6 +409,7 @@ const main = async () => {
   console.log(
     `Local LCM summary model: ${summaryModel} (${summaryReasoningEffort})`
   );
+  assertRunningSmokeProfile();
 
   let token = existingApiToken;
   let authLabel = "existing API token";
@@ -367,6 +440,27 @@ const main = async () => {
     `Authenticated with ${authLabel}; token prefix ${token.slice(0, 12)}`
   );
 
+  const sessionResponse = await requestJson("/v1/sessions", {
+    method: "POST",
+    headers: authHeaders,
+    body: JSON.stringify({
+      externalSessionId: marker,
+      sourceRuntime: "codex-cli",
+      captureMethod: "api",
+      cwd: workspaceId,
+      metadata: {
+        lcmSmokeMarker: marker
+      }
+    })
+  });
+  const sessionId = sessionResponse.body.session?.id;
+  assert(
+    typeof sessionId === "string" && sessionId.length > 0,
+    "Smoke session was not created",
+    sessionResponse.body
+  );
+  console.log(`Smoke session: ${sessionId}`);
+
   for (let index = 1; index <= eventCount; index += 1) {
     const content = [
       `LCM smoke prompt ${index}/${eventCount}.`,
@@ -379,6 +473,7 @@ const main = async () => {
       headers: authHeaders,
       body: JSON.stringify({
         workspaceId,
+        sessionId,
         actor: "user",
         eventType: "user_prompt",
         content,

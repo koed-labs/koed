@@ -1,4 +1,5 @@
 import pg from "pg";
+import { createHash } from "node:crypto";
 import {
   combineStorageSanitizationCounts,
   metadataWithStorageSanitization,
@@ -120,10 +121,226 @@ const sanitizeConversationItemForStorage = (
       | undefined,
     projectionVersion: projectionVersion.value as string | undefined,
     projectionError: projectionError.value as string | undefined,
+    eventTime: item.eventTime ?? transcriptEventTime(rawJson.value),
     metadata: metadataWithStorageSanitization(
       metadata.value as Record<string, unknown>,
       sanitizationCounts
     )
+  };
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const stringField = (
+  value: Record<string, unknown> | null | undefined,
+  key: string
+): string | null => {
+  const field = value?.[key];
+  return typeof field === "string" && field.trim() ? field : null;
+};
+
+const transcriptEventTime = (rawJson: unknown): string | undefined => {
+  const raw = isRecord(rawJson) ? rawJson : null;
+  const timestamp = stringField(raw, "timestamp");
+  if (!timestamp || Number.isNaN(Date.parse(timestamp))) {
+    return undefined;
+  }
+  return timestamp;
+};
+
+const sha256 = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const normalizedContentHash = (content: string): string =>
+  sha256(content.replace(/\s+/g, " ").trim());
+
+const itemPayload = (
+  item: ConversationItemInput
+): Record<string, unknown> | null => {
+  const raw = isRecord(item.rawJson) ? item.rawJson : null;
+  if (!raw) {
+    return null;
+  }
+  return isRecord(raw.payload) ? raw.payload : raw;
+};
+
+const canonicalConversationActor = (
+  item: ConversationItemInput
+): "user" | "agent" | "subagent" | "tool" | "system" | null => {
+  const metadata = item.metadata ?? {};
+  const payload = itemPayload(item);
+  const nestedItem = payload && isRecord(payload.item) ? payload.item : payload;
+  const role =
+    stringField(nestedItem, "role") ??
+    (nestedItem && isRecord(nestedItem.message)
+      ? stringField(nestedItem.message, "role")
+      : null);
+  const transcriptType =
+    stringField(metadata, "transcriptType") ??
+    item.sourceEventType ??
+    item.sourceRecordType;
+  const threadKind = stringField(metadata, "threadKind");
+
+  if (/developer|system/i.test(role ?? "")) {
+    return "system";
+  }
+  if (/user/i.test(transcriptType)) {
+    return threadKind === "subagent" ? "agent" : "user";
+  }
+  if (/subagent/i.test(transcriptType)) {
+    return "subagent";
+  }
+  if (/agent|assistant|reasoning|thought/i.test(transcriptType)) {
+    return "agent";
+  }
+  if (/tool|function_call|custom_tool/i.test(transcriptType)) {
+    return "tool";
+  }
+  if (/system|developer|instruction|context/i.test(transcriptType)) {
+    return "system";
+  }
+  return null;
+};
+
+const canonicalConversationKind = (
+  item: ConversationItemInput,
+  actor: NonNullable<ReturnType<typeof canonicalConversationActor>>
+): string => {
+  const metadata = item.metadata ?? {};
+  const transcriptType =
+    stringField(metadata, "transcriptType") ??
+    item.sourceEventType ??
+    item.sourceRecordType;
+  const sourceRole = stringField(metadata, "sourceRole");
+  const contextKind = stringField(metadata, "contextKind");
+  const toolEventKind =
+    stringField(metadata, "toolEventKind") ?? transcriptType;
+
+  if (sourceRole === "supporting_context" || contextKind) {
+    return `context:${contextKind ?? sourceRole ?? "supporting"}`;
+  }
+  if (actor === "tool") {
+    return /output|result/i.test(toolEventKind ?? "")
+      ? "tool_result"
+      : "tool_call";
+  }
+  if (/reasoning|thought/i.test(transcriptType ?? "")) {
+    return /summary/i.test(transcriptType ?? "")
+      ? "reasoning_summary"
+      : "reasoning";
+  }
+  if (actor === "system") {
+    return `system:${transcriptType}`;
+  }
+  return "message";
+};
+
+const canonicalConversationItemIdentity = (
+  item: ConversationItemInput
+): {
+  key: string;
+  actor: string;
+  kind: string;
+  contentHash: string;
+} | null => {
+  if (
+    item.sourceRecordType === "hook_payload" ||
+    item.sourceAdapterVersion !== "codex-transcript-v1"
+  ) {
+    return null;
+  }
+  if (
+    item.logicalSourceId ||
+    (item.transportChunkCount ?? 1) > 1 ||
+    item.transportChunkText
+  ) {
+    return null;
+  }
+  const content = item.rawText?.replace(/\s+/g, " ").trim();
+  if (!content) {
+    return null;
+  }
+  const actor = canonicalConversationActor(item);
+  if (!actor) {
+    return null;
+  }
+  const turnIdentity =
+    item.externalTurnId ??
+    stringField(item.metadata ?? {}, "externalTurnId") ??
+    (isRecord(item.rawJson) ? stringField(item.rawJson, "turn_id") : null);
+  if (!turnIdentity) {
+    return null;
+  }
+  const threadIdentity =
+    item.externalThreadId ??
+    item.externalSessionId ??
+    stringField(item.metadata ?? {}, "externalSessionId") ??
+    item.sessionId;
+  if (!threadIdentity) {
+    return null;
+  }
+  const kind = canonicalConversationKind(item, actor);
+  if (
+    kind !== "message" &&
+    kind !== "reasoning_summary" &&
+    kind !== "tool_call" &&
+    kind !== "tool_result"
+  ) {
+    return null;
+  }
+  const contentHash = normalizedContentHash(content);
+  if (item.sourcePath && typeof item.sourceSequence === "number") {
+    const key = `conversation-item:${sha256({
+      version: 2,
+      sourceKind: item.sourceKind,
+      sourcePath: item.sourcePath,
+      sourceSequence: item.sourceSequence,
+      actor,
+      kind,
+      contentHash
+    })}`;
+    return {
+      key,
+      actor,
+      kind,
+      contentHash
+    };
+  }
+  const key = `conversation-item:${sha256({
+    version: 1,
+    sourceKind: item.sourceKind,
+    threadIdentity,
+    turnIdentity,
+    actor,
+    kind,
+    contentHash
+  })}`;
+  return {
+    key,
+    actor,
+    kind,
+    contentHash
+  };
+};
+
+const withCanonicalConversationIdentity = (
+  item: ConversationItemInput
+): ConversationItemInput => {
+  const identity = canonicalConversationItemIdentity(item);
+  if (!identity) {
+    return item;
+  }
+  return {
+    ...item,
+    idempotencyKey: identity.key,
+    metadata: {
+      ...(item.metadata ?? {}),
+      canonicalConversationItemKey: identity.key,
+      canonicalConversationItemActor: identity.actor,
+      canonicalConversationItemKind: identity.kind,
+      canonicalConversationItemContentHash: identity.contentHash
+    }
   };
 };
 
@@ -288,7 +505,9 @@ export const createConversationItemRepository = (
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
     for (const inputItem of input.items) {
-      const item = sanitizeConversationItemForStorage(inputItem);
+      const item = withCanonicalConversationIdentity(
+        sanitizeConversationItemForStorage(inputItem)
+      );
       const visibility = item.visibility ?? "personal";
       const ownerUserId = actor.userId;
       if (item.sessionId) {
@@ -355,7 +574,149 @@ export const createConversationItemRepository = (
             $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
             $29, $30, $31
           )
-          on conflict do nothing
+          on conflict (owner_user_id, idempotency_key)
+            where visibility = 'personal'
+          do update set
+            session_id = coalesce(excluded.session_id, conversation_items.session_id),
+            turn_id = coalesce(excluded.turn_id, conversation_items.turn_id),
+            source_kind = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.source_kind
+              else conversation_items.source_kind
+            end,
+            source_adapter_version = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.source_adapter_version
+              else conversation_items.source_adapter_version
+            end,
+            source_transport = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.source_transport
+              else conversation_items.source_transport
+            end,
+            external_session_id = coalesce(
+              excluded.external_session_id,
+              conversation_items.external_session_id
+            ),
+            external_thread_id = coalesce(
+              excluded.external_thread_id,
+              conversation_items.external_thread_id
+            ),
+            external_turn_id = coalesce(
+              excluded.external_turn_id,
+              conversation_items.external_turn_id
+            ),
+            external_item_id = coalesce(
+              excluded.external_item_id,
+              conversation_items.external_item_id
+            ),
+            parent_external_item_id = coalesce(
+              excluded.parent_external_item_id,
+              conversation_items.parent_external_item_id
+            ),
+            source_record_type = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.source_record_type
+              else conversation_items.source_record_type
+            end,
+            source_event_type = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.source_event_type
+              else conversation_items.source_event_type
+            end,
+            source_path = coalesce(
+              excluded.source_path,
+              conversation_items.source_path
+            ),
+            source_line_number = coalesce(
+              excluded.source_line_number,
+              conversation_items.source_line_number
+            ),
+            source_sequence = coalesce(
+              excluded.source_sequence,
+              conversation_items.source_sequence
+            ),
+            event_time = coalesce(
+              excluded.event_time,
+              conversation_items.event_time
+            ),
+            raw_json = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.raw_json
+              else conversation_items.raw_json
+            end,
+            raw_text = coalesce(excluded.raw_text, conversation_items.raw_text),
+            logical_source_id = coalesce(
+              excluded.logical_source_id,
+              conversation_items.logical_source_id
+            ),
+            transport_chunk_index = case
+              when excluded.transport_chunk_count > conversation_items.transport_chunk_count
+              then excluded.transport_chunk_index
+              else conversation_items.transport_chunk_index
+            end,
+            transport_chunk_count = greatest(
+              conversation_items.transport_chunk_count,
+              excluded.transport_chunk_count
+            ),
+            transport_chunk_text = coalesce(
+              excluded.transport_chunk_text,
+              conversation_items.transport_chunk_text
+            ),
+            transport_chunk_encoding = coalesce(
+              excluded.transport_chunk_encoding,
+              conversation_items.transport_chunk_encoding
+            ),
+            projection_status = case
+              when conversation_items.projection_status = 'projected'
+                and excluded.metadata ? 'canonicalConversationItemKey'
+                and (
+                  case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+                ) >= (
+                  case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+                )
+              then 'pending'
+              else conversation_items.projection_status
+            end,
+            projection_version = case
+              when excluded.metadata ? 'canonicalConversationItemKey' and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              ) then excluded.projection_version
+              else conversation_items.projection_version
+            end,
+            projection_error = null,
+            projected_at = case
+              when conversation_items.projection_status = 'projected'
+                and excluded.metadata ? 'canonicalConversationItemKey'
+                and (
+                  case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+                ) >= (
+                  case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+                )
+              then null
+              else conversation_items.projected_at
+            end,
+            metadata = conversation_items.metadata || excluded.metadata
           returning
             id, session_id, turn_id, source_kind, source_adapter_version,
             source_transport, external_session_id, external_thread_id,

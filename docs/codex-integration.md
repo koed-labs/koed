@@ -42,7 +42,7 @@ Name: koed-selfhost
 Command: node
 Argument: /path/to/koed/packages/mcp-server/dist/cli.js
 Environment:
-  MEMORY_API_URL=http://localhost:3300
+  MEMORY_API_URL=http://localhost:3000
   MEMORY_API_TOKEN=<token>
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 Working directory: /path/to/koed
@@ -131,7 +131,7 @@ not a macOS-style or Windows-only path.
 Verify the local Capture Hook from the checkout:
 
 ```bash
-MEMORY_API_URL=http://localhost:3300 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
+MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
 ```
 
 This command enables personal capture, invokes the same TypeScript Capture Hook

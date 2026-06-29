@@ -25,7 +25,7 @@ docker compose up --build
 If ports conflict with another local app:
 
 ```bash
-API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3300 docker compose up --build
+API_HOST_PORT=3001 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3001 docker compose up --build
 ```
 
 Finish the Codex integration after the API migrations have run; `pnpm codex:bootstrap`
@@ -40,6 +40,18 @@ Use `pnpm explorer:bootstrap` after `pnpm codex:bootstrap` if you want to refres
 Explorer token config separately.
 
 The Explorer frontend is available at `http://localhost:5174`, or the host port you selected.
+
+## LCM Smoke Test
+
+`pnpm smoke:lcm` expects a disposable Docker Compose stack using the small LCM
+smoke profile. The profile lowers the LCM thresholds and raises only the local
+write limit needed for the test; it does not change product defaults.
+
+```bash
+docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis
+pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
+MEMORY_API_TOKEN=<token> pnpm smoke:lcm
+```
 
 ## Production Notes
 

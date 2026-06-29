@@ -6,7 +6,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import {
   answerWithMemoryWorker,
-  compactMemoryAnswerPayload,
   type MemoryAnswerResponseDetail,
   resolveMemoryAnswerWorkerConfig
 } from "./answer-worker.js";
@@ -41,7 +40,8 @@ import {
   evidenceFromAnswer,
   persistedAnswerResponse,
   retrievalFromAnswer,
-  stripAppServerEvents
+  stripAppServerEvents,
+  toolAnswerResponse
 } from "./memory-question-answer-persistence.js";
 import { logger } from "./logger.js";
 
@@ -549,9 +549,7 @@ server.registerTool(
         "koed memory_answer token telemetry skipped"
       );
     }
-    return jsonResponse(
-      compactMemoryAnswerPayload(answer, requestedResponseDetail)
-    );
+    return jsonResponse(toolAnswerResponse(answer, requestedResponseDetail));
   }
 );
 

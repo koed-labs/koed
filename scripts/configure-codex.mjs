@@ -16,7 +16,7 @@ const repoRoot = process.cwd();
 const apiUrl =
   process.env.MEMORY_API_URL ??
   process.env.CODEX_MEMORY_BASE_URL ??
-  "http://localhost:3300";
+  "http://localhost:3000";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const appServerBinary = process.env.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
@@ -68,12 +68,12 @@ const markerStart = "# >>> koed";
 const markerEnd = "# <<< koed";
 const hookCommand = `${nodeCommand} ${captureHookPath} --config ${hookConfigPath}`;
 const hookEvents = [
-  ["SessionStart", 3],
-  ["UserPromptSubmit", 3],
-  ["PostToolUse", 3],
-  ["Stop", 10],
-  ["SubagentStart", 3],
-  ["SubagentStop", 10]
+  ["SessionStart", 10],
+  ["UserPromptSubmit", 10],
+  ["PostToolUse", 10],
+  ["Stop", 30],
+  ["SubagentStart", 10],
+  ["SubagentStop", 30]
 ];
 const hookBlocks = hookEvents
   .map(

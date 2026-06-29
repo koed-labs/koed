@@ -96,13 +96,14 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP Server API calls. Default `60_000`.
-- `MEMORY_HOOK_API_REQUEST_TIMEOUT_MS`: short timeout for Supported Capture Hook API calls. Default `1500`.
-- `MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD`: consecutive retryable foreground Capture Hook API failures before local latency protection opens. Default `3`.
-- `MEMORY_HOOK_BREAKER_COOLDOWN_MS`: cooldown before an open Capture Hook breaker retries `/v1/access/check` as its health signal. Default `60000`.
-- `MEMORY_HOOK_DEADLINE_MS`: soft deadline used by Capture Hooks to stop optional work before Codex kills the hook process. Default `8500`.
+- `MEMORY_HOOK_API_REQUEST_TIMEOUT_MS`: short timeout for legacy foreground Capture Hook API calls. Detached transcript catch-up uses `MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS`. Default `1500`.
+- `MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD`: consecutive retryable detached catch-up API failures before local latency protection opens. Default `3`.
+- `MEMORY_HOOK_BREAKER_COOLDOWN_MS`: cooldown before an open catch-up breaker retries `/v1/access/check` as its health signal. Default `60000`.
+- `MEMORY_HOOK_DEADLINE_MS`: soft deadline used by legacy foreground Capture Hook work. Signal-only hooks return after launching detached catch-up. Default `8500`.
 - `MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES`: maximum sequential Codex transcript bytes processed by one background catch-up pass. The hook checkpoints transcript offsets only after raw rows are stored durably. Default `1000000`.
-- `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES`: maximum latest Codex transcript bytes inspected by a foreground PostToolUse, Stop, or SubagentStop hook when a resumed transcript has a larger unread backlog. This keeps new messages visible while background catch-up drains older unread rows. Default `128000`.
-- `MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP`: when `true`, foreground hooks start a detached local transcript catch-up process when unread transcript backlog remains. Default `true`.
+- `MEMORY_TRANSCRIPT_FIRST_CONTACT_GRACE_MS`: timestamp grace window used only when live capture sees a transcript with no prior checkpoint. Koed reads the transcript tail, keeps only timestamped rows newer than the hook signal minus this window, and checkpoints to the current end of file. Historical import should be run explicitly instead of relying on live capture. Default `30000`.
+- `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES`: deprecated; foreground hooks no longer parse transcript tails.
+- `MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP`: when `true`, foreground hooks start a detached local transcript catch-up process. Default `true`.
 - `MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS`: API request timeout used by detached transcript catch-up. This stays longer than the foreground hook timeout so recovery can complete durable raw ingestion after the hook process has returned. Default `60000`.
 - `MEMORY_TRANSCRIPT_CATCHUP_PASS_DEADLINE_MS`: soft deadline for one background transcript catch-up API pass. Default `60000`.
 - `MEMORY_TRANSCRIPT_CATCHUP_MAX_RUNTIME_MS`: maximum runtime for one detached transcript catch-up process before the next hook may resume it. Default `300000`.
@@ -157,6 +158,14 @@ Manual Memory Question settings selected in the Explorer composer are stored on 
 
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
 for a future AI-client approval flow and is not an implemented backend prompt.
+
+Projection selection is configured through the DB-backed
+`projection_policy_rules` table, not `.env`. These rows define which Codex
+transcript item types are projected into the Explorer UI, semantic Memory
+Events, embeddings, and LCM sources. The seeded defaults keep UI projection and
+embedding selection matched for every transcript type in the current build, but
+the fields are independent so future policy rows can support display-only or
+recall-only transcript types without a schema change.
 
 ## Data At Rest
 

@@ -382,6 +382,7 @@ export const messages = pgTable(
     idempotencyKey: text("idempotency_key"),
     sourceHash: text("source_hash"),
     tokenCount: integer("token_count"),
+    sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
     capturedAt: timestamp("captured_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -433,6 +434,7 @@ export const toolEvents = pgTable(
     transcriptItemId: text("transcript_item_id"),
     idempotencyKey: text("idempotency_key"),
     sourceHash: text("source_hash"),
+    sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
     capturedAt: timestamp("captured_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -1520,6 +1522,60 @@ export const localMemoryAgentSettings = pgTable(
     check(
       "local_memory_agent_settings_max_attempts_check",
       sql`${table.maxAttempts} between 1 and 25`
+    )
+  ]
+);
+
+export const projectionPolicyRules = pgTable(
+  "projection_policy_rules",
+  {
+    sourceKind: text("source_kind").notNull().default("codex"),
+    sourceAdapterVersion: text("source_adapter_version")
+      .notNull()
+      .default("codex-transcript-v1"),
+    transcriptType: text("transcript_type").notNull(),
+    description: text("description"),
+    projectToUi: boolean("project_to_ui").notNull().default(false),
+    createMessage: boolean("create_message").notNull().default(false),
+    createToolEvent: boolean("create_tool_event").notNull().default(false),
+    createMemoryEvent: boolean("create_memory_event").notNull().default(false),
+    includeInEmbedding: boolean("include_in_embedding")
+      .notNull()
+      .default(false),
+    includeInLcm: boolean("include_in_lcm").notNull().default(false),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.sourceKind,
+        table.sourceAdapterVersion,
+        table.transcriptType
+      ]
+    }),
+    index("projection_policy_rules_lookup_idx").on(
+      table.sourceKind,
+      table.sourceAdapterVersion,
+      table.transcriptType,
+      table.enabled
+    ),
+    check(
+      "projection_policy_rules_message_ui_check",
+      sql`${table.createMessage} = false or ${table.projectToUi} = true`
+    ),
+    check(
+      "projection_policy_rules_tool_ui_check",
+      sql`${table.createToolEvent} = false or ${table.projectToUi} = true`
+    ),
+    check(
+      "projection_policy_rules_embedding_memory_check",
+      sql`${table.includeInEmbedding} = false or ${table.createMemoryEvent} = true`
+    ),
+    check(
+      "projection_policy_rules_lcm_memory_check",
+      sql`${table.includeInLcm} = false or ${table.createMemoryEvent} = true`
     )
   ]
 );

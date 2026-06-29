@@ -11,6 +11,7 @@ import {
   type MemoryAnswerPayload,
   type MemoryAnswerRetrievalClient
 } from "../src/answer-worker.js";
+import { toolAnswerResponse } from "../src/memory-question-answer-persistence.js";
 
 const answerObject = (
   answer_markdown: string,
@@ -254,6 +255,57 @@ describe("memory answer worker", () => {
     expect(compact.localMemoryWorker.jobId).toBe("job-1");
     expect(compact.evidence).toBeUndefined();
     expect(compact.retrieval.evidenceCount).toBe(1);
+  });
+
+  it("strips app-server raw events from MCP tool responses", () => {
+    const response = toolAnswerResponse(
+      {
+        ...payload,
+        markdown: "Answer",
+        retrieval: {
+          evidenceCount: 1
+        },
+        localMemoryWorker: {
+          provider: "codex",
+          promptVersion: MEMORY_ANSWER_PROMPT_VERSION,
+          jobId: "job-1",
+          model: "gpt-5.4-mini",
+          usedFallback: false,
+          appServerEvents: [
+            {
+              method: "item/tool/call",
+              observedAt: "2026-06-01T12:00:00.000Z"
+            }
+          ],
+          appServerExecutions: [
+            {
+              model: "gpt-5.4-mini",
+              tokenUsage: {
+                last: { totalTokens: 10 },
+                total: { totalTokens: 10 }
+              },
+              rawEvents: [
+                {
+                  method: "item/tool/call/response",
+                  observedAt: "2026-06-01T12:00:01.000Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "with_citations"
+    );
+
+    const worker = response.localMemoryWorker as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(worker.appServerEvents).toBeUndefined();
+    expect(
+      ((worker.appServerExecutions as Array<Record<string, unknown>>) ?? [])[0]
+        ?.rawEvents
+    ).toBeUndefined();
   });
 
   it("resolves Codex app-server memory-answer config without a mode switch", () => {

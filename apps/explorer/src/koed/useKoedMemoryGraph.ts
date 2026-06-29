@@ -28,7 +28,6 @@ import {
   type ThreadDetailCache
 } from "./threadDetailCache";
 import {
-  applyThreadEventShellUpdates,
   emptyThreadIndex,
   ingestThreadIndex,
   renameThreadShell,
@@ -43,8 +42,6 @@ import type {
   ThreadGroup,
   ToastState
 } from "./types";
-
-const streamEventDetailConcurrency = 6;
 
 const threadShellVersion = (thread: ThreadGroup | undefined) =>
   thread
@@ -69,8 +66,6 @@ export interface GraphUpdatePayload {
   table?: unknown;
   threadId?: unknown;
 }
-
-type StreamEventRefreshResult = "failed" | "merged" | "not-selected";
 
 interface StreamEventRef {
   id: string;
@@ -379,40 +374,6 @@ export function useKoedMemoryGraph({
     [touchCache]
   );
 
-  const applyLiveThreadShellEvents = useCallback(
-    (thread: ThreadGroup, events: GraphEvent[]) => {
-      if (events.length === 0) {
-        return;
-      }
-      const nextIndex = applyThreadEventShellUpdates(
-        threadIndexRef.current,
-        thread,
-        events
-      );
-      if (nextIndex === threadIndexRef.current) {
-        return;
-      }
-      const key = threadKey(thread);
-      const updatedThread = selectThread(nextIndex, key);
-      const entry = detailCacheRef.current.get(key);
-      if (updatedThread && entry) {
-        entry.thread = updatedThread;
-        if (key === selectedThreadKeyRef.current) {
-          selectedThreadDetailVersionRef.current =
-            threadShellVersion(updatedThread);
-        }
-      }
-      threadIndexRef.current = nextIndex;
-      setThreadIndex(nextIndex);
-      koedDebug("stream.threadShellUpdated", {
-        threadId: thread.id,
-        events: events.length,
-        latestEventId: events.at(-1)?.id ?? null
-      });
-    },
-    []
-  );
-
   const renameThread = useCallback((thread: ThreadGroup, name: string) => {
     const nextIndex = renameThreadShell(threadIndexRef.current, thread, name);
     if (nextIndex === threadIndexRef.current) {
@@ -701,73 +662,6 @@ export function useKoedMemoryGraph({
     [apiToken, ensureThreadDetail]
   );
 
-  const refreshStreamEvent = useCallback(
-    async (
-      eventId: string,
-      options: { countShellEvent?: boolean } = {}
-    ): Promise<StreamEventRefreshResult> => {
-      if (!eventId || !apiToken.trim()) {
-        return "failed";
-      }
-      const tokenScope = tokenScopeRef.current;
-      try {
-        const detail = await requestEventDetail(eventId, apiToken);
-        if (tokenScopeRef.current !== tokenScope) {
-          return "failed";
-        }
-        const event =
-          detail.content === undefined && detail.rawContent !== undefined
-            ? { ...detail, content: detail.rawContent }
-            : detail;
-        const eventProjectId = event.projectId ?? event.workspaceId;
-        const eventThreadId = event.threadId ?? event.sessionId ?? event.id;
-        if (!eventProjectId || !eventThreadId) {
-          return "failed";
-        }
-        const eventThreadKey = threadSelectionKey({
-          projectId: eventProjectId,
-          id: eventThreadId
-        });
-        const selectedKey = selectedThreadKeyRef.current;
-        if (!selectedKey || eventThreadKey !== selectedKey) {
-          return "not-selected";
-        }
-        const entry = detailCacheRef.current.get(selectedKey);
-        const selectedThread =
-          selectThread(threadIndexRef.current, selectedKey) ?? entry?.thread;
-        if (!selectedThread) {
-          return "failed";
-        }
-        const existingEventIds = new Set(
-          entry?.events.map((cachedEvent) => cachedEvent.id) ?? []
-        );
-        const liveShellEvents =
-          options.countShellEvent === true && !existingEventIds.has(event.id)
-            ? [event]
-            : [];
-        const wasComplete = isCompleteThreadDetail(entry);
-        writeSelectedThreadPage(selectedThread, [event], {
-          complete: wasComplete,
-          tokenScope
-        });
-        applyLiveThreadShellEvents(selectedThread, liveShellEvents);
-        koedDebug("stream.eventMerged", {
-          eventId,
-          selectedThreadKey: selectedKey,
-          wasComplete
-        });
-        return "merged";
-      } catch (error) {
-        koedDebug("stream.eventMergeFailed", {
-          eventId,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        return "failed";
-      }
-    },
-    [apiToken, applyLiveThreadShellEvents, writeSelectedThreadPage]
-  );
-
   const drainPrewarmQueue = useCallback(() => {
     while (
       activePrewarmRef.current < prewarmConcurrency &&
@@ -967,71 +861,8 @@ export function useKoedMemoryGraph({
     let cancelled = false;
     let retryTimeout: number | null = null;
     let refreshTimeout: number | null = null;
-    const eventRetryTimeouts = new Set<number>();
     let scheduledRefreshSelectedThread = false;
     let scheduledRefreshReason = "shell";
-
-    const runStreamEventBatch = async (
-      events: Array<{ countShellEvent: boolean; id: string }>
-    ): Promise<StreamEventRefreshResult[]> => {
-      const results: StreamEventRefreshResult[] = [];
-      for (
-        let index = 0;
-        index < events.length;
-        index += streamEventDetailConcurrency
-      ) {
-        if (cancelled) {
-          break;
-        }
-        const batch = events.slice(index, index + streamEventDetailConcurrency);
-        results.push(
-          ...(await Promise.all(
-            batch.map((eventRef) =>
-              refreshStreamEvent(eventRef.id, {
-                countShellEvent: eventRef.countShellEvent
-              })
-            )
-          ))
-        );
-      }
-      return results;
-    };
-
-    const retryStreamEvents = (
-      events: Array<{ countShellEvent: boolean; id: string }>,
-      attempt = 1
-    ) => {
-      void runStreamEventBatch(events).then((results) => {
-        if (cancelled) {
-          return;
-        }
-        const failed = results.some((result) => result === "failed");
-        const notSelected = results.some((result) => result === "not-selected");
-        koedDebug("stream.eventsMerged", {
-          attempt,
-          eventIds: events.map((eventRef) => eventRef.id),
-          results
-        });
-        if (failed && attempt < 3 && !cancelled) {
-          const timeout = window.setTimeout(() => {
-            eventRetryTimeouts.delete(timeout);
-            if (!cancelled) {
-              retryStreamEvents(events, attempt + 1);
-            }
-          }, 500 * attempt);
-          eventRetryTimeouts.add(timeout);
-          return;
-        }
-        if (failed) {
-          scheduleRefresh({
-            refreshSelectedThread: true,
-            reason: "selected-event-fetch-failed"
-          });
-        } else if (notSelected) {
-          scheduleRefresh({ reason: "stream-event-not-selected" });
-        }
-      });
-    };
 
     const scheduleRefresh = (options?: {
       delayMs?: number;
@@ -1166,6 +997,14 @@ export function useKoedMemoryGraph({
                 boundary = buffer.indexOf("\n\n");
                 continue;
               }
+              const selectedEventRefs = eventRefs.filter(
+                (eventRef) =>
+                  selectedKey &&
+                  threadSelectionKey({
+                    projectId: eventRef.projectId,
+                    id: eventRef.threadId
+                  }) === selectedKey
+              );
               const hasNonSelectedEventRefs = eventRefs.some(
                 (eventRef) =>
                   !selectedKey ||
@@ -1174,38 +1013,12 @@ export function useKoedMemoryGraph({
                     id: eventRef.threadId
                   }) !== selectedKey
               );
-              const selectedEventIds = eventRefs
-                .filter(
-                  (eventRef) =>
-                    selectedKey &&
-                    threadSelectionKey({
-                      projectId: eventRef.projectId,
-                      id: eventRef.threadId
-                    }) === selectedKey
-                )
-                .map((eventRef) => ({
-                  countShellEvent:
-                    (eventRef.operation ?? payload?.operation) === "INSERT",
-                  id: eventRef.id
-                }));
-              const eventIds: Array<{
-                countShellEvent: boolean;
-                id: string;
-              }> =
-                selectedEventIds.length > 0
-                  ? selectedEventIds
-                  : !payload?.eventRefs &&
-                      isGraphDisplayEventPayload(payload) &&
-                      payload.operation !== "DELETE"
-                    ? [
-                        {
-                          countShellEvent: payload.operation === "INSERT",
-                          id: payload.id
-                        }
-                      ]
-                    : [];
-              if (eventIds.length > 0) {
-                retryStreamEvents(eventIds);
+              if (selectedEventRefs.length > 0) {
+                scheduleRefresh({
+                  delayMs: 100,
+                  refreshSelectedThread: true,
+                  reason: "selected-event-refs"
+                });
                 if (hasNonSelectedEventRefs) {
                   scheduleRefresh({ reason: "mixed-event-refs" });
                 }
@@ -1214,12 +1027,11 @@ export function useKoedMemoryGraph({
                 isGraphDisplayEventPayload(payload) &&
                 payload.operation !== "DELETE"
               ) {
-                retryStreamEvents([
-                  {
-                    countShellEvent: payload.operation === "INSERT",
-                    id: String(payload.id ?? "")
-                  }
-                ]);
+                scheduleRefresh({
+                  delayMs: 100,
+                  refreshSelectedThread: true,
+                  reason: "selected-display-event"
+                });
               } else if (payload?.table === "memory_embeddings") {
                 koedDebug("stream.graphUpdateIgnored", {
                   reason: "embedding-index-update"
@@ -1282,17 +1094,12 @@ export function useKoedMemoryGraph({
       if (refreshTimeout !== null) {
         window.clearTimeout(refreshTimeout);
       }
-      for (const timeout of eventRetryTimeouts) {
-        window.clearTimeout(timeout);
-      }
-      eventRetryTimeouts.clear();
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [
     apiToken,
     loadGraph,
     onMemoryQuestionUpdate,
-    refreshStreamEvent,
     refreshVisibleData,
     setToast
   ]);

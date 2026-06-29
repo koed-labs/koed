@@ -43,6 +43,13 @@
       "when": 1781882924553,
       "tag": "0005_typical_vivisector",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782485594362,
+      "tag": "0006_zippy_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

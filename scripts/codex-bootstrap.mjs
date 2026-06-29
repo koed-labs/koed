@@ -14,7 +14,7 @@ import {
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultOwnerEmail = "local@koed.ai";
 const defaultTokenName = "Codex";
-const defaultApiUrl = "http://localhost:3300";
+const defaultApiUrl = "http://localhost:3000";
 const defaultNodeCommand = "node";
 const defaultAppServerBinary = "codex";
 const setupEnvScript = resolve(rootDir, "scripts/setup-env.mjs");
