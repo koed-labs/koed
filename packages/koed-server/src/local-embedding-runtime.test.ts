@@ -87,9 +87,14 @@ describe("local Embedding Service runtime", () => {
     );
   });
 
-  it("auto-selects native mode only when runtime files exist", () => {
+  it("resolves bundled-local Embedding Service to native-only mode", () => {
     const root = tempDir();
-    expect(resolveBundledEmbeddingMode(paths(root), {})).toBe("compose");
+    expect(resolveBundledEmbeddingMode(paths(root), {})).toBe("native");
+    expect(
+      resolveBundledEmbeddingMode(paths(root), {
+        KOED_BUNDLED_EMBEDDING_MODE: "compose"
+      })
+    ).toBe("native");
 
     mkdirSync(resolve(root, "apps", "embedding-service", ".venv", "bin"), {
       recursive: true
@@ -103,7 +108,6 @@ describe("local Embedding Service runtime", () => {
     writeFileSync(resolve(root, "vendor", "llama.cpp", "llama-server"), "");
 
     expect(localEmbeddingRuntimeAvailable(paths(root), {})).toBe(true);
-    expect(resolveBundledEmbeddingMode(paths(root), {})).toBe("native");
   });
 
   it("reports missing runtime files without tokens", async () => {

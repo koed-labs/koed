@@ -17,8 +17,7 @@ MCP-side workers.
 - **Worker**: the background process that consumes BullMQ or Postgres-backed
   local queue jobs, performs catch-up Projection, embedding work, and LCM node
   embedding.
-- **Embedding Service**: Operator-managed service in external dependency mode
-  that turns memory text into retrieval vectors.
+- **Embedding Service**: Operator-managed service in external dependency mode, or native Koed-owned runtime in bundled-local mode, that turns memory text into retrieval vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
   rows, Memory Events, Memory Nodes, embeddings, questions, token usage,
   Team Workspace access records, and Team audit events.
@@ -41,19 +40,15 @@ MCP-side workers.
    values. `koed-server` does not start, stop, or inspect Docker Compose in
    external mode.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
-   starts native Postgres under `KOED_HOME` when bundled Postgres binaries are
-   available or required by configuration; otherwise it starts the local
-   Postgres/pgvector Compose scaffold. It starts the Embedding Service as a
-   direct supervised Python/llama-server process when native assets are
-   available or required by configuration; otherwise it starts the
-   `embedding-service` Compose scaffold. It defaults job processing to the
-   Postgres-backed local queue. Model assets are installed out of band with
-   `koed-server models install`, which requires configured artifact URLs and
-   SHA-256 checksums before writing to `KOED_HOME/models`.
-5. `pnpm smoke:bundled-local -- --json` can verify this path with an isolated
-   temporary `KOED_HOME`, unique Compose project name, and temporary host ports.
-   `pnpm smoke:bundled-local -- --full --json` requires native resources and
-   verifies API Token creation, Capture Hook-like personal ingestion,
+   starts native Postgres/pgvector and native Embedding Service runtimes under
+   `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
+   Python/llama-server, or model assets report setup guidance. It defaults job
+   processing to the Postgres-backed local queue. Model assets are installed out
+   of band with `koed-server models install`, which requires configured artifact
+   URLs and SHA-256 checksums before writing to `KOED_HOME/models`.
+5. `pnpm smoke:bundled-local -- --full --json` verifies this native path with
+   an isolated temporary `KOED_HOME`, temporary host ports, native resource
+   preflight, API Token creation, Capture Hook-like personal ingestion,
    Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer
    reachability, and stop-based cleanup before Operators rely on it for local
    development or packaging checks.
@@ -62,7 +57,7 @@ MCP-side workers.
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
    table.
-7. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, native Postgres through `pg_ctl stop`, then only the Compose scaffold services recorded in runtime state. It treats stale process IDs as an idempotent no-op and does not stop Operator-managed dependencies in external dependency mode. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
+7. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. It treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor

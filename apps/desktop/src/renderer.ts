@@ -1692,7 +1692,7 @@ const runStartupSequence = async () => {
       setStartupStep("start", "running");
       appendStartupLog("command: koed-server start");
       appendStartupLog(
-        "does: setup env; docker compose up deps; build apps; spawn API/worker/Explorer"
+        "does: setup env; use external deps; build apps; spawn API/worker/Explorer"
       );
       const startResult = await runWithStartupProbes("start", () =>
         invokeWithTimeout("start", undefined, 180_000)

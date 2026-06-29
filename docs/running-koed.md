@@ -20,7 +20,7 @@ For local personal use with native bundled resources installed, `koed-server sta
 
 ```bash
 pnpm env:setup
-docker compose up -d --build
+docker compose -f examples/docker-compose/docker-compose.yml up -d --build
 pnpm desktop:start
 ```
 
@@ -41,7 +41,7 @@ node packages/koed-server/dist/cli.js stop --json
 node packages/koed-server/dist/cli.js restart --json
 ```
 
-`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops API, Worker, Explorer, native Embedding Service, native Postgres via `pg_ctl stop -D <dataDir> -m fast`, and only Compose scaffold services recorded in runtime state. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops Explorer, Worker, API, native Embedding Service, and native Postgres via `pg_ctl stop -D <dataDir> -m fast`. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
 Run Codex setup through the same surface after `koed-server start` has made the
 API ready:
@@ -56,26 +56,11 @@ the Compose stack, then let `koed-server` connect to the service URLs. Advanced
 Operators can provide the same URLs from `KOED_HOME/config/server.json` instead
 of Docker Compose.
 
-### Bundled-local runtime scaffold
+### Bundled-local native runtime
 
-Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch the
-local Compose `postgres` and `embedding-service` services and default the
-API/Worker queue backend to `local`. Redis is not required for queues in this
-mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set.
+Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch native Koed-owned Postgres/pgvector and Embedding Service runtimes under `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set; with BullMQ, Redis is Operator-managed external infrastructure.
 
-Bundled-local mode starts runtime scaffolds by default. If native Postgres
-binaries are available under `vendor/postgres/bin` or `KOED_POSTGRES_BIN_DIR`,
-`koed-server` can run bundled-local Postgres directly under `KOED_HOME` instead
-of the Compose Postgres scaffold. If `apps/embedding-service/.venv/bin/python`
-and a bundled `llama-server` are available, it can also run the Embedding
-Service as a direct supervised process. Set `KOED_BUNDLED_POSTGRES_MODE=native`
-or `KOED_BUNDLED_EMBEDDING_MODE=native` to require those native paths, or
-`compose` to force each scaffold. Native local personal runs keep data, queue
-state, logs, model files, Postgres data, and runtime state under `KOED_HOME` and
-do not require Docker when those resources are installed. Docker, Postgres
-images, pgvector, llama.cpp, Homebrew packages, and system services remain
-Operator prerequisites for scaffold-based runs. Model assets are installed
-separately with explicit checksums:
+Bundled-local mode is native-only. Native Postgres binaries must be available under `vendor/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs `apps/embedding-service/.venv/bin/python`, `app.py`, `llama-server`, and model assets. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter. Model assets are installed separately with explicit checksums:
 
 ```bash
 KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \
@@ -86,30 +71,19 @@ node packages/koed-server/dist/cli.js models install --kind embedding --json
 Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
 `KOED_RERANKER_MODEL_SHA256` when enabling reranking.
 
-Run the bundled-local smoke workflow to verify the control-plane path with an
-isolated temporary `KOED_HOME`, unique Compose project name, and temporary host
-ports:
+Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
 
 ```bash
-pnpm smoke:bundled-local -- --json
+pnpm smoke:bundled-local -- --full --json
 ```
 
-The smoke workflow skips explicit model installation unless
-`KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured.
-Use `WORK_QUEUE_BACKEND=bullmq pnpm smoke:bundled-local -- --json` to verify
-the Redis/BullMQ override path. Use `pnpm smoke:bundled-local -- --full --json`
-for native local personal coverage: temporary `KOED_HOME`, native resource
-preflight, API Token creation, Capture Hook-like personal ingestion, Projection,
-local queue/embedding work, Memory Answer evidence retrieval with a unique
-marker, Explorer reachability, and cleanup through `koed-server stop --json`.
-Missing native binaries or model assets fail clearly in full mode instead of
-skipping.
+The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
 ```bash
-REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose up -d --build
-API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
+REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose -f examples/docker-compose/docker-compose.yml up -d --build
+KOED_DEPENDENCY_MODE=external API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
 ```
 
 The Explorer frontend is available at `http://localhost:5174`, or the host port you selected, and is embedded by Koed Desktop.

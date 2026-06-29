@@ -8,10 +8,7 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
-import {
-  resolveBundledPostgresMode,
-  stopLocalPostgresRuntime
-} from "./local-postgres-runtime.js";
+import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -47,12 +44,6 @@ export interface KoedServerStopOptions {
 }
 
 const APP_PROCESS_ORDER = ["explorer", "worker", "api"] as const;
-const COMPOSE_SCAFFOLD_SERVICES = [
-  "postgres",
-  "redis",
-  "embedding-service"
-] as const;
-
 const readRuntimeState = (
   path: string,
   deps: Pick<Required<KoedServerStopOptions>, "existsSync" | "readFileSync">
@@ -155,22 +146,9 @@ const stopPid = (
   }
 };
 
-const shouldStopNativePostgres = (
-  runtime: KoedServerRuntimeState,
-  environment: NodeJS.ProcessEnv,
-  existsSync: typeof nodeExistsSync
-): boolean => {
-  if (runtime.dependencyMode !== "bundled-local") {
-    return false;
-  }
-  if (runtime.services.includes("postgres-native")) {
-    return true;
-  }
-  const paths = resolveKoedServerPaths(environment);
-  return (
-    resolveBundledPostgresMode(paths, environment, existsSync) === "native"
-  );
-};
+const shouldStopNativePostgres = (runtime: KoedServerRuntimeState): boolean =>
+  runtime.dependencyMode === "bundled-local" &&
+  runtime.services.includes("postgres-native");
 
 export const stopKoedServer = ({
   environment = process.env,
@@ -258,7 +236,7 @@ export const stopKoedServer = ({
       }
     }
 
-    if (shouldStopNativePostgres(runtime, environment, pathExists)) {
+    if (shouldStopNativePostgres(runtime)) {
       const stopped = stopLocalPostgresRuntime(paths, environment, {
         existsSync: pathExists,
         spawnSync
@@ -269,31 +247,6 @@ export const stopKoedServer = ({
         errors.push({
           target: "postgres-native",
           error: stopped.error ?? stopped.message
-        });
-      }
-    }
-
-    const composeServices = COMPOSE_SCAFFOLD_SERVICES.filter((service) =>
-      runtime.services.includes(service)
-    );
-    if (composeServices.length > 0) {
-      const result = spawnSync(
-        "docker",
-        ["compose", "stop", ...composeServices],
-        {
-          cwd: runtime.repoRoot || paths.repoRoot,
-          env: environment,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"]
-        }
-      );
-      if (result.status === 0) {
-        stoppedServices.push(...composeServices);
-      } else {
-        errors.push({
-          target: "docker compose",
-          error:
-            result.error?.message ?? result.stderr?.trim() ?? "unknown error"
         });
       }
     }

@@ -124,21 +124,10 @@ export const localEmbeddingRuntimeAvailable = (
     .length === 0;
 
 export const resolveBundledEmbeddingMode = (
-  paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv = process.env,
-  exists: typeof existsSync = existsSync
-): "native" | "compose" => {
-  const configured = trim(environment.KOED_BUNDLED_EMBEDDING_MODE);
-  if (configured === "native") {
-    return "native";
-  }
-  if (configured === "compose") {
-    return "compose";
-  }
-  return localEmbeddingRuntimeAvailable(paths, environment, exists)
-    ? "native"
-    : "compose";
-};
+  _paths: KoedServerPaths,
+  _environment: NodeJS.ProcessEnv = process.env,
+  _exists: typeof existsSync = existsSync
+): "native" => "native";
 
 export const localEmbeddingEnv = (
   runtime: LocalEmbeddingRuntimePaths

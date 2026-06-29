@@ -62,7 +62,7 @@ export const bundledLocalSmokeUsage = `Usage: pnpm smoke:bundled-local -- [optio
 
 Options:
   --json                    Emit JSON result
-  --full                    Run native local personal capture/recall smoke
+  --full                    Also run personal capture/recall smoke after native health
   --timeout-ms <number>     Max wait for healthy status (default 180000)
   --poll-interval-ms <num>  Poll interval (default 2000)
   --help, -h                Show this help
@@ -118,11 +118,7 @@ const assertCommand = (deps, command, args, label, options = {}) => {
   }
 };
 
-export const preflightBundledLocalSmoke = (deps, options = {}) => {
-  if (!options.full) {
-    assertCommand(deps, "docker", ["--version"], "Docker CLI preflight");
-    assertCommand(deps, "docker", ["info"], "Docker daemon preflight");
-  }
+export const preflightBundledLocalSmoke = (deps) => {
   assertCommand(deps, "pnpm", ["--version"], "pnpm preflight");
 };
 
@@ -131,7 +127,6 @@ export const buildBundledLocalSmokeEnvironment = async ({
   deps = createBundledLocalSmokeDeps(),
   baseEnv = process.env,
   koedHome,
-  composeProjectName,
   full = false
 } = {}) => {
   const id = deps.randomUUID().slice(0, 8);
@@ -148,21 +143,15 @@ export const buildBundledLocalSmokeEnvironment = async ({
   };
   const queueBackend =
     baseEnv.WORK_QUEUE_BACKEND === "bullmq" ? "bullmq" : "local";
-  const composeProject = composeProjectName ?? `koed-smoke-${id}`;
   const env = {
     ...baseEnv,
     KOED_HOME: home,
     KOED_REPO_ROOT: root,
     KOED_ENV_PATH: envPath,
     KOED_DEPENDENCY_MODE: "bundled-local",
-    ...(full
-      ? {
-          KOED_BUNDLED_POSTGRES_MODE: "native",
-          KOED_BUNDLED_EMBEDDING_MODE: "native"
-        }
-      : {}),
+    KOED_BUNDLED_POSTGRES_MODE: "native",
+    KOED_BUNDLED_EMBEDDING_MODE: "native",
     WORK_QUEUE_BACKEND: queueBackend,
-    COMPOSE_PROJECT_NAME: composeProject,
     API_HOST_PORT: String(ports.api),
     EXPLORER_WEB_HOST_PORT: String(ports.explorer),
     POSTGRES_HOST_PORT: String(ports.postgres),
@@ -176,11 +165,7 @@ export const buildBundledLocalSmokeEnvironment = async ({
     MEMORY_API_URL: `http://localhost:${ports.api}`,
     EMBEDDING_SERVICE_URL: `http://localhost:${ports.embedding}`
   };
-  const expectedServices = [
-    "postgres",
-    ...(queueBackend === "bullmq" ? ["redis"] : []),
-    "embedding-service"
-  ];
+  const expectedServices = ["postgres-native", "embedding-service-native"];
   return {
     id,
     root,
@@ -188,7 +173,6 @@ export const buildBundledLocalSmokeEnvironment = async ({
     envPath,
     ports,
     env,
-    composeProject,
     expectedServices,
     queueBackend
   };
@@ -241,6 +225,18 @@ const modelInstallConfigured = (env) =>
 const defaultEmbeddingModelPath = (context) =>
   path.join(context.koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
 
+const nativeLlamaServerPath = (env, root) => {
+  const dockerDefault = "/opt/llama.cpp/llama-server";
+  for (const value of [
+    env.KOED_EMBEDDING_LLAMA_SERVER_BIN,
+    env.LLAMA_SERVER_BINARY,
+    env.EMBEDDING_LLAMA_SERVER_BINARY
+  ]) {
+    if (value?.trim() && value.trim() !== dockerDefault) return value.trim();
+  }
+  return path.join(root, "vendor", "llama.cpp", "llama-server");
+};
+
 export const assertNativeBundledLocalResources = ({ deps, context }) => {
   const env = context.env;
   const postgresBinDir = env.KOED_POSTGRES_BIN_DIR;
@@ -288,13 +284,7 @@ export const assertNativeBundledLocalResources = ({ deps, context }) => {
           "python"
         )
     ],
-    [
-      "llama-server",
-      env.KOED_EMBEDDING_LLAMA_SERVER_BIN ??
-        env.LLAMA_SERVER_BINARY ??
-        env.EMBEDDING_LLAMA_SERVER_BINARY ??
-        path.join(context.root, "vendor", "llama.cpp", "llama-server")
-    ]
+    ["llama-server", nativeLlamaServerPath(env, context.root)]
   ];
   const missing = required.filter(([, filePath]) => !deps.fileExists(filePath));
   const modelPath =
@@ -308,7 +298,7 @@ export const assertNativeBundledLocalResources = ({ deps, context }) => {
         .map(([label, filePath]) => `${label} (${filePath})`)
         .join(
           ", "
-        )}. Install native resources or set KOED_* overrides before running --full.`
+        )}. Install native resources or set KOED_* overrides before running bundled-local smoke.`
     );
   }
 };
@@ -641,15 +631,6 @@ export const cleanupBundledLocalSmoke = async ({ deps, context, child }) => {
       child.kill("SIGKILL");
     }
   }
-  deps.spawnSync(
-    "docker",
-    ["compose", "-p", context.composeProject, "down", "--remove-orphans"],
-    {
-      cwd: context.root,
-      env: context.env,
-      stdio: "ignore"
-    }
-  );
   await deps.rm(context.koedHome, { recursive: true, force: true });
 };
 
@@ -681,7 +662,6 @@ export const runBundledLocalSmoke = async ({
       step: "environment",
       state: "created",
       koedHome: context.koedHome,
-      composeProject: context.composeProject,
       ports: context.ports,
       queueBackend: context.queueBackend
     });
@@ -694,10 +674,8 @@ export const runBundledLocalSmoke = async ({
       { cwd: context.root, env: context.env }
     );
     steps.push({ step: "koed-server-build", state: "passed" });
-    if (full) {
-      assertNativeBundledLocalResources({ deps, context });
-      steps.push({ step: "native-resources", state: "present" });
-    }
+    assertNativeBundledLocalResources({ deps, context });
+    steps.push({ step: "native-resources", state: "present" });
     maybeInstallEmbeddingModel({ deps, context, steps });
 
     const cli = path.join(
@@ -742,7 +720,6 @@ export const runBundledLocalSmoke = async ({
       ok: true,
       state: "passed",
       koedHome: context.koedHome,
-      composeProject: context.composeProject,
       steps,
       status,
       ...(fullSmoke ? { fullSmoke } : {})
@@ -752,9 +729,7 @@ export const runBundledLocalSmoke = async ({
       ok: false,
       state: "failed",
       error: error instanceof Error ? error.message : String(error),
-      ...(context
-        ? { koedHome: context.koedHome, composeProject: context.composeProject }
-        : {}),
+      ...(context ? { koedHome: context.koedHome } : {}),
       steps,
       logs: logs.slice(-80)
     };

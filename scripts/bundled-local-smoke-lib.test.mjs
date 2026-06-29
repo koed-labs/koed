@@ -90,7 +90,7 @@ test("parses smoke CLI options", () => {
   assert.throws(() => parseBundledLocalSmokeArgs(["--wat"]), /Unknown/);
 });
 
-test("builds isolated bundled-local environment with unique ports and compose project", async () => {
+test("builds isolated native bundled-local environment with unique ports", async () => {
   const deps = createDeps();
   const context = await buildBundledLocalSmokeEnvironment({
     root: "/repo",
@@ -103,11 +103,11 @@ test("builds isolated bundled-local environment with unique ports and compose pr
   assert.equal(context.env.KOED_REPO_ROOT, "/repo");
   assert.equal(context.env.KOED_DEPENDENCY_MODE, "bundled-local");
   assert.equal(context.env.WORK_QUEUE_BACKEND, "bullmq");
-  assert.equal(context.composeProject, "koed-smoke-12345678");
+  assert.equal(context.env.KOED_BUNDLED_POSTGRES_MODE, "native");
+  assert.equal(context.env.KOED_BUNDLED_EMBEDDING_MODE, "native");
   assert.deepEqual(context.expectedServices, [
-    "postgres",
-    "redis",
-    "embedding-service"
+    "postgres-native",
+    "embedding-service-native"
   ]);
   assert.equal(new Set(Object.values(context.ports)).size, 5);
 });
@@ -128,22 +128,25 @@ test("full preflight does not require Docker", () => {
   );
 });
 
-test("preflight reports missing Docker clearly", () => {
+test("preflight does not require Docker", () => {
   const deps = createDeps({
-    spawnSync: (command, args) =>
-      command === "docker" && args[0] === "info"
-        ? failure("daemon down")
-        : success()
+    spawnSync: (command, args) => {
+      deps.calls.push({ kind: "spawnSync", command, args });
+      if (command === "docker") return failure("daemon down");
+      return success();
+    }
   });
 
-  assert.throws(
-    () => preflightBundledLocalSmoke(deps),
-    /Docker daemon preflight failed/
+  preflightBundledLocalSmoke(deps);
+  assert.equal(
+    deps.calls.some((call) => call.command === "docker"),
+    false
   );
 });
 
 test("run skips model install when model URL or checksum env is absent", async () => {
   const deps = createDeps({
+    fileExists: () => true,
     spawnSync: (command, args) => {
       deps.calls.push({ kind: "spawnSync", command, args });
       if (args.includes("status")) {
@@ -184,6 +187,7 @@ test("run skips model install when model URL or checksum env is absent", async (
 
 test("run installs and verifies model when model env is present", async () => {
   const deps = createDeps({
+    fileExists: () => true,
     spawnSync: (command, args) => {
       deps.calls.push({ kind: "spawnSync", command, args });
       if (args.includes("install"))
@@ -244,7 +248,7 @@ test("wait fails fast when child exits before health", async () => {
   );
 });
 
-test("full smoke fails clearly when native resources are missing", async () => {
+test("smoke fails clearly when native resources are missing", async () => {
   const deps = createDeps({
     spawnSync: (command, args) => {
       deps.calls.push({ kind: "spawnSync", command, args });
@@ -270,7 +274,7 @@ test("full smoke fails clearly when native resources are missing", async () => {
     deps,
     env: {},
     json: true,
-    full: true
+    full: false
   });
 
   assert.equal(result.ok, false);
@@ -361,14 +365,9 @@ test("full smoke creates API Token and calls personal capture recall path", asyn
   );
 });
 
-test("cleanup terminates child and removes temp home on failure", async () => {
+test("cleanup removes temp home on native resource failure", async () => {
   const deps = createDeps({
-    spawnSync: (command, args) => {
-      deps.calls.push({ kind: "spawnSync", command, args });
-      if (command === "docker" && args[0] === "info")
-        return failure("daemon down");
-      return success("{}");
-    }
+    fileExists: () => false
   });
 
   const result = await runBundledLocalSmoke({
@@ -379,5 +378,13 @@ test("cleanup terminates child and removes temp home on failure", async () => {
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.error, /Docker daemon preflight failed/);
+  assert.match(result.error, /Native bundled-local smoke resources missing/);
+  assert.equal(
+    deps.calls.some((call) => call.kind === "rm"),
+    true
+  );
+  assert.equal(
+    deps.calls.some((call) => call.command === "docker"),
+    false
+  );
 });

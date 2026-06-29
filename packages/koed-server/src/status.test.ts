@@ -130,7 +130,7 @@ describe("process status/probe mapping", () => {
     expect(status.details?.missing).toEqual(["redis"]);
   });
 
-  it("checks bundled-local compose scaffolds by expected service", () => {
+  it("checks selected compose services for optional diagnostics", () => {
     const status = dockerComposePs(
       paths(tempDir()),
       () => spawnResult('{"Service":"postgres","State":"running"}\n'),
@@ -296,7 +296,7 @@ describe("status and doctor JSON contracts", () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\nREDIS_URL=redis://operator:6379\n"
     );
     const status = await collectKoedServerStatus(
       {
@@ -318,10 +318,7 @@ describe("status and doctor JSON contracts", () => {
               { service: "embedding-model", status: "ok" }
             ]
           }),
-        spawnSync: () =>
-          spawnResult(
-            '{"Service":"postgres","State":"running"}\n{"Service":"redis","State":"running"}\n{"Service":"embedding-service","State":"running"}\n'
-          ),
+        spawnSync: () => spawnResult("", 0),
         now: () => new Date("2026-01-01T00:00:00.000Z")
       }
     );

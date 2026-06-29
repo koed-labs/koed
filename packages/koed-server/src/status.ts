@@ -7,14 +7,8 @@ import {
 import { resolveKoedServerConfig } from "./config.js";
 import { loadExplorerCredential, resolveLocalApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
-import {
-  collectLocalEmbeddingRuntimeStatus,
-  resolveBundledEmbeddingMode
-} from "./local-embedding-runtime.js";
-import {
-  collectLocalPostgresRuntimeStatus,
-  resolveBundledPostgresMode
-} from "./local-postgres-runtime.js";
+import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
+import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
 import {
   ensureKoedHome,
   resolveKoedServerPaths,
@@ -650,14 +644,8 @@ export const collectKoedServerStatus = async (
     dependencyMode: serverConfig.dependencyMode
   });
   const serviceEnvironment = { ...repoEnv, ...environment };
-  const useNativePostgres =
-    serverConfig.dependencyMode === "bundled-local" &&
-    resolveBundledPostgresMode(paths, serviceEnvironment, deps.existsSync) ===
-      "native";
-  const useNativeEmbedding =
-    serverConfig.dependencyMode === "bundled-local" &&
-    resolveBundledEmbeddingMode(paths, serviceEnvironment, deps.existsSync) ===
-      "native";
+  const useBundledLocalDependencies =
+    serverConfig.dependencyMode === "bundled-local";
   const apiToken = inspectApiToken(environment, repoEnv);
   const codex = inspectCodex(environment, deps);
   const captureHook = inspectCaptureHook(environment, deps);
@@ -691,35 +679,29 @@ export const collectKoedServerStatus = async (
         : apiReady.redis
       : apiReady.redis;
   const databaseStatus =
-    useNativePostgres && apiReady.database.state === "starting"
+    useBundledLocalDependencies && apiReady.database.state === "starting"
       ? collectLocalPostgresRuntimeStatus(paths, serviceEnvironment, {
           existsSync: deps.existsSync,
           spawnSync: deps.spawnSync
         })
       : apiReady.database;
   const embeddingStatus =
-    useNativeEmbedding && apiReady.embeddingService.state === "starting"
+    useBundledLocalDependencies &&
+    apiReady.embeddingService.state === "starting"
       ? await collectLocalEmbeddingRuntimeStatus(paths, serviceEnvironment, {
           existsSync: deps.existsSync,
           fetch: deps.fetch
         })
       : apiReady.embeddingService;
-  const localDependencyServices = [
-    ...(useNativePostgres ? [] : ["postgres"]),
-    ...(queueBackend === "bullmq" ? ["redis"] : []),
-    ...(useNativeEmbedding ? [] : ["embedding-service"])
-  ];
   const queueDependency =
     queueBackend === "local"
       ? localQueueStatus
-      : serverConfig.dependencyMode === "external"
-        ? externalRedisUrl
-          ? apiReady.redis
-          : needsAttention(
-              "External dependency mode requires an Operator-managed Redis URL for BullMQ queues.",
-              "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL, or set WORK_QUEUE_BACKEND=local."
-            )
-        : dockerComposePs(paths, deps.spawnSync, localDependencyServices);
+      : externalRedisUrl
+        ? apiReady.redis
+        : needsAttention(
+            `${serverConfig.dependencyMode === "external" ? "External dependency mode" : "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq"} requires an Operator-managed Redis URL for BullMQ queues.`,
+            "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL, or set WORK_QUEUE_BACKEND=local."
+          );
   const workerPid = runtime?.processes?.worker;
   const workerRunning = workerPid ? deps.checkPid(workerPid) : false;
   const workerQueues =
