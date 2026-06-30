@@ -25,14 +25,18 @@ import { createMainWindowOptions } from "./window/window-manager.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const sourceRepoRoot = resolve(appDir, "..", "..", "..");
+const explicitKoedServerCli = process.env.KOED_SERVER_CLI?.trim()
+  ? resolve(process.env.KOED_SERVER_CLI)
+  : undefined;
 const repoRoot = process.env.KOED_REPO_ROOT?.trim()
   ? resolve(process.env.KOED_REPO_ROOT)
-  : app.isPackaged
-    ? resolve(process.resourcesPath, "repo")
-    : sourceRepoRoot;
-const koedServerCli = process.env.KOED_SERVER_CLI?.trim()
-  ? resolve(process.env.KOED_SERVER_CLI)
-  : resolve(repoRoot, "packages/koed-server/dist/cli.js");
+  : explicitKoedServerCli
+    ? resolve(dirname(explicitKoedServerCli), "..", "..", "..")
+    : app.isPackaged
+      ? resolve(process.resourcesPath, "repo")
+      : sourceRepoRoot;
+const koedServerCli =
+  explicitKoedServerCli ?? resolve(repoRoot, "packages/koed-server/dist/cli.js");
 const appName = "Koed";
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
 
