@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const FIXTURE_VERSION = "team-saas-fixture-v1";
 export const FIXTURE_SOURCE_HASH_PREFIX = `${FIXTURE_VERSION}:`;
 
@@ -32,6 +34,14 @@ export const fixtureTeam = {
   id: "20000000-0000-4000-8000-000000000001",
   name: "Koed Fixture Team"
 };
+
+export const fixtureSessionCookieName = "cm_session";
+export const fixtureSessionSecrets = Object.fromEntries(
+  Object.keys(fixtureUsers).map((userKey) => [
+    userKey,
+    `cms_${FIXTURE_VERSION}_${userKey}_session_secret_000000000000000000000000`
+  ])
+);
 
 export const fixtureWorkspaces = {
   electron: {
@@ -209,6 +219,8 @@ export const fixtureMemoryRows = fixtureMemories.map((memory, index) => ({
   nodeId: idFor("6", index),
   conversationItemId: idFor("7", index),
   shareGrantId: idFor("8", index),
+  messageId: idFor("9", index),
+  capturedAt: new Date(Date.UTC(2026, 0, 1, 9, index, 0)).toISOString(),
   sourceHash: `${FIXTURE_SOURCE_HASH_PREFIX}${memory.key}`,
   idempotencyKey: `${FIXTURE_VERSION}:${memory.key}`
 }));
@@ -235,8 +247,13 @@ export const fixtureConversationItemIds = fixtureMemoryRows.map(
 export const fixtureShareGrantIds = fixtureMemoryRows.map(
   (memory) => memory.shareGrantId
 );
+export const fixtureMessageIds = fixtureMemoryRows.map(
+  (memory) => memory.messageId
+);
 
 const json = (value) => JSON.stringify(value);
+const fixtureSessionHash = (secret, pepper) =>
+  createHash("sha256").update(`${pepper}${secret}`).digest("hex");
 
 export const resetFixture = async (client) => {
   await client.query("begin");
@@ -269,8 +286,9 @@ export const resetFixture = async (client) => {
         delete from memory_node_sources
         where memory_node_id = any($1::uuid[])
            or memory_event_id = any($2::uuid[])
+           or message_id = any($3::uuid[])
       `,
-      [fixtureNodeIds, fixtureEventIds]
+      [fixtureNodeIds, fixtureEventIds, fixtureMessageIds]
     );
     await client.query(
       `
@@ -317,12 +335,25 @@ export const resetFixture = async (client) => {
     );
     await client.query(
       `
+        delete from messages
+        where id = any($1::uuid[])
+           or owner_user_id = any($2::uuid[])
+           or source_hash like $3
+      `,
+      [fixtureMessageIds, fixtureUserIds, `${FIXTURE_SOURCE_HASH_PREFIX}%`]
+    );
+    await client.query(
+      `
         delete from sessions
         where id = any($1::uuid[])
            or owner_user_id = any($2::uuid[])
            or source_hash like $3
       `,
       [fixtureSessionIds, fixtureUserIds, `${FIXTURE_SOURCE_HASH_PREFIX}%`]
+    );
+    await client.query(
+      "delete from user_sessions where user_id = any($1::uuid[])",
+      [fixtureUserIds]
     );
     await client.query(
       "delete from team_workspace_access_grants where team_id = $1 or team_workspace_id = any($2::uuid[])",
@@ -367,6 +398,24 @@ export const seedFixture = async (client) => {
           `${FIXTURE_VERSION}:password-not-for-login`
         ]
       );
+    }
+
+    if (process.env.API_TOKEN_PEPPER?.trim()) {
+      for (const [userKey, user] of Object.entries(fixtureUsers)) {
+        await client.query(
+          `
+            insert into user_sessions (user_id, session_hash, expires_at)
+            values ($1, $2, now() + interval '30 days')
+          `,
+          [
+            user.id,
+            fixtureSessionHash(
+              fixtureSessionSecrets[userKey],
+              process.env.API_TOKEN_PEPPER
+            )
+          ]
+        );
+      }
     }
 
     await client.query("insert into teams (id, name) values ($1, $2)", [
@@ -433,7 +482,12 @@ export const seedFixture = async (client) => {
         memoryKey: memory.key,
         owner: memory.owner,
         workspace: memory.workspace,
-        shareState: memory.shareState
+        shareState: memory.shareState,
+        workspaceId: workspace.projectId,
+        projectName: workspace.name,
+        projectPath: workspace.projectId,
+        externalSessionId: `${FIXTURE_VERSION}:${memory.key}`,
+        threadName: memory.title
       };
       const eventPayload = {
         actor: "user",
@@ -540,6 +594,44 @@ export const seedFixture = async (client) => {
 
       await client.query(
         `
+          insert into messages (
+            id,
+            session_id,
+            owner_user_id,
+            visibility,
+            role,
+            content,
+            content_json,
+            source_runtime,
+            capture_method,
+            transcript_item_id,
+            idempotency_key,
+            source_hash,
+            token_count,
+            source_event_time,
+            captured_at
+          )
+          values (
+            $1, $2, $3, 'personal', 'user', $4, $5, 'codex', 'hook',
+            $6, $7, $8, $9, $10::timestamptz, $10::timestamptz
+          )
+        `,
+        [
+          memory.messageId,
+          memory.sessionId,
+          owner.id,
+          memory.content,
+          json({ type: "message", role: "user", content: memory.content }),
+          String(fixtureMemoryRows.indexOf(memory) + 1),
+          `${memory.idempotencyKey}:message`,
+          `${memory.sourceHash}:message`,
+          Math.ceil(memory.content.length / 4),
+          memory.capturedAt
+        ]
+      );
+
+      await client.query(
+        `
           insert into memory_events (
             id,
             actor_user_id,
@@ -552,16 +644,20 @@ export const seedFixture = async (client) => {
             idempotency_key,
             source_hash,
             payload,
+            token_count,
+            source_event_time,
+            source_sequence,
+            captured_at,
             personal_deleted_at,
             personal_deleted_by_user_id,
             personal_deletion_reason
           )
           values (
             $1, $2, $2, 'personal', 'captured', 'codex', 'hook', $3,
-            $4, $5, $6,
+            $4, $5, $6, $7, $8::timestamptz, $9, $8::timestamptz,
             ${deletedColumns ? "now()" : "null"},
-            $7,
-            $8
+            $10,
+            $11
           )
         `,
         [
@@ -571,6 +667,9 @@ export const seedFixture = async (client) => {
           `${memory.idempotencyKey}:memory-event`,
           memory.sourceHash,
           json(eventPayload),
+          Math.ceil(memory.content.length / 4),
+          memory.capturedAt,
+          fixtureMemoryRows.indexOf(memory) + 1,
           deletedColumns?.personalDeletedByUserId ?? null,
           deletedColumns?.personalDeletionReason ?? null
         ]
@@ -629,12 +728,30 @@ export const seedFixture = async (client) => {
           memory.sourceHash,
           json([
             {
-              eventId: memory.eventId,
-              sessionId: memory.sessionId,
+              kind: "memory_event",
+              sourceTable: "memory_events",
+              sourceId: memory.eventId,
+              visibility: "personal",
+              actor: "user",
+              createdAt: memory.capturedAt,
               text: memory.content,
-              projectPath: workspace.projectId,
-              owner: memory.owner,
-              fixture: FIXTURE_VERSION
+              payload: eventPayload,
+              position: 0
+            },
+            {
+              kind: "message",
+              sourceTable: "messages",
+              sourceId: memory.messageId,
+              visibility: "personal",
+              actor: "user",
+              createdAt: memory.capturedAt,
+              text: memory.content,
+              payload: {
+                role: "user",
+                content: memory.content,
+                metadata
+              },
+              position: 1
             }
           ]),
           deletedColumns?.personalDeletedByUserId ?? null,
@@ -647,12 +764,13 @@ export const seedFixture = async (client) => {
           insert into memory_node_sources (
             memory_node_id,
             memory_event_id,
+            message_id,
             source_order,
             source_hash
           )
-          values ($1, $2, 0, $3)
+          values ($1, $2, $3, 0, $4)
         `,
-        [memory.nodeId, memory.eventId, memory.sourceHash]
+        [memory.nodeId, memory.eventId, memory.messageId, memory.sourceHash]
       );
 
       if (memory.shareState !== "private") {
@@ -682,7 +800,7 @@ export const seedFixture = async (client) => {
               ${memory.shareState === "personal_deleted_retained" ? "now()" : "null"},
               $9,
               $10,
-              now(),
+              ${memory.shareState === "revoked" ? "null" : "now()"},
               $11
             )
           `,
@@ -701,7 +819,9 @@ export const seedFixture = async (client) => {
               : null,
             memory.shareState === "personal_deleted_retained"
               ? "fixture_team_retention_after_personal_deletion"
-              : "fixture_active_team_share"
+              : memory.shareState === "revoked"
+                ? "fixture_revoked_share_not_retained"
+                : "fixture_active_team_share"
           ]
         );
       }
@@ -757,6 +877,45 @@ export const listTeamVisibleMemories = async (
   return result.rows;
 };
 
+export const listTeamVisibleMessages = async (
+  client,
+  { userKey, workspaceKey }
+) => {
+  const result = await client.query(
+    `
+      select distinct
+        msg.content,
+        msg.id as message_id,
+        tssg.team_workspace_id
+      from messages msg
+      join team_session_share_grants tssg on tssg.session_id = msg.session_id
+      join team_workspace_access_grants twag
+        on twag.team_workspace_id = tssg.team_workspace_id
+       and twag.team_id = tssg.team_id
+      join team_memberships tm
+        on tm.team_id = tssg.team_id
+       and tm.user_id = twag.user_id
+      where twag.user_id = $1
+        and tssg.team_workspace_id = $2
+        and tssg.team_id = $3
+        and tssg.revoked_at is null
+        and twag.access in ('read', 'write')
+        and twag.disabled_at is null
+        and tm.status = 'enabled'
+        and msg.visibility = 'personal'
+        and msg.capture_method = 'hook'
+        and msg.invalidated_at is null
+      order by msg.content asc
+    `,
+    [
+      fixtureUsers[userKey].id,
+      fixtureWorkspaces[workspaceKey].id,
+      fixtureTeam.id
+    ]
+  );
+  return result.rows;
+};
+
 const titlesFor = (rows) => rows.map((row) => row.title).sort();
 const assertIncludes = (titles, title, label) => {
   if (!titles.includes(title)) {
@@ -770,6 +929,81 @@ const assertExcludes = (titles, title, label) => {
     throw new Error(`${label}: expected ${JSON.stringify(title)} to be hidden`);
   }
 };
+const fixtureMemory = (key) => {
+  const memory = fixtureMemoryRows.find((row) => row.key === key);
+  if (!memory) {
+    throw new Error(`Fixture definition is missing memory ${key}`);
+  }
+  return memory;
+};
+
+const assertCount = async (client, query, params, expected, label) => {
+  const result = await client.query(query, params);
+  const count = Number(result.rows[0]?.count ?? 0);
+  if (count !== expected) {
+    throw new Error(`${label}: expected ${expected}, got ${count}`);
+  }
+};
+
+const assertMemoryState = async (client, key, expected) => {
+  const memory = fixtureMemory(key);
+  const result = await client.query(
+    `
+      select
+        mn.id as node_id,
+        me.id as event_id,
+        msg.id as message_id,
+        s.id as session_id,
+        tssg.id as grant_id,
+        tssg.revoked_at is not null as grant_revoked,
+        tssg.retained_by_team_at is not null as team_retained,
+        mn.personal_deleted_at is not null as node_deleted,
+        me.personal_deleted_at is not null as event_deleted,
+        s.personal_deleted_at is not null as session_deleted,
+        jsonb_path_exists(
+          mn.source_items_json,
+          '$[*] ? (@.kind == "memory_event" && @.sourceTable == "memory_events")'
+        ) as has_event_source_item,
+        jsonb_path_exists(
+          mn.source_items_json,
+          '$[*] ? (@.kind == "message" && @.sourceTable == "messages")'
+        ) as has_message_source_item
+      from memory_nodes mn
+      join memory_node_sources mns on mns.memory_node_id = mn.id
+      join memory_events me on me.id = mns.memory_event_id
+      join messages msg on msg.id = mns.message_id
+      join sessions s on s.id = me.session_id
+      left join team_session_share_grants tssg on tssg.session_id = s.id
+      where mn.id = $1
+    `,
+    [memory.nodeId]
+  );
+  const row = result.rows[0];
+  if (!row?.node_id || !row.event_id || !row.message_id || !row.session_id) {
+    throw new Error(`${memory.title}: fixture source rows are missing`);
+  }
+  if (Boolean(row.grant_id) !== expected.hasGrant) {
+    throw new Error(`${memory.title}: unexpected Team share grant state`);
+  }
+  if (Boolean(row.grant_revoked) !== expected.revoked) {
+    throw new Error(`${memory.title}: unexpected revoked grant state`);
+  }
+  if (Boolean(row.team_retained) !== expected.retained) {
+    throw new Error(`${memory.title}: unexpected Team retention state`);
+  }
+  if (Boolean(row.node_deleted) !== expected.personalDeleted) {
+    throw new Error(`${memory.title}: unexpected node deletion state`);
+  }
+  if (Boolean(row.event_deleted) !== expected.personalDeleted) {
+    throw new Error(`${memory.title}: unexpected event deletion state`);
+  }
+  if (Boolean(row.session_deleted) !== expected.personalDeleted) {
+    throw new Error(`${memory.title}: unexpected session deletion state`);
+  }
+  if (!row.has_event_source_item || !row.has_message_source_item) {
+    throw new Error(`${memory.title}: source_items_json is not LCM-shaped`);
+  }
+};
 
 export const validateFixture = async (client) => {
   const users = await client.query(
@@ -779,6 +1013,83 @@ export const validateFixture = async (client) => {
   if (users.rows[0]?.count !== fixtureUserIds.length) {
     throw new Error("Fixture users are missing. Run seed first.");
   }
+
+  await assertCount(
+    client,
+    "select count(*)::int as count from sessions where id = any($1::uuid[])",
+    [fixtureSessionIds],
+    fixtureMemoryRows.length,
+    "Fixture sessions"
+  );
+  await assertCount(
+    client,
+    "select count(*)::int as count from messages where id = any($1::uuid[])",
+    [fixtureMessageIds],
+    fixtureMemoryRows.length,
+    "Fixture hook messages"
+  );
+  await assertCount(
+    client,
+    "select count(*)::int as count from memory_nodes where id = any($1::uuid[])",
+    [fixtureNodeIds],
+    fixtureMemoryRows.length,
+    "Fixture memory nodes"
+  );
+  if (process.env.API_TOKEN_PEPPER?.trim()) {
+    await assertCount(
+      client,
+      `
+        select count(*)::int as count
+        from user_sessions
+        where user_id = any($1::uuid[])
+          and revoked_at is null
+          and expires_at > now()
+      `,
+      [fixtureUserIds],
+      fixtureUserIds.length,
+      "Fixture API sessions"
+    );
+  }
+
+  await assertMemoryState(client, "david-electron-revoked-experiment", {
+    hasGrant: true,
+    revoked: true,
+    retained: false,
+    personalDeleted: false
+  });
+  await assertMemoryState(client, "bob-private-devops", {
+    hasGrant: false,
+    revoked: false,
+    retained: false,
+    personalDeleted: false
+  });
+  await assertMemoryState(client, "carol-cloud-retained-deletion", {
+    hasGrant: true,
+    revoked: false,
+    retained: true,
+    personalDeleted: true
+  });
+  await assertMemoryState(client, "bob-cloud-removed-member", {
+    hasGrant: true,
+    revoked: false,
+    retained: true,
+    personalDeleted: false
+  });
+
+  await assertCount(
+    client,
+    `
+      select count(*)::int as count
+      from team_workspace_access_grants
+      where team_workspace_id = $1
+        and user_id = $2
+        and access = 'disabled'
+        and disabled_at is not null
+    `,
+    [fixtureWorkspaces.cloud.id, fixtureUsers.bob.id],
+    1,
+    "Bob disabled Cloud Workspace access"
+  );
 
   const electronForCarol = titlesFor(
     await listTeamVisibleMemories(client, {
@@ -878,46 +1189,37 @@ export const validateFixture = async (client) => {
     "Managed Knowledge Ingestion for Bob"
   );
 
-  const retained = await client.query(
-    `
-      select
-        mn.personal_deleted_at is not null as node_deleted,
-        me.personal_deleted_at is not null as event_deleted,
-        s.personal_deleted_at is not null as session_deleted,
-        tssg.retained_by_team_at is not null as retained,
-        tssg.revoked_at is null as active_grant
-      from memory_nodes mn
-      join memory_node_sources mns on mns.memory_node_id = mn.id
-      join memory_events me on me.id = mns.memory_event_id
-      join sessions s on s.id = me.session_id
-      join team_session_share_grants tssg on tssg.session_id = s.id
-      where mn.id = $1
-    `,
-    [
-      fixtureMemoryRows.find(
-        (memory) => memory.key === "carol-cloud-retained-deletion"
-      ).nodeId
-    ]
-  );
-  const retainedRow = retained.rows[0];
+  const electronMessagesForCarol = (
+    await listTeamVisibleMessages(client, {
+      userKey: "carol",
+      workspaceKey: "electron"
+    })
+  ).map((row) => row.content);
   if (
-    !retainedRow?.node_deleted ||
-    !retainedRow.event_deleted ||
-    !retainedRow.session_deleted ||
-    !retainedRow.retained ||
-    !retainedRow.active_grant
+    !electronMessagesForCarol.some((content) =>
+      content.includes("Workspace Memory Timeline")
+    )
   ) {
     throw new Error(
-      "Retained Billing Grace Decision does not model personal deletion plus Team retention"
+      "Electron Team App for Carol: expected hook message timeline rows"
     );
   }
+
+  assertExcludes(
+    electronMessagesForCarol,
+    fixtureMemory("david-electron-revoked-experiment").content,
+    "Electron Team App message timeline for Carol"
+  );
 
   return {
     users: fixtureUserIds.length,
     workspaces: fixtureWorkspaceIds.length,
     memories: fixtureMemoryRows.length,
     checks: [
+      "Fixture rows exist before visibility exclusions are checked",
+      "Fixture API sessions are available when API_TOKEN_PEPPER is configured",
       "Electron hides revoked and private memories",
+      "Electron has hook message rows for graph/timeline checks",
       "Cloud includes retained Team knowledge after personal deletion",
       "Cloud blocks Bob after Workspace removal",
       "Managed Knowledge Ingestion hides private agent prompt scratchpad"

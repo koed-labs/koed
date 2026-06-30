@@ -1,7 +1,8 @@
 # Team SaaS Synthetic Memory Fixture
 
-This fixture is the shared synthetic data set for Team SaaS backend, API, Agent,
-and later Electron validation.
+This fixture is the shared synthetic data set for Team SaaS backend data, API
+authorization, graph/timeline, evidence, lexical recall, Agent, and later
+Electron validation.
 
 It creates a deterministic near-real Koed Team with four users, three
 Workspaces, private memories, shared memories, revoked shares, a removed
@@ -18,8 +19,8 @@ Run from the repository root.
 pnpm team-fixture:seed
 ```
 
-Runs DB migrations, resets only this fixture's rows, seeds the fixture, and
-validates the core access expectations.
+Loads the repository `.env`, runs DB migrations, resets only this fixture's
+rows, seeds the fixture, and validates the core access expectations.
 
 ```bash
 pnpm team-fixture:validate
@@ -34,7 +35,25 @@ pnpm team-fixture:reset
 Removes only rows belonging to `team-saas-fixture-v1`, returning the fixture
 state to square 1. It does not truncate the full database.
 
-All commands require `DATABASE_URL`.
+All commands require `DATABASE_URL`. `pnpm team-fixture:seed` loads the root
+`.env` before running migrations, so a normal local clone can use the same
+environment file as the other operator scripts.
+
+## API Session Cookies
+
+When `API_TOKEN_PEPPER` is configured, seeding creates active synthetic web
+sessions for API-level checks. Use the `cm_session` cookie with the matching
+fixture secret:
+
+| Person | Cookie header                                                                               |
+| ------ | ------------------------------------------------------------------------------------------- |
+| Alice  | `Cookie: cm_session=cms_team-saas-fixture-v1_alice_session_secret_000000000000000000000000` |
+| Bob    | `Cookie: cm_session=cms_team-saas-fixture-v1_bob_session_secret_000000000000000000000000`   |
+| Carol  | `Cookie: cm_session=cms_team-saas-fixture-v1_carol_session_secret_000000000000000000000000` |
+| David  | `Cookie: cm_session=cms_team-saas-fixture-v1_david_session_secret_000000000000000000000000` |
+
+The fixture passwords are intentionally not login credentials. Use the session
+cookies for deterministic API calls.
 
 ## Team
 
@@ -86,8 +105,8 @@ Use these as the first API/data-level assertions before adding UI checks.
 
 1. Run `pnpm team-fixture:seed`.
 2. Read this document before writing tests or prompts.
-3. Verify data/API behavior first: authorization, recall, graph, expansion, and
-   evidence must match the truth sheet.
+3. Verify data/API behavior first: authorization, lexical recall, graph,
+   expansion, and evidence must match the truth sheet.
 4. Treat any mismatch as either a fixture bug or product bug. Do not silently
    alter the fixture assumptions.
 5. When the Electron app is ready, reuse this same fixture for UI-level checks.
@@ -99,6 +118,13 @@ Use these as the first API/data-level assertions before adding UI checks.
 - The reset mechanism is fixture-scoped. It deletes deterministic fixture rows
   by IDs, emails, and source hashes instead of truncating the whole database.
 - The data intentionally includes edge cases, not only happy paths.
+- The fixture seeds production-shaped `messages`, `memory_events`,
+  `memory_nodes`, `memory_node_sources`, and LCM-style `source_items_json` so
+  graph/timeline and evidence checks exercise the normal data shapes.
+- The fixture does not precompute embeddings. Semantic `/v1/memory/search` and
+  answer flows require the normal embedding service or backfill path before
+  semantic hits are expected. Until then, use lexical/data-level checks for
+  deterministic recall validation.
 - Bob's Cloud Workspace removal tests that user-owned contributions can remain
   useful to the Team while the removed member loses access.
 - Carol's retained billing memory tests that personal deletion does not destroy

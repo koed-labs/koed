@@ -34,7 +34,7 @@
     "env:sync:check": "node scripts/sync-app-env-examples.mjs --check",
     "smoke:lcm": "node scripts/lcm-smoke-test.mjs",
     "team-fixture:reset": "node scripts/team-saas-fixture.mjs reset",
-    "team-fixture:seed": "pnpm --filter @koed/db migrate:up && node scripts/team-saas-fixture.mjs seed",
+    "team-fixture:seed": "node scripts/team-saas-fixture.mjs seed",
     "team-fixture:validate": "node scripts/team-saas-fixture.mjs validate",
     "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 test",
     "test:python": "node scripts/python-check.mjs",

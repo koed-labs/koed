@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import {
@@ -35,6 +36,24 @@ loadRootEnv(process.cwd(), process.env);
 if (!process.env.DATABASE_URL?.trim()) {
   console.error("DATABASE_URL is required. Run pnpm env:setup or set it.");
   process.exit(2);
+}
+
+const runMigrations = () => {
+  const result = spawnSync("pnpm", ["--filter", "@koed/db", "migrate:up"], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "inherit"
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    process.exit(result.status ?? 1);
+  }
+};
+
+if (command === "seed") {
+  runMigrations();
 }
 
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
