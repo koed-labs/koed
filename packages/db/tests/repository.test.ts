@@ -1126,6 +1126,176 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("filters Team-expanded supporting context to shared Workspace sessions", async () => {
+    const owner = await repo.createUser({
+      email: `supporting-context-owner-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `supporting-context-member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Supporting Context Team" }
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Supporting Context Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+
+    const sharedSession = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "supporting-context-shared-project",
+        externalSessionId: `supporting-context-shared-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const privateSession = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "supporting-context-private-project",
+        externalSessionId: `supporting-context-private-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+
+    const [sharedContext, privateContext] = await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: sharedSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "shared-context-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "user_message" }
+            },
+            rawText: "Shared IDE context visible to the Team Workspace.",
+            sourceHash: `shared-supporting-context-${randomUUID()}`,
+            idempotencyKey: `shared-supporting-context-${randomUUID()}`,
+            metadata: {
+              transcriptType: "ide_context",
+              contextKind: "ide_client_context",
+              sourceRole: "supporting_context"
+            }
+          },
+          {
+            sessionId: privateSession.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "hook",
+            externalTurnId: "private-context-turn",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: {
+              type: "event_msg",
+              payload: { type: "user_message" }
+            },
+            rawText: "Private IDE context must not leak to the Team Workspace.",
+            sourceHash: `private-supporting-context-${randomUUID()}`,
+            idempotencyKey: `private-supporting-context-${randomUUID()}`,
+            metadata: {
+              transcriptType: "ide_context",
+              contextKind: "ide_client_context",
+              sourceRole: "supporting_context"
+            }
+          }
+        ]
+      }
+    );
+    const sharedEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        workspaceId: "supporting-context-shared-project",
+        sessionId: sharedSession.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        content: "Shared decision with supporting context.",
+        captureMethod: "hook"
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_event_sources (
+          memory_event_id,
+          conversation_item_id,
+          source_order,
+          source_role
+        )
+        values ($1, $2, 0, 'supporting_context'), ($1, $3, 1, 'supporting_context')
+      `,
+      [sharedEvent.id, sharedContext!.id, privateContext!.id]
+    );
+    const node = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText: "Shared node with mixed supporting context.",
+        captureMethod: "hook",
+        sourceRuntime: "codex",
+        sourceHash: `shared-supporting-context-node-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values ($1, $2, 0)
+      `,
+      [node.id, sharedEvent.id]
+    );
+    await pool.query(
+      `
+        insert into team_session_share_grants (
+          owner_user_id,
+          session_id,
+          team_id,
+          team_workspace_id,
+          granted_by_user_id
+        )
+        values ($1, $2, $3, $4, $5)
+      `,
+      [owner.id, sharedSession.id, team.id, workspace!.id, owner.id]
+    );
+
+    const expanded = await repo.expandMemoryNode(
+      node.id,
+      { userId: member.id },
+      { teamWorkspaceId: workspace!.id }
+    );
+    const supportingText = expanded.sourceItems
+      .flatMap((item) => item.supportingContext ?? [])
+      .map((item) => item.text)
+      .join("\n");
+
+    expect(supportingText).toContain(
+      "Shared IDE context visible to the Team Workspace."
+    );
+    expect(supportingText).not.toContain(
+      "Private IDE context must not leak to the Team Workspace."
+    );
+  });
+
   it("handles Team invites, acceptance, disablement, and audit boundaries", async () => {
     const owner = await repo.createUser({
       email: `invite-owner-${randomUUID()}@example.com`,

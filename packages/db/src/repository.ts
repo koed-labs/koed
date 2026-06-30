@@ -8011,13 +8011,28 @@ export const createMemorySourceRepository = (
 	              where mes.memory_event_id = any($1::uuid[])
 	                and mes.source_role = $2
 	                and ci.visibility = 'personal'
-	                and ci.owner_user_id = $3
+	                and (
+	                  ci.owner_user_id = $3
+	                  or (
+	                    $4::uuid is not null
+	                    and exists (
+	                      select 1
+	                      from team_session_share_grants auth_grant
+	                      where auth_grant.session_id = ci.session_id
+	                        and auth_grant.team_workspace_id = $4::uuid
+	                        and auth_grant.team_id = $5::uuid
+	                        and auth_grant.revoked_at is null
+	                    )
+	                  )
+	                )
 	              order by mes.memory_event_id, mes.source_order asc, ci.id asc
 	            `,
             [
               sources.rows.map((source) => source.id),
               SUPPORTING_CONTEXT_SOURCE_ROLE,
-              actor.userId
+              actor.userId,
+              teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+              teamWorkspaceBoundary?.teamId ?? null
             ]
           )
         : { rows: [] };
