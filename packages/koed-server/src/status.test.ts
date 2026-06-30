@@ -11,8 +11,6 @@ import {
   notConfigured,
   statusFromApiReady
 } from "./status.js";
-import type { KoedServerPaths } from "./paths.js";
-
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -25,24 +23,6 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
 
 const spawnResult = (stdout: string, status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
-
-const paths = (repoRoot: string): KoedServerPaths => ({
-  koedHome: repoRoot,
-  configDir: resolve(repoRoot, "config"),
-  logsDir: resolve(repoRoot, "logs"),
-  runDir: resolve(repoRoot, "run"),
-  dataDir: resolve(repoRoot, "data"),
-  modelsDir: resolve(repoRoot, "models"),
-  cacheDir: resolve(repoRoot, "cache"),
-  postgresDataDir: resolve(repoRoot, "data", "postgres"),
-  postgresRunDir: resolve(repoRoot, "run", "postgres"),
-  postgresLogPath: resolve(repoRoot, "logs", "postgres.log"),
-  runtimeStatePath: resolve(repoRoot, "run", "koed-server.json"),
-  lastVerificationPath: resolve(repoRoot, "run", "last-verification.json"),
-  serverConfigPath: resolve(repoRoot, "config", "server.json"),
-  explorerTokenPath: resolve(repoRoot, "config", "explorer-token.json"),
-  repoRoot
-});
 
 afterEach(() => {
   for (const path of temps.splice(0)) {

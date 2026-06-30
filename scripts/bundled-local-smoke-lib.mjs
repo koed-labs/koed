@@ -126,8 +126,7 @@ export const buildBundledLocalSmokeEnvironment = async ({
   root = defaultRoot,
   deps = createBundledLocalSmokeDeps(),
   baseEnv = process.env,
-  koedHome,
-  full = false
+  koedHome
 } = {}) => {
   const id = deps.randomUUID().slice(0, 8);
   const home =

@@ -177,10 +177,15 @@ export const localPostgresRuntimeAvailable = (
   ).length === 0;
 
 export const resolveBundledPostgresMode = (
-  _paths: KoedServerPaths,
-  _environment: NodeJS.ProcessEnv = process.env,
-  _exists: typeof existsSync = existsSync
-): "native" => "native";
+  paths: KoedServerPaths,
+  environment?: NodeJS.ProcessEnv,
+  exists?: typeof existsSync
+): "native" => {
+  void paths;
+  void environment;
+  void exists;
+  return "native";
+};
 
 const sqlLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;

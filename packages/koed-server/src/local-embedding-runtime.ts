@@ -157,10 +157,15 @@ export const localEmbeddingRuntimeAvailable = (
   ).length === 0;
 
 export const resolveBundledEmbeddingMode = (
-  _paths: KoedServerPaths,
-  _environment: NodeJS.ProcessEnv = process.env,
-  _exists: typeof existsSync = existsSync
-): "native" => "native";
+  paths: KoedServerPaths,
+  environment?: NodeJS.ProcessEnv,
+  exists?: typeof existsSync
+): "native" => {
+  void paths;
+  void environment;
+  void exists;
+  return "native";
+};
 
 export const localEmbeddingEnv = (
   runtime: LocalEmbeddingRuntimePaths
