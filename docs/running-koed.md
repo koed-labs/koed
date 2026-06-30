@@ -83,10 +83,10 @@ Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
 Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
 
 ```bash
-pnpm smoke:bundled-local -- --full --json
+pnpm smoke:bundled-local -- --full --install-runtime --json
 ```
 
-The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
+`--install-runtime` explicitly runs the Homebrew-backed runtime install for the temporary `KOED_HOME` before native resource checks. The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
