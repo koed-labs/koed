@@ -47,16 +47,16 @@ afterEach(() => {
 });
 
 describe("local Embedding Service runtime", () => {
-  it("resolves default native paths under the repo", () => {
+  it("resolves default native paths under KOED_HOME runtime", () => {
     const root = tempDir();
     const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {});
 
-    expect(runtime.appDir).toBe(resolve(root, "apps", "embedding-service"));
+    expect(runtime.appDir).toBe(resolve(root, "runtime", "embedding-service"));
     expect(runtime.pythonBin).toBe(
-      resolve(root, "apps", "embedding-service", ".venv", "bin", "python")
+      resolve(root, "runtime", "embedding-service", ".venv", "bin", "python")
     );
     expect(runtime.llamaServerBin).toBe(
-      resolve(root, "vendor", "llama.cpp", "llama-server")
+      resolve(root, "runtime", "llama.cpp", "llama-server")
     );
     expect(runtime.healthUrl).toBe("http://127.0.0.1:3800/health");
     expect(localEmbeddingEnv(runtime).EMBEDDING_SERVICE_URL).toBe(
@@ -71,7 +71,7 @@ describe("local Embedding Service runtime", () => {
     });
 
     expect(runtime.llamaServerBin).toBe(
-      resolve(root, "vendor", "llama.cpp", "llama-server")
+      resolve(root, "runtime", "llama.cpp", "llama-server")
     );
   });
 
@@ -172,7 +172,7 @@ describe("local Embedding Service runtime", () => {
       "--port",
       "3900"
     ]);
-    expect(spawned[0]?.cwd).toBe(resolve(root, "apps", "embedding-service"));
+    expect(spawned[0]?.cwd).toBe(resolve(root, "runtime", "embedding-service"));
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_URL).toBe(
       "http://127.0.0.1:3900"
     );

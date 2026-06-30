@@ -60,17 +60,34 @@ const trim = (value: string | undefined): string | undefined => {
   return trimmed ? trimmed : undefined;
 };
 
+const hasAnyPostgresBinary = (
+  binDir: string,
+  exists: typeof existsSync = existsSync
+): boolean =>
+  ["initdb", "pg_ctl", "psql"].some((name) => exists(resolve(binDir, name)));
+
+const resolvePostgresBinDir = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv = process.env,
+  exists: typeof existsSync = existsSync
+): string => {
+  const override = trim(environment.KOED_POSTGRES_BIN_DIR);
+  if (override) return resolve(override);
+  const koedRuntimeDir = resolve(paths.koedHome, "runtime", "postgres", "bin");
+  if (hasAnyPostgresBinary(koedRuntimeDir, exists)) return koedRuntimeDir;
+  const vendorDir = resolve(paths.repoRoot, "vendor", "postgres", "bin");
+  if (hasAnyPostgresBinary(vendorDir, exists)) return vendorDir;
+  return koedRuntimeDir;
+};
+
 export const resolveLocalPostgresRuntimePaths = (
   paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  exists: typeof existsSync = existsSync
 ): LocalPostgresRuntimePaths => {
-  const binDir = trim(environment.KOED_POSTGRES_BIN_DIR);
-  const vendorDir = resolve(paths.repoRoot, "vendor", "postgres", "bin");
+  const binDir = resolvePostgresBinDir(paths, environment, exists);
   const bin = (name: string, override: string | undefined) =>
-    resolve(
-      trim(override) ??
-        (binDir ? resolve(binDir, name) : resolve(vendorDir, name))
-    );
+    resolve(trim(override) ?? resolve(binDir, name));
   const password =
     trim(environment.POSTGRES_PASSWORD) ??
     trim(environment.KOED_BUNDLED_POSTGRES_PASSWORD) ??
@@ -132,7 +149,7 @@ const missingRuntime = (
   state: "not_configured",
   message: `Bundled-local native Postgres runtime is missing: ${missing.join(", ")}.`,
   action:
-    "Install bundled Postgres/pgvector resources under vendor/postgres or set KOED_POSTGRES_BIN_DIR / KOED_POSTGRES_*_BIN overrides.",
+    "Install bundled Postgres/pgvector resources under KOED_HOME/runtime/postgres or set KOED_POSTGRES_BIN_DIR / KOED_POSTGRES_*_BIN overrides. Source-checkout vendor/postgres is a development fallback.",
   details: { missing },
   paths: safeRuntimePaths(runtime)
 });
@@ -154,8 +171,10 @@ export const localPostgresRuntimeAvailable = (
   environment: NodeJS.ProcessEnv = process.env,
   exists: typeof existsSync = existsSync
 ): boolean =>
-  runtimeMissing(resolveLocalPostgresRuntimePaths(paths, environment), exists)
-    .length === 0;
+  runtimeMissing(
+    resolveLocalPostgresRuntimePaths(paths, environment, exists),
+    exists
+  ).length === 0;
 
 export const resolveBundledPostgresMode = (
   _paths: KoedServerPaths,
@@ -199,7 +218,7 @@ export const collectLocalPostgresRuntimeStatus = (
 ): LocalPostgresRuntimeStatus => {
   const exists = dependencies.existsSync ?? existsSync;
   const spawnSync = dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike);
-  const runtime = resolveLocalPostgresRuntimePaths(paths, environment);
+  const runtime = resolveLocalPostgresRuntimePaths(paths, environment, exists);
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {
     return missingRuntime(runtime, missing);
@@ -239,7 +258,7 @@ export const stopLocalPostgresRuntime = (
 ): LocalPostgresRuntimeStopResult => {
   const exists = dependencies.existsSync ?? existsSync;
   const spawnSync = dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike);
-  const runtime = resolveLocalPostgresRuntimePaths(paths, environment);
+  const runtime = resolveLocalPostgresRuntimePaths(paths, environment, exists);
   if (!exists(runtime.pgCtlBin)) {
     return {
       ok: false,
@@ -297,7 +316,7 @@ export const startLocalPostgresRuntime = (
 ): LocalPostgresRuntimeStartResult => {
   const exists = dependencies.existsSync ?? existsSync;
   const spawnSync = dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike);
-  const runtime = resolveLocalPostgresRuntimePaths(paths, environment);
+  const runtime = resolveLocalPostgresRuntimePaths(paths, environment, exists);
   const env = { ...environment, ...localPostgresEnv(runtime) };
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {

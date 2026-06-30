@@ -554,7 +554,7 @@ type StartupLiveConfig = {
   actions: () => StartupSupportAction[];
 };
 
-const dockerDependenciesHealthy = (): boolean =>
+const localDependenciesHealthy = (): boolean =>
   status?.database.state === "healthy" &&
   status.redis.state === "healthy" &&
   status.embeddingService.state === "healthy";
@@ -580,15 +580,15 @@ const localServicesProbeMessage = (
   blocker: string | null
 ): string => {
   const reason = friendlyBlocker(blocker);
-  if (!dockerDependenciesHealthy()) {
-    return `status probe ${attempt}: Docker deps db=${statusState(
+  if (!localDependenciesHealthy()) {
+    return `status probe ${attempt}: dependencies db=${statusState(
       status?.database
     )} redis=${statusState(status?.redis)} embeddings=${statusState(
       status?.embeddingService
     )}${reason ? `; blocked by ${reason}` : ""}`;
   }
   if (status?.api.state !== "healthy") {
-    return `status probe ${attempt}: Docker deps ok; waiting for local API :3300${
+    return `status probe ${attempt}: dependencies ok; waiting for local API :3300${
       reason ? ` (${reason})` : ""
     }`;
   }
@@ -735,7 +735,7 @@ const readinessChecks: readonly ReadinessCheckDefinition[] = [
   {
     id: "start",
     title: "Local services",
-    description: "Docker dependencies plus API, worker, and Explorer.",
+    description: "Local dependencies plus API, Worker, and Explorer.",
     componentKeys: startupLiveConfig.start.componentKeys,
     action: {
       label: "Ensure services are running",
@@ -1058,28 +1058,8 @@ const getStartupHint = (): string => {
     return "Waiting for the first status update.";
   }
 
-  const dockerLikeIssue = [
-    status.api.message,
-    status.workerQueues.message,
-    status.database.message,
-    status.redis.message,
-    status.embeddingService.message
-  ]
-    .filter((value): value is string => typeof value === "string")
-    .join(" ")
-    .toLowerCase();
-
-  if (
-    status.api.state === "needs_attention" &&
-    (dockerLikeIssue.includes("docker") ||
-      dockerLikeIssue.includes("compose") ||
-      dockerLikeIssue.includes("socket"))
-  ) {
-    return "Docker looks unavailable. Start Docker Desktop or Colima, then retry startup.";
-  }
-
   if (!apiIsHealthy()) {
-    return "This can take a minute when Docker is starting or rebuilding containers.";
+    return "This can take a minute while koed-server starts local dependencies and app processes.";
   }
 
   return startupVisible
@@ -1688,7 +1668,7 @@ const runStartupSequence = async () => {
 
     if (!startupStepReady("start")) {
       startupDetail =
-        "Starting Docker dependencies plus the local API, worker, and Explorer processes.";
+        "Starting local dependencies plus the API, Worker, and Explorer processes.";
       setStartupStep("start", "running");
       appendStartupLog("command: koed-server start");
       appendStartupLog(

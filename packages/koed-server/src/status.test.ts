@@ -6,7 +6,6 @@ import {
   aggregateState,
   collectKoedServerDoctor,
   collectKoedServerStatus,
-  dockerComposePs,
   healthy,
   needsAttention,
   notConfigured,
@@ -119,26 +118,6 @@ describe("process status/probe mapping", () => {
 
     expect(result.database.state).toBe("needs_attention");
     expect(result.redis.state).toBe("starting");
-  });
-
-  it("maps partial compose startup to starting", () => {
-    const status = dockerComposePs(paths(tempDir()), () =>
-      spawnResult('{"Service":"worker","State":"running"}\n')
-    );
-
-    expect(status.state).toBe("starting");
-    expect(status.details?.missing).toEqual(["redis"]);
-  });
-
-  it("checks selected compose services for optional diagnostics", () => {
-    const status = dockerComposePs(
-      paths(tempDir()),
-      () => spawnResult('{"Service":"postgres","State":"running"}\n'),
-      ["postgres", "embedding-service"]
-    );
-
-    expect(status.state).toBe("starting");
-    expect(status.details?.missing).toEqual(["embedding-service"]);
   });
 });
 
