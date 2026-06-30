@@ -27,3 +27,5 @@ Use deployment controls for data-at-rest protection: private database networking
 
 Database role and row-boundary hardening is tracked in
 [database-row-boundary-safeguards.md](database-row-boundary-safeguards.md).
+Hosted Team tenant isolation and support-access constraints are tracked in
+[hosted-tenant-isolation-checklist.md](hosted-tenant-isolation-checklist.md).
