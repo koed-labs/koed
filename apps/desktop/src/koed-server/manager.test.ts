@@ -79,6 +79,42 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("runs explicit runtime install through koed-server", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true, state: "installed" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.runtime_install!()).resolves.toMatchObject({
+      ok: true,
+      state: "installed"
+    });
+    expect(calls[0]).toEqual([
+      "/repo/cli.js",
+      "runtime",
+      "install",
+      "--provider",
+      "homebrew",
+      "--dependency-mode",
+      "bundled-local",
+      "--json"
+    ]);
+  });
+
   it("reports missing koed-server CLI as not_configured", async () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",

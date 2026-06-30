@@ -47,9 +47,14 @@ MCP-side workers.
    starts native Postgres/pgvector and native Embedding Service runtimes under
    `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
    Python/llama-server, or model assets report setup guidance. It defaults job
-   processing to the Postgres-backed local queue. Model assets are installed out
-   of band with `koed-server models install`, which requires configured artifact
-   URLs and SHA-256 checksums before writing to `KOED_HOME/models`.
+   processing to the Postgres-backed local queue. On macOS,
+   `koed-server runtime status --provider homebrew --json` can inspect
+   Homebrew-backed runtime assets without installing packages, and
+   `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`
+   explicitly installs missing Homebrew packages and links selected binaries
+   under `KOED_HOME/runtime`. Model assets are installed out of band with
+   `koed-server models install`, which requires configured artifact URLs and
+   SHA-256 checksums before writing to `KOED_HOME/models`.
 5. `pnpm smoke:bundled-local -- --full --json` verifies this native path with
    an isolated temporary `KOED_HOME`, temporary host ports, native resource
    preflight, API Token creation, Capture Hook-like personal ingestion,

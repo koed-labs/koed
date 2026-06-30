@@ -253,6 +253,18 @@ export const createKoedServerManager = ({
         withDesktopStartLog(await runJson(["status"]), startOutputLines),
       doctor: () => runJson(["doctor"], 45_000),
       setup_codex: () => runJson(["setup", "codex"], 120_000),
+      runtime_install: () =>
+        runJson(
+          [
+            "runtime",
+            "install",
+            "--provider",
+            "homebrew",
+            "--dependency-mode",
+            "bundled-local"
+          ],
+          600_000
+        ),
       start,
       open_external: async (args) => {
         const url = typeof args?.url === "string" ? args.url : "";

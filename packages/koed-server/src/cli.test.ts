@@ -143,6 +143,116 @@ describe("JSON command output", () => {
     );
   });
 
+  it("prints runtime status --json without installing", async () => {
+    const stdout = writer();
+    let installed = false;
+
+    const exitCode = await runKoedServerCli(
+      ["runtime", "status", "--provider", "homebrew", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        loadEnvironment: () => ({}),
+        collectRuntimeStatus: () => ({
+          ok: true,
+          state: "installed",
+          provider: "homebrew",
+          platform: "darwin",
+          koedHome: "/tmp/koed",
+          homebrew: { installed: true, prefix: "/opt/homebrew" },
+          packages: [],
+          binaries: {},
+          pgvector: { compatible: true, sqlPaths: [] },
+          koedRuntime: {
+            postgresBinDir: "/tmp/koed/runtime/postgres/bin",
+            llamaServerBin: "/tmp/koed/runtime/llama.cpp/llama-server",
+            metadataPath: "/tmp/koed/cache/runtime-homebrew.json",
+            linked: true
+          },
+          message: "installed"
+        }),
+        installRuntime: () => {
+          installed = true;
+          throw new Error("must not install");
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(installed).toBe(false);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      provider: "homebrew"
+    });
+  });
+
+  it("prints runtime install --json only for explicit bundled-local mode", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      [
+        "runtime",
+        "install",
+        "--provider",
+        "homebrew",
+        "--dependency-mode",
+        "bundled-local",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        loadEnvironment: () => ({}),
+        installRuntime: () => ({
+          ok: true,
+          state: "installed",
+          provider: "homebrew",
+          platform: "darwin",
+          koedHome: "/tmp/koed",
+          homebrew: { installed: true, prefix: "/opt/homebrew" },
+          packages: [],
+          binaries: {},
+          pgvector: { compatible: true, sqlPaths: [] },
+          koedRuntime: {
+            postgresBinDir: "/tmp/koed/runtime/postgres/bin",
+            llamaServerBin: "/tmp/koed/runtime/llama.cpp/llama-server",
+            metadataPath: "/tmp/koed/cache/runtime-homebrew.json",
+            linked: true
+          },
+          message: "installed",
+          installedPackages: [],
+          linkedPaths: []
+        })
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "installed"
+    });
+  });
+
+  it("rejects runtime install without explicit bundled-local dependency mode", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      ["runtime", "install", "--provider", "homebrew", "--json"],
+      {
+        stdout: stdout.stream,
+        installRuntime: () => {
+          throw new Error("must not install");
+        }
+      }
+    );
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      error: "runtime install requires --dependency-mode bundled-local."
+    });
+  });
+
   it("prints stop --json", async () => {
     const stdout = writer();
 

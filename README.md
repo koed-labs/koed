@@ -48,6 +48,13 @@ dependencies. Set `KOED_DEPENDENCY_MODE=bundled-local` to let
 `koed-server start` launch native local Postgres + Embedding Service runtimes under
 `KOED_HOME` and use the Postgres-backed local queue by default.
 
+On macOS, native runtime assets can be inspected and explicitly installed with Homebrew:
+
+```bash
+node packages/koed-server/dist/cli.js runtime status --provider homebrew --json
+node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
+```
+
 Bundled-local model installers are opt-in and require artifact URLs plus expected SHA-256 checksums:
 
 ```bash
