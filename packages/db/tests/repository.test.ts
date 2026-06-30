@@ -1278,20 +1278,31 @@ describeDb("memory repository visibility", () => {
       [owner.id, sharedSession.id, team.id, workspace!.id, owner.id]
     );
 
-    const expanded = await repo.expandMemoryNode(
-      node.id,
-      { userId: member.id },
-      { teamWorkspaceId: workspace!.id }
-    );
-    const supportingText = expanded.sourceItems
-      .flatMap((item) => item.supportingContext ?? [])
-      .map((item) => item.text)
-      .join("\n");
+    const supportingTextFor = async (userId: string) => {
+      const expanded = await repo.expandMemoryNode(
+        node.id,
+        { userId },
+        { teamWorkspaceId: workspace!.id }
+      );
+      return expanded.sourceItems
+        .flatMap((item) => item.supportingContext ?? [])
+        .map((item) => item.text)
+        .join("\n");
+    };
 
-    expect(supportingText).toContain(
+    const memberSupportingText = await supportingTextFor(member.id);
+    expect(memberSupportingText).toContain(
       "Shared IDE context visible to the Team Workspace."
     );
-    expect(supportingText).not.toContain(
+    expect(memberSupportingText).not.toContain(
+      "Private IDE context must not leak to the Team Workspace."
+    );
+
+    const ownerSupportingText = await supportingTextFor(owner.id);
+    expect(ownerSupportingText).toContain(
+      "Shared IDE context visible to the Team Workspace."
+    );
+    expect(ownerSupportingText).not.toContain(
       "Private IDE context must not leak to the Team Workspace."
     );
   });

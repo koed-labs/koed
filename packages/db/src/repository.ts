@@ -8012,7 +8012,7 @@ export const createMemorySourceRepository = (
 	                and mes.source_role = $2
 	                and ci.visibility = 'personal'
 	                and (
-	                  ci.owner_user_id = $3
+	                  ($4::uuid is null and ci.owner_user_id = $3)
 	                  or (
 	                    $4::uuid is not null
 	                    and exists (
