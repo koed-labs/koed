@@ -405,6 +405,85 @@ describe("status and doctor JSON contracts", () => {
     expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBe("env_token");
   });
 
+  it("verifies Explorer process and reachability", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({ pid: 10, processes: { explorer: 12, worker: 11 } })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async (url) =>
+          String(url).includes(":5174")
+            ? response(true, 200, "")
+            : response(true, 200, {
+                checks: [
+                  { service: "postgres", status: "ok" },
+                  { service: "postgres-version", status: "ok" },
+                  { service: "migrations", status: "ok" },
+                  { service: "pgvector", status: "ok" },
+                  { service: "work-queue", status: "ok" },
+                  { service: "embedding-service", status: "ok" },
+                  { service: "embedding-model", status: "ok" }
+                ]
+              }),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid) => pid === 10 || pid === 11 || pid === 12,
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.explorer.state).toBe("healthy");
+    expect(status.explorer.message).toContain("reachable");
+    expect(status.explorer.details?.explorerPid).toBe(12);
+  });
+
+  it("marks Explorer unhealthy when the recorded process is stale", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({ pid: 10, processes: { explorer: 12, worker: 11 } })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () =>
+          response(true, 200, {
+            checks: [
+              { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
+            ]
+          }),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid) => pid === 10 || pid === 11,
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.explorer.state).toBe("needs_attention");
+    expect(status.explorer.message).toContain("not running");
+  });
+
   it("maps fully prepared but stopped supervisor to starting", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, ".codex"), { recursive: true });

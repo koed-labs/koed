@@ -180,13 +180,7 @@ export const registerOperationalRoutes = (
       )
     );
 
-    const ready = checks
-      .filter(
-        (check) =>
-          check.service !== "embedding-service" &&
-          check.service !== "embedding-model"
-      )
-      .every((check) => check.status === "ok");
+    const ready = checks.every((check) => check.status === "ok");
     return reply
       .status(ready ? 200 : 503)
       .send({ status: ready ? "ok" : "error", checks });
