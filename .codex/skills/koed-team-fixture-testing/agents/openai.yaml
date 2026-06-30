@@ -1,0 +1,4 @@
+interface:
+  display_name: "Koed Team Fixture Testing"
+  short_description: "Test Koed Team SaaS behavior against the synthetic fixture."
+  default_prompt: "Use the Koed Team SaaS synthetic fixture to validate backend, API authorization, lexical recall, graph, evidence, or Electron behavior against the documented truth sheet."
