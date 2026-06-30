@@ -4141,7 +4141,7 @@ export const createMemorySourceRepository = (
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
           and mn.visibility = 'personal'
           and (
-            (mn.owner_user_id = $1 and ($2::boolean = true or mn.personal_deleted_at is null))
+            ($9::uuid is null and mn.owner_user_id = $1 and ($2::boolean = true or mn.personal_deleted_at is null))
             or (
               $9::uuid is not null
               and exists (
@@ -4349,7 +4349,7 @@ export const createMemorySourceRepository = (
                 from memory_events me
                 where me.visibility = 'personal'
                   and (
-                    me.owner_user_id = $1
+                    ($12::uuid is null and me.owner_user_id = $1)
                     or (
                       $12::uuid is not null
                       and exists (
@@ -4373,7 +4373,7 @@ export const createMemorySourceRepository = (
                 from messages msg
                 where msg.visibility = 'personal'
                   and (
-                    msg.owner_user_id = $1
+                    ($12::uuid is null and msg.owner_user_id = $1)
                     or (
                       $12::uuid is not null
                       and exists (
@@ -4397,7 +4397,7 @@ export const createMemorySourceRepository = (
                 from tool_events te
                 where te.visibility = 'personal'
                   and (
-                    te.owner_user_id = $1
+                    ($12::uuid is null and te.owner_user_id = $1)
                     or (
                       $12::uuid is not null
                       and exists (
@@ -4510,7 +4510,7 @@ export const createMemorySourceRepository = (
             )
             and me.visibility = 'personal'
             and (
-              (me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
+              ($12::uuid is null and me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
               or (
                 $12::uuid is not null
                 and exists (
@@ -4640,7 +4640,7 @@ export const createMemorySourceRepository = (
             )
             and msg.visibility = 'personal'
             and (
-              msg.owner_user_id = $1
+              ($12::uuid is null and msg.owner_user_id = $1)
               or (
                 $12::uuid is not null
                 and exists (
@@ -4790,7 +4790,7 @@ export const createMemorySourceRepository = (
             )
             and te.visibility = 'personal'
             and (
-              te.owner_user_id = $1
+              ($12::uuid is null and te.owner_user_id = $1)
               or (
                 $12::uuid is not null
                 and exists (
@@ -4930,7 +4930,7 @@ export const createMemorySourceRepository = (
             )
             and me.visibility = 'personal'
             and (
-              (me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
+              ($9::uuid is null and me.owner_user_id = $1 and ($2::boolean = true or me.personal_deleted_at is null))
               or (
                 $9::uuid is not null
                 and exists (
@@ -4978,7 +4978,7 @@ export const createMemorySourceRepository = (
             )
             and s.visibility = 'personal'
             and (
-              s.owner_user_id = $1
+              ($9::uuid is null and s.owner_user_id = $1)
               or (
                 $9::uuid is not null
                 and exists (
@@ -6296,7 +6296,7 @@ export const createMemorySourceRepository = (
             where mn.invalidated_at is null and mn.personal_deleted_at is null
               and mn.visibility = 'personal'
               and (
-                mn.owner_user_id = $1
+                ($13::uuid is null and mn.owner_user_id = $1)
                 or (
                   $13::uuid is not null
                   and exists (
@@ -6357,7 +6357,7 @@ export const createMemorySourceRepository = (
             where me.invalidated_at is null
               and me.visibility = 'personal'
               and (
-                (me.owner_user_id = $1 and me.personal_deleted_at is null)
+                ($13::uuid is null and me.owner_user_id = $1 and me.personal_deleted_at is null)
                 or (
                   $13::uuid is not null
                   and exists (
@@ -6409,7 +6409,7 @@ export const createMemorySourceRepository = (
             where msg.invalidated_at is null
               and msg.visibility = 'personal'
               and (
-                msg.owner_user_id = $1
+                ($13::uuid is null and msg.owner_user_id = $1)
                 or (
                   $13::uuid is not null
                   and exists (
@@ -6726,7 +6726,7 @@ export const createMemorySourceRepository = (
                     when mn.summary_model is not null then mn.summary_text
                     when linked_mn.summary_model is not null
                       and (
-                        me.owner_user_id = $1
+                        ($15::uuid is null and me.owner_user_id = $1)
                         or (
                           $15::uuid is not null
                           and exists (
@@ -6820,7 +6820,7 @@ export const createMemorySourceRepository = (
                   )
                   and me.visibility = 'personal'
                   and (
-                    me.owner_user_id = $1
+                    ($15::uuid is null and me.owner_user_id = $1)
                     or (
                       $15::uuid is not null
                       and (
@@ -7886,7 +7886,7 @@ export const createMemorySourceRepository = (
           and mn.invalidated_at is null
           and mn.visibility = 'personal'
           and (
-            (mn.owner_user_id = $1 and mn.personal_deleted_at is null)
+            ($3::uuid is null and mn.owner_user_id = $1 and mn.personal_deleted_at is null)
             or (
               $3::uuid is not null
               and exists (
@@ -7950,7 +7950,7 @@ export const createMemorySourceRepository = (
           and me.invalidated_at is null
           and me.visibility = 'personal'
           and (
-            (me.owner_user_id = $2 and me.personal_deleted_at is null)
+            ($8::uuid is null and me.owner_user_id = $2 and me.personal_deleted_at is null)
             or (
               $8::uuid is not null
               and exists (

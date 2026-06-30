@@ -912,6 +912,220 @@ describeDb("memory repository visibility", () => {
     ).rejects.toThrow();
   });
 
+  it("uses strict Team Workspace boundaries instead of requester personal rows", async () => {
+    const owner = await repo.createUser({
+      email: `team-boundary-owner-${randomUUID()}@example.com`,
+      displayName: "Team Boundary Owner"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Boundary Team" }
+    );
+    const electronWorkspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Electron Boundary" }
+    );
+    const cloudWorkspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Cloud Boundary" }
+    );
+
+    const createNodeFromSession = async (input: {
+      workspaceId: string;
+      content: string;
+      summaryText: string;
+      grantWorkspaceId?: string;
+      revoked?: boolean;
+    }) => {
+      const session = await repo.createCapturedSession(
+        { userId: owner.id },
+        {
+          workspaceId: input.workspaceId,
+          externalSessionId: `boundary-session-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const event = await repo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          workspaceId: input.workspaceId,
+          sessionId: session.id,
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "user_prompt",
+          content: input.content,
+          captureMethod: "api"
+        }
+      );
+      const node = await repo.createMemoryNode(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          summaryText: input.summaryText,
+          bodyText: input.content,
+          captureMethod: "hook",
+          sourceRuntime: "codex",
+          sourceHash: `boundary-node-${randomUUID()}`
+        }
+      );
+      await pool.query(
+        `
+          insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+          values ($1, $2, 0)
+        `,
+        [node.id, event.id]
+      );
+      if (input.grantWorkspaceId) {
+        await pool.query(
+          `
+            insert into team_session_share_grants (
+              owner_user_id,
+              session_id,
+              team_id,
+              team_workspace_id,
+              granted_by_user_id,
+              revoked_at,
+              revoked_by_user_id,
+              revocation_reason
+            )
+            values (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              case when $6::boolean then now() else null end,
+              case when $6::boolean then $5::uuid else null end,
+              case when $6::boolean then 'boundary_regression_revoked' else null end
+            )
+          `,
+          [
+            owner.id,
+            session.id,
+            team.id,
+            input.grantWorkspaceId,
+            owner.id,
+            input.revoked ?? false
+          ]
+        );
+      }
+      return { session, event, node };
+    };
+
+    const sharedElectron = await createNodeFromSession({
+      workspaceId: "electron-boundary-project",
+      content:
+        "SharedElectronBoundaryUnique belongs in the Electron Team Workspace.",
+      summaryText: "SharedElectronBoundaryUnique summary.",
+      grantWorkspaceId: electronWorkspace!.id
+    });
+    const privateCloud = await createNodeFromSession({
+      workspaceId: "cloud-boundary-project",
+      content: "PrivatePricingBoundaryUnique must remain personal-only.",
+      summaryText: "PrivatePricingBoundaryUnique summary."
+    });
+    const cloudOnly = await createNodeFromSession({
+      workspaceId: "cloud-boundary-project",
+      content:
+        "CloudOnlyBoundaryUnique belongs only to the Cloud Team Workspace.",
+      summaryText: "CloudOnlyBoundaryUnique summary.",
+      grantWorkspaceId: cloudWorkspace!.id
+    });
+    const revokedElectron = await createNodeFromSession({
+      workspaceId: "electron-boundary-project",
+      content:
+        "RevokedElectronBoundaryUnique was revoked from the Electron Team Workspace.",
+      summaryText: "RevokedElectronBoundaryUnique summary.",
+      grantWorkspaceId: electronWorkspace!.id,
+      revoked: true
+    });
+
+    const electronActor = { userId: owner.id };
+    const graphNodes = await repo.listLcmGraphNodes(electronActor, {
+      teamWorkspaceId: electronWorkspace!.id,
+      query: "BoundaryUnique",
+      limit: 20
+    });
+    expect(graphNodes.map((node) => node.id)).toContain(sharedElectron.node.id);
+    expect(graphNodes.map((node) => node.id)).not.toEqual(
+      expect.arrayContaining([
+        privateCloud.node.id,
+        cloudOnly.node.id,
+        revokedElectron.node.id
+      ])
+    );
+
+    const graphEvents = await repo.listLcmGraphEvents(electronActor, {
+      teamWorkspaceId: electronWorkspace!.id,
+      includeContent: true,
+      query: "BoundaryUnique",
+      limit: 20
+    });
+    expect(graphEvents.map((event) => event.id)).toContain(
+      sharedElectron.event.id
+    );
+    expect(graphEvents.map((event) => event.id)).not.toEqual(
+      expect.arrayContaining([
+        privateCloud.event.id,
+        cloudOnly.event.id,
+        revokedElectron.event.id
+      ])
+    );
+
+    const graphThreads = await repo.listLcmGraphThreads(electronActor, {
+      teamWorkspaceId: electronWorkspace!.id,
+      query: "BoundaryUnique",
+      limit: 20
+    });
+    expect(graphThreads.flatMap((project) => project.threads)).toEqual([
+      expect.objectContaining({ sessionId: sharedElectron.session.id })
+    ]);
+
+    const lexical = await repo.searchMemoryNodes(electronActor, {
+      query: "BoundaryUnique",
+      scope: "personal",
+      teamWorkspaceId: electronWorkspace!.id,
+      retrievalStage: "lexical_search",
+      limit: 20
+    });
+    expect(lexical.results.map((result) => result.nodeId)).toContain(
+      sharedElectron.node.id
+    );
+    expect(lexical.results.map((result) => result.nodeId)).not.toEqual(
+      expect.arrayContaining([
+        privateCloud.node.id,
+        cloudOnly.node.id,
+        revokedElectron.node.id
+      ])
+    );
+
+    await expect(
+      repo.expandMemoryNode(privateCloud.node.id, electronActor, {
+        teamWorkspaceId: electronWorkspace!.id
+      })
+    ).rejects.toThrow("Memory node not found or not visible");
+    await expect(
+      repo.expandMemoryNode(cloudOnly.node.id, electronActor, {
+        teamWorkspaceId: electronWorkspace!.id
+      })
+    ).rejects.toThrow("Memory node not found or not visible");
+    await expect(
+      repo.expandMemoryNode(revokedElectron.node.id, electronActor, {
+        teamWorkspaceId: electronWorkspace!.id
+      })
+    ).rejects.toThrow("Memory node not found or not visible");
+    await expect(
+      repo.expandMemoryNode(sharedElectron.node.id, electronActor, {
+        teamWorkspaceId: electronWorkspace!.id
+      })
+    ).resolves.toMatchObject({
+      nodeId: sharedElectron.node.id,
+      sources: [expect.objectContaining({ id: sharedElectron.event.id })]
+    });
+  });
+
   it("handles Team invites, acceptance, disablement, and audit boundaries", async () => {
     const owner = await repo.createUser({
       email: `invite-owner-${randomUUID()}@example.com`,

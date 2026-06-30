@@ -55,6 +55,12 @@ fixture secret:
 The fixture passwords are intentionally not login credentials. Use the session
 cookies for deterministic API calls.
 
+These deterministic cookies are only for disposable local fixture databases.
+Do not seed this fixture into shared, staging, or production environments with a
+normal shared `API_TOKEN_PEPPER`, because the documented cookie values are valid
+for the seeded synthetic users until the fixture is reset or the sessions
+expire.
+
 ## Team
 
 | Person | Fixture email           | Role   | Main memory domain                                 |
