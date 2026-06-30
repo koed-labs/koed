@@ -134,6 +134,16 @@ const packageStatus = (
   name: RuntimePackageStatus["name"],
   spawnSync: SpawnSyncLike
 ): RuntimePackageStatus => {
+  const listed = run("brew", ["list", "--versions", name], spawnSync);
+  if (listed.error || listed.status !== 0 || !listed.stdout.trim()) {
+    return {
+      name,
+      installed: false,
+      missing: [
+        listed.stderr.trim() || listed.error?.message || "not installed"
+      ]
+    };
+  }
   const result = brewPrefix(name, spawnSync);
   return result.ok && result.prefix
     ? { name, installed: true, prefix: result.prefix }
@@ -298,35 +308,24 @@ const statusFrom = ({
   const pgvectorPackage = packages.find((pkg) => pkg.name === "pgvector");
   const llama = packages.find((pkg) => pkg.name === "llama.cpp");
   const binaryPaths: Record<string, string> = {};
+  const postgresBin = (name: string) =>
+    postgres?.prefix ? resolve(postgres.prefix, "bin", name) : "";
+  const llamaBin = (name: string) =>
+    llama?.prefix ? resolve(llama.prefix, "bin", name) : "";
   const binaries: HomebrewRuntimeBinaries = {
-    initdb: binary(
-      binaryPaths,
-      "initdb",
-      resolve(postgres?.prefix ?? "", "bin", "initdb"),
-      exists
-    ),
-    pg_ctl: binary(
-      binaryPaths,
-      "pg_ctl",
-      resolve(postgres?.prefix ?? "", "bin", "pg_ctl"),
-      exists
-    ),
-    psql: binary(
-      binaryPaths,
-      "psql",
-      resolve(postgres?.prefix ?? "", "bin", "psql"),
-      exists
-    ),
+    initdb: binary(binaryPaths, "initdb", postgresBin("initdb"), exists),
+    pg_ctl: binary(binaryPaths, "pg_ctl", postgresBin("pg_ctl"), exists),
+    psql: binary(binaryPaths, "psql", postgresBin("psql"), exists),
     pg_config: binary(
       binaryPaths,
       "pg_config",
-      resolve(postgres?.prefix ?? "", "bin", "pg_config"),
+      postgresBin("pg_config"),
       exists
     ),
     llama_server: binary(
       binaryPaths,
       "llama_server",
-      resolve(llama?.prefix ?? "", "bin", "llama-server"),
+      llamaBin("llama-server"),
       exists
     )
   };

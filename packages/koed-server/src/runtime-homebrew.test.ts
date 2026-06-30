@@ -88,6 +88,9 @@ describe("Homebrew runtime provisioning", () => {
           if (args.join(" ") === "--prefix") {
             return spawnResult("/opt/homebrew\n");
           }
+          if (args[0] === "list" && args[1] === "--versions") {
+            return spawnResult(`${args[2]} 1.0\n`);
+          }
           if (args.join(" ") === "--prefix postgresql@17") {
             return spawnResult("/opt/homebrew/opt/postgresql@17\n");
           }
@@ -143,6 +146,11 @@ describe("Homebrew runtime provisioning", () => {
           calls.push(args);
           if (args.join(" ") === "--prefix") {
             return spawnResult("/opt/homebrew\n");
+          }
+          if (args[0] === "list" && args[1] === "--versions") {
+            return installed.has(args[2]!)
+              ? spawnResult(`${args[2]} 1.0\n`)
+              : spawnResult("", 1, "not installed");
           }
           if (args[0] === "--prefix") {
             return installed.has(args[1]!)
