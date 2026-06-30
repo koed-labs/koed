@@ -85,11 +85,18 @@ as the initial implementation for native bundled-local assets.
   service endpoints and report repair guidance.
 - Homebrew is an asset source, not the owner of Koed's bundled-local runtime
   state. `KOED_HOME` should remain the source of Koed-owned configuration,
-  selected runtime paths, supervision state, logs, model files, status, and
-  repair guidance.
+  selected runtime paths, resolved dependency versions, supervision state, logs,
+  model files, status, and repair guidance.
 - The Homebrew-backed runtime installer should detect dependency prefixes,
   validate required binaries, and link, copy, or record them under
   `$KOED_HOME/runtime` so later startup uses stable Koed-owned path resolution.
+  It should persist the resolved paths and versions for Homebrew-provided
+  dependencies such as Postgres, pgvector, and `llama-server`.
+- `koed-server` startup, `status`, and `doctor` should revalidate those
+  recorded Homebrew-backed paths and versions for compatibility drift. If a
+  later `brew upgrade` changes Postgres, pgvector, or `llama-server` behavior
+  underneath Koed, Koed should report clear repair guidance instead of silently
+  assuming the previously provisioned runtime is still compatible.
 - The installer should validate that bundled-local Postgres can enable pgvector,
   ultimately through `CREATE EXTENSION IF NOT EXISTS vector` against the Koed
   database during startup or an equivalent preflight.
