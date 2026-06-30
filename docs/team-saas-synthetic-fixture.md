@@ -11,6 +11,9 @@ Workspace member, and Team-retained knowledge after personal deletion.
 The goal is to let humans and Agents test against the same known world instead
 of inventing one-off examples for each PR.
 
+For release readiness, use this fixture with the launch validation checklist in
+[Team SaaS Launch Validation](./team-saas-launch-validation.md).
+
 ## Commands
 
 Run from the repository root.
@@ -27,6 +30,12 @@ pnpm team-fixture:validate
 ```
 
 Validates the already-seeded fixture against the expected access outcomes.
+
+```bash
+pnpm team-launch:validate
+```
+
+Runs the launch validation report against the already-seeded fixture.
 
 ```bash
 pnpm team-fixture:reset

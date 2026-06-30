@@ -36,6 +36,7 @@
     "team-fixture:reset": "node scripts/team-saas-fixture.mjs reset",
     "team-fixture:seed": "node scripts/team-saas-fixture.mjs seed",
     "team-fixture:validate": "node scripts/team-saas-fixture.mjs validate",
+    "team-launch:validate": "node scripts/team-saas-launch-validation.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 test",
     "test:python": "node scripts/python-check.mjs",
     "setup:python": "node scripts/python-setup.mjs",
