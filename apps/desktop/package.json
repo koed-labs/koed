@@ -2,6 +2,8 @@
   "name": "@koed/desktop",
   "productName": "Koed",
   "version": "0.1.0",
+  "description": "Electron control surface for Koed local personal memory.",
+  "author": "Koed",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -10,6 +12,7 @@
     "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && vite build",
     "dev": "vite --host 127.0.0.1",
     "prestart": "pnpm --filter @koed/koed-server build",
+    "package": "pnpm --filter @koed/koed-server build && pnpm build && rm -rf release/mac release/mac-* && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir && mv release/mac-* release/mac",
     "start": "pnpm build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
@@ -18,6 +21,7 @@
     "@koed/koed-server": "workspace:*"
   },
   "devDependencies": {
-    "electron": "^39.2.7"
+    "electron": "^39.2.7",
+    "electron-builder": "^26.15.3"
   }
 }
