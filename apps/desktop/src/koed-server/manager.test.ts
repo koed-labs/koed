@@ -29,6 +29,26 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("defaults packaged Desktop managed local server to bundled-local", () => {
+    expect(
+      createKoedEnvironment("/repo", {}, { desktopManagedLocal: true })
+    ).toMatchObject({
+      KOED_REPO_ROOT: "/repo",
+      KOED_RUNTIME_MODE: "local-personal",
+      KOED_DEPENDENCY_MODE: "bundled-local"
+    });
+    expect(
+      createKoedEnvironment(
+        "/repo",
+        { KOED_RUNTIME_MODE: "external", KOED_DEPENDENCY_MODE: "external" },
+        { desktopManagedLocal: true }
+      )
+    ).toMatchObject({
+      KOED_RUNTIME_MODE: "external",
+      KOED_DEPENDENCY_MODE: "external"
+    });
+  });
+
   it("runs JSON koed-server commands", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const manager = createKoedServerManager({

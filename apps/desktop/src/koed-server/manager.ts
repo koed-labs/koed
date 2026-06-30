@@ -105,10 +105,18 @@ const hasHealthyApi = (value: unknown): boolean => {
 
 export const createKoedEnvironment = (
   repoRoot: string,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  options: { desktopManagedLocal?: boolean } = {}
 ): NodeJS.ProcessEnv => ({
   ...environment,
-  KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot
+  KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot,
+  ...(options.desktopManagedLocal
+    ? {
+        KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
+        KOED_DEPENDENCY_MODE:
+          environment.KOED_DEPENDENCY_MODE ?? "bundled-local"
+      }
+    : {})
 });
 
 export const createKoedServerManager = ({

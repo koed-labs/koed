@@ -31,14 +31,18 @@ MCP-side workers.
 1. The Operator or Koed Desktop starts `koed-server`.
 2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
    directories, provisions the Explorer credential inside `KOED_HOME`, and
-   resolves runtime/dependency mode from `KOED_HOME/config/server.json` and
-   environment overrides.
-3. In the current source-checkout path, `koed-server` defaults to external
-   dependency mode. The Operator starts Postgres/pgvector, Redis/BullMQ, and
-   the Embedding Service separately, for example with Docker Compose, and
-   provides explicit `DATABASE_URL`, `REDIS_URL`, and `EMBEDDING_SERVICE_URL`
-   values. `koed-server` does not start, stop, or inspect Docker Compose in
-   external mode.
+   resolves runtime/dependency mode from explicit environment overrides,
+   `KOED_HOME/config/server.json`, or package/profile defaults. Packaged Koed
+   Desktop starts its managed local personal `koed-server` with
+   `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
+   Operator overrides those values.
+3. In the current source-checkout path, bare `koed-server` defaults to external
+   dependency mode instead of inferring bundled-local from an empty config. The
+   Operator starts Postgres/pgvector, Redis/BullMQ, and the Embedding Service
+   separately, for example with Docker Compose, and provides explicit
+   `DATABASE_URL`, `REDIS_URL`, and `EMBEDDING_SERVICE_URL` values.
+   `koed-server` does not start, stop, or inspect Docker Compose in external
+   mode.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
    starts native Postgres/pgvector and native Embedding Service runtimes under
    `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
@@ -73,7 +77,8 @@ MCP-side workers.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
     and embed Explorer without requiring the Operator to invoke repo-local
-    scripts directly.
+    scripts directly. Desktop manages only its local personal `koed-server`;
+    remote, Team Self-Hosted, and cloud targets are connect-only.
 
 ## Ingestion
 

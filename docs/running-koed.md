@@ -92,7 +92,11 @@ The Explorer frontend is available at `http://localhost:5174`, or the host port 
 
 Koed Desktop is the Electron control surface for the same local control plane.
 It wraps `koed-server`, shows service status, and can start the supervisor,
-run Codex setup, run doctor, and open the embedded Explorer.
+run Codex setup, run doctor, and open the embedded Explorer. Packaged Koed
+Desktop starts its managed local personal server with bundled-local native
+runtime defaults unless the Operator explicitly overrides runtime/dependency
+mode; source-checkout Desktop keeps the bare developer default and uses explicit
+external dependency configuration.
 
 ```bash
 pnpm --filter @koed/desktop start
