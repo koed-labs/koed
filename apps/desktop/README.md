@@ -26,7 +26,7 @@ pnpm desktop:dev
 Build an unsigned macOS app directory for local packaging smoke tests:
 
 ```bash
-pnpm desktop:package:mac
+pnpm desktop:package
 open apps/desktop/release/mac/Koed.app
 ```
 
@@ -52,7 +52,7 @@ packaged app reports missing backend diagnostics instead of crashing.
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
 - `desktop:dev` runs the renderer dev server only.
-- `desktop:package:mac` builds `apps/desktop/release/mac/Koed.app` with
+- `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
   `electron-builder --mac dir` and disables signing/notarization.
 - The desktop shell still relies on `packages/koed-server/dist/cli.js` for the
   local control-plane actions.
