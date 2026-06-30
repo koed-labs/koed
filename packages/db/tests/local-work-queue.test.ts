@@ -69,10 +69,16 @@ describe("local work queue repository", () => {
       lockToken: "lock-1"
     });
 
-    expect(pool.query).toHaveBeenCalledWith(
-      expect.stringContaining("for update skip locked"),
-      ["lcm-compact", expect.any(String), "60000 milliseconds"]
-    );
+    const [sql] = pool.query.mock.calls[0] ?? [];
+    expect(sql).toContain("for update skip locked");
+    expect(sql).toContain("expired_failed");
+    expect(sql).toContain("attempt_count >= max_attempts");
+    expect(sql).toContain("attempt_count < max_attempts");
+    expect(pool.query).toHaveBeenCalledWith(expect.any(String), [
+      "lcm-compact",
+      expect.any(String),
+      "60000 milliseconds"
+    ]);
   });
 
   it("marks claimed jobs complete or failed with lock token guard", async () => {

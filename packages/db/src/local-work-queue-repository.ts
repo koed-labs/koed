@@ -131,7 +131,20 @@ export const createLocalWorkQueueRepository = (
       lock_token: string;
     }>(
       `
-        with expired as (
+        with expired_failed as (
+          update local_work_queue
+          set status = 'failed',
+              failed_at = now(),
+              last_error = 'Local queue lease expired after max attempts.',
+              lock_token = null,
+              locked_at = null,
+              locked_until = null,
+              updated_at = now()
+          where queue_name = $1
+            and status = 'active'
+            and locked_until <= now()
+            and attempt_count >= max_attempts
+        ), expired_pending as (
           update local_work_queue
           set status = 'pending',
               lock_token = null,
@@ -141,6 +154,7 @@ export const createLocalWorkQueueRepository = (
           where queue_name = $1
             and status = 'active'
             and locked_until <= now()
+            and attempt_count < max_attempts
         ), next_job as (
           select id
           from local_work_queue
