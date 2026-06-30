@@ -42,6 +42,20 @@ const doctor: KoedServerDoctorResult = {
   checks: [{ id: "api", label: "API", state: "needs_attention" }]
 };
 
+const runtimeBinaries = () => ({
+  initdb: { path: "/opt/homebrew/opt/postgresql@17/bin/initdb", exists: true },
+  pg_ctl: { path: "/opt/homebrew/opt/postgresql@17/bin/pg_ctl", exists: true },
+  psql: { path: "/opt/homebrew/opt/postgresql@17/bin/psql", exists: true },
+  pg_config: {
+    path: "/opt/homebrew/opt/postgresql@17/bin/pg_config",
+    exists: true
+  },
+  llama_server: {
+    path: "/opt/homebrew/opt/llama.cpp/bin/llama-server",
+    exists: true
+  }
+});
+
 describe("JSON command output", () => {
   it("prints models status --json", async () => {
     const stdout = writer();
@@ -161,7 +175,7 @@ describe("JSON command output", () => {
           koedHome: "/tmp/koed",
           homebrew: { installed: true, prefix: "/opt/homebrew" },
           packages: [],
-          binaries: {},
+          binaries: runtimeBinaries(),
           pgvector: { compatible: true, sqlPaths: [] },
           koedRuntime: {
             postgresBinDir: "/tmp/koed/runtime/postgres/bin",
@@ -211,7 +225,7 @@ describe("JSON command output", () => {
           koedHome: "/tmp/koed",
           homebrew: { installed: true, prefix: "/opt/homebrew" },
           packages: [],
-          binaries: {},
+          binaries: runtimeBinaries(),
           pgvector: { compatible: true, sqlPaths: [] },
           koedRuntime: {
             postgresBinDir: "/tmp/koed/runtime/postgres/bin",
