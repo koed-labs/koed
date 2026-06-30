@@ -37,12 +37,16 @@ files. Point the packaged app back at a checkout when you want the local
 control-plane actions to use the repo build outputs:
 
 ```bash
-KOED_REPO_ROOT=/path/to/koed open apps/desktop/release/mac/Koed.app
+KOED_REPO_ROOT=/path/to/koed \
+  apps/desktop/release/mac/Koed.app/Contents/MacOS/Koed
 ```
 
 `KOED_SERVER_CLI=/path/to/cli.js` can override the control-plane CLI directly.
-Without those overrides, the packaged app reports missing backend diagnostics
-instead of crashing.
+Use the app executable when passing environment variables; macOS `open` does not
+reliably preserve inline shell environment assignments for `.app` launches.
+Alternatively, set persistent launch services environment with `launchctl setenv
+KOED_REPO_ROOT /path/to/koed` before using `open`. Without those overrides, the
+packaged app reports missing backend diagnostics instead of crashing.
 
 ## Notes
 

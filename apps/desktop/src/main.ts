@@ -36,7 +36,8 @@ const repoRoot = process.env.KOED_REPO_ROOT?.trim()
       ? resolve(process.resourcesPath, "repo")
       : sourceRepoRoot;
 const koedServerCli =
-  explicitKoedServerCli ?? resolve(repoRoot, "packages/koed-server/dist/cli.js");
+  explicitKoedServerCli ??
+  resolve(repoRoot, "packages/koed-server/dist/cli.js");
 const appName = "Koed";
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
 
