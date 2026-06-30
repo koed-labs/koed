@@ -205,6 +205,19 @@ const parseJsonCommandOutput = (command, args, result) => {
   }
 };
 
+const commandFailureDetails = (result) => {
+  const stderr = String(result.stderr ?? "").trim();
+  const stdout = String(result.stdout ?? "").trim();
+  if (!stdout) return stderr;
+  try {
+    return [stderr, JSON.stringify(JSON.parse(stdout), null, 2)]
+      .filter(Boolean)
+      .join("\n");
+  } catch {
+    return [stderr, stdout].filter(Boolean).join("\n");
+  }
+};
+
 export const runJsonCommand = (deps, command, args, options) => {
   const result = deps.spawnSync(command, args, {
     cwd: options.cwd,
@@ -218,8 +231,9 @@ export const runJsonCommand = (deps, command, args, options) => {
     );
   }
   if (result.status !== 0) {
+    const details = commandFailureDetails(result);
     throw new Error(
-      `${command} ${args.join(" ")} exited ${result.status ?? 1}: ${String(result.stderr ?? result.stdout ?? "").trim()}`
+      `${command} ${args.join(" ")} exited ${result.status ?? 1}${details ? `:\n${details}` : ""}`
     );
   }
   return parseJsonCommandOutput(command, args, result);

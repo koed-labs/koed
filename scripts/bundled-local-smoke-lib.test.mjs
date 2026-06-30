@@ -6,6 +6,7 @@ import {
   parseBundledLocalSmokeArgs,
   preflightBundledLocalSmoke,
   runBundledLocalSmoke,
+  runJsonCommand,
   waitForBundledLocalHealthy
 } from "./bundled-local-smoke-lib.mjs";
 
@@ -308,6 +309,31 @@ test("run installs and verifies model when model env is present", async () => {
   assert.equal(
     result.steps.find((step) => step.step === "embedding-model-install")?.state,
     "installed"
+  );
+});
+
+test("runJsonCommand includes JSON stdout on nonzero exit", () => {
+  const deps = createDeps({
+    spawnSync: () => ({
+      status: 1,
+      stdout: JSON.stringify({
+        ok: false,
+        state: "checksum_mismatch",
+        message: "downloaded checksum mismatch",
+        sha256: "actual"
+      }),
+      stderr: "",
+      error: undefined
+    })
+  });
+
+  assert.throws(
+    () =>
+      runJsonCommand(deps, "node", ["cli.js", "models", "install", "--json"], {
+        cwd: "/repo",
+        env: {}
+      }),
+    /checksum_mismatch.*downloaded checksum mismatch/s
   );
 });
 
