@@ -102,6 +102,14 @@ export const launchValidationGates = [
 
 const modeOrder = ["automated", "manual", "staging"];
 
+export const assertLaunchValidationEnvironment = (env = process.env) => {
+  if (!env.API_TOKEN_PEPPER?.trim()) {
+    throw new Error(
+      "API_TOKEN_PEPPER is required for Team SaaS launch validation because the Auth gate depends on deterministic fixture sessions."
+    );
+  }
+};
+
 export const summarizeLaunchValidation = (fixtureResult) => {
   const byMode = Object.fromEntries(modeOrder.map((mode) => [mode, 0]));
   for (const gate of launchValidationGates) {

@@ -1,10 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertLaunchValidationEnvironment,
   formatLaunchValidationReport,
   launchValidationGates,
   summarizeLaunchValidation
 } from "./team-saas-launch-validation-lib.mjs";
+
+test("launch validation requires API_TOKEN_PEPPER for Auth gate coverage", () => {
+  assert.doesNotThrow(() =>
+    assertLaunchValidationEnvironment({ API_TOKEN_PEPPER: "pepper" })
+  );
+  assert.throws(
+    () => assertLaunchValidationEnvironment({ API_TOKEN_PEPPER: "" }),
+    /API_TOKEN_PEPPER is required/
+  );
+  assert.throws(
+    () => assertLaunchValidationEnvironment({}),
+    /API_TOKEN_PEPPER is required/
+  );
+});
 
 test("launch validation gates cover KOE-227 critical path areas", () => {
   const criteria = launchValidationGates.map((gate) => gate.launchCriterion);

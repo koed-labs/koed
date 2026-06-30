@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import {
+  assertLaunchValidationEnvironment,
   formatLaunchValidationReport,
   validateLaunchReadiness
 } from "./team-saas-launch-validation-lib.mjs";
@@ -16,6 +17,7 @@ Validates the seeded Team SaaS fixture and prints the launch validation gates.
 
 Environment:
   DATABASE_URL must point at the Koed database to validate.
+  API_TOKEN_PEPPER must be configured so fixture API sessions are seeded and validated.
 `;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
@@ -27,6 +29,13 @@ loadRootEnv(process.cwd(), process.env);
 
 if (!process.env.DATABASE_URL?.trim()) {
   console.error("DATABASE_URL is required. Run pnpm env:setup or set it.");
+  process.exit(2);
+}
+
+try {
+  assertLaunchValidationEnvironment(process.env);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(2);
 }
 

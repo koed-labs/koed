@@ -20,6 +20,9 @@ fixture, runs migrations, and validates the fixture's access expectations.
 `pnpm team-launch:validate` validates the seeded fixture and prints the launch
 validation report. The report is suitable for local or disposable staging
 validation databases. Do not seed the deterministic fixture into production.
+`API_TOKEN_PEPPER` is required because the Auth launch gate depends on seeded
+deterministic API sessions. If the fixture was seeded without
+`API_TOKEN_PEPPER`, run `pnpm team-fixture:seed` again after configuring it.
 
 ## Automated Gates
 
