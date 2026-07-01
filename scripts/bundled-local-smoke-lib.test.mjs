@@ -6,6 +6,7 @@ import {
   parseBundledLocalSmokeArgs,
   preflightBundledLocalSmoke,
   runBundledLocalSmoke,
+  runJsonCommand,
   waitForBundledLocalHealthy
 } from "./bundled-local-smoke-lib.mjs";
 
@@ -77,12 +78,14 @@ test("parses smoke CLI options", () => {
       "--",
       "--json",
       "--full",
+      "--install-runtime",
       "--timeout-ms",
       "50"
     ]),
     {
       json: true,
       full: true,
+      installRuntime: true,
       timeoutMs: 50,
       pollIntervalMs: 2000
     }
@@ -185,6 +188,85 @@ test("run skips model install when model URL or checksum env is absent", async (
   );
 });
 
+test("run can explicitly install Homebrew runtime before native checks", async () => {
+  let runtimeStatusCount = 0;
+  const deps = createDeps({
+    fileExists: () => true,
+    spawnSync: (command, args) => {
+      deps.calls.push({ kind: "spawnSync", command, args });
+      if (args.includes("runtime") && args.includes("status")) {
+        runtimeStatusCount += 1;
+        return success(
+          JSON.stringify(
+            runtimeStatusCount === 1
+              ? {
+                  ok: false,
+                  state: "missing",
+                  koedRuntime: { linked: false }
+                }
+              : {
+                  ok: true,
+                  state: "installed",
+                  koedRuntime: {
+                    linked: true,
+                    postgresBinDir: "/tmp/koed/runtime/postgres/bin",
+                    llamaServerBin: "/tmp/koed/runtime/llama.cpp/llama-server"
+                  }
+                }
+          )
+        );
+      }
+      if (args.includes("runtime") && args.includes("install")) {
+        return success(
+          JSON.stringify({
+            ok: true,
+            state: "installed",
+            installedPackages: ["postgresql@17"],
+            linkedPaths: ["/tmp/koed/runtime/postgres/bin/initdb"]
+          })
+        );
+      }
+      if (args.includes("status")) {
+        return success(
+          JSON.stringify({
+            dependencyMode: "bundled-local",
+            api: { state: "healthy" },
+            database: { state: "healthy" },
+            embeddingService: { state: "healthy" },
+            workerQueues: { state: "healthy" },
+            redis: { state: "healthy", details: { backend: "local" } }
+          })
+        );
+      }
+      return success("{}");
+    }
+  });
+
+  const result = await runBundledLocalSmoke({
+    root: "/repo",
+    deps,
+    env: {},
+    json: true,
+    installRuntime: true
+  });
+
+  assert.equal(result.ok, true, result.error);
+  assert.equal(
+    result.steps.find((step) => step.step === "homebrew-runtime-install")
+      ?.state,
+    "installed"
+  );
+  assert.equal(
+    deps.calls.some(
+      (call) =>
+        call.kind === "spawnSync" &&
+        call.args?.includes("runtime") &&
+        call.args?.includes("install")
+    ),
+    true
+  );
+});
+
 test("run installs and verifies model when model env is present", async () => {
   const deps = createDeps({
     fileExists: () => true,
@@ -227,6 +309,31 @@ test("run installs and verifies model when model env is present", async () => {
   assert.equal(
     result.steps.find((step) => step.step === "embedding-model-install")?.state,
     "installed"
+  );
+});
+
+test("runJsonCommand includes JSON stdout on nonzero exit", () => {
+  const deps = createDeps({
+    spawnSync: () => ({
+      status: 1,
+      stdout: JSON.stringify({
+        ok: false,
+        state: "checksum_mismatch",
+        message: "downloaded checksum mismatch",
+        sha256: "actual"
+      }),
+      stderr: "",
+      error: undefined
+    })
+  });
+
+  assert.throws(
+    () =>
+      runJsonCommand(deps, "node", ["cli.js", "models", "install", "--json"], {
+        cwd: "/repo",
+        env: {}
+      }),
+    /checksum_mismatch.*downloaded checksum mismatch/s
   );
 });
 

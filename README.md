@@ -66,10 +66,10 @@ node packages/koed-server/dist/cli.js models install --kind embedding --json
 To verify the native bundled-local path with isolated ports and a temporary `KOED_HOME`, run:
 
 ```bash
-pnpm smoke:bundled-local -- --full --json
+pnpm smoke:bundled-local -- --full --install-runtime --json
 ```
 
-Bundled-local smoke requires native bundled resources and verifies API Token creation, Capture Hook-like personal ingestion, Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer reachability, and cleanup through `koed-server stop --json`.
+Bundled-local smoke requires native bundled resources and an embedding model. `--install-runtime` explicitly runs the Homebrew-backed runtime install for the temporary `KOED_HOME`; model install still requires `KOED_EMBEDDING_MODEL_URL` plus `KOED_EMBEDDING_MODEL_SHA256`. The full smoke verifies API Token creation, Capture Hook-like personal ingestion, Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer reachability, and cleanup through `koed-server stop --json`.
 
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.

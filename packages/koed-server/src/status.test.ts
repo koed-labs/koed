@@ -153,7 +153,7 @@ describe("status and doctor JSON contracts", () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
     );
     const status = await collectKoedServerStatus(
       {
@@ -251,17 +251,18 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
-  it("honors bundled-local BullMQ override from .env", async () => {
+  it("honors bundled-local BullMQ override from environment", async () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\nREDIS_URL=redis://operator:6379\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nREDIS_URL=redis://operator:6379\n"
     );
     const status = await collectKoedServerStatus(
       {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        HOME: root
+        HOME: root,
+        WORK_QUEUE_BACKEND: "bullmq"
       },
       {
         fetch: async () =>

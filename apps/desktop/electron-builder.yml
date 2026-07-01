@@ -1,0 +1,28 @@
+appId: ai.koed.desktop
+productName: Koed
+copyright: Copyright © 2026 Koed
+
+asar: true
+npmRebuild: false
+
+files:
+  - dist-electron/**/*
+  - package.json
+
+asarUnpack:
+  - dist-electron/koed-server/node-entrypoint-runner.js
+
+extraResources:
+  - from: dist
+    to: app-dist
+    filter:
+      - "**/*"
+
+directories:
+  output: release
+
+mac:
+  target:
+    - dir
+  category: public.app-category.developer-tools
+  identity: null
