@@ -239,19 +239,12 @@ describe("stopKoedServer", () => {
     expect(commands).toEqual([]);
   });
 
-  it("stops only compose scaffold services from runtime state", () => {
+  it("does not stop legacy Compose services from bundled-local runtime state", () => {
     const koedHome = makeHome();
     writeRuntime(
       koedHome,
       runtime({
-        services: [
-          "postgres",
-          "redis",
-          "embedding-service-native",
-          "api",
-          "worker",
-          "explorer"
-        ]
+        services: ["postgres", "redis", "api", "worker", "explorer"]
       })
     );
     const calls: string[][] = [];
@@ -273,6 +266,6 @@ describe("stopKoedServer", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(calls).toEqual([["compose", "stop", "postgres", "redis"]]);
+    expect(calls).toEqual([]);
   });
 });

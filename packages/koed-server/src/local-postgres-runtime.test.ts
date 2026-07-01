@@ -67,15 +67,15 @@ describe("local Postgres runtime", () => {
     );
   });
 
-  it("uses compose mode until native binaries are available", () => {
+  it("resolves bundled-local Postgres to native-only mode", () => {
     const root = tempDir();
     expect(resolveBundledPostgresMode(paths(root), {}, () => false)).toBe(
-      "compose"
+      "native"
     );
     expect(
       resolveBundledPostgresMode(
         paths(root),
-        { KOED_BUNDLED_POSTGRES_MODE: "native" },
+        { KOED_BUNDLED_POSTGRES_MODE: "compose" },
         () => false
       )
     ).toBe("native");

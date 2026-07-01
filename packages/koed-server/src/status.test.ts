@@ -6,14 +6,11 @@ import {
   aggregateState,
   collectKoedServerDoctor,
   collectKoedServerStatus,
-  dockerComposePs,
   healthy,
   needsAttention,
   notConfigured,
   statusFromApiReady
 } from "./status.js";
-import type { KoedServerPaths } from "./paths.js";
-
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -26,24 +23,6 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
 
 const spawnResult = (stdout: string, status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
-
-const paths = (repoRoot: string): KoedServerPaths => ({
-  koedHome: repoRoot,
-  configDir: resolve(repoRoot, "config"),
-  logsDir: resolve(repoRoot, "logs"),
-  runDir: resolve(repoRoot, "run"),
-  dataDir: resolve(repoRoot, "data"),
-  modelsDir: resolve(repoRoot, "models"),
-  cacheDir: resolve(repoRoot, "cache"),
-  postgresDataDir: resolve(repoRoot, "data", "postgres"),
-  postgresRunDir: resolve(repoRoot, "run", "postgres"),
-  postgresLogPath: resolve(repoRoot, "logs", "postgres.log"),
-  runtimeStatePath: resolve(repoRoot, "run", "koed-server.json"),
-  lastVerificationPath: resolve(repoRoot, "run", "last-verification.json"),
-  serverConfigPath: resolve(repoRoot, "config", "server.json"),
-  explorerTokenPath: resolve(repoRoot, "config", "explorer-token.json"),
-  repoRoot
-});
 
 afterEach(() => {
   for (const path of temps.splice(0)) {
@@ -120,26 +99,6 @@ describe("process status/probe mapping", () => {
     expect(result.database.state).toBe("needs_attention");
     expect(result.redis.state).toBe("starting");
   });
-
-  it("maps partial compose startup to starting", () => {
-    const status = dockerComposePs(paths(tempDir()), () =>
-      spawnResult('{"Service":"worker","State":"running"}\n')
-    );
-
-    expect(status.state).toBe("starting");
-    expect(status.details?.missing).toEqual(["redis"]);
-  });
-
-  it("checks bundled-local compose scaffolds by expected service", () => {
-    const status = dockerComposePs(
-      paths(tempDir()),
-      () => spawnResult('{"Service":"postgres","State":"running"}\n'),
-      ["postgres", "embedding-service"]
-    );
-
-    expect(status.state).toBe("starting");
-    expect(status.details?.missing).toEqual(["embedding-service"]);
-  });
 });
 
 describe("status and doctor JSON contracts", () => {
@@ -194,7 +153,7 @@ describe("status and doctor JSON contracts", () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
     );
     const status = await collectKoedServerStatus(
       {
@@ -292,17 +251,18 @@ describe("status and doctor JSON contracts", () => {
     );
   });
 
-  it("honors bundled-local BullMQ override from .env", async () => {
+  it("honors bundled-local BullMQ override from environment", async () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nREDIS_URL=redis://operator:6379\n"
     );
     const status = await collectKoedServerStatus(
       {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        HOME: root
+        HOME: root,
+        WORK_QUEUE_BACKEND: "bullmq"
       },
       {
         fetch: async () =>
@@ -318,10 +278,7 @@ describe("status and doctor JSON contracts", () => {
               { service: "embedding-model", status: "ok" }
             ]
           }),
-        spawnSync: () =>
-          spawnResult(
-            '{"Service":"postgres","State":"running"}\n{"Service":"redis","State":"running"}\n{"Service":"embedding-service","State":"running"}\n'
-          ),
+        spawnSync: () => spawnResult("", 0),
         now: () => new Date("2026-01-01T00:00:00.000Z")
       }
     );

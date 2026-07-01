@@ -5,20 +5,16 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveLocalApiToken,
   writeExplorerCredential
 } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
-import {
-  resolveBundledEmbeddingMode,
-  startLocalEmbeddingRuntime
-} from "./local-embedding-runtime.js";
+import { startLocalEmbeddingRuntime } from "./local-embedding-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
 import {
-  resolveBundledPostgresMode,
   startLocalPostgresRuntime,
   stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
@@ -136,9 +132,6 @@ const resolveEffectiveWorkQueueBackend = (
   if (environment.WORK_QUEUE_BACKEND) {
     return resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND);
   }
-  if (repoEnv.WORK_QUEUE_BACKEND) {
-    return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
-  }
   if (config.dependencyMode === "bundled-local") {
     return "local";
   }
@@ -187,17 +180,13 @@ const localServiceEnv = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
   apiToken: ReturnType<typeof resolveLocalApiToken> | null,
-  paths: KoedServerPaths,
-  options: { nativeEmbedding?: boolean } = {}
+  paths: KoedServerPaths
 ): NodeJS.ProcessEnv => {
   const apiPort = environment.API_HOST_PORT ?? repoEnv.API_HOST_PORT ?? "3300";
-  const redisPort =
-    environment.REDIS_HOST_PORT ?? repoEnv.REDIS_HOST_PORT ?? "16379";
   const embeddingPort =
     environment.EMBEDDING_SERVICE_HOST_PORT ??
     repoEnv.EMBEDDING_SERVICE_HOST_PORT ??
     "3800";
-  const redisUrl = `redis://localhost:${redisPort}`;
   const embeddingServiceUrl = `http://localhost:${embeddingPort}`;
   const serverConfig = resolveKoedServerConfig(
     paths,
@@ -223,23 +212,13 @@ const localServiceEnv = (
     embeddingModel.modelPath,
     rerankerModel.modelPath
   ].filter((modelPath) => existsSync(modelPath));
-  const mountedModelDirs = new Set(installedModelPaths.map(dirname));
-  if (mountedModelDirs.size > 1) {
-    throw new Error(
-      `Bundled-local model paths must be in one directory so Docker Compose can mount them under /models. Move installed model files into ${paths.modelsDir} or set KOED_EMBEDDING_MODEL_PATH and KOED_RERANKER_MODEL_PATH to files in the same directory.`
-    );
-  }
   const localEmbeddingModelPath = existsSync(embeddingModel.modelPath)
-    ? options.nativeEmbedding
-      ? embeddingModel.modelPath
-      : `/models/${basename(embeddingModel.modelPath)}`
+    ? embeddingModel.modelPath
     : undefined;
   const localRerankerModelPath = existsSync(rerankerModel.modelPath)
-    ? options.nativeEmbedding
-      ? rerankerModel.modelPath
-      : `/models/${basename(rerankerModel.modelPath)}`
+    ? rerankerModel.modelPath
     : undefined;
-  const mountedModelsDir = installedModelPaths[0]
+  const modelsDir = installedModelPaths[0]
     ? dirname(installedModelPaths[0])
     : paths.modelsDir;
   return {
@@ -250,7 +229,7 @@ const localServiceEnv = (
     NODE_ENV: repoEnv.API_NODE_ENV ?? environment.NODE_ENV ?? "production",
     LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
     WORK_QUEUE_BACKEND: queueBackend,
-    KOED_MODELS_DIR: mountedModelsDir,
+    KOED_MODELS_DIR: modelsDir,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     API_PORT: apiPort,
     DATABASE_URL:
@@ -260,11 +239,9 @@ const localServiceEnv = (
           repoEnv.DATABASE_URL)
         : bundledLocalDatabaseUrl(environment, repoEnv),
     REDIS_URL:
-      serverConfig.dependencyMode === "external"
-        ? (serverConfig.external?.redisUrl ??
-          environment.REDIS_URL ??
-          repoEnv.REDIS_URL)
-        : (environment.REDIS_URL ?? repoEnv.REDIS_URL ?? redisUrl),
+      serverConfig.external?.redisUrl ??
+      environment.REDIS_URL ??
+      repoEnv.REDIS_URL,
     RATE_LIMIT_REDIS_URL: repoEnv.API_RATE_LIMIT_REDIS_URL ?? "",
     CACHE_REDIS_URL: repoEnv.API_CACHE_REDIS_URL ?? "",
     DATA_ENCRYPTION_KEY:
@@ -294,7 +271,7 @@ const localServiceEnv = (
         ? localEmbeddingModelPath
         : environment.EMBEDDING_MODEL_PATH,
     MODEL_PATH:
-      serverConfig.dependencyMode === "bundled-local" && options.nativeEmbedding
+      serverConfig.dependencyMode === "bundled-local"
         ? localEmbeddingModelPath
         : (environment.EMBEDDING_MODEL_PATH ?? environment.MODEL_PATH),
     RERANKER_KEY:
@@ -307,7 +284,7 @@ const localServiceEnv = (
         : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
           environment.EMBEDDING_RERANKER_MODEL_PATH),
     RERANKER_MODEL_PATH:
-      serverConfig.dependencyMode === "bundled-local" && options.nativeEmbedding
+      serverConfig.dependencyMode === "bundled-local"
         ? localRerankerModelPath
         : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
           environment.EMBEDDING_RERANKER_MODEL_PATH ??
@@ -392,26 +369,6 @@ const localServiceEnv = (
   };
 };
 
-const stopComposeServices = (
-  paths: KoedServerPaths,
-  services: string[],
-  environment: NodeJS.ProcessEnv,
-  spawnSync: SpawnSyncLike
-): void => {
-  if (services.length === 0) return;
-  const result = spawnSync("docker", ["compose", "stop", ...services], {
-    cwd: paths.repoRoot,
-    env: environment,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `Could not stop bundled-local Compose services after startup failure: ${result.stderr?.trim() || result.error?.message || `exit code ${result.status ?? 1}`}`
-    );
-  }
-};
-
 const sleepSync = (ms: number): void => {
   if (ms <= 0) return;
   const buffer = new SharedArrayBuffer(4);
@@ -481,39 +438,16 @@ export const startKoedServer = async ({
     paths,
     koedServerConfigEnvironment(environment, repoEnv)
   );
-  const initialQueueBackend = resolveEffectiveWorkQueueBackend(
-    config,
-    environment,
-    repoEnv
-  );
   const initialServiceEnv = localServiceEnv(
     environment,
     repoEnv,
     apiToken,
     paths
   );
-  const useNativePostgres =
-    config.dependencyMode === "bundled-local" &&
-    resolveBundledPostgresMode(paths, initialServiceEnv) === "native";
-  const useNativeEmbedding =
-    config.dependencyMode === "bundled-local" &&
-    resolveBundledEmbeddingMode(paths, initialServiceEnv) === "native";
-  const dependencyServices =
-    config.dependencyMode === "external"
-      ? []
-      : [
-          ...(useNativePostgres ? [] : ["postgres"]),
-          ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
-          ...(useNativeEmbedding ? [] : ["embedding-service"])
-        ];
-  const runtimeServices =
-    config.dependencyMode === "external"
-      ? []
-      : [
-          useNativePostgres ? "postgres-native" : "postgres",
-          ...(initialQueueBackend === "bullmq" ? ["redis"] : []),
-          useNativeEmbedding ? "embedding-service-native" : "embedding-service"
-        ];
+  const useBundledLocalDependencies = config.dependencyMode === "bundled-local";
+  const runtimeServices = useBundledLocalDependencies
+    ? ["postgres-native", "embedding-service-native"]
+    : [];
   const appServices = ["api", "worker", "explorer"];
   const childEnv = initialServiceEnv;
 
@@ -539,14 +473,12 @@ export const startKoedServer = async ({
     environment,
     refreshedRepoEnv,
     refreshedApiToken,
-    paths,
-    { nativeEmbedding: useNativeEmbedding }
+    paths
   );
   const apiUrl = resolveApiUrl(environment, refreshedRepoEnv);
   const explorerUrl = resolveExplorerUrl(environment, refreshedRepoEnv);
 
   let startedNativePostgres = false;
-  let startedComposeServices: string[] = [];
   let nativeEmbeddingProcess: ChildProcess | undefined;
   const cleanupStartedResources = () => {
     const cleanupErrors: string[] = [];
@@ -563,20 +495,6 @@ export const startKoedServer = async ({
       });
       if (!stopped.ok) {
         cleanupErrors.push(stopped.error ?? stopped.message);
-      }
-    }
-    if (startedComposeServices.length > 0) {
-      try {
-        stopComposeServices(
-          paths,
-          startedComposeServices,
-          refreshedEnv,
-          spawnSync
-        );
-      } catch (error) {
-        cleanupErrors.push(
-          error instanceof Error ? error.message : String(error)
-        );
       }
     }
     if (cleanupErrors.length > 0) {
@@ -621,22 +539,32 @@ export const startKoedServer = async ({
           `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`
         );
       }
+    } else {
+      const queueBackend = resolveWorkQueueBackend(
+        refreshedEnv.WORK_QUEUE_BACKEND
+      );
+      if (queueBackend === "bullmq" && !refreshedEnv.REDIS_URL?.trim()) {
+        throw new Error(
+          "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL. Set REDIS_URL or use WORK_QUEUE_BACKEND=local."
+        );
+      }
     }
 
-    if (useNativePostgres) {
-      startedNativePostgres = true;
+    if (useBundledLocalDependencies) {
       const result = startLocalPostgresRuntime(paths, refreshedEnv, {
         spawnSync
       });
       Object.assign(refreshedEnv, result.env);
       if (!result.ok) {
+        startedNativePostgres = result.status.state !== "not_configured";
         throw new Error(
           `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
+      startedNativePostgres = true;
     }
 
-    if (useNativeEmbedding) {
+    if (useBundledLocalDependencies) {
       const result = startLocalEmbeddingRuntime(paths, refreshedEnv, {
         spawn
       });
@@ -649,24 +577,6 @@ export const startKoedServer = async ({
       }
     }
 
-    if (config.dependencyMode !== "external" && dependencyServices.length > 0) {
-      startedComposeServices = [...dependencyServices];
-      runCommand(
-        paths,
-        "Start Koed container dependencies",
-        "docker",
-        [
-          "compose",
-          "up",
-          "-d",
-          "--build",
-          "--remove-orphans",
-          ...dependencyServices
-        ],
-        refreshedEnv,
-        spawnSync
-      );
-    }
     runCommand(
       paths,
       "Build Koed server apps",

@@ -100,6 +100,7 @@ export type StatusCardActionCommand =
   | "status"
   | "start"
   | "setup_codex"
+  | "runtime_install"
   | "doctor"
   | "open_explorer"
   | "copy_diagnostics";
@@ -171,6 +172,11 @@ export const statusCards = [
       primary: true
     },
     secondaryActions: [
+      {
+        label: "Install runtime",
+        command: "runtime_install",
+        timeoutMs: 600_000
+      },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
@@ -206,6 +212,11 @@ export const statusCards = [
       primary: true
     },
     secondaryActions: [
+      {
+        label: "Install runtime",
+        command: "runtime_install",
+        timeoutMs: 600_000
+      },
       { label: "Refresh", command: "status", timeoutMs: 10_000 },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 }
     ]

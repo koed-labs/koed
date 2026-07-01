@@ -21,15 +21,15 @@ that memory available through MCP recall.
 ## Quickstart
 
 > [!IMPORTANT]  
-> The `epic/electron-control-refactor` branch is experimental. It splits Koed Desktop/`koed-server` supervision from dependency lifecycle. Docker Compose remains a useful external dependency starter; `koed-server` does not own Compose lifecycle in external dependency mode. `bundled-local` mode can start local Postgres + Embedding Service scaffolds; model downloads are explicit `koed-server models install` steps with SHA-256 verification.
+> The `epic/electron-control-refactor` branch is experimental. It splits Koed Desktop/`koed-server` supervision from dependency lifecycle. Docker Compose remains a useful external dependency starter; `koed-server` does not own Compose lifecycle. `bundled-local` mode uses native Koed-owned dependencies under `KOED_HOME`; model downloads are explicit `koed-server models install` steps with SHA-256 verification.
 >
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 
-For local personal use with native bundled resources installed, `koed-server start` can run without Docker, external Postgres, or external Redis. From a fresh clone, Docker Compose remains the developer/external scaffold fallback:
+For local personal use with native bundled resources installed, `koed-server start` can run without Docker, external Postgres, or external Redis. From a fresh clone, Docker Compose remains an optional external dependency starter:
 
 ```bash
 pnpm env:setup
-docker compose up -d --build
+docker compose -f examples/docker-compose/docker-compose.yml up -d --build
 pnpm desktop:start
 ```
 
@@ -44,9 +44,16 @@ the full Codex bootstrap + health-check sequence before showing the Explorer.
 `koed-server` connects to Postgres, the configured work queue backend, and
 Embedding Service endpoints from `.env`/environment or
 `KOED_HOME/config/server.json`; it does not start or stop Docker Compose
-dependencies in external mode. Set `KOED_DEPENDENCY_MODE=bundled-local` to let
-`koed-server start` launch the local Postgres + Embedding Service scaffolds and
-use the Postgres-backed local queue by default.
+dependencies. Set `KOED_DEPENDENCY_MODE=bundled-local` to let
+`koed-server start` launch native local Postgres + Embedding Service runtimes under
+`KOED_HOME` and use the Postgres-backed local queue by default.
+
+On macOS, native runtime assets can be inspected and explicitly installed with Homebrew:
+
+```bash
+node packages/koed-server/dist/cli.js runtime status --provider homebrew --json
+node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
+```
 
 Bundled-local model installers are opt-in and require artifact URLs plus expected SHA-256 checksums:
 
@@ -56,14 +63,13 @@ KOED_EMBEDDING_MODEL_SHA256=<64-hex-sha256> \
 node packages/koed-server/dist/cli.js models install --kind embedding --json
 ```
 
-To verify the bundled-local path with isolated ports and a temporary `KOED_HOME`, run:
+To verify the native bundled-local path with isolated ports and a temporary `KOED_HOME`, run:
 
 ```bash
-pnpm smoke:bundled-local -- --json
-pnpm smoke:bundled-local -- --full --json
+pnpm smoke:bundled-local -- --full --install-runtime --json
 ```
 
-The full smoke requires native bundled resources and verifies API Token creation, Capture Hook-like personal ingestion, Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer reachability, and cleanup through `koed-server stop --json`.
+Bundled-local smoke requires native bundled resources and an embedding model. `--install-runtime` explicitly runs the Homebrew-backed runtime install for the temporary `KOED_HOME`; model install still requires `KOED_EMBEDDING_MODEL_URL` plus `KOED_EMBEDDING_MODEL_SHA256`. The full smoke verifies API Token creation, Capture Hook-like personal ingestion, Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer reachability, and cleanup through `koed-server stop --json`.
 
 If you need to rerun only the last-mile client setup manually, use
 `pnpm clients:bootstrap`.

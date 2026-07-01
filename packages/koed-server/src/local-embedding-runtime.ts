@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { KoedServerComponentStatus } from "./types.js";
 import type { KoedServerPaths } from "./paths.js";
 
@@ -62,11 +62,30 @@ const nativeLlamaServerOverride = (
   return undefined;
 };
 
+const chooseExistingPath = (
+  primary: string,
+  fallback: string,
+  exists: typeof existsSync = existsSync
+): string =>
+  exists(primary) ? primary : exists(fallback) ? fallback : primary;
+
 export const resolveLocalEmbeddingRuntimePaths = (
   paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  exists: typeof existsSync = existsSync
 ): LocalEmbeddingRuntimePaths => {
-  const appDir = resolve(paths.repoRoot, "apps", "embedding-service");
+  const koedRuntimeAppDir = resolve(
+    paths.koedHome,
+    "runtime",
+    "embedding-service"
+  );
+  const repoAppDir = resolve(paths.repoRoot, "apps", "embedding-service");
+  const appPath = chooseExistingPath(
+    resolve(koedRuntimeAppDir, "app.py"),
+    resolve(repoAppDir, "app.py"),
+    exists
+  );
+  const appDir = dirname(appPath);
   const host = trim(environment.KOED_EMBEDDING_HOST) ?? "127.0.0.1";
   const port =
     trim(environment.KOED_EMBEDDING_PORT) ??
@@ -76,9 +95,21 @@ export const resolveLocalEmbeddingRuntimePaths = (
     trim(environment.KOED_EMBEDDING_PYTHON_BIN) ??
       resolve(appDir, ".venv", "bin", "python")
   );
+  const koedRuntimeLlamaServer = resolve(
+    paths.koedHome,
+    "runtime",
+    "llama.cpp",
+    "llama-server"
+  );
+  const vendorLlamaServer = resolve(
+    paths.repoRoot,
+    "vendor",
+    "llama.cpp",
+    "llama-server"
+  );
   const llamaServerBin = resolve(
     nativeLlamaServerOverride(environment) ??
-      resolve(paths.repoRoot, "vendor", "llama.cpp", "llama-server")
+      chooseExistingPath(koedRuntimeLlamaServer, vendorLlamaServer, exists)
   );
   return {
     appDir,
@@ -98,7 +129,7 @@ const missingRuntime = (
   state: "not_configured",
   message: `Bundled-local native Embedding Service runtime is missing: ${missing.join(", ")}.`,
   action:
-    "Install apps/embedding-service Python runtime and bundled llama-server, or set KOED_EMBEDDING_PYTHON_BIN / KOED_EMBEDDING_LLAMA_SERVER_BIN overrides.",
+    "Install the Embedding Service runtime under KOED_HOME/runtime/embedding-service and llama-server under KOED_HOME/runtime/llama.cpp, or set KOED_EMBEDDING_PYTHON_BIN / KOED_EMBEDDING_LLAMA_SERVER_BIN overrides. Source-checkout app and vendor paths are development fallbacks.",
   details: { missing },
   paths: runtime
 });
@@ -120,24 +151,20 @@ export const localEmbeddingRuntimeAvailable = (
   environment: NodeJS.ProcessEnv = process.env,
   exists: typeof existsSync = existsSync
 ): boolean =>
-  runtimeMissing(resolveLocalEmbeddingRuntimePaths(paths, environment), exists)
-    .length === 0;
+  runtimeMissing(
+    resolveLocalEmbeddingRuntimePaths(paths, environment, exists),
+    exists
+  ).length === 0;
 
 export const resolveBundledEmbeddingMode = (
   paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv = process.env,
-  exists: typeof existsSync = existsSync
-): "native" | "compose" => {
-  const configured = trim(environment.KOED_BUNDLED_EMBEDDING_MODE);
-  if (configured === "native") {
-    return "native";
-  }
-  if (configured === "compose") {
-    return "compose";
-  }
-  return localEmbeddingRuntimeAvailable(paths, environment, exists)
-    ? "native"
-    : "compose";
+  environment?: NodeJS.ProcessEnv,
+  exists?: typeof existsSync
+): "native" => {
+  void paths;
+  void environment;
+  void exists;
+  return "native";
 };
 
 export const localEmbeddingEnv = (
@@ -154,7 +181,7 @@ export const collectLocalEmbeddingRuntimeStatus = async (
 ): Promise<LocalEmbeddingRuntimeStatus> => {
   const exists = dependencies.existsSync ?? existsSync;
   const fetcher = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
-  const runtime = resolveLocalEmbeddingRuntimePaths(paths, environment);
+  const runtime = resolveLocalEmbeddingRuntimePaths(paths, environment, exists);
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {
     return missingRuntime(runtime, missing);
@@ -200,7 +227,7 @@ export const startLocalEmbeddingRuntime = (
 ): LocalEmbeddingRuntimeStartResult => {
   const exists = dependencies.existsSync ?? existsSync;
   const spawn = dependencies.spawn ?? (nodeSpawn as SpawnLike);
-  const runtime = resolveLocalEmbeddingRuntimePaths(paths, environment);
+  const runtime = resolveLocalEmbeddingRuntimePaths(paths, environment, exists);
   const env = {
     ...environment,
     ...localEmbeddingEnv(runtime),

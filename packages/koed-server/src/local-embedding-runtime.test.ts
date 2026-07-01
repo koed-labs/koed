@@ -47,16 +47,16 @@ afterEach(() => {
 });
 
 describe("local Embedding Service runtime", () => {
-  it("resolves default native paths under the repo", () => {
+  it("resolves default native paths under KOED_HOME runtime", () => {
     const root = tempDir();
     const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {});
 
-    expect(runtime.appDir).toBe(resolve(root, "apps", "embedding-service"));
+    expect(runtime.appDir).toBe(resolve(root, "runtime", "embedding-service"));
     expect(runtime.pythonBin).toBe(
-      resolve(root, "apps", "embedding-service", ".venv", "bin", "python")
+      resolve(root, "runtime", "embedding-service", ".venv", "bin", "python")
     );
     expect(runtime.llamaServerBin).toBe(
-      resolve(root, "vendor", "llama.cpp", "llama-server")
+      resolve(root, "runtime", "llama.cpp", "llama-server")
     );
     expect(runtime.healthUrl).toBe("http://127.0.0.1:3800/health");
     expect(localEmbeddingEnv(runtime).EMBEDDING_SERVICE_URL).toBe(
@@ -71,7 +71,7 @@ describe("local Embedding Service runtime", () => {
     });
 
     expect(runtime.llamaServerBin).toBe(
-      resolve(root, "vendor", "llama.cpp", "llama-server")
+      resolve(root, "runtime", "llama.cpp", "llama-server")
     );
   });
 
@@ -87,9 +87,14 @@ describe("local Embedding Service runtime", () => {
     );
   });
 
-  it("auto-selects native mode only when runtime files exist", () => {
+  it("resolves bundled-local Embedding Service to native-only mode", () => {
     const root = tempDir();
-    expect(resolveBundledEmbeddingMode(paths(root), {})).toBe("compose");
+    expect(resolveBundledEmbeddingMode(paths(root), {})).toBe("native");
+    expect(
+      resolveBundledEmbeddingMode(paths(root), {
+        KOED_BUNDLED_EMBEDDING_MODE: "compose"
+      })
+    ).toBe("native");
 
     mkdirSync(resolve(root, "apps", "embedding-service", ".venv", "bin"), {
       recursive: true
@@ -103,7 +108,6 @@ describe("local Embedding Service runtime", () => {
     writeFileSync(resolve(root, "vendor", "llama.cpp", "llama-server"), "");
 
     expect(localEmbeddingRuntimeAvailable(paths(root), {})).toBe(true);
-    expect(resolveBundledEmbeddingMode(paths(root), {})).toBe("native");
   });
 
   it("reports missing runtime files without tokens", async () => {
@@ -168,7 +172,7 @@ describe("local Embedding Service runtime", () => {
       "--port",
       "3900"
     ]);
-    expect(spawned[0]?.cwd).toBe(resolve(root, "apps", "embedding-service"));
+    expect(spawned[0]?.cwd).toBe(resolve(root, "runtime", "embedding-service"));
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_URL).toBe(
       "http://127.0.0.1:3900"
     );
