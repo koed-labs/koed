@@ -140,8 +140,6 @@ const appendTranscriptRecords = (records) => {
   writeFileSync(transcriptPath, `${records.join("\n")}\n`, { flag: "a" });
 };
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 const waitForMarkerSearchHit = async () => {
   const deadline = Date.now() + searchTimeoutMs;
   let lastSearch;
