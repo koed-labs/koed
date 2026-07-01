@@ -17,7 +17,68 @@ export interface KoedServerRuntimeOptions {
   existsSync?: (path: string) => boolean;
 }
 
+export interface KoedServerPathOptions {
+  appDir: string;
+  appIsPackaged: boolean;
+  environment: NodeJS.ProcessEnv;
+  resourcesPath?: string;
+}
+
+export interface KoedServerPaths {
+  repoRoot: string;
+  cliPath: string;
+}
+
 const currentDir = dirname(fileURLToPath(import.meta.url));
+
+export const resolveKoedServerPaths = ({
+  appDir,
+  appIsPackaged,
+  environment,
+  resourcesPath
+}: KoedServerPathOptions): KoedServerPaths => {
+  const explicitCliPath = environment.KOED_SERVER_CLI?.trim()
+    ? resolve(environment.KOED_SERVER_CLI)
+    : undefined;
+
+  if (environment.KOED_REPO_ROOT?.trim()) {
+    const repoRoot = resolve(environment.KOED_REPO_ROOT);
+    return {
+      repoRoot,
+      cliPath:
+        explicitCliPath ?? resolve(repoRoot, "packages/koed-server/dist/cli.js")
+    };
+  }
+
+  if (explicitCliPath) {
+    return {
+      repoRoot: resolve(dirname(explicitCliPath), "..", "..", ".."),
+      cliPath: explicitCliPath
+    };
+  }
+
+  if (appIsPackaged) {
+    const packagedResourcesPath = resourcesPath ?? resolve(appDir, "..");
+    return {
+      repoRoot: packagedResourcesPath,
+      cliPath: resolve(
+        packagedResourcesPath,
+        "app.asar",
+        "node_modules",
+        "@koed",
+        "koed-server",
+        "dist",
+        "cli.js"
+      )
+    };
+  }
+
+  const repoRoot = resolve(appDir, "..", "..", "..");
+  return {
+    repoRoot,
+    cliPath: resolve(repoRoot, "packages/koed-server/dist/cli.js")
+  };
+};
 
 export const createElectronNodeEnv = (
   environment: NodeJS.ProcessEnv

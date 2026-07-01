@@ -146,6 +146,39 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("reports a missing packaged koed-server CLI as renderable diagnostics", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/Applications/Koed.app/Contents/Resources",
+      cliPath:
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/Applications/Koed.app/Contents/MacOS/Koed",
+        args,
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          KOED_REPO_ROOT: "/Applications/Koed.app/Contents/Resources"
+        }
+      }),
+      existsSync: () => false,
+      execFile: () => undefined,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.status!()).resolves.toMatchObject({
+      ok: false,
+      state: "not_configured",
+      database: { action: "Install runtime assets" },
+      embeddingService: { action: "Install runtime assets" },
+      details: {
+        repoRoot: "/Applications/Koed.app/Contents/Resources",
+        cliPath:
+          "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+      }
+    });
+  });
+
   it("returns renderable diagnostic status when status JSON cannot be parsed", async () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
