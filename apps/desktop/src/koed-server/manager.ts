@@ -177,7 +177,8 @@ export const createKoedEnvironment = (
     ? {
         KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
         KOED_DEPENDENCY_MODE:
-          environment.KOED_DEPENDENCY_MODE ?? "bundled-local"
+          environment.KOED_DEPENDENCY_MODE ?? "bundled-local",
+        WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local"
       }
     : {})
 });

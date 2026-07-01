@@ -398,7 +398,7 @@ describe("start supervisor", () => {
     );
   });
 
-  it("requires Operator-managed Redis URL for bundled-local BullMQ override", async () => {
+  it("requires Operator-managed Redis URL for explicit bundled-local BullMQ override", async () => {
     const root = tempDir();
     createNativeResources(root);
     writeFileSync(
@@ -421,6 +421,33 @@ describe("start supervisor", () => {
     ).rejects.toThrow(
       "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL"
     );
+  });
+
+  it("defaults bundled-local mode to the local work queue even when repo env is BullMQ", async () => {
+    const root = tempDir();
+    createNativeResources(root);
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+    );
+    const commands: Array<{ env?: NodeJS.ProcessEnv }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (_command, _args, options) => {
+        commands.push({ env: options?.env });
+        return spawnResult();
+      },
+      spawn: () => child(1),
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(commands.at(-1)?.env?.WORK_QUEUE_BACKEND).toBe("local");
   });
 
   it("does not require Redis URL for external mode with local work queue", async () => {

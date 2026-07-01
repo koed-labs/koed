@@ -27,6 +27,7 @@ Build an unsigned macOS app directory for local packaging smoke tests:
 
 ```bash
 pnpm desktop:package
+pnpm desktop:package:smoke
 open apps/desktop/release/mac/Koed.app
 ```
 
@@ -56,6 +57,9 @@ diagnostics instead of crashing.
 - `desktop:dev` runs the renderer dev server only.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
   `electron-builder --mac dir` and disables signing/notarization.
+- `desktop:package:smoke` builds the unsigned app and verifies the packaged
+  renderer and bundled `koed-server` status/doctor/stop command surface can run
+  without checkout overrides.
 - The packaged desktop shell resolves the bundled
   `node_modules/@koed/koed-server/dist/cli.js` by default; `KOED_REPO_ROOT` and
   `KOED_SERVER_CLI` remain available for developer overrides.

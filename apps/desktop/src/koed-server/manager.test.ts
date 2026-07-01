@@ -35,17 +35,23 @@ describe("Koed server desktop manager", () => {
     ).toMatchObject({
       KOED_REPO_ROOT: "/repo",
       KOED_RUNTIME_MODE: "local-personal",
-      KOED_DEPENDENCY_MODE: "bundled-local"
+      KOED_DEPENDENCY_MODE: "bundled-local",
+      WORK_QUEUE_BACKEND: "local"
     });
     expect(
       createKoedEnvironment(
         "/repo",
-        { KOED_RUNTIME_MODE: "external", KOED_DEPENDENCY_MODE: "external" },
+        {
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          WORK_QUEUE_BACKEND: "bullmq"
+        },
         { desktopManagedLocal: true }
       )
     ).toMatchObject({
       KOED_RUNTIME_MODE: "external",
-      KOED_DEPENDENCY_MODE: "external"
+      KOED_DEPENDENCY_MODE: "external",
+      WORK_QUEUE_BACKEND: "bullmq"
     });
   });
 

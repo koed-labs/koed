@@ -20,6 +20,7 @@
     "desktop:dev": "pnpm --filter @koed/desktop dev",
     "desktop:package": "pnpm --filter @koed/desktop package",
     "desktop:package:mac": "pnpm --filter @koed/desktop package:mac",
+    "desktop:package:smoke": "pnpm --filter @koed/desktop package:smoke",
     "desktop:start": "pnpm --filter @koed/desktop start",
     "codex:bootstrap": "node scripts/codex-bootstrap.mjs",
     "codex:doctor": "node packages/mcp-server/dist/cli.js doctor",
