@@ -3686,6 +3686,16 @@ describe("account and access flows", () => {
         team_workspace_id: teamWorkspaceId
       }
     });
+    const rejectedTeamAnswer = await app.inject({
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        team_workspace_id: teamWorkspaceId
+      }
+    });
     const answer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
@@ -3712,6 +3722,10 @@ describe("account and access flows", () => {
     expect(rejectedTeamSearch.statusCode).toBe(403);
     expect(jsonBody<{ error: string }>(rejectedTeamSearch).error).toBe(
       "Session cookie required for Team Workspace recall"
+    );
+    expect(rejectedTeamAnswer.statusCode).toBe(401);
+    expect(jsonBody<{ error: string }>(rejectedTeamAnswer).error).toBe(
+      "Session cookie required"
     );
     expect(recallInputs[1]).toMatchObject({
       retrievalStage: "score_scan",
@@ -4143,6 +4157,23 @@ describe("account and access flows", () => {
       url: "/v1/memory/items?pinned=true",
       headers: { cookie }
     });
+    const rejectedTeamBrowserRoutes = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/clusters?teamWorkspaceId=${randomUUID()}`,
+        headers
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/items?teamWorkspaceId=${randomUUID()}`,
+        headers
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/clusters/sports/memories?team_workspace_id=${randomUUID()}`,
+        headers
+      })
+    ]);
     await app.close();
 
     expect(jsonBody<CaptureResponse>(captured).event.metadata.projectName).toBe(
@@ -4159,6 +4190,12 @@ describe("account and access flows", () => {
     });
     expect(typeof pinnedMemory?.pinnedAt).toBe("string");
     expect(clusters.headers.deprecation).toBe("true");
+    for (const response of rejectedTeamBrowserRoutes) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: "Invalid request payload"
+      });
+    }
   });
 
   it("browses and governs LCM graph records without curated memory endpoints", async () => {

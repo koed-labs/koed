@@ -2,25 +2,52 @@ import { z } from "zod";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 
-export const memoryBrowserQuerySchema = z.object({
+const rejectDeprecatedTeamScope = <T extends z.ZodRawShape>(
+  schema: z.ZodObject<T>
+) =>
+  schema
+    .passthrough()
+    .superRefine((input, context) => {
+      for (const key of ["teamWorkspaceId", "team_workspace_id"]) {
+        if (input[key] !== undefined) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message:
+              "Team Workspace scope is not supported on deprecated memory browser routes"
+          });
+        }
+      }
+    })
+    .transform((input) => schema.parse(input));
+
+const memoryBrowserQueryShape = {
   query: z.string().min(1).optional(),
   visibility: visibilitySchema.optional(),
   projectId: z.string().min(1).optional(),
-  teamWorkspaceId: z.string().uuid().optional(),
   threadId: z.string().min(1).optional(),
   pinned: queryBooleanSchema.optional(),
   limit: z.coerce.number().int().positive().max(100).default(50)
-});
+} satisfies z.ZodRawShape;
 
-export const memoryClusterQuerySchema = memoryBrowserQuerySchema.extend({
-  itemsPerCluster: z.coerce.number().int().positive().max(10).default(4)
-});
+export const memoryBrowserQuerySchema = rejectDeprecatedTeamScope(
+  z.object(memoryBrowserQueryShape)
+);
+
+export const memoryClusterQuerySchema = rejectDeprecatedTeamScope(
+  z.object({
+    ...memoryBrowserQueryShape,
+    itemsPerCluster: z.coerce.number().int().positive().max(10).default(4)
+  })
+);
 
 export const clusterIdParamsSchema = z.object({ clusterId: z.string().min(1) });
 
-export const clusterMemoriesQuerySchema = z.object({
-  limit: z.coerce.number().int().positive().max(100).default(100)
-});
+export const clusterMemoriesQuerySchema = rejectDeprecatedTeamScope(
+  z.object({
+    limit: z.coerce.number().int().positive().max(100).default(100)
+  })
+);
 
 export const updateMemorySchema = z.object({
   summaryText: z.string().min(1).optional(),
