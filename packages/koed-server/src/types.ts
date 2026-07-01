@@ -52,7 +52,7 @@ export interface KoedServerRuntimeState {
   pid: number;
   startedAt: string;
   runtimeMode?: "local-personal" | "external" | "developer";
-  dependencyMode?: "bundled-local" | "external" | "managed";
+  dependencyMode?: "bundled-local" | "external";
   repoRoot: string;
   apiUrl: string;
   explorerUrl: string;

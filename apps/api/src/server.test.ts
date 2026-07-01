@@ -2446,7 +2446,7 @@ describe("api health", () => {
     });
     await app.close();
 
-    expect(ready.statusCode).toBe(200);
+    expect(ready.statusCode).toBe(503);
     expect(ready.body).not.toContain("test repository");
     expect(details.statusCode).toBe(401);
     expect(publicStatus.statusCode).toBe(200);
@@ -2454,6 +2454,27 @@ describe("api health", () => {
     expect(publicStatus.body).not.toContain("/sensitive/local/path");
     expect(privateStatus.statusCode).toBe(200);
     expect(privateStatus.body).not.toContain("/sensitive/local/path");
+  });
+
+  it("reports readiness error when embedding health is degraded", async () => {
+    process.env.WORK_QUEUE_BACKEND = "local";
+    const app = await buildServer({ repository: createFakeRepository() });
+
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    await app.close();
+
+    const body = jsonBody<{
+      status: "error";
+      checks: Array<{ service: string; status: string; checkedAt: string }>;
+    }>(ready);
+
+    expect(ready.statusCode).toBe(503);
+    expect(body.status).toBe("error");
+    expect(body.checks).toContainEqual({
+      service: "embedding-service",
+      status: "degraded",
+      checkedAt: expect.any(String) as string
+    });
   });
 
   it("reports readiness error when BullMQ queue backend lacks Redis", async () => {

@@ -23,6 +23,10 @@ const promptText = `Koed capture hook verification prompt: ${marker}`;
 const toolCallPurpose = `Koed capture hook verification tool call: ${marker}`;
 const toolResultText = `Koed capture hook verification tool result: ${marker}`;
 const finalText = `Koed capture hook verification final response: ${marker}`;
+const searchTimeoutMs = Number(
+  process.env.CAPTURE_VERIFY_SEARCH_TIMEOUT_MS ?? 30000
+);
+const searchPollMs = Number(process.env.CAPTURE_VERIFY_SEARCH_POLL_MS ?? 1000);
 
 if (!apiToken) {
   console.error(
@@ -100,6 +104,38 @@ const appendTranscriptRecords = (records) => {
   writeFileSync(transcriptPath, `${records.join("\n")}\n`, { flag: "a" });
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForMarkerSearchHit = async () => {
+  const deadline = Date.now() + searchTimeoutMs;
+  let lastSearch;
+
+  do {
+    const search = await requestJson("/v1/memory/search", {
+      method: "POST",
+      body: JSON.stringify({
+        query: marker,
+        retrieval_scope: "personal",
+        search_domain: "project",
+        workspace_id: process.cwd(),
+        limit: 5
+      })
+    });
+    lastSearch = search;
+
+    const hit = Array.isArray(search.hits)
+      ? search.hits.find((item) => JSON.stringify(item).includes(marker))
+      : null;
+    if (hit) return hit;
+
+    await sleep(searchPollMs);
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `Capture Hook ran but marker was not found in memory within ${searchTimeoutMs}ms: ${marker}${lastSearch ? `; last search response: ${JSON.stringify(lastSearch)}` : ""}`
+  );
+};
+
 try {
   await requestJson("/v1/capture-policies", {
     method: "PUT",
@@ -175,26 +211,7 @@ try {
     })
   );
 
-  const search = await requestJson("/v1/memory/search", {
-    method: "POST",
-    body: JSON.stringify({
-      query: marker,
-      retrieval_scope: "personal",
-      search_domain: "project",
-      workspace_id: process.cwd(),
-      limit: 5
-    })
-  });
-
-  const hit = Array.isArray(search.hits)
-    ? search.hits.find((item) => JSON.stringify(item).includes(marker))
-    : null;
-
-  if (!hit) {
-    throw new Error(
-      `Capture Hook ran but marker was not found in memory: ${marker}`
-    );
-  }
+  await waitForMarkerSearchHit();
 
   if (process.env.DATABASE_URL) {
     const { Client } = requireFromDbPackage("pg");

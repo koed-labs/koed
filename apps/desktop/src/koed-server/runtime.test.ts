@@ -56,7 +56,7 @@ describe("Koed Desktop Node entrypoint runtime", () => {
     });
   });
 
-  it("uses the macOS Helper executable for packaged Electron node mode", () => {
+  it("uses the app executable for packaged Electron node mode", () => {
     const execPath = resolveElectronNodeExecPath({
       appIsPackaged: true,
       electronExecPath: "/Applications/Koed.app/Contents/MacOS/Koed",
@@ -64,9 +64,7 @@ describe("Koed Desktop Node entrypoint runtime", () => {
       existsSync: (path) => path.endsWith("Koed Helper")
     });
 
-    expect(execPath).toBe(
-      "/Applications/Koed.app/Contents/Frameworks/Koed Helper.app/Contents/MacOS/Koed Helper"
-    );
+    expect(execPath).toBe("/Applications/Koed.app/Contents/MacOS/Koed");
   });
 
   it("wraps packaged script entrypoints with the runner", () => {
