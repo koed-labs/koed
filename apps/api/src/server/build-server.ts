@@ -388,6 +388,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
 
   registerOperationalRoutes(app, routeContext, {
+    dbPool: pool,
     repository,
     embeddingQueue,
     compactionQueue,

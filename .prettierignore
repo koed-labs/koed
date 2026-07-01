@@ -1,5 +1,9 @@
 node_modules
 dist
+apps/desktop/dist-electron
+apps/desktop/dist-types
+models
+vendor
 coverage
 target
 

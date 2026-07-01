@@ -9,6 +9,11 @@ export interface KoedServerPaths {
   logsDir: string;
   runDir: string;
   dataDir: string;
+  modelsDir: string;
+  cacheDir: string;
+  postgresDataDir: string;
+  postgresRunDir: string;
+  postgresLogPath: string;
   runtimeStatePath: string;
   lastVerificationPath: string;
   serverConfigPath: string;
@@ -45,6 +50,11 @@ export const resolveKoedServerPaths = (
     logsDir: resolve(koedHome, "logs"),
     runDir: resolve(koedHome, "run"),
     dataDir: resolve(koedHome, "data"),
+    modelsDir: resolve(koedHome, "models"),
+    cacheDir: resolve(koedHome, "cache"),
+    postgresDataDir: resolve(koedHome, "data", "postgres"),
+    postgresRunDir: resolve(koedHome, "run", "postgres"),
+    postgresLogPath: resolve(koedHome, "logs", "postgres.log"),
     runtimeStatePath: resolve(koedHome, "run", "koed-server.json"),
     lastVerificationPath: resolve(koedHome, "run", "last-verification.json"),
     serverConfigPath: resolve(koedHome, "config", "server.json"),
@@ -59,7 +69,11 @@ export const ensureKoedHome = (paths: KoedServerPaths): void => {
     paths.configDir,
     paths.logsDir,
     paths.runDir,
-    paths.dataDir
+    paths.dataDir,
+    paths.modelsDir,
+    paths.cacheDir,
+    paths.postgresDataDir,
+    paths.postgresRunDir
   ]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
