@@ -31,9 +31,12 @@ describe("repo env loading", () => {
 });
 
 describe("local URL resolution", () => {
-  it("lets one-shot environment port overrides win over repo .env ports", () => {
+  it("lets one-shot environment port overrides win over repo .env ports and API URLs", () => {
     expect(
-      resolveApiUrl({ API_HOST_PORT: "4545" }, { API_HOST_PORT: "3300" })
+      resolveApiUrl(
+        { API_HOST_PORT: "4545" },
+        { API_HOST_PORT: "3300", MEMORY_API_URL: "http://localhost:3300" }
+      )
     ).toBe("http://localhost:4545");
     expect(
       resolveExplorerUrl(

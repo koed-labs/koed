@@ -1,4 +1,9 @@
 import type { ChildProcess } from "node:child_process";
+import type {
+  ComponentState,
+  ComponentStatus,
+  KoedServerStatus
+} from "../types.js";
 import type { NodeEntrypointInvocation } from "./runtime.js";
 
 export type DesktopCommandHandler = (args?: Record<string, unknown>) => unknown;
@@ -37,12 +42,70 @@ export interface KoedServerManager {
   stop: () => void;
 }
 
-const missingCliPayload = () => ({
-  ok: false,
-  state: "not_configured",
-  error:
-    "koed-server build output was not found. Run pnpm --filter @koed/koed-server build."
+type DiagnosticStatus = KoedServerStatus & {
+  error: string;
+  details: Record<string, unknown>;
+};
+
+const diagnosticComponent = (
+  state: ComponentState,
+  message: string,
+  action?: string
+): ComponentStatus => ({
+  state,
+  message,
+  ...(action ? { action } : {})
 });
+
+const diagnosticStatus = ({
+  state,
+  message,
+  repoRoot,
+  cliPath,
+  details
+}: {
+  state: ComponentState;
+  message: string;
+  repoRoot: string;
+  cliPath: string;
+  details?: Record<string, unknown>;
+}): DiagnosticStatus => {
+  const component = (action?: string): ComponentStatus =>
+    diagnosticComponent(state, message, action);
+  return {
+    ok: false,
+    state,
+    error: message,
+    koedHome: "not available",
+    generatedAt: new Date().toISOString(),
+    api: { ...component("Start Koed"), url: "" },
+    database: component("Install runtime assets"),
+    redis: component(),
+    workerQueues: component("Start Koed"),
+    embeddingService: component("Install runtime assets"),
+    apiToken: { ...component("Run setup"), configured: false },
+    mcpServer: component("Run setup"),
+    captureHook: component("Run setup"),
+    codex: { ...component("Run setup"), configured: false },
+    lcmSummaryService: component(),
+    explorer: { ...component("Start Koed"), url: "" },
+    lastVerification: { ...component("Run doctor"), checkedAt: null },
+    details: {
+      repoRoot,
+      cliPath,
+      ...details
+    }
+  } as DiagnosticStatus;
+};
+
+const missingCliPayload = (repoRoot: string, cliPath: string) =>
+  diagnosticStatus({
+    state: "not_configured",
+    message:
+      "koed-server CLI was not found. Build the checkout with `pnpm --filter @koed/koed-server build`, or launch the packaged app with KOED_REPO_ROOT/KOED_SERVER_CLI pointing at a Koed checkout.",
+    repoRoot,
+    cliPath
+  });
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
@@ -105,10 +168,18 @@ const hasHealthyApi = (value: unknown): boolean => {
 
 export const createKoedEnvironment = (
   repoRoot: string,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  options: { desktopManagedLocal?: boolean } = {}
 ): NodeJS.ProcessEnv => ({
   ...environment,
-  KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot
+  KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot,
+  ...(options.desktopManagedLocal
+    ? {
+        KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
+        KOED_DEPENDENCY_MODE:
+          environment.KOED_DEPENDENCY_MODE ?? "bundled-local"
+      }
+    : {})
 });
 
 export const createKoedServerManager = ({
@@ -128,7 +199,7 @@ export const createKoedServerManager = ({
   const runJson = (args: string[], timeout = 30_000) =>
     new Promise<unknown>((resolvePromise) => {
       if (!existsSync(cliPath)) {
-        resolvePromise(missingCliPayload());
+        resolvePromise(missingCliPayload(repoRoot, cliPath));
         return;
       }
 
@@ -145,17 +216,26 @@ export const createKoedServerManager = ({
           try {
             resolvePromise(JSON.parse(stdout));
           } catch {
-            resolvePromise({
-              ok: false,
-              state: "needs_attention",
-              error:
-                error?.message ??
-                (stderr.trim() ||
-                  stdout.trim() ||
-                  "koed-server command failed."),
-              stdout: stdout.trim(),
-              stderr: stderr.trim()
-            });
+            const message =
+              error?.message ??
+              (stderr.trim() || stdout.trim() || "koed-server command failed.");
+            resolvePromise(
+              args[0] === "status"
+                ? diagnosticStatus({
+                    state: "needs_attention",
+                    message,
+                    repoRoot,
+                    cliPath,
+                    details: { stdout: stdout.trim(), stderr: stderr.trim() }
+                  })
+                : {
+                    ok: false,
+                    state: "needs_attention",
+                    error: message,
+                    stdout: stdout.trim(),
+                    stderr: stderr.trim()
+                  }
+            );
           }
         }
       );
@@ -190,7 +270,7 @@ export const createKoedServerManager = ({
       return pollUntilReady();
     }
     if (!existsSync(cliPath)) {
-      return missingCliPayload();
+      return missingCliPayload(repoRoot, cliPath);
     }
 
     startOutputLines.length = 0;
@@ -199,12 +279,29 @@ export const createKoedServerManager = ({
       startOutputLines,
       `$ ${invocation.command} ${invocation.args.join(" ")}`
     );
-    serverProcess = spawn(invocation.command, invocation.args, {
-      cwd: repoRoot,
-      env: invocation.env,
-      stdio: "pipe",
-      detached: false
-    });
+    try {
+      serverProcess = spawn(invocation.command, invocation.args, {
+        cwd: repoRoot,
+        env: invocation.env,
+        stdio: "pipe",
+        detached: false
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendOutputLines(
+        startOutputLines,
+        `koed-server start failed: ${message}`
+      );
+      serverProcess = null;
+      return withDesktopStartLog(
+        {
+          ok: false,
+          state: "needs_attention",
+          error: message
+        },
+        startOutputLines
+      );
+    }
     serverProcess.stdout?.on("data", (chunk) => {
       appendOutputLines(startOutputLines, chunk);
     });
@@ -212,6 +309,21 @@ export const createKoedServerManager = ({
       appendOutputLines(startOutputLines, chunk);
     });
     const startExited = new Promise<unknown>((resolveExit) => {
+      serverProcess?.once("error", (error) => {
+        const message = `koed-server start failed: ${error.message}`;
+        appendOutputLines(startOutputLines, message);
+        serverProcess = null;
+        resolveExit(
+          withDesktopStartLog(
+            {
+              ok: false,
+              state: "needs_attention",
+              error: message
+            },
+            startOutputLines
+          )
+        );
+      });
       serverProcess?.once("exit", (code, signal) => {
         const exitSummary = `koed-server start exited with ${
           signal ? `signal ${signal}` : `code ${code ?? "unknown"}`
@@ -245,6 +357,18 @@ export const createKoedServerManager = ({
         withDesktopStartLog(await runJson(["status"]), startOutputLines),
       doctor: () => runJson(["doctor"], 45_000),
       setup_codex: () => runJson(["setup", "codex"], 120_000),
+      runtime_install: () =>
+        runJson(
+          [
+            "runtime",
+            "install",
+            "--provider",
+            "homebrew",
+            "--dependency-mode",
+            "bundled-local"
+          ],
+          600_000
+        ),
       start,
       open_external: async (args) => {
         const url = typeof args?.url === "string" ? args.url : "";
