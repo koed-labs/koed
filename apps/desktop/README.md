@@ -67,6 +67,12 @@ diagnostics instead of crashing.
   renderer and bundled `koed-server` status/doctor/stop command surface can run
   without checkout overrides. `desktop:package:smoke` currently aliases the
   macOS smoke and guards non-Darwin platforms before package execution.
+- `desktop:package:release` builds macOS `dmg` and `zip` artifacts using the
+  release packaging config. Signing/notarization requires a local Developer ID
+  identity and release credentials; use `desktop:package` for unsigned local
+  smoke builds.
+- macOS packaging uses `assets/icon.icns` plus hardened-runtime entitlement
+  templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
   `node_modules/@koed/koed-server/dist/cli.js` by default; `KOED_REPO_ROOT` and
   `KOED_SERVER_CLI` remain available for developer overrides.
