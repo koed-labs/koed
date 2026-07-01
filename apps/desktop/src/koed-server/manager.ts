@@ -356,6 +356,14 @@ export const createKoedServerManager = ({
       status: async () =>
         withDesktopStartLog(await runJson(["status"]), startOutputLines),
       doctor: () => runJson(["doctor"], 45_000),
+      stop: async () => {
+        const result = await runJson(["stop"], 45_000);
+        if (serverProcess && !serverProcess.killed) {
+          serverProcess.kill("SIGTERM");
+        }
+        serverProcess = null;
+        return result;
+      },
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       runtime_install: () =>
         runJson(
