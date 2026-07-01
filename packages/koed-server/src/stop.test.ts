@@ -68,6 +68,54 @@ describe("stopKoedServer", () => {
     expect(result.stoppedPids).toEqual([12, 11, 10]);
   });
 
+  it("escalates lingering app PIDs before removing runtime state", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime({ processes: { api: 10 } }));
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    let running = true;
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        if (signal === "SIGKILL") running = false;
+      },
+      checkPid: () => running,
+      waitForExitMs: 1,
+      pollIntervalMs: 1,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(true);
+    expect(signals).toEqual([
+      [10, "SIGTERM"],
+      [10, "SIGKILL"]
+    ]);
+    expect(() =>
+      readFileSync(resolve(koedHome, "run", "koed-server.json"))
+    ).toThrow();
+  });
+
+  it("retains runtime state when a PID will not stop", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime({ processes: { api: 10 } }));
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      kill: () => undefined,
+      checkPid: () => true,
+      waitForExitMs: 1,
+      pollIntervalMs: 1,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0]?.error).toContain("Timed out");
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
   it("treats stale app PIDs as missing and removes runtime state", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime());
@@ -191,19 +239,12 @@ describe("stopKoedServer", () => {
     expect(commands).toEqual([]);
   });
 
-  it("stops only compose scaffold services from runtime state", () => {
+  it("does not stop legacy Compose services from bundled-local runtime state", () => {
     const koedHome = makeHome();
     writeRuntime(
       koedHome,
       runtime({
-        services: [
-          "postgres",
-          "redis",
-          "embedding-service-native",
-          "api",
-          "worker",
-          "explorer"
-        ]
+        services: ["postgres", "redis", "api", "worker", "explorer"]
       })
     );
     const calls: string[][] = [];
@@ -225,6 +266,6 @@ describe("stopKoedServer", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(calls).toEqual([["compose", "stop", "postgres", "redis"]]);
+    expect(calls).toEqual([]);
   });
 });

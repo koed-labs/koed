@@ -56,7 +56,9 @@ describe("worker JSON benchmark scoring", () => {
           decisions: [],
           facts: [],
           files: [],
-          commands: ["docker compose up --build"],
+          commands: [
+            "docker compose -f examples/docker-compose/docker-compose.yml up --build"
+          ],
           model_names: [],
           tool_outcomes: [],
           errors: ["UI regression remains."],

@@ -8,10 +8,7 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
-import {
-  resolveBundledPostgresMode,
-  stopLocalPostgresRuntime
-} from "./local-postgres-runtime.js";
+import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -41,15 +38,12 @@ export interface KoedServerStopOptions {
   spawnSync?: SpawnSyncLike;
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   checkPid?: (pid: number) => boolean;
+  waitForExitMs?: number;
+  pollIntervalMs?: number;
+  sleepSync?: (ms: number) => void;
 }
 
 const APP_PROCESS_ORDER = ["explorer", "worker", "api"] as const;
-const COMPOSE_SCAFFOLD_SERVICES = [
-  "postgres",
-  "redis",
-  "embedding-service"
-] as const;
-
 const readRuntimeState = (
   path: string,
   deps: Pick<Required<KoedServerStopOptions>, "existsSync" | "readFileSync">
@@ -83,10 +77,36 @@ const errorCode = (error: unknown): string =>
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const defaultSleepSync = (ms: number): void => {
+  if (ms <= 0) return;
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, ms);
+};
+
+const waitForPidExit = (
+  pid: number,
+  deps: Pick<
+    Required<KoedServerStopOptions>,
+    "checkPid" | "waitForExitMs" | "pollIntervalMs" | "sleepSync"
+  >
+): boolean => {
+  const deadline = Date.now() + deps.waitForExitMs;
+  while (deps.checkPid(pid) && Date.now() < deadline) {
+    deps.sleepSync(
+      Math.min(deps.pollIntervalMs, Math.max(0, deadline - Date.now()))
+    );
+  }
+  return !deps.checkPid(pid);
+};
+
 const stopPid = (
   label: string,
   pid: number | undefined,
-  deps: Pick<Required<KoedServerStopOptions>, "kill" | "checkPid">
+  deps: Pick<
+    Required<KoedServerStopOptions>,
+    "kill" | "checkPid" | "waitForExitMs" | "pollIntervalMs" | "sleepSync"
+  >
 ): {
   stoppedPids: number[];
   missingPids: number[];
@@ -97,7 +117,23 @@ const stopPid = (
   }
   try {
     deps.kill(pid, "SIGTERM");
-    return { stoppedPids: [pid], missingPids: [], errors: [] };
+    if (waitForPidExit(pid, deps)) {
+      return { stoppedPids: [pid], missingPids: [], errors: [] };
+    }
+    deps.kill(pid, "SIGKILL");
+    if (waitForPidExit(pid, deps)) {
+      return { stoppedPids: [pid], missingPids: [], errors: [] };
+    }
+    return {
+      stoppedPids: [pid],
+      missingPids: [],
+      errors: [
+        {
+          target: `${label} (${pid})`,
+          error: "Timed out waiting for process to stop"
+        }
+      ]
+    };
   } catch (error) {
     if (errorCode(error) === "ESRCH" || !deps.checkPid(pid)) {
       return { stoppedPids: [], missingPids: [pid], errors: [] };
@@ -110,22 +146,9 @@ const stopPid = (
   }
 };
 
-const shouldStopNativePostgres = (
-  runtime: KoedServerRuntimeState,
-  environment: NodeJS.ProcessEnv,
-  existsSync: typeof nodeExistsSync
-): boolean => {
-  if (runtime.dependencyMode !== "bundled-local") {
-    return false;
-  }
-  if (runtime.services.includes("postgres-native")) {
-    return true;
-  }
-  const paths = resolveKoedServerPaths(environment);
-  return (
-    resolveBundledPostgresMode(paths, environment, existsSync) === "native"
-  );
-};
+const shouldStopNativePostgres = (runtime: KoedServerRuntimeState): boolean =>
+  runtime.dependencyMode === "bundled-local" &&
+  runtime.services.includes("postgres-native");
 
 export const stopKoedServer = ({
   environment = process.env,
@@ -136,7 +159,10 @@ export const stopKoedServer = ({
   kill = (pid, signal) => {
     process.kill(pid, signal);
   },
-  checkPid = defaultCheckPid
+  checkPid = defaultCheckPid,
+  waitForExitMs = 5_000,
+  pollIntervalMs = 100,
+  sleepSync = defaultSleepSync
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
   const runtime = readRuntimeState(paths.runtimeStatePath, {
@@ -169,7 +195,13 @@ export const stopKoedServer = ({
       missingServices.push(name);
       continue;
     }
-    const stopped = stopPid(name, pid, { kill, checkPid });
+    const stopped = stopPid(name, pid, {
+      kill,
+      checkPid,
+      waitForExitMs,
+      pollIntervalMs,
+      sleepSync
+    });
     stoppedPids.push(...stopped.stoppedPids);
     missingPids.push(...stopped.missingPids);
     if (stopped.missingPids.length > 0) {
@@ -188,7 +220,10 @@ export const stopKoedServer = ({
       } else {
         const stopped = stopPid("embedding-service-native", embeddingPid, {
           kill,
-          checkPid
+          checkPid,
+          waitForExitMs,
+          pollIntervalMs,
+          sleepSync
         });
         stoppedPids.push(...stopped.stoppedPids);
         missingPids.push(...stopped.missingPids);
@@ -201,7 +236,7 @@ export const stopKoedServer = ({
       }
     }
 
-    if (shouldStopNativePostgres(runtime, environment, pathExists)) {
+    if (shouldStopNativePostgres(runtime)) {
       const stopped = stopLocalPostgresRuntime(paths, environment, {
         existsSync: pathExists,
         spawnSync
@@ -212,31 +247,6 @@ export const stopKoedServer = ({
         errors.push({
           target: "postgres-native",
           error: stopped.error ?? stopped.message
-        });
-      }
-    }
-
-    const composeServices = COMPOSE_SCAFFOLD_SERVICES.filter((service) =>
-      runtime.services.includes(service)
-    );
-    if (composeServices.length > 0) {
-      const result = spawnSync(
-        "docker",
-        ["compose", "stop", ...composeServices],
-        {
-          cwd: runtime.repoRoot || paths.repoRoot,
-          env: environment,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"]
-        }
-      );
-      if (result.status === 0) {
-        stoppedServices.push(...composeServices);
-      } else {
-        errors.push({
-          target: "docker compose",
-          error:
-            result.error?.message ?? result.stderr?.trim() ?? "unknown error"
         });
       }
     }
