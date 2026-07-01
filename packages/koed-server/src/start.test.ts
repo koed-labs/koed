@@ -185,7 +185,11 @@ describe("start supervisor", () => {
     );
     writeFileSync(
       resolve(root, ".env"),
-      "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong\n"
+      [
+        "DATABASE_URL=postgres://wrong:wrong@localhost:15432/wrong",
+        "WORK_QUEUE_BACKEND=bullmq",
+        ""
+      ].join("\n")
     );
     const commands: Array<{
       command: string;
@@ -399,14 +403,15 @@ describe("start supervisor", () => {
     createNativeResources(root);
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\n"
     );
 
     await expect(
       startKoedServer({
         environment: {
           KOED_HOME: root,
-          KOED_REPO_ROOT: root
+          KOED_REPO_ROOT: root,
+          WORK_QUEUE_BACKEND: "bullmq"
         },
         timeoutMs: 1,
         pollIntervalMs: 1,
