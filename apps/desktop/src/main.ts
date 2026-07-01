@@ -24,6 +24,7 @@ import {
   KOED_APP_SCHEME,
   resolveAppProtocolRequest
 } from "./window/app-protocol.js";
+import { resolveDevServerUrl } from "./window/dev-server-url.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
@@ -108,8 +109,12 @@ const createWindow = async () => {
   );
   window.once("ready-to-show", () => window.show());
 
-  if (process.env.VITE_DEV_SERVER_URL) {
-    await window.loadURL(process.env.VITE_DEV_SERVER_URL);
+  const devServerUrl = resolveDevServerUrl({
+    appIsPackaged: app.isPackaged,
+    devServerUrl: process.env.VITE_DEV_SERVER_URL
+  });
+  if (devServerUrl) {
+    await window.loadURL(devServerUrl);
   } else {
     await window.loadURL(`${KOED_APP_SCHEME}://app/`);
   }
