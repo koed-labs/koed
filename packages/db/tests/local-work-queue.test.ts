@@ -69,7 +69,7 @@ describe("local work queue repository", () => {
       lockToken: "lock-1"
     });
 
-    const [sql] = pool.query.mock.calls[0] ?? [];
+    const sql = String(pool.query.mock.calls[0]?.[0] ?? "");
     expect(sql).toContain("for update skip locked");
     expect(sql).toContain("expired_failed");
     expect(sql).toContain("attempt_count >= max_attempts");
