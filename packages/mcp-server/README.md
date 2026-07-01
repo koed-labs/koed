@@ -275,6 +275,8 @@ node packages/mcp-server/dist/cli.js process-local-memory --limit 2
   sessions.
 - `src/lcm-summary-worker.ts`: local Codex summarization for pending LCM nodes.
 - `src/lcm-summary-service.ts`: background local memory processing lifecycle.
+- `src/codex-app-server-runner.ts`: generic Codex app-server runner for local
+  JSON worker and evaluation tasks.
 
 ## Troubleshooting
 

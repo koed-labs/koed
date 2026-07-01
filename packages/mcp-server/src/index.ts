@@ -7,6 +7,11 @@ import {
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
+export { runCodexAppServerJsonTask } from "./codex-app-server-runner.js";
+export type {
+  CodexAppServerJsonTaskConfig,
+  CodexAppServerRunResult
+} from "./codex-app-server-runner.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
 import {
   lcmSummaryLockState,

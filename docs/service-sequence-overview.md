@@ -190,7 +190,10 @@ sequenceDiagram
 5. The local LCM worker builds token-bounded prompts from exact source items or
    child summaries. The prompt requires secret-like literal redaction and, when
    ordered source items or child summaries conflict, prefers later items while
-   preserving older conflicts only as superseded context.
+   preserving older conflicts only as superseded context. It also asks the AI
+   Client to keep active decisions, stable facts, unresolved questions, and tool
+   outcomes in their matching structured fields while compressing repetitive
+   logs and lifecycle noise into durable findings.
 6. The LCM worker runs Codex app-server mode locally under the user's Codex
    subscription and parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,

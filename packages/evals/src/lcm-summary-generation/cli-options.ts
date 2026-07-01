@@ -27,17 +27,18 @@ export const parseLcmSummaryRunsOption = (
 };
 
 export const parseLcmSummaryThresholdOption = (
-  value: string | undefined
+  value: string | undefined,
+  name = "--threshold"
 ): number | undefined => {
   if (value === undefined) {
     return undefined;
   }
   if (value.trim() !== value || value.length === 0) {
-    throw new Error("--threshold must be a number between 0 and 1");
+    throw new Error(`${name} must be a number between 0 and 1`);
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    throw new Error("--threshold must be a number between 0 and 1");
+    throw new Error(`${name} must be a number between 0 and 1`);
   }
   return parsed;
 };

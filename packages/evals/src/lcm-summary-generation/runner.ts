@@ -6,6 +6,7 @@ import {
   type CodexLcmSummaryRunner,
   type LcmSummaryWorkerConfig
 } from "@koed/mcp-server";
+import { runWithAttempts } from "./attempts.js";
 import {
   scoreLcmSummaryRun,
   summarizeLcmSummaryBenchmark,
@@ -16,6 +17,10 @@ import {
   lcmSummaryBenchmarkCases,
   type LcmSummaryBenchmarkCase
 } from "./cases.js";
+import {
+  lcmSummaryBenchmarkReportRedactions,
+  redactLcmSummaryBenchmarkValue
+} from "./redaction.js";
 
 export interface LcmSummaryBenchmarkRunOptions {
   config?: LcmSummaryWorkerConfig;
@@ -59,48 +64,6 @@ const selectedCases = (
   return cases;
 };
 
-const escapeRegExp = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const redactString = (value: string, redactions: string[]): string =>
-  redactions.reduce(
-    (current, redaction) =>
-      current.replace(new RegExp(escapeRegExp(redaction), "gi"), "[REDACTED]"),
-    value
-  );
-
-const redactValue = (value: unknown, redactions: string[]): unknown => {
-  if (redactions.length === 0) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return redactString(value, redactions);
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactValue(item, redactions));
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        redactString(key, redactions),
-        redactValue(item, redactions)
-      ])
-    );
-  }
-  return value;
-};
-
-const reportRedactions = (cases: LcmSummaryBenchmarkCase[]): string[] => [
-  ...new Set(
-    cases.flatMap(
-      (benchmarkCase) =>
-        benchmarkCase.expected.forbiddenClaims
-          ?.filter((claim) => claim.redactInReports === true)
-          .flatMap((claim) => claim.match.exactPhrases ?? []) ?? []
-    )
-  )
-];
-
 export const runLcmSummaryBenchmarkCase = async (
   benchmarkCase: LcmSummaryBenchmarkCase,
   runIndex: number,
@@ -112,11 +75,15 @@ export const runLcmSummaryBenchmarkCase = async (
   const runner = options.runner ?? runCodexAppServerLcmSummary;
   const prompt = buildLcmSummaryPrompt(benchmarkCase.node);
   const started = performance.now();
+
   try {
-    const result = await runner(
-      prompt,
-      options.config,
-      options.config.timeoutMs
+    const result = await runWithAttempts(
+      {
+        maxAttempts: options.config.maxAttempts,
+        retryDelayMs: options.config.retryDelayMs,
+        timeoutMs: options.config.timeoutMs
+      },
+      ({ timeoutMs }) => runner(prompt, options.config, timeoutMs)
     );
     return {
       caseId: benchmarkCase.id,
@@ -171,18 +138,19 @@ export const runLcmSummaryBenchmark = async (
   const summary = summarizeLcmSummaryBenchmark(scores, {
     threshold: options.threshold
   });
-  const redactions = reportRedactions(cases);
-  const redactedSummary = redactValue(
+  const redactions = lcmSummaryBenchmarkReportRedactions(cases);
+  const redactedSummary = redactLcmSummaryBenchmarkValue(
     summary,
     redactions
   ) as LcmSummaryBenchmarkSummary;
+
   return {
     benchmark: "lcm-summary-generation",
     generatedAt: new Date().toISOString(),
     model: config.model,
     reasoningEffort: config.reasoningEffort,
     cases: cases.map((benchmarkCase) => benchmarkCase.id),
-    runInputs: redactValue(
+    runInputs: redactLcmSummaryBenchmarkValue(
       runInputs,
       redactions
     ) as LcmSummaryBenchmarkRunInput[],

@@ -22,6 +22,7 @@ const writeFakeAppServer = (
     }>;
     turnStatus?: "completed" | "failed" | "interrupted" | "running";
     turnStatuses?: Array<"completed" | "failed" | "interrupted" | "running">;
+    transientErrorBeforeCompletion?: boolean;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-codex-app-server.mjs");
@@ -77,6 +78,9 @@ const malformedStdout = ${JSON.stringify(options.malformedStdout ?? "")};
 const modelPages = ${JSON.stringify(options.modelPages ?? [])};
 const turnStatus = ${JSON.stringify(options.turnStatus ?? "completed")};
 const turnStatuses = ${JSON.stringify(options.turnStatuses ?? [])};
+const transientErrorBeforeCompletion = ${JSON.stringify(
+      options.transientErrorBeforeCompletion ?? false
+    )};
 let threadId = "thread-test";
 let turnId = "turn-test";
 let turnIndex = 0;
@@ -138,6 +142,9 @@ lineReader.on("line", (line) => {
     const currentTurnStatus = turnStatuses[turnIndex] ?? turnStatus;
     turnIndex += 1;
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
+    if (transientErrorBeforeCompletion) {
+      send({ method: "error", params: { threadId, turnId, error: { message: "Reconnecting... 2/5" } } });
+    }
     send({ method: "item/agentMessage/delta", params: { threadId, turnId, itemId: "message-test", delta: "app-server answer " + turnId } });
     send({ method: "thread/tokenUsage/updated", params: { threadId, turnId, tokenUsage: { total: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 1, outputTokens: 1, reasoningOutputTokens: 0 }, last: { totalTokens: 3, inputTokens: 2, cachedInputTokens: 1, outputTokens: 1, reasoningOutputTokens: 0 }, modelContextWindow: 1000 } } });
     if (currentTurnStatus === "running") {
@@ -474,6 +481,45 @@ describe("Codex app-server runner", () => {
       );
       expect((error as CodexAppServerTurnError).threadId).toBe("thread-test");
       expect((error as CodexAppServerTurnError).turnId).toBe("turn-test");
+    } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores transient reconnect notices before turn completion", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-reconnect-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+
+    try {
+      const result = await runCodexAppServerTurn(
+        "Prompt text",
+        {
+          appServerBinary: writeFakeAppServer(tempDirectory, {
+            transientErrorBeforeCompletion: true
+          }),
+          model: "gpt-5.4-mini",
+          reasoningEffort: "low",
+          cwd: tempDirectory,
+          env: {
+            ...process.env,
+            CODEX_HOME: realCodexHome,
+            FAKE_REAL_CODEX_HOME: realCodexHome
+          },
+          clientName: "koed-test",
+          baseInstructions: "Return the answer.",
+          developerInstructions: ""
+        },
+        3000
+      );
+
+      expect(result.text).toBe("app-server answer turn-test");
+      expect(result.rawEvents?.map((event) => event.method)).toContain("error");
+      expect(result.rawEvents?.map((event) => event.method)).toContain(
+        "turn/completed"
+      );
     } finally {
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }

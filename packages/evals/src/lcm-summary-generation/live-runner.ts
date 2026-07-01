@@ -8,6 +8,7 @@ import {
   parseLcmSummaryThresholdOption
 } from "./cli-options.js";
 import { runLcmSummaryBenchmark } from "./runner.js";
+import { runLcmSummarySemanticJudgeReport } from "./semantic-judge.js";
 
 const args = process.argv.slice(2);
 
@@ -21,23 +22,31 @@ const selectedCaseIds = optionValue("--case")
 
 const runsOverride = parseLcmSummaryRunsOption(optionValue("--runs"));
 const threshold = parseLcmSummaryThresholdOption(optionValue("--threshold"));
+const semanticJudgeEnabled = args.includes("--semantic-judge");
+const judgeThreshold = parseLcmSummaryThresholdOption(
+  optionValue("--judge-threshold"),
+  "--judge-threshold"
+);
 const model = optionValue("--model");
 const reasoningEffort = optionValue("--reasoning-effort");
+const judgeModel = optionValue("--judge-model");
+const judgeReasoningEffort = optionValue("--judge-reasoning-effort");
 const codexBinary =
   optionValue("--codex") ?? process.env.MEMORY_LCM_CODEX_BINARY;
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(currentDirectory, "../../../..");
-const outputPath =
-  optionValue("--out") ??
-  join(
-    repositoryRoot,
-    "benchmarks",
-    "lcm-summary-generation",
-    "artifacts",
-    `lcm-summary-generation-${new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")}.json`
-  );
+const outputOption = optionValue("--out");
+const outputPath = outputOption
+  ? resolve(repositoryRoot, outputOption)
+  : join(
+      repositoryRoot,
+      "benchmarks",
+      "lcm-summary-generation",
+      "artifacts",
+      `lcm-summary-generation-${new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")}.json`
+    );
 
 const config = resolveLcmSummaryWorkerConfig(process.env, {
   ...(model ? { model } : {}),
@@ -52,7 +61,27 @@ const report = await runLcmSummaryBenchmark({
   threshold
 });
 
-const serialized = `${JSON.stringify(report, null, 2)}\n`;
+const finalReport = semanticJudgeEnabled
+  ? {
+      ...report,
+      semanticJudge: await runLcmSummarySemanticJudgeReport({
+        report,
+        config: {
+          appServerBinary: config.appServerBinary,
+          model: judgeModel ?? config.model,
+          reasoningEffort: judgeReasoningEffort ?? config.reasoningEffort,
+          timeoutMs: config.timeoutMs,
+          maxAttempts: config.maxAttempts,
+          retryDelayMs: config.retryDelayMs,
+          cwd: config.cwd,
+          env: config.env
+        },
+        ...(judgeThreshold === undefined ? {} : { threshold: judgeThreshold })
+      })
+    }
+  : report;
+
+const serialized = `${JSON.stringify(finalReport, null, 2)}\n`;
 await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, serialized);
 console.error(`Wrote LCM summary generation benchmark report to ${outputPath}`);

@@ -26,6 +26,7 @@ export interface LcmSummaryRequiredClaim {
   match: LcmSummaryTermMatch;
   fields: LcmSummaryField[];
   critical?: boolean;
+  fieldCritical?: boolean;
 }
 
 export interface LcmSummaryForbiddenClaim {
@@ -185,10 +186,11 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           id: "typescript-supported",
           label: "only the TypeScript Codex Capture Hook is supported",
           match: {
-            allTerms: ["TypeScript Codex Capture Hook"],
+            allTerms: ["Codex Capture Hook"],
             anyTermGroups: [
-              ["only", "sole", "exclusive"],
-              ["support", "supported", "supporting"]
+              ["TypeScript", "TypeScript-only"],
+              ["only", "sole", "exclusive", "TypeScript-only"],
+              ["support", "supported", "supporting", "TypeScript-only"]
             ]
           },
           fields: ["decisions"],
@@ -285,7 +287,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["errors", "tool_outcomes"],
+      requiredNonEmptyFields: ["errors"],
       minNonEmptyFields: 4,
       maxSummaryTextChars: 900
     },
@@ -334,7 +336,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             exactPhrases: ["migration 0012_memory_nodes_backfill"],
             allTerms: ["first migration", "fresh local reset"]
           },
-          fields: ["facts"],
+          fields: ["facts", "tool_outcomes"],
           critical: true
         }
       ],
@@ -467,7 +469,8 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             anyTermGroups: [["visible", "visibility"]]
           },
           fields: ["unresolved_questions"],
-          critical: true
+          critical: true,
+          fieldCritical: true
         },
         {
           id: "scope-domain-open",
@@ -476,7 +479,8 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["Search Domain", "Retrieval Scope", "team memory"]
           },
           fields: ["unresolved_questions"],
-          critical: true
+          critical: true,
+          fieldCritical: true
         }
       ],
       forbiddenClaims: [

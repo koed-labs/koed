@@ -78,6 +78,17 @@ export interface CodexAppServerRunConfig {
   ) => Promise<CodexAppServerDynamicToolResponse>;
 }
 
+export interface CodexAppServerJsonTaskConfig {
+  appServerBinary: string;
+  model: string;
+  reasoningEffort: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  clientName: string;
+  baseInstructions: string;
+  developerInstructions?: string;
+}
+
 export interface CodexAppServerRunResult {
   text: string;
   model: string;
@@ -221,6 +232,19 @@ const createIsolatedCodexHome = (
   return isolatedHome;
 };
 
+const removeIsolatedCodexHome = (isolatedHome: string): void => {
+  try {
+    fs.rmSync(isolatedHome, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100
+    });
+  } catch {
+    // Best-effort cleanup only; do not turn a completed app-server call into a failure.
+  }
+};
+
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
@@ -244,6 +268,9 @@ const tokenUsageFromParams = (
     ? (tokenUsage as CodexThreadTokenUsage)
     : undefined;
 };
+
+const isTransientTurnErrorMessage = (message: string): boolean =>
+  /^Reconnecting\.\.\. \d+\/\d+$/.test(message.trim());
 
 class CodexAppServerClient {
   private nextId = 1;
@@ -558,12 +585,15 @@ class CodexAppServerClient {
         typeof params.turnId === "string"
       ) {
         const error = asRecord(params.error);
-        const state = this.stateFor(params.threadId, params.turnId);
-        state.error = new Error(
+        const errorMessage =
           typeof error.message === "string"
             ? error.message
-            : "Codex app-server turn failed"
-        );
+            : "Codex app-server turn failed";
+        if (isTransientTurnErrorMessage(errorMessage)) {
+          return;
+        }
+        const state = this.stateFor(params.threadId, params.turnId);
+        state.error = new Error(errorMessage);
         state.completed = true;
         this.settleTurnIfReady(params.threadId, params.turnId);
       }
@@ -847,7 +877,7 @@ export class CodexAppServerThreadSession {
     }
     this.closed = true;
     this.client.close();
-    fs.rmSync(this.isolatedHome, { recursive: true, force: true });
+    removeIsolatedCodexHome(this.isolatedHome);
   }
 
   private async ensureThread(): Promise<string> {
@@ -879,6 +909,27 @@ export const runCodexAppServerTurn = async (
     session.close();
   }
 };
+
+export const runCodexAppServerJsonTask = (
+  prompt: string,
+  config: CodexAppServerJsonTaskConfig,
+  timeoutMs: number
+): Promise<CodexAppServerRunResult> =>
+  runCodexAppServerTurn(
+    prompt,
+    {
+      appServerBinary: config.appServerBinary,
+      model: config.model,
+      reasoningEffort: config.reasoningEffort,
+      cwd: config.cwd,
+      env: config.env,
+      clientName: config.clientName,
+      baseInstructions: config.baseInstructions,
+      developerInstructions:
+        config.developerInstructions ?? koedAppServerWorkerDeveloperInstructions
+    },
+    timeoutMs
+  );
 
 const normalizeReasoningEfforts = (
   value: unknown
@@ -984,7 +1035,7 @@ export const listCodexAppServerModels = async (
   } finally {
     clearTimeout(timeout);
     client.close();
-    fs.rmSync(isolatedHome, { recursive: true, force: true });
+    removeIsolatedCodexHome(isolatedHome);
   }
 };
 
@@ -1020,6 +1071,6 @@ export const checkCodexAppServerAvailability = async (
   } finally {
     clearTimeout(timeout);
     client.close();
-    fs.rmSync(isolatedHome, { recursive: true, force: true });
+    removeIsolatedCodexHome(isolatedHome);
   }
 };

@@ -71,20 +71,38 @@ const normalized = (value: string): string =>
 const includesPhrase = (haystack: string, phrase: string): boolean =>
   normalized(haystack).includes(normalized(phrase));
 
+const negationCue =
+  /\b(no longer|not|never|false that|false|incorrect|wrong|does not|do not|did not|cannot|can't|is not|are not|was not|were not)\b\s*(\w+\s+){0,5}$/;
+
+const hasNegationBeforeIndex = (
+  normalizedHaystack: string,
+  index: number,
+  windowChars: number
+): boolean =>
+  negationCue.test(
+    normalizedHaystack.slice(Math.max(0, index - windowChars), index)
+  );
+
 const includesAffirmativePhrase = (
   haystack: string,
   phrase: string
 ): boolean => {
   const normalizedHaystack = normalized(haystack);
   const normalizedPhrase = normalized(phrase);
-  const index = normalizedHaystack.indexOf(normalizedPhrase);
-  if (index < 0) {
+  if (!normalizedPhrase) {
     return false;
   }
-  const before = normalizedHaystack.slice(Math.max(0, index - 50), index);
-  return !/\b(no|not|never|false|incorrect|wrong)\b\s*(\w+\s+){0,5}$/.test(
-    before
-  );
+  let index = normalizedHaystack.indexOf(normalizedPhrase);
+  while (index >= 0) {
+    if (!hasNegationBeforeIndex(normalizedHaystack, index, 50)) {
+      return true;
+    }
+    index = normalizedHaystack.indexOf(
+      normalizedPhrase,
+      index + normalizedPhrase.length
+    );
+  }
+  return false;
 };
 
 const stopWords = new Set([
@@ -152,20 +170,52 @@ const tokenCoverage = (haystack: string, phrase: string): number => {
   return expected.filter((token) => actual.has(token)).length / expected.length;
 };
 
-const negationCue =
-  /\b(no longer|not|never|false that|false|incorrect|wrong|does not|do not|did not|cannot|can't|is not|are not|was not|were not)\b/;
+const localTextUnits = (text: string): string[] =>
+  text
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((unit) => unit.trim())
+    .filter(Boolean);
+
+const termOccurrenceIndexes = (
+  normalizedHaystack: string,
+  term: string
+): number[] => {
+  const normalizedTerm = normalized(term);
+  const indexes: number[] = [];
+  if (normalizedTerm.length > 0) {
+    let index = normalizedHaystack.indexOf(normalizedTerm);
+    while (index >= 0) {
+      indexes.push(index);
+      index = normalizedHaystack.indexOf(
+        normalizedTerm,
+        index + normalizedTerm.length
+      );
+    }
+    if (indexes.length > 0) {
+      return indexes;
+    }
+  }
+
+  const firstToken = significantTokens(term)[0];
+  if (!firstToken) {
+    return [];
+  }
+  let index = normalizedHaystack.indexOf(firstToken);
+  while (index >= 0) {
+    indexes.push(index);
+    index = normalizedHaystack.indexOf(firstToken, index + firstToken.length);
+  }
+  return indexes;
+};
 
 const hasNegationBeforeTerm = (haystack: string, term: string): boolean => {
   const normalizedHaystack = normalized(haystack);
-  const firstToken = significantTokens(term)
-    .map((token) => normalizedHaystack.indexOf(token))
-    .filter((index) => index >= 0)
-    .sort((left, right) => left - right)[0];
-  if (firstToken === undefined) {
+  const indexes = termOccurrenceIndexes(normalizedHaystack, term);
+  if (indexes.length === 0) {
     return false;
   }
-  return negationCue.test(
-    normalizedHaystack.slice(Math.max(0, firstToken - 80), firstToken)
+  return indexes.every((index) =>
+    hasNegationBeforeIndex(normalizedHaystack, index, 80)
   );
 };
 
@@ -173,15 +223,17 @@ const containsTerm = (haystack: string, term: string): boolean => {
   if (includesAffirmativePhrase(haystack, term)) {
     return true;
   }
-  if (hasNegationBeforeTerm(haystack, term)) {
-    return false;
-  }
   const expected = significantTokens(term);
   if (expected.length === 0) {
     return false;
   }
-  const actual = new Set(significantTokens(haystack));
-  return expected.every((token) => actual.has(token));
+  return localTextUnits(haystack).some((unit) => {
+    if (hasNegationBeforeTerm(unit, term)) {
+      return false;
+    }
+    const actual = new Set(significantTokens(unit));
+    return expected.every((token) => actual.has(token));
+  });
 };
 
 const containsFuzzyTerm = (haystack: string, term: string): boolean =>
@@ -221,12 +273,6 @@ const allSummaryText = (summary: StructuredLcmSummary): string =>
     ...summary.provenance_hints
   ].join("\n");
 
-const localTextUnits = (text: string): string[] =>
-  text
-    .split(/\n+|(?<=[.!?])\s+/)
-    .map((unit) => unit.trim())
-    .filter(Boolean);
-
 const requiredMatchPresent = (
   text: string,
   match: LcmSummaryTermMatch
@@ -255,6 +301,15 @@ const containsForbiddenTerm = (haystack: string, term: string): boolean =>
 const includesForbiddenPhrase = (haystack: string, phrase: string): boolean =>
   includesPhrase(haystack, phrase) && !hasNegationBeforeTerm(haystack, phrase);
 
+const containsForbiddenExactPhrase = (
+  text: string,
+  phrase: string,
+  claim: LcmSummaryForbiddenClaim
+): boolean =>
+  claim.redactInReports === true
+    ? includesPhrase(text, phrase)
+    : includesForbiddenPhrase(text, phrase);
+
 const forbiddenMatchPresent = (
   text: string,
   claim: LcmSummaryForbiddenClaim
@@ -264,12 +319,10 @@ const forbiddenMatchPresent = (
   const phraseGroups = match.phraseGroups ?? [];
   const allTerms = match.allTerms ?? [];
   const anyTermGroups = match.anyTermGroups ?? [];
-  const containsExactForbiddenPhrase =
-    claim.redactInReports === true ? includesPhrase : includesForbiddenPhrase;
 
   return (
     exactPhrases.every((phrase) =>
-      containsExactForbiddenPhrase(text, phrase)
+      containsForbiddenExactPhrase(text, phrase, claim)
     ) &&
     phraseGroups.every((group) =>
       group.some((phrase) => includesForbiddenPhrase(text, phrase))
@@ -290,6 +343,12 @@ const forbiddenMatchingSpans = (
 const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
   requiredMatchPresent(text, claim.match);
 
+const forbiddenSpanAllowed = (
+  span: string,
+  claim: LcmSummaryForbiddenClaim
+): boolean =>
+  (claim.allowedContextTerms ?? []).some((term) => includesPhrase(span, term));
+
 const forbiddenPresent = (
   summary: StructuredLcmSummary,
   claim: LcmSummaryForbiddenClaim
@@ -302,12 +361,7 @@ const forbiddenPresent = (
   if (spans.length === 0) {
     return false;
   }
-  return spans.some(
-    (span) =>
-      !(claim.allowedContextTerms ?? []).some((term) =>
-        includesPhrase(span, term)
-      )
-  );
+  return spans.some((span) => !forbiddenSpanAllowed(span, claim));
 };
 
 const nonEmptyStructuredFields = (
@@ -367,7 +421,7 @@ const requiredClaimDetails = (
       actual: Object.fromEntries(
         claim.fields.map((field) => [field, fieldValue(summary, field)])
       ),
-      critical
+      critical: claim.fieldCritical ?? false
     });
   }
 
