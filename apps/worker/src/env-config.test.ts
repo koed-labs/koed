@@ -4,6 +4,7 @@ import { resolveWorkerEnv } from "./env-config.js";
 describe("resolveWorkerEnv", () => {
   it("uses development defaults", () => {
     expect(resolveWorkerEnv({})).toEqual({
+      queueBackend: "bullmq",
       redisUrl: "redis://localhost:6379",
       databaseConfigured: false,
       embeddingServiceUrl: "http://embedding-service:8000",
@@ -35,6 +36,7 @@ describe("resolveWorkerEnv", () => {
         EMBEDDING_MODEL: "qwen3-0.6b"
       })
     ).toMatchObject({
+      queueBackend: "bullmq",
       redisUrl: "redis://local:6379",
       databaseUrl: "postgres://local",
       databaseConfigured: true,
@@ -82,9 +84,31 @@ describe("resolveWorkerEnv", () => {
     ).toThrow("Unsupported reranker model key");
   });
 
-  it("requires production service configuration", () => {
+  it("accepts local queue backend override", () => {
+    expect(
+      resolveWorkerEnv({
+        WORK_QUEUE_BACKEND: "local"
+      }).queueBackend
+    ).toBe("local");
+  });
+
+  it("requires production BullMQ service configuration", () => {
     expect(() => resolveWorkerEnv({ NODE_ENV: "production" })).toThrow(
       "DATABASE_URL, REDIS_URL, DATA_ENCRYPTION_KEY, EMBEDDING_SERVICE_URL, EMBEDDING_SERVICE_TOKEN, EMBEDDING_MODEL"
     );
+  });
+
+  it("does not require Redis in production local queue mode", () => {
+    expect(() =>
+      resolveWorkerEnv({
+        NODE_ENV: "production",
+        WORK_QUEUE_BACKEND: "local",
+        DATABASE_URL: "postgres://local",
+        DATA_ENCRYPTION_KEY: "secret",
+        EMBEDDING_SERVICE_URL: "http://localhost:8000",
+        EMBEDDING_SERVICE_TOKEN: "token",
+        EMBEDDING_MODEL: "qwen3-0.6b"
+      })
+    ).not.toThrow();
   });
 });

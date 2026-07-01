@@ -1,15 +1,7 @@
 import { scheduleCompaction, type Visibility } from "@koed/core";
-import type { Queue } from "bullmq";
 import type { EmbeddableSourceType, MemorySourceRepository } from "@koed/db";
+import { type KoedJobQueue, type WorkerQueueName } from "@koed/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
-
-export const workerQueueNames = [
-  "memory-embed",
-  "lcm-compact",
-  "lcm-embed"
-] as const;
-
-export type WorkerQueueName = (typeof workerQueueNames)[number];
 
 export interface EmbeddingQueueJobData {
   sourceType: EmbeddableSourceType;
@@ -18,7 +10,7 @@ export interface EmbeddingQueueJobData {
 
 export interface WorkerJobWorkflowConfig {
   embeddingWorkflow: EmbeddingWorkflow;
-  lcmEmbedQueue: Queue<EmbeddingQueueJobData>;
+  lcmEmbedQueue: KoedJobQueue<EmbeddingQueueJobData>;
   repository: () => MemorySourceRepository;
 }
 
@@ -64,7 +56,7 @@ const visibilityFromJobData = (data: Record<string, unknown>): Visibility => {
 };
 
 export const enqueueLcmNodeEmbeddings = async (
-  lcmEmbedQueue: Queue<EmbeddingQueueJobData>,
+  lcmEmbedQueue: KoedJobQueue<EmbeddingQueueJobData>,
   nodeIds: string[]
 ) =>
   Promise.all(

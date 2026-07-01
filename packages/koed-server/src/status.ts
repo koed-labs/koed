@@ -7,6 +7,8 @@ import {
 import { resolveKoedServerConfig } from "./config.js";
 import { loadExplorerCredential, resolveLocalApiToken } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
+import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
 import {
   ensureKoedHome,
   resolveKoedServerPaths,
@@ -26,6 +28,24 @@ type SpawnSyncLike = (
   args: string[],
   options?: Parameters<typeof nodeSpawnSync>[2]
 ) => SpawnSyncReturns<string>;
+
+const resolveWorkQueueBackend = (
+  value: string | undefined
+): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
+
+const resolveEffectiveWorkQueueBackend = (
+  dependencyMode: "bundled-local" | "external",
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): "bullmq" | "local" => {
+  if (environment.WORK_QUEUE_BACKEND) {
+    return resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND);
+  }
+  if (dependencyMode === "bundled-local") {
+    return "local";
+  }
+  return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+};
 
 export interface KoedServerStatusDependencies {
   fetch?: typeof fetch;
@@ -134,17 +154,27 @@ const fetchJson = async <T>(
 
 interface ApiReadyPayload {
   status?: string;
-  checks?: Array<{ service?: string; status?: string }>;
+  checks?: Array<{
+    service?: string;
+    status?: string;
+    details?: Record<string, unknown>;
+  }>;
 }
 
 export const statusFromApiReady = async (
   apiUrl: string,
   fetcher: typeof fetch = globalThis.fetch.bind(globalThis),
   options: { dependencyMode?: "bundled-local" | "external" } = {}
-) => {
+): Promise<{
+  api: KoedServerComponentStatus;
+  database: KoedServerComponentStatus;
+  redis: KoedServerComponentStatus;
+  workerQueues: KoedServerComponentStatus;
+  embeddingService: KoedServerComponentStatus;
+}> => {
   const readyUrl = new URL("/ready", apiUrl).toString();
   const response = await fetchJson<ApiReadyPayload>(readyUrl, fetcher);
-  if (!response.ok || !response.body) {
+  if (!response.body) {
     return {
       api: needsAttention(
         `API is not ready at ${readyUrl}${response.error ? ` (${response.error})` : response.status ? ` (HTTP ${response.status})` : ""}`,
@@ -156,6 +186,9 @@ export const statusFromApiReady = async (
         "Waiting for API readiness to confirm database state."
       ),
       redis: starting("Waiting for API readiness to confirm Redis state."),
+      workerQueues: starting(
+        "Waiting for API readiness to confirm work queue state."
+      ),
       embeddingService: starting(
         "Waiting for API readiness to confirm Embedding Service state."
       )
@@ -163,120 +196,114 @@ export const statusFromApiReady = async (
   }
 
   const checks = response.body.checks ?? [];
-  const serviceStatus = (service: string): string | undefined =>
-    checks.find((check) => check.service === service)?.status;
+  const serviceCheck = (service: string) =>
+    checks.find((check) => check.service === service);
+  const actionFor = (service: string, fallback: string): string => {
+    if (service === "migrations") {
+      return "Run pnpm db:migrate:check or restart koed-server so startup migrations run.";
+    }
+    if (service === "pgvector") {
+      return "Install and enable pgvector in the Koed database.";
+    }
+    if (service === "postgres-version") {
+      return "Upgrade Postgres to a Koed-compatible version.";
+    }
+    if (service === "embedding-model") {
+      return "Fix the bundled-local Embedding Service model or configured embedding dimensions.";
+    }
+    if (service === "work-queue") {
+      return "Set WORK_QUEUE_BACKEND=local or configure Redis for BullMQ queues.";
+    }
+    return fallback;
+  };
   const component = (
     service: string,
     label: string
   ): KoedServerComponentStatus => {
-    const value = serviceStatus(service);
+    const check = serviceCheck(service);
+    const value = check?.status;
     if (value === "ok") {
-      return healthy();
+      return healthy(undefined, check?.details);
     }
     if (value === "degraded") {
       return needsAttention(
         `${label} is degraded.`,
-        "Run koed-server doctor --json for details."
+        actionFor(service, "Run koed-server doctor --json for details."),
+        check?.details
       );
     }
     if (value === "error") {
       return needsAttention(
-        `${label} is unavailable.`,
-        "Run koed-server start or inspect Koed logs."
+        `${label} is unavailable or incompatible.`,
+        actionFor(service, "Run koed-server start or inspect Koed logs."),
+        check?.details
       );
     }
     return starting(`${label} status is not available yet.`);
   };
+  const aggregateComponent = (
+    services: Array<[string, string]>,
+    healthyMessage: string
+  ): KoedServerComponentStatus => {
+    const components = services.map(([service, label]) =>
+      component(service, label)
+    );
+    const state = aggregateState(components);
+    if (state === "healthy") {
+      return healthy(healthyMessage, {
+        checks: services
+          .map(([service]) => serviceCheck(service))
+          .filter((check): check is NonNullable<typeof check> => Boolean(check))
+      });
+    }
+    return components.find((entry) => entry.state === state) ?? components[0]!;
+  };
 
   return {
-    api: healthy(undefined, { readyUrl }),
-    database: component("postgres", "Database"),
+    api: response.ok
+      ? healthy(undefined, { readyUrl })
+      : starting("API is reachable but readiness checks have not passed.", {
+          readyUrl,
+          httpStatus: response.status
+        }),
+    database: aggregateComponent(
+      [
+        ["postgres", "Database"],
+        ["postgres-version", "Postgres version"],
+        ["migrations", "Database migrations"],
+        ["pgvector", "pgvector"]
+      ],
+      "Database, migrations, Postgres version, and pgvector are ready."
+    ),
     redis: component("redis", "Redis"),
-    embeddingService: component("embedding-service", "Embedding Service")
+    workerQueues: component("work-queue", "Work queue"),
+    embeddingService: aggregateComponent(
+      [
+        ["embedding-service", "Embedding Service"],
+        ["embedding-model", "Embedding model"]
+      ],
+      "Embedding Service model and dimensions are ready."
+    )
   };
 };
 
-export const dockerComposePs = (
-  paths: KoedServerPaths,
-  spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike
-): KoedServerComponentStatus => {
-  const result = spawnSync("docker", ["compose", "ps", "--format", "json"], {
-    cwd: paths.repoRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  if (result.error) {
-    return needsAttention(
-      `Could not run docker compose: ${result.error.message}`,
-      "Install/start Docker Desktop, then run koed-server start."
-    );
-  }
-  if (result.status !== 0 && result.stderr.includes("unknown flag")) {
-    const servicesResult = spawnSync(
-      "docker",
-      ["compose", "ps", "--services", "--filter", "status=running"],
-      {
-        cwd: paths.repoRoot,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"]
-      }
-    );
-    if (servicesResult.status === 0) {
-      const runningServices = new Set(
-        servicesResult.stdout
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean)
-      );
-      return runningServices.has("redis")
-        ? healthy(undefined, {
-            services: [{ Service: "redis", State: "running" }]
-          })
-        : starting("Redis queue dependency has not started yet.", {
-            missing: ["redis"],
-            services: [...runningServices]
-          });
-    }
-  }
-  if (result.status !== 0) {
-    return needsAttention(
-      `docker compose ps failed: ${result.stderr.trim() || "unknown error"}`,
-      "Start Docker Desktop, then run koed-server start."
-    );
-  }
-
-  const lines = result.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const services = lines.flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line) as {
-        Service?: string;
-        State?: string;
-        Health?: string;
-      };
-      return [parsed];
-    } catch {
-      return [];
-    }
-  });
-  const redisService = services.find((service) => service.Service === "redis");
-  if (!redisService) {
-    return starting("Redis queue dependency has not started yet.", {
-      missing: ["redis"],
-      services
-    });
-  }
-  if (redisService.State !== "running") {
-    return needsAttention(
-      "Redis queue dependency is not running.",
-      "Run koed-server start.",
-      { services: [redisService] }
-    );
-  }
-  return healthy(undefined, { services: [redisService] });
-};
+const koedServerConfigEnvironment = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): NodeJS.ProcessEnv => ({
+  ...environment,
+  KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? repoEnv.KOED_RUNTIME_MODE,
+  KOED_DEPENDENCY_MODE:
+    environment.KOED_DEPENDENCY_MODE ?? repoEnv.KOED_DEPENDENCY_MODE,
+  KOED_EXTERNAL_DATABASE_URL:
+    environment.KOED_EXTERNAL_DATABASE_URL ??
+    repoEnv.KOED_EXTERNAL_DATABASE_URL,
+  KOED_EXTERNAL_REDIS_URL:
+    environment.KOED_EXTERNAL_REDIS_URL ?? repoEnv.KOED_EXTERNAL_REDIS_URL,
+  KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
+    environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
+    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL
+});
 
 const inspectApiToken = (
   environment: NodeJS.ProcessEnv,
@@ -406,6 +433,61 @@ const inspectMcp = (
   );
 };
 
+const inspectExplorer = async (
+  explorerUrl: string,
+  runtime: KoedServerRuntimeState | null,
+  runtimeProcessRunning: boolean,
+  explorerCredentialConfigured: boolean,
+  deps: Required<KoedServerStatusDependencies>
+): Promise<KoedServerComponentStatus> => {
+  const explorerPid = runtime?.processes?.explorer;
+  const details = {
+    appCredentialProvisioned: explorerCredentialConfigured,
+    explorerPid: explorerPid ?? null
+  };
+  if (!runtimeProcessRunning) {
+    return starting(
+      "Koed server supervisor is not currently running.",
+      details
+    );
+  }
+  if (!explorerPid) {
+    return needsAttention(
+      "Explorer process is not recorded in koed-server runtime state.",
+      "Restart koed-server or inspect Koed logs.",
+      details
+    );
+  }
+  if (!deps.checkPid(explorerPid)) {
+    return needsAttention(
+      "Explorer process is not running.",
+      "Run koed-server restart --json or inspect Koed logs.",
+      details
+    );
+  }
+
+  try {
+    const response = await deps.fetch(explorerUrl);
+    if (response.ok) {
+      return healthy("Explorer is reachable through the Koed local service.", {
+        ...details,
+        httpStatus: response.status
+      });
+    }
+    return needsAttention(
+      `Explorer is not reachable at ${explorerUrl} (HTTP ${response.status}).`,
+      "Run koed-server restart --json or inspect Explorer logs.",
+      { ...details, httpStatus: response.status }
+    );
+  } catch (error) {
+    return needsAttention(
+      `Explorer is not reachable at ${explorerUrl} (${error instanceof Error ? error.message : String(error)}).`,
+      "Run koed-server restart --json or inspect Explorer logs.",
+      details
+    );
+  }
+};
+
 const inspectLastVerification = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
@@ -458,10 +540,14 @@ export const collectKoedServerStatus = async (
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   const repoEnv = loadRepoEnv(paths.repoRoot);
-  const serverConfig = resolveKoedServerConfig(paths, environment, {
-    existsSync: deps.existsSync,
-    readFileSync: deps.readFileSync
-  });
+  const serverConfig = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(environment, repoEnv),
+    {
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync
+    }
+  );
   const apiUrl = resolveApiUrl(environment, repoEnv);
   const explorerUrl = resolveExplorerUrl(environment, repoEnv);
   const runtime = readJsonFile<KoedServerRuntimeState>(
@@ -472,6 +558,9 @@ export const collectKoedServerStatus = async (
   const apiReady = await statusFromApiReady(apiUrl, deps.fetch, {
     dependencyMode: serverConfig.dependencyMode
   });
+  const serviceEnvironment = { ...repoEnv, ...environment };
+  const useBundledLocalDependencies =
+    serverConfig.dependencyMode === "bundled-local";
   const apiToken = inspectApiToken(environment, repoEnv);
   const codex = inspectCodex(environment, deps);
   const captureHook = inspectCaptureHook(environment, deps);
@@ -480,15 +569,52 @@ export const collectKoedServerStatus = async (
     serverConfig.external?.redisUrl ??
     environment.REDIS_URL ??
     repoEnv.REDIS_URL;
+  const queueBackend = resolveEffectiveWorkQueueBackend(
+    serverConfig.dependencyMode,
+    environment,
+    repoEnv
+  );
+  const localQueueRedisBypass = healthy(
+    "Postgres-backed local queue does not require Redis.",
+    { backend: queueBackend }
+  );
+  const localQueueStatus =
+    apiReady.workerQueues.state === "healthy"
+      ? healthy("Postgres-backed local queue is ready.", {
+          backend: queueBackend,
+          readiness: apiReady.workerQueues.details
+        })
+      : apiReady.workerQueues;
+  const redisStatus =
+    queueBackend === "local"
+      ? apiReady.redis.state === "starting"
+        ? localQueueRedisBypass
+        : apiReady.redis
+      : apiReady.redis;
+  const databaseStatus =
+    useBundledLocalDependencies && apiReady.database.state === "starting"
+      ? collectLocalPostgresRuntimeStatus(paths, serviceEnvironment, {
+          existsSync: deps.existsSync,
+          spawnSync: deps.spawnSync
+        })
+      : apiReady.database;
+  const embeddingStatus =
+    useBundledLocalDependencies &&
+    apiReady.embeddingService.state === "starting"
+      ? await collectLocalEmbeddingRuntimeStatus(paths, serviceEnvironment, {
+          existsSync: deps.existsSync,
+          fetch: deps.fetch
+        })
+      : apiReady.embeddingService;
   const queueDependency =
-    serverConfig.dependencyMode === "external"
-      ? externalRedisUrl
+    queueBackend === "local"
+      ? localQueueStatus
+      : externalRedisUrl
         ? apiReady.redis
         : needsAttention(
-            "External dependency mode requires an Operator-managed Redis URL for BullMQ queues.",
-            "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL."
-          )
-      : dockerComposePs(paths, deps.spawnSync);
+            `${serverConfig.dependencyMode === "external" ? "External dependency mode" : "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq"} requires an Operator-managed Redis URL for BullMQ queues.`,
+            "Set external.redisUrl in KOED_HOME/config/server.json or set REDIS_URL, or set WORK_QUEUE_BACKEND=local."
+          );
   const workerPid = runtime?.processes?.worker;
   const workerRunning = workerPid ? deps.checkPid(workerPid) : false;
   const workerQueues =
@@ -517,13 +643,13 @@ export const collectKoedServerStatus = async (
           );
   const lastVerification = inspectLastVerification(paths, deps);
   const explorerCredential = loadExplorerCredential(paths);
-  const explorer = runtimeProcessRunning
-    ? healthy("Explorer is available through the Koed local service.", {
-        appCredentialProvisioned: Boolean(explorerCredential)
-      })
-    : starting("Koed server supervisor is not currently running.", {
-        appCredentialProvisioned: Boolean(explorerCredential)
-      });
+  const explorer = await inspectExplorer(
+    explorerUrl,
+    runtime,
+    runtimeProcessRunning,
+    Boolean(explorerCredential),
+    deps
+  );
   const statusWithoutState = {
     ok: false,
     state: "starting" as KoedServerComponentState,
@@ -532,13 +658,10 @@ export const collectKoedServerStatus = async (
     runtimeMode: serverConfig.runtimeMode,
     dependencyMode: serverConfig.dependencyMode,
     api: { ...apiReady.api, url: apiUrl },
-    database: apiReady.database,
-    redis:
-      serverConfig.dependencyMode === "external"
-        ? queueDependency
-        : apiReady.redis,
+    database: databaseStatus,
+    redis: redisStatus,
     workerQueues,
-    embeddingService: apiReady.embeddingService,
+    embeddingService: embeddingStatus,
     apiToken,
     mcpServer,
     captureHook,

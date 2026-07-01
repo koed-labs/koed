@@ -6,6 +6,7 @@ export {
   graphUpdateActionForPayload,
   shouldIgnoreGraphStreamPayload
 } from "./graph-stream.js";
+export { createMemoryJobQueue } from "./queue.js";
 export { createMemoryJobScheduler } from "./jobs.js";
 export { registerLocalAgentSettingsRoutes } from "./local-agent-settings-routes.js";
 export { registerLcmRoutes } from "./lcm-routes.js";

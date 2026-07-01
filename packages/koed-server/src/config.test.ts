@@ -18,6 +18,11 @@ const paths = (root: string): KoedServerPaths => ({
   logsDir: resolve(root, "logs"),
   runDir: resolve(root, "run"),
   dataDir: resolve(root, "data"),
+  modelsDir: resolve(root, "models"),
+  cacheDir: resolve(root, "cache"),
+  postgresDataDir: resolve(root, "data/postgres"),
+  postgresRunDir: resolve(root, "run/postgres"),
+  postgresLogPath: resolve(root, "logs/postgres.log"),
   runtimeStatePath: resolve(root, "run/koed-server.json"),
   lastVerificationPath: resolve(root, "run/last-verification.json"),
   serverConfigPath: resolve(root, "config/server.json"),
@@ -39,6 +44,24 @@ describe("koed-server config", () => {
       runtimeMode: "developer",
       dependencyMode: "external"
     });
+  });
+
+  it("accepts bundled-local dependency mode from file and environment", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ dependencyMode: "bundled-local" })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      dependencyMode: "bundled-local"
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        KOED_DEPENDENCY_MODE: "external"
+      })
+    ).toMatchObject({ dependencyMode: "external" });
   });
 
   it("loads server config and lets environment override it", () => {

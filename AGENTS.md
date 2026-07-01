@@ -14,7 +14,7 @@ Fresh-clone bootstrap should assume Docker Desktop (or another running Docker da
 
 ```bash
 pnpm env:setup
-docker compose up -d --build
+docker compose -f examples/docker-compose/docker-compose.yml up -d --build
 pnpm desktop:start
 ```
 

@@ -4,20 +4,27 @@ import {
   type ChildProcess,
   type SpawnSyncReturns
 } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { resolveKoedServerConfig } from "./config.js";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
   resolveLocalApiToken,
   writeExplorerCredential
 } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { startLocalEmbeddingRuntime } from "./local-embedding-runtime.js";
+import { resolveLocalModelManifest } from "./local-models-runtime.js";
+import {
+  startLocalPostgresRuntime,
+  stopLocalPostgresRuntime
+} from "./local-postgres-runtime.js";
 import {
   ensureKoedHome,
   resolveKoedServerPaths,
   type KoedServerPaths
 } from "./paths.js";
 import { collectKoedServerStatus } from "./status.js";
+import { stopKoedServer } from "./stop.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 type SpawnSyncLike = (
@@ -70,11 +77,12 @@ const spawnManagedProcess = (
   command: string,
   args: string[],
   environment: NodeJS.ProcessEnv,
-  spawn: SpawnLike
+  spawn: SpawnLike,
+  cwd = paths.repoRoot
 ): ChildProcess => {
   console.log(`> Start ${label}`);
   const child = spawn(command, args, {
-    cwd: paths.repoRoot,
+    cwd,
     env: environment,
     stdio: "inherit"
   });
@@ -102,13 +110,70 @@ const waitForHealthyOrReady = async ({
     if (
       lastStatus.api.state === "healthy" &&
       lastStatus.database.state === "healthy" &&
-      lastStatus.redis.state === "healthy"
+      lastStatus.redis.state === "healthy" &&
+      lastStatus.embeddingService.state === "healthy"
     ) {
       return lastStatus;
     }
     await new Promise((resolvePoll) => setTimeout(resolvePoll, pollIntervalMs));
   }
   return lastStatus;
+};
+
+const resolveWorkQueueBackend = (
+  value: string | undefined
+): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
+
+const resolveEffectiveWorkQueueBackend = (
+  config: KoedServerConfig,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): "bullmq" | "local" => {
+  if (environment.WORK_QUEUE_BACKEND) {
+    return resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND);
+  }
+  if (config.dependencyMode === "bundled-local") {
+    return "local";
+  }
+  return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+};
+
+const koedServerConfigEnvironment = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): NodeJS.ProcessEnv => ({
+  ...environment,
+  KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? repoEnv.KOED_RUNTIME_MODE,
+  KOED_DEPENDENCY_MODE:
+    environment.KOED_DEPENDENCY_MODE ?? repoEnv.KOED_DEPENDENCY_MODE,
+  KOED_EXTERNAL_DATABASE_URL:
+    environment.KOED_EXTERNAL_DATABASE_URL ??
+    repoEnv.KOED_EXTERNAL_DATABASE_URL,
+  KOED_EXTERNAL_REDIS_URL:
+    environment.KOED_EXTERNAL_REDIS_URL ?? repoEnv.KOED_EXTERNAL_REDIS_URL,
+  KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
+    environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
+    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL
+});
+
+const bundledLocalDatabaseUrl = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): string => {
+  const user = environment.POSTGRES_USER ?? repoEnv.POSTGRES_USER ?? "koed";
+  const password =
+    environment.POSTGRES_PASSWORD ??
+    repoEnv.POSTGRES_PASSWORD ??
+    environment.KOED_BUNDLED_POSTGRES_PASSWORD ??
+    "koed-local-postgres";
+  const database = environment.POSTGRES_DB ?? repoEnv.POSTGRES_DB ?? "koed";
+  const host = environment.KOED_POSTGRES_HOST ?? "127.0.0.1";
+  const port =
+    environment.KOED_POSTGRES_PORT ??
+    environment.POSTGRES_HOST_PORT ??
+    repoEnv.POSTGRES_HOST_PORT ??
+    "15432";
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
 };
 
 const localServiceEnv = (
@@ -118,15 +183,44 @@ const localServiceEnv = (
   paths: KoedServerPaths
 ): NodeJS.ProcessEnv => {
   const apiPort = environment.API_HOST_PORT ?? repoEnv.API_HOST_PORT ?? "3300";
-  const redisPort =
-    environment.REDIS_HOST_PORT ?? repoEnv.REDIS_HOST_PORT ?? "16379";
   const embeddingPort =
     environment.EMBEDDING_SERVICE_HOST_PORT ??
     repoEnv.EMBEDDING_SERVICE_HOST_PORT ??
     "3800";
-  const redisUrl = `redis://localhost:${redisPort}`;
   const embeddingServiceUrl = `http://localhost:${embeddingPort}`;
-  const serverConfig = resolveKoedServerConfig(paths, environment);
+  const serverConfig = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(environment, repoEnv)
+  );
+  const queueBackend = resolveEffectiveWorkQueueBackend(
+    serverConfig,
+    environment,
+    repoEnv
+  );
+  const modelEnvironment = { ...repoEnv, ...environment };
+  const embeddingModel = resolveLocalModelManifest(
+    paths,
+    "embedding",
+    modelEnvironment
+  );
+  const rerankerModel = resolveLocalModelManifest(
+    paths,
+    "reranker",
+    modelEnvironment
+  );
+  const installedModelPaths = [
+    embeddingModel.modelPath,
+    rerankerModel.modelPath
+  ].filter((modelPath) => existsSync(modelPath));
+  const localEmbeddingModelPath = existsSync(embeddingModel.modelPath)
+    ? embeddingModel.modelPath
+    : undefined;
+  const localRerankerModelPath = existsSync(rerankerModel.modelPath)
+    ? rerankerModel.modelPath
+    : undefined;
+  const modelsDir = installedModelPaths[0]
+    ? dirname(installedModelPaths[0])
+    : paths.modelsDir;
   return {
     ...process.env,
     ...repoEnv,
@@ -134,6 +228,8 @@ const localServiceEnv = (
     ...environment,
     NODE_ENV: repoEnv.API_NODE_ENV ?? environment.NODE_ENV ?? "production",
     LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
+    WORK_QUEUE_BACKEND: queueBackend,
+    KOED_MODELS_DIR: modelsDir,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
     API_PORT: apiPort,
     DATABASE_URL:
@@ -141,13 +237,11 @@ const localServiceEnv = (
         ? (serverConfig.external?.databaseUrl ??
           environment.DATABASE_URL ??
           repoEnv.DATABASE_URL)
-        : (repoEnv.DATABASE_URL ?? environment.DATABASE_URL),
+        : bundledLocalDatabaseUrl(environment, repoEnv),
     REDIS_URL:
-      serverConfig.dependencyMode === "external"
-        ? (serverConfig.external?.redisUrl ??
-          environment.REDIS_URL ??
-          repoEnv.REDIS_URL)
-        : (environment.REDIS_URL ?? repoEnv.REDIS_URL ?? redisUrl),
+      serverConfig.external?.redisUrl ??
+      environment.REDIS_URL ??
+      repoEnv.REDIS_URL,
     RATE_LIMIT_REDIS_URL: repoEnv.API_RATE_LIMIT_REDIS_URL ?? "",
     CACHE_REDIS_URL: repoEnv.API_CACHE_REDIS_URL ?? "",
     DATA_ENCRYPTION_KEY:
@@ -163,13 +257,160 @@ const localServiceEnv = (
           embeddingServiceUrl),
     EMBEDDING_SERVICE_TOKEN:
       repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
-    EMBEDDING_MODEL: repoEnv.EMBEDDING_MODEL_KEY ?? environment.EMBEDDING_MODEL,
-    RERANKER_KEY: repoEnv.EMBEDDING_RERANKER_KEY ?? environment.RERANKER_KEY,
+    EMBEDDING_MODEL:
+      repoEnv.EMBEDDING_MODEL_KEY ??
+      environment.EMBEDDING_MODEL_KEY ??
+      environment.EMBEDDING_MODEL,
+    MODEL_KEY:
+      repoEnv.EMBEDDING_MODEL_KEY ??
+      environment.EMBEDDING_MODEL_KEY ??
+      environment.MODEL_KEY ??
+      environment.EMBEDDING_MODEL,
+    EMBEDDING_MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local"
+        ? localEmbeddingModelPath
+        : environment.EMBEDDING_MODEL_PATH,
+    MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local"
+        ? localEmbeddingModelPath
+        : (environment.EMBEDDING_MODEL_PATH ?? environment.MODEL_PATH),
+    RERANKER_KEY:
+      repoEnv.EMBEDDING_RERANKER_KEY ??
+      environment.EMBEDDING_RERANKER_KEY ??
+      environment.RERANKER_KEY,
+    EMBEDDING_RERANKER_MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local"
+        ? localRerankerModelPath
+        : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
+          environment.EMBEDDING_RERANKER_MODEL_PATH),
+    RERANKER_MODEL_PATH:
+      serverConfig.dependencyMode === "bundled-local"
+        ? localRerankerModelPath
+        : (repoEnv.EMBEDDING_RERANKER_MODEL_PATH ??
+          environment.EMBEDDING_RERANKER_MODEL_PATH ??
+          repoEnv.RERANKER_MODEL_PATH ??
+          environment.RERANKER_MODEL_PATH),
+    LLAMA_SERVER_BINARY:
+      environment.LLAMA_SERVER_BINARY ??
+      repoEnv.EMBEDDING_LLAMA_SERVER_BINARY ??
+      environment.EMBEDDING_LLAMA_SERVER_BINARY,
+    LLAMA_N_CTX:
+      repoEnv.EMBEDDING_LLAMA_N_CTX ??
+      environment.EMBEDDING_LLAMA_N_CTX ??
+      environment.LLAMA_N_CTX,
+    LLAMA_N_THREADS:
+      repoEnv.EMBEDDING_LLAMA_N_THREADS ??
+      environment.EMBEDDING_LLAMA_N_THREADS ??
+      environment.LLAMA_N_THREADS,
+    LLAMA_N_BATCH:
+      repoEnv.EMBEDDING_LLAMA_N_BATCH ??
+      environment.EMBEDDING_LLAMA_N_BATCH ??
+      environment.LLAMA_N_BATCH,
+    LLAMA_BATCH_TOKEN_HEADROOM:
+      repoEnv.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM ??
+      environment.EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM ??
+      environment.LLAMA_BATCH_TOKEN_HEADROOM,
+    LLAMA_N_UBATCH:
+      repoEnv.EMBEDDING_LLAMA_N_UBATCH ??
+      environment.EMBEDDING_LLAMA_N_UBATCH ??
+      environment.LLAMA_N_UBATCH,
+    LLAMA_PARALLEL:
+      repoEnv.EMBEDDING_LLAMA_PARALLEL ??
+      environment.EMBEDDING_LLAMA_PARALLEL ??
+      environment.LLAMA_PARALLEL,
+    LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS:
+      repoEnv.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
+      environment.EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS ??
+      environment.LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS,
+    LLAMA_EMBEDDING_SERVER_PORT:
+      repoEnv.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
+      environment.EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT ??
+      environment.LLAMA_EMBEDDING_SERVER_PORT,
+    RERANKER_BATCH_LIMIT:
+      repoEnv.EMBEDDING_RERANKER_BATCH_LIMIT ??
+      environment.EMBEDDING_RERANKER_BATCH_LIMIT ??
+      environment.RERANKER_BATCH_LIMIT,
+    RERANKER_CONTEXT_PER_SLOT:
+      repoEnv.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
+      environment.EMBEDDING_RERANKER_CONTEXT_PER_SLOT ??
+      environment.RERANKER_CONTEXT_PER_SLOT,
+    LLAMA_RERANKER_SERVER_PORT:
+      repoEnv.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
+      environment.EMBEDDING_LLAMA_RERANKER_SERVER_PORT ??
+      environment.LLAMA_RERANKER_SERVER_PORT,
+    RERANKER_LLAMA_N_CTX:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_CTX ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_CTX ??
+      environment.RERANKER_LLAMA_N_CTX,
+    RERANKER_LLAMA_N_THREADS:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_THREADS ??
+      environment.RERANKER_LLAMA_N_THREADS,
+    RERANKER_LLAMA_N_BATCH:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_BATCH ??
+      environment.RERANKER_LLAMA_N_BATCH,
+    RERANKER_LLAMA_N_UBATCH:
+      repoEnv.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
+      environment.EMBEDDING_RERANKER_LLAMA_N_UBATCH ??
+      environment.RERANKER_LLAMA_N_UBATCH,
+    RERANKER_PARALLEL:
+      repoEnv.EMBEDDING_RERANKER_PARALLEL ??
+      environment.EMBEDDING_RERANKER_PARALLEL ??
+      environment.RERANKER_PARALLEL,
+    RERANKER_PROMPT_CACHE_ENABLED:
+      repoEnv.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
+      environment.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
+      environment.RERANKER_PROMPT_CACHE_ENABLED,
     CORS_ORIGINS: repoEnv.API_CORS_ORIGINS ?? environment.CORS_ORIGINS,
     COOKIE_SECURE: repoEnv.API_COOKIE_SECURE ?? environment.COOKIE_SECURE,
     EXPLORER_API_BASE_URL: resolveApiUrl(environment, repoEnv),
     VITE_KOED_API_BASE_URL: resolveApiUrl(environment, repoEnv)
   };
+};
+
+const sleepSync = (ms: number): void => {
+  if (ms <= 0) return;
+  const buffer = new SharedArrayBuffer(4);
+  const view = new Int32Array(buffer);
+  Atomics.wait(view, 0, 0, ms);
+};
+
+const processRunning = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const stopChildProcessSync = (child: ChildProcess | undefined): void => {
+  if (!child?.pid || child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  const deadline = Date.now() + 5_000;
+  while (
+    child.exitCode === null &&
+    processRunning(child.pid) &&
+    Date.now() < deadline
+  ) {
+    sleepSync(100);
+  }
+  if (child.exitCode !== null || !processRunning(child.pid)) return;
+  child.kill("SIGKILL");
+  const killDeadline = Date.now() + 5_000;
+  while (
+    child.exitCode === null &&
+    processRunning(child.pid) &&
+    Date.now() < killDeadline
+  ) {
+    sleepSync(100);
+  }
+  if (child.exitCode === null && processRunning(child.pid)) {
+    throw new Error(
+      `Timed out stopping native Embedding Service process ${child.pid}.`
+    );
+  }
 };
 
 export const startKoedServer = async ({
@@ -193,15 +434,22 @@ export const startKoedServer = async ({
       source: apiToken.source
     });
   }
-  const apiUrl = resolveApiUrl(environment, repoEnv);
-  const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const config = resolveKoedServerConfig(paths, environment);
-  const dependencyServices =
-    config.dependencyMode === "external"
-      ? []
-      : ["postgres", "redis", "embedding-service"];
+  const config = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(environment, repoEnv)
+  );
+  const initialServiceEnv = localServiceEnv(
+    environment,
+    repoEnv,
+    apiToken,
+    paths
+  );
+  const useBundledLocalDependencies = config.dependencyMode === "bundled-local";
+  const runtimeServices = useBundledLocalDependencies
+    ? ["postgres-native", "embedding-service-native"]
+    : [];
   const appServices = ["api", "worker", "explorer"];
-  const childEnv = localServiceEnv(environment, repoEnv, apiToken, paths);
+  const childEnv = initialServiceEnv;
 
   runCommand(
     paths,
@@ -227,172 +475,268 @@ export const startKoedServer = async ({
     refreshedApiToken,
     paths
   );
+  const apiUrl = resolveApiUrl(environment, refreshedRepoEnv);
+  const explorerUrl = resolveExplorerUrl(environment, refreshedRepoEnv);
 
-  if (config.dependencyMode === "external") {
-    const missing = [
-      ["DATABASE_URL", refreshedEnv.DATABASE_URL],
-      ["REDIS_URL", refreshedEnv.REDIS_URL],
-      ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
-    ].flatMap(([name, value]) => (String(value ?? "").trim() ? [] : [name]));
-    if (missing.length > 0) {
-      throw new Error(
-        `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`
+  let startedNativePostgres = false;
+  let nativeEmbeddingProcess: ChildProcess | undefined;
+  const cleanupStartedResources = () => {
+    const cleanupErrors: string[] = [];
+    try {
+      stopChildProcessSync(nativeEmbeddingProcess);
+    } catch (error) {
+      cleanupErrors.push(
+        error instanceof Error ? error.message : String(error)
       );
     }
-  }
-
-  if (config.dependencyMode !== "external") {
-    runCommand(
-      paths,
-      "Start Koed container dependencies",
-      "docker",
-      [
-        "compose",
-        "up",
-        "-d",
-        "--build",
-        "--remove-orphans",
-        ...dependencyServices
-      ],
-      refreshedEnv,
-      spawnSync
-    );
-  }
-  runCommand(
-    paths,
-    "Build Koed server apps",
-    "pnpm",
-    [
-      "--filter",
-      "@koed/api",
-      "--filter",
-      "@koed/worker",
-      "--filter",
-      "@koed/explorer",
-      "build"
-    ],
-    refreshedEnv,
-    spawnSync
-  );
-
-  const children = {
-    api: spawnManagedProcess(
-      paths,
-      "API",
-      "pnpm",
-      ["--filter", "@koed/api", "start"],
-      refreshedEnv,
-      spawn
-    ),
-    worker: spawnManagedProcess(
-      paths,
-      "Worker",
-      "pnpm",
-      ["--filter", "@koed/worker", "start"],
-      refreshedEnv,
-      spawn
-    ),
-    explorer: spawnManagedProcess(
-      paths,
-      "Explorer",
-      "pnpm",
-      [
-        "--filter",
-        "@koed/explorer",
-        "exec",
-        "vite",
-        "preview",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        refreshedRepoEnv.EXPLORER_WEB_HOST_PORT ??
-          environment.EXPLORER_WEB_HOST_PORT ??
-          "5174"
-      ],
-      refreshedEnv,
-      spawn
-    )
-  };
-
-  const runtime: KoedServerRuntimeState = {
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    repoRoot: paths.repoRoot,
-    apiUrl,
-    explorerUrl,
-    runtimeMode: config.runtimeMode,
-    dependencyMode: config.dependencyMode,
-    services: [...dependencyServices, ...appServices],
-    processes: {
-      api: children.api.pid ?? 0,
-      worker: children.worker.pid ?? 0,
-      explorer: children.explorer.pid ?? 0
+    if (startedNativePostgres) {
+      const stopped = stopLocalPostgresRuntime(paths, refreshedEnv, {
+        spawnSync
+      });
+      if (!stopped.ok) {
+        cleanupErrors.push(stopped.error ?? stopped.message);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new Error(cleanupErrors.join("; "));
     }
   };
-  writeFileSync(
-    paths.runtimeStatePath,
-    `${JSON.stringify(runtime, null, 2)}\n`,
-    {
-      mode: 0o600
-    }
-  );
-
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        state: "starting",
-        koedHome: paths.koedHome,
-        apiUrl,
-        explorerUrl,
-        services: runtime.services
-      },
-      null,
-      2
-    )
-  );
-
-  const status = await waitForHealthyOrReady({
-    environment: refreshedEnv,
-    timeoutMs,
-    pollIntervalMs,
-    collectStatus
-  });
-  console.log(
-    JSON.stringify(
-      {
-        ok: status.api.state === "healthy",
-        state: status.state,
-        api: status.api,
-        database: status.database,
-        redis: status.redis
-      },
-      null,
-      2
-    )
-  );
-  console.log(
-    "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
-  );
-
   const shutdown = () => {
-    for (const child of Object.values(children)) {
-      child.kill("SIGTERM");
+    stopKoedServer({ environment: refreshedEnv, spawnSync });
+    try {
+      cleanupStartedResources();
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
     }
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const exits = new Set<string>();
-    for (const [name, child] of Object.entries(children)) {
-      child.on("exit", () => {
-        exits.add(name);
-        if (exits.size === Object.keys(children).length) {
-          resolvePromise();
-        }
-      });
-      child.on("error", rejectPromise);
+
+  try {
+    if (config.dependencyMode === "external") {
+      const queueBackend = resolveWorkQueueBackend(
+        refreshedEnv.WORK_QUEUE_BACKEND
+      );
+      const requiredExternalServices: Array<[string, string | undefined]> = [
+        ["DATABASE_URL", refreshedEnv.DATABASE_URL],
+        ...(queueBackend === "bullmq"
+          ? [
+              ["REDIS_URL", refreshedEnv.REDIS_URL] as [
+                string,
+                string | undefined
+              ]
+            ]
+          : []),
+        ["EMBEDDING_SERVICE_URL", refreshedEnv.EMBEDDING_SERVICE_URL]
+      ];
+      const missing = requiredExternalServices.flatMap(([name, value]) =>
+        value?.trim() ? [] : [name]
+      );
+      if (missing.length > 0) {
+        throw new Error(
+          `External dependency mode requires Operator-managed service configuration: ${missing.join(", ")}. Set values in KOED_HOME/config/server.json or environment.`
+        );
+      }
+    } else {
+      const queueBackend = resolveWorkQueueBackend(
+        refreshedEnv.WORK_QUEUE_BACKEND
+      );
+      if (queueBackend === "bullmq" && !refreshedEnv.REDIS_URL?.trim()) {
+        throw new Error(
+          "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL. Set REDIS_URL or use WORK_QUEUE_BACKEND=local."
+        );
+      }
     }
-  });
+
+    if (useBundledLocalDependencies) {
+      const result = startLocalPostgresRuntime(paths, refreshedEnv, {
+        spawnSync
+      });
+      Object.assign(refreshedEnv, result.env);
+      if (!result.ok) {
+        startedNativePostgres = result.status.state !== "not_configured";
+        throw new Error(
+          `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+        );
+      }
+      startedNativePostgres = true;
+    }
+
+    if (useBundledLocalDependencies) {
+      const result = startLocalEmbeddingRuntime(paths, refreshedEnv, {
+        spawn
+      });
+      Object.assign(refreshedEnv, result.env);
+      nativeEmbeddingProcess = result.process;
+      if (!result.ok) {
+        throw new Error(
+          `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
+        );
+      }
+    }
+
+    runCommand(
+      paths,
+      "Build Koed server apps",
+      "pnpm",
+      [
+        "--filter",
+        "@koed/api",
+        "--filter",
+        "@koed/worker",
+        "--filter",
+        "@koed/explorer",
+        "build"
+      ],
+      refreshedEnv,
+      spawnSync
+    );
+
+    const explorerPort = (() => {
+      if (environment.EXPLORER_WEB_HOST_PORT) {
+        return environment.EXPLORER_WEB_HOST_PORT;
+      }
+      if (refreshedRepoEnv.EXPLORER_WEB_HOST_PORT) {
+        return refreshedRepoEnv.EXPLORER_WEB_HOST_PORT;
+      }
+      try {
+        return new URL(explorerUrl).port || "5174";
+      } catch {
+        return "5174";
+      }
+    })();
+
+    const children = {
+      ...(nativeEmbeddingProcess
+        ? { embeddingService: nativeEmbeddingProcess }
+        : {}),
+      api: spawnManagedProcess(
+        paths,
+        "API",
+        "pnpm",
+        ["--filter", "@koed/api", "start"],
+        refreshedEnv,
+        spawn
+      ),
+      worker: spawnManagedProcess(
+        paths,
+        "Worker",
+        "pnpm",
+        ["--filter", "@koed/worker", "start"],
+        refreshedEnv,
+        spawn
+      ),
+      explorer: spawnManagedProcess(
+        paths,
+        "Explorer",
+        "pnpm",
+        [
+          "--filter",
+          "@koed/explorer",
+          "exec",
+          "vite",
+          "preview",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          explorerPort
+        ],
+        refreshedEnv,
+        spawn
+      )
+    };
+
+    const runtime: KoedServerRuntimeState = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      repoRoot: paths.repoRoot,
+      apiUrl,
+      explorerUrl,
+      runtimeMode: config.runtimeMode,
+      dependencyMode: config.dependencyMode,
+      services: [...runtimeServices, ...appServices],
+      processes: {
+        ...(nativeEmbeddingProcess
+          ? { embeddingService: nativeEmbeddingProcess.pid ?? 0 }
+          : {}),
+        api: children.api.pid ?? 0,
+        worker: children.worker.pid ?? 0,
+        explorer: children.explorer.pid ?? 0
+      }
+    };
+    writeFileSync(
+      paths.runtimeStatePath,
+      `${JSON.stringify(runtime, null, 2)}\n`,
+      {
+        mode: 0o600
+      }
+    );
+
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          state: "starting",
+          koedHome: paths.koedHome,
+          apiUrl,
+          explorerUrl,
+          services: runtime.services
+        },
+        null,
+        2
+      )
+    );
+
+    const status = await waitForHealthyOrReady({
+      environment: refreshedEnv,
+      timeoutMs,
+      pollIntervalMs,
+      collectStatus
+    });
+    console.log(
+      JSON.stringify(
+        {
+          ok: status.api.state === "healthy",
+          state: status.state,
+          api: status.api,
+          database: status.database,
+          redis: status.redis,
+          embeddingService: status.embeddingService
+        },
+        null,
+        2
+      )
+    );
+    console.log(
+      "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
+    );
+
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const exits = new Set<string>();
+      for (const [name, child] of Object.entries(children)) {
+        child.on("exit", () => {
+          exits.add(name);
+          if (exits.size === Object.keys(children).length) {
+            resolvePromise();
+          }
+        });
+        child.on("error", rejectPromise);
+      }
+    });
+  } catch (error) {
+    try {
+      cleanupStartedResources();
+    } catch (cleanupError) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        { cause: cleanupError }
+      );
+    }
+    throw error;
+  } finally {
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+  }
 };

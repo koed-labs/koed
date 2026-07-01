@@ -1,4 +1,8 @@
-import { resolveRerankerKeyFromEnv } from "@koed/shared";
+import {
+  resolveKoedQueueBackend,
+  type KoedQueueBackend,
+  resolveRerankerKeyFromEnv
+} from "@koed/shared";
 import type { RateLimitName, RateLimitPolicy } from "../infra/rate-limit.js";
 import { parseCsv } from "./utils.js";
 
@@ -10,6 +14,7 @@ export interface ApiServerConfig {
   requestBodyLimitBytes: number;
   databaseUrl?: string;
   redisUrl?: string;
+  queueBackend: KoedQueueBackend;
   apiPort?: string;
   dataEncryptionKeyConfigured: boolean;
   apiTokenPepperConfigured: boolean;
@@ -107,6 +112,7 @@ export const resolveApiServerConfig = (
     ),
     databaseUrl,
     redisUrl,
+    queueBackend: resolveKoedQueueBackend(environment.WORK_QUEUE_BACKEND),
     apiPort: optionalEnv(environment.API_PORT),
     dataEncryptionKeyConfigured: Boolean(
       optionalEnv(environment.DATA_ENCRYPTION_KEY)

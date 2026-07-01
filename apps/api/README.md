@@ -26,7 +26,7 @@ connected AI Client through the MCP Server.
 
 - `src/index.ts`: process entry point.
 - `src/server/build-server.ts`: Fastify app construction, database wiring,
-  Redis queues, rate limits, CORS, cookies, and route registration.
+  work queue adapters, rate limits, CORS, cookies, and route registration.
 - `src/server/config.ts`: API runtime configuration.
 - `src/auth/`: User auth, sessions, and setup/login routes.
 - `src/api-tokens/`: API Token routes and schemas.
@@ -39,6 +39,7 @@ connected AI Client through the MCP Server.
 - `src/memory/graph-routes.ts` and `src/memory/graph-stream.ts`: Explorer graph
   APIs and update stream.
 - `src/memory/jobs.ts`: embedding and LCM compaction job scheduling.
+- `src/memory/queue.ts`: BullMQ and Postgres-backed local queue adapter wiring.
 - `src/infra/`: rate limiting and cache providers.
 
 ## Local Commands
@@ -66,8 +67,7 @@ Operator-facing environment reference, see `docs/configuration.md`.
 Important runtime dependencies:
 
 - Postgres via `DATABASE_URL`.
-- Redis via `REDIS_URL` for job queues and optional shared rate-limit/cache
-  stores.
+- `WORK_QUEUE_BACKEND=bullmq` with Redis via `REDIS_URL`, or `WORK_QUEUE_BACKEND=local` with Postgres-backed `local_work_queue` jobs. Redis can still back optional shared rate-limit/cache stores.
 - The Embedding Service URL and token for recall-time query embeddings and
   reranking.
 - `API_TOKEN_PEPPER` and `DATA_ENCRYPTION_KEY` for auth/token handling.

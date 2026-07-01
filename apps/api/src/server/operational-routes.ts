@@ -3,13 +3,19 @@ import {
   searchMemory,
   type Visibility
 } from "@koed/core";
-import { createDbPool, type MemorySourceRepository } from "@koed/db";
+import {
+  createDbPool,
+  getLatestMigrationTimestamp,
+  inspectDatabaseReadiness,
+  type DbPool,
+  type MemorySourceRepository
+} from "@koed/db";
 import {
   createHealth,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig
+  resolveSupportedRerankerModelConfig,
+  type KoedJobQueue
 } from "@koed/shared";
-import type { Queue } from "bullmq";
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
 import type { ApiRouteContext } from "./context.js";
@@ -18,9 +24,10 @@ import { openApiDocument } from "./openapi.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
 
 interface OperationalRouteOptions {
+  dbPool?: DbPool | null;
   repository: MemorySourceRepository | null;
-  embeddingQueue: Queue | null;
-  compactionQueue: Queue | null;
+  embeddingQueue: KoedJobQueue<unknown> | null;
+  compactionQueue: KoedJobQueue<unknown> | null;
   runCompactionInline(
     repo: MemorySourceRepository,
     requesterContext: { userId: string },
@@ -39,6 +46,7 @@ export const registerOperationalRoutes = (
 ) => {
   const { config, requireRepository, auth } = context;
   const {
+    dbPool,
     repository,
     embeddingQueue,
     compactionQueue,
@@ -67,14 +75,50 @@ export const registerOperationalRoutes = (
 
   const publicHealth = (
     service: string,
-    status: "ok" | "degraded" | "error" = "ok"
-  ) => createHealth(service, status);
+    status: "ok" | "degraded" | "error" = "ok",
+    details?: Record<string, unknown>
+  ) => createHealth(service, status, details);
 
   app.get("/ready", async (_request, reply) => {
     const checks = [publicHealth("api")];
     const repo = repository;
 
-    if (repo) {
+    if (config.databaseUrl && (dbPool || !repo)) {
+      const pool =
+        dbPool ?? createDbPool({ connectionString: config.databaseUrl });
+      try {
+        const readiness = await inspectDatabaseReadiness(pool, {
+          expectedLatestMigrationTimestamp: await getLatestMigrationTimestamp()
+        });
+        checks.push(
+          publicHealth("postgres", readiness.reachable ? "ok" : "error")
+        );
+        checks.push(
+          publicHealth(
+            "postgres-version",
+            readiness.postgresCompatible ? "ok" : "error"
+          )
+        );
+        checks.push(
+          publicHealth(
+            "migrations",
+            readiness.migrationsCurrent ? "ok" : "error"
+          )
+        );
+        checks.push(
+          publicHealth("pgvector", readiness.pgvectorInstalled ? "ok" : "error")
+        );
+      } catch {
+        checks.push(publicHealth("postgres", "error"));
+        checks.push(publicHealth("postgres-version", "error"));
+        checks.push(publicHealth("migrations", "error"));
+        checks.push(publicHealth("pgvector", "error"));
+      } finally {
+        if (!dbPool) {
+          await pool.end();
+        }
+      }
+    } else if (repo) {
       try {
         checks.push(
           publicHealth("postgres", (await repo.health()) ? "ok" : "error")
@@ -82,40 +126,63 @@ export const registerOperationalRoutes = (
       } catch {
         checks.push(publicHealth("postgres", "error"));
       }
-    } else if (config.databaseUrl) {
-      checks.push(publicHealth("postgres", "error"));
     }
 
-    if (config.redisUrl) {
-      const redis = new Redis(config.redisUrl, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1
-      });
-      try {
-        await redis.connect();
-        await redis.ping();
-        checks.push(publicHealth("redis"));
-      } catch {
+    const redisRequired =
+      config.queueBackend === "bullmq" ||
+      config.rateLimit.store === "redis" ||
+      config.cache.store === "redis";
+
+    if (redisRequired) {
+      if (config.redisUrl) {
+        const redis = new Redis(config.redisUrl, {
+          lazyConnect: true,
+          maxRetriesPerRequest: 1
+        });
+        try {
+          await redis.connect();
+          await redis.ping();
+          checks.push(publicHealth("redis"));
+        } catch {
+          checks.push(publicHealth("redis", "error"));
+        } finally {
+          redis.disconnect();
+        }
+      } else {
         checks.push(publicHealth("redis", "error"));
-      } finally {
-        redis.disconnect();
       }
     }
 
     if (repo) {
       try {
         const status = await repo.getLocalEmbeddingStatus();
+        const expected = resolveSupportedEmbeddingModelConfig(
+          config.embeddingModel ?? status.model ?? undefined
+        );
+        const compatible =
+          status.healthy &&
+          status.dimensions === expected.dimensions &&
+          (!status.model || status.model === expected.key);
         checks.push(
           publicHealth("embedding-service", status.healthy ? "ok" : "degraded")
         );
+        checks.push(
+          publicHealth("embedding-model", compatible ? "ok" : "degraded")
+        );
       } catch {
         checks.push(publicHealth("embedding-service", "error"));
+        checks.push(publicHealth("embedding-model", "error"));
       }
     }
 
-    const ready = checks
-      .filter((check) => check.service !== "embedding-service")
-      .every((check) => check.status === "ok");
+    checks.push(
+      publicHealth(
+        "work-queue",
+        config.queueBackend === "local" || config.redisUrl ? "ok" : "error"
+      )
+    );
+
+    const ready = checks.every((check) => check.status === "ok");
     return reply
       .status(ready ? 200 : 503)
       .send({ status: ready ? "ok" : "error", checks });
@@ -179,7 +246,10 @@ export const registerOperationalRoutes = (
             status: config.redisUrl ? "configured" : "not_configured"
           },
           embeddingService: { status: "not_disclosed" },
-          workerQueues: { status: "not_disclosed" }
+          workerQueues: {
+            status: "not_disclosed",
+            backend: config.queueBackend
+          }
         },
         redacted: true
       };
@@ -213,6 +283,7 @@ export const registerOperationalRoutes = (
         },
         embeddingService: embedding,
         workerQueues: {
+          backend: config.queueBackend,
           embedding: embeddingJobs ?? { status: "not_configured" },
           compaction: compactionJobs ?? { status: "not_configured" }
         }
@@ -247,6 +318,7 @@ export const registerOperationalRoutes = (
         apiPort: config.apiPort ?? null,
         databaseConfigured: Boolean(config.databaseUrl),
         redisConfigured: Boolean(config.redisUrl),
+        queueBackend: config.queueBackend,
         dataEncryptionKeyConfigured: config.dataEncryptionKeyConfigured,
         apiTokenPepperConfigured: config.apiTokenPepperConfigured
       },
@@ -269,9 +341,56 @@ export const registerOperationalRoutes = (
     };
   });
 
+  const waitForSmokeQueues = async () => {
+    const readCounts = async (queue: KoedJobQueue<unknown> | null) => {
+      if (!queue) {
+        throw new Error("Smoke test queue is not configured.");
+      }
+      const counts = await queue.getJobCounts(
+        "waiting",
+        "active",
+        "delayed",
+        "failed"
+      );
+      for (const key of ["waiting", "active", "delayed", "failed"]) {
+        if (!Number.isFinite(counts[key])) {
+          throw new Error(`Smoke test queue count missing: ${key}`);
+        }
+      }
+      if ((counts.failed ?? 0) > 0) {
+        throw new Error("Smoke test queue has failed jobs.");
+      }
+      return counts;
+    };
+    let lastCounts = {
+      embedding: await readCounts(embeddingQueue),
+      compaction: await readCounts(compactionQueue)
+    };
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 60_000) {
+      const pending = [lastCounts.embedding, lastCounts.compaction].reduce(
+        (total, counts) =>
+          total +
+          (counts.waiting ?? 0) +
+          (counts.active ?? 0) +
+          (counts.delayed ?? 0),
+        0
+      );
+      if (pending === 0) {
+        return lastCounts;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      lastCounts = {
+        embedding: await readCounts(embeddingQueue),
+        compaction: await readCounts(compactionQueue)
+      };
+    }
+    throw new Error("Timed out waiting for smoke test queues to drain.");
+  };
+
   app.post("/self-host/smoke-test", async (request) => {
     const repo = requireRepository();
-    const user = await auth.authenticateSession(request);
+    const user = await auth.authenticateApiToken(request);
     const requesterContext = { userId: user.id };
     const marker = `koed-self-hosted-console-${Date.now()}`;
     const content = `Koed self-hosted smoke test memory ${marker}. The setup is working.`;
@@ -302,6 +421,7 @@ export const registerOperationalRoutes = (
         ? [enqueueEmbedding("memory_node", compaction.rollupNodeId)]
         : [])
     ]);
+    const queueDrain = await waitForSmokeQueues();
     const search = await searchMemory({
       repository: repo,
       requesterContext,
@@ -318,6 +438,7 @@ export const registerOperationalRoutes = (
       event,
       compaction,
       embeddingJobs,
+      queueDrain,
       recall: {
         hits: search.results.length,
         topHit: search.results[0] ?? null,
