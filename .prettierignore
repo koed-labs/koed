@@ -2,6 +2,7 @@ node_modules
 dist
 apps/desktop/dist-electron
 apps/desktop/dist-types
+apps/desktop/release
 models
 vendor
 coverage
