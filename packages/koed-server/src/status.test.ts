@@ -6,14 +6,11 @@ import {
   aggregateState,
   collectKoedServerDoctor,
   collectKoedServerStatus,
-  dockerComposePs,
   healthy,
   needsAttention,
   notConfigured,
   statusFromApiReady
 } from "./status.js";
-import type { KoedServerPaths } from "./paths.js";
-
 const temps: string[] = [];
 const tempDir = () => {
   const path = mkdtempSync(resolve(tmpdir(), "koed-server-status-"));
@@ -26,21 +23,6 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
 
 const spawnResult = (stdout: string, status = 0) =>
   ({ stdout, stderr: "", status, signal: null, pid: 1, output: [] }) as never;
-
-const paths = (repoRoot: string): KoedServerPaths => ({
-  koedHome: repoRoot,
-  configDir: resolve(repoRoot, "config"),
-  logsDir: resolve(repoRoot, "logs"),
-  runDir: resolve(repoRoot, "run"),
-  dataDir: resolve(repoRoot, "data"),
-  modelsDir: resolve(repoRoot, "models"),
-  cacheDir: resolve(repoRoot, "cache"),
-  runtimeStatePath: resolve(repoRoot, "run", "koed-server.json"),
-  lastVerificationPath: resolve(repoRoot, "run", "last-verification.json"),
-  serverConfigPath: resolve(repoRoot, "config", "server.json"),
-  explorerTokenPath: resolve(repoRoot, "config", "explorer-token.json"),
-  repoRoot
-});
 
 afterEach(() => {
   for (const path of temps.splice(0)) {
@@ -69,8 +51,13 @@ describe("process status/probe mapping", () => {
       response(true, 200, {
         checks: [
           { service: "postgres", status: "ok" },
+          { service: "postgres-version", status: "ok" },
+          { service: "migrations", status: "ok" },
+          { service: "pgvector", status: "ok" },
           { service: "redis", status: "ok" },
-          { service: "embedding-service", status: "ok" }
+          { service: "work-queue", status: "ok" },
+          { service: "embedding-service", status: "ok" },
+          { service: "embedding-model", status: "ok" }
         ]
       })
     );
@@ -79,6 +66,27 @@ describe("process status/probe mapping", () => {
     expect(result.database.state).toBe("healthy");
     expect(result.redis.state).toBe("healthy");
     expect(result.embeddingService.state).toBe("healthy");
+    expect(result.workerQueues.state).toBe("healthy");
+  });
+
+  it("maps 503 readiness details to component actions", async () => {
+    const result = await statusFromApiReady("http://localhost:3300", async () =>
+      response(false, 503, {
+        checks: [
+          { service: "postgres", status: "ok" },
+          { service: "postgres-version", status: "ok" },
+          { service: "migrations", status: "error" },
+          { service: "pgvector", status: "ok" },
+          { service: "work-queue", status: "ok" },
+          { service: "embedding-service", status: "ok" },
+          { service: "embedding-model", status: "ok" }
+        ]
+      })
+    );
+
+    expect(result.api.state).toBe("starting");
+    expect(result.database.state).toBe("needs_attention");
+    expect(result.database.action).toContain("migrations");
   });
 
   it("maps unhealthy dependency checks to needs_attention", async () => {
@@ -90,26 +98,6 @@ describe("process status/probe mapping", () => {
 
     expect(result.database.state).toBe("needs_attention");
     expect(result.redis.state).toBe("starting");
-  });
-
-  it("maps partial compose startup to starting", () => {
-    const status = dockerComposePs(paths(tempDir()), () =>
-      spawnResult('{"Service":"worker","State":"running"}\n')
-    );
-
-    expect(status.state).toBe("starting");
-    expect(status.details?.missing).toEqual(["redis"]);
-  });
-
-  it("checks bundled-local compose scaffolds by expected service", () => {
-    const status = dockerComposePs(
-      paths(tempDir()),
-      () => spawnResult('{"Service":"postgres","State":"running"}\n'),
-      ["postgres", "embedding-service"]
-    );
-
-    expect(status.state).toBe("starting");
-    expect(status.details?.missing).toEqual(["embedding-service"]);
   });
 });
 
@@ -165,7 +153,7 @@ describe("status and doctor JSON contracts", () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
     );
     const status = await collectKoedServerStatus(
       {
@@ -178,7 +166,12 @@ describe("status and doctor JSON contracts", () => {
           response(true, 200, {
             checks: [
               { service: "postgres", status: "ok" },
-              { service: "embedding-service", status: "ok" }
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
             ]
           }),
         spawnSync: () => spawnResult("", 0),
@@ -194,31 +187,98 @@ describe("status and doctor JSON contracts", () => {
     expect(status.workerQueues.state).toBe("starting");
   });
 
-  it("honors bundled-local BullMQ override from .env", async () => {
+  it("uses native Postgres status before API readiness", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_BUNDLED_POSTGRES_MODE: "native",
+        KOED_POSTGRES_BIN_DIR: resolve(root, "bin")
+      },
+      {
+        existsSync: (filePath) =>
+          String(filePath).includes("/bin/") ||
+          String(filePath).endsWith("PG_VERSION"),
+        fetch: async () => response(false, 503, {}),
+        spawnSync: (command, args) =>
+          command.endsWith("pg_ctl") && args.includes("status")
+            ? spawnResult("", 0)
+            : spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.database.state).toBe("healthy");
+    expect(status.database.message).toContain("native Postgres");
+    expect(status.database.details?.dataDir).toBe(
+      resolve(root, "data", "postgres")
+    );
+  });
+
+  it("uses native Embedding Service status before API readiness", async () => {
+    const root = tempDir();
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        KOED_DEPENDENCY_MODE: "bundled-local",
+        KOED_BUNDLED_EMBEDDING_MODE: "native"
+      },
+      {
+        existsSync: (filePath) =>
+          String(filePath).endsWith("app.py") ||
+          String(filePath).endsWith("python") ||
+          String(filePath).endsWith("llama-server"),
+        fetch: async (url) =>
+          String(url).endsWith(":3800/health")
+            ? response(true, 200, { status: "ok" })
+            : response(false, 503, {}),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.embeddingService.state).toBe("healthy");
+    expect(status.embeddingService.message).toContain(
+      "native Embedding Service"
+    );
+    expect(status.embeddingService.details?.healthUrl).toBe(
+      "http://127.0.0.1:3800/health"
+    );
+  });
+
+  it("honors bundled-local BullMQ override from environment", async () => {
     const root = tempDir();
     writeFileSync(
       resolve(root, ".env"),
-      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+      "KOED_DEPENDENCY_MODE=bundled-local\nREDIS_URL=redis://operator:6379\n"
     );
     const status = await collectKoedServerStatus(
       {
         KOED_HOME: root,
         KOED_REPO_ROOT: root,
-        HOME: root
+        HOME: root,
+        WORK_QUEUE_BACKEND: "bullmq"
       },
       {
         fetch: async () =>
           response(true, 200, {
             checks: [
               { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
               { service: "redis", status: "ok" },
-              { service: "embedding-service", status: "ok" }
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
             ]
           }),
-        spawnSync: () =>
-          spawnResult(
-            '{"Service":"postgres","State":"running"}\n{"Service":"redis","State":"running"}\n{"Service":"embedding-service","State":"running"}\n'
-          ),
+        spawnSync: () => spawnResult("", 0),
         now: () => new Date("2026-01-01T00:00:00.000Z")
       }
     );
@@ -266,7 +326,7 @@ describe("status and doctor JSON contracts", () => {
 
     expect(doctor.ok).toBe(false);
     expect(doctor.state).toBe("needs_attention");
-    expect(doctor.summary).toContain("API is not ready");
+    expect(doctor.summary).toContain("Operator-managed Redis URL");
     expect(doctor.checks.map((check) => check.id)).toContain("mcpServer");
   });
 
@@ -300,6 +360,85 @@ describe("status and doctor JSON contracts", () => {
     expect(status.apiToken.configured).toBe(true);
     expect(status.mcpServer.state).toBe("healthy");
     expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBe("env_token");
+  });
+
+  it("verifies Explorer process and reachability", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({ pid: 10, processes: { explorer: 12, worker: 11 } })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async (url) =>
+          String(url).includes(":5174")
+            ? response(true, 200, "")
+            : response(true, 200, {
+                checks: [
+                  { service: "postgres", status: "ok" },
+                  { service: "postgres-version", status: "ok" },
+                  { service: "migrations", status: "ok" },
+                  { service: "pgvector", status: "ok" },
+                  { service: "work-queue", status: "ok" },
+                  { service: "embedding-service", status: "ok" },
+                  { service: "embedding-model", status: "ok" }
+                ]
+              }),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid) => pid === 10 || pid === 11 || pid === 12,
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.explorer.state).toBe("healthy");
+    expect(status.explorer.message).toContain("reachable");
+    expect(status.explorer.details?.explorerPid).toBe(12);
+  });
+
+  it("marks Explorer unhealthy when the recorded process is stale", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({ pid: 10, processes: { explorer: 12, worker: 11 } })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () =>
+          response(true, 200, {
+            checks: [
+              { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
+            ]
+          }),
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid) => pid === 10 || pid === 11,
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.explorer.state).toBe("needs_attention");
+    expect(status.explorer.message).toContain("not running");
   });
 
   it("maps fully prepared but stopped supervisor to starting", async () => {
@@ -343,8 +482,13 @@ describe("status and doctor JSON contracts", () => {
           response(true, 200, {
             checks: [
               { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
               { service: "redis", status: "ok" },
-              { service: "embedding-service", status: "ok" }
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
             ]
           }),
         spawnSync: (_command, args) =>
