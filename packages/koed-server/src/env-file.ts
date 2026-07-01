@@ -49,15 +49,15 @@ export const resolveApiUrl = (
 ): string =>
   (
     environment.MEMORY_API_URL ??
-    repoEnv.MEMORY_API_URL ??
     (environment.API_HOST_PORT
       ? `http://localhost:${environment.API_HOST_PORT}`
       : null) ??
+    repoEnv.MEMORY_API_URL ??
     (repoEnv.API_HOST_PORT
       ? `http://localhost:${repoEnv.API_HOST_PORT}`
       : null) ??
-    repoEnv.CODEX_MEMORY_BASE_URL ??
     environment.CODEX_MEMORY_BASE_URL ??
+    repoEnv.CODEX_MEMORY_BASE_URL ??
     "http://localhost:3300"
   ).trim();
 

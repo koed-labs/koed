@@ -4,8 +4,10 @@ export {
   writeKoedServerConfig
 } from "./config.js";
 export { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
+export { restartKoedServer } from "./restart.js";
 export { setupCodex } from "./setup.js";
 export { startKoedServer } from "./start.js";
+export { stopKoedServer } from "./stop.js";
 export {
   collectLocalEmbeddingRuntimeStatus,
   localEmbeddingRuntimeAvailable,
@@ -23,8 +25,13 @@ export {
   localPostgresRuntimeAvailable,
   resolveBundledPostgresMode,
   resolveLocalPostgresRuntimePaths,
-  startLocalPostgresRuntime
+  startLocalPostgresRuntime,
+  stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
+export {
+  collectHomebrewRuntimeStatus,
+  installHomebrewRuntime
+} from "./runtime-homebrew.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export type {
   KoedDependencyMode,
@@ -39,7 +46,8 @@ export type {
 export type {
   LocalPostgresRuntimePaths,
   LocalPostgresRuntimeStartResult,
-  LocalPostgresRuntimeStatus
+  LocalPostgresRuntimeStatus,
+  LocalPostgresRuntimeStopResult
 } from "./local-postgres-runtime.js";
 export type {
   LocalModelInstallResult,
@@ -48,6 +56,13 @@ export type {
   LocalModelState,
   LocalModelStatus
 } from "./local-models-runtime.js";
+export type {
+  HomebrewRuntimeInstallResult,
+  HomebrewRuntimeStatus,
+  RuntimeInstallState,
+  RuntimePackageStatus,
+  RuntimeProvider
+} from "./runtime-homebrew.js";
 export type {
   KoedServerComponentState,
   KoedServerComponentStatus,

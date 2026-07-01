@@ -30,7 +30,7 @@ services:
 
   embedding-service:
     build:
-      context: ./apps/embedding-service
+      context: ../../apps/embedding-service
     ports:
       - "127.0.0.1:${EMBEDDING_SERVICE_HOST_PORT:-3800}:8000"
     environment:
@@ -64,7 +64,7 @@ services:
       RERANKER_PROMPT_CACHE_ENABLED: ${EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED:-true}
     volumes:
       - embedding-model-cache:/root/.cache/huggingface
-      - ${KOED_MODELS_DIR:-./models}:/models:ro
+      - ${KOED_MODELS_DIR:-../../models}:/models:ro
     healthcheck:
       test:
         [

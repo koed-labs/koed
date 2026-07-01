@@ -35,21 +35,9 @@ export const resolveElectronNodeExecPath = ({
   KoedServerRuntimeOptions,
   "appIsPackaged" | "electronExecPath" | "platform" | "existsSync"
 >): string => {
-  if (appIsPackaged && platform === "darwin") {
-    const marker = ".app/Contents/MacOS/";
-    const markerIndex = electronExecPath.indexOf(marker);
-    if (markerIndex !== -1) {
-      const bundleRoot = electronExecPath.substring(
-        0,
-        markerIndex + ".app".length
-      );
-      const appName = electronExecPath.slice(markerIndex + marker.length);
-      const helperPath = `${bundleRoot}/Contents/Frameworks/${appName} Helper.app/Contents/MacOS/${appName} Helper`;
-      if (pathExists(helperPath)) {
-        return helperPath;
-      }
-    }
-  }
+  void appIsPackaged;
+  void platform;
+  void pathExists;
   return electronExecPath;
 };
 
