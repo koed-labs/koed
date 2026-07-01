@@ -60,7 +60,16 @@ of Docker Compose.
 
 Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch native Koed-owned Postgres/pgvector and Embedding Service runtimes under `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set; with BullMQ, Redis is Operator-managed external infrastructure.
 
-Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs `KOED_HOME/runtime/embedding-service/.venv/bin/python`, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter. Model assets are installed separately with explicit checksums:
+Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs `KOED_HOME/runtime/embedding-service/.venv/bin/python`, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
+
+On macOS, Linux, and WSL, Homebrew can explicitly install and link the native runtime assets into `KOED_HOME`:
+
+```bash
+node packages/koed-server/dist/cli.js runtime status --provider homebrew --json
+node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
+```
+
+`runtime status` is diagnostic-only and never installs packages. `runtime install` may run `brew install postgresql@17 pgvector llama.cpp` when packages are missing, then links selected binaries under `KOED_HOME/runtime` and records install metadata under `KOED_HOME/cache`. Model assets are installed separately with explicit checksums:
 
 ```bash
 KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \
@@ -74,10 +83,10 @@ Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
 Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
 
 ```bash
-pnpm smoke:bundled-local -- --full --json
+pnpm smoke:bundled-local -- --full --install-runtime --json
 ```
 
-The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
+`--install-runtime` explicitly runs the Homebrew-backed runtime install for the temporary `KOED_HOME` before native resource checks. The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
@@ -92,7 +101,8 @@ The Explorer frontend is available at `http://localhost:5174`, or the host port 
 
 Koed Desktop is the Electron control surface for the same local control plane.
 It wraps `koed-server`, shows service status, and can start the supervisor,
-run Codex setup, run doctor, and open the embedded Explorer. Packaged Koed
+run Codex setup, run doctor, explicitly trigger Homebrew-backed runtime install
+with Operator confirmation, and open the embedded Explorer. Packaged Koed
 Desktop starts its managed local personal server with bundled-local native
 runtime defaults unless the Operator explicitly overrides runtime/dependency
 mode; source-checkout Desktop keeps the bare developer default and uses explicit

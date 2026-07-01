@@ -33,6 +33,20 @@ const resolveWorkQueueBackend = (
   value: string | undefined
 ): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
 
+const resolveEffectiveWorkQueueBackend = (
+  dependencyMode: "bundled-local" | "external",
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): "bullmq" | "local" => {
+  if (environment.WORK_QUEUE_BACKEND) {
+    return resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND);
+  }
+  if (dependencyMode === "bundled-local") {
+    return "local";
+  }
+  return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+};
+
 export interface KoedServerStatusDependencies {
   fetch?: typeof fetch;
   spawnSync?: SpawnSyncLike;
@@ -555,13 +569,11 @@ export const collectKoedServerStatus = async (
     serverConfig.external?.redisUrl ??
     environment.REDIS_URL ??
     repoEnv.REDIS_URL;
-  const queueBackend = environment.WORK_QUEUE_BACKEND
-    ? resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND)
-    : repoEnv.WORK_QUEUE_BACKEND
-      ? resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND)
-      : serverConfig.dependencyMode === "bundled-local"
-        ? "local"
-        : resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+  const queueBackend = resolveEffectiveWorkQueueBackend(
+    serverConfig.dependencyMode,
+    environment,
+    repoEnv
+  );
   const localQueueRedisBypass = healthy(
     "Postgres-backed local queue does not require Redis.",
     { backend: queueBackend }

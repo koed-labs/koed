@@ -17,6 +17,7 @@ export const parseBundledLocalSmokeArgs = (argv) => {
   const options = {
     json: false,
     full: false,
+    installRuntime: false,
     timeoutMs: 180_000,
     pollIntervalMs: 2_000
   };
@@ -31,6 +32,10 @@ export const parseBundledLocalSmokeArgs = (argv) => {
     }
     if (value === "--full") {
       options.full = true;
+      continue;
+    }
+    if (value === "--install-runtime") {
+      options.installRuntime = true;
       continue;
     }
     if (value === "--timeout-ms") {
@@ -63,6 +68,7 @@ export const bundledLocalSmokeUsage = `Usage: pnpm smoke:bundled-local -- [optio
 Options:
   --json                    Emit JSON result
   --full                    Also run personal capture/recall smoke after native health
+  --install-runtime         Explicitly run Homebrew-backed runtime install before startup
   --timeout-ms <number>     Max wait for healthy status (default 180000)
   --poll-interval-ms <num>  Poll interval (default 2000)
   --help, -h                Show this help
@@ -188,6 +194,30 @@ const pushLog = (logs, prefix, chunk, echo) => {
   }
 };
 
+const parseJsonCommandOutput = (command, args, result) => {
+  try {
+    return JSON.parse(result.stdout || "{}");
+  } catch (error) {
+    throw new Error(
+      `Could not parse JSON from ${command} ${args.join(" ")}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+};
+
+const commandFailureDetails = (result) => {
+  const stderr = String(result.stderr ?? "").trim();
+  const stdout = String(result.stdout ?? "").trim();
+  if (!stdout) return stderr;
+  try {
+    return [stderr, JSON.stringify(JSON.parse(stdout), null, 2)]
+      .filter(Boolean)
+      .join("\n");
+  } catch {
+    return [stderr, stdout].filter(Boolean).join("\n");
+  }
+};
+
 export const runJsonCommand = (deps, command, args, options) => {
   const result = deps.spawnSync(command, args, {
     cwd: options.cwd,
@@ -201,18 +231,28 @@ export const runJsonCommand = (deps, command, args, options) => {
     );
   }
   if (result.status !== 0) {
+    const details = commandFailureDetails(result);
     throw new Error(
-      `${command} ${args.join(" ")} exited ${result.status ?? 1}: ${String(result.stderr ?? result.stdout ?? "").trim()}`
+      `${command} ${args.join(" ")} exited ${result.status ?? 1}${details ? `:\n${details}` : ""}`
     );
   }
-  try {
-    return JSON.parse(result.stdout || "{}");
-  } catch (error) {
+  return parseJsonCommandOutput(command, args, result);
+};
+
+const runJsonCommandAllowExit = (deps, command, args, options) => {
+  const result = deps.spawnSync(command, args, {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.error) {
     throw new Error(
-      `Could not parse JSON from ${command} ${args.join(" ")}: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error }
+      `${command} ${args.join(" ")} failed: ${result.error.message}`
     );
   }
+  const parsed = parseJsonCommandOutput(command, args, result);
+  return { exitCode: result.status ?? 0, ...parsed };
 };
 
 const modelInstallConfigured = (env) =>
@@ -224,7 +264,11 @@ const modelInstallConfigured = (env) =>
 const defaultEmbeddingModelPath = (context) =>
   path.join(context.koedHome, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf");
 
-const nativeLlamaServerPath = (env, root) => {
+const firstExistingOrDefault = (deps, candidates) =>
+  candidates.find((candidate) => candidate && deps.fileExists(candidate)) ??
+  candidates.find(Boolean);
+
+const nativeLlamaServerPath = (deps, env, context) => {
   const dockerDefault = "/opt/llama.cpp/llama-server";
   for (const value of [
     env.KOED_EMBEDDING_LLAMA_SERVER_BIN,
@@ -233,57 +277,88 @@ const nativeLlamaServerPath = (env, root) => {
   ]) {
     if (value?.trim() && value.trim() !== dockerDefault) return value.trim();
   }
-  return path.join(root, "vendor", "llama.cpp", "llama-server");
+  return firstExistingOrDefault(deps, [
+    path.join(context.koedHome, "runtime", "llama.cpp", "llama-server"),
+    path.join(context.root, "vendor", "llama.cpp", "llama-server")
+  ]);
 };
+
+const nativePostgresBinPath = (deps, env, context, name, override) => {
+  if (override?.trim()) return override.trim();
+  const binDirs = [
+    env.KOED_POSTGRES_BIN_DIR,
+    path.join(context.koedHome, "runtime", "postgres", "bin"),
+    path.join(context.root, "vendor", "postgres", "bin")
+  ].filter(Boolean);
+  return firstExistingOrDefault(
+    deps,
+    binDirs.map((binDir) => path.join(binDir, name))
+  );
+};
+
+const nativeEmbeddingAppPath = (deps, context) =>
+  firstExistingOrDefault(deps, [
+    path.join(context.koedHome, "runtime", "embedding-service", "app.py"),
+    path.join(context.root, "apps", "embedding-service", "app.py")
+  ]);
+
+const nativeEmbeddingPythonPath = (deps, env, context) =>
+  env.KOED_EMBEDDING_PYTHON_BIN ??
+  firstExistingOrDefault(deps, [
+    path.join(
+      context.koedHome,
+      "runtime",
+      "embedding-service",
+      ".venv",
+      "bin",
+      "python"
+    ),
+    path.join(
+      context.root,
+      "apps",
+      "embedding-service",
+      ".venv",
+      "bin",
+      "python"
+    )
+  ]);
 
 export const assertNativeBundledLocalResources = ({ deps, context }) => {
   const env = context.env;
-  const postgresBinDir = env.KOED_POSTGRES_BIN_DIR;
   const required = [
     [
       "Postgres initdb",
-      env.KOED_POSTGRES_INITDB_BIN ??
-        path.join(
-          postgresBinDir ??
-            path.join(context.root, "vendor", "postgres", "bin"),
-          "initdb"
-        )
+      nativePostgresBinPath(
+        deps,
+        env,
+        context,
+        "initdb",
+        env.KOED_POSTGRES_INITDB_BIN
+      )
     ],
     [
       "Postgres pg_ctl",
-      env.KOED_POSTGRES_PG_CTL_BIN ??
-        path.join(
-          postgresBinDir ??
-            path.join(context.root, "vendor", "postgres", "bin"),
-          "pg_ctl"
-        )
+      nativePostgresBinPath(
+        deps,
+        env,
+        context,
+        "pg_ctl",
+        env.KOED_POSTGRES_PG_CTL_BIN
+      )
     ],
     [
       "Postgres psql",
-      env.KOED_POSTGRES_PSQL_BIN ??
-        path.join(
-          postgresBinDir ??
-            path.join(context.root, "vendor", "postgres", "bin"),
-          "psql"
-        )
+      nativePostgresBinPath(
+        deps,
+        env,
+        context,
+        "psql",
+        env.KOED_POSTGRES_PSQL_BIN
+      )
     ],
-    [
-      "Embedding Service app",
-      path.join(context.root, "apps", "embedding-service", "app.py")
-    ],
-    [
-      "Embedding Service Python",
-      env.KOED_EMBEDDING_PYTHON_BIN ??
-        path.join(
-          context.root,
-          "apps",
-          "embedding-service",
-          ".venv",
-          "bin",
-          "python"
-        )
-    ],
-    ["llama-server", nativeLlamaServerPath(env, context.root)]
+    ["Embedding Service app", nativeEmbeddingAppPath(deps, context)],
+    ["Embedding Service Python", nativeEmbeddingPythonPath(deps, env, context)],
+    ["llama-server", nativeLlamaServerPath(deps, env, context)]
   ];
   const missing = required.filter(([, filePath]) => !deps.fileExists(filePath));
   const modelPath =
@@ -300,6 +375,91 @@ export const assertNativeBundledLocalResources = ({ deps, context }) => {
         )}. Install native resources or set KOED_* overrides before running bundled-local smoke.`
     );
   }
+};
+
+export const maybeInstallHomebrewRuntime = ({ deps, context, steps }) => {
+  const cli = path.join(
+    context.root,
+    "packages",
+    "koed-server",
+    "dist",
+    "cli.js"
+  );
+  const statusBefore = runJsonCommandAllowExit(
+    deps,
+    process.execPath,
+    [cli, "runtime", "status", "--provider", "homebrew", "--json"],
+    {
+      cwd: context.root,
+      env: context.env
+    }
+  );
+  steps.push({
+    step: "homebrew-runtime-status-before",
+    state: statusBefore.state ?? "unknown",
+    ok: Boolean(statusBefore.ok),
+    linked: Boolean(statusBefore.koedRuntime?.linked)
+  });
+
+  if (!statusBefore.ok) {
+    const install = runJsonCommand(
+      deps,
+      process.execPath,
+      [
+        cli,
+        "runtime",
+        "install",
+        "--provider",
+        "homebrew",
+        "--dependency-mode",
+        "bundled-local",
+        "--json"
+      ],
+      {
+        cwd: context.root,
+        env: context.env
+      }
+    );
+    if (!install.ok) {
+      throw new Error(
+        `Homebrew runtime install failed: ${JSON.stringify(install)}`
+      );
+    }
+    steps.push({
+      step: "homebrew-runtime-install",
+      state: install.state ?? "installed",
+      installedPackages: install.installedPackages ?? [],
+      linkedPaths: install.linkedPaths ?? []
+    });
+  } else {
+    steps.push({
+      step: "homebrew-runtime-install",
+      state: "skipped",
+      reason: "runtime already installed"
+    });
+  }
+
+  const statusAfter = runJsonCommand(
+    deps,
+    process.execPath,
+    [cli, "runtime", "status", "--provider", "homebrew", "--json"],
+    {
+      cwd: context.root,
+      env: context.env
+    }
+  );
+  if (!statusAfter.ok || !statusAfter.koedRuntime?.linked) {
+    throw new Error(
+      `Homebrew runtime status was not installed under KOED_HOME: ${JSON.stringify(statusAfter)}`
+    );
+  }
+  steps.push({
+    step: "homebrew-runtime-status-after",
+    state: statusAfter.state,
+    linked: Boolean(statusAfter.koedRuntime?.linked),
+    postgresBinDir: statusAfter.koedRuntime?.postgresBinDir,
+    llamaServerBin: statusAfter.koedRuntime?.llamaServerBin
+  });
 };
 
 export const maybeInstallEmbeddingModel = ({ deps, context, steps }) => {
@@ -640,6 +800,7 @@ export const runBundledLocalSmoke = async ({
   pollIntervalMs = 2_000,
   json = false,
   full = false,
+  installRuntime = false,
   deps = createBundledLocalSmokeDeps(),
   echo = json ? undefined : console.log
 } = {}) => {
@@ -673,6 +834,9 @@ export const runBundledLocalSmoke = async ({
       { cwd: context.root, env: context.env }
     );
     steps.push({ step: "koed-server-build", state: "passed" });
+    if (installRuntime) {
+      maybeInstallHomebrewRuntime({ deps, context, steps });
+    }
     assertNativeBundledLocalResources({ deps, context });
     steps.push({ step: "native-resources", state: "present" });
     maybeInstallEmbeddingModel({ deps, context, steps });

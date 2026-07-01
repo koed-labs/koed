@@ -28,6 +28,10 @@ export {
   startLocalPostgresRuntime,
   stopLocalPostgresRuntime
 } from "./local-postgres-runtime.js";
+export {
+  collectHomebrewRuntimeStatus,
+  installHomebrewRuntime
+} from "./runtime-homebrew.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export type {
   KoedDependencyMode,
@@ -52,6 +56,13 @@ export type {
   LocalModelState,
   LocalModelStatus
 } from "./local-models-runtime.js";
+export type {
+  HomebrewRuntimeInstallResult,
+  HomebrewRuntimeStatus,
+  RuntimeInstallState,
+  RuntimePackageStatus,
+  RuntimeProvider
+} from "./runtime-homebrew.js";
 export type {
   KoedServerComponentState,
   KoedServerComponentStatus,

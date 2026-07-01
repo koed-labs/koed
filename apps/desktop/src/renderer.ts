@@ -35,6 +35,7 @@ type StartupActionId =
   | "refresh-status"
   | "start"
   | "setup_codex"
+  | "runtime_install"
   | "doctor"
   | "keep-waiting";
 
@@ -1824,6 +1825,26 @@ const runStatusCardAction = async (
     } else if (action.command === "status") {
       await refreshStatus();
       appendStatusCardLog(cardId, "status refreshed");
+    } else if (action.command === "runtime_install") {
+      const confirmed = window.confirm(
+        "Install Homebrew-backed Koed runtime assets? This may run `brew install postgresql@17 pgvector llama.cpp` and link selected binaries under KOED_HOME."
+      );
+      if (!confirmed) {
+        appendStatusCardLog(cardId, "runtime install cancelled by Operator");
+        return;
+      }
+      const result = await invokeWithTimeout(
+        "runtime_install",
+        undefined,
+        action.timeoutMs ?? 600_000
+      );
+      const error = commandResultError(result);
+      if (error) {
+        appendStatusCardLog(cardId, `failed: ${error}`);
+      } else {
+        appendStatusCardLog(cardId, "runtime install completed");
+      }
+      await refreshStatus();
     } else {
       const result = await invokeWithTimeout(
         action.command,
