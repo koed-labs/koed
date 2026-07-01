@@ -47,7 +47,7 @@ MCP-side workers.
    starts native Postgres/pgvector and native Embedding Service runtimes under
    `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
    Python/llama-server, or model assets report setup guidance. It defaults job
-   processing to the Postgres-backed local queue. On macOS,
+   processing to the Postgres-backed local queue. On macOS, Linux, and WSL,
    `koed-server runtime status --provider homebrew --json` can inspect
    Homebrew-backed runtime assets without installing packages, and
    `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`

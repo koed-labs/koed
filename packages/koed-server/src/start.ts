@@ -132,9 +132,6 @@ const resolveEffectiveWorkQueueBackend = (
   if (environment.WORK_QUEUE_BACKEND) {
     return resolveWorkQueueBackend(environment.WORK_QUEUE_BACKEND);
   }
-  if (repoEnv.WORK_QUEUE_BACKEND) {
-    return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
-  }
   if (config.dependencyMode === "bundled-local") {
     return "local";
   }

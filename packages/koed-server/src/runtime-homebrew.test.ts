@@ -49,7 +49,7 @@ describe("Homebrew runtime provisioning", () => {
       paths(tempDir()),
       {},
       {
-        platform: "linux",
+        platform: "win32",
         spawnSync: (_command, args) => {
           calls.push(args);
           return spawnResult();
@@ -59,6 +59,25 @@ describe("Homebrew runtime provisioning", () => {
 
     expect(status.state).toBe("not_supported");
     expect(calls).toEqual([]);
+  });
+
+  it("supports Linux and WSL Homebrew environments", () => {
+    const calls: string[][] = [];
+    const status = collectHomebrewRuntimeStatus(
+      paths(tempDir()),
+      {},
+      {
+        platform: "linux",
+        spawnSync: (_command, args) => {
+          calls.push(args);
+          return spawnResult("", 1, "brew missing");
+        }
+      }
+    );
+
+    expect(status.state).toBe("missing");
+    expect(status.message).toContain("Homebrew is required");
+    expect(calls).toEqual([["--prefix"]]);
   });
 
   it("detects packages, binaries, pgvector files, and KOED_HOME links without installing", () => {
@@ -81,7 +100,7 @@ describe("Homebrew runtime provisioning", () => {
       paths(root),
       {},
       {
-        platform: "darwin",
+        platform: "linux",
         existsSync: (path) => existing.has(String(path)),
         spawnSync: (_command, args) => {
           calls.push(args);
