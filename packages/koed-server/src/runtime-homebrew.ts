@@ -247,6 +247,9 @@ const binaryEntries = (
     [keyof HomebrewRuntimeBinaries, HomebrewRuntimeBinaryStatus]
   >;
 
+const isSupportedHomebrewPlatform = (platform: NodeJS.Platform): boolean =>
+  platform === "darwin" || platform === "linux";
+
 const statusFrom = ({
   paths,
   platform,
@@ -259,7 +262,7 @@ const statusFrom = ({
   spawnSync: SpawnSyncLike;
 }): HomebrewRuntimeStatus => {
   const koedRuntime = runtimePaths(paths);
-  if (platform !== "darwin") {
+  if (!isSupportedHomebrewPlatform(platform)) {
     return {
       ok: false,
       state: "not_supported",
@@ -269,12 +272,12 @@ const statusFrom = ({
       homebrew: { installed: false },
       packages: [],
       binaries: emptyBinaries(),
-      pgvector: { compatible: false, sqlPaths: [], missing: ["macOS"] },
+      pgvector: { compatible: false, sqlPaths: [], missing: ["macOS/Linux"] },
       koedRuntime: { ...koedRuntime, linked: false },
       message:
-        "Homebrew-backed bundled-local runtime provisioning is supported on macOS only.",
+        "Homebrew-backed bundled-local runtime provisioning is supported on macOS, Linux, and WSL only.",
       action:
-        "Use external dependency mode or a supported macOS Homebrew environment."
+        "Use external dependency mode or a supported Homebrew environment on macOS, Linux, or WSL."
     };
   }
 
