@@ -12,7 +12,10 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
-import { createKoedServerManager } from "./koed-server/manager.js";
+import {
+  createKoedEnvironment,
+  createKoedServerManager
+} from "./koed-server/manager.js";
 import { createKoedServerCliInvocation } from "./koed-server/runtime.js";
 import {
   KOED_APP_SCHEME,
@@ -21,8 +24,20 @@ import {
 import { createMainWindowOptions } from "./window/window-manager.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(appDir, "..", "..", "..");
-const koedServerCli = resolve(repoRoot, "packages/koed-server/dist/cli.js");
+const sourceRepoRoot = resolve(appDir, "..", "..", "..");
+const explicitKoedServerCli = process.env.KOED_SERVER_CLI?.trim()
+  ? resolve(process.env.KOED_SERVER_CLI)
+  : undefined;
+const repoRoot = process.env.KOED_REPO_ROOT?.trim()
+  ? resolve(process.env.KOED_REPO_ROOT)
+  : explicitKoedServerCli
+    ? resolve(dirname(explicitKoedServerCli), "..", "..", "..")
+    : app.isPackaged
+      ? resolve(process.resourcesPath, "repo")
+      : sourceRepoRoot;
+const koedServerCli =
+  explicitKoedServerCli ??
+  resolve(repoRoot, "packages/koed-server/dist/cli.js");
 const appName = "Koed";
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
 
@@ -45,10 +60,9 @@ const koedServer = createKoedServerManager({
       electronExecPath: process.execPath,
       platform: process.platform,
       resourcesPath: process.resourcesPath,
-      environment: {
-        ...process.env,
-        KOED_REPO_ROOT: process.env.KOED_REPO_ROOT ?? repoRoot
-      },
+      environment: createKoedEnvironment(repoRoot, process.env, {
+        desktopManagedLocal: app.isPackaged
+      }),
       existsSync
     }),
   existsSync,

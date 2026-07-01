@@ -6,9 +6,12 @@ export {
   checkDatabaseMigrated,
   createDb,
   createDbPool,
+  inspectDatabaseReadiness,
   waitForDbMigrations,
+  type DatabaseReadiness,
   type DbConfig,
   type DbPool,
+  type InspectDatabaseReadinessOptions,
   type KoedDb,
   type WaitForDbMigrationsOptions
 } from "./connection.js";
