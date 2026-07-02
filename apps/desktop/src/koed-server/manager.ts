@@ -522,6 +522,7 @@ export const createKoedServerManager = ({
         return result;
       },
       setup_codex: () => runJson(["setup", "codex"], 120_000),
+      repair_codex: () => runJson(["repair", "codex"], 120_000),
       runtime_install: () =>
         runJson(
           [

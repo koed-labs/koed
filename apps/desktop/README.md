@@ -63,6 +63,14 @@ ports automatically. The first successful allocation is persisted under
 API, Explorer, Postgres, and Embedding Service ports while avoiding common
 local development or Docker port collisions.
 
+Desktop also compares the active local API URL/token with the supported Codex
+MCP and Capture Hook configuration in `~/.codex/config.toml` and
+`~/.koed/config.json`. If those user-owned files point at stale local ports or
+credentials, the AI Client Integration and Capture Path cards show an explicit
+mismatch and offer **Fix Codex integration**. The repair action rewrites the
+Koed-managed Codex block and hook config for the currently running Desktop API;
+restart Codex and trust updated hooks if prompted before expecting new captures.
+
 ## Notes
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
