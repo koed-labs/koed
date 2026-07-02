@@ -15,7 +15,22 @@ import type {
 import { koedDebug, koedDebugTimed } from "./debug";
 import { selectedThreadEventPageSize } from "./threadDetailCache";
 
+const apiBaseUrlFromDesktopQuery = (): string | null => {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("koedDesktop") !== "1") return null;
+  const value = params.get("koedApiBaseUrl")?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+};
+
 export const apiBaseUrl = (
+  apiBaseUrlFromDesktopQuery() ??
   import.meta.env.VITE_KOED_API_BASE_URL ??
   import.meta.env.VITE_API_BASE_URL ??
   "http://localhost:3000"
