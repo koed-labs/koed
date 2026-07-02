@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { loadRepoEnv } from "./env-file.js";
-import { setupCodex } from "./setup.js";
+import { repairCodexIntegration, setupCodex } from "./setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 import { restartKoedServer } from "./restart.js";
 import { startKoedServer } from "./start.js";
@@ -25,6 +25,7 @@ Commands:
   status --json          Print machine-readable local service state
   doctor --json          Print actionable setup/dependency diagnostics
   setup codex --json     Configure the supported Codex integration
+  repair codex --json    Rewrite Codex integration for the active local API
   models status --json   Print bundled local model install state
   models install --json  Download bundled local model with SHA-256 verification
   runtime status --json  Print native bundled-local runtime install state
@@ -46,6 +47,7 @@ export interface KoedServerCliDependencies {
   stop?: typeof stopKoedServer;
   restart?: typeof restartKoedServer;
   setupCodex?: typeof setupCodex;
+  repairCodex?: typeof repairCodexIntegration;
   collectModelStatus?: typeof collectLocalModelStatus;
   installModel?: typeof installLocalModel;
   collectRuntimeStatus?: typeof collectHomebrewRuntimeStatus;
@@ -90,6 +92,7 @@ export const runKoedServerCli = async (
     stop = stopKoedServer,
     restart = restartKoedServer,
     setupCodex: setup = setupCodex,
+    repairCodex = repairCodexIntegration,
     collectModelStatus = collectLocalModelStatus,
     installModel = installLocalModel,
     collectRuntimeStatus = collectHomebrewRuntimeStatus,
@@ -169,6 +172,20 @@ export const runKoedServerCli = async (
           result.ok
             ? "Codex setup completed.\n"
             : `${result.error ?? "Codex setup failed."}\n`
+        );
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "repair" && subcommand === "codex") {
+      const result = repairCodex();
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(
+          result.ok
+            ? "Codex integration repaired. Restart Codex and trust updated hooks if prompted.\n"
+            : `${result.error ?? "Codex integration repair failed."}\n`
         );
       }
       return result.ok ? 0 : 1;

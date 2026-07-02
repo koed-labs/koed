@@ -35,7 +35,9 @@ MCP-side workers.
    `KOED_HOME/config/server.json`, or package/profile defaults. Packaged Koed
    Desktop starts its managed local personal `koed-server` with
    `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
-   Operator overrides those values.
+   Operator overrides those values. Desktop bundled-local startup allocates free
+   local API, Explorer, Postgres, and Embedding Service ports and persists them
+   under `KOED_HOME/config/local-ports.json` for stable later launches.
 3. In the current source-checkout path, bare `koed-server` defaults to external
    dependency mode instead of inferring bundled-local from an empty config. The
    Operator starts Postgres/pgvector, Redis/BullMQ, and the Embedding Service
@@ -72,19 +74,25 @@ MCP-side workers.
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
    output, Supported Capture Hook config, Codex config, LCM Summary Service
-   availability, and last verification metadata. Readiness gates include
-   Postgres reachability and version, current migrations, pgvector, local or
-   BullMQ queue backend availability, and Embedding Service model/dimension
-   compatibility.
+   availability, and last verification metadata. Status compares the active
+   local API URL/token against the Koed-managed Codex MCP block and Capture
+   Hook config so stale ports or credentials show as explicit integration
+   mismatches. Readiness gates include Postgres reachability and version,
+   current migrations, pgvector, local or BullMQ queue backend availability,
+   and Embedding Service model/dimension compatibility.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
-   the control plane.
+   the control plane. `koed-server repair codex --json` is the narrower Desktop
+   repair path: it rewrites the Koed-managed Codex MCP block and hook config
+   for the currently active local API URL/token without running the full
+   bootstrap.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
-    and embed Explorer without requiring the Operator to invoke repo-local
-    scripts directly. Desktop manages only its local personal `koed-server`;
-    remote, Team Self-Hosted, and cloud targets are connect-only.
+    offer one-click Codex integration repair for stale local config, and embed
+    Explorer without requiring the Operator to invoke repo-local scripts
+    directly. Desktop manages only its local personal `koed-server`; remote,
+    Team Self-Hosted, and cloud targets are connect-only.
 
 ## Capability Discovery
 

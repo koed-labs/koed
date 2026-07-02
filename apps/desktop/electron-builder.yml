@@ -28,7 +28,13 @@ directories:
   output: release
 
 mac:
+  artifactName: "Koed-${version}-${arch}.${ext}"
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
   target:
     - dir
+    - dmg
+    - zip
   category: public.app-category.developer-tools
-  identity: null

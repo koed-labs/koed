@@ -36,7 +36,8 @@ describe("Koed server desktop manager", () => {
       KOED_REPO_ROOT: "/repo",
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
-      WORK_QUEUE_BACKEND: "local"
+      WORK_QUEUE_BACKEND: "local",
+      KOED_AUTO_PORTS: "1"
     });
     expect(
       createKoedEnvironment(

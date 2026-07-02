@@ -57,6 +57,20 @@ KOED_REPO_ROOT /path/to/koed` before using `open`. Without those overrides, the
 packaged app uses its bundled `koed-server` CLI and reports missing runtime
 diagnostics instead of crashing.
 
+Packaged Desktop bundled-local startup asks `koed-server` to allocate local
+ports automatically. The first successful allocation is persisted under
+`KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
+API, Explorer, Postgres, and Embedding Service ports while avoiding common
+local development or Docker port collisions.
+
+Desktop also compares the active local API URL/token with the supported Codex
+MCP and Capture Hook configuration in `~/.codex/config.toml` and
+`~/.koed/config.json`. If those user-owned files point at stale local ports or
+credentials, the AI Client Integration and Capture Path cards show an explicit
+mismatch and offer **Fix Codex integration**. The repair action rewrites the
+Koed-managed Codex block and hook config for the currently running Desktop API;
+restart Codex and trust updated hooks if prompted before expecting new captures.
+
 ## Notes
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
@@ -67,6 +81,12 @@ diagnostics instead of crashing.
   renderer and bundled `koed-server` status/doctor/stop command surface can run
   without checkout overrides. `desktop:package:smoke` currently aliases the
   macOS smoke and guards non-Darwin platforms before package execution.
+- `desktop:package:release` builds macOS `dmg` and `zip` artifacts using the
+  release packaging config. Signing/notarization requires a local Developer ID
+  identity and release credentials; use `desktop:package` for unsigned local
+  smoke builds.
+- macOS packaging uses `assets/icon.icns` plus hardened-runtime entitlement
+  templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
   `node_modules/@koed/koed-server/dist/cli.js` by default; `KOED_REPO_ROOT` and
   `KOED_SERVER_CLI` remain available for developer overrides.

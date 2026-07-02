@@ -20,12 +20,18 @@ const isDesktopEmbed = (): boolean =>
 export function readConfiguredToken() {
   const storedToken = usableToken(window.localStorage.getItem(tokenStorageKey));
   const provisionedToken = usableToken(import.meta.env.VITE_KOED_API_TOKEN);
+  const desktopToken = usableToken(
+    new URLSearchParams(window.location.search).get("koedApiToken")
+  );
 
-  if (isDesktopEmbed() && provisionedToken) {
-    if (storedToken !== provisionedToken) {
-      window.localStorage.setItem(tokenStorageKey, provisionedToken);
+  if (isDesktopEmbed()) {
+    const token = desktopToken ?? provisionedToken;
+    if (token) {
+      if (storedToken !== token) {
+        window.localStorage.setItem(tokenStorageKey, token);
+      }
+      return token;
     }
-    return provisionedToken;
   }
 
   return storedToken ?? provisionedToken ?? "";

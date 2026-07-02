@@ -80,3 +80,34 @@ export const loadExplorerCredential = (
     return null;
   }
 };
+
+export const resolveActiveIntegrationApiToken = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): {
+  token: string;
+  source: "environment" | "repo-env" | "explorer-credential";
+} | null => {
+  const explorerCredential = loadExplorerCredential(paths);
+  if (environment.KOED_AUTO_PORTS === "1" && explorerCredential?.apiToken) {
+    return {
+      token: explorerCredential.apiToken,
+      source: "explorer-credential"
+    };
+  }
+
+  const localToken = resolveLocalApiToken(environment, repoEnv);
+  if (localToken) {
+    return localToken;
+  }
+
+  if (explorerCredential?.apiToken) {
+    return {
+      token: explorerCredential.apiToken,
+      source: "explorer-credential"
+    };
+  }
+
+  return null;
+};
