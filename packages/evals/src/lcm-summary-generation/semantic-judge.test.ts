@@ -209,6 +209,49 @@ describe("LCM summary semantic judge", () => {
     });
   });
 
+  it("retries invalid semantic judge JSON", async () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    let judgeCalls = 0;
+    const report = await runLcmSummaryBenchmark({
+      caseIds: [benchmarkCase.id],
+      runs: 1,
+      config: resolveLcmSummaryWorkerConfig(process.env, {
+        model: "codex-app-server:test"
+      }),
+      runner: async () => ({
+        text: JSON.stringify(passingOutput(benchmarkCase)),
+        model: "codex-app-server:test"
+      })
+    });
+    const semanticJudge = await runLcmSummarySemanticJudgeReport({
+      report,
+      config: {
+        appServerBinary: "codex",
+        model: "codex-app-server:test",
+        reasoningEffort: "medium",
+        timeoutMs: 1_000,
+        maxAttempts: 2,
+        retryDelayMs: 0,
+        cwd: process.cwd(),
+        env: process.env
+      },
+      runner: async (): Promise<LcmSummarySemanticJudgePromptResult> => {
+        judgeCalls += 1;
+        return {
+          text: judgeCalls === 1 ? "not json" : passingJudgeOutput(),
+          model: "codex-app-server:judge"
+        };
+      }
+    });
+
+    expect(judgeCalls).toBe(2);
+    expect(semanticJudge.errorCount).toBe(0);
+    expect(semanticJudge.runs[0]).toMatchObject({
+      status: "judged",
+      verdict: "pass"
+    });
+  });
+
   it("runs semantic judge calls sequentially", async () => {
     const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
     let activeJudgeCalls = 0;
@@ -338,6 +381,62 @@ describe("LCM summary semantic judge", () => {
     expect(semanticJudge.runs[0]).toMatchObject({
       status: "judged",
       verdict: "pass",
+      passed: false
+    });
+  });
+
+  it("can judge unredacted raw reports before redacting judge output", async () => {
+    const benchmarkCase = mustCase("secret-like-value-redaction");
+    const report = await runLcmSummaryBenchmark({
+      caseIds: [benchmarkCase.id],
+      runs: 1,
+      redactReport: false,
+      config: resolveLcmSummaryWorkerConfig(process.env, {
+        model: "codex-app-server:test"
+      }),
+      runner: async () => ({
+        text: JSON.stringify({
+          ...passingOutput(benchmarkCase),
+          facts: ["The API Token was rotated.", "koed_live_secret_abc123"]
+        }),
+        model: "codex-app-server:test"
+      })
+    });
+    let judgePrompt = "";
+    const semanticJudge = await runLcmSummarySemanticJudgeReport({
+      report,
+      config: {
+        appServerBinary: "codex",
+        model: "codex-app-server:test",
+        reasoningEffort: "medium",
+        timeoutMs: 1_000,
+        cwd: process.cwd(),
+        env: process.env
+      },
+      runner: async (prompt) => {
+        judgePrompt = prompt;
+        return {
+          text: passingJudgeOutput({
+            issues: [
+              {
+                severity: "high",
+                category: "koed_live_secret_abc123",
+                note: "The summary mentions koed_live_secret_abc123."
+              }
+            ],
+            rationale: "The literal koed_live_secret_abc123 leaked."
+          }),
+          model: "codex-app-server:judge"
+        };
+      }
+    });
+
+    expect(judgePrompt).toContain("koed_live_secret_abc123");
+    expect(JSON.stringify(semanticJudge)).not.toContain(
+      "koed_live_secret_abc123"
+    );
+    expect(semanticJudge.runs[0]).toMatchObject({
+      status: "judged",
       passed: false
     });
   });

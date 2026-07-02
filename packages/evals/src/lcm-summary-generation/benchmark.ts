@@ -257,7 +257,46 @@ const fieldValue = (
   return typeof value === "string" ? value : "";
 };
 
-const allSummaryText = (summary: StructuredLcmSummary): string =>
+const structuredSummaryFields = new Set<string>([
+  "schema_version",
+  "title",
+  "summary_text",
+  "user_requests",
+  "decisions",
+  "facts",
+  "files",
+  "commands",
+  "model_names",
+  "tool_outcomes",
+  "errors",
+  "unresolved_questions",
+  "provenance_hints"
+]);
+
+const textFragments = (value: unknown): string[] => {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(textFragments);
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, item]) => [
+      key,
+      ...textFragments(item)
+    ]);
+  }
+  return [];
+};
+
+const passthroughSummaryText = (summary: StructuredLcmSummary): string =>
+  Object.entries(summary)
+    .flatMap(([key, value]) =>
+      structuredSummaryFields.has(key) ? [] : [key, ...textFragments(value)]
+    )
+    .join("\n");
+
+const structuredSummaryText = (summary: StructuredLcmSummary): string =>
   [
     summary.title,
     summary.summary_text,
@@ -272,6 +311,9 @@ const allSummaryText = (summary: StructuredLcmSummary): string =>
     ...summary.unresolved_questions,
     ...summary.provenance_hints
   ].join("\n");
+
+const allSummaryText = (summary: StructuredLcmSummary): string =>
+  [structuredSummaryText(summary), passthroughSummaryText(summary)].join("\n");
 
 const requiredMatchPresent = (
   text: string,
@@ -338,7 +380,14 @@ const forbiddenMatchingSpans = (
   text: string,
   claim: LcmSummaryForbiddenClaim
 ): string[] =>
-  localTextUnits(text).filter((span) => forbiddenMatchPresent(span, claim));
+  localTextUnits(text)
+    .flatMap((unit) =>
+      unit
+        .split(/;|,(?=\s*(?:but|however|yet)\b)|\bbut\b|\bhowever\b/)
+        .map((span) => span.trim())
+        .filter(Boolean)
+    )
+    .filter((span) => forbiddenMatchPresent(span, claim));
 
 const claimPresent = (text: string, claim: LcmSummaryRequiredClaim): boolean =>
   requiredMatchPresent(text, claim.match);
@@ -393,7 +442,7 @@ const requiredClaimDetails = (
   summary: StructuredLcmSummary,
   claim: LcmSummaryRequiredClaim
 ): LcmSummaryScoreDetail[] => {
-  const text = allSummaryText(summary);
+  const text = structuredSummaryText(summary);
   const present = claimPresent(text, claim);
   const critical = claim.critical ?? true;
   const details: LcmSummaryScoreDetail[] = [

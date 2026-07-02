@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import {
   buildLcmSummaryPrompt,
+  parseStructuredLcmSummary,
   resolveLcmSummaryWorkerConfig,
   runCodexAppServerLcmSummary,
   type CodexLcmSummaryRunner,
@@ -28,6 +29,7 @@ export interface LcmSummaryBenchmarkRunOptions {
   runs?: number;
   caseIds?: string[];
   threshold?: number;
+  redactReport?: boolean;
 }
 
 export interface LcmSummaryBenchmarkReport extends LcmSummaryBenchmarkSummary {
@@ -75,6 +77,7 @@ export const runLcmSummaryBenchmarkCase = async (
   const runner = options.runner ?? runCodexAppServerLcmSummary;
   const prompt = buildLcmSummaryPrompt(benchmarkCase.node);
   const started = performance.now();
+  let lastText = "";
 
   try {
     const result = await runWithAttempts(
@@ -83,7 +86,12 @@ export const runLcmSummaryBenchmarkCase = async (
         retryDelayMs: options.config.retryDelayMs,
         timeoutMs: options.config.timeoutMs
       },
-      ({ timeoutMs }) => runner(prompt, options.config, timeoutMs)
+      async ({ timeoutMs }) => {
+        const result = await runner(prompt, options.config, timeoutMs);
+        lastText = result.text;
+        parseStructuredLcmSummary(result.text);
+        return result;
+      }
     );
     return {
       caseId: benchmarkCase.id,
@@ -97,13 +105,22 @@ export const runLcmSummaryBenchmarkCase = async (
     return {
       caseId: benchmarkCase.id,
       runIndex,
-      output: "",
+      output: lastText,
       latencyMs: Math.round(performance.now() - started),
       model: options.config.model,
       error: error instanceof Error ? error.message : String(error)
     };
   }
 };
+
+export const redactLcmSummaryBenchmarkReport = (
+  report: LcmSummaryBenchmarkReport,
+  cases: LcmSummaryBenchmarkCase[]
+): LcmSummaryBenchmarkReport =>
+  redactLcmSummaryBenchmarkValue(
+    report,
+    lcmSummaryBenchmarkReportRedactions(cases)
+  ) as LcmSummaryBenchmarkReport;
 
 export const runLcmSummaryBenchmark = async (
   options: LcmSummaryBenchmarkRunOptions = {}
@@ -138,22 +155,16 @@ export const runLcmSummaryBenchmark = async (
   const summary = summarizeLcmSummaryBenchmark(scores, {
     threshold: options.threshold
   });
-  const redactions = lcmSummaryBenchmarkReportRedactions(cases);
-  const redactedSummary = redactLcmSummaryBenchmarkValue(
-    summary,
-    redactions
-  ) as LcmSummaryBenchmarkSummary;
-
-  return {
+  const report: LcmSummaryBenchmarkReport = {
     benchmark: "lcm-summary-generation",
     generatedAt: new Date().toISOString(),
     model: config.model,
     reasoningEffort: config.reasoningEffort,
     cases: cases.map((benchmarkCase) => benchmarkCase.id),
-    runInputs: redactLcmSummaryBenchmarkValue(
-      runInputs,
-      redactions
-    ) as LcmSummaryBenchmarkRunInput[],
-    ...redactedSummary
+    runInputs,
+    ...summary
   };
+  return options.redactReport === false
+    ? report
+    : redactLcmSummaryBenchmarkReport(report, cases);
 };

@@ -108,6 +108,55 @@ describe("LCM summary generation scoring", () => {
     });
   });
 
+  it("scans passthrough fields for forbidden claims", () => {
+    const benchmarkCase = mustCase("secret-like-value-redaction");
+    const output = {
+      ...passingOutput(benchmarkCase),
+      unexpected_model_field: "koed_live_secret_abc123"
+    };
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find((detail) => detail.name === "forbidden:literal-token")
+    ).toMatchObject({
+      score: 0,
+      critical: true
+    });
+    expect(score.criticalFailure).toBe(true);
+    expect(score.passed).toBe(false);
+  });
+
+  it("does not satisfy required claims from passthrough fields", () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    const output = {
+      ...passingOutput(benchmarkCase),
+      decisions: [],
+      summary_text: "Koed answer synthesis placement was discussed.",
+      extra_decision:
+        "Backend returns Evidence Bundles only and Answer Synthesis runs in the connected AI Client."
+    };
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "required:backend-evidence-only"
+      )
+    ).toMatchObject({
+      score: 0
+    });
+    expect(score.criticalFailure).toBe(true);
+  });
+
   it("does not pass negated critical required claims through token overlap", () => {
     const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
     const output = passingOutput(benchmarkCase);
@@ -657,6 +706,30 @@ describe("LCM summary generation scoring", () => {
       "Diagnostic low-level memory tools stay hidden unless explicitly enabled.",
       "Diagnostic low-level memory tools are enabled by default for all users.",
       "An earlier unrelated child summary was superseded."
+    ];
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:diagnostic-default"
+      )
+    ).toMatchObject({
+      score: 0,
+      critical: true
+    });
+    expect(score.criticalFailure).toBe(true);
+  });
+
+  it("does not let allowed context in one clause suppress a later active forbidden claim", () => {
+    const benchmarkCase = mustCase("rollup-conflict-latest-wins");
+    const output = passingOutput(benchmarkCase);
+    output.decisions = [
+      "Earlier child summary was superseded, but diagnostic low-level memory tools are enabled by default for all users."
     ];
 
     const score = scoreLcmSummaryRun(benchmarkCase, {

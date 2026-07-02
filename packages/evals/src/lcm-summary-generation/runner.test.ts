@@ -52,6 +52,34 @@ describe("LCM summary generation live runner", () => {
     expect(report.runInputs[0]?.error).toBeUndefined();
   });
 
+  it("retries invalid summary JSON before scoring", async () => {
+    const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
+    let calls = 0;
+    const report = await runLcmSummaryBenchmark({
+      caseIds: [benchmarkCase.id],
+      runs: 1,
+      config: resolveLcmSummaryWorkerConfig(process.env, {
+        model: "codex-app-server:test",
+        maxAttempts: 2,
+        retryDelayMs: 0
+      }),
+      runner: async () => {
+        calls += 1;
+        return {
+          text:
+            calls === 1
+              ? "not json"
+              : JSON.stringify(passingOutput(benchmarkCase)),
+          model: "codex-app-server:test"
+        };
+      }
+    });
+
+    expect(calls).toBe(2);
+    expect(report.passed).toBe(true);
+    expect(report.runInputs[0]?.output).not.toBe("not json");
+  });
+
   it("rejects unknown selected case ids", async () => {
     await expect(
       runLcmSummaryBenchmark({

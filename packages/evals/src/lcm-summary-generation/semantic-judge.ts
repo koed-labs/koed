@@ -282,15 +282,20 @@ export const judgeLcmSummaryRun = async (
   const started = performance.now();
 
   try {
-    const result = await runWithAttempts(
+    const { result, judgment } = await runWithAttempts(
       {
         maxAttempts: options.config.maxAttempts ?? 1,
         retryDelayMs: options.config.retryDelayMs ?? 0,
         timeoutMs: options.config.timeoutMs
       },
-      ({ timeoutMs }) => runner(prompt, options.config, timeoutMs)
+      async ({ timeoutMs }) => {
+        const result = await runner(prompt, options.config, timeoutMs);
+        return {
+          result,
+          judgment: parseLcmSummarySemanticJudgeOutput(result.text)
+        };
+      }
     );
-    const judgment = parseLcmSummarySemanticJudgeOutput(result.text);
     const passed =
       judgment.verdict === "pass" &&
       judgment.score >= threshold &&

@@ -7,6 +7,11 @@ import {
   parseLcmSummaryRunsOption,
   parseLcmSummaryThresholdOption
 } from "./cli-options.js";
+import { lcmSummaryBenchmarkCases } from "./cases.js";
+import {
+  lcmSummaryBenchmarkReportRedactions,
+  redactLcmSummaryBenchmarkValue
+} from "./redaction.js";
 import { runLcmSummaryBenchmark } from "./runner.js";
 import { runLcmSummarySemanticJudgeReport } from "./semantic-judge.js";
 
@@ -31,8 +36,7 @@ const model = optionValue("--model");
 const reasoningEffort = optionValue("--reasoning-effort");
 const judgeModel = optionValue("--judge-model");
 const judgeReasoningEffort = optionValue("--judge-reasoning-effort");
-const codexBinary =
-  optionValue("--codex") ?? process.env.MEMORY_LCM_CODEX_BINARY;
+const codexBinary = optionValue("--codex");
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(currentDirectory, "../../../..");
 const outputOption = optionValue("--out");
@@ -58,7 +62,8 @@ const report = await runLcmSummaryBenchmark({
   config,
   caseIds: selectedCaseIds,
   runs: runsOverride,
-  threshold
+  threshold,
+  redactReport: !semanticJudgeEnabled
 });
 
 const finalReport = semanticJudgeEnabled
@@ -81,7 +86,17 @@ const finalReport = semanticJudgeEnabled
     }
   : report;
 
-const serialized = `${JSON.stringify(finalReport, null, 2)}\n`;
+const selectedCases =
+  selectedCaseIds && selectedCaseIds.length > 0
+    ? lcmSummaryBenchmarkCases.filter((benchmarkCase) =>
+        selectedCaseIds.includes(benchmarkCase.id)
+      )
+    : lcmSummaryBenchmarkCases;
+const serializableReport = redactLcmSummaryBenchmarkValue(
+  finalReport,
+  lcmSummaryBenchmarkReportRedactions(selectedCases)
+);
+const serialized = `${JSON.stringify(serializableReport, null, 2)}\n`;
 await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, serialized);
 console.error(`Wrote LCM summary generation benchmark report to ${outputPath}`);
