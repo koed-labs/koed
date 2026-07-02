@@ -293,6 +293,55 @@ describe("Codex capture hook transcript parsing", () => {
     }
   });
 
+  it("persists Stop control rows in foreground while detached catch-up is enabled", async () => {
+    await withHookStateFile(async () => {
+      const triggerCatchup = vi.fn();
+      const runPass = vi.fn(async () => ({
+        rawItemsStored: 1,
+        rawItemsProjected: 1,
+        transcriptPath: "/tmp/koed-stop-catchup.jsonl",
+        transcriptBacklogRemaining: false,
+        transcriptCheckpointAdvanced: true
+      }));
+      const postToolPayload = {
+        hook_event_name: "PostToolUse" as const,
+        session_id: "session-stop-catchup",
+        turn_id: "turn-stop-catchup",
+        transcript_path: "/tmp/koed-stop-catchup.jsonl",
+        cwd: "/repo"
+      };
+      await runForegroundCapturePass({
+        payload: postToolPayload,
+        triggerCatchup
+      });
+
+      const stopPayload = {
+        hook_event_name: "Stop" as const,
+        session_id: "session-stop-catchup",
+        turn_id: "turn-stop-catchup",
+        transcript_path: "/tmp/koed-stop-catchup.jsonl",
+        cwd: "/repo"
+      };
+      const result = await runForegroundCapturePass({
+        payload: stopPayload,
+        runPass,
+        triggerCatchup
+      });
+
+      expect(triggerCatchup).toHaveBeenCalledTimes(1);
+      expect(runPass).toHaveBeenCalledWith({
+        configPath: undefined,
+        payload: stopPayload,
+        mode: "foreground"
+      });
+      expect(result).toMatchObject({
+        rawItemsStored: 1,
+        rawItemsProjected: 1,
+        transcriptCheckpointAdvanced: true
+      });
+    });
+  });
+
   it("throttles duplicate detached catch-up spawns for an in-flight transcript", async () => {
     await withHookStateFile(async () => {
       const triggerCatchup = vi.fn();

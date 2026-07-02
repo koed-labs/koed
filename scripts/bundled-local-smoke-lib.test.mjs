@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import {
   buildBundledLocalSmokeEnvironment,
+  cleanupBundledLocalSmoke,
   parseBundledLocalSmokeArgs,
   preflightBundledLocalSmoke,
   runBundledLocalSmoke,
@@ -467,6 +468,37 @@ test("full smoke creates API Token and calls personal capture recall path", asyn
   assert.equal(
     deps.calls.some(
       (call) => call.kind === "spawnSync" && call.args?.includes("stop")
+    ),
+    true
+  );
+});
+
+test("cleanup destroys child stdio after stopping smoke process", async () => {
+  const deps = createDeps({ fileExists: () => true });
+  const child = new EventEmitter();
+  let stdoutDestroyed = false;
+  let stderrDestroyed = false;
+  child.exitCode = null;
+  child.stdout = { destroy: () => (stdoutDestroyed = true) };
+  child.stderr = { destroy: () => (stderrDestroyed = true) };
+  child.kill = (signal) => {
+    deps.calls.push({ kind: "kill", signal });
+    child.exitCode = 0;
+    child.emit("exit", 0);
+    return true;
+  };
+
+  await cleanupBundledLocalSmoke({
+    deps,
+    context: { root: "/repo", koedHome: "/tmp/koed-smoke", env: {} },
+    child
+  });
+
+  assert.equal(stdoutDestroyed, true);
+  assert.equal(stderrDestroyed, true);
+  assert.equal(
+    deps.calls.some(
+      (call) => call.kind === "kill" && call.signal === "SIGTERM"
     ),
     true
   );

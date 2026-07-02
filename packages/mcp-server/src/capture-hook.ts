@@ -1351,6 +1351,9 @@ const transcriptPrefersEventMessages = (records: unknown[]): boolean =>
 export const parseTranscriptText = (text: string): CaptureItem[] =>
   parseTranscriptRecords(parseTranscriptRecordsText(text));
 
+const isStopControlHook = (payload: HookPayload): boolean =>
+  /^(Stop|SubagentStop)$/i.test(payload.hook_event_name ?? "");
+
 export const shouldReadTranscriptForHook = (payload: HookPayload): boolean =>
   payload.hook_event_name === "SessionStart" ||
   payload.hook_event_name === "UserPromptSubmit" ||
@@ -2832,7 +2835,7 @@ export const runForegroundCapturePass = (input: {
       transcriptCheckpointAdvanced: false
     });
   }
-  if (!hookTriggersTranscriptCatchup()) {
+  if (!hookTriggersTranscriptCatchup() || isStopControlHook(payload)) {
     return (input.runPass ?? runCapturePass)({
       configPath,
       payload,

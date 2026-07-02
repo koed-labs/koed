@@ -765,6 +765,23 @@ export const runFullPersonalSmoke = async ({ deps, context, steps }) => {
   return smoke;
 };
 
+const destroyChildStream = (stream) => {
+  if (stream && typeof stream.destroy === "function") {
+    stream.destroy();
+  }
+};
+
+const waitForChildClose = async (deps, child, timeoutMs = 5_000) => {
+  if (!child || child.exitCode !== null) {
+    return;
+  }
+  await Promise.race([
+    new Promise((resolve) => child.once("close", resolve)),
+    new Promise((resolve) => child.once("exit", resolve)),
+    deps.setTimeout(timeoutMs)
+  ]);
+};
+
 export const cleanupBundledLocalSmoke = async ({ deps, context, child }) => {
   const cli = path.join(
     context.root,
@@ -780,15 +797,20 @@ export const cleanupBundledLocalSmoke = async ({ deps, context, child }) => {
       stdio: "ignore"
     });
   }
-  if (child && child.exitCode === null) {
-    child.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolve) => child.once("exit", resolve)),
-      deps.setTimeout(5_000)
-    ]);
+  if (child) {
     if (child.exitCode === null) {
-      child.kill("SIGKILL");
+      child.kill("SIGTERM");
+      await Promise.race([
+        new Promise((resolve) => child.once("exit", resolve)),
+        deps.setTimeout(5_000)
+      ]);
+      if (child.exitCode === null) {
+        child.kill("SIGKILL");
+      }
     }
+    await waitForChildClose(deps, child);
+    destroyChildStream(child.stdout);
+    destroyChildStream(child.stderr);
   }
   await deps.rm(context.koedHome, { recursive: true, force: true });
 };
