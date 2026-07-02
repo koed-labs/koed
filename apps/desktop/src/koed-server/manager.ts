@@ -1,4 +1,12 @@
 import type { ChildProcess } from "node:child_process";
+import {
+  existsSync as nodeExistsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import type {
   ComponentState,
   ComponentStatus,
@@ -153,6 +161,84 @@ const summarizeStartFailure = (
         line.endsWith("Failed")
     ) ?? fallback;
 
+const resolveKoedHome = (environment: NodeJS.ProcessEnv): string =>
+  resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
+
+const resolveExplorerCredentialPath = (
+  environment: NodeJS.ProcessEnv
+): string =>
+  resolve(resolveKoedHome(environment), "config", "explorer-token.json");
+
+const readExplorerCredential = (
+  environment: NodeJS.ProcessEnv
+): { ok: true; apiToken: string } | { ok: false; error: string } => {
+  const credentialPath = resolveExplorerCredentialPath(environment);
+  if (!nodeExistsSync(credentialPath)) {
+    return { ok: false, error: "Explorer credential is not provisioned." };
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(credentialPath, "utf8")) as {
+      apiToken?: unknown;
+    };
+    return typeof parsed.apiToken === "string" && parsed.apiToken.trim()
+      ? { ok: true, apiToken: parsed.apiToken.trim() }
+      : { ok: false, error: "Explorer credential is missing an API Token." };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+};
+
+const parseCreatedApiToken = (output: string): string | null => {
+  const match = /^Token:\s*(\S+)$/m.exec(output);
+  return match?.[1] ?? null;
+};
+
+const readDesktopPorts = (
+  environment: NodeJS.ProcessEnv
+): Record<string, string> => {
+  const portsPath = resolve(
+    resolveKoedHome(environment),
+    "config",
+    "local-ports.json"
+  );
+  if (!nodeExistsSync(portsPath)) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(portsPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([, value]) => typeof value === "string" && value.trim())
+        .map(([key, value]) => [key, String(value)])
+    );
+  } catch {
+    return {};
+  }
+};
+
+const bundledLocalDatabaseUrl = (environment: NodeJS.ProcessEnv): string => {
+  const ports = readDesktopPorts(environment);
+  const user = environment.POSTGRES_USER ?? "koed";
+  const password =
+    environment.POSTGRES_PASSWORD ??
+    environment.KOED_BUNDLED_POSTGRES_PASSWORD ??
+    "koed-local-postgres";
+  const database = environment.POSTGRES_DB ?? "koed";
+  const host = environment.KOED_POSTGRES_HOST ?? "127.0.0.1";
+  const port =
+    environment.KOED_POSTGRES_PORT ??
+    environment.POSTGRES_HOST_PORT ??
+    ports.postgres ??
+    "15432";
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+};
+
 const hasHealthyApi = (value: unknown): boolean => {
   if (typeof value !== "object" || value === null || !("api" in value)) {
     return false;
@@ -178,7 +264,8 @@ export const createKoedEnvironment = (
         KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
         KOED_DEPENDENCY_MODE:
           environment.KOED_DEPENDENCY_MODE ?? "bundled-local",
-        WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local"
+        WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
+        KOED_AUTO_PORTS: environment.KOED_AUTO_PORTS ?? "1"
       }
     : {})
 });
@@ -247,6 +334,7 @@ export const createKoedServerManager = ({
     for (let attempt = 0; attempt < 90; attempt += 1) {
       latest = await runJson(["status"], 10_000);
       if (hasHealthyApi(latest)) {
+        await provisionExplorerCredential();
         return withDesktopStartLog(latest, startOutputLines);
       }
       await sleep(1_000);
@@ -261,9 +349,77 @@ export const createKoedServerManager = ({
     );
   };
 
+  const provisionExplorerCredential = () =>
+    new Promise<{ ok: true; apiToken: string } | { ok: false; error: string }>(
+      (resolvePromise) => {
+        const current = readExplorerCredential(environment);
+        if (current.ok) {
+          resolvePromise(current);
+          return;
+        }
+        if (environment.KOED_AUTO_PORTS !== "1") {
+          resolvePromise(current);
+          return;
+        }
+
+        execFile(
+          "pnpm",
+          [
+            "api-token:create",
+            "--owner-email",
+            "desktop@koed.local",
+            "--name",
+            "Koed Desktop"
+          ],
+          {
+            cwd: repoRoot,
+            env: {
+              ...environment,
+              DATABASE_URL: bundledLocalDatabaseUrl(environment)
+            },
+            timeout: 120_000
+          },
+          (error, stdout, stderr) => {
+            if (error) {
+              resolvePromise({
+                ok: false,
+                error: stderr.trim() || stdout.trim() || error.message
+              });
+              return;
+            }
+            const token = parseCreatedApiToken(stdout);
+            if (!token) {
+              resolvePromise({
+                ok: false,
+                error: `Could not parse Koed API Token from output: ${stdout.trim()}`
+              });
+              return;
+            }
+            const credentialPath = resolveExplorerCredentialPath(environment);
+            mkdirSync(resolve(credentialPath, ".."), { recursive: true });
+            writeFileSync(
+              credentialPath,
+              `${JSON.stringify(
+                {
+                  apiToken: token,
+                  provisionedAt: new Date().toISOString(),
+                  source: "environment"
+                },
+                null,
+                2
+              )}\n`,
+              { mode: 0o600 }
+            );
+            resolvePromise({ ok: true, apiToken: token });
+          }
+        );
+      }
+    );
+
   const start = async () => {
     const current = await runJson(["status"], 10_000);
     if (hasHealthyApi(current)) {
+      await provisionExplorerCredential();
       return current;
     }
 
@@ -378,6 +534,7 @@ export const createKoedServerManager = ({
           ],
           600_000
         ),
+      explorer_credential: () => provisionExplorerCredential(),
       start,
       open_external: async (args) => {
         const url = typeof args?.url === "string" ? args.url : "";

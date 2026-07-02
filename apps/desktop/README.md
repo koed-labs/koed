@@ -57,6 +57,12 @@ KOED_REPO_ROOT /path/to/koed` before using `open`. Without those overrides, the
 packaged app uses its bundled `koed-server` CLI and reports missing runtime
 diagnostics instead of crashing.
 
+Packaged Desktop bundled-local startup asks `koed-server` to allocate local
+ports automatically. The first successful allocation is persisted under
+`KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
+API, Explorer, Postgres, and Embedding Service ports while avoiding common
+local development or Docker port collisions.
+
 ## Notes
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
