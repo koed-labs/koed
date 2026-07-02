@@ -324,6 +324,62 @@ describe("Codex capture hook transcript parsing", () => {
     });
   });
 
+  it("queues Stop catch-up without duplicate foreground capture while an earlier catch-up is in flight", async () => {
+    await withHookStateFile(async () => {
+      const triggerCatchup = vi.fn();
+      const runPass = vi.fn(async () => ({
+        rawItemsStored: 1,
+        rawItemsProjected: 1,
+        transcriptPath: "/tmp/koed-stop-seal-catchup.jsonl",
+        transcriptCheckpointOffset: 128,
+        transcriptSize: 128,
+        transcriptBacklogBytes: 0,
+        transcriptBacklogRemaining: false,
+        transcriptCheckpointAdvanced: true
+      }));
+      const transcriptPath = "/tmp/koed-stop-seal-catchup.jsonl";
+      const postToolPayload = {
+        hook_event_name: "PostToolUse" as const,
+        session_id: "session-stop-seal",
+        transcript_path: transcriptPath,
+        cwd: "/repo"
+      };
+      const stopPayload = {
+        hook_event_name: "Stop" as const,
+        session_id: "session-stop-seal",
+        turn_id: "turn-stop-seal",
+        transcript_path: transcriptPath,
+        cwd: "/repo"
+      };
+
+      await runForegroundCapturePass({
+        payload: postToolPayload,
+        triggerCatchup
+      });
+      const result = await runForegroundCapturePass({
+        payload: stopPayload,
+        triggerCatchup,
+        runPass
+      });
+
+      expect(triggerCatchup).toHaveBeenCalledTimes(2);
+      expect(triggerCatchup).toHaveBeenNthCalledWith(
+        1,
+        undefined,
+        postToolPayload
+      );
+      expect(triggerCatchup).toHaveBeenNthCalledWith(2, undefined, stopPayload);
+      expect(runPass).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        rawItemsStored: 0,
+        rawItemsProjected: 0,
+        transcriptPath,
+        transcriptBacklogRemaining: true,
+        transcriptCheckpointAdvanced: false
+      });
+    });
+  });
+
   it("records successful detached transcript catch-up breadcrumbs", async () => {
     await withHookStateFile(async ({ dir, statePath }) => {
       const transcriptPath = path.join(dir, "transcript.jsonl");

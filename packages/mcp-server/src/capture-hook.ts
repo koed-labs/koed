@@ -2386,10 +2386,14 @@ const triggerDetachedTranscriptCatchup = (
   child.unref();
 };
 
+const hookPayloadIsTurnCompleteSignal = (payload: HookPayload): boolean =>
+  /^(Stop|SubagentStop)$/i.test(payload.hook_event_name ?? "");
+
 const shouldTriggerDetachedTranscriptCatchup = (
   configPath: string | undefined,
   payload: HookPayload,
-  now = Date.now()
+  now = Date.now(),
+  options: { force?: boolean } = {}
 ): boolean => {
   if (!hookTriggersTranscriptCatchup()) {
     return false;
@@ -2418,12 +2422,14 @@ const shouldTriggerDetachedTranscriptCatchup = (
     ? Date.parse(status.lastFinishedAt)
     : Number.NaN;
   if (
+    !options.force &&
     Number.isFinite(lastStartedAt) &&
     (!Number.isFinite(lastFinishedAt) || lastFinishedAt < lastStartedAt)
   ) {
     return false;
   }
   if (
+    !options.force &&
     status?.lastError &&
     Number.isFinite(lastFinishedAt) &&
     now - lastFinishedAt < hookBreakerCooldownMs()
@@ -2841,8 +2847,27 @@ export const runForegroundCapturePass = (input: {
   }
   const triggerCatchup =
     input.triggerCatchup ?? triggerDetachedTranscriptCatchup;
-  if (shouldTriggerDetachedTranscriptCatchup(configPath, payload)) {
+  const turnCompleteSignal = hookPayloadIsTurnCompleteSignal(payload);
+  if (
+    shouldTriggerDetachedTranscriptCatchup(configPath, payload, Date.now(), {
+      force: turnCompleteSignal
+    })
+  ) {
     triggerCatchup(configPath, payload);
+    return Promise.resolve({
+      rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptPath,
+      transcriptBacklogRemaining: true,
+      transcriptCheckpointAdvanced: false
+    });
+  }
+  if (turnCompleteSignal) {
+    return (input.runPass ?? runCapturePass)({
+      configPath,
+      payload,
+      mode: "foreground"
+    });
   }
   return Promise.resolve({
     rawItemsStored: 0,
