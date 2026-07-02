@@ -10,7 +10,7 @@ test("codex bootstrap args respect env defaults and flags", () => {
   assert.deepEqual(args, {
     ownerEmail: "local@koed.ai",
     name: "Codex",
-    apiUrl: "http://localhost:3000",
+    apiUrl: "http://localhost:3300",
     nodeCommand: "/opt/node",
     skipBuild: true,
     skipVerify: false,

@@ -265,7 +265,8 @@ export const createKoedEnvironment = (
         KOED_DEPENDENCY_MODE:
           environment.KOED_DEPENDENCY_MODE ?? "bundled-local",
         WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
-        KOED_AUTO_PORTS: environment.KOED_AUTO_PORTS ?? "1"
+        KOED_AUTO_PORTS: environment.KOED_AUTO_PORTS ?? "1",
+        KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1"
       }
     : {})
 });

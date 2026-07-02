@@ -83,16 +83,21 @@ MCP-side workers.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
-   the control plane. `koed-server repair codex --json` is the narrower Desktop
-   repair path: it rewrites the Koed-managed Codex MCP block and hook config
-   for the currently active local API URL/token without running the full
-   bootstrap.
+   the control plane. Setup applies persisted auto-allocated local ports before
+   resolving the API/Explorer URLs, so Desktop-managed ports and direct CLI
+   setup write the same target URL/token. `koed-server repair codex --json` is
+   the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
+   block and hook config for the currently active local API URL/token without
+   running the full bootstrap.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
     offer one-click Codex integration repair for stale local config, and embed
     Explorer without requiring the Operator to invoke repo-local scripts
-    directly. Desktop manages only its local personal `koed-server`; remote,
-    Team Self-Hosted, and cloud targets are connect-only.
+    directly. Desktop readiness waits for API, Worker/queues, Explorer, and
+    the provisioned Explorer credential so static Explorer reachability cannot
+    mask an unhealthy processing path. Desktop manages only its local personal
+    `koed-server`; remote, Team Self-Hosted, and cloud targets are
+    connect-only.
 
 ## Capability Discovery
 

@@ -185,8 +185,8 @@ This project is still a PoC/MVP. If the raw ingestion schema changes before
 release, a fresh local reset is acceptable:
 
 ```bash
-docker compose -f examples/docker-compose/docker-compose.yml down -v
-docker compose -f examples/docker-compose/docker-compose.yml up --build
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml down -v
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up --build
 ```
 
 Preserve `.env` before any reset if it contains local API tokens or developer

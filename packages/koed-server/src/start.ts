@@ -162,7 +162,8 @@ const waitForHealthyOrReady = async ({
       lastStatus.api.state === "healthy" &&
       lastStatus.database.state === "healthy" &&
       lastStatus.redis.state === "healthy" &&
-      lastStatus.embeddingService.state === "healthy"
+      lastStatus.embeddingService.state === "healthy" &&
+      lastStatus.workerQueues.state === "healthy"
     ) {
       return lastStatus;
     }
@@ -174,6 +175,44 @@ const waitForHealthyOrReady = async ({
 const resolveWorkQueueBackend = (
   value: string | undefined
 ): "bullmq" | "local" => (value?.trim() === "local" ? "local" : "bullmq");
+
+const prefixedApiEnv = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  name: string
+): string | undefined =>
+  environment[`API_${name}`] ??
+  repoEnv[`API_${name}`] ??
+  environment[name] ??
+  repoEnv[name];
+
+const assertSourceRuntimeAvailable = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv
+): void => {
+  if (environment.KOED_PACKAGED_DESKTOP !== "1") {
+    return;
+  }
+  const requiredPaths = [
+    resolve(paths.repoRoot, "scripts/setup-env.mjs"),
+    resolve(paths.repoRoot, "apps/api/package.json"),
+    resolve(paths.repoRoot, "apps/worker/package.json"),
+    resolve(paths.repoRoot, "apps/explorer/package.json"),
+    resolve(paths.repoRoot, "packages/db/package.json"),
+    resolve(paths.repoRoot, "packages/mcp-server/package.json")
+  ];
+  const missing = requiredPaths.filter((item) => !existsSync(item));
+  if (missing.length === 0) {
+    return;
+  }
+  throw new Error(
+    [
+      "This koed-server start path currently requires a Koed source checkout with workspace packages and scripts.",
+      `Missing runtime files under ${paths.repoRoot}: ${missing.join(", ")}.`,
+      "Set KOED_REPO_ROOT to a Koed checkout, or use a packaged build that includes self-contained API/Worker/Explorer runtime artifacts."
+    ].join(" ")
+  );
+};
 
 const resolveEffectiveWorkQueueBackend = (
   config: KoedServerConfig,
@@ -234,7 +273,12 @@ const corsOrigins = (
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>
 ): string => {
-  const configured = [repoEnv.API_CORS_ORIGINS, environment.CORS_ORIGINS]
+  const configured = [
+    environment.API_CORS_ORIGINS,
+    repoEnv.API_CORS_ORIGINS,
+    environment.CORS_ORIGINS,
+    repoEnv.CORS_ORIGINS
+  ]
     .flatMap((value) => value?.split(",") ?? [])
     .map((value) => value.trim())
     .filter(Boolean);
@@ -298,8 +342,16 @@ const localServiceEnv = (
     ...repoEnv,
     ...(apiToken ? { VITE_KOED_API_TOKEN: apiToken.token } : {}),
     ...environment,
-    NODE_ENV: repoEnv.API_NODE_ENV ?? environment.NODE_ENV ?? "production",
-    LOG_LEVEL: repoEnv.API_LOG_LEVEL ?? environment.LOG_LEVEL,
+    NODE_ENV:
+      environment.API_NODE_ENV ??
+      repoEnv.API_NODE_ENV ??
+      environment.NODE_ENV ??
+      "production",
+    LOG_LEVEL:
+      environment.API_LOG_LEVEL ??
+      repoEnv.API_LOG_LEVEL ??
+      environment.LOG_LEVEL,
+    API_HOST: environment.API_HOST ?? repoEnv.API_HOST ?? "127.0.0.1",
     WORK_QUEUE_BACKEND: queueBackend,
     KOED_MODELS_DIR: modelsDir,
     WORKER_LOG_LEVEL: repoEnv.WORKER_LOG_LEVEL ?? environment.WORKER_LOG_LEVEL,
@@ -314,11 +366,83 @@ const localServiceEnv = (
       serverConfig.external?.redisUrl ??
       environment.REDIS_URL ??
       repoEnv.REDIS_URL,
-    RATE_LIMIT_REDIS_URL: repoEnv.API_RATE_LIMIT_REDIS_URL ?? "",
-    CACHE_REDIS_URL: repoEnv.API_CACHE_REDIS_URL ?? "",
+    RATE_LIMIT_STORE: prefixedApiEnv(environment, repoEnv, "RATE_LIMIT_STORE"),
+    RATE_LIMIT_REDIS_URL:
+      prefixedApiEnv(environment, repoEnv, "RATE_LIMIT_REDIS_URL") ?? "",
+    AUTH_RATE_LIMIT_WINDOW_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "AUTH_RATE_LIMIT_WINDOW_MS"
+    ),
+    AUTH_RATE_LIMIT_MAX: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "AUTH_RATE_LIMIT_MAX"
+    ),
+    MEMORY_RATE_LIMIT_WINDOW_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_RATE_LIMIT_WINDOW_MS"
+    ),
+    MEMORY_RATE_LIMIT_MAX: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_RATE_LIMIT_MAX"
+    ),
+    MEMORY_READ_RATE_LIMIT_WINDOW_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_READ_RATE_LIMIT_WINDOW_MS"
+    ),
+    MEMORY_READ_RATE_LIMIT_MAX: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_READ_RATE_LIMIT_MAX"
+    ),
+    MEMORY_WRITE_RATE_LIMIT_WINDOW_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_WRITE_RATE_LIMIT_WINDOW_MS"
+    ),
+    MEMORY_WRITE_RATE_LIMIT_MAX: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_WRITE_RATE_LIMIT_MAX"
+    ),
+    MEMORY_RECALL_RATE_LIMIT_WINDOW_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_RECALL_RATE_LIMIT_WINDOW_MS"
+    ),
+    MEMORY_RECALL_RATE_LIMIT_MAX: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_RECALL_RATE_LIMIT_MAX"
+    ),
+    CACHE_STORE: prefixedApiEnv(environment, repoEnv, "CACHE_STORE"),
+    CACHE_REDIS_URL:
+      prefixedApiEnv(environment, repoEnv, "CACHE_REDIS_URL") ?? "",
+    GRAPH_CACHE_TTL_SECONDS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "GRAPH_CACHE_TTL_SECONDS"
+    ),
+    GRAPH_UPDATE_DEBOUNCE_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "GRAPH_UPDATE_DEBOUNCE_MS"
+    ),
+    MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS: prefixedApiEnv(
+      environment,
+      repoEnv,
+      "MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS"
+    ),
     DATA_ENCRYPTION_KEY:
-      repoEnv.API_DATA_ENCRYPTION_KEY ?? environment.DATA_ENCRYPTION_KEY,
-    API_TOKEN_PEPPER: repoEnv.API_TOKEN_PEPPER ?? environment.API_TOKEN_PEPPER,
+      environment.API_DATA_ENCRYPTION_KEY ??
+      repoEnv.API_DATA_ENCRYPTION_KEY ??
+      environment.DATA_ENCRYPTION_KEY ??
+      repoEnv.DATA_ENCRYPTION_KEY,
+    API_TOKEN_PEPPER: environment.API_TOKEN_PEPPER ?? repoEnv.API_TOKEN_PEPPER,
     EMBEDDING_SERVICE_URL:
       serverConfig.dependencyMode === "external"
         ? (serverConfig.external?.embeddingServiceUrl ??
@@ -495,6 +619,7 @@ export const startKoedServer = async ({
 }: KoedServerStartOptions = {}): Promise<void> => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  assertSourceRuntimeAvailable(paths, environment);
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
   environment = await allocateAndPersistLocalPorts(paths, environment);
 
@@ -809,7 +934,8 @@ export const startKoedServer = async ({
           api: status.api,
           database: status.database,
           redis: status.redis,
-          embeddingService: status.embeddingService
+          embeddingService: status.embeddingService,
+          workerQueues: status.workerQueues
         },
         null,
         2

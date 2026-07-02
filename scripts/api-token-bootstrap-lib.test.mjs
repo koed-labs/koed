@@ -219,7 +219,7 @@ test("formats blank AggregateError database connection failures", () => {
   assert.match(message, /Could not connect to Postgres using DATABASE_URL/);
   assert.match(
     message,
-    /docker compose -f examples\/docker-compose\/docker-compose\.yml up postgres/
+    /docker compose --env-file \.env -f examples\/docker-compose\/docker-compose\.yml up postgres/
   );
   assert.match(message, /connect ECONNREFUSED 127\.0\.0\.1:15432/);
 });

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCodexBootstrap } from "./codex-bootstrap.mjs";
@@ -21,7 +22,32 @@ Runs the guided Koed client bootstrap path after koed-server has started:
 const hasHelpArg = (argv) =>
   argv.some((arg) => arg === "--help" || arg === "-h");
 
-const defaultApiUrl = "http://localhost:3000";
+const defaultApiUrl = "http://localhost:3300";
+
+const parseEnvFile = (content) =>
+  Object.fromEntries(
+    content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && line.includes("="))
+      .map((line) => {
+        const separator = line.indexOf("=");
+        const key = line.slice(0, separator).trim();
+        let value = line.slice(separator + 1).trim();
+        if (
+          (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))
+        ) {
+          value = value.slice(1, -1);
+        }
+        return [key, value];
+      })
+  );
+
+const loadRootEnv = (bootstrapRootDir) => {
+  const envPath = resolve(bootstrapRootDir, ".env");
+  return existsSync(envPath) ? parseEnvFile(readFileSync(envPath, "utf8")) : {};
+};
 
 const resolveApiUrl = (environment) =>
   (
@@ -124,6 +150,10 @@ export const runClientsBootstrap = async ({
       command: "docker",
       args: [
         "compose",
+        "--env-file",
+        ".env",
+        "-f",
+        "examples/docker-compose/docker-compose.yml",
         "up",
         "-d",
         "--build",
@@ -135,19 +165,23 @@ export const runClientsBootstrap = async ({
     });
   }
 
-  const apiUrl = resolveApiUrl(environment);
+  const effectiveEnvironment = {
+    ...loadRootEnv(bootstrapRootDir),
+    ...environment
+  };
+  const apiUrl = resolveApiUrl(effectiveEnvironment);
   await waitForApiReadyFn({ apiUrl });
 
   const codex = await runCodexBootstrapFn({
     argv: [],
-    environment: { ...environment, MEMORY_API_URL: apiUrl },
+    environment: { ...effectiveEnvironment, MEMORY_API_URL: apiUrl },
     skipSetup: true
   });
 
   const explorer = await runExplorerBootstrapFn({
     token: codex.tokenResult.token,
     rootDir: bootstrapRootDir,
-    environment
+    environment: effectiveEnvironment
   });
 
   const result = { codex, explorer };

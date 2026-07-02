@@ -29,7 +29,7 @@ For local personal use with native bundled resources installed, `koed-server sta
 
 ```bash
 pnpm env:setup
-docker compose -f examples/docker-compose/docker-compose.yml up -d --build
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
 pnpm desktop:start
 ```
 

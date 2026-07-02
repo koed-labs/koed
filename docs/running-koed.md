@@ -20,7 +20,7 @@ For local personal use with native bundled resources installed, `koed-server sta
 
 ```bash
 pnpm env:setup
-docker compose -f examples/docker-compose/docker-compose.yml up -d --build
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
 pnpm desktop:start
 ```
 
@@ -91,7 +91,7 @@ pnpm smoke:bundled-local -- --full --install-runtime --json
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
 ```bash
-REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose -f examples/docker-compose/docker-compose.yml up -d --build
+REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
 KOED_DEPENDENCY_MODE=external API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
 ```
 
@@ -125,7 +125,8 @@ smoke profile. The profile lowers the LCM thresholds and raises only the local
 write limit needed for the test; it does not change product defaults.
 
 ```bash
-docker compose -f examples/docker-compose/docker-compose.yml --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build postgres redis embedding-service
+# In another shell, run koed-server start with scripts/lcm-smoke.env loaded before pnpm smoke:lcm
 pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
 MEMORY_API_TOKEN=<token> pnpm smoke:lcm
 ```

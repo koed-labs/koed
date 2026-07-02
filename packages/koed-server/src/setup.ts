@@ -157,6 +157,7 @@ export const setupCodex = ({
 }: KoedServerSetupOptions = {}): KoedServerSetupCodexResult => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,

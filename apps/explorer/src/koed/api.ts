@@ -15,6 +15,11 @@ import type {
 import { koedDebug, koedDebugTimed } from "./debug";
 import { selectedThreadEventPageSize } from "./threadDetailCache";
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+const isLoopbackHostname = (hostname: string): boolean =>
+  LOOPBACK_HOSTS.has(hostname) || hostname.startsWith("127.");
+
 const apiBaseUrlFromDesktopQuery = (): string | null => {
   if (typeof window === "undefined") return null;
   const params = new URLSearchParams(window.location.search);
@@ -22,8 +27,12 @@ const apiBaseUrlFromDesktopQuery = (): string | null => {
   const value = params.get("koedApiBaseUrl")?.trim();
   if (!value) return null;
   try {
-    const url = new URL(value);
-    return url.toString().replace(/\/$/, "");
+    const pageUrl = new URL(window.location.href);
+    const apiUrl = new URL(value);
+    if (!isLoopbackHostname(pageUrl.hostname)) return null;
+    if (!isLoopbackHostname(apiUrl.hostname)) return null;
+    if (!["http:", "https:"].includes(apiUrl.protocol)) return null;
+    return apiUrl.toString().replace(/\/$/, "");
   } catch {
     return null;
   }
@@ -33,7 +42,7 @@ export const apiBaseUrl = (
   apiBaseUrlFromDesktopQuery() ??
   import.meta.env.VITE_KOED_API_BASE_URL ??
   import.meta.env.VITE_API_BASE_URL ??
-  "http://localhost:3000"
+  "http://localhost:3300"
 ).replace(/\/$/, "");
 
 const includeInvalidated = false;

@@ -16,7 +16,7 @@ const repoRoot = process.cwd();
 const apiUrl =
   process.env.MEMORY_API_URL ??
   process.env.CODEX_MEMORY_BASE_URL ??
-  "http://localhost:3000";
+  "http://localhost:3300";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const appServerBinary = process.env.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";

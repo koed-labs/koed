@@ -473,7 +473,10 @@ const explorerReady = (): boolean =>
   explorerCredentialProvisioned() &&
   Boolean(explorerApiToken);
 
-const desktopReady = (): boolean => explorerReady();
+const desktopReady = (): boolean =>
+  status?.api.state === "healthy" &&
+  status?.workerQueues.state === "healthy" &&
+  explorerReady();
 
 const commandResultError = (value: unknown): string | null => {
   if (typeof value !== "object" || value === null || !("error" in value)) {
@@ -1688,11 +1691,28 @@ const runStartupSequence = async () => {
       setStartupStep("start", "skipped");
     }
 
-    setStartupStep("setup", "skipped");
+    if (!startupStepReady("setup")) {
+      startupDetail =
+        "Configuring Codex integration and provisioning Explorer credentials.";
+      setStartupStep("setup", "running");
+      appendStartupLog("command: koed-server setup codex --json");
+      const setupResult = await runWithStartupProbes("setup", () =>
+        invokeWithTimeout("setup_codex", undefined, 300_000)
+      );
+      const setupError = commandResultError(setupResult);
+      if (setupError) {
+        throw new Error(`koed-server setup codex failed: ${setupError}`);
+      }
+      await waitForStartupStepReady("setup");
+      setStartupStep("setup", "done");
+    } else {
+      setStartupStep("setup", "skipped");
+    }
 
-    startupDetail = "Waiting for Explorer to become available.";
+    startupDetail =
+      "Waiting for API, Worker, and Explorer to become available.";
     setStartupStep("health", "running");
-    appendStartupLog("checking: Explorer reachability");
+    appendStartupLog("checking: API, Worker/queues, and Explorer reachability");
     await waitForDesktopReady();
     setStartupStep("health", "done");
     await refreshStatus();

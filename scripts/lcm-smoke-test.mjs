@@ -17,7 +17,7 @@ for (let index = 2; index < process.argv.length; index += 1) {
 const apiUrl = (
   args.get("api-url") ??
   process.env.MEMORY_API_URL ??
-  "http://localhost:3000"
+  "http://localhost:3300"
 ).replace(/\/+$/, "");
 const defaultComposeProject = path
   .basename(process.cwd())
@@ -221,7 +221,7 @@ const assertRunningSmokeProfile = () => {
     [
       "Running Docker Compose services do not match the LCM smoke profile.",
       "Start a smoke-profile stack first:",
-      "docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis"
+      "Run koed-server start with scripts/lcm-smoke.env loaded, or set LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE=1 for the legacy Compose app profile."
     ].join("\n"),
     { composeProject, mismatches }
   );
@@ -409,7 +409,9 @@ const main = async () => {
   console.log(
     `Local LCM summary model: ${summaryModel} (${summaryReasoningEffort})`
   );
-  assertRunningSmokeProfile();
+  if (process.env.LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE === "1") {
+    assertRunningSmokeProfile();
+  }
 
   let token = existingApiToken;
   let authLabel = "existing API token";

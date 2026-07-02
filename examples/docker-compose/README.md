@@ -6,7 +6,7 @@ From the repo root:
 
 ```bash
 pnpm env:setup
-docker compose -f examples/docker-compose/docker-compose.yml up -d --build
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
 pnpm --filter @koed/koed-server build
 KOED_DEPENDENCY_MODE=external node packages/koed-server/dist/cli.js start
 ```
@@ -20,7 +20,7 @@ set -a
 set +a
 
 POSTGRES_HOST_PORT=15433 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 \
-  docker compose -f examples/docker-compose/docker-compose.yml up -d --build
+  docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
 
 KOED_DEPENDENCY_MODE=external \
 DATABASE_URL=postgres://koed:${POSTGRES_PASSWORD}@localhost:15433/koed \
@@ -32,5 +32,5 @@ node packages/koed-server/dist/cli.js start
 Stop the external stack yourself when done:
 
 ```bash
-docker compose -f examples/docker-compose/docker-compose.yml down
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml down
 ```
