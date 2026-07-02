@@ -21,7 +21,7 @@ that memory available through MCP recall.
 ## Quickstart
 
 > [!IMPORTANT]  
-> The `epic/electron-control-refactor` branch is experimental. It splits Koed Desktop/`koed-server` supervision from dependency lifecycle. Docker Compose remains a useful external dependency starter; `koed-server` does not own Compose lifecycle. `bundled-local` mode uses native Koed-owned dependencies under `KOED_HOME`; model downloads are explicit `koed-server models install` steps with SHA-256 verification.
+> Koed Desktop/`koed-server` supervision is split from dependency lifecycle. Docker Compose remains a useful external dependency starter; `koed-server` does not own Compose lifecycle. `bundled-local` mode uses native Koed-owned dependencies under `KOED_HOME`; model downloads are explicit `koed-server models install` steps with SHA-256 verification.
 >
 > Codex is currently the only supported AI Client integration for capture and recall. Future integrations are tracked separately.
 

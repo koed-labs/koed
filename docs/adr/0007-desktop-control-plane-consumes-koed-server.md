@@ -1,11 +1,11 @@
-# Proposed Desktop Control Plane Consumes koed-server
+# Desktop Control Plane Consumes koed-server
 
-Status: Proposed for KOE-217 and KOE-243.
+Status: Accepted and implemented by Koed Desktop and `koed-server`.
 
-Related proposals:
+Related decisions:
 
-- [0005 Proposed Native Bundled-Local Runtime Asset Provisioning Boundary](./0005-bundled-local-runtime-asset-provisioning.md)
-- [0006 Proposed macOS Homebrew-First Runtime Provisioning](./0006-macos-homebrew-first-runtime-provisioning.md)
+- [0005 Native Bundled-Local Runtime Asset Provisioning Boundary](./0005-bundled-local-runtime-asset-provisioning.md)
+- [0006 macOS Homebrew-First Runtime Provisioning](./0006-macos-homebrew-first-runtime-provisioning.md)
 
 ## Context
 
@@ -29,51 +29,51 @@ setup actions, and machine-readable contracts. Electron Desktop can make those
 flows approachable, but duplicating the same logic in Electron would create two
 control planes with different behavior.
 
-The product needs a durable boundary before the Electron work lands on `main`:
+The product needs a durable boundary for the Electron control-plane work:
 Desktop should be the Operator-facing control surface, while `koed-server`
 remains the single implementation of local control-plane behavior.
 
 ## Decision
 
-This ADR proposes that Koed Desktop consume `koed-server` control-plane
-capabilities rather than reimplement them.
+Koed Desktop consumes `koed-server` control-plane capabilities rather than
+reimplementing them.
 
-- `koed-server` should remain the source of truth for local service lifecycle,
+- `koed-server` remains the source of truth for local service lifecycle,
   dependency-mode resolution, setup, status, diagnostics, logs, and verification.
-- Koed Desktop should be an Operator-facing control surface and orchestrator.
+- Koed Desktop is an Operator-facing control surface and orchestrator.
   For the local personal target, it may start, stop, restart, and monitor a
-  managed `koed-server`, but it should do so through stable `koed-server`
+  managed `koed-server`, but it does so through stable `koed-server`
   command or API contracts. For Team Self-Hosted, Koed-managed cloud, and other
   remote targets, Desktop should connect to the selected backend and should not
   manage that backend's service lifecycle or dependencies.
-- Desktop should not implement independent dependency detection, runtime asset
+- Desktop does not implement independent dependency detection, runtime asset
   provisioning, model install, migration readiness, pgvector checks, work queue
   checks, MCP Server setup, Supported Capture Hook setup, Codex configuration,
   or current local/self-hosted API Token setup. Those capabilities should live
   behind `koed-server` contracts until superseded by a dedicated enrollment
   contract.
-- Any setup flow visible in Desktop should also be available through a headless
+- Any setup flow visible in Desktop is also available through a headless
   or scriptable `koed-server` surface. Desktop may present a guided first-run
-  experience, but the underlying actions should be reusable by Local Operator
+  experience, but the underlying actions are reusable by Local Operator
   Scripts and headless installs.
 - `koed-server status --json`, `doctor --json`, setup commands, runtime status,
-  runtime install, model install, and future verification commands should provide
+  runtime install, model install, and future verification commands provide
   stable machine-readable contracts for Desktop and automation.
 - Desktop may provide progress UI, explanations, prompts, links to logs, and
-  recovery actions, but it should treat `koed-server` results as authoritative.
-- Desktop may provide package-specific defaults for its own managed local
+  recovery actions, but it treats `koed-server` results as authoritative.
+- Desktop provides package-specific defaults for its own managed local
   personal `koed-server`, such as choosing bundled-local mode for first startup.
-  Those defaults should not change remote/backend targets, and they should not
+  Those defaults do not change remote/backend targets, and they should not
   change standalone headless behavior except where the headless install is also
   identified as fresh local-personal.
 - External dependency mode remains Operator-owned. If Desktop connects to or
-  starts a `koed-server` configured for external dependency mode, Desktop should
-  surface missing endpoint or readiness diagnostics from `koed-server` rather
+  starts a `koed-server` configured for external dependency mode, Desktop
+  surfaces missing endpoint or readiness diagnostics from `koed-server` rather
   than attempting to install or manage those dependencies itself.
-- Desktop credential flows should consume the current local/self-hosted
+- Desktop credential flows consume the current local/self-hosted
   `koed-server` setup contracts while leaving room for KOE-218's device/app
   enrollment contract. API Tokens may remain the compatibility mechanism for
-  current self-hosted AI-client integrations, but Desktop should not hard-code an
+  current self-hosted AI-client integrations, but Desktop does not hard-code an
   API Token-only future if enrollment becomes the accepted product flow.
 - Backend LLM synthesis remains out of scope. Desktop may configure or invoke
   AI-client-backed local flows, but Koed still returns Evidence Bundles and the
@@ -112,11 +112,5 @@ boundary: `koed` is the Electron control plane package, while `koed-server` is
 the headless local control-plane package. Desktop depends on and manages
 `koed-server`; it does not replace it.
 
-If this proposal is accepted, the KOE-217/KOE-243 implementation must update
-`docs/service-sequence-overview.md` when service ordering and boundaries change.
-This ADR-only proposal does not update the sequence overview by itself.
-
-If this proposal is not accepted, the Electron implementation should explicitly
-document which setup and diagnostic responsibilities are Desktop-only, how they
-stay consistent with headless `koed-server`, and how Operators can perform the
-same setup without Desktop.
+`docs/service-sequence-overview.md` is updated alongside implementation changes
+that affect service ordering or boundaries.

@@ -1,9 +1,11 @@
 # Koed Explorer
 
 Koed Explorer is a focused web app for browsing captured Koed memory history.
-This fork keeps only the browser app and the minimal tooling needed to build it.
-The upstream desktop, server, marketing, release, remote-access, and platform
-package paths have been removed.
+The Explorer package keeps only the browser app and the minimal tooling needed
+to build it.
+Upstream desktop, server, marketing, release, remote-access, and platform
+package paths have been removed from `apps/explorer`; Koed Desktop and the
+local control plane live elsewhere in this repository.
 
 ## Current Scope
 
@@ -17,7 +19,8 @@ package paths have been removed.
 
 - pnpm 11.1.2
 - Node.js 24.13.1
-- A running Koed API that exposes `/v1/memory/graph/stream`
+- A running Koed API that exposes `/v1/memory/graph/stream` (the
+  `koed-server` supervised default is `http://localhost:3300`)
 - A Koed API token
 
 ## Development
@@ -37,7 +40,7 @@ pnpm explorer:bootstrap --token "$KOED_API_TOKEN"
 Run the browser app against a local Koed API:
 
 ```bash
-VITE_KOED_API_BASE_URL=http://localhost:3000 \
+VITE_KOED_API_BASE_URL=http://localhost:3300 \
 VITE_KOED_API_TOKEN="$KOED_API_TOKEN" \
 pnpm explorer:dev
 ```

@@ -17,8 +17,8 @@ values and adds any missing keys from
 ## `koed-server` Dependency Ownership
 
 `koed-server` reads `KOED_HOME/config/server.json` plus environment overrides.
-This experimental branch defaults source checkouts to `runtimeMode: "developer"`
-and `dependencyMode: "external"`.
+Source checkouts default to `runtimeMode: "developer"` and
+`dependencyMode: "external"`.
 
 External dependency mode means the Operator manages Postgres, Redis/BullMQ, and
 the Embedding Service lifecycle. The services may be launched by Docker Compose,

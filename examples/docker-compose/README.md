@@ -7,12 +7,18 @@ From the repo root:
 ```bash
 pnpm env:setup
 docker compose -f examples/docker-compose/docker-compose.yml up -d --build
-KOED_DEPENDENCY_MODE=external koed-server start
+pnpm --filter @koed/koed-server build
+KOED_DEPENDENCY_MODE=external node packages/koed-server/dist/cli.js start
 ```
 
-Use explicit URLs when host ports differ:
+Use explicit URLs when host ports differ. Compose reads `.env`, but your shell
+needs the password exported before interpolating it into `DATABASE_URL`:
 
 ```bash
+set -a
+. ./.env
+set +a
+
 POSTGRES_HOST_PORT=15433 REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 \
   docker compose -f examples/docker-compose/docker-compose.yml up -d --build
 
@@ -20,7 +26,7 @@ KOED_DEPENDENCY_MODE=external \
 DATABASE_URL=postgres://koed:${POSTGRES_PASSWORD}@localhost:15433/koed \
 REDIS_URL=redis://localhost:16380 \
 EMBEDDING_SERVICE_URL=http://localhost:3801 \
-koed-server start
+node packages/koed-server/dist/cli.js start
 ```
 
 Stop the external stack yourself when done:

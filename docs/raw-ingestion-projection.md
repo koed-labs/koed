@@ -185,8 +185,7 @@ This project is still a PoC/MVP. If the raw ingestion schema changes before
 release, a fresh local reset is acceptable:
 
 ```bash
-docker compose -f examples/docker-compose/docker-compose.yml down
-docker volume rm koed_postgres-data
+docker compose -f examples/docker-compose/docker-compose.yml down -v
 docker compose -f examples/docker-compose/docker-compose.yml up --build
 ```
 

@@ -9,8 +9,8 @@ Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis backs
 BullMQ queues when `WORK_QUEUE_BACKEND=bullmq`; the Postgres-backed local queue
 is used when `WORK_QUEUE_BACKEND=local`.
 
-On the experimental `epic/electron-control-refactor` branch, `koed-server`
-defaults to external dependency mode for source checkouts. It connects to
+In source checkouts, `koed-server` defaults to external dependency mode. It
+connects to
 Operator-managed Postgres, Redis/BullMQ, and Embedding Service endpoints; it
 does not start or stop Docker Compose dependencies in external mode.
 
@@ -125,7 +125,7 @@ smoke profile. The profile lowers the LCM thresholds and raises only the local
 write limit needed for the test; it does not change product defaults.
 
 ```bash
-docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis
+docker compose -f examples/docker-compose/docker-compose.yml --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis
 pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
 MEMORY_API_TOKEN=<token> pnpm smoke:lcm
 ```
