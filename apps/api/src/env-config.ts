@@ -33,12 +33,14 @@ export const resolveApiEnv = (
   environment: NodeJS.ProcessEnv = process.env
 ): ApiEnvConfig => {
   const nodeEnv = environment.NODE_ENV ?? "development";
+  const queueBackend =
+    environment.WORK_QUEUE_BACKEND?.trim() === "local" ? "local" : "bullmq";
   resolveSupportedRerankerModelConfig(resolveRerankerKeyFromEnv(environment));
   if (nodeEnv === "production") {
     requireEnv(
       [
         "DATABASE_URL",
-        "REDIS_URL",
+        ...(queueBackend === "bullmq" ? ["REDIS_URL"] : []),
         "DATA_ENCRYPTION_KEY",
         "API_TOKEN_PEPPER",
         "EMBEDDING_SERVICE_TOKEN",

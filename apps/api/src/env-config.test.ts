@@ -68,4 +68,18 @@ describe("resolveApiEnv", () => {
       "DATABASE_URL, REDIS_URL, DATA_ENCRYPTION_KEY, API_TOKEN_PEPPER, EMBEDDING_SERVICE_TOKEN, CORS_ORIGINS"
     );
   });
+
+  it("does not require Redis in production with the local work queue", () => {
+    expect(() =>
+      resolveApiEnv({
+        NODE_ENV: "production",
+        WORK_QUEUE_BACKEND: "local",
+        DATABASE_URL: "postgres://localhost/db",
+        DATA_ENCRYPTION_KEY: "key",
+        API_TOKEN_PEPPER: "pepper",
+        EMBEDDING_SERVICE_TOKEN: "token",
+        CORS_ORIGINS: "http://localhost:5174"
+      })
+    ).not.toThrow();
+  });
 });

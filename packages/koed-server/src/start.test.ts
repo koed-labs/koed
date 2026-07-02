@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createServer, type Server } from "node:net";
 import {
   mkdirSync,
   mkdtempSync,
@@ -81,6 +82,16 @@ const child = (pid: number) => {
   setTimeout(() => value.emit("exit", 0), 0);
   return value as never;
 };
+
+const listen = (port: number): Promise<Server> =>
+  new Promise((resolveListen, rejectListen) => {
+    const server = createServer();
+    server.once("error", rejectListen);
+    server.listen(port, "127.0.0.1", () => resolveListen(server));
+  });
+
+const closeServer = (server: Server): Promise<void> =>
+  new Promise((resolveClose) => server.close(() => resolveClose()));
 
 afterEach(() => {
   for (const path of temps.splice(0)) {
@@ -398,7 +409,7 @@ describe("start supervisor", () => {
     );
   });
 
-  it("requires Operator-managed Redis URL for bundled-local BullMQ override", async () => {
+  it("requires Operator-managed Redis URL for explicit bundled-local BullMQ override", async () => {
     const root = tempDir();
     createNativeResources(root);
     writeFileSync(
@@ -421,6 +432,33 @@ describe("start supervisor", () => {
     ).rejects.toThrow(
       "Bundled-local mode with WORK_QUEUE_BACKEND=bullmq requires an Operator-managed Redis URL"
     );
+  });
+
+  it("defaults bundled-local mode to the local work queue even when repo env is BullMQ", async () => {
+    const root = tempDir();
+    createNativeResources(root);
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_DEPENDENCY_MODE=bundled-local\nWORK_QUEUE_BACKEND=bullmq\n"
+    );
+    const commands: Array<{ env?: NodeJS.ProcessEnv }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: (_command, _args, options) => {
+        commands.push({ env: options?.env });
+        return spawnResult();
+      },
+      spawn: () => child(1),
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    expect(commands.at(-1)?.env?.WORK_QUEUE_BACKEND).toBe("local");
   });
 
   it("does not require Redis URL for external mode with local work queue", async () => {
@@ -448,6 +486,75 @@ describe("start supervisor", () => {
     expect(spawned.map((entry) => entry.args.join(" "))).toContain(
       "--filter @koed/worker start"
     );
+  });
+
+  it("allocates and persists free local ports for Desktop bundled-local startup", async () => {
+    const root = tempDir();
+    createNativeResources(root);
+    const occupiedApi = await listen(43300);
+    const spawned: Array<{ env?: NodeJS.ProcessEnv }> = [];
+
+    try {
+      await startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_AUTO_PORTS: "1",
+          KOED_DEPENDENCY_MODE: "bundled-local"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: (command, args) => {
+          if (args.includes("api-token:create")) {
+            return {
+              stdout: "Created Koed API token.\nToken: koed_test_token\n",
+              stderr: "",
+              status: 0,
+              signal: null,
+              pid: 1,
+              output: []
+            } as never;
+          }
+          if (command.endsWith("pg_ctl") && args.includes("status")) {
+            return {
+              stdout: "",
+              stderr: "not running",
+              status: 1,
+              signal: null,
+              pid: 1,
+              output: []
+            } as never;
+          }
+          return spawnResult();
+        },
+        spawn: (_command, _args, options) => {
+          spawned.push({ env: options?.env });
+          return child(spawned.length);
+        },
+        collectStatus: async () => healthyStatus(root)
+      });
+    } finally {
+      await closeServer(occupiedApi);
+    }
+
+    const ports = JSON.parse(
+      readFileSync(resolve(root, "config/local-ports.json"), "utf8")
+    ) as { api: string; explorer: string; postgres: string; embedding: string };
+    expect(ports.api).not.toBe("43300");
+    expect(Number(ports.explorer)).toBeGreaterThanOrEqual(45174);
+    expect(Number(ports.postgres)).toBeGreaterThanOrEqual(45432);
+    expect(Number(ports.embedding)).toBeGreaterThanOrEqual(43800);
+    expect(spawned.at(-1)?.env?.API_PORT).toBe(ports.api);
+    expect(spawned.at(-1)?.env?.EMBEDDING_SERVICE_URL).toBe(
+      `http://127.0.0.1:${ports.embedding}`
+    );
+    expect(spawned.at(-1)?.env?.CORS_ORIGINS).toContain(
+      `http://localhost:${ports.explorer}`
+    );
+    const credential = JSON.parse(
+      readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+    ) as { apiToken: string };
+    expect(credential.apiToken).toBe("koed_test_token");
   });
 
   it("starts app services without managing external dependencies", async () => {

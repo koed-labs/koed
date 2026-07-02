@@ -100,6 +100,7 @@ export type StatusCardActionCommand =
   | "status"
   | "start"
   | "setup_codex"
+  | "repair_codex"
   | "runtime_install"
   | "doctor"
   | "open_explorer"
@@ -229,12 +230,13 @@ export const statusCards = [
       "The AI Client cannot call Koed memory tools when this is incomplete.",
     componentKeys: ["apiToken", "mcpServer", "codex"],
     primaryAction: {
-      label: "Setup Codex",
-      command: "setup_codex",
-      timeoutMs: 300_000,
+      label: "Fix Codex integration",
+      command: "repair_codex",
+      timeoutMs: 120_000,
       primary: true
     },
     secondaryActions: [
+      { label: "Setup Codex", command: "setup_codex", timeoutMs: 300_000 },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
@@ -247,12 +249,13 @@ export const statusCards = [
       "New conversations will not be captured automatically when this is blocked.",
     componentKeys: ["captureHook", "apiToken", "api"],
     primaryAction: {
-      label: "Verify capture setup",
-      command: "setup_codex",
-      timeoutMs: 300_000,
+      label: "Fix Codex integration",
+      command: "repair_codex",
+      timeoutMs: 120_000,
       primary: true
     },
     secondaryActions: [
+      { label: "Setup Codex", command: "setup_codex", timeoutMs: 300_000 },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Refresh", command: "status", timeoutMs: 10_000 }
     ]
@@ -271,7 +274,11 @@ export const statusCards = [
       primary: true
     },
     secondaryActions: [
-      { label: "Setup Codex", command: "setup_codex", timeoutMs: 300_000 },
+      {
+        label: "Fix Codex integration",
+        command: "repair_codex",
+        timeoutMs: 120_000
+      },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
   },
@@ -322,9 +329,9 @@ export const statusGroups = [
       "Credentials and local integration pieces used by the supported AI Client.",
     componentKeys: ["apiToken", "mcpServer", "captureHook", "codex"],
     action: {
-      label: "Setup Codex",
-      command: "setup_codex",
-      timeoutMs: 300_000
+      label: "Fix Codex integration",
+      command: "repair_codex",
+      timeoutMs: 120_000
     }
   },
   {

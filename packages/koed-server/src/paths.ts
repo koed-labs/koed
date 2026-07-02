@@ -17,6 +17,7 @@ export interface KoedServerPaths {
   runtimeStatePath: string;
   lastVerificationPath: string;
   serverConfigPath: string;
+  localPortsPath: string;
   explorerTokenPath: string;
   repoRoot: string;
 }
@@ -58,6 +59,7 @@ export const resolveKoedServerPaths = (
     runtimeStatePath: resolve(koedHome, "run", "koed-server.json"),
     lastVerificationPath: resolve(koedHome, "run", "last-verification.json"),
     serverConfigPath: resolve(koedHome, "config", "server.json"),
+    localPortsPath: resolve(koedHome, "config", "local-ports.json"),
     explorerTokenPath: resolve(koedHome, "config", "explorer-token.json"),
     repoRoot
   };

@@ -4,7 +4,7 @@ import {
   type ChildProcess,
   type SpawnSyncReturns
 } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
@@ -23,6 +23,7 @@ import {
   resolveKoedServerPaths,
   type KoedServerPaths
 } from "./paths.js";
+import { allocateAndPersistLocalPorts } from "./ports.js";
 import { collectKoedServerStatus } from "./status.js";
 import { stopKoedServer } from "./stop.js";
 import type { KoedServerRuntimeState } from "./types.js";
@@ -69,6 +70,56 @@ const runCommand = (
   if (result.status !== 0) {
     throw new Error(`${label} failed with exit code ${result.status ?? 1}.`);
   }
+};
+
+const parseCreatedApiToken = (output: string): string | null => {
+  const match = /^Token:\s*(\S+)$/m.exec(output);
+  return match?.[1] ?? null;
+};
+
+const provisionDesktopApiToken = (
+  paths: KoedServerPaths,
+  environment: NodeJS.ProcessEnv,
+  spawnSync: SpawnSyncLike
+): string | null => {
+  if (environment.KOED_AUTO_PORTS !== "1") {
+    return null;
+  }
+  console.log("> Provision Koed Desktop API Token");
+  const result = spawnSync(
+    "pnpm",
+    [
+      "api-token:create",
+      "--owner-email",
+      "desktop@koed.local",
+      "--name",
+      "Koed Desktop"
+    ],
+    {
+      cwd: paths.repoRoot,
+      env: environment,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `Provision Koed Desktop API Token failed with exit code ${result.status ?? 1}: ${(result.stderr || result.stdout || "").trim()}`
+    );
+  }
+  const token = parseCreatedApiToken(result.stdout ?? "");
+  if (!token) {
+    throw new Error("Provision Koed Desktop API Token did not return a token.");
+  }
+  writeExplorerCredential(paths, {
+    apiToken: token,
+    provisionedAt: new Date().toISOString(),
+    source: "environment"
+  });
+  return token;
 };
 
 const spawnManagedProcess = (
@@ -135,6 +186,9 @@ const resolveEffectiveWorkQueueBackend = (
   if (config.dependencyMode === "bundled-local") {
     return "local";
   }
+  if (repoEnv.WORK_QUEUE_BACKEND) {
+    return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
+  }
   return resolveWorkQueueBackend(repoEnv.WORK_QUEUE_BACKEND);
 };
 
@@ -174,6 +228,24 @@ const bundledLocalDatabaseUrl = (
     repoEnv.POSTGRES_HOST_PORT ??
     "15432";
   return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+};
+
+const corsOrigins = (
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>
+): string => {
+  const configured = [repoEnv.API_CORS_ORIGINS, environment.CORS_ORIGINS]
+    .flatMap((value) => value?.split(",") ?? [])
+    .map((value) => value.trim())
+    .filter(Boolean);
+  try {
+    const explorerOrigin = new URL(resolveExplorerUrl(environment, repoEnv))
+      .origin;
+    configured.push(explorerOrigin);
+  } catch {
+    // Keep configured origins only.
+  }
+  return Array.from(new Set(configured)).join(",");
 };
 
 const localServiceEnv = (
@@ -362,7 +434,7 @@ const localServiceEnv = (
       repoEnv.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
       environment.EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED ??
       environment.RERANKER_PROMPT_CACHE_ENABLED,
-    CORS_ORIGINS: repoEnv.API_CORS_ORIGINS ?? environment.CORS_ORIGINS,
+    CORS_ORIGINS: corsOrigins(environment, repoEnv),
     COOKIE_SECURE: repoEnv.API_COOKIE_SECURE ?? environment.COOKIE_SECURE,
     EXPLORER_API_BASE_URL: resolveApiUrl(environment, repoEnv),
     VITE_KOED_API_BASE_URL: resolveApiUrl(environment, repoEnv)
@@ -424,9 +496,13 @@ export const startKoedServer = async ({
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+  environment = await allocateAndPersistLocalPorts(paths, environment);
 
   const repoEnv = loadRepoEnv(paths.repoRoot);
-  const apiToken = resolveLocalApiToken(environment, repoEnv);
+  const desktopManagedLocal = environment.KOED_AUTO_PORTS === "1";
+  const apiToken = desktopManagedLocal
+    ? null
+    : resolveLocalApiToken(environment, repoEnv);
   if (apiToken) {
     writeExplorerCredential(paths, {
       apiToken: apiToken.token,
@@ -461,7 +537,9 @@ export const startKoedServer = async ({
   );
 
   const refreshedRepoEnv = loadRepoEnv(paths.repoRoot);
-  const refreshedApiToken = resolveLocalApiToken(environment, refreshedRepoEnv);
+  const refreshedApiToken = desktopManagedLocal
+    ? null
+    : resolveLocalApiToken(environment, refreshedRepoEnv);
   if (refreshedApiToken) {
     writeExplorerCredential(paths, {
       apiToken: refreshedApiToken.token,
@@ -480,6 +558,17 @@ export const startKoedServer = async ({
 
   let startedNativePostgres = false;
   let nativeEmbeddingProcess: ChildProcess | undefined;
+  const runtimeStateOwnedByCurrentProcess = (): boolean => {
+    try {
+      const runtime = JSON.parse(
+        readFileSync(paths.runtimeStatePath, "utf8")
+      ) as Partial<KoedServerRuntimeState>;
+      return runtime.pid === process.pid;
+    } catch {
+      return true;
+    }
+  };
+
   const cleanupStartedResources = () => {
     const cleanupErrors: string[] = [];
     try {
@@ -502,6 +591,9 @@ export const startKoedServer = async ({
     }
   };
   const shutdown = () => {
+    if (!runtimeStateOwnedByCurrentProcess()) {
+      process.exit(0);
+    }
     stopKoedServer({ environment: refreshedEnv, spawnSync });
     try {
       cleanupStartedResources();
@@ -689,12 +781,26 @@ export const startKoedServer = async ({
       )
     );
 
-    const status = await waitForHealthyOrReady({
+    let status = await waitForHealthyOrReady({
       environment: refreshedEnv,
       timeoutMs,
       pollIntervalMs,
       collectStatus
     });
+    if (desktopManagedLocal && status.api.state === "healthy") {
+      const desktopApiToken = provisionDesktopApiToken(
+        paths,
+        refreshedEnv,
+        spawnSync
+      );
+      if (desktopApiToken) {
+        Object.assign(refreshedEnv, {
+          MEMORY_API_TOKEN: desktopApiToken,
+          VITE_KOED_API_TOKEN: desktopApiToken
+        });
+        status = await collectStatus(refreshedEnv);
+      }
+    }
     console.log(
       JSON.stringify(
         {
