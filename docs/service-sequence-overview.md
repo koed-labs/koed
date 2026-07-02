@@ -35,7 +35,9 @@ MCP-side workers.
    `KOED_HOME/config/server.json`, or package/profile defaults. Packaged Koed
    Desktop starts its managed local personal `koed-server` with
    `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
-   Operator overrides those values.
+   Operator overrides those values. Desktop bundled-local startup allocates free
+   local API, Explorer, Postgres, and Embedding Service ports and persists them
+   under `KOED_HOME/config/local-ports.json` for stable later launches.
 3. In the current source-checkout path, bare `koed-server` defaults to external
    dependency mode instead of inferring bundled-local from an empty config. The
    Operator starts Postgres/pgvector, Redis/BullMQ, and the Embedding Service

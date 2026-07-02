@@ -14,6 +14,7 @@ import {
   resolveKoedServerPaths,
   type KoedServerPaths
 } from "./paths.js";
+import { applyPersistedLocalPorts } from "./ports.js";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -539,6 +540,7 @@ export const collectKoedServerStatus = async (
   const deps = withDefaults(dependencies);
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const serverConfig = resolveKoedServerConfig(
     paths,
