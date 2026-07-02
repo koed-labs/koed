@@ -27,9 +27,15 @@ Build an unsigned macOS app directory for local packaging smoke tests:
 
 ```bash
 pnpm desktop:package
-pnpm desktop:package:smoke
+pnpm desktop:package:smoke:mac
 open apps/desktop/release/mac/Koed.app
 ```
+
+`desktop:package`, `desktop:package:mac`, and `desktop:package:smoke:mac` are
+macOS-only today. On Linux/WSL, `desktop:package:smoke` exits before launching
+anything with a clear macOS-only message; set
+`KOED_DESKTOP_PACKAGE_SMOKE_SKIP_NON_DARWIN=1` only in jobs that intentionally
+skip this smoke.
 
 This local package bundles the Electron shell, packaged renderer assets, and the
 `@koed/koed-server` control-plane CLI. It does not yet bundle the full native
@@ -57,9 +63,10 @@ diagnostics instead of crashing.
 - `desktop:dev` runs the renderer dev server only.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
   `electron-builder --mac dir` and disables signing/notarization.
-- `desktop:package:smoke` builds the unsigned app and verifies the packaged
+- `desktop:package:smoke:mac` builds the unsigned app and verifies the packaged
   renderer and bundled `koed-server` status/doctor/stop command surface can run
-  without checkout overrides.
+  without checkout overrides. `desktop:package:smoke` currently aliases the
+  macOS smoke and guards non-Darwin platforms before package execution.
 - The packaged desktop shell resolves the bundled
   `node_modules/@koed/koed-server/dist/cli.js` by default; `KOED_REPO_ROOT` and
   `KOED_SERVER_CLI` remain available for developer overrides.
