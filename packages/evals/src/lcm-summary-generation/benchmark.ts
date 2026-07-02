@@ -363,9 +363,10 @@ const forbiddenMatchPresent = (
   const anyTermGroups = match.anyTermGroups ?? [];
 
   return (
-    exactPhrases.every((phrase) =>
-      containsForbiddenExactPhrase(text, phrase, claim)
-    ) &&
+    (exactPhrases.length === 0 ||
+      exactPhrases.some((phrase) =>
+        containsForbiddenExactPhrase(text, phrase, claim)
+      )) &&
     phraseGroups.every((group) =>
       group.some((phrase) => includesForbiddenPhrase(text, phrase))
     ) &&

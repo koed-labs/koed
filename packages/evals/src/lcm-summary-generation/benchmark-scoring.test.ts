@@ -270,6 +270,29 @@ describe("LCM summary generation scoring", () => {
     expect(score.criticalFailure).toBe(false);
   });
 
+  it("fails any forbidden exact phrase alternative", () => {
+    const benchmarkCase = mustCase("superseded-decision-typescript-hook");
+    const output = passingOutput(benchmarkCase);
+    output.decisions.push("Python hook is supported.");
+
+    const score = scoreLcmSummaryRun(benchmarkCase, {
+      caseId: benchmarkCase.id,
+      runIndex: 0,
+      output
+    });
+
+    expect(
+      score.details.find(
+        (detail) => detail.name === "forbidden:python-still-supported"
+      )
+    ).toMatchObject({
+      score: 0,
+      critical: true
+    });
+    expect(score.criticalFailure).toBe(true);
+    expect(score.passed).toBe(false);
+  });
+
   it("does not fail forbidden claims when the match is negated", () => {
     const benchmarkCase = mustCase("accepted-decision-ai-client-synthesis");
     const output = passingOutput(benchmarkCase);
