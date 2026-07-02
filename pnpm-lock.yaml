@@ -94,6 +94,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/koed-server
     devDependencies:
+      '@electron/asar':
+        specifier: ^3.4.1
+        version: 3.4.1
       electron:
         specifier: ^39.2.7
         version: 39.8.10

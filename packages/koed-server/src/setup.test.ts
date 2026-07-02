@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { setupCodex } from "./setup.js";
+import { repairCodexIntegration, setupCodex } from "./setup.js";
 
 const temps: string[] = [];
 const tempDir = () => {
@@ -65,5 +65,37 @@ describe("Codex setup wrapper", () => {
     expect(result.state).toBe("needs_attention");
     expect(result.stderr).toBe("bad");
     expect(result.action).toContain("rerun koed-server setup codex --json");
+  });
+
+  it("repairs Codex using the active Desktop API Token", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "desktop_token" })
+    );
+    const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+
+    const result = repairCodexIntegration({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "1",
+        API_HOST_PORT: "43300"
+      },
+      spawnSync: (_command, args, options) => {
+        calls.push({ args, env: options?.env });
+        return spawnResult(0, "configured");
+      },
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.apiUrl).toBe("http://localhost:43300");
+    expect(calls[0]?.args[0]).toBe(
+      resolve(root, "scripts/configure-codex.mjs")
+    );
+    expect(calls[0]?.env?.MEMORY_API_URL).toBe("http://localhost:43300");
+    expect(calls[0]?.env?.MEMORY_API_TOKEN).toBe("desktop_token");
   });
 });

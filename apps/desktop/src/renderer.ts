@@ -69,7 +69,7 @@ if (!app) {
 
 let status: KoedServerStatus | null = null;
 let busyAction: string | null = null;
-let startupVisible = true;
+let startupVisible = false;
 let startupError = "";
 let startupPhase: string = startupPhaseLabels.status;
 let startupDetail: string =
@@ -78,6 +78,7 @@ let startupRunning = false;
 let rendered = false;
 let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
+let explorerApiToken: string | null = null;
 type StartupLogLine = {
   key?: string;
   text: string;
@@ -467,26 +468,12 @@ const apiIsHealthy = (): boolean => status?.api.state === "healthy";
 const explorerCredentialProvisioned = (): boolean =>
   status?.explorer.details?.appCredentialProvisioned === true;
 
-const desktopReady = (): boolean => {
-  if (
-    !status ||
-    status.explorer.state !== "healthy" ||
-    !explorerCredentialProvisioned()
-  ) {
-    return false;
-  }
-  return [
-    status.api,
-    status.database,
-    status.redis,
-    status.workerQueues,
-    status.embeddingService,
-    status.apiToken,
-    status.mcpServer,
-    status.captureHook,
-    status.codex
-  ].every((component) => component.state === "healthy");
-};
+const explorerReady = (): boolean =>
+  status?.explorer.state === "healthy" &&
+  explorerCredentialProvisioned() &&
+  Boolean(explorerApiToken);
+
+const desktopReady = (): boolean => explorerReady();
 
 const commandResultError = (value: unknown): string | null => {
   if (typeof value !== "object" || value === null || !("error" in value)) {
@@ -500,6 +487,12 @@ const explorerEmbedUrl = (rawUrl: string): string => {
   try {
     const url = new URL(rawUrl);
     url.searchParams.set("koedDesktop", "1");
+    if (status?.api.url) {
+      url.searchParams.set("koedApiBaseUrl", status.api.url);
+    }
+    if (explorerApiToken) {
+      url.searchParams.set("koedApiToken", explorerApiToken);
+    }
     return url.toString();
   } catch {
     return rawUrl;
@@ -620,14 +613,7 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
     liveTitle: "Live: local services",
     liveBody:
       "Runs koed-server start: connect to configured dependencies, build apps, then spawn API/worker/Explorer.",
-    componentKeys: [
-      "api",
-      "explorer",
-      "database",
-      "redis",
-      "workerQueues",
-      "embeddingService"
-    ],
+    componentKeys: ["explorer"],
     probeMessage: localServicesProbeMessage,
     actions: () =>
       stepHasExhaustedProbes("start")
@@ -676,23 +662,11 @@ const startupLiveConfig: Record<StartupStepId, StartupLiveConfig> = {
         : []
   },
   health: {
-    liveTitle: "Live: health checks",
-    liveBody: "Waiting for every required component to report healthy.",
-    componentKeys: [
-      "api",
-      "database",
-      "redis",
-      "workerQueues",
-      "embeddingService",
-      "apiToken",
-      "mcpServer",
-      "captureHook",
-      "codex",
-      "lcmSummaryService",
-      "lastVerification"
-    ],
+    liveTitle: "Live: Explorer availability",
+    liveBody: "Waiting for Explorer to become reachable.",
+    componentKeys: ["explorer"],
     probeMessage: (attempt, blocker) =>
-      `status probe ${attempt}: final readiness check${
+      `status probe ${attempt}: Explorer availability${
         friendlyBlocker(blocker)
           ? `; blocked by ${friendlyBlocker(blocker)}`
           : ""
@@ -1197,8 +1171,8 @@ const renderShell = () => {
         </aside>
         <section class="explorer">
           <div class="explorer-body">
-            <div class="empty" data-explorer-empty>
-              Explorer will appear after startup completes.
+            <div class="empty explorer-overlay" data-explorer-empty>
+              Starting Explorer…
             </div>
             <iframe title="Koed Explorer" data-explorer-frame hidden></iframe>
           </div>
@@ -1424,25 +1398,32 @@ const syncStatusCards = () => {
   }
 
   if (startupPanel) {
-    startupPanel.hidden = !startupVisible;
+    startupPanel.hidden = true;
   }
   if (mainShell) {
-    mainShell.hidden = startupVisible;
+    mainShell.hidden = false;
   }
 
-  if (
-    !startupVisible &&
-    status?.explorer.url &&
-    explorerFrame &&
-    explorerEmpty
-  ) {
-    const nextUrl = explorerEmbedUrl(status.explorer.url);
-    if (explorerFrame.dataset.loadedExplorerUrl !== nextUrl) {
-      explorerFrame.src = nextUrl;
-      explorerFrame.dataset.loadedExplorerUrl = nextUrl;
+  if (explorerFrame && explorerEmpty) {
+    const ready = explorerReady();
+    const loadedUrl = explorerFrame.dataset.loadedExplorerUrl;
+    explorerFrame.classList.toggle("explorer-blurred", !ready);
+
+    if (ready && status?.explorer.url) {
+      const nextUrl = explorerEmbedUrl(status.explorer.url);
+      if (loadedUrl !== nextUrl) {
+        explorerFrame.src = nextUrl;
+        explorerFrame.dataset.loadedExplorerUrl = nextUrl;
+      }
+      explorerFrame.hidden = false;
+      explorerEmpty.hidden = true;
+      explorerEmpty.textContent = "";
+    } else {
+      explorerFrame.hidden = !loadedUrl;
+      explorerEmpty.hidden = false;
+      explorerEmpty.textContent =
+        status?.explorer.message || "Waiting for Explorer to become healthy…";
     }
-    explorerFrame.hidden = false;
-    explorerEmpty.hidden = true;
   }
 };
 
@@ -1473,6 +1454,21 @@ const syncUI = () => {
     });
 };
 
+const refreshExplorerCredential = async (): Promise<void> => {
+  if (!explorerCredentialProvisioned() && status?.api.state !== "healthy") {
+    explorerApiToken = null;
+    return;
+  }
+  const result = await invokeWithTimeout<
+    { ok: true; apiToken: string } | { ok: false; error: string }
+  >("explorer_credential", undefined, 130_000);
+  if (result.ok) {
+    explorerApiToken = result.apiToken;
+  } else if (!explorerCredentialProvisioned()) {
+    explorerApiToken = null;
+  }
+};
+
 const refreshStatus = async () => {
   if (refreshInFlight) {
     return refreshInFlight;
@@ -1497,7 +1493,11 @@ const refreshStatus = async () => {
         "latest-status"
       );
       appendDesktopStartLog(nextStatus);
-      syncUI();
+      return refreshExplorerCredential()
+        .catch(() => undefined)
+        .then(() => {
+          syncUI();
+        });
     })
     .catch((error) => {
       startupError = error instanceof Error ? error.message : String(error);
@@ -1651,7 +1651,7 @@ const runStartupSequence = async () => {
   }
 
   startupRunning = true;
-  startupVisible = true;
+  startupVisible = false;
   resetStartupSteps();
   syncUI();
 
@@ -1688,44 +1688,14 @@ const runStartupSequence = async () => {
       setStartupStep("start", "skipped");
     }
 
-    if (!startupStepReady("setup")) {
-      startupDetail =
-        "Provisioning Explorer credentials and Codex capture settings.";
-      setStartupStep("setup", "running");
-      appendStartupLog("command: koed-server setup codex --json");
-      appendStartupLog(
-        "does: write local API token, Explorer credential, MCP config, and capture hook settings"
-      );
-      const setupResult = await runWithStartupProbes("setup", () =>
-        invokeWithTimeout("setup_codex", undefined, 300_000)
-      );
-      const setupError = commandResultError(setupResult);
-      if (setupError) {
-        throw new Error(`koed-server setup codex failed: ${setupError}`);
-      }
-      await waitForStartupStepReady("setup");
-      setStartupStep("setup", "done");
-    } else {
-      setStartupStep("setup", "skipped");
-    }
+    setStartupStep("setup", "skipped");
 
-    startupDetail = "Waiting for every required component to report healthy.";
+    startupDetail = "Waiting for Explorer to become available.";
     setStartupStep("health", "running");
-    appendStartupLog(
-      "checking: API, Explorer credential, MCP, capture hook, queues, memory services"
-    );
+    appendStartupLog("checking: Explorer reachability");
     await waitForDesktopReady();
-    startupDetail = "Running one final verification before opening Explorer.";
-    appendStartupLog("command: koed-server doctor --json");
-    await invokeWithTimeout("doctor", undefined, 90_000);
     setStartupStep("health", "done");
     await refreshStatus();
-
-    if (!desktopReady()) {
-      throw new Error(
-        "Koed is still not ready for Desktop Explorer. Check Explorer credentials and service health."
-      );
-    }
 
     startupVisible = false;
   } catch (error) {

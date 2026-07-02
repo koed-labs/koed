@@ -362,6 +362,55 @@ describe("status and doctor JSON contracts", () => {
     expect(doctorEnvironments[0]?.MEMORY_API_TOKEN).toBe("env_token");
   });
 
+  it("reports Codex and Capture Hook API URL mismatches", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, ".codex"), { recursive: true });
+    mkdirSync(resolve(root, "hook"), { recursive: true });
+    mkdirSync(resolve(root, "packages/mcp-server/dist"), { recursive: true });
+    writeFileSync(resolve(root, "packages/mcp-server/dist/cli.js"), "");
+    writeFileSync(
+      resolve(root, ".codex/config.toml"),
+      '# >>> koed\n[mcp_servers.koed]\ncommand = "node"\n\n[mcp_servers.koed.env]\nMEMORY_API_URL = "http://localhost:3300"\nMEMORY_API_TOKEN = "token"\n# <<< koed\n'
+    );
+    writeFileSync(
+      resolve(root, "hook/config.json"),
+      JSON.stringify({ apiUrl: "http://localhost:3300", apiToken: "token" })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        API_HOST_PORT: "43300",
+        MEMORY_API_TOKEN: "token",
+        MEMORY_HOOK_CONFIG: resolve(root, "hook/config.json"),
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () =>
+          response(true, 200, {
+            checks: [
+              { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
+            ]
+          }),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.codex.state).toBe("needs_attention");
+    expect(status.codex.message).toContain("localhost:3300");
+    expect(status.captureHook.state).toBe("needs_attention");
+    expect(status.captureHook.message).toContain("localhost:3300");
+  });
+
   it("verifies Explorer process and reachability", async () => {
     const root = tempDir();
     mkdirSync(resolve(root, "run"), { recursive: true });
@@ -452,7 +501,7 @@ describe("status and doctor JSON contracts", () => {
     );
     writeFileSync(
       resolve(root, ".codex/config.toml"),
-      "# >>> koed\n[mcp_servers.koed]\n"
+      '# >>> koed\n[mcp_servers.koed]\ncommand = "node"\n\n[mcp_servers.koed.env]\nMEMORY_API_URL = "http://localhost:3300"\nMEMORY_API_TOKEN = "token"\n# <<< koed\n'
     );
     writeFileSync(
       resolve(root, "hook/config.json"),

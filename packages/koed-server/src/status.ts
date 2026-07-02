@@ -5,7 +5,10 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { resolveKoedServerConfig } from "./config.js";
-import { loadExplorerCredential, resolveLocalApiToken } from "./credentials.js";
+import {
+  loadExplorerCredential,
+  resolveActiveIntegrationApiToken
+} from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
@@ -14,6 +17,7 @@ import {
   resolveKoedServerPaths,
   type KoedServerPaths
 } from "./paths.js";
+import { applyPersistedLocalPorts } from "./ports.js";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -306,10 +310,11 @@ const koedServerConfigEnvironment = (
 });
 
 const inspectApiToken = (
+  paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>
 ): KoedServerStatus["apiToken"] => {
-  const token = resolveLocalApiToken(environment, repoEnv);
+  const token = resolveActiveIntegrationApiToken(paths, environment, repoEnv);
   if (!token) {
     return {
       ...notConfigured(
@@ -322,7 +327,35 @@ const inspectApiToken = (
   return { ...healthy("A local API Token is configured."), configured: true };
 };
 
+const tomlStringValue = (content: string, key: string): string | null => {
+  const match = new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, "m").exec(content);
+  return match?.[1] ?? null;
+};
+
+const tomlSection = (content: string, sectionName: string): string => {
+  const lines = content.split(/\r?\n/);
+  const header = `[${sectionName}]`;
+  const sectionLines: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === header) {
+      inSection = true;
+      continue;
+    }
+    if (inSection && trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      break;
+    }
+    if (inSection) {
+      sectionLines.push(line);
+    }
+  }
+  return sectionLines.join("\n");
+};
+
 const inspectCodex = (
+  apiUrl: string,
+  apiToken: string | undefined,
   environment: NodeJS.ProcessEnv,
   deps: Required<KoedServerStatusDependencies>
 ): KoedServerStatus["codex"] => {
@@ -334,30 +367,77 @@ const inspectCodex = (
     return {
       ...notConfigured(
         "Codex configuration was not found.",
-        "Run koed-server setup codex --json to configure the supported AI Client integration."
+        "Run Fix Codex integration to configure the supported AI Client integration."
       ),
       configured: false
     };
   }
   const content = deps.readFileSync(codexConfigPath, "utf8") as string;
-  const configured =
-    content.includes("# >>> koed") && content.includes("[mcp_servers.");
+  const mcpName = environment.MEMORY_MCP_NAME ?? "koed";
+  const mcpBlock = tomlSection(content, `mcp_servers.${mcpName}`);
+  const mcpEnvBlock = tomlSection(content, `mcp_servers.${mcpName}.env`);
+  const configured = content.includes("# >>> koed") && Boolean(mcpBlock);
   if (!configured) {
     return {
       ...notConfigured(
         "Codex is installed but Koed is not configured in Codex.",
-        "Run koed-server setup codex --json."
+        "Run Fix Codex integration."
       ),
       configured: false
     };
   }
+
+  const configuredApiUrl = tomlStringValue(mcpEnvBlock, "MEMORY_API_URL");
+  const configuredToken = tomlStringValue(mcpEnvBlock, "MEMORY_API_TOKEN");
+  if (
+    configuredApiUrl &&
+    configuredApiUrl.replace(/\/+$/, "") !== apiUrl.replace(/\/+$/, "")
+  ) {
+    return {
+      ...needsAttention(
+        `Codex Koed integration points to ${configuredApiUrl}, but Koed Desktop is running at ${apiUrl}.`,
+        "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+        { configuredApiUrl, expectedApiUrl: apiUrl, codexConfigPath }
+      ),
+      configured: true
+    };
+  }
+  if (apiToken && configuredToken && configuredToken !== apiToken) {
+    return {
+      ...needsAttention(
+        "Codex Koed integration uses a different API Token than Koed Desktop.",
+        "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+        {
+          configuredApiUrl: configuredApiUrl ?? null,
+          expectedApiUrl: apiUrl,
+          codexConfigPath
+        }
+      ),
+      configured: true
+    };
+  }
+  if (!configuredApiUrl || !configuredToken) {
+    return {
+      ...needsAttention(
+        "Codex Koed integration is missing API URL or API Token configuration.",
+        "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+        { codexConfigPath }
+      ),
+      configured: true
+    };
+  }
   return {
-    ...healthy("Codex Koed integration is configured."),
+    ...healthy("Codex Koed integration is configured.", {
+      configuredApiUrl,
+      codexConfigPath
+    }),
     configured: true
   };
 };
 
 const inspectCaptureHook = (
+  apiUrl: string,
+  apiToken: string | undefined,
   environment: NodeJS.ProcessEnv,
   deps: Required<KoedServerStatusDependencies>
 ) => {
@@ -368,7 +448,7 @@ const inspectCaptureHook = (
   if (!deps.existsSync(hookConfigPath)) {
     return notConfigured(
       "Supported Capture Hook config was not found.",
-      "Run koed-server setup codex --json."
+      "Run Fix Codex integration."
     );
   }
   const parsed = readJsonFile<{
@@ -379,16 +459,43 @@ const inspectCaptureHook = (
   if (!parsed?.apiUrl || !parsed.apiToken) {
     return needsAttention(
       "Supported Capture Hook config is incomplete.",
-      "Run koed-server setup codex --json to rewrite hook configuration."
+      "Run Fix Codex integration to rewrite hook configuration.",
+      { hookConfigPath }
+    );
+  }
+  if (parsed.apiUrl.replace(/\/+$/, "") !== apiUrl.replace(/\/+$/, "")) {
+    return needsAttention(
+      `Supported Capture Hook points to ${parsed.apiUrl}, but Koed Desktop is running at ${apiUrl}.`,
+      "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+      {
+        configuredApiUrl: parsed.apiUrl,
+        expectedApiUrl: apiUrl,
+        hookConfigPath
+      }
+    );
+  }
+  if (apiToken && parsed.apiToken !== apiToken) {
+    return needsAttention(
+      "Supported Capture Hook uses a different API Token than Koed Desktop.",
+      "Run Fix Codex integration, then restart Codex and trust updated hooks if prompted.",
+      {
+        configuredApiUrl: parsed.apiUrl,
+        expectedApiUrl: apiUrl,
+        hookConfigPath
+      }
     );
   }
   if (parsed.captureEnabled === false) {
     return needsAttention(
       "Supported Capture Hook is configured but capture is disabled.",
-      "Enable capture in the Koed hook config or rerun setup."
+      "Run Fix Codex integration or enable capture in the Koed hook config.",
+      { hookConfigPath }
     );
   }
-  return healthy("Supported Capture Hook is configured.");
+  return healthy("Supported Capture Hook is configured.", {
+    configuredApiUrl: parsed.apiUrl,
+    hookConfigPath
+  });
 };
 
 const inspectMcp = (
@@ -405,7 +512,11 @@ const inspectMcp = (
       "Run pnpm --filter @koed/mcp-server build or koed-server setup codex --json."
     );
   }
-  const token = resolveLocalApiToken(environment, repoEnv)?.token;
+  const token = resolveActiveIntegrationApiToken(
+    paths,
+    environment,
+    repoEnv
+  )?.token;
   if (!token) {
     return notConfigured(
       "MCP Server needs a local API Token.",
@@ -539,6 +650,7 @@ export const collectKoedServerStatus = async (
   const deps = withDefaults(dependencies);
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const serverConfig = resolveKoedServerConfig(
     paths,
@@ -561,9 +673,24 @@ export const collectKoedServerStatus = async (
   const serviceEnvironment = { ...repoEnv, ...environment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
-  const apiToken = inspectApiToken(environment, repoEnv);
-  const codex = inspectCodex(environment, deps);
-  const captureHook = inspectCaptureHook(environment, deps);
+  const integrationToken = resolveActiveIntegrationApiToken(
+    paths,
+    environment,
+    repoEnv
+  );
+  const apiToken = inspectApiToken(paths, environment, repoEnv);
+  const codex = inspectCodex(
+    apiUrl,
+    integrationToken?.token,
+    environment,
+    deps
+  );
+  const captureHook = inspectCaptureHook(
+    apiUrl,
+    integrationToken?.token,
+    environment,
+    deps
+  );
   const mcpServer = inspectMcp(apiUrl, environment, repoEnv, paths, deps);
   const externalRedisUrl =
     serverConfig.external?.redisUrl ??

@@ -8,6 +8,12 @@ npmRebuild: false
 files:
   - dist-electron/**/*
   - package.json
+  - "node_modules/@koed/koed-server/package.json"
+  - "node_modules/@koed/koed-server/dist/**/*"
+  - "!node_modules/@koed/koed-server/src/**"
+  - "!node_modules/@koed/koed-server/**/*.test.ts"
+  - "!node_modules/@koed/koed-server/tsconfig.json"
+  - "!node_modules/@koed/koed-server/tsconfig.tsbuildinfo"
 
 asarUnpack:
   - dist-electron/koed-server/node-entrypoint-runner.js
@@ -22,7 +28,13 @@ directories:
   output: release
 
 mac:
+  artifactName: "Koed-${version}-${arch}.${ext}"
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
   target:
     - dir
+    - dmg
+    - zip
   category: public.app-category.developer-tools
-  identity: null

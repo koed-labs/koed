@@ -7,6 +7,10 @@
   "bin": {
     "koed-server": "dist/cli.js"
   },
+  "files": [
+    "dist/**/*",
+    "package.json"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

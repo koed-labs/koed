@@ -2,10 +2,72 @@ import { describe, expect, it } from "vitest";
 import {
   createElectronNodeEnv,
   createKoedServerCliInvocation,
-  resolveElectronNodeExecPath
+  resolveElectronNodeExecPath,
+  resolveKoedServerPaths
 } from "./runtime.js";
 
 describe("Koed Desktop Node entrypoint runtime", () => {
+  it("resolves the development koed-server CLI from the checkout", () => {
+    expect(
+      resolveKoedServerPaths({
+        appDir: "/repo/apps/desktop/dist-electron",
+        appIsPackaged: false,
+        environment: {}
+      })
+    ).toEqual({
+      repoRoot: "/repo",
+      cliPath: "/repo/packages/koed-server/dist/cli.js"
+    });
+  });
+
+  it("resolves the packaged koed-server CLI from app.asar node_modules", () => {
+    expect(
+      resolveKoedServerPaths({
+        appDir:
+          "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
+        appIsPackaged: true,
+        environment: {},
+        resourcesPath: "/Applications/Koed.app/Contents/Resources"
+      })
+    ).toEqual({
+      repoRoot: "/Applications/Koed.app/Contents/Resources",
+      cliPath:
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+    });
+  });
+
+  it("preserves explicit koed-server CLI override and infers its checkout root", () => {
+    expect(
+      resolveKoedServerPaths({
+        appDir:
+          "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
+        appIsPackaged: true,
+        environment: {
+          KOED_SERVER_CLI: "/repo/packages/koed-server/dist/cli.js"
+        },
+        resourcesPath: "/Applications/Koed.app/Contents/Resources"
+      })
+    ).toEqual({
+      repoRoot: "/repo",
+      cliPath: "/repo/packages/koed-server/dist/cli.js"
+    });
+  });
+
+  it("preserves explicit checkout root override", () => {
+    expect(
+      resolveKoedServerPaths({
+        appDir:
+          "/Applications/Koed.app/Contents/Resources/app.asar/dist-electron",
+        appIsPackaged: true,
+        environment: { KOED_REPO_ROOT: "/debug/repo" },
+        resourcesPath: "/Applications/Koed.app/Contents/Resources"
+      })
+    ).toEqual({
+      repoRoot: "/debug/repo",
+      cliPath: "/debug/repo/packages/koed-server/dist/cli.js"
+    });
+  });
+
   it("marks Electron child processes as Node-compatible", () => {
     expect(createElectronNodeEnv({ FOO: "bar" })).toMatchObject({
       FOO: "bar",

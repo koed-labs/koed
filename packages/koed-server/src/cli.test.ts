@@ -344,4 +344,26 @@ describe("JSON command output", () => {
       summary: "API is not ready"
     });
   });
+
+  it("prints repair codex --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["repair", "codex", "--json"], {
+      stdout: stdout.stream,
+      repairCodex: () => ({
+        ok: true,
+        state: "healthy",
+        koedHome: "/tmp/koed",
+        apiUrl: "http://localhost:43300",
+        checkedAt: "2026-01-01T00:00:00.000Z",
+        command: "node scripts/configure-codex.mjs"
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      apiUrl: "http://localhost:43300"
+    });
+  });
 });

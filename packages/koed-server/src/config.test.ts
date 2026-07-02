@@ -26,6 +26,7 @@ const paths = (root: string): KoedServerPaths => ({
   runtimeStatePath: resolve(root, "run/koed-server.json"),
   lastVerificationPath: resolve(root, "run/last-verification.json"),
   serverConfigPath: resolve(root, "config/server.json"),
+  localPortsPath: resolve(root, "config/local-ports.json"),
   explorerTokenPath: resolve(root, "config/explorer-token.json"),
   repoRoot: root
 });

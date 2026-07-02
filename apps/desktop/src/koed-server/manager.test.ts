@@ -35,17 +35,24 @@ describe("Koed server desktop manager", () => {
     ).toMatchObject({
       KOED_REPO_ROOT: "/repo",
       KOED_RUNTIME_MODE: "local-personal",
-      KOED_DEPENDENCY_MODE: "bundled-local"
+      KOED_DEPENDENCY_MODE: "bundled-local",
+      WORK_QUEUE_BACKEND: "local",
+      KOED_AUTO_PORTS: "1"
     });
     expect(
       createKoedEnvironment(
         "/repo",
-        { KOED_RUNTIME_MODE: "external", KOED_DEPENDENCY_MODE: "external" },
+        {
+          KOED_RUNTIME_MODE: "external",
+          KOED_DEPENDENCY_MODE: "external",
+          WORK_QUEUE_BACKEND: "bullmq"
+        },
         { desktopManagedLocal: true }
       )
     ).toMatchObject({
       KOED_RUNTIME_MODE: "external",
-      KOED_DEPENDENCY_MODE: "external"
+      KOED_DEPENDENCY_MODE: "external",
+      WORK_QUEUE_BACKEND: "bullmq"
     });
   });
 
@@ -115,6 +122,58 @@ describe("Koed server desktop manager", () => {
     ]);
   });
 
+  it("runs explicit stop through koed-server and clears the managed process", async () => {
+    const spawned = childProcess();
+    const calls: string[][] = [];
+    let statusCalls = 0;
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("stop")) {
+          callback(
+            null,
+            JSON.stringify({ ok: true, state: "healthy", stoppedPids: [] }),
+            ""
+          );
+          return;
+        }
+        statusCalls += 1;
+        callback(
+          null,
+          JSON.stringify(
+            statusCalls === 1
+              ? {
+                  ok: false,
+                  state: "needs_attention",
+                  api: { state: "needs_attention" }
+                }
+              : { ok: true, state: "healthy", api: { state: "healthy" } }
+          ),
+          ""
+        );
+      },
+      spawn: () => spawned as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.start!();
+    await expect(manager.handlers.stop!()).resolves.toMatchObject({
+      ok: true,
+      state: "healthy"
+    });
+    expect(calls[calls.length - 1]).toEqual(["/repo/cli.js", "stop", "--json"]);
+    expect(spawned.killed).toBe(true);
+  });
+
   it("reports missing koed-server CLI as not_configured", async () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -143,6 +202,39 @@ describe("Koed server desktop manager", () => {
       ok: false,
       state: "not_configured",
       api: { state: "not_configured" }
+    });
+  });
+
+  it("reports a missing packaged koed-server CLI as renderable diagnostics", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/Applications/Koed.app/Contents/Resources",
+      cliPath:
+        "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/Applications/Koed.app/Contents/MacOS/Koed",
+        args,
+        env: {
+          ELECTRON_RUN_AS_NODE: "1",
+          KOED_REPO_ROOT: "/Applications/Koed.app/Contents/Resources"
+        }
+      }),
+      existsSync: () => false,
+      execFile: () => undefined,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.status!()).resolves.toMatchObject({
+      ok: false,
+      state: "not_configured",
+      database: { action: "Install runtime assets" },
+      embeddingService: { action: "Install runtime assets" },
+      details: {
+        repoRoot: "/Applications/Koed.app/Contents/Resources",
+        cliPath:
+          "/Applications/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js"
+      }
     });
   });
 
