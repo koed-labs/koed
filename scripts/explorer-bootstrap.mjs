@@ -79,11 +79,17 @@ const readFlagValue = (argv, index, flag) => {
   return value;
 };
 
-const runCommand = ({ label, command, args, cwd = rootDir }) => {
+const runCommand = ({
+  label,
+  command,
+  args,
+  cwd = rootDir,
+  environment = process.env
+}) => {
   console.log(`> ${label}`);
   const result = spawnSync(command, args, {
     cwd,
-    env: process.env,
+    env: environment,
     stdio: "inherit"
   });
 
@@ -96,12 +102,15 @@ const runCommand = ({ label, command, args, cwd = rootDir }) => {
 };
 
 const writeExplorerTokenConfig = ({ rootDir: repoRoot, token }) => {
+  upsertEnvFileValue(resolve(repoRoot, ".env"), "MEMORY_API_TOKEN", token);
   upsertEnvFileValue(resolve(repoRoot, ".env"), "VITE_KOED_API_TOKEN", token);
-  upsertEnvFileValue(
-    resolve(repoRoot, "apps/explorer/.env.local"),
-    "VITE_KOED_API_TOKEN",
-    token
-  );
+  for (const envFile of [".env.local", ".env.production.local"]) {
+    upsertEnvFileValue(
+      resolve(repoRoot, "apps/explorer", envFile),
+      "VITE_KOED_API_TOKEN",
+      token
+    );
+  }
 };
 
 export const runExplorerBootstrap = async ({
@@ -133,7 +142,13 @@ export const runExplorerBootstrap = async ({
       label: "Build Explorer assets",
       command: "pnpm",
       args: ["--filter", "@koed/explorer", "build"],
-      cwd: bootstrapRootDir
+      cwd: bootstrapRootDir,
+      environment: {
+        ...process.env,
+        ...environment,
+        MEMORY_API_TOKEN: effectiveToken,
+        VITE_KOED_API_TOKEN: effectiveToken
+      }
     });
   }
 

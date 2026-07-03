@@ -652,53 +652,73 @@ export const collectKoedServerStatus = async (
   ensureKoedHome(paths);
   environment = applyPersistedLocalPorts(paths, environment);
   const repoEnv = loadRepoEnv(paths.repoRoot);
-  const serverConfig = resolveKoedServerConfig(
-    paths,
-    koedServerConfigEnvironment(environment, repoEnv),
-    {
-      existsSync: deps.existsSync,
-      readFileSync: deps.readFileSync
-    }
-  );
-  const apiUrl = resolveApiUrl(environment, repoEnv);
-  const explorerUrl = resolveExplorerUrl(environment, repoEnv);
   const runtime = readJsonFile<KoedServerRuntimeState>(
     paths.runtimeStatePath,
     deps.readFileSync
   );
   const runtimeProcessRunning = runtime ? deps.checkPid(runtime.pid) : false;
+  const runtimeEnvironment =
+    runtime && runtimeProcessRunning
+      ? {
+          ...environment,
+          KOED_RUNTIME_MODE: runtime.runtimeMode,
+          KOED_DEPENDENCY_MODE: runtime.dependencyMode
+        }
+      : environment;
+  const serverConfig = resolveKoedServerConfig(
+    paths,
+    koedServerConfigEnvironment(runtimeEnvironment, repoEnv),
+    {
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync
+    }
+  );
+  const apiUrl =
+    runtimeProcessRunning && runtime?.apiUrl
+      ? runtime.apiUrl
+      : resolveApiUrl(runtimeEnvironment, repoEnv);
+  const explorerUrl =
+    runtimeProcessRunning && runtime?.explorerUrl
+      ? runtime.explorerUrl
+      : resolveExplorerUrl(runtimeEnvironment, repoEnv);
   const apiReady = await statusFromApiReady(apiUrl, deps.fetch, {
     dependencyMode: serverConfig.dependencyMode
   });
-  const serviceEnvironment = { ...repoEnv, ...environment };
+  const serviceEnvironment = { ...repoEnv, ...runtimeEnvironment };
   const useBundledLocalDependencies =
     serverConfig.dependencyMode === "bundled-local";
   const integrationToken = resolveActiveIntegrationApiToken(
     paths,
-    environment,
+    runtimeEnvironment,
     repoEnv
   );
-  const apiToken = inspectApiToken(paths, environment, repoEnv);
+  const apiToken = inspectApiToken(paths, runtimeEnvironment, repoEnv);
   const codex = inspectCodex(
     apiUrl,
     integrationToken?.token,
-    environment,
+    runtimeEnvironment,
     deps
   );
   const captureHook = inspectCaptureHook(
     apiUrl,
     integrationToken?.token,
-    environment,
+    runtimeEnvironment,
     deps
   );
-  const mcpServer = inspectMcp(apiUrl, environment, repoEnv, paths, deps);
+  const mcpServer = inspectMcp(
+    apiUrl,
+    runtimeEnvironment,
+    repoEnv,
+    paths,
+    deps
+  );
   const externalRedisUrl =
     serverConfig.external?.redisUrl ??
-    environment.REDIS_URL ??
+    runtimeEnvironment.REDIS_URL ??
     repoEnv.REDIS_URL;
   const queueBackend = resolveEffectiveWorkQueueBackend(
     serverConfig.dependencyMode,
-    environment,
+    runtimeEnvironment,
     repoEnv
   );
   const localQueueRedisBypass = healthy(

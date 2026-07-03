@@ -557,4 +557,62 @@ describe("status and doctor JSON contracts", () => {
     expect(status.state).toBe("healthy");
     expect(status.explorer.state).toBe("starting");
   });
+  it("prefers running runtime state over plain-shell dependency defaults", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, ".env"),
+      "KOED_DEPENDENCY_MODE=external\nWORK_QUEUE_BACKEND=bullmq\n"
+    );
+    writeFileSync(
+      resolve(root, "run/koed-server.json"),
+      JSON.stringify({
+        pid: 42,
+        startedAt: "2026-01-01T00:00:00.000Z",
+        repoRoot: root,
+        apiUrl: "http://localhost:43300",
+        explorerUrl: "http://localhost:45774",
+        runtimeMode: "local-personal",
+        dependencyMode: "bundled-local",
+        services: [
+          "postgres-native",
+          "embedding-service-native",
+          "api",
+          "worker",
+          "explorer"
+        ],
+        processes: { api: 43, worker: 44, explorer: 45 }
+      })
+    );
+
+    const fetchedUrls: string[] = [];
+    const status = await collectKoedServerStatus(
+      { KOED_HOME: root, KOED_REPO_ROOT: root, HOME: root },
+      {
+        fetch: async (url) => {
+          fetchedUrls.push(String(url));
+          return response(true, 200, {
+            checks: [
+              { service: "postgres", status: "ok" },
+              { service: "postgres-version", status: "ok" },
+              { service: "migrations", status: "ok" },
+              { service: "pgvector", status: "ok" },
+              { service: "work-queue", status: "ok" },
+              { service: "embedding-service", status: "ok" },
+              { service: "embedding-model", status: "ok" }
+            ]
+          });
+        },
+        spawnSync: () => spawnResult("", 0),
+        checkPid: (pid) => [42, 44, 45].includes(pid),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(fetchedUrls).toContain("http://localhost:43300/ready");
+    expect(status.runtimeMode).toBe("local-personal");
+    expect(status.dependencyMode).toBe("bundled-local");
+    expect(status.redis.message).toContain("local queue");
+    expect(status.explorer.url).toBe("http://localhost:45774");
+  });
 });
