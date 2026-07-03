@@ -67,19 +67,19 @@ instead of Docker Compose.
 
 Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch native Koed-owned Postgres/pgvector and Embedding Service runtimes under `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set; with BullMQ, Redis is Operator-managed external infrastructure.
 
-Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs `KOED_HOME/runtime/embedding-service/.venv/bin/python`, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
+Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs a Python virtualenv, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. In source checkouts, `pnpm setup:python` prepares `apps/embedding-service/.venv` with the pinned runtime dependencies used by the Embedding Service. The README Quickstart runs this, the workspace build, runtime install, and embedding model install as `pnpm local:setup`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
 
 On macOS, Linux, and WSL, Homebrew can explicitly install and link the native runtime assets into `KOED_HOME`:
 
 ```bash
-node packages/koed-server/dist/cli.js runtime status --provider homebrew --json
-node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
+pnpm runtime:status
+pnpm runtime:install
 ```
 
 `runtime status` is diagnostic-only and never installs packages. `runtime install` may run `brew install postgresql@17 pgvector llama.cpp` when packages are missing, then links selected binaries under `KOED_HOME/runtime` and records install metadata under `KOED_HOME/cache`. The default embedding model is installed separately with a pinned URL and SHA-256 checksum:
 
 ```bash
-node packages/koed-server/dist/cli.js models install --kind embedding --json
+pnpm models:install:embedding
 ```
 
 Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact. Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and `KOED_RERANKER_MODEL_SHA256` when enabling reranking.

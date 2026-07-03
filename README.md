@@ -31,12 +31,13 @@ From a fresh clone, run:
 
 ```bash
 pnpm install
-pnpm env:setup
-pnpm build
-node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
-node packages/koed-server/dist/cli.js models install --kind embedding --json
+pnpm local:setup
 KOED_DEPENDENCY_MODE=bundled-local pnpm desktop:start
 ```
+
+`pnpm local:setup` prepares `.env`, installs the Embedding Service Python
+virtualenv, builds the workspace, links the Homebrew-backed bundled-local
+runtime, and installs the default embedding model.
 
 Koed opens when setup is complete and configures Codex automatically.
 
