@@ -3,43 +3,120 @@
 > [!IMPORTANT]  
 > Only Codex is supported for knowledge capture. More agents to follow!
 
-Koed runs API, worker, embedding service, and an optional Explorer
-frontend. Postgres with pgvector stores Users, API Tokens, Memory Events, Memory
-Nodes, embeddings, and Capture Policies. Redis backs BullMQ queues.
+Koed runs API, Worker, Embedding Service, and Explorer under the local
+`koed-server` control plane. Postgres with pgvector stores Users, API Tokens,
+Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis backs
+BullMQ queues when `WORK_QUEUE_BACKEND=bullmq`; the Postgres-backed local queue
+is used when `WORK_QUEUE_BACKEND=local`.
+
+In source checkouts, `koed-server` defaults to external dependency mode. It
+connects to
+Operator-managed Postgres, Redis/BullMQ, and Embedding Service endpoints; it
+does not start or stop Docker Compose dependencies in external mode.
 
 ## Local Run
 
-For the guided zero-to-verified path, run:
-
-```bash
-pnpm clients:bootstrap
-```
-
-If you want to manage the services manually:
+For local personal use with native bundled resources installed, `koed-server start` can run without Docker, external Postgres, or external Redis. For the current source-checkout developer fallback, start the Docker-backed external dependency stack, then open Koed Desktop:
 
 ```bash
 pnpm env:setup
-docker compose up --build
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
+pnpm desktop:start
 ```
 
-If ports conflict with another local app:
+`pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
+Codex bootstrap when needed, and keeps the startup screen visible until the
+system is ready.
+
+`koed-server` owns `KOED_HOME`, runs API, Worker, and Explorer as supervised
+local app processes, and records runtime state under `KOED_HOME/run`. Docker
+Compose is treated as Operator-managed external infrastructure in this mode.
+
+Check service state or stop/restart supervised local processes from any headless shell:
 
 ```bash
-API_HOST_PORT=3001 EXPLORER_WEB_HOST_PORT=5574 EXPLORER_API_BASE_URL=http://localhost:3001 docker compose up --build
+node packages/koed-server/dist/cli.js status --json
+node packages/koed-server/dist/cli.js doctor --json
+node packages/koed-server/dist/cli.js stop --json
+node packages/koed-server/dist/cli.js restart --json
 ```
 
-Finish the Codex integration after the API migrations have run; `pnpm codex:bootstrap`
-creates or reuses the API token, builds `@koed/db` and `@koed/mcp-server`, and
-verifies capture plus doctor health automatically:
+`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops Explorer, Worker, API, native Embedding Service, and native Postgres via `pg_ctl stop -D <dataDir> -m fast`. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+
+Run Codex setup through the same surface after `koed-server start` has made the
+API ready:
 
 ```bash
-pnpm codex:bootstrap
+node packages/koed-server/dist/cli.js setup codex --json
 ```
 
-Use `pnpm explorer:bootstrap` after `pnpm codex:bootstrap` if you want to refresh the
-Explorer token config separately.
+Docker Compose is one way to provide external Postgres/pgvector, Redis/queues,
+and the Embedding Service/model runtime. Start Docker Desktop before launching
+the Compose stack, then let `koed-server` connect to the service URLs. Advanced
+Operators can provide the same URLs from `KOED_HOME/config/server.json` instead
+of Docker Compose.
 
-The Explorer frontend is available at `http://localhost:5174`, or the host port you selected.
+### Bundled-local native runtime
+
+Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch native Koed-owned Postgres/pgvector and Embedding Service runtimes under `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set; with BullMQ, Redis is Operator-managed external infrastructure.
+
+Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs `KOED_HOME/runtime/embedding-service/.venv/bin/python`, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
+
+On macOS, Linux, and WSL, Homebrew can explicitly install and link the native runtime assets into `KOED_HOME`:
+
+```bash
+node packages/koed-server/dist/cli.js runtime status --provider homebrew --json
+node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
+```
+
+`runtime status` is diagnostic-only and never installs packages. `runtime install` may run `brew install postgresql@17 pgvector llama.cpp` when packages are missing, then links selected binaries under `KOED_HOME/runtime` and records install metadata under `KOED_HOME/cache`. Model assets are installed separately with explicit checksums:
+
+```bash
+KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \
+KOED_EMBEDDING_MODEL_SHA256=<64-hex-sha256> \
+node packages/koed-server/dist/cli.js models install --kind embedding --json
+```
+
+Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
+`KOED_RERANKER_MODEL_SHA256` when enabling reranking.
+
+Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
+
+```bash
+pnpm smoke:bundled-local -- --full --install-runtime --json
+```
+
+`--install-runtime` explicitly runs the Homebrew-backed runtime install for the temporary `KOED_HOME` before native resource checks. The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
+
+If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
+
+```bash
+REDIS_HOST_PORT=16380 EMBEDDING_SERVICE_HOST_PORT=3801 docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
+KOED_DEPENDENCY_MODE=external API_HOST_PORT=3300 EXPLORER_WEB_HOST_PORT=5574 REDIS_URL=redis://localhost:16380 EMBEDDING_SERVICE_URL=http://localhost:3801 node packages/koed-server/dist/cli.js start
+```
+
+The Explorer frontend is available at `http://localhost:5174`, or the host port you selected, and is embedded by Koed Desktop.
+
+### Koed Desktop
+
+Koed Desktop is the Electron control surface for the same local control plane.
+It wraps `koed-server`, shows service status, and can start the supervisor,
+run Codex setup, run doctor, explicitly trigger Homebrew-backed runtime install
+with Operator confirmation, and open the embedded Explorer. Packaged Koed
+Desktop starts its managed local personal server with bundled-local native
+runtime defaults unless the Operator explicitly overrides runtime/dependency
+mode; source-checkout Desktop keeps the bare developer default and uses explicit
+external dependency configuration.
+
+```bash
+pnpm --filter @koed/desktop start
+```
+
+For renderer development only:
+
+```bash
+pnpm --filter @koed/desktop dev
+```
 
 ## LCM Smoke Test
 
@@ -48,7 +125,8 @@ smoke profile. The profile lowers the LCM thresholds and raises only the local
 write limit needed for the test; it does not change product defaults.
 
 ```bash
-docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build postgres redis embedding-service
+# In another shell, run koed-server start with scripts/lcm-smoke.env loaded before pnpm smoke:lcm
 pnpm api-token:create --owner-email smoke@example.local --name lcm-smoke
 MEMORY_API_TOKEN=<token> pnpm smoke:lcm
 ```
@@ -59,4 +137,4 @@ Keep Postgres, Redis, and the embedding service private. Expose only the API and
 
 Memory data is stored plaintext at the application layer in Postgres in this build. Protect the database and backups with private networking, least-privilege credentials, encrypted storage, and restricted administrator access.
 
-Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication.
+Only `/health` and `/ready` are intended for unauthenticated infrastructure probes. They return coarse status and should not be used as operator diagnostics. `/v1/capabilities` is also unauthenticated, but it is a client discovery contract rather than a health check: clients can use it to detect the positive capabilities registered by the current backend, and should treat missing capabilities as unavailable. `status --json` and `doctor --json` use readiness gates for Postgres reachability/version, migrations, pgvector, work queue backend, and Embedding Service model/dimensions before reporting healthy; doctor output gives repair actions such as running migrations, enabling pgvector, fixing dependency URLs, or correcting model/runtime mismatch. Detailed status endpoints such as `/health/details`, `/self-host/diagnostics`, and the authenticated view of `/self-host/status` should remain behind normal API authentication. Koed Desktop packaging/signing remains tracked separately from this local runtime path.

@@ -1481,6 +1481,59 @@ export const workflowTokenUsageSourceReferences = pgTable(
   ]
 );
 
+export const localWorkQueue = pgTable(
+  "local_work_queue",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    queueName: text("queue_name").notNull(),
+    jobName: text("job_name").notNull(),
+    jobKey: text("job_key"),
+    data: jsonb("data")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(1),
+    backoffMs: integer("backoff_ms"),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lockToken: text("lock_token"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("local_work_queue_job_key_unique")
+      .on(table.queueName, table.jobKey)
+      .where(
+        sql`${table.jobKey} is not null and ${table.status} in ('pending', 'active')`
+      ),
+    index("local_work_queue_claim_idx")
+      .on(table.queueName, table.availableAt, table.id)
+      .where(sql`${table.status} = 'pending'`),
+    index("local_work_queue_active_lease_idx")
+      .on(table.lockedUntil)
+      .where(sql`${table.status} = 'active'`),
+    check(
+      "local_work_queue_status_check",
+      sql`${table.status} in ('pending', 'active', 'completed', 'failed')`
+    ),
+    check(
+      "local_work_queue_max_attempts_check",
+      sql`${table.maxAttempts} >= 1`
+    ),
+    check(
+      "local_work_queue_attempt_count_check",
+      sql`${table.attemptCount} >= 0`
+    )
+  ]
+);
+
 export const localMemoryAgentSettings = pgTable(
   "local_memory_agent_settings",
   {

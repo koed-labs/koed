@@ -15,7 +15,7 @@ const usageText = `Usage: pnpm explorer:bootstrap [options]
 
 Options:
   --token <token>         Koed API token used to prefill Explorer config.
-  --skip-refresh          Skip rebuilding and restarting the Explorer container.
+  --skip-refresh          Skip rebuilding local Explorer assets.
   --help                  Show this help.
 
 Environment:
@@ -79,11 +79,17 @@ const readFlagValue = (argv, index, flag) => {
   return value;
 };
 
-const runCommand = ({ label, command, args, cwd = rootDir }) => {
+const runCommand = ({
+  label,
+  command,
+  args,
+  cwd = rootDir,
+  environment = process.env
+}) => {
   console.log(`> ${label}`);
   const result = spawnSync(command, args, {
     cwd,
-    env: process.env,
+    env: environment,
     stdio: "inherit"
   });
 
@@ -96,12 +102,15 @@ const runCommand = ({ label, command, args, cwd = rootDir }) => {
 };
 
 const writeExplorerTokenConfig = ({ rootDir: repoRoot, token }) => {
+  upsertEnvFileValue(resolve(repoRoot, ".env"), "MEMORY_API_TOKEN", token);
   upsertEnvFileValue(resolve(repoRoot, ".env"), "VITE_KOED_API_TOKEN", token);
-  upsertEnvFileValue(
-    resolve(repoRoot, "apps/explorer/.env.local"),
-    "VITE_KOED_API_TOKEN",
-    token
-  );
+  for (const envFile of [".env.local", ".env.production.local"]) {
+    upsertEnvFileValue(
+      resolve(repoRoot, "apps/explorer", envFile),
+      "VITE_KOED_API_TOKEN",
+      token
+    );
+  }
 };
 
 export const runExplorerBootstrap = async ({
@@ -116,7 +125,7 @@ export const runExplorerBootstrap = async ({
     console.log(`Root .env token: ${result.paths.rootEnvPath}`);
     console.log(`Explorer local token: ${result.paths.explorerEnvPath}`);
     console.log(
-      `Explorer refresh: ${result.args.skipRefresh ? "skipped" : "restarted"}`
+      `Explorer refresh: ${result.args.skipRefresh ? "skipped" : "rebuilt"}`
     );
   }
 } = {}) => {
@@ -130,10 +139,16 @@ export const runExplorerBootstrap = async ({
 
   if (!args.skipRefresh) {
     await runCommandFn({
-      label: "Refresh Explorer Docker image",
-      command: "docker",
-      args: ["compose", "up", "-d", "--build", "explorer"],
-      cwd: bootstrapRootDir
+      label: "Build Explorer assets",
+      command: "pnpm",
+      args: ["--filter", "@koed/explorer", "build"],
+      cwd: bootstrapRootDir,
+      environment: {
+        ...process.env,
+        ...environment,
+        MEMORY_API_TOKEN: effectiveToken,
+        VITE_KOED_API_TOKEN: effectiveToken
+      }
     });
   }
 

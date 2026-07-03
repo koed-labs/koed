@@ -9,5 +9,7 @@ blockExoticSubdeps: true
 strictDepBuilds: true
 allowBuilds:
   argon2: true
+  electron: true
+  electron-winstaller: false
   esbuild: true
   msgpackr-extract: false

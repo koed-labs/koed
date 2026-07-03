@@ -260,7 +260,7 @@ export const formatCliError = (error) => {
   if (code && databaseConnectionCodes.has(code)) {
     return [
       "Could not connect to Postgres using DATABASE_URL.",
-      "Start the local database with `docker compose up postgres` or update DATABASE_URL in `.env`.",
+      "Start the Operator-managed Postgres dependency (for example `docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up postgres`) or update DATABASE_URL in `.env`.",
       details.length > 0 ? `Details: ${details.join("; ")}` : `Code: ${code}`
     ].join("\n");
   }

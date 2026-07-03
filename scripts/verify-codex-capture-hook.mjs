@@ -1,16 +1,56 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const apiUrl = (process.env.MEMORY_API_URL ?? "http://localhost:3000").replace(
-  /\/+$/,
-  ""
-);
-const apiToken = process.env.MEMORY_API_TOKEN;
+const parseEnvFile = (filePath) => {
+  if (!existsSync(filePath)) return {};
+  return Object.fromEntries(
+    readFileSync(filePath, "utf8")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && line.includes("="))
+      .map((line) => {
+        const separator = line.indexOf("=");
+        return [
+          line.slice(0, separator).trim(),
+          line.slice(separator + 1).trim()
+        ];
+      })
+  );
+};
+const usableToken = (value) => {
+  const token = value?.trim();
+  return token && !token.includes("replace_with_token") ? token : null;
+};
+const rootEnv = parseEnvFile(path.resolve(".env"));
+const explorerEnv = parseEnvFile(path.resolve("apps/explorer/.env.local"));
+const apiUrl = (
+  process.env.MEMORY_API_URL ??
+  rootEnv.MEMORY_API_URL ??
+  (process.env.API_HOST_PORT
+    ? `http://localhost:${process.env.API_HOST_PORT}`
+    : null) ??
+  (rootEnv.API_HOST_PORT
+    ? `http://localhost:${rootEnv.API_HOST_PORT}`
+    : null) ??
+  "http://localhost:3300"
+).replace(/\/+$/, "");
+const apiToken =
+  usableToken(process.env.MEMORY_API_TOKEN) ??
+  usableToken(rootEnv.MEMORY_API_TOKEN) ??
+  usableToken(process.env.VITE_KOED_API_TOKEN) ??
+  usableToken(rootEnv.VITE_KOED_API_TOKEN) ??
+  usableToken(explorerEnv.VITE_KOED_API_TOKEN);
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const hookPath =
   process.env.MEMORY_CAPTURE_HOOK_PATH ??
@@ -24,6 +64,10 @@ const toolCallPurpose = `Koed capture hook verification tool call: ${marker}`;
 const toolResultText = `Koed capture hook verification tool result: ${marker}`;
 const finalText = `Koed capture hook verification final response: ${marker}`;
 let transcriptTimestampOffset = 0;
+const searchTimeoutMs = Number(
+  process.env.CAPTURE_VERIFY_SEARCH_TIMEOUT_MS ?? 30000
+);
+const searchPollMs = Number(process.env.CAPTURE_VERIFY_SEARCH_POLL_MS ?? 1000);
 
 if (!apiToken) {
   console.error(
@@ -134,6 +178,36 @@ const responseItem = (payload) =>
   });
 const appendTranscriptRecords = (records) => {
   writeFileSync(transcriptPath, `${records.join("\n")}\n`, { flag: "a" });
+};
+
+const waitForMarkerSearchHit = async () => {
+  const deadline = Date.now() + searchTimeoutMs;
+  let lastSearch;
+
+  do {
+    const search = await requestJson("/v1/memory/search", {
+      method: "POST",
+      body: JSON.stringify({
+        query: marker,
+        retrieval_scope: "personal",
+        search_domain: "project",
+        workspace_id: process.cwd(),
+        limit: 5
+      })
+    });
+    lastSearch = search;
+
+    const hit = Array.isArray(search.hits)
+      ? search.hits.find((item) => JSON.stringify(item).includes(marker))
+      : null;
+    if (hit) return hit;
+
+    await sleep(searchPollMs);
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `Capture Hook ran but marker was not found in memory within ${searchTimeoutMs}ms: ${marker}${lastSearch ? `; last search response: ${JSON.stringify(lastSearch)}` : ""}`
+  );
 };
 
 try {
@@ -320,22 +394,7 @@ try {
   }
 
   if (!verifiedWithDatabase) {
-    await waitFor("Capture Hook semantic search", async () => {
-      const search = await requestJson("/v1/memory/search", {
-        method: "POST",
-        body: JSON.stringify({
-          query: marker,
-          retrieval_scope: "personal",
-          search_domain: "project",
-          workspace_id: process.cwd(),
-          limit: 5
-        })
-      });
-
-      return Array.isArray(search.hits)
-        ? search.hits.find((item) => JSON.stringify(item).includes(marker))
-        : null;
-    });
+    await waitForMarkerSearchHit();
   }
 
   console.log("Codex Capture Hook verification passed.");

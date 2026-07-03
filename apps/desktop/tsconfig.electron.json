@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "outDir": "dist-electron",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": [
+    "src/main.ts",
+    "src/preload.cts",
+    "src/ipc/**/*.ts",
+    "src/koed-server/**/*.ts",
+    "src/window/**/*.ts"
+  ],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+}

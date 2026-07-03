@@ -1,0 +1,255 @@
+import { randomUUID } from "node:crypto";
+import type pg from "pg";
+
+export type LocalWorkQueueStatus =
+  | "pending"
+  | "active"
+  | "completed"
+  | "failed";
+
+export interface EnqueueLocalWorkQueueJobInput {
+  queueName: string;
+  jobName: string;
+  data: unknown;
+  jobKey?: string;
+  maxAttempts?: number;
+  backoffMs?: number;
+  delayMs?: number;
+}
+
+export interface LocalWorkQueueJobRecord<TData = unknown> {
+  id: number;
+  queueName: string;
+  jobName: string;
+  data: TData;
+  attemptCount: number;
+  maxAttempts: number;
+  lockToken: string;
+}
+
+export interface ClaimLocalWorkQueueJobInput {
+  queueName: string;
+  leaseMs: number;
+}
+
+export interface LocalWorkQueueRepository {
+  enqueue(input: EnqueueLocalWorkQueueJobInput): Promise<{ id: number }>;
+  claim<TData = unknown>(
+    input: ClaimLocalWorkQueueJobInput
+  ): Promise<LocalWorkQueueJobRecord<TData> | null>;
+  complete(input: { id: number; lockToken: string }): Promise<boolean>;
+  fail(input: {
+    id: number;
+    lockToken: string;
+    errorMessage: string;
+    retry: boolean;
+  }): Promise<boolean>;
+  getJobCounts(statuses: string[]): Promise<Record<string, number>>;
+}
+
+const toPositiveInteger = (
+  value: number | undefined,
+  fallback: number
+): number =>
+  Number.isInteger(value) && value !== undefined && value > 0
+    ? value
+    : fallback;
+
+const toNonNegativeInteger = (
+  value: number | undefined,
+  fallback: number
+): number =>
+  Number.isInteger(value) && value !== undefined && value >= 0
+    ? value
+    : fallback;
+
+const mapJobRow = <TData>(row: {
+  id: string | number;
+  queue_name: string;
+  job_name: string;
+  data: TData;
+  attempt_count: number;
+  max_attempts: number;
+  lock_token: string;
+}): LocalWorkQueueJobRecord<TData> => ({
+  id: Number(row.id),
+  queueName: row.queue_name,
+  jobName: row.job_name,
+  data: row.data,
+  attemptCount: row.attempt_count,
+  maxAttempts: row.max_attempts,
+  lockToken: row.lock_token
+});
+
+export const createLocalWorkQueueRepository = (
+  pool: pg.Pool
+): LocalWorkQueueRepository => ({
+  async enqueue(input) {
+    const maxAttempts = toPositiveInteger(input.maxAttempts, 1);
+    const backoffMs = input.backoffMs ?? null;
+    const delayMs = toNonNegativeInteger(input.delayMs, 0);
+    const result = await pool.query<{ id: string }>(
+      `
+        insert into local_work_queue (
+          queue_name,
+          job_name,
+          job_key,
+          data,
+          max_attempts,
+          backoff_ms,
+          available_at
+        )
+        values ($1, $2, $3, $4::jsonb, $5, $6, now() + ($7::text::interval))
+        on conflict (queue_name, job_key)
+          where job_key is not null and status in ('pending', 'active')
+          do update set updated_at = local_work_queue.updated_at
+        returning id
+      `,
+      [
+        input.queueName,
+        input.jobName,
+        input.jobKey ?? null,
+        JSON.stringify(input.data ?? {}),
+        maxAttempts,
+        backoffMs,
+        `${delayMs} milliseconds`
+      ]
+    );
+    return { id: Number(result.rows[0]?.id) };
+  },
+
+  async claim<TData = unknown>(input: ClaimLocalWorkQueueJobInput) {
+    const lockToken = randomUUID();
+    const leaseMs = toPositiveInteger(input.leaseMs, 60_000);
+    const result = await pool.query<{
+      id: string;
+      queue_name: string;
+      job_name: string;
+      data: TData;
+      attempt_count: number;
+      max_attempts: number;
+      lock_token: string;
+    }>(
+      `
+        with expired_failed as (
+          update local_work_queue
+          set status = 'failed',
+              failed_at = now(),
+              last_error = 'Local queue lease expired after max attempts.',
+              lock_token = null,
+              locked_at = null,
+              locked_until = null,
+              updated_at = now()
+          where queue_name = $1
+            and status = 'active'
+            and locked_until <= now()
+            and attempt_count >= max_attempts
+        ), expired_pending as (
+          update local_work_queue
+          set status = 'pending',
+              lock_token = null,
+              locked_at = null,
+              locked_until = null,
+              updated_at = now()
+          where queue_name = $1
+            and status = 'active'
+            and locked_until <= now()
+            and attempt_count < max_attempts
+        ), next_job as (
+          select id
+          from local_work_queue
+          where queue_name = $1
+            and status = 'pending'
+            and available_at <= now()
+          order by available_at asc, id asc
+          for update skip locked
+          limit 1
+        )
+        update local_work_queue q
+        set status = 'active',
+            attempt_count = q.attempt_count + 1,
+            lock_token = $2,
+            locked_at = now(),
+            locked_until = now() + ($3::text::interval),
+            updated_at = now()
+        from next_job
+        where q.id = next_job.id
+        returning q.id,
+                  q.queue_name,
+                  q.job_name,
+                  q.data,
+                  q.attempt_count,
+                  q.max_attempts,
+                  q.lock_token
+      `,
+      [input.queueName, lockToken, `${leaseMs} milliseconds`]
+    );
+    const row = result.rows[0];
+    return row ? mapJobRow<TData>(row) : null;
+  },
+
+  async complete(input) {
+    const result = await pool.query(
+      `
+        update local_work_queue
+        set status = 'completed',
+            completed_at = now(),
+            lock_token = null,
+            locked_at = null,
+            locked_until = null,
+            updated_at = now()
+        where id = $1 and lock_token = $2 and status = 'active'
+      `,
+      [input.id, input.lockToken]
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
+  async fail(input) {
+    const result = await pool.query(
+      `
+        update local_work_queue
+        set status = case when $3::boolean then 'pending' else 'failed' end,
+            available_at = case
+              when $3::boolean then now() + (coalesce(backoff_ms, 0)::text || ' milliseconds')::interval
+              else available_at
+            end,
+            failed_at = case when $3::boolean then failed_at else now() end,
+            last_error = $4,
+            lock_token = null,
+            locked_at = null,
+            locked_until = null,
+            updated_at = now()
+        where id = $1 and lock_token = $2 and status = 'active'
+      `,
+      [input.id, input.lockToken, input.retry, input.errorMessage]
+    );
+    return (result.rowCount ?? 0) > 0;
+  },
+
+  async getJobCounts(statuses) {
+    if (statuses.length === 0) {
+      return {};
+    }
+    const result = await pool.query<{ status: string; count: string }>(
+      `
+        select case
+                 when status = 'pending' and available_at > now() then 'delayed'
+                 else status
+               end as status,
+               count(*)::text as count
+        from local_work_queue
+        where status = any($1::text[])
+           or ('delayed' = any($1::text[]) and status = 'pending')
+        group by 1
+      `,
+      [statuses]
+    );
+    return Object.fromEntries(
+      statuses.map((status) => [
+        status,
+        Number(result.rows.find((row) => row.status === status)?.count ?? 0)
+      ])
+    );
+  }
+});

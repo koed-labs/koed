@@ -9,6 +9,7 @@ export interface DbConfig {
   connectionString?: string;
 }
 
+export type DbPool = pg.Pool;
 export type KoedDb = NodePgDatabase<typeof schema>;
 
 export const createDbPool = (config: DbConfig = {}): pg.Pool =>
@@ -27,26 +28,85 @@ export const checkDatabaseMigrated = async (
   pool: pg.Pool,
   expectedLatestMigrationTimestamp?: number
 ): Promise<boolean> => {
-  if (expectedLatestMigrationTimestamp !== undefined) {
+  try {
+    if (expectedLatestMigrationTimestamp !== undefined) {
+      const result = await pool.query<{ migrated: boolean }>(
+        `
+          select coalesce(max(created_at), 0)::bigint >= $1::bigint as migrated
+          from drizzle.__drizzle_migrations
+        `,
+        [expectedLatestMigrationTimestamp]
+      );
+      return result.rows[0]?.migrated === true;
+    }
+
     const result = await pool.query<{ migrated: boolean }>(
       `
-        select coalesce(max(created_at), 0)::bigint >= $1::bigint as migrated
-        from drizzle.__drizzle_migrations
-      `,
-      [expectedLatestMigrationTimestamp]
+        select exists (
+          select 1
+          from drizzle.__drizzle_migrations
+        ) as migrated
+      `
     );
     return result.rows[0]?.migrated === true;
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? error.code
+        : null;
+    if (code === "42P01" || code === "3F000") {
+      return false;
+    }
+    throw error;
   }
+};
 
-  const result = await pool.query<{ migrated: boolean }>(
-    `
-      select exists (
-        select 1
-        from drizzle.__drizzle_migrations
-      ) as migrated
-    `
+export interface DatabaseReadiness {
+  reachable: boolean;
+  migrationsCurrent: boolean;
+  postgresVersionNum: number | null;
+  postgresVersion: string | null;
+  postgresCompatible: boolean;
+  pgvectorInstalled: boolean;
+  pgvectorVersion: string | null;
+}
+
+export interface InspectDatabaseReadinessOptions {
+  expectedLatestMigrationTimestamp?: number;
+  minimumPostgresVersionNum?: number;
+}
+
+export const inspectDatabaseReadiness = async (
+  pool: pg.Pool,
+  options: InspectDatabaseReadinessOptions = {}
+): Promise<DatabaseReadiness> => {
+  const minimumPostgresVersionNum = options.minimumPostgresVersionNum ?? 140000;
+  const [version, pgvector, migrationsCurrent] = await Promise.all([
+    pool.query<{ version_num: string; version: string }>(
+      "select current_setting('server_version_num') as version_num, version() as version"
+    ),
+    pool.query<{ extversion: string }>(
+      "select extversion from pg_extension where extname = 'vector'"
+    ),
+    checkDatabaseMigrated(pool, options.expectedLatestMigrationTimestamp)
+  ]);
+  const postgresVersionNum = Number.parseInt(
+    version.rows[0]?.version_num ?? "0",
+    10
   );
-  return result.rows[0]?.migrated === true;
+  return {
+    reachable: true,
+    migrationsCurrent,
+    postgresVersionNum: Number.isFinite(postgresVersionNum)
+      ? postgresVersionNum
+      : null,
+    postgresVersion: version.rows[0]?.version ?? null,
+    postgresCompatible:
+      Number.isFinite(postgresVersionNum) &&
+      postgresVersionNum >= minimumPostgresVersionNum,
+    pgvectorInstalled: Boolean(pgvector.rows[0]?.extversion),
+    pgvectorVersion: pgvector.rows[0]?.extversion ?? null
+  };
 };
 
 export interface WaitForDbMigrationsOptions {

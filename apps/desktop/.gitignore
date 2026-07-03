@@ -1,0 +1,6 @@
+dist/
+dist-electron/
+dist-types/
+release/
+tsconfig.tsbuildinfo
+tsconfig.electron.tsbuildinfo

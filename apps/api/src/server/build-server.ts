@@ -1,6 +1,5 @@
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
-import { Queue } from "bullmq";
 import Fastify, { type FastifyRequest } from "fastify";
 import { Redis } from "ioredis";
 import { z } from "zod";
@@ -31,6 +30,7 @@ import {
 import {
   canReceiveGraphStreamPayload,
   createGraphStreamService,
+  createMemoryJobQueue,
   createMemoryJobScheduler,
   graphUpdateActionForPayload,
   registerCaptureRoutes,
@@ -42,6 +42,7 @@ import {
   registerRecallRoutes,
   shouldIgnoreGraphStreamPayload
 } from "../memory/index.js";
+import { lcmCompactQueueName, memoryEmbedQueueName } from "@koed/shared";
 import { registerTeamRoutes } from "../team/index.js";
 import { resolveApiServerConfig } from "./config.js";
 import {
@@ -142,17 +143,20 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   }
   const repository =
     options.repository ?? (pool ? createMemorySourceRepository(pool) : null);
-  const createQueue = (name: string) =>
-    config.redisUrl
-      ? new Queue(name, {
-          connection: {
-            url: config.redisUrl,
-            maxRetriesPerRequest: null
-          }
-        })
-      : null;
-  const embeddingQueue = createQueue("memory-embed");
-  const compactionQueue = createQueue("lcm-compact");
+  const createQueue = <TJobData>(name: string) =>
+    createMemoryJobQueue<TJobData>(name, {
+      backend: config.queueBackend,
+      redisUrl: config.redisUrl,
+      pool
+    });
+  const embeddingQueue = createQueue<{
+    sourceType: "memory_node" | "memory_event" | "message";
+    sourceId: string;
+  }>(memoryEmbedQueueName);
+  const compactionQueue = createQueue<{
+    userId: string;
+    visibility: Visibility;
+  }>(lcmCompactQueueName);
   const rateLimitRedis =
     !options.rateLimitStore &&
     config.rateLimit.store === "redis" &&
@@ -384,6 +388,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   });
 
   registerOperationalRoutes(app, routeContext, {
+    dbPool: pool,
     repository,
     embeddingQueue,
     compactionQueue,

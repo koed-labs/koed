@@ -1,5 +1,56 @@
 export type HealthStatus = "ok" | "degraded" | "error";
 
+export const memoryEmbedQueueName = "memory-embed";
+export const lcmCompactQueueName = "lcm-compact";
+export const lcmEmbedQueueName = "lcm-embed";
+
+export const workerQueueNames = [
+  memoryEmbedQueueName,
+  lcmCompactQueueName,
+  lcmEmbedQueueName
+] as const;
+
+export type WorkerQueueName = (typeof workerQueueNames)[number];
+
+export type KoedQueueBackend = "bullmq" | "local";
+
+const koedQueueBackends = new Set<KoedQueueBackend>(["bullmq", "local"]);
+
+export const resolveKoedQueueBackend = (
+  value: string | undefined,
+  fallback: KoedQueueBackend = "bullmq"
+): KoedQueueBackend => {
+  const normalized = value?.trim();
+  return normalized && koedQueueBackends.has(normalized as KoedQueueBackend)
+    ? (normalized as KoedQueueBackend)
+    : fallback;
+};
+
+export interface KoedJobHandle {
+  id: string | number | undefined;
+}
+
+export interface KoedJobEnqueueOptions {
+  jobId?: string;
+  attempts?: number;
+  backoff?: {
+    type: string;
+    delay: number;
+  };
+  removeOnComplete?: number | boolean;
+  removeOnFail?: number | boolean;
+}
+
+export interface KoedJobQueue<TJobData = unknown> {
+  add(
+    name: string,
+    data: TJobData,
+    options?: KoedJobEnqueueOptions
+  ): Promise<KoedJobHandle>;
+  getJobCounts(...statuses: string[]): Promise<Record<string, number>>;
+  close(): Promise<void>;
+}
+
 export interface ServiceHealth {
   service: string;
   status: HealthStatus;

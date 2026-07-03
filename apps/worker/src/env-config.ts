@@ -3,9 +3,11 @@ import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import {
   requireEnv,
+  resolveKoedQueueBackend,
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
-  resolveSupportedRerankerModelConfig
+  resolveSupportedRerankerModelConfig,
+  type KoedQueueBackend
 } from "@koed/shared";
 import {
   resolveWorkerLogDestinationConfig,
@@ -15,6 +17,7 @@ import {
 } from "./logging.js";
 
 export interface WorkerEnvConfig {
+  queueBackend: KoedQueueBackend;
   redisUrl: string;
   databaseUrl?: string;
   databaseConfigured: boolean;
@@ -55,6 +58,7 @@ export const resolveWorkerEnv = (
   environment: NodeJS.ProcessEnv = process.env
 ): WorkerEnvConfig => {
   const nodeEnv = environment.NODE_ENV ?? "development";
+  const queueBackend = resolveKoedQueueBackend(environment.WORK_QUEUE_BACKEND);
   const databaseUrl = optionalEnv(environment.DATABASE_URL);
   const embeddingServiceToken = optionalEnv(
     environment.EMBEDDING_SERVICE_TOKEN
@@ -67,7 +71,7 @@ export const resolveWorkerEnv = (
     requireEnv(
       [
         "DATABASE_URL",
-        "REDIS_URL",
+        ...(queueBackend === "bullmq" ? ["REDIS_URL"] : []),
         "DATA_ENCRYPTION_KEY",
         "EMBEDDING_SERVICE_URL",
         "EMBEDDING_SERVICE_TOKEN",
@@ -78,6 +82,7 @@ export const resolveWorkerEnv = (
   }
 
   return {
+    queueBackend,
     redisUrl: environment.REDIS_URL ?? "redis://localhost:6379",
     ...(databaseUrl ? { databaseUrl } : {}),
     databaseConfigured: Boolean(databaseUrl),

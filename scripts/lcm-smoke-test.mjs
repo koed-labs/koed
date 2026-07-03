@@ -17,7 +17,7 @@ for (let index = 2; index < process.argv.length; index += 1) {
 const apiUrl = (
   args.get("api-url") ??
   process.env.MEMORY_API_URL ??
-  "http://localhost:3000"
+  "http://localhost:3300"
 ).replace(/\/+$/, "");
 const defaultComposeProject = path
   .basename(process.cwd())
@@ -71,6 +71,51 @@ const existingApiToken =
   process.env.LCM_SMOKE_API_TOKEN ??
   process.env.MEMORY_API_TOKEN;
 
+const readJsonFile = (filePath) => {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+};
+
+const resolveKoedHome = () =>
+  path.resolve(
+    process.env.KOED_HOME?.trim() || path.join(os.homedir(), ".koed")
+  );
+
+const resolveBundledLocalDatabaseUrl = () => {
+  const koedHome = resolveKoedHome();
+  const localPorts = readJsonFile(
+    path.join(koedHome, "config", "local-ports.json")
+  );
+  const runtime = readJsonFile(path.join(koedHome, "run", "koed-server.json"));
+  if (
+    process.env.KOED_DEPENDENCY_MODE !== "bundled-local" &&
+    runtime?.dependencyMode !== "bundled-local"
+  ) {
+    return null;
+  }
+  const user = process.env.POSTGRES_USER || "koed";
+  const password =
+    process.env.POSTGRES_PASSWORD ||
+    process.env.KOED_BUNDLED_POSTGRES_PASSWORD ||
+    "koed-local-postgres";
+  const database = process.env.POSTGRES_DB || "koed";
+  const host = process.env.KOED_POSTGRES_HOST || "127.0.0.1";
+  const port =
+    process.env.KOED_POSTGRES_PORT ||
+    process.env.POSTGRES_HOST_PORT ||
+    localPorts?.postgres ||
+    "15432";
+  return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+};
+
+const databaseUrl =
+  args.get("database-url") ??
+  process.env.DATABASE_URL ??
+  resolveBundledLocalDatabaseUrl();
+
 const assert = (condition, message, details) => {
   if (!condition) {
     const suffix =
@@ -107,31 +152,39 @@ const requestJson = async (path, options = {}) => {
 const sqlLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
 const psqlJson = (sql) => {
-  const result = spawnSync(
-    "docker",
-    [
-      "compose",
-      "-p",
-      composeProject,
-      "exec",
-      "-T",
-      "postgres",
-      "psql",
-      "-U",
-      "koed",
-      "-d",
-      "koed",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-t",
-      "-A",
-      "-c",
-      sql
-    ],
-    { encoding: "utf8" }
-  );
+  const result = databaseUrl
+    ? spawnSync(
+        process.env.PSQL_COMMAND || "psql",
+        [databaseUrl, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", sql],
+        { encoding: "utf8" }
+      )
+    : spawnSync(
+        "docker",
+        [
+          "compose",
+          "-p",
+          composeProject,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "-U",
+          "koed",
+          "-d",
+          "koed",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-t",
+          "-A",
+          "-c",
+          sql
+        ],
+        { encoding: "utf8" }
+      );
   if (result.status !== 0) {
-    throw new Error(`psql failed:\n${result.stderr || result.stdout}`);
+    throw new Error(
+      `psql failed${databaseUrl ? ` using ${process.env.PSQL_COMMAND || "psql"}` : " using Docker Compose"}:\n${result.stderr || result.stdout}`
+    );
   }
   const line = result.stdout
     .split(/\r?\n/)
@@ -221,7 +274,7 @@ const assertRunningSmokeProfile = () => {
     [
       "Running Docker Compose services do not match the LCM smoke profile.",
       "Start a smoke-profile stack first:",
-      "docker compose --env-file .env --env-file scripts/lcm-smoke.env up -d --build api worker embedding-service postgres redis"
+      "Run koed-server start with scripts/lcm-smoke.env loaded, or set LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE=1 for the legacy Compose app profile."
     ].join("\n"),
     { composeProject, mismatches }
   );
@@ -405,11 +458,15 @@ const main = async () => {
 
   console.log(`LCM smoke marker: ${marker}`);
   console.log(`API: ${apiUrl}`);
-  console.log(`Docker Compose project: ${composeProject}`);
+  console.log(
+    `Database inspection: ${databaseUrl ? "psql" : `Docker Compose project ${composeProject}`}`
+  );
   console.log(
     `Local LCM summary model: ${summaryModel} (${summaryReasoningEffort})`
   );
-  assertRunningSmokeProfile();
+  if (process.env.LCM_SMOKE_REQUIRE_COMPOSE_APP_PROFILE === "1") {
+    assertRunningSmokeProfile();
+  }
 
   let token = existingApiToken;
   let authLabel = "existing API token";

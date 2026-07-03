@@ -1,8 +1,9 @@
 # Koed Worker
 
-The Worker is Koed's background processing service. It consumes BullMQ jobs,
-runs raw Projection catch-up, embeds Memory Events and Memory Nodes, and keeps
-LCM Placeholder nodes moving toward retrievable summaries.
+The Worker is Koed's background processing service. It consumes BullMQ or
+Postgres-backed local queue jobs, runs raw Projection catch-up, embeds Memory
+Events and Memory Nodes, and keeps LCM Placeholder nodes moving toward
+retrievable summaries.
 
 The Worker does not perform Answer Synthesis or LCM Summary creation. LCM
 Summaries are created locally through the MCP Server and connected AI Client,
@@ -62,7 +63,7 @@ full Operator-facing environment reference, see `docs/configuration.md`.
 Important runtime dependencies:
 
 - Postgres via `DATABASE_URL`.
-- Redis via `REDIS_URL` for BullMQ queues.
+- `WORK_QUEUE_BACKEND=bullmq` with Redis via `REDIS_URL`, or `WORK_QUEUE_BACKEND=local` with Postgres-backed `local_work_queue` jobs.
 - The Embedding Service URL, token, model key, and dimensions.
 - Raw Projection catch-up limits:
   `MEMORY_RAW_PROJECTION_INTERVAL_MS`,

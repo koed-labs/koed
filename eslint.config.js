@@ -12,6 +12,9 @@ export default tseslint.config(
     ignores: [
       "**/.venv/**",
       "**/dist/**",
+      "apps/desktop/dist-electron/**",
+      "apps/desktop/dist-types/**",
+      "apps/desktop/release/**",
       "**/coverage/**",
       "**/target/**",
       "node_modules/**"

@@ -14,13 +14,90 @@ MCP-side workers.
   memory-answer work, and runs the LCM Summary Service.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
   records, runs Projection, and serves recall endpoints.
-- **Worker**: the BullMQ/background process that performs catch-up projection,
-  embedding work, and LCM node embedding.
-- **Embedding Service**: local service that turns memory text into retrieval
-  vectors.
+- **Worker**: the background process that consumes BullMQ or Postgres-backed
+  local queue jobs, performs catch-up Projection, embedding work, and LCM node
+  embedding.
+- **Embedding Service**: Operator-managed service in external dependency mode, or native Koed-owned runtime in bundled-local mode, that turns memory text into retrieval vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
-  rows, Memory Events, Memory Nodes, embeddings, questions, token usage, and
-  Team Workspace access records.
+  rows, Memory Events, Memory Nodes, embeddings, questions, token usage,
+  Team Workspace access records, and Team audit events.
+- **Koed Server Control Plane**: the local `koed-server` supervisor surface
+  that owns `KOED_HOME`, starts Koed app processes, connects to configured
+  dependency endpoints, and reports setup/readiness status for headless and
+  desktop use.
+
+## Local Service Startup
+
+1. The Operator or Koed Desktop starts `koed-server`.
+2. `koed-server` resolves `KOED_HOME`, prepares local config/log/runtime
+   directories, provisions the Explorer credential inside `KOED_HOME`, and
+   resolves runtime/dependency mode from explicit environment overrides,
+   `KOED_HOME/config/server.json`, or package/profile defaults. Packaged Koed
+   Desktop starts its managed local personal `koed-server` with
+   `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
+   Operator overrides those values. Desktop bundled-local startup allocates free
+   local API, Explorer, Postgres, and Embedding Service ports and persists them
+   under `KOED_HOME/config/local-ports.json` for stable later launches.
+3. In the current source-checkout path, bare `koed-server` defaults to external
+   dependency mode instead of inferring bundled-local from an empty config. The
+   Operator starts Postgres/pgvector, Redis/BullMQ, and the Embedding Service
+   separately, for example with Docker Compose, and provides explicit
+   `DATABASE_URL`, `REDIS_URL`, and `EMBEDDING_SERVICE_URL` values.
+   `koed-server` does not start, stop, or inspect Docker Compose in external
+   mode.
+4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
+   starts native Postgres/pgvector and native Embedding Service runtimes under
+   `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
+   Python/llama-server, or model assets report setup guidance. It defaults job
+   processing to the Postgres-backed local queue. On macOS, Linux, and WSL,
+   `koed-server runtime status --provider homebrew --json` can inspect
+   Homebrew-backed runtime assets without installing packages, and
+   `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`
+   explicitly installs missing Homebrew packages and links selected binaries
+   under `KOED_HOME/runtime`. Model assets are installed out of band with
+   `koed-server models install`, which requires configured artifact URLs and
+   SHA-256 checksums before writing to `KOED_HOME/models`.
+5. `pnpm smoke:bundled-local -- --full --install-runtime --json` verifies this
+   native path with an isolated temporary `KOED_HOME`, optional Homebrew-backed
+   runtime install for that temporary home, temporary host ports, native resource
+   preflight, API Token creation, Capture Hook-like personal ingestion,
+   Projection, queue/embedding work, Memory Answer evidence retrieval, Explorer
+   reachability, and stop-based cleanup before Operators rely on it for local
+   development or packaging checks.
+6. The API, Worker, and Explorer run as local app processes supervised by
+   `koed-server` and connect to those configured dependency URLs. API/Worker
+   job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
+   `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
+   table.
+7. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. It treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
+8. `koed-server status --json` and `koed-server doctor --json` poll the API
+   readiness endpoint, dependency readiness as reported by the API, local
+   Worker process state, local API Token configuration, MCP Server doctor
+   output, Supported Capture Hook config, Codex config, LCM Summary Service
+   availability, and last verification metadata. Status compares the active
+   local API URL/token against the Koed-managed Codex MCP block and Capture
+   Hook config so stale ports or credentials show as explicit integration
+   mismatches. Readiness gates include Postgres reachability and version,
+   current migrations, pgvector, local or BullMQ queue backend availability,
+   and Embedding Service model/dimension compatibility.
+9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
+   Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
+   Explorer credential, verification, and doctor setup can be invoked through
+   the control plane. Setup applies persisted auto-allocated local ports before
+   resolving the API/Explorer URLs, so Desktop-managed ports and direct CLI
+   setup write the same target URL/token. `koed-server repair codex --json` is
+   the narrower Desktop repair path: it rewrites the Koed-managed Codex MCP
+   block and hook config for the currently active local API URL/token without
+   running the full bootstrap.
+10. Koed Desktop can start/connect to the same headless command surface, run
+    the first-launch Codex bootstrap and health-check sequence, poll status,
+    offer one-click Codex integration repair for stale local config, and embed
+    Explorer without requiring the Operator to invoke repo-local scripts
+    directly. Desktop readiness waits for API, Worker/queues, Explorer, and
+    the provisioned Explorer credential so static Explorer reachability cannot
+    mask an unhealthy processing path. Desktop manages only its local personal
+    `koed-server`; remote, Team Self-Hosted, and cloud targets are
+    connect-only.
 
 ## Capability Discovery
 
@@ -76,10 +153,12 @@ being enumerated as unsupported by this public self-hosted build.
    tool events, Memory Events, source links, and token usage where available.
    Agent work is bundled into semantic `agent_turn` Memory Events only when a
    seal condition is reached.
-9. The API schedules processing for newly projected Memory Events. The Worker
-   also runs a catch-up loop over pending or failed raw rows.
-10. The Worker embeds Memory Events by calling the Embedding Service and then
-    upserts source embeddings.
+9. The API schedules processing for newly projected Memory Events through the
+   configured work queue backend. The Worker also runs a catch-up loop over
+   pending or failed raw rows.
+10. The Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`,
+    embeds Memory Events by calling the Embedding Service, and then upserts
+    source embeddings.
 11. The Worker schedules compaction, creating or updating LCM Placeholder Memory
     Nodes from Memory Events and child nodes, then queues Memory Node embedding.
 12. Pending LCM placeholders remain available as degraded evidence until local
@@ -402,6 +481,7 @@ sequenceDiagram
 - LCM Summary Service: `packages/mcp-server/src/lcm-summary-service.ts`
 - LCM summary worker: `packages/mcp-server/src/lcm-summary-worker.ts`
 - LCM API routes: `apps/api/src/memory/lcm-routes.ts`
+- Koed Server control plane: `packages/koed-server/src/cli.ts`
 - MCP `memory_answer`: `packages/mcp-server/src/cli.ts`
 - Memory answer worker: `packages/mcp-server/src/answer-worker.ts`
 - Recall API routes: `apps/api/src/memory/recall-routes.ts`

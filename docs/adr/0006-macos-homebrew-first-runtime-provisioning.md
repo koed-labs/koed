@@ -1,12 +1,12 @@
-# Proposed macOS Homebrew-First Runtime Provisioning
+# macOS Homebrew-First Runtime Provisioning
 
-Status: Proposed for KOE-243.
+Status: Accepted as the first native bundled-local runtime provisioning path.
 
-Depends on: [0005 Proposed Native Bundled-Local Runtime Asset Provisioning Boundary](./0005-bundled-local-runtime-asset-provisioning.md).
+Depends on: [0005 Native Bundled-Local Runtime Asset Provisioning Boundary](./0005-bundled-local-runtime-asset-provisioning.md).
 
 ## Context
 
-If Koed accepts native bundled-local as the local personal runtime boundary, it
+With native bundled-local accepted as the local personal runtime boundary, Koed
 still needs an initial way to provision native assets on macOS. A fully
 self-contained distribution would require Koed to build, package, sign,
 notarize, host, verify, and test native Postgres/pgvector and `llama-server`
@@ -22,7 +22,7 @@ and an embedding model. Homebrew can therefore serve as the first native asset
 source while Koed builds the durable runtime status/install boundary proposed in
 ADR-0005.
 
-This ADR is intentionally transitional. It proposes a macOS-first implementation
+This ADR is intentionally transitional. It records a macOS-first implementation
 path, not the final cross-platform packaging answer. During this phase, a clean
 single-command local launch is only possible when Homebrew is available and the
 required native dependencies are already installed or can be installed by the
@@ -35,26 +35,28 @@ requirement.
 
 ## Decision
 
-This ADR proposes that Koed use a macOS Homebrew-first runtime provisioning path
-as the initial implementation for native bundled-local assets.
+Koed uses a Homebrew-first runtime provisioning path as the initial
+implementation for native bundled-local assets on macOS, Linux, and WSL where
+Homebrew is available.
 
-- macOS should be the first supported native bundled-local provisioning target.
-- Homebrew should be the initial source for native runtime dependencies. The
+- macOS is the first targeted native bundled-local provisioning environment; the
+  implementation also supports Homebrew on Linux and WSL.
+- Homebrew is the initial source for native runtime dependencies. The
   first-run setup flow may detect already-installed Homebrew packages or, when
   allowed by the selected bundled-local setup path, invoke Homebrew to install
   missing packages. It should not attempt to bootstrap Homebrew itself.
   Invoking Homebrew mutates package-manager state outside `KOED_HOME`, so it
-  must be visible and actionable: Desktop should show progress and require clear
-  Operator consent before invoking Homebrew, and headless flows should require
+  must be visible and actionable: Desktop shows progress and requires clear
+  Operator consent before invoking Homebrew, and headless flows require
   an explicit setup/install command or flag. Passive `status` and `doctor`
-  checks must never install Homebrew packages. Required Homebrew-provided
+  checks never install Homebrew packages. Required Homebrew-provided
   dependencies include:
   - `postgresql@17` for `initdb`, `pg_ctl`, `psql`, and compatible Postgres
     runtime files.
   - `pgvector` for the Postgres `vector` extension used by Koed memory storage
     and retrieval.
   - `llama.cpp` for `llama-server`, used by the native Embedding Service.
-- The Embedding Service Python runtime and dependencies should be provisioned
+- The Embedding Service Python runtime and dependencies are provisioned
   through the same `koed-server` runtime status/install contract. Whether the
   first implementation uses a Koed package resource, a Koed-managed runtime
   environment under `KOED_HOME`, or Homebrew-managed Python dependencies is an
@@ -107,7 +109,7 @@ as the initial implementation for native bundled-local assets.
   during bundled-local first-run setup, but they are not side effects of
   installing the minimal `koed-server` package and must not be downloaded in
   external dependency mode.
-- This Homebrew path should not replace the future option to ship packaged
+- This Homebrew path does not replace the future option to ship packaged
   Desktop resources or Koed-hosted verified tarballs with SHA-256 verification.
 - Linux, Windows, non-Homebrew macOS installs, and fully self-contained native
   runtime packaging remain future work unless separately accepted.
@@ -128,7 +130,7 @@ bundled-local = Koed-owned native runtime under KOED_HOME
 ```
 
 Homebrew is only the first macOS asset source for proving that boundary. A later
-packaged runtime should make the asset source swappable without changing
+packaged runtime must make the asset source swappable without changing
 Desktop, headless startup, status, doctor, or setup semantics.
 
 A likely future direction is a "stitched upstream" packaging approach. Instead
@@ -206,6 +208,5 @@ downloaded artifacts. Any non-Homebrew tarball or model download still requires
 manifested SHA-256 verification before installation. Homebrew package integrity
 is delegated to Homebrew for this transitional path.
 
-If ADR-0005 is not accepted, this Homebrew proposal should be revisited because
-its package split and first-run behavior depend on the proposed external-only
-Compose boundary and native bundled-local ownership model.
+This Homebrew-first path depends on the external-only Compose boundary and
+native bundled-local ownership model accepted in ADR-0005.

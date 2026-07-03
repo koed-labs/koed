@@ -4,16 +4,26 @@ Codex is currently the only supported AI Client for Koed.
 
 ## Recommended Setup
 
-From a Koed checkout, run the guided bootstrap path:
+Start the local control plane supervisor in one terminal:
 
 ```bash
-pnpm clients:bootstrap
+pnpm --filter @koed/koed-server build
+node packages/koed-server/dist/cli.js start
 ```
 
-This command prepares the environment, starts the backend services, creates or
-reuses the local API token, writes it into Explorer local config, refreshes the
-Docker-built Explorer, writes the Codex MCP and Capture Hook configuration,
-verifies capture, and finishes with a doctor check.
+`koed-server start` is long-running. After it reports that the API is ready, run
+the Codex setup wrapper from another terminal:
+
+```bash
+node packages/koed-server/dist/cli.js setup codex --json
+```
+
+The setup command prepares the environment, creates or reuses the local API
+Token once the API is ready, writes the app-provisioned Explorer credential,
+writes the Codex MCP and Capture Hook configuration, verifies capture, and
+finishes with a doctor check. Koed Desktop runs this guided client setup path
+automatically on startup when needed; `pnpm clients:bootstrap` remains the
+underlying Local Operator Script for manual recovery.
 
 ## API Token
 
@@ -42,13 +52,15 @@ Name: koed-selfhost
 Command: node
 Argument: /path/to/koed/packages/mcp-server/dist/cli.js
 Environment:
-  MEMORY_API_URL=http://localhost:3000
+  MEMORY_API_URL=http://localhost:3300
   MEMORY_API_TOKEN=<token>
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 Working directory: /path/to/koed
 ```
 
-If your API runs on a non-default host port, use that port in `MEMORY_API_URL`.
+The supervised `koed-server` default API host port is `3300`; direct app-local
+API runs may use `3000`. If your API runs on a different host port, use that
+port in `MEMORY_API_URL`.
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions
 from NVM, pyenv, or similar tools may not be on the PATH when Codex runs hooks.
@@ -131,7 +143,7 @@ not a macOS-style or Windows-only path.
 Verify the local Capture Hook from the checkout:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
+MEMORY_API_URL=http://localhost:3300 MEMORY_API_TOKEN=<token> pnpm codex:verify-capture
 ```
 
 This command enables personal capture, invokes the same TypeScript Capture Hook

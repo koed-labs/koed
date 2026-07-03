@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Queue } from "bullmq";
 import type { MemorySourceRepository } from "@koed/db";
+import type { KoedJobQueue } from "@koed/shared";
 import {
   createWorkerJobWorkflow,
   embeddingJobData,
@@ -35,7 +35,7 @@ describe("worker job workflows", () => {
       .mockResolvedValue({ dimensions: 1024, inserted: true, chunks: 1 });
     const workflow = createWorkerJobWorkflow({
       embeddingWorkflow: { embedSource },
-      lcmEmbedQueue: {} as Queue<EmbeddingQueueJobData>,
+      lcmEmbedQueue: {} as KoedJobQueue<EmbeddingQueueJobData>,
       repository: () => ({}) as MemorySourceRepository
     });
 

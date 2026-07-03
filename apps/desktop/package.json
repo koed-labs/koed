@@ -1,0 +1,32 @@
+{
+  "name": "@koed/desktop",
+  "productName": "Koed",
+  "version": "0.1.0",
+  "description": "Electron control surface for Koed local personal memory.",
+  "author": "Koed",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "prestart": "pnpm --filter @koed/koed-server build",
+    "package": "pnpm package:mac",
+    "package:mac": "pnpm --filter @koed/koed-server build && pnpm build && rm -rf release/mac release/mac-* && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir && if [ ! -d release/mac ]; then set -- release/mac-*; [ -d \"$1\" ] && mv \"$1\" release/mac; fi",
+    "package:release": "pnpm --filter @koed/koed-server build && pnpm build && electron-builder --mac dmg zip",
+    "package:smoke": "node scripts/smoke-packaged-desktop-app.mjs --build",
+    "package:smoke:mac": "node scripts/smoke-packaged-desktop-app.mjs --build",
+    "start": "pnpm build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@koed/koed-server": "workspace:*"
+  },
+  "devDependencies": {
+    "@electron/asar": "^3.4.1",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.15.3"
+  }
+}

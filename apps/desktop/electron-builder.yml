@@ -1,0 +1,40 @@
+appId: ai.koed.desktop
+productName: Koed
+copyright: Copyright © 2026 Koed
+
+asar: true
+npmRebuild: false
+
+files:
+  - dist-electron/**/*
+  - package.json
+  - "node_modules/@koed/koed-server/package.json"
+  - "node_modules/@koed/koed-server/dist/**/*"
+  - "!node_modules/@koed/koed-server/src/**"
+  - "!node_modules/@koed/koed-server/**/*.test.ts"
+  - "!node_modules/@koed/koed-server/tsconfig.json"
+  - "!node_modules/@koed/koed-server/tsconfig.tsbuildinfo"
+
+asarUnpack:
+  - dist-electron/koed-server/node-entrypoint-runner.js
+
+extraResources:
+  - from: dist
+    to: app-dist
+    filter:
+      - "**/*"
+
+directories:
+  output: release
+
+mac:
+  artifactName: "Koed-${version}-${arch}.${ext}"
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  target:
+    - dir
+    - dmg
+    - zip
+  category: public.app-category.developer-tools

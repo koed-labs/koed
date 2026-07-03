@@ -49,7 +49,7 @@ Command: node
 Argument: /path/to/koed/packages/mcp-server/dist/cli.js
 Working directory: /path/to/koed
 Environment:
-  MEMORY_API_URL=http://localhost:3000
+  MEMORY_API_URL=http://localhost:3300
   MEMORY_API_TOKEN=<koed-api-token>
   MEMORY_CODEX_APP_SERVER_BINARY=codex
   MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
@@ -61,7 +61,7 @@ Environment:
 Run a quick health check from the package:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 \
+MEMORY_API_URL=http://localhost:3300 \
 MEMORY_API_TOKEN=<koed-api-token> \
 node packages/mcp-server/dist/cli.js doctor
 ```
@@ -239,7 +239,7 @@ MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
 Verify capture from the repo root:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 \
+MEMORY_API_URL=http://localhost:3300 \
 MEMORY_API_TOKEN=<koed-api-token> \
 pnpm codex:verify-capture
 ```
@@ -258,7 +258,7 @@ Run one local memory processing pass. This generates pending captured-session
 titles, then submits pending LCM summaries:
 
 ```bash
-MEMORY_API_URL=http://localhost:3000 \
+MEMORY_API_URL=http://localhost:3300 \
 MEMORY_API_TOKEN=<koed-api-token> \
 node packages/mcp-server/dist/cli.js process-local-memory --limit 2
 ```
