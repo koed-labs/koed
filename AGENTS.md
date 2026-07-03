@@ -10,15 +10,18 @@ If you are helping an Operator or User get started in a fresh clone, begin here:
 4. `docs/configuration.md` → environment and deployment settings
 5. `CONTEXT.md` → product language and canonical terms
 
-Fresh-clone bootstrap should assume Docker Desktop (or another running Docker daemon) is required before Koed startup. The happy path is:
+Fresh-clone bootstrap should follow the README bundled-local Quickstart. The happy path avoids Docker and uses Koed-owned native local dependencies under `KOED_HOME`:
 
 ```bash
+pnpm install
 pnpm env:setup
-docker compose -f examples/docker-compose/docker-compose.yml up -d --build
-pnpm desktop:start
+pnpm build
+node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
+node packages/koed-server/dist/cli.js models install --kind embedding --json
+KOED_DEPENDENCY_MODE=bundled-local pnpm desktop:start
 ```
 
-If Docker is unavailable, surface that first instead of proceeding to Koed startup.
+If Homebrew or native runtime installation is unavailable, surface that first instead of silently switching to Docker or another external dependency path. Docker Compose and other external dependency starters are advanced documentation paths.
 
 If you are making code changes, keep using the contributor guidance below.
 

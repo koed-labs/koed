@@ -9,28 +9,26 @@ Memory Events, Memory Nodes, embeddings, and Capture Policies. Redis backs
 BullMQ queues when `WORK_QUEUE_BACKEND=bullmq`; the Postgres-backed local queue
 is used when `WORK_QUEUE_BACKEND=local`.
 
-In source checkouts, `koed-server` defaults to external dependency mode. It
-connects to
+The README Quickstart is the supported first-time path for basic local use: one
+bundled-local setup that avoids Docker, external Postgres, and external Redis.
+This document covers advanced running modes, development fallbacks, manual
+control-plane commands, and smoke workflows.
+
+In source checkouts, `koed-server` defaults to external dependency mode unless
+`KOED_DEPENDENCY_MODE=bundled-local` is set. In external mode it connects to
 Operator-managed Postgres, Redis/BullMQ, and Embedding Service endpoints; it
-does not start or stop Docker Compose dependencies in external mode.
+does not start or stop Docker Compose dependencies.
 
-## Local Run
-
-For local personal use with native bundled resources installed, `koed-server start` can run without Docker, external Postgres, or external Redis. For the current source-checkout developer fallback, start the Docker-backed external dependency stack, then open Koed Desktop:
-
-```bash
-pnpm env:setup
-docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
-pnpm desktop:start
-```
+## Manual control-plane commands
 
 `pnpm desktop:start` opens Koed Desktop, which auto-starts `koed-server`, runs
 Codex bootstrap when needed, and keeps the startup screen visible until the
 system is ready.
 
 `koed-server` owns `KOED_HOME`, runs API, Worker, and Explorer as supervised
-local app processes, and records runtime state under `KOED_HOME/run`. Docker
-Compose is treated as Operator-managed external infrastructure in this mode.
+local app processes, and records runtime state under `KOED_HOME/run`. In
+external dependency mode, Docker Compose or another dependency launcher is
+Operator-managed infrastructure.
 
 Check service state or stop/restart supervised local processes from any headless shell:
 
@@ -50,11 +48,20 @@ API ready:
 node packages/koed-server/dist/cli.js setup codex --json
 ```
 
+## External dependency mode with Docker Compose
+
 Docker Compose is one way to provide external Postgres/pgvector, Redis/queues,
 and the Embedding Service/model runtime. Start Docker Desktop before launching
-the Compose stack, then let `koed-server` connect to the service URLs. Advanced
-Operators can provide the same URLs from `KOED_HOME/config/server.json` instead
-of Docker Compose.
+the Compose stack, then let `koed-server` connect to the service URLs:
+
+```bash
+pnpm env:setup
+docker compose --env-file .env -f examples/docker-compose/docker-compose.yml up -d --build
+pnpm desktop:start
+```
+
+Advanced Operators can provide the same URLs from `KOED_HOME/config/server.json`
+instead of Docker Compose.
 
 ### Bundled-local native runtime
 
@@ -69,16 +76,13 @@ node packages/koed-server/dist/cli.js runtime status --provider homebrew --json
 node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json
 ```
 
-`runtime status` is diagnostic-only and never installs packages. `runtime install` may run `brew install postgresql@17 pgvector llama.cpp` when packages are missing, then links selected binaries under `KOED_HOME/runtime` and records install metadata under `KOED_HOME/cache`. Model assets are installed separately with explicit checksums:
+`runtime status` is diagnostic-only and never installs packages. `runtime install` may run `brew install postgresql@17 pgvector llama.cpp` when packages are missing, then links selected binaries under `KOED_HOME/runtime` and records install metadata under `KOED_HOME/cache`. The default embedding model is installed separately with a pinned URL and SHA-256 checksum:
 
 ```bash
-KOED_EMBEDDING_MODEL_URL=https://example.test/Qwen3-Embedding-0.6B-Q8_0.gguf \
-KOED_EMBEDDING_MODEL_SHA256=<64-hex-sha256> \
 node packages/koed-server/dist/cli.js models install --kind embedding --json
 ```
 
-Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and
-`KOED_RERANKER_MODEL_SHA256` when enabling reranking.
+Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact. Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and `KOED_RERANKER_MODEL_SHA256` when enabling reranking.
 
 Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
 

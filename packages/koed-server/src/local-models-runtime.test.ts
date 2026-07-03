@@ -55,6 +55,12 @@ describe("local model runtime", () => {
     expect(manifest.modelPath).toBe(
       resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
     );
+    expect(manifest.url).toBe(
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    );
+    expect(manifest.sha256).toBe(
+      "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
+    );
   });
 
   it("reports missing model with installer action", async () => {
@@ -80,6 +86,30 @@ describe("local model runtime", () => {
 
     expect(status.state).toBe("installed");
     expect(status.sha256).toBe(sha256("model-bytes"));
+  });
+
+  it("uses the pinned default embedding artifact when no URL is configured", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "models"));
+    let requestedUrl = "";
+
+    const result = await installLocalModel(
+      paths(root),
+      "embedding",
+      {},
+      {
+        fetch: async (url) => {
+          requestedUrl = String(url);
+          return new Response("actual");
+        }
+      }
+    );
+
+    expect(requestedUrl).toBe(
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    );
+    expect(result.ok).toBe(false);
+    expect(result.state).toBe("checksum_mismatch");
   });
 
   it("requires HTTPS model URLs", async () => {

@@ -58,6 +58,8 @@ const MODEL_DEFINITIONS: Record<
     urlEnv: string;
     sha256Env: string;
     pathEnv: string;
+    defaultUrl?: string;
+    defaultSha256?: string;
   }
 > = {
   embedding: {
@@ -65,7 +67,11 @@ const MODEL_DEFINITIONS: Record<
     filename: "Qwen3-Embedding-0.6B-Q8_0.gguf",
     urlEnv: "KOED_EMBEDDING_MODEL_URL",
     sha256Env: "KOED_EMBEDDING_MODEL_SHA256",
-    pathEnv: "KOED_EMBEDDING_MODEL_PATH"
+    pathEnv: "KOED_EMBEDDING_MODEL_PATH",
+    defaultUrl:
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    defaultSha256:
+      "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
   },
   reranker: {
     key: "qwen3-reranker-0.6b",
@@ -116,8 +122,10 @@ export const resolveLocalModelManifest = (
     urlEnv: definition.urlEnv,
     sha256Env: definition.sha256Env,
     pathEnv: definition.pathEnv,
-    url: trimEnv(environment, definition.urlEnv),
-    sha256: normalizeSha256(trimEnv(environment, definition.sha256Env))
+    url: trimEnv(environment, definition.urlEnv) ?? definition.defaultUrl,
+    sha256: normalizeSha256(
+      trimEnv(environment, definition.sha256Env) ?? definition.defaultSha256
+    )
   };
 };
 
@@ -137,7 +145,7 @@ export const collectLocalModelStatus = async (
     return {
       state: "missing",
       message: `${manifest.key} model is not installed at ${manifest.modelPath}.`,
-      action: `Set ${manifest.urlEnv} and ${manifest.sha256Env}, then run koed-server models install --kind ${kind}.`,
+      action: `Run koed-server models install --kind ${kind}. Override ${manifest.urlEnv} and ${manifest.sha256Env} only when using a custom model artifact.`,
       modelPath: manifest.modelPath,
       manifest
     };

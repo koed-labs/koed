@@ -2,7 +2,9 @@
 
 Use `.env.example` as the canonical Koed environment example. It is the starting point for local and production deployments.
 
-For a local deployment, run:
+The README Quickstart covers the basic bundled-local setup. This page is the advanced reference for environment variables, runtime modes, external dependency URLs, and production settings.
+
+For any local deployment, start by running:
 
 ```bash
 pnpm env:setup
@@ -106,7 +108,7 @@ model/runtime mismatch.
 - `WORK_QUEUE_BACKEND`: `bullmq` by default for Redis/BullMQ queues. Set `local` to use the Postgres-backed `local_work_queue` table for API/Worker jobs; this does not require Redis for job queues, though Redis may still be used for rate-limit or cache stores if configured.
 - `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
-- `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. Install writes to `KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
+- `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
 - `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. Install writes to `KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
 - `KOED_BUNDLED_POSTGRES_MODE`: deprecated. Bundled-local Postgres is native-only; `compose` is ignored and missing native binaries report setup guidance.
 - `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, and `psql` binaries for bundled-local Postgres. Defaults to `KOED_HOME/runtime/postgres/bin`, with source-checkout `vendor/postgres/bin` only as a development fallback. Individual binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`.
