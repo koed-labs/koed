@@ -47,6 +47,12 @@ const withDatabase = (connectionString, database) => {
 
 const quoteIdentifier = (value) => `"${value.replaceAll('"', '""')}"`;
 
+const isPostgresAdminTermination = (error) =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  error.code === "57P01";
+
 const admin = new Client({
   connectionString: withDatabase(databaseUrl, adminDatabase)
 });
@@ -61,6 +67,16 @@ try {
   await admin.query(`create database ${quoteIdentifier(targetDatabase)}`);
 
   const pool = new Pool({ connectionString: targetUrl });
+  let allowCleanupTerminationErrors = false;
+  pool.on("error", (error) => {
+    if (allowCleanupTerminationErrors && isPostgresAdminTermination(error)) {
+      return;
+    }
+    queueMicrotask(() => {
+      throw error;
+    });
+  });
+
   try {
     await runDbMigrations(pool);
 
@@ -114,6 +130,7 @@ try {
       )
     );
   } finally {
+    allowCleanupTerminationErrors = true;
     await pool.end();
   }
 } finally {
