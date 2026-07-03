@@ -15,7 +15,9 @@
     "@koed/explorer",
     "@koed/mcp-server",
     "@koed/shared",
-    "@koed/worker"
+    "@koed/worker",
+    "@koed/koed-server",
+    "@koed/desktop"
   ],
   "privatePackages": {
     "version": true,
