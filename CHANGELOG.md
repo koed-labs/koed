@@ -1,5 +1,12 @@
 # Koed
 
+## 0.3.1
+
+### Patch Changes
+
+- 11ca885: Add Team Workspace storage and request-time access primitives for Team SaaS.
+- d196ad6: Ensure Stop and SubagentStop hooks queue transcript catch-up even when earlier catch-up is active, preserving final turn sealing after existing token-limit rollover.
+
 ## 0.3.0
 
 ### Minor Changes
