@@ -67,18 +67,25 @@ try {
   await admin.query(`create database ${quoteIdentifier(targetDatabase)}`);
 
   const pool = new Pool({ connectionString: targetUrl });
-  let allowCleanupTerminationErrors = false;
+  let poolClosing = false;
+  let unexpectedPoolError;
+
   pool.on("error", (error) => {
-    if (allowCleanupTerminationErrors && isPostgresAdminTermination(error)) {
+    if (poolClosing && isPostgresAdminTermination(error)) {
       return;
     }
-    queueMicrotask(() => {
-      throw error;
-    });
+    unexpectedPoolError ??= error;
   });
+
+  const throwUnexpectedPoolError = () => {
+    if (unexpectedPoolError) {
+      throw unexpectedPoolError;
+    }
+  };
 
   try {
     await runDbMigrations(pool);
+    throwUnexpectedPoolError();
 
     const expectedLatestMigrationTimestamp =
       await getLatestMigrationTimestamp();
@@ -95,6 +102,7 @@ try {
           to_regclass('drizzle.__drizzle_migrations') as migrations_table
       `
     );
+    throwUnexpectedPoolError();
 
     const actualLatestMigrationTimestamp = BigInt(
       migrationResult.rows[0]?.latest_migration ?? 0
@@ -130,7 +138,7 @@ try {
       )
     );
   } finally {
-    allowCleanupTerminationErrors = true;
+    poolClosing = true;
     await pool.end();
   }
 } finally {
