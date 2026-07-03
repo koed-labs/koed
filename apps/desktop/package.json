@@ -1,7 +1,7 @@
 {
   "name": "@koed/desktop",
   "productName": "Koed",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Electron control surface for Koed local personal memory.",
   "author": "Koed",
   "private": true,
