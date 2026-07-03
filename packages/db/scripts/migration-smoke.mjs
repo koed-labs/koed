@@ -47,6 +47,12 @@ const withDatabase = (connectionString, database) => {
 
 const quoteIdentifier = (value) => `"${value.replaceAll('"', '""')}"`;
 
+const isPostgresAdminTermination = (error) =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  error.code === "57P01";
+
 const admin = new Client({
   connectionString: withDatabase(databaseUrl, adminDatabase)
 });
@@ -61,8 +67,25 @@ try {
   await admin.query(`create database ${quoteIdentifier(targetDatabase)}`);
 
   const pool = new Pool({ connectionString: targetUrl });
+  let poolClosing = false;
+  let unexpectedPoolError;
+
+  pool.on("error", (error) => {
+    if (poolClosing && isPostgresAdminTermination(error)) {
+      return;
+    }
+    unexpectedPoolError ??= error;
+  });
+
+  const throwUnexpectedPoolError = () => {
+    if (unexpectedPoolError) {
+      throw unexpectedPoolError;
+    }
+  };
+
   try {
     await runDbMigrations(pool);
+    throwUnexpectedPoolError();
 
     const expectedLatestMigrationTimestamp =
       await getLatestMigrationTimestamp();
@@ -79,6 +102,7 @@ try {
           to_regclass('drizzle.__drizzle_migrations') as migrations_table
       `
     );
+    throwUnexpectedPoolError();
 
     const actualLatestMigrationTimestamp = BigInt(
       migrationResult.rows[0]?.latest_migration ?? 0
@@ -114,6 +138,7 @@ try {
       )
     );
   } finally {
+    poolClosing = true;
     await pool.end();
   }
 } finally {
