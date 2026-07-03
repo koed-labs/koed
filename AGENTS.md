@@ -32,8 +32,8 @@ If you are making code changes, keep using the contributor guidance below.
 
 ## Architecture Documentation
 
-- Update `docs/service-sequence-overview.md` whenever a change affects service ordering, service boundaries, ingestion, Projection, LCM summarisation, retrieval, embedding, storage, or AI-client integration flow.
-- If a change does not require a sequence overview update, say so explicitly in the final response or PR description.
+- Update documentation in `/docs` whenever a change affects service ordering, service boundaries, ingestion, Projection, LCM summarisation, retrieval, embedding, storage, or AI-client integration flow.
+- If a change does not require documentation updates, say so explicitly in the final response or PR description.
 
 ## Planning And TODOs
 
