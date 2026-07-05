@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 /* global console, process */
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
@@ -17,21 +25,36 @@ const parseArgs = (argv) => {
     else if (value === "--source-dir") options.sourceDir = argv[++i];
     else if (value === "--out-dir") options.outDir = argv[++i];
     else if (value === "--version") options.version = argv[++i];
-    else if (value === "--allow-host-mismatch") options.allowHostMismatch = true;
+    else if (value === "--allow-host-mismatch")
+      options.allowHostMismatch = true;
     else if (value === "--help" || value === "-h") options.help = true;
     else throw new Error(`Unknown option: ${value}`);
   }
   options.sourceDir ||= process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR;
-  options.outDir ||= process.env.KOED_NATIVE_RUNTIME_OUT_DIR ?? resolve(repoRoot, "dist", "native-runtime", "macos-arm64");
-  options.version ||= process.env.KOED_NATIVE_RUNTIME_VERSION ?? `dev-${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}`;
+  options.outDir ||=
+    process.env.KOED_NATIVE_RUNTIME_OUT_DIR ??
+    resolve(repoRoot, "dist", "native-runtime", "macos-arm64");
+  options.version ||=
+    process.env.KOED_NATIVE_RUNTIME_VERSION ??
+    `dev-${new Date()
+      .toISOString()
+      .replace(/[^0-9]/g, "")
+      .slice(0, 14)}`;
   return options;
 };
 
 const run = (command, args, opts = {}) => {
-  const result = spawnSync(command, args, { cwd: repoRoot, encoding: "utf8", stdio: opts.stdio ?? "pipe", ...opts });
+  const result = spawnSync(command, args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: opts.stdio ?? "pipe",
+    ...opts
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed with ${result.status ?? 1}: ${result.stderr || result.stdout}`);
+    throw new Error(
+      `${command} ${args.join(" ")} failed with ${result.status ?? 1}: ${result.stderr || result.stdout}`
+    );
   }
   return result;
 };
@@ -39,12 +62,16 @@ const run = (command, args, opts = {}) => {
 const assertHost = (allowMismatch) => {
   if (allowMismatch) return;
   if (process.platform !== "darwin" || process.arch !== "arm64") {
-    throw new Error("macOS arm64 native runtime artifact build requires darwin/arm64. Use --allow-host-mismatch only for layout tests.");
+    throw new Error(
+      "macOS arm64 native runtime artifact build requires darwin/arm64. Use --allow-host-mismatch only for layout tests."
+    );
   }
 };
 
 const readSources = () => {
-  const path = process.env.KOED_NATIVE_RUNTIME_SOURCES ?? resolve(import.meta.dirname, "sources.macos-arm64.json");
+  const path =
+    process.env.KOED_NATIVE_RUNTIME_SOURCES ??
+    resolve(import.meta.dirname, "sources.macos-arm64.json");
   if (!existsSync(path)) return { path, sources: null };
   return { path, sources: JSON.parse(readFileSync(path, "utf8")) };
 };
@@ -52,10 +79,15 @@ const readSources = () => {
 const copySourceRuntime = ({ sourceDir, runtimeRoot }) => {
   if (!sourceDir) {
     const { path } = readSources();
-    throw new Error(`No local runtime source supplied. Provide --source-dir/KOED_NATIVE_RUNTIME_SOURCE_DIR, or implement pinned upstream downloads in ${path}.`);
+    throw new Error(
+      `No local runtime source supplied. Provide --source-dir/KOED_NATIVE_RUNTIME_SOURCE_DIR, or implement pinned upstream downloads in ${path}.`
+    );
   }
   const resolved = resolve(sourceDir);
-  if (!existsSync(resolved)) throw new Error(`Native runtime source directory does not exist: ${resolved}`);
+  if (!existsSync(resolved))
+    throw new Error(
+      `Native runtime source directory does not exist: ${resolved}`
+    );
   cpSync(resolved, runtimeRoot, { recursive: true, preserveTimestamps: true });
 };
 
@@ -70,12 +102,22 @@ const writeProvenance = ({ outDir, runtimeRoot, version, sourceDir }) => {
     node: process.version,
     host: { platform: process.platform, architecture: process.arch },
     validation: {
-      command: "pnpm native-runtime:validate -- --runtime-root <koed-runtime> --platform darwin --json"
+      command:
+        "pnpm native-runtime:validate -- --runtime-root <koed-runtime> --platform darwin --json"
     }
   };
-  writeFileSync(resolve(runtimeRoot, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`);
-  writeFileSync(resolve(runtimeRoot, "README.koed-native-runtime.txt"), "Koed packaged native runtime artifact. Validate with `pnpm native-runtime:validate -- --runtime-root koed-runtime --platform darwin --json`.\n");
-  writeFileSync(resolve(outDir, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`);
+  writeFileSync(
+    resolve(runtimeRoot, "provenance.json"),
+    `${JSON.stringify(provenance, null, 2)}\n`
+  );
+  writeFileSync(
+    resolve(runtimeRoot, "README.koed-native-runtime.txt"),
+    "Koed packaged native runtime artifact. Validate with `pnpm native-runtime:validate -- --runtime-root koed-runtime --platform darwin --json`.\n"
+  );
+  writeFileSync(
+    resolve(outDir, "provenance.json"),
+    `${JSON.stringify(provenance, null, 2)}\n`
+  );
 };
 
 const archive = ({ outDir, version }) => {
@@ -83,26 +125,49 @@ const archive = ({ outDir, version }) => {
   const tarPath = resolve(outDir, tarName);
   run("tar", ["-czf", tarPath, "koed-runtime"], { cwd: outDir });
   const sha = sha256File(tarPath);
-  writeFileSync(resolve(outDir, `${tarName}.sha256`), `${sha}  ${basename(tarPath)}\n`);
-  return { tarPath, sha256Path: resolve(outDir, `${tarName}.sha256`), sha256: sha };
+  writeFileSync(
+    resolve(outDir, `${tarName}.sha256`),
+    `${sha}  ${basename(tarPath)}\n`
+  );
+  return {
+    tarPath,
+    sha256Path: resolve(outDir, `${tarName}.sha256`),
+    sha256: sha
+  };
 };
 
 const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log("Usage: native-runtime:build:macos-arm64 -- [--source-dir <koed-runtime>] [--out-dir <dir>] [--version <version>] [--json]");
+    console.log(
+      "Usage: native-runtime:build:macos-arm64 -- [--source-dir <koed-runtime>] [--out-dir <dir>] [--version <version>] [--json]"
+    );
     return;
   }
   assertHost(options.allowHostMismatch);
   const outDir = resolve(options.outDir);
   const runtimeRoot = resolve(outDir, "koed-runtime");
-  const workDir = process.env.KOED_NATIVE_RUNTIME_WORK_DIR ?? mkdtempSync(resolve(tmpdir(), "koed-native-runtime-"));
+  const workDir =
+    process.env.KOED_NATIVE_RUNTIME_WORK_DIR ??
+    mkdtempSync(resolve(tmpdir(), "koed-native-runtime-"));
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(runtimeRoot, { recursive: true });
   copySourceRuntime({ sourceDir: options.sourceDir, runtimeRoot, workDir });
-  const nativeAssets = writeRuntimeAssetManifest({ runtimeRoot, platform: "macos", architecture: "arm64" });
-  if (nativeAssets.length === 0) throw new Error("No native runtime assets were staged; refusing to publish empty artifact.");
-  writeProvenance({ outDir, runtimeRoot, version: options.version, sourceDir: options.sourceDir });
+  const nativeAssets = writeRuntimeAssetManifest({
+    runtimeRoot,
+    platform: "macos",
+    architecture: "arm64"
+  });
+  if (nativeAssets.length === 0)
+    throw new Error(
+      "No native runtime assets were staged; refusing to publish empty artifact."
+    );
+  writeProvenance({
+    outDir,
+    runtimeRoot,
+    version: options.version,
+    sourceDir: options.sourceDir
+  });
   const artifact = archive({ outDir, version: options.version });
   const result = { ok: true, outDir, runtimeRoot, nativeAssets, artifact };
   if (options.json) console.log(JSON.stringify(result, null, 2));

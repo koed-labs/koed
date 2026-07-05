@@ -232,9 +232,12 @@ describe("packaged runtime provisioning", () => {
       if (args.includes("--version") && command.endsWith("initdb")) {
         return spawnResult("initdb (PostgreSQL) 17.4\n");
       }
-      if (args[0] === "-L") {
+      if (command === "ldd" && args[0] === "--version") {
+        return spawnResult("ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35\n");
+      }
+      if (command === "ldd") {
         return spawnResult(
-          `${args[1]}:\n\tlinux-vdso.so.1 (0x00007fffd3dfe000)\n`
+          `${args[0]}:\n\tlinux-vdso.so.1 (0x00007fffd3dfe000)\n`
         );
       }
       return spawnResult();
@@ -270,6 +273,9 @@ describe("packaged runtime provisioning", () => {
       if (args.includes("--version") && command.endsWith("initdb")) {
         return spawnResult("initdb (PostgreSQL) 17.4\n");
       }
+      if (command === "ldd" && args[0] === "--version") {
+        return spawnResult("ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35\n");
+      }
       return spawnResult("not a dynamic executable", 1);
     };
 
@@ -286,6 +292,70 @@ describe("packaged runtime provisioning", () => {
       entry.command.endsWith("psql")
     );
     expect(psqlLoader).toMatchObject({ ok: true, skipped: true });
+  });
+
+  it("rejects linux packaged runtime on old glibc hosts", () => {
+    const root = tempDir();
+    createPackagedPostgres(root);
+    writeManifest(root, { platform: "linux", architecture: "x64" });
+
+    const status = collectPackagedRuntimeStatus(paths(root), env(root), {
+      ...linuxHost,
+      spawnSync: (command, args) => {
+        if (command === "ldd" && args[0] === "--version") {
+          return spawnResult("ldd (GNU libc) 2.31\n");
+        }
+        return spawnResult();
+      }
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.state).toBe("not_supported");
+    expect(status.message).toContain("glibc 2.35+");
+    expect(status.action).toContain("Ubuntu 22.04+");
+  });
+
+  it("rejects linux packaged runtime on musl hosts", () => {
+    const root = tempDir();
+    createPackagedPostgres(root);
+    writeManifest(root, { platform: "linux", architecture: "x64" });
+
+    const status = collectPackagedRuntimeStatus(paths(root), env(root), {
+      ...linuxHost,
+      spawnSync: (command, args) => {
+        if (command === "ldd" && args[0] === "--version") {
+          return spawnResult("musl libc (x86_64)\nVersion 1.2.4\n");
+        }
+        return spawnResult();
+      }
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.state).toBe("not_supported");
+    expect(status.message).toContain("musl");
+  });
+
+  it("reports missing ldd on linux packaged runtime with host guidance", () => {
+    const root = tempDir();
+    createPackagedPostgres(root);
+    writeManifest(root, { platform: "linux", architecture: "x64" });
+
+    const status = collectPackagedRuntimeStatus(paths(root), env(root), {
+      ...linuxHost,
+      spawnSync: (command, args) => {
+        if (command === "ldd" && args[0] === "--version") {
+          return {
+            ...spawnResult("", 1, "ldd missing"),
+            error: new Error("ENOENT")
+          } as never;
+        }
+        return spawnResult();
+      }
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.state).toBe("not_supported");
+    expect(status.message).toContain("ldd");
   });
 
   it("reports checksum mismatch as incompatible and does not install", () => {

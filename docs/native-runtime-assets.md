@@ -82,4 +82,16 @@ Linux packaged native runtime targets:
 - Ubuntu 22.04 LTS / Debian 12 or newer as baseline;
 - non-musl Linux. Alpine/musl requires external dependency mode or separately built assets.
 
-If packaged assets do not match host platform/architecture or loader checks find missing libraries, Koed reports unsupported/incompatible guidance instead of falling back to Docker Compose or source-checkout paths. Native Windows packaging is not part of this path.
+If packaged assets do not match host platform/architecture, glibc is older than 2.35, musl/Alpine is detected, or loader checks find missing libraries, Koed reports unsupported/incompatible guidance instead of falling back to Docker Compose or source-checkout paths. Native Windows packaging is not part of this path.
+
+## WSL validation
+
+Windows native packaging is out of scope; use WSL for local Linux validation. Keep `KOED_HOME` and the checkout on the WSL Linux filesystem rather than `/mnt/<drive>` so permissions, sockets, and Postgres data files behave like Linux.
+
+```bash
+KOED_HOME=$HOME/.koed-test \
+KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime \
+pnpm native-runtime:validate:wsl -- --runtime-root /path/to/linux-x64/koed-runtime --json
+```
+
+WSL hosts must use a glibc distro that meets the same 2.35+ baseline, such as Ubuntu 22.04+.

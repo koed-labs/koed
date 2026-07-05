@@ -417,6 +417,54 @@ const validateManifest = (value: unknown): PackagedRuntimeAssetManifest => {
   return manifest;
 };
 
+const linuxCompatibility = (
+  platform: string,
+  spawnSync: SpawnSyncLike
+): { ok: true } | { ok: false; message: string; action: string } => {
+  if (platform !== "linux") return { ok: true };
+  const result = run("ldd", ["--version"], spawnSync);
+  const output = commandOutput(result);
+  if (result.error || result.status !== 0) {
+    return {
+      ok: false,
+      message:
+        "Linux packaged native runtime requires glibc 2.35+; ldd is unavailable or failed.",
+      action:
+        "Use Ubuntu 22.04+/Debian 12+ or a WSL Linux distro with glibc 2.35+, or use external dependency mode."
+    };
+  }
+  if (/musl/i.test(output)) {
+    return {
+      ok: false,
+      message:
+        "Linux packaged native runtime requires glibc 2.35+ and does not support musl/Alpine hosts.",
+      action:
+        "Use Ubuntu 22.04+/Debian 12+ or a WSL Linux distro with glibc 2.35+, or use external dependency mode."
+    };
+  }
+  const match = output.match(/(?:glibc|GNU libc|ldd)\D+(\d+)\.(\d+)/i);
+  const major = match ? Number.parseInt(match[1] ?? "", 10) : Number.NaN;
+  const minor = match ? Number.parseInt(match[2] ?? "", 10) : Number.NaN;
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) {
+    return {
+      ok: false,
+      message:
+        "Linux packaged native runtime requires glibc 2.35+; could not determine glibc version from ldd.",
+      action:
+        "Use Ubuntu 22.04+/Debian 12+ or a WSL Linux distro with glibc 2.35+, or use external dependency mode."
+    };
+  }
+  if (major < 2 || (major === 2 && minor < 35)) {
+    return {
+      ok: false,
+      message: `Linux packaged native runtime requires glibc 2.35+; host reports glibc ${major}.${minor}.`,
+      action:
+        "Use Ubuntu 22.04+/Debian 12+ or a WSL Linux distro with glibc 2.35+, or use external dependency mode."
+    };
+  }
+  return { ok: true };
+};
+
 const matchesHost = (
   asset: PackagedRuntimeAssetManifestEntry,
   platform: string,
@@ -559,6 +607,22 @@ export const collectPackagedRuntimeStatus = (
   const platform = dependencies.platform ?? process.platform;
   const architecture = dependencies.architecture ?? process.arch;
   const spawnSync = dependencies.spawnSync ?? (nodeSpawnSync as SpawnSyncLike);
+  const linux = linuxCompatibility(platform, spawnSync);
+  if (!linux.ok) {
+    return {
+      ok: false,
+      state: "not_supported",
+      provider: "packaged",
+      platform: platformKey(platform),
+      architecture,
+      koedHome: paths.koedHome,
+      manifestPath: manifestPath(paths, root),
+      packagedRuntimeRoot: root,
+      assets: [],
+      message: linux.message,
+      action: linux.action
+    };
+  }
   const loaded = readManifest(paths, root);
   if (!loaded.manifest) {
     return {
@@ -592,7 +656,9 @@ export const collectPackagedRuntimeStatus = (
       assets: [],
       message: `Packaged runtime asset manifest has no assets for ${platformKey(platform)}/${architecture}.`,
       action:
-        "Install Homebrew-backed runtime assets or ship matching packaged assets."
+        platform === "linux"
+          ? "Ship matching linux/x64 or linux/arm64 packaged assets for a glibc 2.35+ host, or use external dependency mode."
+          : "Install Homebrew-backed runtime assets or ship matching packaged assets."
     };
   }
   return statusFromAssets(

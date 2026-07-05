@@ -1,12 +1,6 @@
 #!/usr/bin/env node
 /* global console, process */
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { writeRuntimeAssetManifest } from "../../../scripts/native-runtime/manifest-lib.mjs";
@@ -39,7 +33,6 @@ const deploy = (filter, to) =>
     resolve(runtimeRoot, to)
   ]);
 
-
 const copyEmbeddingServiceApp = () => {
   const source = resolve(repoRoot, "apps", "embedding-service");
   const target = resolve(runtimeRoot, "embedding-service");
@@ -61,8 +54,7 @@ const copyEmbeddingServiceApp = () => {
   }
 };
 
-const writeNativeManifest = () =>
-  writeRuntimeAssetManifest({ runtimeRoot });
+const writeNativeManifest = () => writeRuntimeAssetManifest({ runtimeRoot });
 
 rmSync(runtimeRoot, { recursive: true, force: true });
 mkdirSync(runtimeRoot, { recursive: true });

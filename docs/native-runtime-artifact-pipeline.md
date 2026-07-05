@@ -30,6 +30,17 @@ pnpm native-runtime:validate -- \
   --json
 ```
 
+Linux x64 follows the same local shape and enforces glibc 2.35+:
+
+```bash
+KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime \
+  pnpm native-runtime:build:linux-x64 -- --json
+pnpm native-runtime:validate -- \
+  --runtime-root dist/native-runtime/linux-x64/koed-runtime \
+  --platform linux \
+  --json
+```
+
 ## Source inputs
 
 `scripts/native-runtime/sources.macos-arm64.json` records the intended pinned upstream inputs:
@@ -43,7 +54,7 @@ The current builder accepts `KOED_NATIVE_RUNTIME_SOURCE_DIR` for local layout te
 
 ## CI
 
-`.github/workflows/ci.yml` includes a manual `native-runtime-macos-arm64` job. It is intentionally not part of normal pull-request CI because macOS native artifact builds are expensive and should run on dependency bumps or explicit review.
+`.github/workflows/ci.yml` includes manual `native-runtime-macos-arm64` and `native-runtime-linux-x64` jobs. They are intentionally not part of normal pull-request CI because native artifact builds are expensive and should run on dependency bumps or explicit review. Linux x64 artifacts target glibc 2.35+ and should be built on Ubuntu 22.04 or an equivalent baseline image.
 
 The uploaded artifact contains the runtime tarball, sidecar SHA-256, and provenance metadata. When that manual artifact job runs, CI also runs `packaged-desktop-native-smoke`: it downloads the artifact, extracts `koed-runtime/`, validates it, sets `KOED_NATIVE_RUNTIME_SOURCE_DIR`, packages Desktop, and runs the full packaged smoke. The existing `packaged-desktop-smoke` job remains a missing-assets negative smoke and does not set `KOED_NATIVE_RUNTIME_SOURCE_DIR`.
 

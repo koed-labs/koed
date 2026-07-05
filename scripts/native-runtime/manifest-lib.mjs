@@ -104,7 +104,11 @@ export const writeRuntimeAssetManifest = ({
     platform,
     architecture
   });
-  if (existsSync(resolve(runtimeRoot, "embedding-service", ".venv", "bin", "python"))) {
+  if (
+    existsSync(
+      resolve(runtimeRoot, "embedding-service", ".venv", "bin", "python")
+    )
+  ) {
     addAsset({
       assets,
       id: "embedding-service",
