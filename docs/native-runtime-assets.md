@@ -94,4 +94,7 @@ KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime \
 pnpm native-runtime:validate:wsl -- --runtime-root /path/to/linux-x64/koed-runtime --json
 ```
 
-WSL hosts must use a glibc distro that meets the same 2.35+ baseline, such as Ubuntu 22.04+.
+The WSL validator runs packaged-provider runtime install, embedding model
+install, daemon start, status, doctor, API `/ready` reachability, and stop using
+bundled-local defaults. WSL hosts must use a glibc distro that meets the same
+2.35+ baseline, such as Ubuntu 22.04+.

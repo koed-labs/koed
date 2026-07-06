@@ -64,7 +64,7 @@ validating a pre-staged runtime layout instead of CI procurement.
 `scripts/native-runtime/sources.linux-x64.json` record pinned upstream inputs:
 
 - `python-build-standalone` install-only archives for the Python runtime;
-- official `llama.cpp` release assets;
+- official `llama.cpp` release assets pinned to a macOS 14-compatible build for macOS arm64 CI runners;
 - PostgreSQL 17 official source tarballs while relocatable binary candidates are
   still being evaluated;
 - pgvector source built against the selected `pg_config`.

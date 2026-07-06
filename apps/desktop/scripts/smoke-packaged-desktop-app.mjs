@@ -16,6 +16,8 @@ const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
 const sleep = (ms) =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+const sleepSync = (ms) =>
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 const parseArgs = (argv) => {
   const options = {
@@ -204,6 +206,22 @@ const parseJsonOutput = (label, output) => {
   }
 };
 
+const killPidBestEffort = (pid) => {
+  if (typeof pid !== "number" || pid <= 0) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  sleepSync(500);
+  try {
+    process.kill(pid, 0);
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Process already exited.
+  }
+};
+
 const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
   const result = spawnSync(
     layout.executable,
@@ -211,7 +229,8 @@ const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
     {
       cwd: layout.resourcesPath,
       env: createSmokeEnv(layout, koedHome, extraEnv),
-      encoding: "utf8"
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024
     }
   );
   return {
@@ -308,10 +327,14 @@ const assertPackagedJsSurface = (layout) => {
   }
 };
 
-const assertHealthy = (payload, label) => {
-  if (payload?.ok !== true || payload?.state !== "healthy") {
+const assertPackagedDaemonReady = (payload, label) => {
+  const requiredComponents = ["database", "redis", "explorer"];
+  const unhealthy = requiredComponents.filter(
+    (component) => payload?.[component]?.state !== "healthy"
+  );
+  if (unhealthy.length > 0) {
     throw new Error(
-      `${label} was not healthy: ${JSON.stringify(payload, null, 2)}`
+      `${label} was not ready (${unhealthy.join(", ")}): ${JSON.stringify(payload, null, 2)}`
     );
   }
 };
@@ -378,7 +401,10 @@ const waitForHealthyStatus = async ({
       continue;
     }
     lastStatus = parseJsonOutput("status --json", status.stdout);
-    if (lastStatus?.ok === true && lastStatus?.state === "healthy") {
+    const readyComponents = ["database", "redis", "explorer"].every(
+      (component) => lastStatus?.[component]?.state === "healthy"
+    );
+    if (readyComponents) {
       assertNoSourceCheckoutResolution("status --json", lastStatus);
       return lastStatus;
     }
@@ -397,16 +423,21 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     "packaged",
     "--json"
   ]);
-  if (runtimeStatus.status !== 0) {
-    throw new Error(
-      `runtime status --json failed with ${runtimeStatus.status}: ${runtimeStatus.stderr || runtimeStatus.stdout}`
-    );
-  }
   const runtimeStatusJson = parseJsonOutput(
     "runtime status --json",
     runtimeStatus.stdout
   );
   assertNoSourceCheckoutResolution("runtime status --json", runtimeStatusJson);
+  if (runtimeStatus.status !== 0) {
+    assertMissingAssets(
+      runtimeStatusJson,
+      "runtime status --json before install"
+    );
+  } else if (runtimeStatusJson.ok !== true) {
+    throw new Error(
+      `runtime status --json was not ok: ${JSON.stringify(runtimeStatusJson, null, 2)}`
+    );
+  }
 
   const install = runPackagedCommand(layout, koedHome, [
     "runtime",
@@ -425,6 +456,31 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   const installJson = parseJsonOutput("runtime install --json", install.stdout);
   assertNoSourceCheckoutResolution("runtime install --json", installJson);
   assertInstalled(installJson, "runtime install --json");
+
+  const installedRuntimeStatus = runPackagedCommand(layout, koedHome, [
+    "runtime",
+    "status",
+    "--provider",
+    "packaged",
+    "--json"
+  ]);
+  if (installedRuntimeStatus.status !== 0) {
+    throw new Error(
+      `runtime status --json after install failed with ${installedRuntimeStatus.status}: ${installedRuntimeStatus.stderr || installedRuntimeStatus.stdout}`
+    );
+  }
+  const installedRuntimeStatusJson = parseJsonOutput(
+    "runtime status --json after install",
+    installedRuntimeStatus.stdout
+  );
+  assertNoSourceCheckoutResolution(
+    "runtime status --json after install",
+    installedRuntimeStatusJson
+  );
+  assertInstalled(
+    installedRuntimeStatusJson,
+    "runtime status --json after install"
+  );
 
   const modelStatus = runPackagedCommand(layout, koedHome, [
     "models",
@@ -480,6 +536,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const startJson = parseJsonOutput("start --daemon --json", start.stdout);
   assertNoSourceCheckoutResolution("start --daemon --json", startJson);
+  if (startJson.ok === true && typeof startJson.startedPid === "number") {
+    options.daemonPids?.push(startJson.startedPid);
+  }
   if (startJson.ok !== true || typeof startJson.startedPid !== "number") {
     throw new Error(
       `start --daemon --json did not include daemon start details: ${start.stdout}`
@@ -497,17 +556,12 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     "status",
     "--json"
   ]);
-  if (reconnectStatus.status !== 0) {
-    throw new Error(
-      `status --json after reconnect failed with ${reconnectStatus.status}: ${reconnectStatus.stderr || reconnectStatus.stdout}`
-    );
-  }
   const reconnectJson = parseJsonOutput(
     "status --json",
     reconnectStatus.stdout
   );
   assertNoSourceCheckoutResolution("status --json", reconnectJson);
-  assertHealthy(reconnectJson, "status --json after reconnect");
+  assertPackagedDaemonReady(reconnectJson, "status --json after reconnect");
 
   const stop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
   if (stop.status !== 0) {
@@ -533,6 +587,9 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   }
   const restartJson = parseJsonOutput("start --daemon --json", restart.stdout);
   assertNoSourceCheckoutResolution("reopen start --daemon --json", restartJson);
+  if (restartJson.ok === true && typeof restartJson.startedPid === "number") {
+    options.daemonPids?.push(restartJson.startedPid);
+  }
   if (restartJson.ok !== true || typeof restartJson.startedPid !== "number") {
     throw new Error(
       `reopen start --daemon --json did not include daemon start details: ${restart.stdout}`
@@ -560,6 +617,7 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
   return {
     runtimeStatus: runtimeStatusJson,
     install: installJson,
+    installedRuntimeStatus: installedRuntimeStatusJson,
     modelStatus: modelStatusJson,
     firstStatus,
     reconnectStatus: reconnectJson,
@@ -585,6 +643,7 @@ const run = async () => {
   assertPackagedJsSurface(layout);
 
   const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-smoke-"));
+  const daemonPids = [];
   try {
     if (options.missingAssets) {
       const result = smokeMissingAssets(layout, koedHome);
@@ -605,7 +664,10 @@ const run = async () => {
       return;
     }
 
-    const result = await smokeHealthyDaemon(layout, koedHome, options);
+    const result = await smokeHealthyDaemon(layout, koedHome, {
+      ...options,
+      daemonPids
+    });
     if (options.json) {
       console.log(
         JSON.stringify(
@@ -638,6 +700,11 @@ const run = async () => {
     }
     console.log("Packaged Desktop smoke passed.");
   } finally {
+    runPackagedCommand(layout, koedHome, ["stop", "--json"]);
+    for (const pid of daemonPids.toReversed()) {
+      killPidBestEffort(pid);
+    }
+    spawnSync("pkill", ["-f", koedHome], { stdio: "ignore" });
     rmSync(koedHome, { recursive: true, force: true });
   }
 };

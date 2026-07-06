@@ -291,7 +291,7 @@ jobs:
       - name: Packaged Desktop native smoke
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: /tmp/koed-native-runtime-extracted/koed-runtime
-        run: pnpm desktop:package:smoke:mac -- --json
+        run: pnpm desktop:package:smoke:mac -- --json --timeout-ms 420000
 
   python-dependencies:
     name: Python dependency resolution

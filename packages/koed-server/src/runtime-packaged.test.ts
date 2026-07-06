@@ -344,11 +344,9 @@ describe("packaged runtime provisioning", () => {
       ...linuxHost,
       spawnSync: (command, args) => {
         if (command === "ldd" && args[0] === "--version") {
-          const result = spawnResult("", 1, "ldd missing") as {
-            error?: Error;
-          };
-          result.error = new Error("ENOENT");
-          return result as never;
+          return Object.assign(spawnResult("", 1, "ldd missing"), {
+            error: new Error("ENOENT")
+          }) as never;
         }
         return spawnResult();
       }

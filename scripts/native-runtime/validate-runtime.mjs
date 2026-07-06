@@ -94,18 +94,49 @@ const validateExecutables = (runtimeRoot) =>
     ];
   });
 
-const collectMachOFiles = (runtimeRoot) =>
-  [
+const pgConfigValue = (runtimeRoot, flag) => {
+  const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
+  if (!existsSync(pgConfig)) return undefined;
+  const result = run(pgConfig, [flag]);
+  if (result.status !== 0 || result.error) return undefined;
+  return result.stdout.trim();
+};
+
+const collectLoaderFiles = (runtimeRoot, platform) => {
+  const files = [
     resolve(runtimeRoot, "postgres", "bin", "initdb"),
     resolve(runtimeRoot, "postgres", "bin", "pg_ctl"),
     resolve(runtimeRoot, "postgres", "bin", "psql"),
     resolve(runtimeRoot, "postgres", "bin", "pg_config"),
-    resolve(runtimeRoot, "postgres", "lib", "postgresql", "vector.dylib"),
     resolve(runtimeRoot, "llama.cpp", "llama-server")
-  ].filter(existsSync);
+  ];
+  const pkglibdir = pgConfigValue(runtimeRoot, "--pkglibdir");
+  if (pkglibdir) {
+    files.push(
+      resolve(pkglibdir, platform === "darwin" ? "vector.dylib" : "vector.so")
+    );
+  } else {
+    files.push(
+      resolve(
+        runtimeRoot,
+        "postgres",
+        "lib",
+        platform === "darwin" ? "vector.dylib" : "vector.so"
+      ),
+      resolve(
+        runtimeRoot,
+        "postgres",
+        "lib",
+        "postgresql",
+        platform === "darwin" ? "vector.dylib" : "vector.so"
+      )
+    );
+  }
+  return files.filter(existsSync);
+};
 
 const validateMacLoaders = (runtimeRoot) =>
-  collectMachOFiles(runtimeRoot).map((file) => {
+  collectLoaderFiles(runtimeRoot, "darwin").map((file) => {
     const result = run("otool", ["-L", file]);
     const output = `${result.stdout}\n${result.stderr}`;
     const forbidden = [
@@ -141,7 +172,7 @@ const validateLinuxLoaders = (runtimeRoot) => {
   ) {
     throw new Error("Linux native runtime artifacts require glibc 2.35+.");
   }
-  return collectMachOFiles(runtimeRoot).map((file) => {
+  return collectLoaderFiles(runtimeRoot, "linux").map((file) => {
     const result = run("ldd", [file]);
     const output = `${result.stdout}\n${result.stderr}`;
     return {
@@ -151,6 +182,71 @@ const validateLinuxLoaders = (runtimeRoot) => {
       output: output.trim()
     };
   });
+};
+
+const validatePgvectorExtension = (runtimeRoot) => {
+  const tempRoot = mkdtempSync(resolve(tmpdir(), "koed-pgvector-validate-"));
+  const dataDir = resolve(tempRoot, "data");
+  const socketDir = resolve(tempRoot, "socket");
+  const logPath = resolve(tempRoot, "postgres.log");
+  const initdb = resolve(runtimeRoot, "postgres", "bin", "initdb");
+  const pgCtl = resolve(runtimeRoot, "postgres", "bin", "pg_ctl");
+  const psql = resolve(runtimeRoot, "postgres", "bin", "psql");
+  const port = String(55000 + Math.floor(Math.random() * 5000));
+  const steps = [];
+  try {
+    const mkdir = run("mkdir", ["-p", socketDir]);
+    steps.push(mkdir);
+    failOnBad(mkdir);
+    const init = run(initdb, [
+      "-D",
+      dataDir,
+      "--auth=trust",
+      "--username=koed"
+    ]);
+    steps.push(init);
+    failOnBad(init);
+    const start = run(pgCtl, [
+      "-D",
+      dataDir,
+      "-l",
+      logPath,
+      "-o",
+      `-p ${port} -k ${socketDir}`,
+      "start"
+    ]);
+    steps.push(start);
+    failOnBad(start);
+    const createExtension = run(psql, [
+      "-h",
+      socketDir,
+      "-p",
+      port,
+      "-U",
+      "koed",
+      "-d",
+      "postgres",
+      "-c",
+      "CREATE EXTENSION IF NOT EXISTS vector;"
+    ]);
+    steps.push(createExtension);
+    failOnBad(createExtension);
+    return { ok: true, steps };
+  } catch (error) {
+    return {
+      ok: false,
+      steps,
+      error: error instanceof Error ? error.message : String(error),
+      log: existsSync(logPath)
+        ? run("tail", ["-100", logPath]).stdout
+        : undefined
+    };
+  } finally {
+    if (existsSync(pgCtl) && existsSync(dataDir)) {
+      run(pgCtl, ["-D", dataDir, "stop", "-m", "fast"]);
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 };
 
 const validatePackagedProvider = (runtimeRoot) => {
@@ -210,6 +306,7 @@ const runValidation = (options) => {
       : options.platform === "linux"
         ? validateLinuxLoaders(runtimeRoot)
         : [];
+  const pgvectorExtension = validatePgvectorExtension(runtimeRoot);
   const packagedProvider = validatePackagedProvider(runtimeRoot);
   const errors = [
     ...executables
@@ -218,6 +315,9 @@ const runValidation = (options) => {
     ...loaders
       .filter((entry) => !entry.ok)
       .map((entry) => `${entry.file} loader failed: ${entry.output}`),
+    ...(pgvectorExtension.ok
+      ? []
+      : [`pgvector extension validation failed: ${pgvectorExtension.error}`]),
     ...(packagedProvider.skipped || packagedProvider.ok
       ? []
       : ["packaged provider validation failed"])
@@ -228,6 +328,7 @@ const runValidation = (options) => {
     platform: options.platform,
     executables,
     loaders,
+    pgvectorExtension,
     packagedProvider,
     errors
   };

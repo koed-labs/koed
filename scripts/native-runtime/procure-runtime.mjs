@@ -9,12 +9,14 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   statSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
@@ -98,6 +100,32 @@ const chmodIfExists = (path) => {
   if (existsSync(path)) chmodSync(path, 0o755);
 };
 
+const materializeAbsoluteSymlinks = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      materializeAbsoluteSymlinks(path);
+      continue;
+    }
+    if (!entry.isSymbolicLink()) continue;
+    const target = readlinkSync(path);
+    if (!target.startsWith("/") || !existsSync(target)) continue;
+    const mode = statSync(target).mode;
+    rmSync(path, { force: true });
+    cpSync(target, path, {
+      recursive: true,
+      preserveTimestamps: true,
+      dereference: true
+    });
+    if (!statSync(path).isDirectory()) chmodSync(path, mode & 0o777);
+  }
+};
+
+const adHocSignIfDarwin = (path) => {
+  if (process.platform !== "darwin") return;
+  run("codesign", ["--force", "--sign", "-", path]);
+};
+
 const listFiles = (dir) =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(dir, entry.name);
@@ -149,7 +177,11 @@ const stagePython = ({ source, runtimeRoot, cacheDir, workDir }) => {
   copyEmbeddingServiceApp(targetEmbedding);
   const venvDir = resolve(targetEmbedding, ".venv");
   rmSync(venvDir, { recursive: true, force: true });
-  cpSync(pythonRoot, venvDir, { recursive: true, preserveTimestamps: true });
+  cpSync(pythonRoot, venvDir, {
+    recursive: true,
+    preserveTimestamps: true,
+    dereference: true
+  });
   const venvPython = resolve(venvDir, "bin", "python");
   run(venvPython, ["-m", "pip", "install", "--upgrade", "pip"], {
     stdio: "inherit"
@@ -165,6 +197,7 @@ const stagePython = ({ source, runtimeRoot, cacheDir, workDir }) => {
     ],
     { stdio: "inherit" }
   );
+  materializeAbsoluteSymlinks(venvDir);
   chmodIfExists(venvPython);
   return { archive, pythonBin, venvPython };
 };
@@ -183,9 +216,55 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const target = resolve(runtimeRoot, "llama.cpp");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(dirname(target), { recursive: true });
-  cpSync(unpackedRoot, target, { recursive: true, preserveTimestamps: true });
+  cpSync(unpackedRoot, target, {
+    recursive: true,
+    preserveTimestamps: true,
+    dereference: true
+  });
+  materializeAbsoluteSymlinks(target);
   chmodIfExists(resolve(target, "llama-server"));
   return { archive, llamaServer: resolve(target, "llama-server") };
+};
+
+const relocateMacosPostgresLibraries = (postgresRoot) => {
+  if (process.platform !== "darwin") return;
+  const libRoot = resolve(postgresRoot, "lib");
+  const candidates = listFiles(postgresRoot).filter((file) => {
+    const relativePath = relative(postgresRoot, file).replaceAll("\\", "/");
+    return (
+      relativePath.startsWith("bin/") || /\.(dylib|so)$/.test(relativePath)
+    );
+  });
+  for (const file of candidates) {
+    const otool = spawnSync("otool", ["-L", file], {
+      encoding: "utf8",
+      stdio: "pipe"
+    });
+    if (otool.status !== 0) continue;
+    const relativePath = relative(postgresRoot, file).replaceAll("\\", "/");
+    const loaderPrefix = relativePath.startsWith("bin/")
+      ? "@loader_path/../lib"
+      : "@loader_path";
+    let changed = false;
+    for (const line of otool.stdout.split("\n")) {
+      const match = line.trim().match(/^(\/[^\s]+\/postgres\/lib\/([^\s]+))/);
+      if (!match) continue;
+      const [, dependency, name] = match;
+      if (!dependency.startsWith(libRoot)) continue;
+      run("install_name_tool", [
+        "-change",
+        dependency,
+        `${loaderPrefix}/${name}`,
+        file
+      ]);
+      changed = true;
+    }
+    if (relativePath.startsWith("lib/") && /\.dylib$/.test(relativePath)) {
+      run("install_name_tool", ["-id", `@loader_path/${basename(file)}`, file]);
+      changed = true;
+    }
+    if (changed) adHocSignIfDarwin(file);
+  }
 };
 
 const stagePostgresArchive = ({ source, runtimeRoot, cacheDir, workDir }) => {
@@ -204,6 +283,7 @@ const stagePostgresArchive = ({ source, runtimeRoot, cacheDir, workDir }) => {
   cpSync(postgresRoot, target, { recursive: true, preserveTimestamps: true });
   for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
     chmodIfExists(resolve(target, "bin", name));
+  relocateMacosPostgresLibraries(target);
   return { archive, pgConfig: resolve(target, "bin", "pg_config") };
 };
 
@@ -233,10 +313,21 @@ const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
   run("make", ["install"], { cwd: sourceRoot, stdio: "inherit" });
   for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
     chmodIfExists(resolve(target, "bin", name));
+  relocateMacosPostgresLibraries(target);
   return { archive, pgConfig: resolve(target, "bin", "pg_config") };
 };
 
-const copyPgvectorBuildOutputs = ({ buildDir, postgresRoot }) => {
+const assertInside = (base, child, label) => {
+  const resolvedBase = realpathSync(resolve(base));
+  const resolvedChild = existsSync(child)
+    ? realpathSync(resolve(child))
+    : resolve(child);
+  const rel = relative(resolvedBase, resolvedChild);
+  if (rel === "" || (!rel.startsWith("..") && rel !== "..")) return;
+  throw new Error(`${label} escaped PostgreSQL runtime root: ${child}`);
+};
+
+const copyPgvectorBuildOutputs = ({ buildDir, postgresRoot, pgConfig }) => {
   const control = resolve(buildDir, "vector.control");
   if (!existsSync(control))
     throw new Error("pgvector build directory is missing vector.control.");
@@ -249,20 +340,20 @@ const copyPgvectorBuildOutputs = ({ buildDir, postgresRoot }) => {
   if (!library)
     throw new Error("pgvector build did not produce vector.so/vector.dylib.");
 
-  const extensionDir = resolve(postgresRoot, "share", "extension");
-  const libDir = resolve(postgresRoot, "lib", "postgresql");
+  const sharedir = run(pgConfig, ["--sharedir"]).stdout.trim();
+  const pkglibdir = run(pgConfig, ["--pkglibdir"]).stdout.trim();
+  assertInside(postgresRoot, sharedir, "pg_config --sharedir");
+  assertInside(postgresRoot, pkglibdir, "pg_config --pkglibdir");
+  const extensionDir = resolve(sharedir, "extension");
+  const libDir = pkglibdir;
   mkdirSync(extensionDir, { recursive: true });
   mkdirSync(libDir, { recursive: true });
   copyFileSync(control, resolve(extensionDir, "vector.control"));
   for (const file of sqlFiles)
     copyFileSync(file, resolve(extensionDir, basename(file)));
-  copyFileSync(
-    library,
-    resolve(
-      libDir,
-      process.platform === "darwin" ? "vector.dylib" : "vector.so"
-    )
-  );
+  const platformLibraryName =
+    process.platform === "darwin" ? "vector.dylib" : "vector.so";
+  copyFileSync(library, resolve(libDir, platformLibraryName));
   if (process.platform === "darwin")
     copyFileSync(library, resolve(libDir, "vector.so"));
   return { extensionDir, libDir, library, sqlFiles };
@@ -279,7 +370,8 @@ const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
   run("make", [`PG_CONFIG=${pgConfig}`], { cwd: sourceRoot, stdio: "inherit" });
   const copied = copyPgvectorBuildOutputs({
     buildDir: sourceRoot,
-    postgresRoot: resolve(runtimeRoot, "postgres")
+    postgresRoot: resolve(runtimeRoot, "postgres"),
+    pgConfig
   });
   return { archive, ...copied };
 };

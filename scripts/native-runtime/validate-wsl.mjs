@@ -66,29 +66,87 @@ const main = () => {
 
   const env = {
     ...process.env,
+    KOED_HOME: koedHome,
     KOED_PACKAGED_DESKTOP: "1",
     KOED_PACKAGED_RESOURCES_PATH: runtimeRoot
       ? resolve(runtimeRoot, "..")
-      : process.env.KOED_PACKAGED_RESOURCES_PATH
+      : process.env.KOED_PACKAGED_RESOURCES_PATH,
+    KOED_DEPENDENCY_MODE: "bundled-local",
+    KOED_AUTO_PORTS: "1",
+    WORK_QUEUE_BACKEND: "local"
   };
   const cli = resolve("packages", "koed-server", "dist", "cli.js");
-  const status = existsSync(cli)
-    ? run(
-        process.execPath,
-        [cli, "runtime", "status", "--provider", "packaged", "--json"],
-        env
-      )
-    : undefined;
-  if (!status) errors.push("Build @koed/koed-server before WSL validation.");
-  else if (status.status !== 0)
-    errors.push(`runtime status failed: ${status.stderr || status.stdout}`);
+  const steps = [];
+  const runCli = (args) => {
+    const step = run(process.execPath, [cli, ...args], env);
+    steps.push(step);
+    return step;
+  };
+  let apiProbe;
+  if (!existsSync(cli)) {
+    errors.push("Build @koed/koed-server before WSL validation.");
+  } else if (errors.length === 0) {
+    const statusBefore = runCli([
+      "runtime",
+      "status",
+      "--provider",
+      "packaged",
+      "--json"
+    ]);
+    const install = runCli([
+      "runtime",
+      "install",
+      "--provider",
+      "packaged",
+      "--dependency-mode",
+      "bundled-local",
+      "--json"
+    ]);
+    const models = runCli([
+      "models",
+      "install",
+      "--kind",
+      "embedding",
+      "--json"
+    ]);
+    const start = runCli(["start", "--daemon", "--json"]);
+    const status = runCli(["status", "--json"]);
+    const doctor = runCli(["doctor", "--json"]);
+    for (const step of [statusBefore, install, models, start, status, doctor]) {
+      if (step.status !== 0)
+        errors.push(
+          `${step.command} failed: ${step.stderr || step.stdout || step.error}`
+        );
+    }
+    try {
+      const parsed = JSON.parse(status.stdout || "{}");
+      const apiUrl = parsed?.components?.api?.url ?? parsed?.api?.url;
+      if (apiUrl)
+        apiProbe = run(
+          "curl",
+          ["-fsS", `${apiUrl.replace(/\/+$/, "")}/ready`],
+          env
+        );
+      if (apiProbe && apiProbe.status !== 0)
+        errors.push(
+          `API /ready probe failed: ${apiProbe.stderr || apiProbe.stdout}`
+        );
+    } catch (error) {
+      errors.push(
+        `Could not parse status JSON for API probe: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      runCli(["stop", "--json"]);
+    }
+  }
 
   const result = {
     ok: errors.length === 0,
     runtimeRoot,
     koedHome,
     isWsl: isWsl(),
-    status,
+    steps,
+    apiProbe,
     errors
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));
