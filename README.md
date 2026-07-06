@@ -22,6 +22,7 @@ need them.
 
 - macOS, Linux, or WSL.
 - Node.js and pnpm.
+- Python 3.12, available as `python3.12` or via `KOED_PYTHON`.
 - Homebrew.
 - Codex installed and signed in.
 
