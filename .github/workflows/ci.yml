@@ -245,9 +245,9 @@ jobs:
         run: pnpm desktop:package:smoke:mac -- --json --missing-assets
 
   packaged-desktop-native-smoke:
-    name: Packaged Desktop native smoke
+    name: Packaged Desktop native smoke and unsigned artifacts
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 50
     needs: native-runtime-macos-arm64
     if: github.event_name == 'workflow_dispatch' && inputs.build_native_runtime_macos_arm64
 
@@ -288,10 +288,22 @@ jobs:
       - name: Validate native runtime artifact
         run: pnpm native-runtime:validate -- --runtime-root /tmp/koed-native-runtime-extracted/koed-runtime --platform darwin --json
 
-      - name: Packaged Desktop native smoke
+      - name: Build unsigned Desktop artifacts
         env:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: /tmp/koed-native-runtime-extracted/koed-runtime
-        run: pnpm desktop:package:smoke:mac -- --json --timeout-ms 420000
+        run: pnpm desktop:package:internal:mac
+
+      - name: Packaged Desktop native smoke
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000
+
+      - name: Upload unsigned Desktop artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-macos-arm64-unsigned
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+          if-no-files-found: error
 
   python-dependencies:
     name: Python dependency resolution

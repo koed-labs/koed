@@ -78,7 +78,9 @@ the runtime tarball.
 
 `.github/workflows/ci.yml` includes manual `native-runtime-macos-arm64` and `native-runtime-linux-x64` jobs. They are intentionally not part of normal pull-request CI because native artifact builds are expensive and should run on dependency bumps or explicit review. Linux x64 artifacts target glibc 2.35+ and should be built on Ubuntu 22.04 or an equivalent baseline image.
 
-The uploaded artifact contains the runtime tarball, sidecar SHA-256, and provenance metadata. When that manual artifact job runs, CI also runs `packaged-desktop-native-smoke`: it downloads the artifact, extracts `koed-runtime/`, validates it, sets `KOED_NATIVE_RUNTIME_SOURCE_DIR`, packages Desktop, and runs the full packaged smoke. The existing `packaged-desktop-smoke` job remains a missing-assets negative smoke and does not set `KOED_NATIVE_RUNTIME_SOURCE_DIR`.
+The uploaded native runtime artifact contains the runtime tarball, sidecar SHA-256, and provenance metadata. When that manual artifact job runs, CI also runs `packaged-desktop-native-smoke`: it downloads the artifact, extracts `koed-runtime/`, validates it, sets `KOED_NATIVE_RUNTIME_SOURCE_DIR`, builds unsigned Desktop DMG/ZIP artifacts, runs the full packaged smoke against the built app, and uploads `koed-desktop-macos-arm64-unsigned` for internal testing. The existing `packaged-desktop-smoke` job remains a missing-assets negative smoke and does not set `KOED_NATIVE_RUNTIME_SOURCE_DIR`.
+
+The release workflow uses the same macOS native-runtime and Desktop packaging path when it creates a new GitHub Release, then uploads the unsigned DMG/ZIP and checksum file as release assets. See `docs/desktop-internal-artifacts.md` for artifact download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 
 ## Desktop consumption
 

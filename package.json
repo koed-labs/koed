@@ -24,6 +24,7 @@
     "desktop:dev": "pnpm --filter @koed/desktop dev",
     "desktop:package": "pnpm --filter @koed/desktop package",
     "desktop:package:mac": "pnpm --filter @koed/desktop package:mac",
+    "desktop:package:internal:mac": "pnpm --filter @koed/desktop package:internal:mac",
     "desktop:package:release": "pnpm --filter @koed/desktop package:release",
     "desktop:package:smoke": "pnpm --filter @koed/desktop package:smoke",
     "desktop:package:smoke:mac": "pnpm --filter @koed/desktop package:smoke:mac",

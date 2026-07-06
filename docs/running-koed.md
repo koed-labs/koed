@@ -116,7 +116,7 @@ Then open `http://<WSL_IP>:<port>` for the API or Explorer. Native Windows packa
 
 Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists `KOED_HOME/config/local-ports.json`, and checks `runtime status/install` plus `models status/install` before local startup continues. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
 
-`desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:release` prepares macOS `dmg` and `zip` outputs, but signed/notarized release artifacts still require local Developer ID credentials and release setup.
+`desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:internal:mac` prepares unsigned macOS `dmg` and `zip` outputs for internal testing, including packaged native runtime assets when `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. New GitHub Releases upload these unsigned Desktop assets and checksums after packaged-native smoke passes. Signed/notarized release artifacts still require future Developer ID credential setup.
 
 Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
 
@@ -132,7 +132,7 @@ Packaged Desktop smoke now exercises the packaged Electron bundle with a tempora
 pnpm desktop:package:smoke:mac -- --missing-assets --json
 ```
 
-When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack.
+When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack. See `docs/desktop-internal-artifacts.md` for CI-uploaded unsigned DMG/ZIP download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup instructions.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 

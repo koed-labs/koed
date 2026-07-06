@@ -122,6 +122,12 @@ Linux/WSL use is limited to smoke and unpacked-artifact testing.
   `KOED_DESKTOP_PACKAGE_SMOKE_RESOURCES_PATH`, and
   `KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE` when a Linux packaged build is
   available.
+- `desktop:package:internal:mac` builds unsigned macOS `dmg` and `zip`
+  artifacts for internal testing, including packaged native runtime assets when
+  `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set. CI uploads these artifacts from the
+  manual native-runtime workflow; see `docs/desktop-internal-artifacts.md` for
+  download, install/open, Gatekeeper-warning, runtime status/doctor, and cleanup
+  steps.
 - `desktop:package:release` builds macOS `dmg` and `zip` artifacts using the
   release packaging config. Signing/notarization requires a local Developer ID
   identity and release credentials; use `desktop:package` for unsigned local
