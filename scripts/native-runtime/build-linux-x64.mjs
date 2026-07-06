@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import { writeRuntimeAssetManifest, sha256File } from "./manifest-lib.mjs";
+import { procureRuntime } from "./procure-runtime.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 
@@ -22,6 +23,7 @@ const parseArgs = (argv) => {
     if (value === "--") continue;
     if (value === "--json") options.json = true;
     else if (value === "--source-dir") options.sourceDir = argv[++i];
+    else if (value === "--sources") options.sourcesPath = argv[++i];
     else if (value === "--out-dir") options.outDir = argv[++i];
     else if (value === "--version") options.version = argv[++i];
     else if (value === "--allow-host-mismatch")
@@ -30,6 +32,9 @@ const parseArgs = (argv) => {
     else throw new Error(`Unknown option: ${value}`);
   }
   options.sourceDir ||= process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR;
+  options.sourcesPath ||=
+    process.env.KOED_NATIVE_RUNTIME_SOURCES ??
+    resolve(import.meta.dirname, "sources.linux-x64.json");
   options.outDir ||=
     process.env.KOED_NATIVE_RUNTIME_OUT_DIR ??
     resolve(repoRoot, "dist", "native-runtime", "linux-x64");
@@ -85,19 +90,15 @@ const main = () => {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     console.log(
-      "Usage: native-runtime:build:linux-x64 -- [--source-dir <koed-runtime>] [--out-dir <dir>] [--version <version>] [--json]"
+      "Usage: native-runtime:build:linux-x64 -- [--source-dir <koed-runtime>] [--sources <sources.json>] [--out-dir <dir>] [--version <version>] [--json]"
     );
     return;
   }
   assertHost(options.allowHostMismatch);
-  if (!options.sourceDir)
-    throw new Error(
-      "Provide --source-dir or KOED_NATIVE_RUNTIME_SOURCE_DIR for Linux artifact assembly."
-    );
   const outDir = resolve(options.outDir);
   const runtimeRoot = resolve(outDir, "koed-runtime");
-  const sourceDir = resolve(options.sourceDir);
-  if (!existsSync(sourceDir))
+  const sourceDir = options.sourceDir ? resolve(options.sourceDir) : undefined;
+  if (sourceDir && !existsSync(sourceDir))
     throw new Error(
       `Native runtime source directory does not exist: ${sourceDir}`
     );
@@ -106,7 +107,19 @@ const main = () => {
   );
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(runtimeRoot, { recursive: true });
-  cpSync(sourceDir, runtimeRoot, { recursive: true, preserveTimestamps: true });
+  const procurement = sourceDir
+    ? (cpSync(sourceDir, runtimeRoot, {
+        recursive: true,
+        preserveTimestamps: true
+      }),
+      { sourceDir })
+    : procureRuntime({
+        sourcesPath: options.sourcesPath,
+        runtimeRoot,
+        platform: "linux",
+        architecture: "x64",
+        workDir: process.env.KOED_NATIVE_RUNTIME_WORK_DIR
+      });
   const nativeAssets = writeRuntimeAssetManifest({
     runtimeRoot,
     platform: "linux",
@@ -124,6 +137,7 @@ const main = () => {
       version: options.version
     },
     sourceDir,
+    sourcesPath: options.sourcesPath,
     generatedAt: new Date().toISOString(),
     glibcBaseline: "2.35+"
   };
@@ -146,7 +160,8 @@ const main = () => {
     outDir,
     runtimeRoot,
     nativeAssets,
-    artifact: { tarPath, sha256Path, sha256 }
+    artifact: { tarPath, sha256Path, sha256 },
+    procurement
   };
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else console.log(`Built ${tarPath}`);

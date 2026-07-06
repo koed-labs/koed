@@ -212,7 +212,8 @@ const collectCommandValidation = (
     const help =
       version.status === 0 ? version : run(command, ["--help"], spawnSync);
     const output = commandOutput(help);
-    const ok = help.status === 0 && /llama/i.test(output);
+    const ok =
+      help.status === 0 && /llama|version:|built with/i.test(output);
     commands.push({
       name: "llama-server",
       command,

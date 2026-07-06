@@ -157,6 +157,9 @@ jobs:
           KOED_NATIVE_RUNTIME_VERSION: ${{ github.sha }}
         run: pnpm native-runtime:build:macos-arm64 -- --json
 
+      - name: Validate native runtime artifact
+        run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/macos-arm64/koed-runtime --platform darwin --json
+
       - name: Upload native runtime artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -193,6 +196,9 @@ jobs:
 
       - name: Build koed-server CLI
         run: pnpm --filter @koed/koed-server build
+
+      - name: Install native runtime build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential curl ca-certificates
 
       - name: Build native runtime artifact
         env:

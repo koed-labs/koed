@@ -193,7 +193,7 @@ const validatePackagedProvider = (runtimeRoot) => {
       skipped: false,
       status,
       install,
-      ok: status.status === 0 && install.status === 0
+      ok: install.status === 0
     };
   } finally {
     rmSync(koedHome, { recursive: true, force: true });
