@@ -81,7 +81,12 @@ const readSources = () => {
   return { path, sources: JSON.parse(readFileSync(path, "utf8")) };
 };
 
-const copySourceRuntime = ({ sourceDir, runtimeRoot, sourcesPath, workDir }) => {
+const copySourceRuntime = ({
+  sourceDir,
+  runtimeRoot,
+  sourcesPath,
+  workDir
+}) => {
   if (!sourceDir) {
     return procureRuntime({
       sourcesPath,
@@ -183,7 +188,14 @@ const main = () => {
     sourceDir: options.sourceDir
   });
   const artifact = archive({ outDir, version: options.version });
-  const result = { ok: true, outDir, runtimeRoot, nativeAssets, artifact, procurement };
+  const result = {
+    ok: true,
+    outDir,
+    runtimeRoot,
+    nativeAssets,
+    artifact,
+    procurement
+  };
   if (options.json) console.log(JSON.stringify(result, null, 2));
   else console.log(`Built ${artifact.tarPath}`);
 };

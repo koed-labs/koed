@@ -47,14 +47,18 @@ const sha256File = (path) => {
 const verifySha256 = (path, expected) => {
   const actual = sha256File(path);
   if (actual !== expected.toLowerCase()) {
-    throw new Error(`SHA-256 mismatch for ${path}: expected ${expected}, got ${actual}`);
+    throw new Error(
+      `SHA-256 mismatch for ${path}: expected ${expected}, got ${actual}`
+    );
   }
   return actual;
 };
 
 const download = ({ url, sha256, cacheDir }) => {
   if (!url || !sha256 || url.includes("TODO") || sha256.includes("TODO")) {
-    throw new Error(`Pinned URL and SHA-256 are required for native runtime source: ${JSON.stringify({ url, sha256 })}`);
+    throw new Error(
+      `Pinned URL and SHA-256 are required for native runtime source: ${JSON.stringify({ url, sha256 })}`
+    );
   }
   mkdirSync(cacheDir, { recursive: true });
   const parsed = new URL(url);
@@ -85,7 +89,10 @@ const copyEmbeddingServiceApp = (targetEmbedding) => {
     "requirements.txt",
     "pyproject.toml"
   ]) {
-    copyFileSync(resolve(embeddingAppRoot, entry), resolve(targetEmbedding, entry));
+    copyFileSync(
+      resolve(embeddingAppRoot, entry),
+      resolve(targetEmbedding, entry)
+    );
   }
 };
 
@@ -120,7 +127,9 @@ const extractArchive = (archive, outDir) => {
 };
 
 const firstChildDir = (dir) => {
-  const entries = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  const entries = readdirSync(dir, { withFileTypes: true }).filter((entry) =>
+    entry.isDirectory()
+  );
   if (entries.length === 1) return resolve(dir, entries[0].name);
   return dir;
 };
@@ -130,16 +139,34 @@ const stagePython = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const extractDir = resolve(workDir, "python");
   extractArchive(archive, extractDir);
   const pythonRoot = firstChildDir(extractDir);
-  const pythonBin = findFile(pythonRoot, (file) => /\/python3?(\.\d+)?$/.test(file) && statSync(file).mode & 0o111);
-  if (!pythonBin) throw new Error("python-build-standalone archive did not contain a Python executable.");
+  const pythonBin = findFile(
+    pythonRoot,
+    (file) => /\/python3?(\.\d+)?$/.test(file) && statSync(file).mode & 0o111
+  );
+  if (!pythonBin)
+    throw new Error(
+      "python-build-standalone archive did not contain a Python executable."
+    );
   const targetEmbedding = resolve(runtimeRoot, "embedding-service");
   copyEmbeddingServiceApp(targetEmbedding);
   const venvDir = resolve(targetEmbedding, ".venv");
   rmSync(venvDir, { recursive: true, force: true });
   cpSync(pythonRoot, venvDir, { recursive: true, preserveTimestamps: true });
   const venvPython = resolve(venvDir, "bin", "python");
-  run(venvPython, ["-m", "pip", "install", "--upgrade", "pip"], { stdio: "inherit" });
-  run(venvPython, ["-m", "pip", "install", "-r", resolve(targetEmbedding, "requirements.txt")], { stdio: "inherit" });
+  run(venvPython, ["-m", "pip", "install", "--upgrade", "pip"], {
+    stdio: "inherit"
+  });
+  run(
+    venvPython,
+    [
+      "-m",
+      "pip",
+      "install",
+      "-r",
+      resolve(targetEmbedding, "requirements.txt")
+    ],
+    { stdio: "inherit" }
+  );
   chmodIfExists(venvPython);
   return { archive, pythonBin, venvPython };
 };
@@ -149,8 +176,12 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const extractDir = resolve(workDir, "llama.cpp");
   extractArchive(archive, extractDir);
   const unpackedRoot = firstChildDir(extractDir);
-  const llamaServer = findFile(unpackedRoot, (file) => basename(file) === "llama-server");
-  if (!llamaServer) throw new Error("llama.cpp archive did not contain llama-server.");
+  const llamaServer = findFile(
+    unpackedRoot,
+    (file) => basename(file) === "llama-server"
+  );
+  if (!llamaServer)
+    throw new Error("llama.cpp archive did not contain llama-server.");
   const target = resolve(runtimeRoot, "llama.cpp");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(dirname(target), { recursive: true });
@@ -163,14 +194,18 @@ const stagePostgresArchive = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "postgres");
   extractArchive(archive, extractDir);
-  const pgConfig = findFile(extractDir, (file) => file.endsWith("/bin/pg_config"));
-  if (!pgConfig) throw new Error("PostgreSQL archive did not contain bin/pg_config.");
+  const pgConfig = findFile(extractDir, (file) =>
+    file.endsWith("/bin/pg_config")
+  );
+  if (!pgConfig)
+    throw new Error("PostgreSQL archive did not contain bin/pg_config.");
   const postgresRoot = resolve(pgConfig, "..", "..");
   const target = resolve(runtimeRoot, "postgres");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(dirname(target), { recursive: true });
   cpSync(postgresRoot, target, { recursive: true, preserveTimestamps: true });
-  for (const name of ["initdb", "pg_ctl", "psql", "pg_config"]) chmodIfExists(resolve(target, "bin", name));
+  for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
+    chmodIfExists(resolve(target, "bin", name));
   return { archive, pgConfig: resolve(target, "bin", "pg_config") };
 };
 
@@ -182,33 +217,56 @@ const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const target = resolve(runtimeRoot, "postgres");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
-  run("./configure", [
-    `--prefix=${target}`,
-    "--without-icu",
-    "--without-readline",
-    "--without-zlib"
-  ], { cwd: sourceRoot, stdio: "inherit" });
-  run("make", ["-j", String(process.env.KOED_NATIVE_RUNTIME_MAKE_JOBS ?? "2")], { cwd: sourceRoot, stdio: "inherit" });
+  run(
+    "./configure",
+    [
+      `--prefix=${target}`,
+      "--without-icu",
+      "--without-readline",
+      "--without-zlib"
+    ],
+    { cwd: sourceRoot, stdio: "inherit" }
+  );
+  run(
+    "make",
+    ["-j", String(process.env.KOED_NATIVE_RUNTIME_MAKE_JOBS ?? "2")],
+    { cwd: sourceRoot, stdio: "inherit" }
+  );
   run("make", ["install"], { cwd: sourceRoot, stdio: "inherit" });
-  for (const name of ["initdb", "pg_ctl", "psql", "pg_config"]) chmodIfExists(resolve(target, "bin", name));
+  for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
+    chmodIfExists(resolve(target, "bin", name));
   return { archive, pgConfig: resolve(target, "bin", "pg_config") };
 };
 
 const copyPgvectorBuildOutputs = ({ buildDir, postgresRoot }) => {
   const control = resolve(buildDir, "vector.control");
-  if (!existsSync(control)) throw new Error("pgvector build directory is missing vector.control.");
-  const sqlFiles = listFiles(buildDir).filter((file) => /^vector--.*\.sql$/.test(basename(file)));
-  const library = findFile(buildDir, (file) => /\/vector\.(so|dylib)$/.test(file));
-  if (!library) throw new Error("pgvector build did not produce vector.so/vector.dylib.");
+  if (!existsSync(control))
+    throw new Error("pgvector build directory is missing vector.control.");
+  const sqlFiles = listFiles(buildDir).filter((file) =>
+    /^vector--.*\.sql$/.test(basename(file))
+  );
+  const library = findFile(buildDir, (file) =>
+    /\/vector\.(so|dylib)$/.test(file)
+  );
+  if (!library)
+    throw new Error("pgvector build did not produce vector.so/vector.dylib.");
 
   const extensionDir = resolve(postgresRoot, "share", "extension");
   const libDir = resolve(postgresRoot, "lib", "postgresql");
   mkdirSync(extensionDir, { recursive: true });
   mkdirSync(libDir, { recursive: true });
   copyFileSync(control, resolve(extensionDir, "vector.control"));
-  for (const file of sqlFiles) copyFileSync(file, resolve(extensionDir, basename(file)));
-  copyFileSync(library, resolve(libDir, process.platform === "darwin" ? "vector.dylib" : "vector.so"));
-  if (process.platform === "darwin") copyFileSync(library, resolve(libDir, "vector.so"));
+  for (const file of sqlFiles)
+    copyFileSync(file, resolve(extensionDir, basename(file)));
+  copyFileSync(
+    library,
+    resolve(
+      libDir,
+      process.platform === "darwin" ? "vector.dylib" : "vector.so"
+    )
+  );
+  if (process.platform === "darwin")
+    copyFileSync(library, resolve(libDir, "vector.so"));
   return { extensionDir, libDir, library, sqlFiles };
 };
 
@@ -218,34 +276,76 @@ const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
   extractArchive(archive, extractDir);
   const sourceRoot = firstChildDir(extractDir);
   const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
-  if (!existsSync(pgConfig)) throw new Error(`Cannot build pgvector; missing ${pgConfig}`);
+  if (!existsSync(pgConfig))
+    throw new Error(`Cannot build pgvector; missing ${pgConfig}`);
   run("make", [`PG_CONFIG=${pgConfig}`], { cwd: sourceRoot, stdio: "inherit" });
-  const copied = copyPgvectorBuildOutputs({ buildDir: sourceRoot, postgresRoot: resolve(runtimeRoot, "postgres") });
+  const copied = copyPgvectorBuildOutputs({
+    buildDir: sourceRoot,
+    postgresRoot: resolve(runtimeRoot, "postgres")
+  });
   return { archive, ...copied };
 };
 
 const validateRequiredSources = (sources) => {
   for (const key of ["python", "llamaCpp", "postgres", "pgvector"]) {
-    if (!sources[key]) throw new Error(`Native runtime sources file is missing ${key}.`);
+    if (!sources[key])
+      throw new Error(`Native runtime sources file is missing ${key}.`);
   }
 };
 
-export const procureRuntime = ({ sourcesPath, runtimeRoot, platform, architecture, workDir, cacheDir }) => {
+export const procureRuntime = ({
+  sourcesPath,
+  runtimeRoot,
+  platform,
+  architecture,
+  workDir,
+  cacheDir
+}) => {
   const resolvedSourcesPath = resolve(sourcesPath);
   const sources = JSON.parse(readFileSync(resolvedSourcesPath, "utf8"));
   validateRequiredSources(sources);
   const resolvedRuntimeRoot = resolve(runtimeRoot);
-  const resolvedWorkDir = workDir ? resolve(workDir) : mkdtempSync(resolve(tmpdir(), "koed-native-procure-"));
-  const resolvedCacheDir = cacheDir ? resolve(cacheDir) : resolve(repoRoot, ".cache", "native-runtime");
+  const resolvedWorkDir = workDir
+    ? resolve(workDir)
+    : mkdtempSync(resolve(tmpdir(), "koed-native-procure-"));
+  const resolvedCacheDir = cacheDir
+    ? resolve(cacheDir)
+    : resolve(repoRoot, ".cache", "native-runtime");
   rmSync(resolvedRuntimeRoot, { recursive: true, force: true });
   mkdirSync(resolvedRuntimeRoot, { recursive: true });
 
-  const postgres = sources.postgres.kind === "source"
-    ? buildPostgresSource({ source: sources.postgres, runtimeRoot: resolvedRuntimeRoot, cacheDir: resolvedCacheDir, workDir: resolvedWorkDir })
-    : stagePostgresArchive({ source: sources.postgres, runtimeRoot: resolvedRuntimeRoot, cacheDir: resolvedCacheDir, workDir: resolvedWorkDir });
-  const pgvector = buildPgvector({ source: sources.pgvector, runtimeRoot: resolvedRuntimeRoot, cacheDir: resolvedCacheDir, workDir: resolvedWorkDir });
-  const llamaCpp = stageLlama({ source: sources.llamaCpp, runtimeRoot: resolvedRuntimeRoot, cacheDir: resolvedCacheDir, workDir: resolvedWorkDir });
-  const python = stagePython({ source: sources.python, runtimeRoot: resolvedRuntimeRoot, cacheDir: resolvedCacheDir, workDir: resolvedWorkDir });
+  const postgres =
+    sources.postgres.kind === "source"
+      ? buildPostgresSource({
+          source: sources.postgres,
+          runtimeRoot: resolvedRuntimeRoot,
+          cacheDir: resolvedCacheDir,
+          workDir: resolvedWorkDir
+        })
+      : stagePostgresArchive({
+          source: sources.postgres,
+          runtimeRoot: resolvedRuntimeRoot,
+          cacheDir: resolvedCacheDir,
+          workDir: resolvedWorkDir
+        });
+  const pgvector = buildPgvector({
+    source: sources.pgvector,
+    runtimeRoot: resolvedRuntimeRoot,
+    cacheDir: resolvedCacheDir,
+    workDir: resolvedWorkDir
+  });
+  const llamaCpp = stageLlama({
+    source: sources.llamaCpp,
+    runtimeRoot: resolvedRuntimeRoot,
+    cacheDir: resolvedCacheDir,
+    workDir: resolvedWorkDir
+  });
+  const python = stagePython({
+    source: sources.python,
+    runtimeRoot: resolvedRuntimeRoot,
+    cacheDir: resolvedCacheDir,
+    workDir: resolvedWorkDir
+  });
 
   const result = {
     ok: true,
@@ -280,10 +380,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log("Usage: node scripts/native-runtime/procure-runtime.mjs -- --sources <sources.json> --runtime-root <koed-runtime> [--json]");
+      console.log(
+        "Usage: node scripts/native-runtime/procure-runtime.mjs -- --sources <sources.json> --runtime-root <koed-runtime> [--json]"
+      );
       process.exit(0);
     }
-    if (!options.sourcesPath || !options.runtimeRoot) throw new Error("Provide --sources and --runtime-root.");
+    if (!options.sourcesPath || !options.runtimeRoot)
+      throw new Error("Provide --sources and --runtime-root.");
     const result = procureRuntime(options);
     if (options.json) console.log(JSON.stringify(result, null, 2));
     else console.log(`Procured native runtime at ${result.runtimeRoot}`);
