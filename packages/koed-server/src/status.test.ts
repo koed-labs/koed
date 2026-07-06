@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  type PathLike
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -311,6 +317,42 @@ describe("status and doctor JSON contracts", () => {
 
     expect(status.redis.state).toBe("needs_attention");
     expect(status.workerQueues.state).toBe("starting");
+  });
+
+  it("includes packaged artifact source diagnostics in status and doctor", async () => {
+    const root = tempDir();
+    const environment = {
+      KOED_HOME: root,
+      KOED_PACKAGED_DESKTOP: "1",
+      KOED_PACKAGED_RESOURCES_PATH: root,
+      KOED_DEPENDENCY_MODE: "bundled-local",
+      HOME: root,
+      MEMORY_API_TOKEN: "token"
+    };
+    const dependencies = {
+      existsSync: (filePath: PathLike) =>
+        String(filePath).startsWith(resolve(root, "koed-runtime")) ||
+        String(filePath).endsWith("PG_VERSION"),
+      fetch: async (url: string | URL | Request) =>
+        String(url).endsWith(":3800/health")
+          ? response(true, 200, { status: "ok" })
+          : response(false, 503, {}),
+      spawnSync: () => spawnResult("", 0),
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    };
+
+    const status = await collectKoedServerStatus(environment, dependencies);
+    const doctor = await collectKoedServerDoctor(environment, dependencies);
+
+    expect(status.database.details?.artifactSource).toBe("packaged-resource");
+    expect(status.embeddingService.details?.artifactSource).toBe(
+      "packaged-resource"
+    );
+    expect(status.mcpServer.details?.artifactSource).toBe("packaged-resource");
+    expect(
+      doctor.checks.find((check) => check.id === "database")?.details
+        ?.artifactSource
+    ).toBe("packaged-resource");
   });
 
   it("formats doctor result with actionable checks", async () => {

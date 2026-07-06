@@ -1,36 +1,93 @@
 #!/usr/bin/env node
-/* global console, process */
+/* global console, process, setTimeout */
 import { listPackage } from "@electron/asar";
+import {
+  readdirSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  statSync
+} from "node:fs";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-if (process.platform !== "darwin") {
-  console.error(
-    "desktop package smoke is macOS-only: packaged app path is release/mac/Koed.app and executable requires Darwin."
-  );
-  process.exit(
-    process.env.KOED_DESKTOP_PACKAGE_SMOKE_SKIP_NON_DARWIN === "1" ? 0 : 1
-  );
-}
-
-const shouldBuildPackage = process.argv.includes("--build");
-
 const desktopRoot = resolve(import.meta.dirname, "..");
-const appPath = resolve(desktopRoot, "release/mac/Koed.app");
-const executable = resolve(appPath, "Contents/MacOS/Koed");
-const resourcesPath = resolve(appPath, "Contents/Resources");
-const appAsarPath = resolve(resourcesPath, "app.asar");
-const runner = resolve(
-  resourcesPath,
-  "app.asar.unpacked/dist-electron/koed-server/node-entrypoint-runner.js"
-);
-const bundledCli = resolve(
-  resourcesPath,
-  "app.asar/node_modules/@koed/koed-server/dist/cli.js"
-);
-const rendererIndex = resolve(resourcesPath, "app-dist/index.html");
+const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
+const sleep = (ms) =>
+  new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+const parseArgs = (argv) => {
+  const options = {
+    json: false,
+    build: false,
+    missingAssets: false,
+    timeoutMs: 180_000,
+    pollIntervalMs: 2_000
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === "--") continue;
+    if (value === "--json") {
+      options.json = true;
+      continue;
+    }
+    if (value === "--build") {
+      options.build = true;
+      continue;
+    }
+    if (value === "--missing-assets") {
+      options.missingAssets = true;
+      continue;
+    }
+    if (value === "--timeout-ms") {
+      options.timeoutMs = Number.parseInt(argv[index + 1] ?? "", 10);
+      index += 1;
+      continue;
+    }
+    if (value === "--poll-interval-ms") {
+      options.pollIntervalMs = Number.parseInt(argv[index + 1] ?? "", 10);
+      index += 1;
+      continue;
+    }
+    if (value === "--help" || value === "-h") {
+      options.help = true;
+      continue;
+    }
+    throw new Error(`Unknown packaged desktop smoke option: ${value}`);
+  }
+  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+    throw new Error("--timeout-ms must be a positive integer.");
+  }
+  if (!Number.isFinite(options.pollIntervalMs) || options.pollIntervalMs <= 0) {
+    throw new Error("--poll-interval-ms must be a positive integer.");
+  }
+  return options;
+};
+
+const usage = `Usage: pnpm desktop:package:smoke:mac -- [options]
+
+Options:
+  --json                    Emit JSON result
+  --build                   Build packaged app before smoke
+  --missing-assets          Expect packaged native runtime assets to be missing
+  --timeout-ms <number>     Max wait for healthy status (default 180000)
+  --poll-interval-ms <num>  Poll interval (default 2000)
+  --help, -h                Show this help
+`;
+
+const buildPackage = () => {
+  const result = spawnSync("pnpm", ["package:mac"], {
+    cwd: desktopRoot,
+    stdio: "inherit"
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`package:mac failed with ${result.status ?? 1}`);
+  }
+};
 
 const assertExists = (label, path) => {
   if (!existsSync(path)) {
@@ -38,8 +95,191 @@ const assertExists = (label, path) => {
   }
 };
 
-const assertBundledKoedServerSurface = () => {
-  const entries = listPackage(appAsarPath);
+const pickExecutable = (appRoot) => {
+  for (const preferred of ["Koed", "koed"]) {
+    const candidate = resolve(appRoot, preferred);
+    if (existsSync(candidate) && (statSync(candidate).mode & 0o111) !== 0) {
+      return candidate;
+    }
+  }
+  for (const entry of readdirSync(appRoot, { withFileTypes: true })) {
+    const candidate = resolve(appRoot, entry.name);
+    if (!entry.isFile()) continue;
+    if ((statSync(candidate).mode & 0o111) !== 0) {
+      return candidate;
+    }
+  }
+  throw new Error(`Could not find packaged app executable under ${appRoot}`);
+};
+
+const resolvePackagedLayout = () => {
+  const explicitAppPath =
+    process.env.KOED_DESKTOP_PACKAGE_SMOKE_APP_PATH?.trim();
+  const explicitResourcesPath =
+    process.env.KOED_DESKTOP_PACKAGE_SMOKE_RESOURCES_PATH?.trim();
+  const explicitExecutable =
+    process.env.KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE?.trim();
+  const explicitRunner = process.env.KOED_DESKTOP_PACKAGE_SMOKE_RUNNER?.trim();
+  const appPath =
+    explicitAppPath ??
+    (process.platform === "darwin"
+      ? resolve(desktopRoot, "release", "mac", "Koed.app")
+      : process.platform === "linux"
+        ? resolve(desktopRoot, "release", "linux-unpacked")
+        : undefined);
+  if (!appPath) {
+    throw new Error(
+      "Packaged Desktop smoke needs Darwin or Linux, or explicit KOED_DESKTOP_PACKAGE_SMOKE_APP_PATH/RESOURCES_PATH overrides."
+    );
+  }
+  const resourcesPath =
+    explicitResourcesPath ??
+    (process.platform === "darwin"
+      ? resolve(appPath, "Contents", "Resources")
+      : resolve(appPath, "resources"));
+  const executable =
+    explicitExecutable ??
+    (process.platform === "darwin"
+      ? resolve(appPath, "Contents", "MacOS", "Koed")
+      : pickExecutable(appPath));
+  const runner =
+    explicitRunner ??
+    resolve(
+      resourcesPath,
+      "app.asar.unpacked",
+      "dist-electron",
+      "koed-server",
+      "node-entrypoint-runner.js"
+    );
+  const appAsarPath = resolve(resourcesPath, "app.asar");
+  const bundledCli = resolve(
+    resourcesPath,
+    "app.asar",
+    "node_modules",
+    "@koed",
+    "koed-server",
+    "dist",
+    "cli.js"
+  );
+  const rendererIndex = resolve(resourcesPath, "app-dist", "index.html");
+  const runtimeRoot = resolve(resourcesPath, "koed-runtime");
+  return {
+    appPath,
+    resourcesPath,
+    executable,
+    runner,
+    appAsarPath,
+    bundledCli,
+    rendererIndex,
+    runtimeRoot
+  };
+};
+
+const createSmokeEnv = (layout, koedHome, extraEnv = {}) => {
+  const env = {
+    ...process.env,
+    ...extraEnv,
+    ELECTRON_RUN_AS_NODE: "1",
+    KOED_HOME: koedHome,
+    KOED_PACKAGED_DESKTOP: "1",
+    KOED_PACKAGED_RESOURCES_PATH: layout.resourcesPath,
+    KOED_RUNTIME_MODE: "local-personal",
+    KOED_DEPENDENCY_MODE: "bundled-local",
+    WORK_QUEUE_BACKEND: "local"
+  };
+  delete env.KOED_REPO_ROOT;
+  delete env.KOED_SERVER_CLI;
+  delete env.KOED_ALLOW_PACKAGED_SOURCE_FALLBACK;
+  return env;
+};
+
+const parseJsonOutput = (label, output) => {
+  try {
+    return JSON.parse(output);
+  } catch (error) {
+    throw new Error(
+      `${label} did not produce JSON: ${error instanceof Error ? error.message : String(error)}\n${output}`,
+      { cause: error }
+    );
+  }
+};
+
+const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
+  const result = spawnSync(
+    layout.executable,
+    [layout.runner, "node-script", layout.bundledCli, ...args],
+    {
+      cwd: layout.resourcesPath,
+      env: createSmokeEnv(layout, koedHome, extraEnv),
+      encoding: "utf8"
+    }
+  );
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? ""
+  };
+};
+
+const assertNoSourceCheckoutResolution = (label, payload) => {
+  const sourceMarkers = [
+    resolve(sourceCheckoutRoot, "apps", "api"),
+    resolve(sourceCheckoutRoot, "apps", "worker"),
+    resolve(sourceCheckoutRoot, "apps", "embedding-service"),
+    resolve(sourceCheckoutRoot, "packages", "koed-server"),
+    resolve(sourceCheckoutRoot, "packages", "mcp-server"),
+    resolve(sourceCheckoutRoot, "packages", "db"),
+    resolve(sourceCheckoutRoot, "vendor")
+  ];
+  const hits = [];
+  const visit = (value, path = []) => {
+    if (typeof value === "string") {
+      if (sourceMarkers.some((marker) => value.includes(marker))) {
+        hits.push({ path: path.join("."), value });
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, [...path, String(index)]));
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, entry] of Object.entries(value)) {
+        visit(entry, [...path, key]);
+      }
+    }
+  };
+  visit(payload);
+  if (hits.length > 0) {
+    throw new Error(
+      `${label} resolved packaged runtime artifacts from source checkout: ${JSON.stringify(hits, null, 2)}`
+    );
+  }
+};
+
+const assertPackagedJsSurface = (layout) => {
+  assertExists("Packaged app executable", layout.executable);
+  assertExists("Packaged app asar", layout.appAsarPath);
+  assertExists("Packaged renderer", layout.rendererIndex);
+  assertExists("Bundled node entrypoint runner", layout.runner);
+  for (const [label, relativePath] of [
+    ["Packaged API artifact", "api/dist/index.js"],
+    ["Packaged Worker artifact", "worker/dist/index.js"],
+    ["Packaged Explorer artifact", "explorer-dist/index.html"],
+    ["Packaged MCP Server artifact", "mcp-server/dist/cli.js"],
+    [
+      "Packaged Supported Capture Hook artifact",
+      "mcp-server/dist/capture-hook.js"
+    ],
+    ["Packaged DB package artifact", "api/node_modules/@koed/db/dist/index.js"],
+    [
+      "Packaged DB migration journal",
+      "api/node_modules/@koed/db/drizzle/meta/_journal.json"
+    ]
+  ]) {
+    assertExists(label, resolve(layout.runtimeRoot, relativePath));
+  }
+  const entries = listPackage(layout.appAsarPath);
   const entrySet = new Set(entries);
   const requiredEntries = [
     "/node_modules/@koed/koed-server/package.json",
@@ -51,7 +291,6 @@ const assertBundledKoedServerSurface = () => {
       `Packaged koed-server runtime files are missing from app.asar: ${missing.join(", ")}`
     );
   }
-
   const forbidden = entries.filter(
     (entry) =>
       entry.startsWith("/node_modules/@koed/koed-server/src") ||
@@ -69,107 +308,341 @@ const assertBundledKoedServerSurface = () => {
   }
 };
 
-const buildPackage = () => {
-  const result = spawnSync("pnpm", ["package:mac"], {
-    cwd: desktopRoot,
-    stdio: "inherit"
-  });
-  if (result.status !== 0) {
-    throw new Error(`package:mac failed with ${result.status ?? 1}`);
-  }
-};
-
-const parseJsonOutput = (label, output) => {
-  try {
-    return JSON.parse(output);
-  } catch (error) {
+const assertHealthy = (payload, label) => {
+  if (payload?.ok !== true || payload?.state !== "healthy") {
     throw new Error(
-      `${label} did not produce JSON: ${error instanceof Error ? error.message : String(error)}\n${output}`,
-      { cause: error }
+      `${label} was not healthy: ${JSON.stringify(payload, null, 2)}`
     );
   }
 };
 
-const runBundledServer = (args, env = {}) => {
+const assertInstalled = (payload, label) => {
+  if (payload?.ok !== true || !payload?.state) {
+    throw new Error(
+      `${label} did not report install state: ${JSON.stringify(payload, null, 2)}`
+    );
+  }
+};
+
+const assertMissingAssets = (payload, label) => {
+  if (payload?.ok === true) {
+    throw new Error(
+      `${label} unexpectedly reported ok: ${JSON.stringify(payload, null, 2)}`
+    );
+  }
+  const text = JSON.stringify(payload, null, 2);
+  if (!/packaged|missing|install runtime assets/i.test(text)) {
+    throw new Error(
+      `${label} did not include actionable missing-asset guidance: ${text}`
+    );
+  }
+};
+
+const smokeMissingAssets = (layout, koedHome) => {
+  const runtimeStatus = runPackagedCommand(layout, koedHome, [
+    "runtime",
+    "status",
+    "--provider",
+    "packaged",
+    "--json"
+  ]);
+  const runtimeStatusJson = parseJsonOutput(
+    "runtime status --json",
+    runtimeStatus.stdout
+  );
+  assertNoSourceCheckoutResolution("runtime status --json", runtimeStatusJson);
+  const doctor = runPackagedCommand(layout, koedHome, ["doctor", "--json"]);
+  const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
+  assertNoSourceCheckoutResolution("doctor --json", doctorJson);
+  assertMissingAssets(doctorJson, "doctor --json");
+  return {
+    runtimeStatus: runtimeStatusJson,
+    doctor: doctorJson,
+    doctorExitCode: doctor.status
+  };
+};
+
+const waitForHealthyStatus = async ({
+  layout,
+  koedHome,
+  timeoutMs,
+  pollIntervalMs
+}) => {
+  const startedAt = Date.now();
+  let lastStatus = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const status = runPackagedCommand(layout, koedHome, ["status", "--json"]);
+    if (status.status !== 0) {
+      lastStatus = parseJsonOutput("status --json", status.stdout || "{}");
+      await sleep(pollIntervalMs);
+      continue;
+    }
+    lastStatus = parseJsonOutput("status --json", status.stdout);
+    if (lastStatus?.ok === true && lastStatus?.state === "healthy") {
+      assertNoSourceCheckoutResolution("status --json", lastStatus);
+      return lastStatus;
+    }
+    await sleep(pollIntervalMs);
+  }
+  throw new Error(
+    `Timed out waiting for packaged daemon health. Last status:\n${JSON.stringify(lastStatus, null, 2)}`
+  );
+};
+
+const smokeHealthyDaemon = async (layout, koedHome, options) => {
+  const runtimeStatus = runPackagedCommand(layout, koedHome, [
+    "runtime",
+    "status",
+    "--provider",
+    "packaged",
+    "--json"
+  ]);
+  if (runtimeStatus.status !== 0) {
+    throw new Error(
+      `runtime status --json failed with ${runtimeStatus.status}: ${runtimeStatus.stderr || runtimeStatus.stdout}`
+    );
+  }
+  const runtimeStatusJson = parseJsonOutput(
+    "runtime status --json",
+    runtimeStatus.stdout
+  );
+  assertNoSourceCheckoutResolution("runtime status --json", runtimeStatusJson);
+
+  const install = runPackagedCommand(layout, koedHome, [
+    "runtime",
+    "install",
+    "--provider",
+    "packaged",
+    "--dependency-mode",
+    "bundled-local",
+    "--json"
+  ]);
+  if (install.status !== 0) {
+    throw new Error(
+      `runtime install --json failed with ${install.status}: ${install.stderr || install.stdout}`
+    );
+  }
+  const installJson = parseJsonOutput("runtime install --json", install.stdout);
+  assertNoSourceCheckoutResolution("runtime install --json", installJson);
+  assertInstalled(installJson, "runtime install --json");
+
+  const modelStatus = runPackagedCommand(layout, koedHome, [
+    "models",
+    "status",
+    "--kind",
+    "embedding",
+    "--json"
+  ]);
+  if (modelStatus.status !== 0) {
+    throw new Error(
+      `models status --json failed with ${modelStatus.status}: ${modelStatus.stderr || modelStatus.stdout}`
+    );
+  }
+  const modelStatusJson = parseJsonOutput(
+    "models status --json",
+    modelStatus.stdout
+  );
+  assertNoSourceCheckoutResolution("models status --json", modelStatusJson);
+  if (modelStatusJson.state !== "installed") {
+    const modelInstall = runPackagedCommand(layout, koedHome, [
+      "models",
+      "install",
+      "--kind",
+      "embedding",
+      "--json"
+    ]);
+    if (modelInstall.status !== 0) {
+      throw new Error(
+        `models install --json failed with ${modelInstall.status}: ${modelInstall.stderr || modelInstall.stdout}`
+      );
+    }
+    const modelInstallJson = parseJsonOutput(
+      "models install --json",
+      modelInstall.stdout
+    );
+    assertNoSourceCheckoutResolution("models install --json", modelInstallJson);
+    if (modelInstallJson.ok !== true) {
+      throw new Error(
+        `models install --json was not ok: ${JSON.stringify(modelInstallJson, null, 2)}`
+      );
+    }
+  }
+
+  const start = runPackagedCommand(layout, koedHome, [
+    "start",
+    "--daemon",
+    "--json"
+  ]);
+  if (start.status !== 0) {
+    throw new Error(
+      `start --daemon --json failed with ${start.status}: ${start.stderr || start.stdout}`
+    );
+  }
+  const startJson = parseJsonOutput("start --daemon --json", start.stdout);
+  assertNoSourceCheckoutResolution("start --daemon --json", startJson);
+  if (startJson.ok !== true || typeof startJson.startedPid !== "number") {
+    throw new Error(
+      `start --daemon --json did not include daemon start details: ${start.stdout}`
+    );
+  }
+
+  const firstStatus = await waitForHealthyStatus({
+    layout,
+    koedHome,
+    timeoutMs: options.timeoutMs,
+    pollIntervalMs: options.pollIntervalMs
+  });
+
+  const reconnectStatus = runPackagedCommand(layout, koedHome, [
+    "status",
+    "--json"
+  ]);
+  if (reconnectStatus.status !== 0) {
+    throw new Error(
+      `status --json after reconnect failed with ${reconnectStatus.status}: ${reconnectStatus.stderr || reconnectStatus.stdout}`
+    );
+  }
+  const reconnectJson = parseJsonOutput(
+    "status --json",
+    reconnectStatus.stdout
+  );
+  assertNoSourceCheckoutResolution("status --json", reconnectJson);
+  assertHealthy(reconnectJson, "status --json after reconnect");
+
+  const stop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
+  if (stop.status !== 0) {
+    throw new Error(
+      `stop --json failed with ${stop.status}: ${stop.stderr || stop.stdout}`
+    );
+  }
+  const stopJson = parseJsonOutput("stop --json", stop.stdout);
+  assertNoSourceCheckoutResolution("stop --json", stopJson);
+  if (stopJson.ok !== true) {
+    throw new Error(`stop --json was not ok: ${stop.stdout}`);
+  }
+
+  const restart = runPackagedCommand(layout, koedHome, [
+    "start",
+    "--daemon",
+    "--json"
+  ]);
+  if (restart.status !== 0) {
+    throw new Error(
+      `reopen start --daemon --json failed with ${restart.status}: ${restart.stderr || restart.stdout}`
+    );
+  }
+  const restartJson = parseJsonOutput("start --daemon --json", restart.stdout);
+  assertNoSourceCheckoutResolution("reopen start --daemon --json", restartJson);
+  if (restartJson.ok !== true || typeof restartJson.startedPid !== "number") {
+    throw new Error(
+      `reopen start --daemon --json did not include daemon start details: ${restart.stdout}`
+    );
+  }
+  const reopenedStatus = await waitForHealthyStatus({
+    layout,
+    koedHome,
+    timeoutMs: options.timeoutMs,
+    pollIntervalMs: options.pollIntervalMs
+  });
+
+  const finalStop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
+  if (finalStop.status !== 0) {
+    throw new Error(
+      `final stop --json failed with ${finalStop.status}: ${finalStop.stderr || finalStop.stdout}`
+    );
+  }
+  const finalStopJson = parseJsonOutput("stop --json", finalStop.stdout);
+  assertNoSourceCheckoutResolution("final stop --json", finalStopJson);
+  if (finalStopJson.ok !== true) {
+    throw new Error(`final stop --json was not ok: ${finalStop.stdout}`);
+  }
+
+  return {
+    runtimeStatus: runtimeStatusJson,
+    install: installJson,
+    modelStatus: modelStatusJson,
+    firstStatus,
+    reconnectStatus: reconnectJson,
+    stop: stopJson,
+    restart: restartJson,
+    reopenedStatus,
+    finalStop: finalStopJson,
+    startPid: startJson.startedPid,
+    restartPid: restartJson.startedPid
+  };
+};
+
+const run = async () => {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(usage);
+    return;
+  }
+  if (options.build) {
+    buildPackage();
+  }
+  const layout = resolvePackagedLayout();
+  assertPackagedJsSurface(layout);
+
   const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-smoke-"));
   try {
-    const result = spawnSync(
-      executable,
-      [runner, "node-script", bundledCli, ...args],
-      {
-        cwd: resourcesPath,
-        env: {
-          ...process.env,
-          ...env,
-          ELECTRON_RUN_AS_NODE: "1",
-          KOED_HOME: koedHome,
-          KOED_REPO_ROOT: resourcesPath,
-          KOED_RUNTIME_MODE: "local-personal",
-          KOED_DEPENDENCY_MODE: "bundled-local",
-          WORK_QUEUE_BACKEND: "local"
-        },
-        encoding: "utf8"
+    if (options.missingAssets) {
+      const result = smokeMissingAssets(layout, koedHome);
+      if (options.json) {
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              mode: "missing-assets",
+              appPath: layout.appPath,
+              ...result
+            },
+            null,
+            2
+          )
+        );
       }
-    );
-    return {
-      status: result.status ?? 1,
-      stdout: result.stdout,
-      stderr: result.stderr
-    };
+      return;
+    }
+
+    const result = await smokeHealthyDaemon(layout, koedHome, options);
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            mode: "healthy-daemon",
+            appPath: layout.appPath,
+            runtime: { ok: result.install.ok, state: result.install.state },
+            status: {
+              ok: result.firstStatus.ok,
+              state: result.firstStatus.state
+            },
+            reconnect: {
+              ok: result.reconnectStatus.ok,
+              state: result.reconnectStatus.state
+            },
+            restart: {
+              ok: result.reopenedStatus.ok,
+              state: result.reopenedStatus.state
+            },
+            stop: { ok: result.finalStop.ok, state: result.finalStop.state },
+            startPid: result.startPid,
+            restartPid: result.restartPid
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    console.log("Packaged Desktop smoke passed.");
   } finally {
     rmSync(koedHome, { recursive: true, force: true });
   }
 };
 
-if (shouldBuildPackage) {
-  buildPackage();
-}
-
-assertExists("Packaged app executable", executable);
-assertExists("Packaged app asar", appAsarPath);
-assertExists("Packaged renderer", rendererIndex);
-assertExists("Bundled node entrypoint runner", runner);
-assertBundledKoedServerSurface();
-
-const status = runBundledServer(["status", "--json"]);
-if (status.status !== 0) {
-  throw new Error(
-    `status --json failed with ${status.status}: ${status.stderr || status.stdout}`
-  );
-}
-const statusJson = parseJsonOutput("status --json", status.stdout);
-if (typeof statusJson.ok !== "boolean" || !statusJson.state) {
-  throw new Error(
-    `status --json did not include renderable status fields: ${status.stdout}`
-  );
-}
-
-const doctor = runBundledServer(["doctor", "--json"]);
-const doctorJson = parseJsonOutput("doctor --json", doctor.stdout);
-if (typeof doctorJson.ok !== "boolean" || !doctorJson.state) {
-  throw new Error(
-    `doctor --json did not include renderable status fields: ${doctor.stdout}`
-  );
-}
-
-const stop = runBundledServer(["stop", "--json"]);
-const stopJson = parseJsonOutput("stop --json", stop.stdout);
-if (typeof stopJson.ok !== "boolean" || !stopJson.state) {
-  throw new Error(
-    `stop --json did not include renderable status fields: ${stop.stdout}`
-  );
-}
-
-console.log(
-  JSON.stringify(
-    {
-      ok: true,
-      appPath,
-      status: { ok: statusJson.ok, state: statusJson.state },
-      doctor: { ok: doctorJson.ok, state: doctorJson.state },
-      stop: { ok: stopJson.ok, state: stopJson.state }
-    },
-    null,
-    2
-  )
-);
+run().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

@@ -16,6 +16,10 @@
       "import": "./dist/server/index.js"
     }
   },
+  "files": [
+    "dist/**/*",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc -b tsconfig.json",
     "dev": "tsx watch src/index.ts",

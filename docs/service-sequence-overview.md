@@ -24,7 +24,8 @@ MCP-side workers.
 - **Koed Server Control Plane**: the local `koed-server` supervisor surface
   that owns `KOED_HOME`, starts Koed app processes, connects to configured
   dependency endpoints, and reports setup/readiness status for headless and
-  desktop use.
+  desktop use on macOS, Linux, and WSL. Native Windows packaged app support is
+  not part of this build.
 
 ## Local Service Startup
 
@@ -37,7 +38,9 @@ MCP-side workers.
    `runtimeMode=local-personal` and `dependencyMode=bundled-local` unless the
    Operator overrides those values. Desktop bundled-local startup allocates free
    local API, Explorer, Postgres, and Embedding Service ports and persists them
-   under `KOED_HOME/config/local-ports.json` for stable later launches.
+   under `KOED_HOME/config/local-ports.json` for stable later launches. The same
+   control plane uses `KOED_HOME/config`, `run`, `logs`, `data`, `models`,
+   `cache`, and `runtime` as durable local state.
 3. In the current source-checkout path, bare `koed-server` defaults to external
    dependency mode instead of inferring bundled-local from an empty config. The
    Operator starts Postgres/pgvector, Redis/BullMQ, and the Embedding Service
@@ -48,15 +51,32 @@ MCP-side workers.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
    starts native Postgres/pgvector and native Embedding Service runtimes under
    `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
-   Python/llama-server, or model assets report setup guidance. It defaults job
-   processing to the Postgres-backed local queue. On macOS, Linux, and WSL,
-   `koed-server runtime status --provider homebrew --json` can inspect
-   Homebrew-backed runtime assets without installing packages, and
+   Python/llama-server, or model assets report setup guidance through
+   `koed-server runtime status/install` and `koed-server models status/install`,
+   not repo scripts. It defaults job processing to the Postgres-backed local
+   queue. Packaged Desktop can ship platform/architecture native resources plus
+   `runtime-asset-manifest.json`; `koed-server runtime install --provider packaged --dependency-mode bundled-local --json`
+   verifies SHA-256, executable bits, PostgreSQL 17, `llama-server`, and loader
+   dependencies before copying resources into `KOED_HOME/runtime`. For local
+   packaged-native smoke, `pnpm native-runtime:stage:homebrew` can create a
+   `KOED_NATIVE_RUNTIME_SOURCE_DIR` staging directory from local Homebrew/Linuxbrew
+   formulas and an existing Embedding Service virtualenv; this is a development
+   helper rather than a release-quality runtime distribution. Packaged Koed
+   Desktop also calls `koed-server models status --kind embedding --json` and
+   `koed-server models install --kind embedding --json` during first-run local
+   personal setup when the embedding model is missing or checksums do not match.
+   On macOS, Linux, and WSL, `koed-server runtime status --provider homebrew --json` can
+   inspect Homebrew-backed runtime assets without installing packages, and
    `koed-server runtime install --provider homebrew --dependency-mode bundled-local --json`
    explicitly installs missing Homebrew packages and links selected binaries
-   under `KOED_HOME/runtime`. Model assets are installed out of band with
+   under `KOED_HOME/runtime`. Linux packaged native assets target glibc 2.35+
+   distributions such as Ubuntu 22.04/Debian 12 or newer; unsupported hosts fail
+   with explicit guidance instead of Docker Compose or source-checkout fallback.
+   Native Windows packaged app support is not shipped in this build; use WSL for
+   local development. Model assets are installed out of band with
    `koed-server models install`, which requires configured artifact URLs and
-   SHA-256 checksums before writing to `KOED_HOME/models`.
+   SHA-256 checksums before writing to `KOED_HOME/models`. See
+   `docs/native-runtime-assets.md`.
 5. `pnpm smoke:bundled-local -- --full --install-runtime --json` verifies this
    native path with an isolated temporary `KOED_HOME`, optional Homebrew-backed
    runtime install for that temporary home, temporary host ports, native resource
@@ -69,7 +89,7 @@ MCP-side workers.
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
    table.
-7. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. It treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
+7. `koed-server start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. It treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
@@ -91,13 +111,14 @@ MCP-side workers.
    running the full bootstrap.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
-    offer one-click Codex integration repair for stale local config, and embed
-    Explorer without requiring the Operator to invoke repo-local scripts
-    directly. Desktop readiness waits for API, Worker/queues, Explorer, and
-    the provisioned Explorer credential so static Explorer reachability cannot
-    mask an unhealthy processing path. Desktop manages only its local personal
-    `koed-server`; remote, Team Self-Hosted, and cloud targets are
-    connect-only.
+    offer one-click Codex integration repair for stale local config, provision
+    the embedding model through `koed-server models status/install --json` in
+    bundled-local mode, and embed Explorer without requiring the Operator to
+    invoke repo-local scripts directly. Desktop readiness waits for API,
+    Worker/queues, Explorer, and the provisioned Explorer credential so static
+    Explorer reachability cannot mask an unhealthy processing path. Desktop
+    manages only its local personal `koed-server`; remote, Team Self-Hosted,
+    and cloud targets are connect-only.
 
 ## Capability Discovery
 

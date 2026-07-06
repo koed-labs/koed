@@ -16,6 +16,8 @@ export interface KoedServerStatus {
   state: ComponentState;
   koedHome: string;
   generatedAt: string;
+  runtimeMode: "local-personal" | "external" | "developer";
+  dependencyMode: "bundled-local" | "external";
   api: ComponentStatus & { url: string };
   database: ComponentStatus;
   redis: ComponentStatus;

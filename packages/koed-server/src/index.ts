@@ -32,6 +32,11 @@ export {
   collectHomebrewRuntimeStatus,
   installHomebrewRuntime
 } from "./runtime-homebrew.js";
+export {
+  collectPackagedRuntimeStatus,
+  installPackagedRuntime,
+  sha256PackagedRuntimeFiles
+} from "./runtime-packaged.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export type {
   KoedDependencyMode,
@@ -63,6 +68,13 @@ export type {
   RuntimePackageStatus,
   RuntimeProvider
 } from "./runtime-homebrew.js";
+export type {
+  PackagedRuntimeAssetManifest,
+  PackagedRuntimeAssetManifestEntry,
+  PackagedRuntimeAssetStatus,
+  PackagedRuntimeInstallResult,
+  PackagedRuntimeStatus
+} from "./runtime-packaged.js";
 export type {
   KoedServerComponentState,
   KoedServerComponentStatus,

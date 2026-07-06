@@ -172,8 +172,12 @@ export const runClientsBootstrap = async ({
   const apiUrl = resolveApiUrl(effectiveEnvironment);
   await waitForApiReadyFn({ apiUrl });
 
+  const codexBootstrapArgs =
+    environment.KOED_SERVER_MANAGED === "1"
+      ? ["--skip-verify", "--skip-doctor"]
+      : [];
   const codex = await runCodexBootstrapFn({
-    argv: [],
+    argv: codexBootstrapArgs,
     environment: { ...effectiveEnvironment, MEMORY_API_URL: apiUrl },
     skipSetup: true
   });

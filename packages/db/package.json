@@ -12,6 +12,11 @@
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist/**/*",
+    "drizzle/**/*",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc -b tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",

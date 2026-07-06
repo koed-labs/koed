@@ -1,0 +1,29 @@
+{
+  "platform": "macos",
+  "architecture": "arm64",
+  "notes": "Pinned upstream inputs for the macOS arm64 Koed native runtime artifact. CI aggregates and verifies relocatable upstream assets for Python and llama.cpp. PostgreSQL is built from the official source tarball until a selected relocatable macOS PostgreSQL binary satisfies the packaged runtime contract; pgvector is built against that selected pg_config.",
+  "postgres": {
+    "kind": "source",
+    "version": "17.6",
+    "url": "https://ftp.postgresql.org/pub/source/v17.6/postgresql-17.6.tar.gz",
+    "sha256": "2910b85283674da2dae6ac13fe5ebbaaf3c482446396cba32e6728d3cc736d86"
+  },
+  "pgvector": {
+    "kind": "source-build-against-selected-pg-config",
+    "version": "0.8.3",
+    "url": "https://github.com/pgvector/pgvector/archive/refs/tags/v0.8.3.tar.gz",
+    "sha256": "dc080c511a6354a1628eb19f9bc8e77ce880dde16c889744a6814c8c0006e36c"
+  },
+  "python": {
+    "kind": "python-build-standalone",
+    "version": "3.12.7+20241016",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7%2B20241016-aarch64-apple-darwin-install_only.tar.gz",
+    "sha256": "4c18852bf9c1a11b56f21bcf0df1946f7e98ee43e9e4c0c5374b2b3765cf9508"
+  },
+  "llamaCpp": {
+    "kind": "official-release",
+    "version": "b9878",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9878/llama-b9878-bin-macos-arm64.tar.gz",
+    "sha256": "3c18b48c3d4e4fb6e66c8188c6ac06849d9da6919511c061e310e18682432b57"
+  }
+}

@@ -78,6 +78,7 @@ describe("Homebrew runtime provisioning", () => {
 
     expect(status.state).toBe("missing");
     expect(status.message).toContain("Homebrew is required");
+    expect(status.action).toContain("Linuxbrew");
     expect(calls).toEqual([["--prefix"]]);
   });
 

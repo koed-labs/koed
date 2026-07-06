@@ -29,16 +29,30 @@ describe("Koed server desktop manager", () => {
     });
   });
 
-  it("defaults packaged Desktop managed local server to bundled-local", () => {
+  it("enables automatic local ports for source Desktop bundled-local runs", () => {
     expect(
-      createKoedEnvironment("/repo", {}, { desktopManagedLocal: true })
+      createKoedEnvironment("/repo", { KOED_DEPENDENCY_MODE: "bundled-local" })
     ).toMatchObject({
       KOED_REPO_ROOT: "/repo",
+      KOED_AUTO_PORTS: "1"
+    });
+  });
+
+  it("defaults packaged Desktop managed local server to bundled-local", () => {
+    const packagedEnvironment = createKoedEnvironment(
+      "/repo",
+      {},
+      { desktopManagedLocal: true, packagedResourcesPath: "/resources" }
+    );
+    expect(packagedEnvironment).toMatchObject({
       KOED_RUNTIME_MODE: "local-personal",
       KOED_DEPENDENCY_MODE: "bundled-local",
       WORK_QUEUE_BACKEND: "local",
-      KOED_AUTO_PORTS: "1"
+      KOED_AUTO_PORTS: "1",
+      KOED_PACKAGED_DESKTOP: "1",
+      KOED_PACKAGED_RESOURCES_PATH: "/resources"
     });
+    expect(packagedEnvironment).not.toHaveProperty("KOED_REPO_ROOT");
     expect(
       createKoedEnvironment(
         "/repo",
@@ -106,7 +120,9 @@ describe("Koed server desktop manager", () => {
       openExternal: async () => undefined
     });
 
-    await expect(manager.handlers.runtime_install!()).resolves.toMatchObject({
+    await expect(
+      manager.handlers.runtime_install!({ operatorConsented: true })
+    ).resolves.toMatchObject({
       ok: true,
       state: "installed"
     });
@@ -122,7 +138,133 @@ describe("Koed server desktop manager", () => {
     ]);
   });
 
-  it("runs explicit stop through koed-server and clears the managed process", async () => {
+  it("requires Operator consent before Homebrew runtime install", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: () => undefined,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.runtime_install!()).resolves.toMatchObject({
+      ok: false,
+      provider: "homebrew",
+      error:
+        "Operator consent is required before Koed Desktop may mutate Homebrew package-manager state."
+    });
+  });
+
+  it("uses packaged runtime install when packaged manifest is present", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_PACKAGED_RESOURCES_PATH: "/resources" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: (path) =>
+        path === "/repo/cli.js" ||
+        path === "/resources/koed-runtime/runtime-asset-manifest.json",
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true, state: "installed" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.runtime_install!()).resolves.toMatchObject({
+      ok: true,
+      state: "installed"
+    });
+    expect(calls[0]).toContain("packaged");
+  });
+
+  it("keeps packaged runtime status actionable when packaged manifest is missing", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {
+        KOED_PACKAGED_DESKTOP: "1",
+        KOED_PACKAGED_RESOURCES_PATH: "/resources"
+      },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: (path) => path === "/repo/cli.js",
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: false, state: "missing" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await manager.handlers.runtime_status!();
+    expect(calls[0]).toContain("packaged");
+  });
+
+  it("runs model status and install through koed-server", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true, state: "installed" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.models_status!()).resolves.toMatchObject({
+      ok: true,
+      state: "installed"
+    });
+    await expect(manager.handlers.models_install!()).resolves.toMatchObject({
+      ok: true,
+      state: "installed"
+    });
+    expect(calls[0]).toEqual([
+      "/repo/cli.js",
+      "models",
+      "status",
+      "--kind",
+      "embedding",
+      "--json"
+    ]);
+    expect(calls[1]).toEqual([
+      "/repo/cli.js",
+      "models",
+      "install",
+      "--kind",
+      "embedding",
+      "--json"
+    ]);
+  });
+
+  it("runs explicit stop through koed-server", async () => {
     const spawned = childProcess();
     const calls: string[][] = [];
     let statusCalls = 0;
@@ -171,7 +313,7 @@ describe("Koed server desktop manager", () => {
       state: "healthy"
     });
     expect(calls[calls.length - 1]).toEqual(["/repo/cli.js", "stop", "--json"]);
-    expect(spawned.killed).toBe(true);
+    expect(spawned.killed).toBe(false);
   });
 
   it("reports missing koed-server CLI as not_configured", async () => {
@@ -267,9 +409,8 @@ describe("Koed server desktop manager", () => {
     });
   });
 
-  it("starts one koed-server process and stops it on quit", async () => {
-    const spawned = childProcess();
-    const spawnCalls: string[][] = [];
+  it("reconnects without requesting koed-server start --daemon again once healthy", async () => {
+    const calls: string[][] = [];
     let statusCalls = 0;
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -281,7 +422,21 @@ describe("Koed server desktop manager", () => {
         env: { KOED_REPO_ROOT: "/repo" }
       }),
       existsSync: () => true,
-      execFile: (_command, _args, _options, callback) => {
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("--daemon")) {
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              state: "starting",
+              message: "Koed server daemon start requested.",
+              startedPid: 42
+            }),
+            ""
+          );
+          return;
+        }
         statusCalls += 1;
         callback(
           null,
@@ -297,10 +452,7 @@ describe("Koed server desktop manager", () => {
           ""
         );
       },
-      spawn: (_command, args) => {
-        spawnCalls.push(args);
-        return spawned as never;
-      },
+      spawn: () => childProcess() as never,
       openExternal: async () => undefined
     });
 
@@ -310,13 +462,10 @@ describe("Koed server desktop manager", () => {
     await expect(manager.handlers.start!()).resolves.toMatchObject({
       state: "healthy"
     });
-    expect(spawnCalls).toEqual([["/repo/cli.js", "start"]]);
-
-    manager.stop();
-    expect(spawned.killed).toBe(true);
+    expect(calls.filter((args) => args.includes("--daemon"))).toHaveLength(1);
   });
 
-  it("reports koed-server spawn errors without throwing uncaught exceptions", async () => {
+  it("reports koed-server daemon start failures without throwing", async () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -327,7 +476,19 @@ describe("Koed server desktop manager", () => {
         env: { KOED_REPO_ROOT: "/repo" }
       }),
       existsSync: () => true,
-      execFile: (_command, _args, _options, callback) => {
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("--daemon")) {
+          callback(
+            null,
+            JSON.stringify({
+              ok: false,
+              state: "needs_attention",
+              error: "spawn /missing-electron ENOENT"
+            }),
+            ""
+          );
+          return;
+        }
         callback(
           null,
           JSON.stringify({
@@ -338,20 +499,14 @@ describe("Koed server desktop manager", () => {
           ""
         );
       },
-      spawn: () => {
-        const child = childProcess();
-        queueMicrotask(() => {
-          child.emit("error", new Error("spawn /missing-electron ENOENT"));
-        });
-        return child as never;
-      },
+      spawn: () => childProcess() as never,
       openExternal: async () => undefined
     });
 
     await expect(manager.handlers.start!()).resolves.toMatchObject({
       ok: false,
       state: "needs_attention",
-      error: "koed-server start failed: spawn /missing-electron ENOENT"
+      error: "spawn /missing-electron ENOENT"
     });
   });
 });

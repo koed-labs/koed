@@ -23,6 +23,10 @@ extraResources:
     to: app-dist
     filter:
       - "**/*"
+  - from: .koed-runtime
+    to: koed-runtime
+    filter:
+      - "**/*"
 
 directories:
   output: release

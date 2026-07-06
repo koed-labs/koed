@@ -2,6 +2,10 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isPackagedRuntimeMode,
+  resolvePackagedResourcesPath
+} from "./runtime-artifact-source.js";
 
 export interface KoedServerPaths {
   koedHome: string;
@@ -32,13 +36,37 @@ export const resolveRepoRoot = (
     return resolve(fromEnv);
   }
 
+  if (isPackagedRuntimeMode(environment)) {
+    const resourcesPath = resolvePackagedResourcesPath(environment);
+    if (resourcesPath) {
+      return resourcesPath;
+    }
+  }
+
   // dist/ -> package root -> packages/koed-server -> repo root
   return resolve(packageDir, "..", "..");
 };
 
+const documentationPlaceholderPath = (value: string): boolean => {
+  const normalized = resolve(value);
+  return (
+    normalized === "/path" ||
+    normalized === "/path/to" ||
+    normalized.startsWith("/path/to/")
+  );
+};
+
 export const resolveKoedHome = (
   environment: NodeJS.ProcessEnv = process.env
-): string => resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
+): string => {
+  const configured = environment.KOED_HOME?.trim();
+  if (configured && documentationPlaceholderPath(configured)) {
+    throw new Error(
+      `KOED_HOME is set to the documentation placeholder ${configured}. Unset KOED_HOME or set it to a writable local state directory such as ${resolve(`${homedir()}/.koed`)}.`
+    );
+  }
+  return resolve(configured || `${homedir()}/.koed`);
+};
 
 export const resolveKoedServerPaths = (
   environment: NodeJS.ProcessEnv = process.env

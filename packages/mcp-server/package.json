@@ -17,6 +17,10 @@
       "import": "./dist/index.js"
     }
   },
+  "files": [
+    "dist/**/*",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc -b tsconfig.json --force",
     "bundle": "pnpm run build && esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/koed-mcp-bundled.mjs",

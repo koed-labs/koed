@@ -2,5 +2,6 @@ dist/
 dist-electron/
 dist-types/
 release/
+.koed-runtime/
 tsconfig.tsbuildinfo
 tsconfig.electron.tsbuildinfo

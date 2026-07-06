@@ -30,6 +30,8 @@ export interface LocalModelManifest {
   pathEnv: string;
   url?: string;
   sha256?: string;
+  defaultUrl?: string;
+  defaultSha256?: string;
 }
 
 export interface LocalModelStatus {
@@ -92,6 +94,19 @@ const trimEnv = (
   return value ? value : undefined;
 };
 
+const dependencyMode = (
+  environment: NodeJS.ProcessEnv
+): "bundled-local" | "external" | undefined => {
+  const value = trimEnv(environment, "KOED_DEPENDENCY_MODE");
+  if (value === "bundled-local" || value === "external") {
+    return value;
+  }
+  return undefined;
+};
+
+const modelDownloadBlockedAction = (manifest: LocalModelManifest): string =>
+  `External dependency mode does not download model assets. Switch to bundled-local mode or set ${manifest.pathEnv} to an existing model file.`;
+
 const normalizeSha256 = (value: string | undefined): string | undefined => {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) {
@@ -125,7 +140,9 @@ export const resolveLocalModelManifest = (
     url: trimEnv(environment, definition.urlEnv) ?? definition.defaultUrl,
     sha256: normalizeSha256(
       trimEnv(environment, definition.sha256Env) ?? definition.defaultSha256
-    )
+    ),
+    defaultUrl: definition.defaultUrl,
+    defaultSha256: definition.defaultSha256
   };
 };
 
@@ -141,11 +158,15 @@ export const collectLocalModelStatus = async (
   environment: NodeJS.ProcessEnv = process.env
 ): Promise<LocalModelStatus> => {
   const manifest = resolveLocalModelManifest(paths, kind, environment);
+  const mode = dependencyMode(environment);
   if (!existsSync(manifest.modelPath)) {
     return {
       state: "missing",
       message: `${manifest.key} model is not installed at ${manifest.modelPath}.`,
-      action: `Run koed-server models install --kind ${kind}. Override ${manifest.urlEnv} and ${manifest.sha256Env} only when using a custom model artifact.`,
+      action:
+        mode === "external"
+          ? modelDownloadBlockedAction(manifest)
+          : `Run koed-server models install --kind ${kind}. Override ${manifest.urlEnv} and ${manifest.sha256Env} only when using a custom model artifact.`,
       modelPath: manifest.modelPath,
       manifest
     };
@@ -195,6 +216,17 @@ export const installLocalModel = async (
   }: LocalModelInstallDependencies = {}
 ): Promise<LocalModelInstallResult> => {
   const manifest = resolveLocalModelManifest(paths, kind, environment);
+  const mode = dependencyMode(environment);
+  if (mode === "external") {
+    return {
+      ok: false,
+      state: "not_configured",
+      message: `${manifest.key} model downloads are disabled in external dependency mode.`,
+      action: modelDownloadBlockedAction(manifest),
+      modelPath: manifest.modelPath,
+      manifest
+    };
+  }
   if (!manifest.url) {
     return {
       ok: false,

@@ -35,6 +35,10 @@ const { repoRoot, cliPath: koedServerCli } = resolveKoedServerPaths({
   resourcesPath: process.resourcesPath
 });
 const appName = "Koed";
+const koedEnvironment = createKoedEnvironment(repoRoot, process.env, {
+  desktopManagedLocal: app.isPackaged,
+  packagedResourcesPath: process.resourcesPath
+});
 const desktopIconPath = resolve(repoRoot, "apps/desktop/assets/koed-icon.png");
 
 app.setName(appName);
@@ -49,22 +53,21 @@ protocol.registerSchemesAsPrivileged([
 const koedServer = createKoedServerManager({
   repoRoot,
   cliPath: koedServerCli,
-  environment: process.env,
+  environment: koedEnvironment,
   createCliInvocation: (args) =>
     createKoedServerCliInvocation(koedServerCli, args, {
       appIsPackaged: app.isPackaged,
       electronExecPath: process.execPath,
       platform: process.platform,
       resourcesPath: process.resourcesPath,
-      environment: createKoedEnvironment(repoRoot, process.env, {
-        desktopManagedLocal: app.isPackaged
-      }),
+      environment: koedEnvironment,
       existsSync
     }),
   existsSync,
   execFile,
   spawn,
-  openExternal: (url) => shell.openExternal(url)
+  openExternal: (url) => shell.openExternal(url),
+  openPath: (path) => shell.openPath(path)
 });
 
 const getAppDistDir = (): string =>
@@ -143,6 +146,15 @@ app.on("activate", () => {
     void createWindow();
   }
 });
-app.on("before-quit", () => {
-  koedServer.stop();
+let koedServerStoppedForQuit = false;
+app.on("before-quit", (event) => {
+  if (koedServerStoppedForQuit) {
+    return;
+  }
+  event.preventDefault();
+  void (async () => {
+    await koedServer.stop();
+    koedServerStoppedForQuit = true;
+    app.quit();
+  })();
 });

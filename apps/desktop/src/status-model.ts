@@ -102,8 +102,10 @@ export type StatusCardActionCommand =
   | "setup_codex"
   | "repair_codex"
   | "runtime_install"
+  | "models_install"
   | "doctor"
   | "open_explorer"
+  | "open_logs"
   | "copy_diagnostics";
 
 export interface StatusCardAction {
@@ -139,6 +141,7 @@ export const statusCards = [
     },
     secondaryActions: [
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Open logs", command: "open_logs", timeoutMs: 10_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
   },
@@ -179,6 +182,7 @@ export const statusCards = [
         timeoutMs: 600_000
       },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
+      { label: "Open logs", command: "open_logs", timeoutMs: 10_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
   },
@@ -204,7 +208,8 @@ export const statusCards = [
     id: "embeddingEngine",
     title: "Embedding Engine",
     role: "Local model runtime that turns memory text into retrieval vectors.",
-    impact: "Semantic recall and new memory indexing are degraded without it.",
+    impact:
+      "Semantic recall and new memory indexing are degraded without the model.",
     componentKeys: ["embeddingService"],
     primaryAction: {
       label: "Ensure embedding stack",
@@ -213,6 +218,11 @@ export const statusCards = [
       primary: true
     },
     secondaryActions: [
+      {
+        label: "Install embedding model",
+        command: "models_install",
+        timeoutMs: 600_000
+      },
       {
         label: "Install runtime",
         command: "runtime_install",
@@ -236,7 +246,6 @@ export const statusCards = [
       primary: true
     },
     secondaryActions: [
-      { label: "Setup Codex", command: "setup_codex", timeoutMs: 300_000 },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Copy diagnostics", command: "copy_diagnostics" }
     ]
@@ -255,7 +264,6 @@ export const statusCards = [
       primary: true
     },
     secondaryActions: [
-      { label: "Setup Codex", command: "setup_codex", timeoutMs: 300_000 },
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Refresh", command: "status", timeoutMs: 10_000 }
     ]

@@ -10,6 +10,7 @@ import {
   resolveActiveIntegrationApiToken
 } from "./credentials.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import { resolveKoedAppRuntime } from "./app-runtime.js";
 import { collectLocalEmbeddingRuntimeStatus } from "./local-embedding-runtime.js";
 import { collectLocalPostgresRuntimeStatus } from "./local-postgres-runtime.js";
 import {
@@ -505,11 +506,21 @@ const inspectMcp = (
   paths: KoedServerPaths,
   deps: Required<KoedServerStatusDependencies>
 ) => {
-  const cliPath = resolve(paths.repoRoot, "packages/mcp-server/dist/cli.js");
+  const appRuntime = resolveKoedAppRuntime(paths, environment, deps.existsSync);
+  const cliPath = appRuntime.mcpCli;
   if (!deps.existsSync(cliPath)) {
     return notConfigured(
-      "MCP Server build output was not found.",
-      "Run pnpm --filter @koed/mcp-server build or koed-server setup codex --json."
+      appRuntime.kind === "packaged"
+        ? "Packaged MCP Server artifact was not found."
+        : "MCP Server build output was not found.",
+      appRuntime.kind === "packaged"
+        ? "Rebuild Koed Desktop packaging so koed-runtime includes the MCP Server and Supported Capture Hook artifacts."
+        : "Run pnpm --filter @koed/mcp-server build or koed-server setup codex --json.",
+      {
+        artifactSource: appRuntime.artifactSource,
+        runtimeRoot: appRuntime.root,
+        missing: appRuntime.missing
+      }
     );
   }
   const token = resolveActiveIntegrationApiToken(
@@ -535,12 +546,20 @@ const inspectMcp = (
     stdio: ["ignore", "pipe", "pipe"]
   });
   if (result.status === 0) {
-    return healthy("MCP Server doctor passed.");
+    return healthy("MCP Server doctor passed.", {
+      artifactSource: appRuntime.artifactSource,
+      runtimeRoot: appRuntime.root
+    });
   }
   return needsAttention(
     "MCP Server doctor failed.",
     "Run koed-server doctor --json for details.",
-    { stderr: result.stderr.trim(), stdout: result.stdout.trim() }
+    {
+      stderr: result.stderr.trim(),
+      stdout: result.stdout.trim(),
+      artifactSource: appRuntime.artifactSource,
+      runtimeRoot: appRuntime.root
+    }
   );
 };
 
@@ -828,8 +847,7 @@ export const collectKoedServerStatus = async (
     statusWithoutState.mcpServer,
     statusWithoutState.captureHook,
     statusWithoutState.codex,
-    statusWithoutState.lcmSummaryService,
-    statusWithoutState.lastVerification
+    statusWithoutState.lcmSummaryService
   ];
   const state = aggregateState(blockingComponents);
   return { ...statusWithoutState, state, ok: state === "healthy" };
@@ -857,8 +875,15 @@ export const collectKoedServerDoctor = async (
     label: label as string,
     ...(component as KoedServerComponentStatus)
   }));
-  const failed = checks.filter((check) => check.state === "needs_attention");
-  const missing = checks.filter((check) => check.state === "not_configured");
+  const blockingChecks = checks.filter(
+    (check) => check.id !== "lastVerification"
+  );
+  const failed = blockingChecks.filter(
+    (check) => check.state === "needs_attention"
+  );
+  const missing = blockingChecks.filter(
+    (check) => check.state === "not_configured"
+  );
   const summary =
     failed[0]?.message ??
     missing[0]?.message ??

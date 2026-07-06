@@ -115,6 +115,23 @@ const resolvePackagedRunnerPath = (resourcesPath?: string): string => {
   return resolve(currentDir, "node-entrypoint-runner.js");
 };
 
+const daemonInvocationEnvironment = (
+  environment: NodeJS.ProcessEnv,
+  command: string,
+  args: string[]
+): NodeJS.ProcessEnv => {
+  if (!args.includes("--daemon")) {
+    return environment;
+  }
+  return {
+    ...environment,
+    KOED_SERVER_DAEMON_COMMAND: command,
+    KOED_SERVER_DAEMON_ARGS_JSON: JSON.stringify(
+      args.filter((arg) => arg !== "--daemon" && arg !== "--json")
+    )
+  };
+};
+
 export const createKoedServerCliInvocation = (
   cliPath: string,
   args: string[],
@@ -122,10 +139,15 @@ export const createKoedServerCliInvocation = (
 ): NodeEntrypointInvocation => {
   const explicitNodeCommand = options.environment.KOED_NODE_COMMAND?.trim();
   if (explicitNodeCommand) {
+    const invocationArgs = [cliPath, ...args];
     return {
       command: explicitNodeCommand,
-      args: [cliPath, ...args],
-      env: options.environment
+      args: invocationArgs,
+      env: daemonInvocationEnvironment(
+        options.environment,
+        explicitNodeCommand,
+        invocationArgs
+      )
     };
   }
 
@@ -133,21 +155,23 @@ export const createKoedServerCliInvocation = (
   const env = createElectronNodeEnv(options.environment);
 
   if (options.appIsPackaged) {
+    const invocationArgs = [
+      resolvePackagedRunnerPath(options.resourcesPath),
+      "node-script",
+      cliPath,
+      ...args
+    ];
     return {
       command,
-      args: [
-        resolvePackagedRunnerPath(options.resourcesPath),
-        "node-script",
-        cliPath,
-        ...args
-      ],
-      env
+      args: invocationArgs,
+      env: daemonInvocationEnvironment(env, command, invocationArgs)
     };
   }
 
+  const invocationArgs = [cliPath, ...args];
   return {
     command,
-    args: [cliPath, ...args],
-    env
+    args: invocationArgs,
+    env: daemonInvocationEnvironment(env, command, invocationArgs)
   };
 };

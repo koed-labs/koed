@@ -6,6 +6,11 @@ import {
 } from "node:child_process";
 import type { KoedServerComponentStatus } from "./types.js";
 import type { KoedServerPaths } from "./paths.js";
+import {
+  canUseSourceCheckoutFallback,
+  resolvePackagedKoedRuntimeRoot,
+  type RuntimeArtifactSource
+} from "./runtime-artifact-source.js";
 
 type SpawnSyncLike = (
   command: string,
@@ -20,6 +25,7 @@ export interface LocalPostgresRuntimePaths {
   initdbBin: string;
   pgCtlBin: string;
   psqlBin: string;
+  artifactSource: RuntimeArtifactSource;
   host: string;
   port: string;
   database: string;
@@ -70,14 +76,30 @@ const resolvePostgresBinDir = (
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv = process.env,
   exists: typeof existsSync = existsSync
-): string => {
+): { binDir: string; artifactSource: RuntimeArtifactSource } => {
   const override = trim(environment.KOED_POSTGRES_BIN_DIR);
-  if (override) return resolve(override);
+  if (override) {
+    return { binDir: resolve(override), artifactSource: "explicit-override" };
+  }
   const koedRuntimeDir = resolve(paths.koedHome, "runtime", "postgres", "bin");
-  if (hasAnyPostgresBinary(koedRuntimeDir, exists)) return koedRuntimeDir;
+  if (hasAnyPostgresBinary(koedRuntimeDir, exists)) {
+    return { binDir: koedRuntimeDir, artifactSource: "koed-home-runtime" };
+  }
+  const packagedRuntimeRoot = resolvePackagedKoedRuntimeRoot(environment);
+  const packagedDir = packagedRuntimeRoot
+    ? resolve(packagedRuntimeRoot, "postgres", "bin")
+    : undefined;
+  if (packagedDir && hasAnyPostgresBinary(packagedDir, exists)) {
+    return { binDir: packagedDir, artifactSource: "packaged-resource" };
+  }
   const vendorDir = resolve(paths.repoRoot, "vendor", "postgres", "bin");
-  if (hasAnyPostgresBinary(vendorDir, exists)) return vendorDir;
-  return koedRuntimeDir;
+  if (
+    canUseSourceCheckoutFallback(environment) &&
+    hasAnyPostgresBinary(vendorDir, exists)
+  ) {
+    return { binDir: vendorDir, artifactSource: "source-checkout" };
+  }
+  return { binDir: koedRuntimeDir, artifactSource: "koed-home-runtime" };
 };
 
 export const resolveLocalPostgresRuntimePaths = (
@@ -85,7 +107,16 @@ export const resolveLocalPostgresRuntimePaths = (
   environment: NodeJS.ProcessEnv = process.env,
   exists: typeof existsSync = existsSync
 ): LocalPostgresRuntimePaths => {
-  const binDir = resolvePostgresBinDir(paths, environment, exists);
+  const { binDir, artifactSource } = resolvePostgresBinDir(
+    paths,
+    environment,
+    exists
+  );
+  const hasBinaryOverride = Boolean(
+    trim(environment.KOED_POSTGRES_INITDB_BIN) ??
+    trim(environment.KOED_POSTGRES_PG_CTL_BIN) ??
+    trim(environment.KOED_POSTGRES_PSQL_BIN)
+  );
   const bin = (name: string, override: string | undefined) =>
     resolve(trim(override) ?? resolve(binDir, name));
   const password =
@@ -105,6 +136,7 @@ export const resolveLocalPostgresRuntimePaths = (
     initdbBin: bin("initdb", environment.KOED_POSTGRES_INITDB_BIN),
     pgCtlBin: bin("pg_ctl", environment.KOED_POSTGRES_PG_CTL_BIN),
     psqlBin: bin("psql", environment.KOED_POSTGRES_PSQL_BIN),
+    artifactSource: hasBinaryOverride ? "explicit-override" : artifactSource,
     host: trim(environment.KOED_POSTGRES_HOST) ?? "127.0.0.1",
     port:
       trim(environment.KOED_POSTGRES_PORT) ??
@@ -135,6 +167,7 @@ const safeRuntimePaths = (
   initdbBin: runtime.initdbBin,
   pgCtlBin: runtime.pgCtlBin,
   psqlBin: runtime.psqlBin,
+  artifactSource: runtime.artifactSource,
   host: runtime.host,
   port: runtime.port,
   database: runtime.database,
@@ -149,8 +182,11 @@ const missingRuntime = (
   state: "not_configured",
   message: `Bundled-local native Postgres runtime is missing: ${missing.join(", ")}.`,
   action:
-    "Install bundled Postgres/pgvector resources under KOED_HOME/runtime/postgres or set KOED_POSTGRES_BIN_DIR / KOED_POSTGRES_*_BIN overrides. Source-checkout vendor/postgres is a development fallback.",
-  details: { missing },
+    runtime.artifactSource === "source-checkout" ||
+    runtime.artifactSource === "explicit-override"
+      ? "Install bundled Postgres/pgvector resources with koed-server runtime install --provider homebrew --dependency-mode bundled-local --json on macOS, Linux, or WSL, or set KOED_POSTGRES_BIN_DIR / KOED_POSTGRES_*_BIN overrides."
+      : "Inspect native runtime with koed-server runtime status --provider packaged --json, then install packaged assets with koed-server runtime install --provider packaged --dependency-mode bundled-local --json or Homebrew-backed assets with --provider homebrew on macOS, Linux, or WSL.",
+  details: { missing, artifactSource: runtime.artifactSource },
   paths: safeRuntimePaths(runtime)
 });
 
@@ -205,6 +241,39 @@ const run = (
     stdio: ["ignore", "pipe", "pipe"]
   });
 
+const commandOutput = (result: SpawnSyncReturns<string>): string =>
+  `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+
+const validatePostgres17 = (
+  runtime: LocalPostgresRuntimePaths,
+  env: NodeJS.ProcessEnv,
+  spawnSync: SpawnSyncLike
+): LocalPostgresRuntimeStatus | null => {
+  const version = run(runtime.initdbBin, ["--version"], env, spawnSync);
+  const output = commandOutput(version);
+  if (
+    version.status === 0 &&
+    (output === "" ||
+      /PostgreSQL\)?\s+17(?:\.|\s|$)/i.test(output) ||
+      /\(PostgreSQL\)\s+17(?:\.|\s|$)/i.test(output))
+  ) {
+    return null;
+  }
+  return {
+    runtime: "native-postgres",
+    state: "needs_attention",
+    message: "Bundled-local native Postgres must be PostgreSQL 17 compatible.",
+    action:
+      "Run koed-server runtime status --provider packaged --json or koed-server runtime install --provider homebrew --dependency-mode bundled-local --json with PostgreSQL 17 assets.",
+    details: {
+      exitCode: version.status,
+      output,
+      artifactSource: runtime.artifactSource
+    },
+    paths: safeRuntimePaths(runtime)
+  };
+};
+
 const healthyStatus = (
   runtime: LocalPostgresRuntimePaths,
   message: string
@@ -212,7 +281,11 @@ const healthyStatus = (
   runtime: "native-postgres",
   state: "healthy",
   message,
-  details: { port: runtime.port, dataDir: runtime.dataDir },
+  details: {
+    port: runtime.port,
+    dataDir: runtime.dataDir,
+    artifactSource: runtime.artifactSource
+  },
   paths: safeRuntimePaths(runtime)
 });
 
@@ -326,6 +399,10 @@ export const startLocalPostgresRuntime = (
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {
     return { ok: false, status: missingRuntime(runtime, missing), env };
+  }
+  const versionStatus = validatePostgres17(runtime, env, spawnSync);
+  if (versionStatus) {
+    return { ok: false, status: versionStatus, env };
   }
   mkdirSync(runtime.dataDir, { recursive: true, mode: 0o700 });
   mkdirSync(runtime.runDir, { recursive: true, mode: 0o700 });

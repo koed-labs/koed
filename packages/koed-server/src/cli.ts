@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { loadRepoEnv } from "./env-file.js";
 import { repairCodexIntegration, setupCodex } from "./setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
@@ -14,12 +15,17 @@ import {
   collectHomebrewRuntimeStatus,
   installHomebrewRuntime
 } from "./runtime-homebrew.js";
+import {
+  collectPackagedRuntimeStatus,
+  installPackagedRuntime
+} from "./runtime-packaged.js";
 import { resolveKoedServerPaths } from "./paths.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
 Commands:
   start                  Start and supervise local Koed services
+  start --daemon --json  Start koed-server supervisor detached
   stop --json            Stop supervised local Koed services
   restart --json         Restart supervised local Koed services
   status --json          Print machine-readable local service state
@@ -30,6 +36,10 @@ Commands:
   models install --json  Download bundled local model with SHA-256 verification
   runtime status --json  Print native bundled-local runtime install state
   runtime install --json Install native bundled-local runtime assets explicitly
+
+Runtime providers:
+  --provider homebrew       Use Homebrew-backed runtime assets (default)
+  --provider packaged       Use packaged runtime resources from the app bundle
 
 Options:
   --json                 Emit JSON output for commands that support it
@@ -44,6 +54,7 @@ export interface KoedServerCliDependencies {
   collectStatus?: typeof collectKoedServerStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
   start?: typeof startKoedServer;
+  startDaemon?: typeof startKoedServerDaemon;
   stop?: typeof stopKoedServer;
   restart?: typeof restartKoedServer;
   setupCodex?: typeof setupCodex;
@@ -52,6 +63,8 @@ export interface KoedServerCliDependencies {
   installModel?: typeof installLocalModel;
   collectRuntimeStatus?: typeof collectHomebrewRuntimeStatus;
   installRuntime?: typeof installHomebrewRuntime;
+  collectPackagedRuntimeStatus?: typeof collectPackagedRuntimeStatus;
+  installPackagedRuntime?: typeof installPackagedRuntime;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -70,10 +83,110 @@ const flagValue = (args: string[], name: string): string | undefined => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 
-const assertRuntimeFlags = (args: string[], command: "status" | "install") => {
+type SpawnLike = typeof nodeSpawn;
+
+export interface KoedServerStartDaemonResult {
+  ok: boolean;
+  state: "starting" | "needs_attention";
+  koedHome: string;
+  message: string;
+  startedPid?: number;
+  error?: string;
+}
+
+export interface KoedServerStartDaemonOptions {
+  environment?: NodeJS.ProcessEnv;
+  spawn?: SpawnLike;
+  startCommand?: string;
+  startArgs?: string[];
+  resolvePaths?: typeof resolveKoedServerPaths;
+}
+
+const configuredDaemonInvocation = (
+  environment: NodeJS.ProcessEnv
+): { command: string; args: string[] } | null => {
+  const command = environment.KOED_SERVER_DAEMON_COMMAND?.trim();
+  const argsJson = environment.KOED_SERVER_DAEMON_ARGS_JSON?.trim();
+  if (!command || !argsJson) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(argsJson) as unknown;
+    if (
+      !Array.isArray(parsed) ||
+      !parsed.every((arg) => typeof arg === "string")
+    ) {
+      throw new Error("KOED_SERVER_DAEMON_ARGS_JSON must be a string array.");
+    }
+    return { command, args: parsed };
+  } catch (error) {
+    throw new Error(
+      `Could not parse KOED_SERVER_DAEMON_ARGS_JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+};
+
+export const startKoedServerDaemon = ({
+  environment = process.env,
+  spawn = nodeSpawn,
+  startCommand = process.argv[1],
+  startArgs,
+  resolvePaths = resolveKoedServerPaths
+}: KoedServerStartDaemonOptions = {}): KoedServerStartDaemonResult => {
+  const paths = resolvePaths(environment);
+  const configured = configuredDaemonInvocation(environment);
+  const command = configured?.command ?? process.execPath;
+  const args =
+    configured?.args ??
+    startArgs ??
+    (startCommand ? [startCommand, "start"] : []);
+  if (args.length === 0) {
+    return {
+      ok: false,
+      state: "needs_attention",
+      koedHome: paths.koedHome,
+      message: "Could not resolve koed-server CLI path for daemon start.",
+      error: "Could not resolve koed-server CLI path for daemon start."
+    };
+  }
+  try {
+    const child = spawn(command, args, {
+      cwd: environment.KOED_REPO_ROOT ?? process.cwd(),
+      detached: true,
+      env: environment,
+      stdio: "ignore"
+    }) as ChildProcess;
+    if (!child.pid) {
+      throw new Error("koed-server daemon child process did not report a pid.");
+    }
+    child.unref();
+    return {
+      ok: true,
+      state: "starting",
+      koedHome: paths.koedHome,
+      message: "Koed server daemon start requested.",
+      startedPid: child.pid
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      state: "needs_attention",
+      koedHome: paths.koedHome,
+      message,
+      error: message
+    };
+  }
+};
+
+const assertRuntimeFlags = (
+  args: string[],
+  command: "status" | "install"
+): "homebrew" | "packaged" => {
   const provider = flagValue(args, "--provider") ?? "homebrew";
-  if (provider !== "homebrew") {
-    throw new Error("--provider must be homebrew.");
+  if (provider !== "homebrew" && provider !== "packaged") {
+    throw new Error("--provider must be homebrew or packaged.");
   }
   const dependencyMode = flagValue(args, "--dependency-mode");
   if (command === "install" && dependencyMode !== "bundled-local") {
@@ -81,6 +194,7 @@ const assertRuntimeFlags = (args: string[], command: "status" | "install") => {
       "runtime install requires --dependency-mode bundled-local."
     );
   }
+  return provider;
 };
 
 export const runKoedServerCli = async (
@@ -89,6 +203,7 @@ export const runKoedServerCli = async (
     collectStatus = collectKoedServerStatus,
     collectDoctor = collectKoedServerDoctor,
     start = startKoedServer,
+    startDaemon = startKoedServerDaemon,
     stop = stopKoedServer,
     restart = restartKoedServer,
     setupCodex: setup = setupCodex,
@@ -97,6 +212,9 @@ export const runKoedServerCli = async (
     installModel = installLocalModel,
     collectRuntimeStatus = collectHomebrewRuntimeStatus,
     installRuntime = installHomebrewRuntime,
+    collectPackagedRuntimeStatus:
+      collectPackagedRuntime = collectPackagedRuntimeStatus,
+    installPackagedRuntime: installPackaged = installPackagedRuntime,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -139,6 +257,15 @@ export const runKoedServerCli = async (
     }
 
     if (command === "start") {
+      if (args.includes("--daemon")) {
+        const result = startDaemon();
+        if (wantsJson) {
+          printJson(stdout, result);
+        } else {
+          stdout.write(`${result.message}\n`);
+        }
+        return result.ok ? 0 : 1;
+      }
       await start();
       return 0;
     }
@@ -232,13 +359,16 @@ export const runKoedServerCli = async (
     }
 
     if (command === "runtime" && subcommand === "status") {
-      assertRuntimeFlags(args, "status");
+      const provider = assertRuntimeFlags(args, "status");
       const paths = resolvePaths();
       const runtimeEnvironment = {
         ...loadEnvironment(paths.repoRoot),
         ...process.env
       };
-      const result = collectRuntimeStatus(paths, runtimeEnvironment);
+      const result =
+        provider === "packaged"
+          ? collectPackagedRuntime(paths, runtimeEnvironment)
+          : collectRuntimeStatus(paths, runtimeEnvironment);
       if (wantsJson) {
         printJson(stdout, result);
       } else {
@@ -248,13 +378,16 @@ export const runKoedServerCli = async (
     }
 
     if (command === "runtime" && subcommand === "install") {
-      assertRuntimeFlags(args, "install");
+      const provider = assertRuntimeFlags(args, "install");
       const paths = resolvePaths();
       const runtimeEnvironment = {
         ...loadEnvironment(paths.repoRoot),
         ...process.env
       };
-      const result = installRuntime(paths, runtimeEnvironment);
+      const result =
+        provider === "packaged"
+          ? installPackaged(paths, runtimeEnvironment)
+          : installRuntime(paths, runtimeEnvironment);
       if (wantsJson) {
         printJson(stdout, result);
       } else {

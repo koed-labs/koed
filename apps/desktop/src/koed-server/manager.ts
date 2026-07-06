@@ -43,11 +43,12 @@ export interface KoedServerManagerOptions {
     }
   ) => ChildProcess;
   openExternal: (url: string) => Promise<unknown>;
+  openPath?: (path: string) => Promise<string>;
 }
 
 export interface KoedServerManager {
   handlers: Record<string, DesktopCommandHandler>;
-  stop: () => void;
+  stop: () => Promise<unknown>;
 }
 
 type DiagnosticStatus = KoedServerStatus & {
@@ -86,6 +87,8 @@ const diagnosticStatus = ({
     error: message,
     koedHome: "not available",
     generatedAt: new Date().toISOString(),
+    runtimeMode: "developer",
+    dependencyMode: "external",
     api: { ...component("Start Koed"), url: "" },
     database: component("Install runtime assets"),
     redis: component(),
@@ -147,20 +150,6 @@ const withDesktopStartLog = (
   };
 };
 
-const summarizeStartFailure = (
-  outputLines: string[],
-  fallback: string
-): string =>
-  [...outputLines]
-    .reverse()
-    .find(
-      (line) =>
-        line.includes("failed with exit code") ||
-        line.includes("ERR_PNPM") ||
-        line.includes("Exit status") ||
-        line.endsWith("Failed")
-    ) ?? fallback;
-
 const resolveKoedHome = (environment: NodeJS.ProcessEnv): string =>
   resolve(environment.KOED_HOME?.trim() || `${homedir()}/.koed`);
 
@@ -194,6 +183,24 @@ const readExplorerCredential = (
 const parseCreatedApiToken = (output: string): string | null => {
   const match = /^Token:\s*(\S+)$/m.exec(output);
   return match?.[1] ?? null;
+};
+
+const packagedRuntimeManifestPath = (
+  environment: NodeJS.ProcessEnv
+): string | null => {
+  const resourcesPath = environment.KOED_PACKAGED_RESOURCES_PATH?.trim();
+  return resourcesPath
+    ? resolve(resourcesPath, "koed-runtime", "runtime-asset-manifest.json")
+    : null;
+};
+
+const runtimeInstallProvider = (
+  environment: NodeJS.ProcessEnv,
+  existsSync: (path: string) => boolean
+): "packaged" | "homebrew" => {
+  const manifestPath = packagedRuntimeManifestPath(environment);
+  if (manifestPath && existsSync(manifestPath)) return "packaged";
+  return environment.KOED_PACKAGED_DESKTOP === "1" ? "packaged" : "homebrew";
 };
 
 const readDesktopPorts = (
@@ -255,21 +262,36 @@ const hasHealthyApi = (value: unknown): boolean => {
 export const createKoedEnvironment = (
   repoRoot: string,
   environment: NodeJS.ProcessEnv,
-  options: { desktopManagedLocal?: boolean } = {}
-): NodeJS.ProcessEnv => ({
-  ...environment,
-  KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot,
-  ...(options.desktopManagedLocal
-    ? {
-        KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
-        KOED_DEPENDENCY_MODE:
-          environment.KOED_DEPENDENCY_MODE ?? "bundled-local",
-        WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
-        KOED_AUTO_PORTS: environment.KOED_AUTO_PORTS ?? "1",
-        KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1"
-      }
-    : {})
-});
+  options: {
+    desktopManagedLocal?: boolean;
+    packagedResourcesPath?: string;
+  } = {}
+): NodeJS.ProcessEnv => {
+  const dependencyMode = options.desktopManagedLocal
+    ? (environment.KOED_DEPENDENCY_MODE ?? "bundled-local")
+    : environment.KOED_DEPENDENCY_MODE;
+  return {
+    ...environment,
+    ...(!options.desktopManagedLocal || environment.KOED_REPO_ROOT?.trim()
+      ? { KOED_REPO_ROOT: environment.KOED_REPO_ROOT ?? repoRoot }
+      : {}),
+    ...(dependencyMode === "bundled-local" && !environment.KOED_AUTO_PORTS
+      ? { KOED_AUTO_PORTS: "1" }
+      : {}),
+    ...(options.desktopManagedLocal
+      ? {
+          KOED_RUNTIME_MODE: environment.KOED_RUNTIME_MODE ?? "local-personal",
+          KOED_DEPENDENCY_MODE: dependencyMode,
+          WORK_QUEUE_BACKEND: environment.WORK_QUEUE_BACKEND ?? "local",
+          KOED_PACKAGED_DESKTOP: environment.KOED_PACKAGED_DESKTOP ?? "1",
+          KOED_PACKAGED_RESOURCES_PATH:
+            environment.KOED_PACKAGED_RESOURCES_PATH ??
+            options.packagedResourcesPath ??
+            repoRoot
+        }
+      : {})
+  };
+};
 
 export const createKoedServerManager = ({
   repoRoot,
@@ -278,8 +300,8 @@ export const createKoedServerManager = ({
   createCliInvocation,
   existsSync,
   execFile,
-  spawn,
-  openExternal
+  openExternal,
+  openPath
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
   const startOutputLines: string[] = [];
@@ -330,6 +352,47 @@ export const createKoedServerManager = ({
       );
     });
 
+  const selectedRuntimeInstallProvider = () =>
+    runtimeInstallProvider(environment, existsSync);
+
+  const runRuntimeStatusJson = () =>
+    runJson(
+      ["runtime", "status", "--provider", selectedRuntimeInstallProvider()],
+      60_000
+    );
+
+  const runRuntimeInstallJson = async (args?: Record<string, unknown>) => {
+    const provider = selectedRuntimeInstallProvider();
+    if (provider === "homebrew" && args?.operatorConsented !== true) {
+      return {
+        ok: false,
+        state: "needs_attention",
+        provider,
+        error:
+          "Operator consent is required before Koed Desktop may mutate Homebrew package-manager state.",
+        action:
+          "Confirm the Homebrew runtime install prompt, then retry runtime install."
+      };
+    }
+    return runJson(
+      [
+        "runtime",
+        "install",
+        "--provider",
+        provider,
+        "--dependency-mode",
+        "bundled-local"
+      ],
+      600_000
+    );
+  };
+
+  const runModelJson = () =>
+    runJson(["models", "status", "--kind", "embedding"], 60_000);
+
+  const runModelInstallJson = () =>
+    runJson(["models", "install", "--kind", "embedding"], 600_000);
+
   const pollUntilReady = async () => {
     let latest: unknown = null;
     for (let attempt = 0; attempt < 90; attempt += 1) {
@@ -360,6 +423,14 @@ export const createKoedServerManager = ({
         }
         if (environment.KOED_AUTO_PORTS !== "1") {
           resolvePromise(current);
+          return;
+        }
+        if (environment.KOED_PACKAGED_DESKTOP === "1") {
+          resolvePromise({
+            ok: false,
+            error:
+              "Explorer credential is not provisioned. Restart Koed so packaged koed-server can create the Desktop API Token without workspace pnpm scripts."
+          });
           return;
         }
 
@@ -417,7 +488,7 @@ export const createKoedServerManager = ({
       }
     );
 
-  const start = async () => {
+  const requestDaemonStart = async () => {
     const current = await runJson(["status"], 10_000);
     if (hasHealthyApi(current)) {
       await provisionExplorerCredential();
@@ -425,88 +496,62 @@ export const createKoedServerManager = ({
     }
 
     if (serverProcess && !serverProcess.killed) {
-      return pollUntilReady();
+      return {
+        ok: true,
+        state: "starting",
+        message: "Koed server daemon is already starting."
+      };
     }
     if (!existsSync(cliPath)) {
       return missingCliPayload(repoRoot, cliPath);
     }
 
     startOutputLines.length = 0;
-    const invocation = createCliInvocation(["start"]);
+    const invocation = createCliInvocation(["start", "--daemon"]);
     appendOutputLines(
       startOutputLines,
       `$ ${invocation.command} ${invocation.args.join(" ")}`
     );
-    try {
-      serverProcess = spawn(invocation.command, invocation.args, {
-        cwd: repoRoot,
-        env: invocation.env,
-        stdio: "pipe",
-        detached: false
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    const result = await runJson(["start", "--daemon"], 45_000);
+    if (typeof result === "object" && result !== null) {
+      const payload = result as {
+        message?: unknown;
+        error?: unknown;
+        startedPid?: unknown;
+      };
+      const message =
+        typeof payload.message === "string"
+          ? payload.message
+          : typeof payload.error === "string"
+            ? payload.error
+            : "koed-server start --daemon completed.";
       appendOutputLines(
         startOutputLines,
-        `koed-server start failed: ${message}`
-      );
-      serverProcess = null;
-      return withDesktopStartLog(
-        {
-          ok: false,
-          state: "needs_attention",
-          error: message
-        },
-        startOutputLines
+        `${message}${payload.startedPid ? ` pid ${payload.startedPid}` : ""}`
       );
     }
-    serverProcess.stdout?.on("data", (chunk) => {
-      appendOutputLines(startOutputLines, chunk);
-    });
-    serverProcess.stderr?.on("data", (chunk) => {
-      appendOutputLines(startOutputLines, chunk);
-    });
-    const startExited = new Promise<unknown>((resolveExit) => {
-      serverProcess?.once("error", (error) => {
-        const message = `koed-server start failed: ${error.message}`;
-        appendOutputLines(startOutputLines, message);
-        serverProcess = null;
-        resolveExit(
-          withDesktopStartLog(
-            {
-              ok: false,
-              state: "needs_attention",
-              error: message
-            },
-            startOutputLines
-          )
-        );
-      });
-      serverProcess?.once("exit", (code, signal) => {
-        const exitSummary = `koed-server start exited with ${
-          signal ? `signal ${signal}` : `code ${code ?? "unknown"}`
-        }`;
-        appendOutputLines(startOutputLines, exitSummary);
-        serverProcess = null;
-        resolveExit(
-          withDesktopStartLog(
-            {
-              ok: false,
-              state: "needs_attention",
-              error: summarizeStartFailure(startOutputLines, exitSummary)
-            },
-            startOutputLines
-          )
-        );
-      });
-    });
-    return await Promise.race([pollUntilReady(), startExited]);
+    return withDesktopStartLog(result, startOutputLines);
   };
 
-  const stop = () => {
+  const start = async () => {
+    const result = await requestDaemonStart();
+    if (
+      typeof result === "object" &&
+      result !== null &&
+      (result as { ok?: unknown }).ok === false
+    ) {
+      return result;
+    }
+    return pollUntilReady();
+  };
+
+  const stop = async () => {
+    const result = await runJson(["stop"], 45_000);
     if (serverProcess && !serverProcess.killed) {
       serverProcess.kill("SIGTERM");
     }
+    serverProcess = null;
+    return result;
   };
 
   return {
@@ -514,30 +559,16 @@ export const createKoedServerManager = ({
       status: async () =>
         withDesktopStartLog(await runJson(["status"]), startOutputLines),
       doctor: () => runJson(["doctor"], 45_000),
-      stop: async () => {
-        const result = await runJson(["stop"], 45_000);
-        if (serverProcess && !serverProcess.killed) {
-          serverProcess.kill("SIGTERM");
-        }
-        serverProcess = null;
-        return result;
-      },
+      stop,
       setup_codex: () => runJson(["setup", "codex"], 120_000),
       repair_codex: () => runJson(["repair", "codex"], 120_000),
-      runtime_install: () =>
-        runJson(
-          [
-            "runtime",
-            "install",
-            "--provider",
-            "homebrew",
-            "--dependency-mode",
-            "bundled-local"
-          ],
-          600_000
-        ),
+      runtime_status: () => runRuntimeStatusJson(),
+      runtime_install: (args) => runRuntimeInstallJson(args),
+      models_status: () => runModelJson(),
+      models_install: () => runModelInstallJson(),
       explorer_credential: () => provisionExplorerCredential(),
       start,
+      start_daemon: requestDaemonStart,
       open_external: async (args) => {
         const url = typeof args?.url === "string" ? args.url : "";
         if (!url) {
@@ -545,6 +576,15 @@ export const createKoedServerManager = ({
         }
         await openExternal(url);
         return { ok: true };
+      },
+      open_logs: async () => {
+        const logsDir = resolve(resolveKoedHome(environment), "logs");
+        if (openPath) {
+          const error = await openPath(logsDir);
+          return error ? { ok: false, error } : { ok: true, path: logsDir };
+        }
+        await openExternal(`file://${logsDir}`);
+        return { ok: true, path: logsDir };
       }
     },
     stop

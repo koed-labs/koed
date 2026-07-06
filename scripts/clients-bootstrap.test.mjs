@@ -13,8 +13,8 @@ test("clients bootstrap chains environment, dependencies, codex, and explorer se
     waitForApiReadyFn: async ({ apiUrl }) => {
       calls.push(["api-ready", apiUrl]);
     },
-    runCodexBootstrapFn: async ({ skipSetup }) => {
-      calls.push(["codex-bootstrap", skipSetup]);
+    runCodexBootstrapFn: async ({ skipSetup, argv }) => {
+      calls.push(["codex-bootstrap", skipSetup, argv]);
       return {
         args: { skipVerify: false, skipDoctor: false },
         tokenResult: { owner: { email: "local@koed.ai" }, token: "cmt_token" }
@@ -45,6 +45,7 @@ test("clients bootstrap chains environment, dependencies, codex, and explorer se
   );
   assert.equal(calls[2][1], "http://localhost:4545");
   assert.equal(calls[3][1], true);
+  assert.deepEqual(calls[3][2], []);
   assert.equal(calls[4][1], "cmt_token");
 });
 
@@ -59,10 +60,10 @@ test("clients bootstrap can rely on koed-server managed dependencies", async () 
     waitForApiReadyFn: async ({ apiUrl }) => {
       calls.push(["api-ready", apiUrl]);
     },
-    runCodexBootstrapFn: async ({ skipSetup }) => {
-      calls.push(["codex-bootstrap", skipSetup]);
+    runCodexBootstrapFn: async ({ skipSetup, argv }) => {
+      calls.push(["codex-bootstrap", skipSetup, argv]);
       return {
-        args: { skipVerify: false, skipDoctor: false },
+        args: { skipVerify: true, skipDoctor: true },
         tokenResult: { owner: { email: "local@koed.ai" }, token: "cmt_token" }
       };
     },
@@ -87,4 +88,5 @@ test("clients bootstrap can rely on koed-server managed dependencies", async () 
       "complete"
     ]
   );
+  assert.deepEqual(calls[2][2], ["--skip-verify", "--skip-doctor"]);
 });

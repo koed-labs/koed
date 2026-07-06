@@ -35,11 +35,26 @@ Check service state or stop/restart supervised local processes from any headless
 ```bash
 node packages/koed-server/dist/cli.js status --json
 node packages/koed-server/dist/cli.js doctor --json
+node packages/koed-server/dist/cli.js start --daemon --json
 node packages/koed-server/dist/cli.js stop --json
 node packages/koed-server/dist/cli.js restart --json
 ```
 
-`stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops Explorer, Worker, API, native Embedding Service, and native Postgres via `pg_ctl stop -D <dataDir> -m fast`. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+`start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops Explorer, Worker, API, native Embedding Service, and native Postgres via `pg_ctl stop -D <dataDir> -m fast`. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
+
+## KOED_HOME layout
+
+`koed-server` keeps local state under `KOED_HOME`:
+
+- `config/` for `server.json`, `local-ports.json`, and `explorer-token.json`
+- `run/` for `koed-server.json`, `last-verification.json`, and supervisor state
+- `logs/` for service logs, including `postgres.log`
+- `data/` for native database files, including `data/postgres`
+- `models/` for embedding and reranker model files
+- `cache/` for installer metadata and downloaded artifact cache
+- `runtime/` for bundled or packaged native runtime binaries
+
+Packaged Desktop and headless local-personal flows both use this layout.
 
 Run Codex setup through the same surface after `koed-server start` has made the
 API ready:
@@ -48,11 +63,12 @@ API ready:
 node packages/koed-server/dist/cli.js setup codex --json
 ```
 
-## External dependency mode with Docker Compose
+## External dependency mode
 
-Docker Compose is one way to provide external Postgres/pgvector, Redis/queues,
-and the Embedding Service/model runtime. Start Docker Desktop before launching
-the Compose stack, then let `koed-server` connect to the service URLs:
+Docker Compose is one optional way to provide external Postgres/pgvector,
+Redis/queues, and the Embedding Service/model runtime. It is Operator-managed
+infrastructure, not the local-personal happy path. Start Docker Desktop before
+launching the Compose stack, then let `koed-server` connect to the service URLs:
 
 ```bash
 pnpm env:setup
@@ -67,9 +83,9 @@ instead of Docker Compose.
 
 Set `KOED_DEPENDENCY_MODE=bundled-local` to let `koed-server start` launch native Koed-owned Postgres/pgvector and Embedding Service runtimes under `KOED_HOME` and default the API/Worker queue backend to `local`. Redis is not required for queues in this mode unless `WORK_QUEUE_BACKEND=bullmq` is explicitly set; with BullMQ, Redis is Operator-managed external infrastructure.
 
-Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs a Python virtualenv, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. In source checkouts, `pnpm setup:python` prepares `apps/embedding-service/.venv` with the pinned runtime dependencies used by the Embedding Service. The README Quickstart runs this, the workspace build, runtime install, and embedding model install as `pnpm local:setup`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
+Bundled-local mode is native-only. Native Postgres binaries should be available under `KOED_HOME/runtime/postgres/bin` or `KOED_POSTGRES_BIN_DIR`, and the Embedding Service needs a runtime Python virtualenv, `app.py`, `KOED_HOME/runtime/llama.cpp/llama-server`, and model assets. Runtime install places the Embedding Service virtualenv at `KOED_HOME/runtime/embedding-service/.venv/bin/python`; in source checkouts, `pnpm setup:python` prepares `apps/embedding-service/.venv` with the pinned runtime dependencies used by the Embedding Service. The README Quickstart runs this, the workspace build, runtime install, and embedding model install as `pnpm local:setup`. Packaged Desktop also checks packaged app resources after `KOED_HOME/runtime`. Source-checkout `vendor` and `apps/embedding-service` paths remain development fallbacks only; packaged mode rejects those fallbacks unless `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1` is set for developer diagnostics. `KOED_BUNDLED_POSTGRES_MODE` and `KOED_BUNDLED_EMBEDDING_MODE` are deprecated and ignored. Missing native resources fail with setup guidance instead of falling back to Docker Compose. Docker Compose is available only as an Operator-selected external dependency starter.
 
-On macOS, Linux, and WSL, Homebrew can explicitly install and link the native runtime assets into `KOED_HOME`:
+On macOS, Linux, and WSL, Homebrew is one selected provisioning path for the native runtime assets under `KOED_HOME`:
 
 ```bash
 pnpm runtime:status
@@ -84,6 +100,24 @@ pnpm models:install:embedding
 
 Set `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` only when installing a custom embedding model artifact. Use `--kind reranker` with `KOED_RERANKER_MODEL_URL` and `KOED_RERANKER_MODEL_SHA256` when enabling reranking.
 
+### WSL development
+
+Run Koed inside WSL as Linux tooling. Keep `KOED_HOME` on Linux filesystem paths such as `/home/<user>/.koed`; do not point bundled-local runtime state at Windows paths. Use the same `pnpm install`, `pnpm build`, `runtime status/install`, `models install`, `start`, `status`, and `doctor` commands from WSL.
+
+Windows host browsers can usually reach Koed through WSL localhost forwarding at `http://localhost:<API_HOST_PORT>` and `http://localhost:<EXPLORER_WEB_HOST_PORT>`. If localhost forwarding is not available, resolve the WSL IP from inside WSL and browse that IP from Windows instead:
+
+```bash
+wsl.exe hostname -I
+```
+
+Then open `http://<WSL_IP>:<port>` for the API or Explorer. Native Windows packaged app support is not shipped in this build; use WSL for Windows development.
+
+### Packaged Desktop first-run
+
+Packaged Koed Desktop starts its managed local-personal `koed-server` with `runtimeMode=local-personal`, `dependencyMode=bundled-local`, and `WORK_QUEUE_BACKEND=local`. First run resolves `KOED_HOME`, persists `KOED_HOME/config/local-ports.json`, and checks `runtime status/install` plus `models status/install` before local startup continues. Packaged runtime assets are preferred first; Homebrew-backed runtime install is only used when that provisioning path is selected on macOS, Linux, or WSL. Native Windows packaged app support is not part of this build, so Windows development should use WSL.
+
+`desktop:package` and `desktop:package:smoke:mac` build unsigned local smoke artifacts. `desktop:package:release` prepares macOS `dmg` and `zip` outputs, but signed/notarized release artifacts still require local Developer ID credentials and release setup.
+
 Run the bundled-local smoke workflow to verify the native control-plane path with an isolated temporary `KOED_HOME` and temporary host ports:
 
 ```bash
@@ -91,6 +125,14 @@ pnpm smoke:bundled-local -- --full --install-runtime --json
 ```
 
 `--install-runtime` explicitly runs the Homebrew-backed runtime install for the temporary `KOED_HOME` before native resource checks. The smoke workflow skips explicit model installation unless `KOED_EMBEDDING_MODEL_URL` and `KOED_EMBEDDING_MODEL_SHA256` are configured. `--full` adds API Token creation, Capture Hook-like personal ingestion, Projection, local queue/embedding work, Memory Answer evidence retrieval with a unique marker, Explorer reachability, and cleanup through `koed-server stop --json`. Missing native binaries or model assets fail clearly instead of falling back to Docker.
+
+Packaged Desktop smoke now exercises the packaged Electron bundle with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, and verifies daemon start/status/reconnect/stop without checkout fallbacks. For CI or diagnostics when native assets are absent, run:
+
+```bash
+pnpm desktop:package:smoke:mac -- --missing-assets --json
+```
+
+When packaged native assets are staged, omit `--missing-assets` to let smoke install packaged runtime assets, start the daemon, and reach a healthy local stack.
 
 If dependency ports conflict with another local app, start the external dependency stack with alternate host ports and pass matching explicit URLs to `koed-server`:
 
@@ -115,6 +157,15 @@ external dependency configuration.
 ```bash
 pnpm --filter @koed/desktop start
 ```
+
+For local packaged-native smoke with Homebrew/Linuxbrew-provided assets, stage the native runtime first and pass it into packaging:
+
+```bash
+pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force
+KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm --filter @koed/desktop package:mac
+```
+
+The Homebrew staging helper requires an existing Embedding Service virtualenv at `apps/embedding-service/.venv`, or `KOED_EMBEDDING_VENV_DIR=/path/to/.venv`. It is a development smoke helper and does not create release-quality redistributable native runtime assets.
 
 For renderer development only:
 

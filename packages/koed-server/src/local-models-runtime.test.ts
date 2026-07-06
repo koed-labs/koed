@@ -61,6 +61,8 @@ describe("local model runtime", () => {
     expect(manifest.sha256).toBe(
       "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
     );
+    expect(manifest.defaultUrl).toBe(manifest.url);
+    expect(manifest.defaultSha256).toBe(manifest.sha256);
   });
 
   it("reports missing model with installer action", async () => {
@@ -72,6 +74,36 @@ describe("local model runtime", () => {
     expect(status.action).toContain(
       "koed-server models install --kind embedding"
     );
+  });
+
+  it("blocks model downloads in external dependency mode", async () => {
+    const root = tempDir();
+    let fetched = false;
+
+    const status = await collectLocalModelStatus(paths(root), "embedding", {
+      KOED_DEPENDENCY_MODE: "external"
+    });
+
+    const install = await installLocalModel(
+      paths(root),
+      "embedding",
+      { KOED_DEPENDENCY_MODE: "external" },
+      {
+        fetch: async () => {
+          fetched = true;
+          return new Response("actual");
+        }
+      }
+    );
+
+    expect(status.state).toBe("missing");
+    expect(status.action).toContain(
+      "External dependency mode does not download model assets."
+    );
+    expect(install.ok).toBe(false);
+    expect(install.state).toBe("not_configured");
+    expect(install.message).toContain("disabled in external dependency mode");
+    expect(fetched).toBe(false);
   });
 
   it("verifies installed model checksum", async () => {

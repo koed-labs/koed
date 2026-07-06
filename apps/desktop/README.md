@@ -37,15 +37,28 @@ anything with a clear macOS-only message; set
 `KOED_DESKTOP_PACKAGE_SMOKE_SKIP_NON_DARWIN=1` only in jobs that intentionally
 skip this smoke.
 
-This local package bundles the Electron shell, packaged renderer assets, and the
-`@koed/koed-server` control-plane CLI. It does not yet bundle the full native
-Koed runtime, native dependency assets, or model files, so missing local runtime
-assets may still show as actionable diagnostics. Point the packaged app back at
-a checkout when you want the local control-plane actions to use repo build
-outputs instead of the bundled CLI:
+This local package bundles the Electron shell, packaged renderer assets, the
+`@koed/koed-server` control-plane CLI, JS/service artifacts for API, Worker,
+Explorer, MCP Server, Supported Capture Hook, DB migrations, Embedding Service
+app files, and runtime package dependencies under
+`Contents/Resources/koed-runtime`. It can also stage native Postgres/pgvector,
+llama-server, and Embedding Service Python runtime assets from
+`KOED_NATIVE_RUNTIME_SOURCE_DIR`; when present, packaging writes a
+platform/architecture `runtime-asset-manifest.json` so `koed-server runtime
+install --provider packaged --dependency-mode bundled-local --json` can verify
+and install them under `KOED_HOME/runtime`. For local packaged-native smoke,
+`pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
+can create a staging directory from Homebrew/Linuxbrew formulas and an existing
+Embedding Service `.venv`; this helper is not a release-quality redistributable
+runtime bundle. If no native source is staged, missing native runtime assets
+show as actionable `koed-server runtime status/install` diagnostics and
+Homebrew remains the macOS/Linux fallback.
+Point the packaged app back at a checkout for developer diagnostics by opting
+into source fallbacks explicitly:
 
 ```bash
 KOED_REPO_ROOT=/path/to/koed \
+KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1 \
   apps/desktop/release/mac/Koed.app/Contents/MacOS/Koed
 ```
 
@@ -61,7 +74,11 @@ Packaged Desktop bundled-local startup asks `koed-server` to allocate local
 ports automatically. The first successful allocation is persisted under
 `KOED_HOME/config/local-ports.json` so subsequent Desktop launches keep stable
 API, Explorer, Postgres, and Embedding Service ports while avoiding common
-local development or Docker port collisions.
+local development or Docker port collisions. During first-run bundled-local
+setup, Desktop also calls `koed-server models status --kind embedding --json`
+and `koed-server models install --kind embedding --json` so the embedding model
+is verified or repaired under `KOED_HOME/models` before local startup
+continues.
 
 Desktop also compares the active local API URL/token with the supported Codex
 MCP and Capture Hook configuration in `~/.codex/config.toml` and
@@ -71,6 +88,18 @@ mismatch and offer **Fix Codex integration**. The repair action rewrites the
 Koed-managed Codex block and hook config for the currently running Desktop API;
 restart Codex and trust updated hooks if prompted before expecting new captures.
 
+## Packaged First-Run
+
+Packaged Desktop uses `Koed` app metadata, `assets/icon.icns`, and
+`assets/koed-icon.png` for branding. First run starts bundled-local
+`koed-server`, allocates ports, and verifies runtime/model assets under
+`KOED_HOME` before the main window reports healthy. Packaged release
+signing/notarization is not turned on in this repo yet; `desktop:package` and
+`desktop:package:smoke:mac` are unsigned local smoke builds, and
+`desktop:package:release` still needs local Developer ID credentials and
+release setup. Native Windows packaged app support is not shipped here;
+Linux/WSL use is limited to smoke and unpacked-artifact testing.
+
 ## Notes
 
 - `desktop:start` builds the app and launches Electron in source-checkout mode.
@@ -78,9 +107,21 @@ restart Codex and trust updated hooks if prompted before expecting new captures.
 - `desktop:package` (`desktop:package:mac`) builds `apps/desktop/release/mac/Koed.app` with
   `electron-builder --mac dir` and disables signing/notarization.
 - `desktop:package:smoke:mac` builds the unsigned app and verifies the packaged
-  renderer and bundled `koed-server` status/doctor/stop command surface can run
-  without checkout overrides. `desktop:package:smoke` currently aliases the
-  macOS smoke and guards non-Darwin platforms before package execution.
+  renderer, bundled `koed-server`, and `koed-runtime` JS/service artifact layout
+  can run without checkout overrides. The smoke launches the packaged
+  `koed-server` with a temporary `KOED_HOME`, unsets `KOED_REPO_ROOT`, verifies
+  daemon start/status/reconnect/stop, and `--missing-assets` checks actionable
+  `doctor --json` output when native runtime assets are absent. Set
+  `KOED_NATIVE_RUNTIME_SOURCE_DIR` to stage native assets into the package
+  manifest for packaged-provider runtime install tests.
+  `pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
+  can produce a local Homebrew-backed staging directory for those smoke tests.
+  `desktop:package:smoke` currently aliases the macOS smoke and guards
+  non-Darwin platforms before package execution, though Linux smoke can be
+  pointed at unpacked artifacts with `KOED_DESKTOP_PACKAGE_SMOKE_APP_PATH`,
+  `KOED_DESKTOP_PACKAGE_SMOKE_RESOURCES_PATH`, and
+  `KOED_DESKTOP_PACKAGE_SMOKE_EXECUTABLE` when a Linux packaged build is
+  available.
 - `desktop:package:release` builds macOS `dmg` and `zip` artifacts using the
   release packaging config. Signing/notarization requires a local Developer ID
   identity and release credentials; use `desktop:package` for unsigned local
@@ -89,4 +130,6 @@ restart Codex and trust updated hooks if prompted before expecting new captures.
   templates in `build/` for signed release artifacts.
 - The packaged desktop shell resolves the bundled
   `node_modules/@koed/koed-server/dist/cli.js` by default; `KOED_REPO_ROOT` and
-  `KOED_SERVER_CLI` remain available for developer overrides.
+  `KOED_SERVER_CLI` remain available for developer control-plane overrides.
+  Source-checkout runtime fallback also requires
+  `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1`.
