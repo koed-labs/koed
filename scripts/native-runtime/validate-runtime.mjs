@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global console, process */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global console, process */
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -11,8 +10,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
-  writeFileSync
+  statSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";

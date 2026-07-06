@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /* global console, process */
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { writeRuntimeAssetManifest } from "../../../scripts/native-runtime/manifest-lib.mjs";
