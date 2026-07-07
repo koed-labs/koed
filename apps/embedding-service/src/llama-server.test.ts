@@ -1,11 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { extractRerankScores, tokenPieceText } from "./llama-server.js";
+import {
+  extractRerankScores,
+  llamaServerEnvironment,
+  tokenPieceText
+} from "./llama-server.js";
 
 describe("llama-server adapter helpers", () => {
   it("decodes token pieces with Python parity", () => {
     expect(tokenPieceText("hello")).toBe("hello");
     expect(tokenPieceText([99, 97, 102, 195, 169])).toBe("café");
     expect(tokenPieceText({ value: "x" })).toBe("[object Object]");
+  });
+
+  it("derives llama-server library path from configured binary", () => {
+    expect(
+      llamaServerEnvironment("/runtime/llama.cpp/llama-server", {})
+        .LD_LIBRARY_PATH
+    ).toBe("/runtime/llama.cpp");
+    expect(
+      llamaServerEnvironment("/runtime/llama.cpp/llama-server", {
+        LD_LIBRARY_PATH: "/existing"
+      }).LD_LIBRARY_PATH
+    ).toBe("/runtime/llama.cpp:/existing");
   });
 
   it("extracts rerank scores in original document order", () => {

@@ -37,6 +37,18 @@ export class LlamaServerError extends Error {}
 type FetchLike = typeof fetch;
 type SpawnLike = typeof spawn;
 
+export const llamaServerEnvironment = (
+  llamaServerBinary: string,
+  environment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv => {
+  const llamaDir = dirname(llamaServerBinary);
+  const existing = environment.LD_LIBRARY_PATH?.trim();
+  return {
+    ...environment,
+    LD_LIBRARY_PATH: existing ? `${llamaDir}:${existing}` : llamaDir
+  };
+};
+
 export const tokenPieceText = (piece: unknown): string => {
   if (typeof piece === "string") {
     return piece;
@@ -207,7 +219,7 @@ export class LlamaServerClient {
         `\n--- starting ${this.options.name} llama-server ---\n`
       );
       const child = this.spawner(this.config.llamaServerBinary, args, {
-        env: { ...process.env, LD_LIBRARY_PATH: "/opt/llama.cpp" },
+        env: llamaServerEnvironment(this.config.llamaServerBinary),
         stdio: ["ignore", "pipe", "pipe"]
       });
       this.process = child;

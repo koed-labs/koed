@@ -182,7 +182,9 @@ Verdict: defer. Too broad for pre-signing cleanup.
 
 ## Recommended implementation sequence
 
-1. Implement a Node/TypeScript Embedding Service with the same HTTP contract.
+Current stack status: KOE-295 implements step 1 by adding the TypeScript/Node Embedding Service HTTP contract beside the existing Python service. Bundled-local supervision, packaged runtime procurement, and native runtime validation still use Python until the follow-up runtime switch.
+
+1. Implement a Node/TypeScript Embedding Service with the same HTTP contract. **Status: implemented in KOE-295, pending review/merge.**
    - Preserve `/health`, `/embed`, and `/rerank` response shapes.
    - Preserve `x-koed-embedding-token` auth.
    - Preserve model/reranker environment aliases.
@@ -212,7 +214,7 @@ Verdict: defer. Too broad for pre-signing cleanup.
 
 Recommended implementation issues:
 
-1. Port the Embedding Service HTTP contract to TypeScript/Node.
+1. Port the Embedding Service HTTP contract to TypeScript/Node. **Tracked by KOE-295.**
 2. Switch bundled-local runtime packaging and `koed-server` supervision to the Node Embedding Service.
 3. Remove Python venv procurement/staging/validation/docs from native runtime artifacts.
 
