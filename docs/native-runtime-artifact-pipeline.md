@@ -49,7 +49,7 @@ Linux x64 follows the same local shape, procures from
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential bison flex curl ca-certificates
+sudo apt-get install -y build-essential bison flex libssl-dev curl ca-certificates
 ```
 
 Then build and validate:

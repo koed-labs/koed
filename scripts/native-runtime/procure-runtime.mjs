@@ -307,11 +307,11 @@ const requireCommand = (command, installHint) => {
 const requirePostgresBuildTools = () => {
   requireCommand(
     "bison",
-    "Install bison before running native-runtime:build (for example: sudo apt-get install bison flex on Ubuntu/WSL)."
+    "Install bison before running native-runtime:build (for example: sudo apt-get install bison flex libssl-dev on Ubuntu/WSL)."
   );
   requireCommand(
     "flex",
-    "Install flex before running native-runtime:build (for example: sudo apt-get install bison flex on Ubuntu/WSL)."
+    "Install flex before running native-runtime:build (for example: sudo apt-get install bison flex libssl-dev on Ubuntu/WSL)."
   );
 };
 
@@ -328,6 +328,7 @@ const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
     "./configure",
     [
       `--prefix=${target}`,
+      "--with-ssl=openssl",
       "--without-icu",
       "--without-readline",
       "--without-zlib"
