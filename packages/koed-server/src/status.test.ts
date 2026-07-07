@@ -236,8 +236,7 @@ describe("status and doctor JSON contracts", () => {
       },
       {
         existsSync: (filePath) =>
-          String(filePath).endsWith("app.py") ||
-          String(filePath).endsWith("python") ||
+          String(filePath).endsWith("dist/index.js") ||
           String(filePath).endsWith("llama-server"),
         fetch: async (url) =>
           String(url).endsWith(":3800/health")

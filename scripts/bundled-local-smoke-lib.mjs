@@ -296,31 +296,16 @@ const nativePostgresBinPath = (deps, env, context, name, override) => {
   );
 };
 
-const nativeEmbeddingAppPath = (deps, context) =>
-  firstExistingOrDefault(deps, [
-    path.join(context.koedHome, "runtime", "embedding-service", "app.py"),
-    path.join(context.root, "apps", "embedding-service", "app.py")
-  ]);
-
-const nativeEmbeddingPythonPath = (deps, env, context) =>
-  env.KOED_EMBEDDING_PYTHON_BIN ??
+const nativeEmbeddingEntryPath = (deps, context) =>
   firstExistingOrDefault(deps, [
     path.join(
       context.koedHome,
       "runtime",
       "embedding-service",
-      ".venv",
-      "bin",
-      "python"
+      "dist",
+      "index.js"
     ),
-    path.join(
-      context.root,
-      "apps",
-      "embedding-service",
-      ".venv",
-      "bin",
-      "python"
-    )
+    path.join(context.root, "apps", "embedding-service", "dist", "index.js")
   ]);
 
 export const assertNativeBundledLocalResources = ({ deps, context }) => {
@@ -356,8 +341,7 @@ export const assertNativeBundledLocalResources = ({ deps, context }) => {
         env.KOED_POSTGRES_PSQL_BIN
       )
     ],
-    ["Embedding Service app", nativeEmbeddingAppPath(deps, context)],
-    ["Embedding Service Python", nativeEmbeddingPythonPath(deps, env, context)],
+    ["Embedding Service entry", nativeEmbeddingEntryPath(deps, context)],
     ["llama-server", nativeLlamaServerPath(deps, env, context)]
   ];
   const missing = required.filter(([, filePath]) => !deps.fileExists(filePath));

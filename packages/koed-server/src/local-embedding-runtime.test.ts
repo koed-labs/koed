@@ -59,8 +59,8 @@ describe("local Embedding Service runtime", () => {
     const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {});
 
     expect(runtime.appDir).toBe(resolve(root, "runtime", "embedding-service"));
-    expect(runtime.pythonBin).toBe(
-      resolve(root, "runtime", "embedding-service", ".venv", "bin", "python")
+    expect(runtime.serviceEntry).toBe(
+      resolve(root, "runtime", "embedding-service", "dist", "index.js")
     );
     expect(runtime.llamaServerBin).toBe(
       resolve(root, "runtime", "llama.cpp", "llama-server")
@@ -69,6 +69,8 @@ describe("local Embedding Service runtime", () => {
     expect(localEmbeddingEnv(runtime).EMBEDDING_SERVICE_URL).toBe(
       "http://127.0.0.1:3800"
     );
+    expect(localEmbeddingEnv(runtime).EMBEDDING_SERVICE_HOST).toBe("127.0.0.1");
+    expect(localEmbeddingEnv(runtime).EMBEDDING_SERVICE_PORT).toBe("3800");
   });
 
   it("prefers packaged Embedding Service resources over source checkout in packaged mode", () => {
@@ -79,15 +81,24 @@ describe("local Embedding Service runtime", () => {
     mkdirSync(resolve(root, "koed-runtime", "llama.cpp"), { recursive: true });
     mkdirSync(resolve(root, "apps", "embedding-service"), { recursive: true });
     mkdirSync(resolve(root, "vendor", "llama.cpp"), { recursive: true });
+    mkdirSync(resolve(root, "koed-runtime", "embedding-service", "dist"), {
+      recursive: true
+    });
     writeFileSync(
-      resolve(root, "koed-runtime", "embedding-service", "app.py"),
+      resolve(root, "koed-runtime", "embedding-service", "dist", "index.js"),
       ""
     );
     writeFileSync(
       resolve(root, "koed-runtime", "llama.cpp", "llama-server"),
       ""
     );
-    writeFileSync(resolve(root, "apps", "embedding-service", "app.py"), "");
+    mkdirSync(resolve(root, "apps", "embedding-service", "dist"), {
+      recursive: true
+    });
+    writeFileSync(
+      resolve(root, "apps", "embedding-service", "dist", "index.js"),
+      ""
+    );
     writeFileSync(resolve(root, "vendor", "llama.cpp", "llama-server"), "");
 
     const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {
@@ -99,6 +110,9 @@ describe("local Embedding Service runtime", () => {
     expect(runtime.appDir).toBe(
       resolve(root, "koed-runtime", "embedding-service")
     );
+    expect(runtime.serviceEntry).toBe(
+      resolve(root, "koed-runtime", "embedding-service", "dist", "index.js")
+    );
     expect(runtime.llamaServerBin).toBe(
       resolve(root, "koed-runtime", "llama.cpp", "llama-server")
     );
@@ -108,7 +122,13 @@ describe("local Embedding Service runtime", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "apps", "embedding-service"), { recursive: true });
     mkdirSync(resolve(root, "vendor", "llama.cpp"), { recursive: true });
-    writeFileSync(resolve(root, "apps", "embedding-service", "app.py"), "");
+    mkdirSync(resolve(root, "apps", "embedding-service", "dist"), {
+      recursive: true
+    });
+    writeFileSync(
+      resolve(root, "apps", "embedding-service", "dist", "index.js"),
+      ""
+    );
     writeFileSync(resolve(root, "vendor", "llama.cpp", "llama-server"), "");
 
     const runtime = resolveLocalEmbeddingRuntimePaths(paths(root), {
@@ -155,23 +175,16 @@ describe("local Embedding Service runtime", () => {
       })
     ).toBe("native");
 
-    mkdirSync(resolve(root, "apps", "embedding-service", ".venv", "bin"), {
+    mkdirSync(resolve(root, "apps", "embedding-service", "dist"), {
       recursive: true
     });
     mkdirSync(resolve(root, "vendor", "llama.cpp"), { recursive: true });
-    writeFileSync(resolve(root, "apps", "embedding-service", "app.py"), "");
-    const python = resolve(
-      root,
-      "apps",
-      "embedding-service",
-      ".venv",
-      "bin",
-      "python"
+    writeFileSync(
+      resolve(root, "apps", "embedding-service", "dist", "index.js"),
+      ""
     );
     const llama = resolve(root, "vendor", "llama.cpp", "llama-server");
-    writeFileSync(python, "");
     writeFileSync(llama, "");
-    chmodSync(python, 0o755);
     chmodSync(llama, 0o755);
 
     expect(localEmbeddingRuntimeAvailable(paths(root), {})).toBe(true);
@@ -188,7 +201,7 @@ describe("local Embedding Service runtime", () => {
     expect(status.action).toContain("WSL");
     expect(status.details?.missing).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("python"),
+        expect.stringContaining("Embedding Service entry"),
         expect.stringContaining("llama-server")
       ])
     );
@@ -209,7 +222,7 @@ describe("local Embedding Service runtime", () => {
     expect(status.details?.healthUrl).toBe("http://127.0.0.1:3800/health");
   });
 
-  it("spawns uvicorn with native environment", () => {
+  it("spawns the Embedding Service entry with native environment", () => {
     const root = tempDir();
     const spawned: Array<{
       command: string;
@@ -230,19 +243,18 @@ describe("local Embedding Service runtime", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(spawned[0]?.command).toContain("python");
+    expect(spawned[0]?.command).toBe(process.execPath);
     expect(spawned[0]?.args).toEqual([
-      "-m",
-      "uvicorn",
-      "app:app",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "3900"
+      resolve(root, "runtime", "embedding-service", "dist", "index.js")
     ]);
     expect(spawned[0]?.cwd).toBe(resolve(root, "runtime", "embedding-service"));
     expect(spawned[0]?.env?.EMBEDDING_SERVICE_URL).toBe(
       "http://127.0.0.1:3900"
+    );
+    expect(spawned[0]?.env?.EMBEDDING_SERVICE_HOST).toBe("127.0.0.1");
+    expect(spawned[0]?.env?.EMBEDDING_SERVICE_PORT).toBe("3900");
+    expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(
+      resolve(root, "runtime", "llama.cpp", "llama-server")
     );
   });
 });

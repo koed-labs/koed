@@ -889,6 +889,27 @@ export const startKoedServer = async ({
       }
     }
 
+    if (appRuntime.kind === "source") {
+      runCommand(
+        paths,
+        "Build Koed server apps",
+        "pnpm",
+        [
+          "--filter",
+          "@koed/api",
+          "--filter",
+          "@koed/worker",
+          "--filter",
+          "@koed/embedding-service",
+          "--filter",
+          "@koed/explorer",
+          "build"
+        ],
+        refreshedEnv,
+        spawnSync
+      );
+    }
+
     if (useBundledLocalDependencies) {
       const result = startLocalPostgresRuntime(paths, refreshedEnv, {
         spawnSync
@@ -914,25 +935,6 @@ export const startKoedServer = async ({
           `Bundled-local native Embedding Service could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
-    }
-
-    if (appRuntime.kind === "source") {
-      runCommand(
-        paths,
-        "Build Koed server apps",
-        "pnpm",
-        [
-          "--filter",
-          "@koed/api",
-          "--filter",
-          "@koed/worker",
-          "--filter",
-          "@koed/explorer",
-          "build"
-        ],
-        refreshedEnv,
-        spawnSync
-      );
     }
 
     const explorerPort = (() => {

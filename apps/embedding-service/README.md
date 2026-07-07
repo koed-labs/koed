@@ -2,10 +2,9 @@
 
 Local adapter for llama-server embeddings and optional reranking.
 
-The current bundled-local supervisor still launches the Python FastAPI service.
-The TypeScript/Node implementation in `src/` preserves the same HTTP contract
-for KOE-295 and is intended to become the supervised path in KOE-296. Keep the
-Python app and venv procurement in place until that follow-up lands.
+The bundled-local supervisor launches the TypeScript implementation in `src/`.
+The Python app and venv procurement remain in place until KOE-297 removes Python
+from native runtime artifacts.
 
 The embedding service is intended to run as a private backend component. Set
 `EMBEDDING_SERVICE_TOKEN` in shared deployments; `/embed` and `/rerank` then
@@ -52,9 +51,7 @@ pnpm --filter @koed/embedding-service dev
 ```
 
 The TypeScript service launches `llama-server` directly and expects local
-`MODEL_PATH` and, when reranking is enabled, `RERANKER_MODEL_PATH`. Runtime
-procurement and bundled-local process supervision remain Python-owned until the
-follow-up switch.
+`MODEL_PATH` and, when reranking is enabled, `RERANKER_MODEL_PATH`.
 
 Select the embedding model with `MODEL_KEY`. Unknown keys fail service startup.
 Supported keys:
@@ -100,7 +97,8 @@ text, chunks, vectors, request bodies, tokens, and full headers.
 
 The production path starts local `llama-server` subprocesses and calls
 `/tokenize`, `/v1/embeddings`, and, when enabled, `/v1/rerank`. Koed keeps the
-FastAPI adapter because it owns auth, queue priority, chunk response shape,
-normalization validation, health metadata, and stable API/worker contracts.
+Embedding Service boundary because it owns auth, queue priority, chunk response
+shape, normalization validation, health metadata, and stable API/worker
+contracts.
 
 If `pip install -r requirements.txt` reports a wheel checksum error such as `Bad CRC-32`, remove the local venv and rerun the runtime install with `--no-cache-dir` so pip downloads a fresh wheel instead of reusing a corrupt cached archive.

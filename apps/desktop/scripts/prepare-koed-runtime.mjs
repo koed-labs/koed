@@ -61,6 +61,7 @@ mkdirSync(runtimeRoot, { recursive: true });
 
 deploy("@koed/api", "api");
 deploy("@koed/worker", "worker");
+deploy("@koed/embedding-service", "embedding-service");
 deploy("@koed/mcp-server", "mcp-server");
 cpSync(
   resolve(repoRoot, "apps/explorer/dist"),
@@ -95,6 +96,7 @@ const required = [
   "api/node_modules/@koed/db/dist/index.js",
   "api/node_modules/@koed/db/drizzle/meta/_journal.json",
   "worker/dist/index.js",
+  "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
   "explorer-dist/index.html",

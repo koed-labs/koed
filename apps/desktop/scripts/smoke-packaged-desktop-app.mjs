@@ -284,6 +284,7 @@ const assertPackagedJsSurface = (layout) => {
   for (const [label, relativePath] of [
     ["Packaged API artifact", "api/dist/index.js"],
     ["Packaged Worker artifact", "worker/dist/index.js"],
+    ["Packaged Embedding Service artifact", "embedding-service/dist/index.js"],
     ["Packaged Explorer artifact", "explorer-dist/index.html"],
     ["Packaged MCP Server artifact", "mcp-server/dist/cli.js"],
     [

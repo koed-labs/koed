@@ -17,12 +17,11 @@ type SpawnLike = (
 
 export interface LocalEmbeddingRuntimePaths {
   appDir: string;
-  pythonBin: string;
+  serviceEntry: string;
   llamaServerBin: string;
   artifactSource: RuntimeArtifactSource;
   artifactSources: {
-    app: RuntimeArtifactSource;
-    python: RuntimeArtifactSource;
+    service: RuntimeArtifactSource;
     llamaServer: RuntimeArtifactSource;
   };
   host: string;
@@ -109,16 +108,16 @@ export const resolveLocalEmbeddingRuntimePaths = (
   const packagedAppDir = packagedRuntimeRoot
     ? resolve(packagedRuntimeRoot, "embedding-service")
     : undefined;
-  const app = chooseRuntimePath(
+  const service = chooseRuntimePath(
     [
       {
-        path: resolve(koedRuntimeAppDir, "app.py"),
+        path: resolve(koedRuntimeAppDir, "dist", "index.js"),
         artifactSource: "koed-home-runtime" as const
       },
       ...(packagedAppDir
         ? [
             {
-              path: resolve(packagedAppDir, "app.py"),
+              path: resolve(packagedAppDir, "dist", "index.js"),
               artifactSource: "packaged-resource" as const
             }
           ]
@@ -126,26 +125,23 @@ export const resolveLocalEmbeddingRuntimePaths = (
       ...(canUseSourceCheckoutFallback(environment)
         ? [
             {
-              path: resolve(repoAppDir, "app.py"),
+              path: resolve(repoAppDir, "dist", "index.js"),
               artifactSource: "source-checkout" as const
             }
           ]
         : [])
     ],
-    resolve(koedRuntimeAppDir, "app.py"),
+    resolve(koedRuntimeAppDir, "dist", "index.js"),
     "koed-home-runtime",
     exists
   );
-  const appDir = dirname(app.path);
+  const serviceEntry = resolve(service.path);
+  const appDir = dirname(dirname(serviceEntry));
   const host = trim(environment.KOED_EMBEDDING_HOST) ?? "127.0.0.1";
   const port =
     trim(environment.KOED_EMBEDDING_PORT) ??
     trim(environment.EMBEDDING_SERVICE_HOST_PORT) ??
     "3800";
-  const pythonBin = resolve(
-    trim(environment.KOED_EMBEDDING_PYTHON_BIN) ??
-      resolve(appDir, ".venv", "bin", "python")
-  );
   const koedRuntimeLlamaServer = resolve(
     paths.koedHome,
     "runtime",
@@ -195,23 +191,16 @@ export const resolveLocalEmbeddingRuntimePaths = (
         exists
       );
   const llamaServerBin = resolve(llama.path);
-  const pythonSource: RuntimeArtifactSource = trim(
-    environment.KOED_EMBEDDING_PYTHON_BIN
-  )
-    ? "explicit-override"
-    : app.artifactSource;
   return {
     appDir,
-    pythonBin,
+    serviceEntry,
     llamaServerBin,
     artifactSource: combinedArtifactSource([
-      app.artifactSource,
-      pythonSource,
+      service.artifactSource,
       llama.artifactSource
     ]),
     artifactSources: {
-      app: app.artifactSource,
-      python: pythonSource,
+      service: service.artifactSource,
       llamaServer: llama.artifactSource
     },
     host,
@@ -229,7 +218,7 @@ const missingRuntime = (
   message: `Bundled-local native Embedding Service runtime is missing: ${missing.join(", ")}.`,
   action:
     runtime.artifactSource === "source-checkout"
-      ? "Install native Embedding Service and llama-server assets with koed-server runtime install --provider homebrew --dependency-mode bundled-local --json on macOS, Linux, or WSL, or set KOED_EMBEDDING_PYTHON_BIN / KOED_EMBEDDING_LLAMA_SERVER_BIN overrides."
+      ? "Build the Embedding Service and install llama-server assets with koed-server runtime install --provider homebrew --dependency-mode bundled-local --json on macOS, Linux, or WSL, or set KOED_EMBEDDING_LLAMA_SERVER_BIN."
       : "Inspect native runtime with koed-server runtime status --provider packaged --json, then install packaged assets with koed-server runtime install --provider packaged --dependency-mode bundled-local --json or Homebrew-backed assets with --provider homebrew on macOS, Linux, or WSL.",
   details: {
     missing,
@@ -253,8 +242,7 @@ const runtimeMissing = (
 ): string[] =>
   (
     [
-      ["embedding service app", resolve(runtime.appDir, "app.py"), false],
-      ["python", runtime.pythonBin, true],
+      ["Embedding Service entry", runtime.serviceEntry, false],
       ["llama-server", runtime.llamaServerBin, true]
     ] satisfies Array<[string, string, boolean]>
   ).flatMap(([name, file, mustExecute]) => {
@@ -289,8 +277,12 @@ export const resolveBundledEmbeddingMode = (
 export const localEmbeddingEnv = (
   runtime: LocalEmbeddingRuntimePaths
 ): NodeJS.ProcessEnv => ({
+  EMBEDDING_SERVICE_HOST: runtime.host,
+  EMBEDDING_SERVICE_PORT: runtime.port,
+  EMBEDDING_SERVICE_HOST_PORT: runtime.port,
   EMBEDDING_SERVICE_URL: `http://${runtime.host}:${runtime.port}`,
-  LLAMA_SERVER_BINARY: runtime.llamaServerBin
+  LLAMA_SERVER_BINARY: runtime.llamaServerBin,
+  EMBEDDING_LLAMA_SERVER_BINARY: runtime.llamaServerBin
 });
 
 export const collectLocalEmbeddingRuntimeStatus = async (
@@ -367,23 +359,11 @@ export const startLocalEmbeddingRuntime = (
   if (missing.length > 0) {
     return { ok: false, status: missingRuntime(runtime, missing), env };
   }
-  const child = spawn(
-    runtime.pythonBin,
-    [
-      "-m",
-      "uvicorn",
-      "app:app",
-      "--host",
-      runtime.host,
-      "--port",
-      runtime.port
-    ],
-    {
-      cwd: runtime.appDir,
-      env,
-      stdio: "inherit"
-    }
-  );
+  const child = spawn(process.execPath, [runtime.serviceEntry], {
+    cwd: runtime.appDir,
+    env,
+    stdio: "inherit"
+  });
   child.on("exit", (code) => {
     console.log(
       `Native Embedding Service exited with code ${code ?? "signal"}.`

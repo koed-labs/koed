@@ -344,10 +344,20 @@ export const resolveEnv = (
 
   const cpuCount = cpus().length || 1;
   return {
-    host: firstEnv(environment, ["KOED_EMBEDDING_HOST", "HOST"]) ?? "127.0.0.1",
+    host:
+      firstEnv(environment, [
+        "KOED_EMBEDDING_HOST",
+        "EMBEDDING_SERVICE_HOST",
+        "HOST"
+      ]) ?? "127.0.0.1",
     port: intAlias(
       environment,
-      ["KOED_EMBEDDING_PORT", "EMBEDDING_SERVICE_HOST_PORT", "PORT"],
+      [
+        "KOED_EMBEDDING_PORT",
+        "EMBEDDING_SERVICE_PORT",
+        "EMBEDDING_SERVICE_HOST_PORT",
+        "PORT"
+      ],
       3800
     ),
     modelKey: modelConfig.key,

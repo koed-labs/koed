@@ -71,26 +71,24 @@ const createPackagedAppRuntime = (root: string) => {
 const createNativeResources = (root: string) => {
   const pgBin = resolve(root, "vendor", "postgres", "bin");
   const appDir = resolve(root, "apps", "embedding-service");
-  const venvBin = resolve(appDir, ".venv", "bin");
+  const serviceDist = resolve(appDir, "dist");
   const llamaBin = resolve(root, "vendor", "llama.cpp");
   mkdirSync(pgBin, { recursive: true });
-  mkdirSync(venvBin, { recursive: true });
+  mkdirSync(serviceDist, { recursive: true });
   mkdirSync(llamaBin, { recursive: true });
   for (const name of ["initdb", "pg_ctl", "psql"]) {
     const path = resolve(pgBin, name);
     writeFileSync(path, "");
     chmodSync(path, 0o755);
   }
-  writeFileSync(resolve(appDir, "app.py"), "");
-  const python = resolve(venvBin, "python");
+  const serviceEntry = resolve(serviceDist, "index.js");
   const llamaServer = resolve(llamaBin, "llama-server");
-  writeFileSync(python, "");
+  writeFileSync(serviceEntry, "");
   writeFileSync(llamaServer, "");
-  chmodSync(python, 0o755);
   chmodSync(llamaServer, 0o755);
   return {
     pgBin,
-    python: resolve(venvBin, "python"),
+    serviceEntry,
     llamaServer: resolve(llamaBin, "llama-server")
   };
 };
@@ -273,9 +271,11 @@ describe("start supervisor", () => {
       resolve(resources.pgBin, "pg_ctl")
     );
     expect(commands.map((command) => command.args.join(" "))).toContain(
-      "--filter @koed/api --filter @koed/worker --filter @koed/explorer build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer build"
     );
-    const buildEnv = commands.at(-1)?.env;
+    const buildEnv = commands.find((command) =>
+      command.args.includes("@koed/embedding-service")
+    )?.env;
     expect(buildEnv?.WORK_QUEUE_BACKEND).toBe("local");
     expect(buildEnv?.KOED_MODELS_DIR).toBe(resolve(root, "models"));
     expect(buildEnv?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
@@ -286,7 +286,12 @@ describe("start supervisor", () => {
     expect(buildEnv?.DATABASE_URL).toBe(
       "postgres://koed:koed-local-postgres@127.0.0.1:25432/koed"
     );
-    expect(spawned[0]?.command).toBe(resources.python);
+    expect(spawned[0]?.command).toBe(process.execPath);
+    expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
+    expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);
+    expect(spawned[0]?.env?.MODEL_PATH).toBe(
+      resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
+    );
     expect(spawned.map((entry) => entry.args.join(" "))).toContain(
       "--filter @koed/worker start"
     );
@@ -377,9 +382,7 @@ describe("start supervisor", () => {
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
     );
-    expect(commands.map((command) => command.command)).toContain(
-      resolve(root, "vendor", "postgres", "bin", "pg_ctl")
-    );
+    expect(commands.map((command) => command.command)).not.toContain("docker");
   });
 
   it("allows bundled-local models split across directories for native runtime", async () => {
@@ -425,7 +428,9 @@ describe("start supervisor", () => {
       collectStatus: async () => healthyStatus(root)
     });
 
-    const buildEnv = commands.at(-1)?.env;
+    const buildEnv = commands.find((command) =>
+      command.args.includes("@koed/embedding-service")
+    )?.env;
     expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
       resolve(embeddingDir, "embedding.gguf")
     );
@@ -670,7 +675,7 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "--filter @koed/api --filter @koed/worker --filter @koed/explorer build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer build"
     ]);
     expect(commands.some((command) => command.command === "docker")).toBe(
       false
