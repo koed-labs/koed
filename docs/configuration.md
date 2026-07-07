@@ -112,6 +112,10 @@ koed-server upstream register --url https://koed.example.test --id team-vps --na
 koed-server upstream list --json
 koed-server upstream refresh --id team-vps --json
 koed-server upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --json
+koed-server upstream enroll start --id team-vps --json
+koed-server upstream enroll status --id team-vps --json
+koed-server upstream enroll cancel --id team-vps --json
+koed-server upstream disconnect --id team-vps --json
 koed-server upstream remove --id team-vps --json
 ```
 
@@ -126,12 +130,20 @@ allowed operation families with `koed-server upstream policy`; later routing and
 sync work must consume the cached capabilities and route policy before enabling
 remote-dependent surfaces.
 
+Enrollment orchestration state is separate from the upstream backend registry.
+`upstream enroll start/status/cancel` and `upstream disconnect` record only
+non-secret local state under `KOED_HOME/run/upstream-enrollments.json`, including
+state, activation URL, requested operation families, timestamps, and credential
+status/reference metadata. API Tokens remain personal AI-client compatibility
+credentials and are not used for upstream enrollment or Team Workspace recall.
+
 ## KOED_HOME Layout
 
 Koed-owned local state lives under `KOED_HOME`:
 
 - `config/` for `server.json`, `local-ports.json`, and `explorer-token.json`
-- `run/` for `koed-server.json`, `last-verification.json`, and native runtime state
+- `run/` for `koed-server.json`, `last-verification.json`, upstream enrollment
+  orchestration state, and native runtime state
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
 - `models/` for embedding and reranker model files

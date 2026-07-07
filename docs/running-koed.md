@@ -46,12 +46,31 @@ node packages/koed-server/dist/cli.js restart --json
 
 `start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops Explorer, Worker, API, native Embedding Service, and native Postgres via `pg_ctl stop -D <dataDir> -m fast`. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
+Local upstream enrollment orchestration is exposed as machine-readable
+control-plane state for Desktop and headless scripts:
+
+```bash
+node packages/koed-server/dist/cli.js upstream enroll start --id team-vps --json
+node packages/koed-server/dist/cli.js upstream enroll status --id team-vps --json
+node packages/koed-server/dist/cli.js upstream enroll cancel --id team-vps --json
+node packages/koed-server/dist/cli.js upstream disconnect --id team-vps --json
+```
+
+`upstream enroll start` requires a registered upstream backend with fresh
+validated capabilities and at least one explicitly enabled route-policy family.
+It returns an activation URL and records non-secret local state under
+`KOED_HOME/run`; it does not create API Tokens or persist reusable device
+secrets. `upstream disconnect` disables local upstream route families and marks
+the local enrollment state revoked. Browser approval and upstream-side device
+credential revocation remain browser/session-mediated local-edge flows.
+
 ## KOED_HOME layout
 
 `koed-server` keeps local state under `KOED_HOME`:
 
 - `config/` for `server.json`, `local-ports.json`, and `explorer-token.json`
-- `run/` for `koed-server.json`, `last-verification.json`, and supervisor state
+- `run/` for `koed-server.json`, `last-verification.json`, upstream enrollment
+  orchestration state, and supervisor state
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
 - `models/` for embedding and reranker model files

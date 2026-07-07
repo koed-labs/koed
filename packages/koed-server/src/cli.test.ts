@@ -731,6 +731,145 @@ describe("JSON command output", () => {
     });
   });
 
+  it("prints upstream enroll start --json", async () => {
+    const stdout = writer();
+    const seen: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "enroll", "start", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        startUpstreamEnroll: (_paths, id) => {
+          seen.push(id);
+          return {
+            ok: true,
+            state: "pending",
+            message: "started",
+            enrollment: {
+              backendId: "team-vps",
+              requestId: "enroll-1",
+              state: "pending",
+              activationUrl:
+                "https://team.example.test/v1/local-edge/device-enrollments/challenges?upstream_backend_id=team-vps",
+              requestedOperationFamilies: ["team_workspace_read"],
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              expiresAt: "2026-01-01T00:10:00.000Z",
+              credential: { status: "not_configured" }
+            }
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(seen).toEqual(["team-vps"]);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "pending",
+      enrollment: {
+        activationUrl:
+          "https://team.example.test/v1/local-edge/device-enrollments/challenges?upstream_backend_id=team-vps"
+      }
+    });
+  });
+
+  it("prints upstream enroll status --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "enroll", "status", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        getUpstreamEnrollStatus: () => ({
+          ok: true,
+          state: "exchanged",
+          message: "exchanged",
+          enrollment: {
+            backendId: "team-vps",
+            requestId: "enroll-1",
+            state: "exchanged",
+            activationUrl: null,
+            requestedOperationFamilies: ["team_workspace_read"],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:01:00.000Z",
+            expiresAt: "2026-01-01T00:10:00.000Z",
+            credential: { status: "configured", reference: "keychain://team" }
+          }
+        })
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "exchanged",
+      enrollment: {
+        credential: { status: "configured", reference: "keychain://team" }
+      }
+    });
+  });
+
+  it("prints upstream enroll cancel --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "enroll", "cancel", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        cancelUpstreamEnroll: () => ({
+          ok: true,
+          state: "canceled",
+          message: "canceled"
+        })
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "canceled"
+    });
+  });
+
+  it("prints upstream disconnect --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "disconnect", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        disconnectUpstream: () => ({
+          ok: true,
+          state: "revoked",
+          message: "revoked",
+          enrollment: {
+            backendId: "team-vps",
+            requestId: "enroll-1",
+            state: "revoked",
+            activationUrl: null,
+            requestedOperationFamilies: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:02:00.000Z",
+            expiresAt: null,
+            credential: { status: "revoked" }
+          }
+        })
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "revoked",
+      enrollment: { credential: { status: "revoked" } }
+    });
+  });
+
   it("prints doctor --json and returns non-zero for failures", async () => {
     const stdout = writer();
 

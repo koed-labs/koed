@@ -28,6 +28,12 @@ import {
   updateUpstreamBackendRoutePolicy,
   type UpstreamRoutePolicyUpdate
 } from "./upstream-registry.js";
+import {
+  cancelUpstreamEnrollment,
+  disconnectUpstreamBackendEnrollment,
+  getUpstreamEnrollmentStatus,
+  startUpstreamEnrollment
+} from "./upstream-enrollment.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -49,6 +55,10 @@ Commands:
   upstream refresh --json Refresh cached upstream capabilities
   upstream policy --json  Update explicit upstream route-policy families
   upstream remove --json Remove an upstream backend
+  upstream enroll start --json Start local upstream enrollment orchestration
+  upstream enroll status --json Print local upstream enrollment state
+  upstream enroll cancel --json Cancel local upstream enrollment orchestration
+  upstream disconnect --json Disable local upstream routes and enrollment state
 
 Runtime providers:
   --provider homebrew       Use Homebrew-backed runtime assets (default)
@@ -83,6 +93,10 @@ export interface KoedServerCliDependencies {
   refreshUpstream?: typeof refreshUpstreamBackendCapabilities;
   updateUpstreamPolicy?: typeof updateUpstreamBackendRoutePolicy;
   removeUpstream?: typeof removeUpstreamBackend;
+  startUpstreamEnroll?: typeof startUpstreamEnrollment;
+  getUpstreamEnrollStatus?: typeof getUpstreamEnrollmentStatus;
+  cancelUpstreamEnroll?: typeof cancelUpstreamEnrollment;
+  disconnectUpstream?: typeof disconnectUpstreamBackendEnrollment;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -284,6 +298,10 @@ export const runKoedServerCli = async (
     refreshUpstream = refreshUpstreamBackendCapabilities,
     updateUpstreamPolicy = updateUpstreamBackendRoutePolicy,
     removeUpstream = removeUpstreamBackend,
+    startUpstreamEnroll = startUpstreamEnrollment,
+    getUpstreamEnrollStatus = getUpstreamEnrollmentStatus,
+    cancelUpstreamEnroll = cancelUpstreamEnrollment,
+    disconnectUpstream = disconnectUpstreamBackendEnrollment,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -520,6 +538,42 @@ export const runKoedServerCli = async (
     if (command === "upstream" && subcommand === "remove") {
       const paths = resolvePaths();
       const result = removeUpstream(paths, requireFlagValue(args, "--id"));
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "enroll") {
+      const enrollCommand = args[2];
+      const paths = resolvePaths();
+      const id = requireFlagValue(args, "--id");
+      const result =
+        enrollCommand === "start"
+          ? startUpstreamEnroll(paths, id)
+          : enrollCommand === "status"
+            ? getUpstreamEnrollStatus(paths, id)
+            : enrollCommand === "cancel"
+              ? cancelUpstreamEnroll(paths, id)
+              : null;
+      if (!result) {
+        throw new Error(
+          "upstream enroll command must be start, status, or cancel."
+        );
+      }
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "disconnect") {
+      const paths = resolvePaths();
+      const result = disconnectUpstream(paths, requireFlagValue(args, "--id"));
       if (wantsJson) {
         printJson(stdout, result);
       } else {
