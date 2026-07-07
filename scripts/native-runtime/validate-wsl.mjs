@@ -73,7 +73,8 @@ const parseJson = (label, text) => {
     return JSON.parse(text || "{}");
   } catch (error) {
     throw new Error(
-      `Could not parse ${label} JSON: ${error instanceof Error ? error.message : String(error)}`
+      `Could not parse ${label} JSON: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
     );
   }
 };
