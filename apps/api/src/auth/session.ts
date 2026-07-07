@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { MemorySourceRepository } from "@koed/db";
+import type {
+  DeviceCredentialAuthContext,
+  MemorySourceRepository
+} from "@koed/db";
 import type { AuthLogKind } from "../server/logging.js";
 
 export const sessionCookieName = "cm_session";
@@ -47,6 +50,24 @@ export interface AuthHelpers {
     displayName: string | null;
     passwordHash?: string | null;
   }>;
+  authenticateDeviceCredential(
+    request: FastifyRequest
+  ): Promise<DeviceCredentialAuthContext>;
+  authenticateSessionOrDeviceCredential(
+    request: FastifyRequest,
+    operationFamily:
+      | "team_workspace_read"
+      | "share_grant_management"
+      | "capture_writes"
+      | "sync"
+      | "admin",
+    options?: { apiTokenError?: string }
+  ): Promise<{
+    id: string;
+    email: string;
+    displayName: string | null;
+    passwordHash?: string | null;
+  }>;
 }
 
 export const createAuthHelpers = (
@@ -64,6 +85,21 @@ export const createAuthHelpers = (
   }
 ): AuthHelpers => {
   const { hashSecret } = options;
+  const readAuthorizationCredential = (
+    request: FastifyRequest,
+    expectedScheme: string
+  ): string | null => {
+    const authHeader = request.headers.authorization?.trim();
+    const separatorIndex = authHeader?.indexOf(" ") ?? -1;
+    if (!authHeader || separatorIndex <= 0) {
+      return null;
+    }
+    const scheme = authHeader.slice(0, separatorIndex);
+    if (scheme.toLowerCase() !== expectedScheme.toLowerCase()) {
+      return null;
+    }
+    return authHeader.slice(separatorIndex + 1).trim() || null;
+  };
   const recordAuthContext = (
     request: FastifyRequest,
     kind: Exclude<AuthLogKind, "anonymous">,
@@ -83,10 +119,7 @@ export const createAuthHelpers = (
 
   const authenticate = async (request: FastifyRequest) => {
     const repo = requireRepository();
-    const authHeader = request.headers.authorization;
-    const bearer = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length).trim()
-      : null;
+    const bearer = readAuthorizationCredential(request, "Bearer");
 
     if (bearer) {
       const user = await repo.getApiTokenUser(hashSecret(bearer));
@@ -126,10 +159,7 @@ export const createAuthHelpers = (
 
   const authenticateApiToken = async (request: FastifyRequest) => {
     const repo = requireRepository();
-    const authHeader = request.headers.authorization;
-    const bearer = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length).trim()
-      : null;
+    const bearer = readAuthorizationCredential(request, "Bearer");
     if (!bearer) {
       throw Object.assign(new Error("Bearer API token required"), {
         statusCode: 401
@@ -143,11 +173,85 @@ export const createAuthHelpers = (
     return user;
   };
 
+  const authenticateDeviceCredential = async (request: FastifyRequest) => {
+    const repo = requireRepository();
+    const credential = readAuthorizationCredential(request, "Koed-Device");
+    const separatorIndex = credential?.indexOf(":") ?? -1;
+    const credentialKeyId =
+      credential && separatorIndex > 0
+        ? credential.slice(0, separatorIndex)
+        : null;
+    const secret =
+      credential && separatorIndex > 0
+        ? credential.slice(separatorIndex + 1)
+        : null;
+    if (!credentialKeyId || !secret) {
+      throw Object.assign(new Error("Device credential required"), {
+        statusCode: 401
+      });
+    }
+
+    const context = await repo.getDeviceCredentialUser({
+      credentialKeyId,
+      verifierHash: hashSecret(secret)
+    });
+    if (!context) {
+      throw Object.assign(new Error("Invalid device credential"), {
+        statusCode: 401
+      });
+    }
+    recordAuthContext(request, "device_credential", context.user.id);
+    return context;
+  };
+
+  const authenticateSessionOrDeviceCredential = async (
+    request: FastifyRequest,
+    operationFamily:
+      | "team_workspace_read"
+      | "share_grant_management"
+      | "capture_writes"
+      | "sync"
+      | "admin",
+    options: { apiTokenError?: string } = {}
+  ) => {
+    const authHeader = request.headers.authorization?.trim();
+    const separatorIndex = authHeader?.indexOf(" ") ?? -1;
+    const authScheme =
+      authHeader && separatorIndex > 0
+        ? authHeader.slice(0, separatorIndex).toLowerCase()
+        : "";
+    if (authScheme === "bearer") {
+      throw Object.assign(
+        new Error(
+          options.apiTokenError ??
+            "Session cookie or scoped device credential required"
+        ),
+        { statusCode: 403 }
+      );
+    }
+    if (authScheme === "koed-device") {
+      const context = await authenticateDeviceCredential(request);
+      if (
+        !context.credential.operationFamilies.includes(operationFamily) &&
+        !context.credential.operationFamilies.includes("*")
+      ) {
+        throw Object.assign(
+          new Error("Device credential is not allowed for this operation"),
+          { statusCode: 403 }
+        );
+      }
+      return context.user;
+    }
+    return await authenticateSession(request);
+  };
+
   return {
     hashSecret,
     setSessionCookie,
     authenticate,
     authenticateSession,
-    authenticateApiToken
+    authenticateApiToken,
+    authenticateDeviceCredential,
+    authenticateSessionOrDeviceCredential
   };
 };

@@ -64,4 +64,15 @@ describe("KOED_HOME resolution", () => {
     expect(paths.postgresRunDir).toBe(resolve(home, "run", "postgres"));
     expect(paths.postgresLogPath).toBe(resolve(home, "logs", "postgres.log"));
   });
+
+  it("uses KOED_MODELS_DIR when set", () => {
+    const home = tempDir();
+    const models = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_MODELS_DIR: models
+    });
+
+    expect(paths.modelsDir).toBe(resolve(models));
+  });
 });

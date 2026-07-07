@@ -70,7 +70,8 @@ Important runtime dependencies:
 - `WORK_QUEUE_BACKEND=bullmq` with Redis via `REDIS_URL`, or `WORK_QUEUE_BACKEND=local` with Postgres-backed `local_work_queue` jobs. Redis can still back optional shared rate-limit/cache stores.
 - The Embedding Service URL and token for recall-time query embeddings and
   reranking.
-- `API_TOKEN_PEPPER` and `DATA_ENCRYPTION_KEY` for auth/token handling.
+- `API_TOKEN_PEPPER` and `API_DATA_ENCRYPTION_KEY` for auth/token handling.
+  App-local child processes may receive the same key as `DATA_ENCRYPTION_KEY`.
 
 ## Related Documentation
 

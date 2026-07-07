@@ -5,6 +5,8 @@ import type {
 } from "@koed/core";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
+import type { CrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
+import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
@@ -49,18 +51,171 @@ export interface UserRecord {
   passwordHash: string | null;
 }
 
+export type ExternalAuthProvider = "workos_authkit";
+
+export type ExternalAuthLinkStatus = "linked" | "disabled";
+
+export interface ExternalAuthIdentityRecord {
+  id: string;
+  provider: ExternalAuthProvider;
+  providerEnvironment: string;
+  providerUserId: string;
+  userId: string;
+  email: string;
+  emailVerified: boolean;
+  displayName: string | null;
+  status: ExternalAuthLinkStatus;
+  profile: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string | null;
+}
+
+export interface ExternalAuthOrganizationRecord {
+  id: string;
+  provider: ExternalAuthProvider;
+  providerEnvironment: string;
+  providerOrganizationId: string;
+  teamId: string;
+  name: string | null;
+  status: ExternalAuthLinkStatus;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string | null;
+}
+
+export interface ExternalAuthSessionResult {
+  user: UserRecord;
+  identity: ExternalAuthIdentityRecord;
+  organization: ExternalAuthOrganizationRecord | null;
+  createdUser: boolean;
+}
+
 export type TeamRole = "owner" | "admin" | "member";
 
 export type TeamMembershipStatus = "invited" | "enabled" | "disabled";
 
 export type TeamWorkspaceAccessLevel = "disabled" | "read" | "write";
 
+export type TeamEntitlementStatus =
+  | "active"
+  | "grace"
+  | "suspended"
+  | "revoked";
+
+export type TeamBillingSeatSyncStatus =
+  | "synced"
+  | "pending_provider_update"
+  | "over_limit"
+  | "error";
+
+export interface TeamEntitlementGateRecord {
+  teamId: string;
+  status: TeamEntitlementStatus;
+  allowsTeamAccess: boolean;
+  deniedOperationFamilies: string[];
+  reason: string | null;
+  updatedAt: string | null;
+}
+
 export interface TeamRecord {
   id: string;
   name: string;
+  entitlementStatus: TeamEntitlementStatus;
+  entitlementReason: string | null;
+  entitlementUpdatedAt: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+}
+
+export interface TeamBillingSeatStateRecord {
+  teamId: string;
+  seatLimit: number | null;
+  billableSeatCount: number;
+  pendingBillingSeatCount: number;
+  syncStatus: TeamBillingSeatSyncStatus;
+  overLimitAt: string | null;
+  lastSyncedAt: string | null;
+  lastErrorMessage: string | null;
+  updatedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TeamSupportOverviewRecord {
+  generatedAt: string;
+  supportAccess: {
+    policy: "team_manager_redacted" | "hosted_operator_redacted";
+    actorUserId: string;
+    actorRole: Exclude<TeamRole, "member"> | "hosted_operator";
+    rawContentAccess: "not_permitted";
+    breakGlassRequiredForRawContent: true;
+  };
+  team: TeamRecord;
+  entitlement: TeamEntitlementGateRecord;
+  billingSeats: TeamBillingSeatStateRecord | null;
+  diagnosticSurfaces: {
+    auth: "browser_session";
+    rawContentAccess: "not_permitted";
+    operationsStatusPath: "/ops/status";
+    capabilitiesPath: string;
+    auditEventsPath: string;
+    entitlementPath: string;
+    billingSeatsPath: string;
+    supportOverviewPath: string;
+  };
+  counts: {
+    memberships: {
+      enabled: number;
+      invited: number;
+      disabled: number;
+    };
+    workspaces: {
+      active: number;
+      archived: number;
+    };
+    workspaceAccess: {
+      read: number;
+      write: number;
+      disabled: number;
+    };
+    invites: {
+      pending: number;
+      accepted: number;
+      revoked: number;
+      expired: number;
+    };
+    sessionShareGrants: {
+      active: number;
+      revoked: number;
+      retainedAfterPersonalDeletion: number;
+    };
+    auditEvents: {
+      teamEventCount: number;
+      lastTeamEventAt: string | null;
+    };
+    setupAndIntegrations: {
+      externalAuthOrganizations: {
+        linked: number;
+        disabled: number;
+        lastSeenAt: string | null;
+      };
+      externalAuthIdentities: {
+        linked: number;
+        disabled: number;
+        emailVerified: number;
+        lastSeenAt: string | null;
+      };
+      deviceCredentials: {
+        active: number;
+        revoked: number;
+        expired: number;
+        lastValidatedAt: string | null;
+      };
+    };
+  };
 }
 
 export interface TeamMembershipRecord {
@@ -91,10 +246,31 @@ export interface TeamWorkspaceAccessRecord {
   role: TeamRole | null;
   membershipStatus: TeamMembershipStatus | null;
   access: TeamWorkspaceAccessLevel;
+  teamEntitlementStatus: TeamEntitlementStatus;
+  teamEntitlementAllowsAccess: boolean;
   canManageTeam: boolean;
   canManageWorkspace: boolean;
   canRecall: boolean;
   canCreateShare: boolean;
+}
+
+export interface TeamSessionShareGrantRecord {
+  id: string;
+  ownerUserId: string | null;
+  sessionId: string | null;
+  teamId: string;
+  teamWorkspaceId: string;
+  grantedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  revokedAt: string | null;
+  revokedByUserId: string | null;
+  revocationReason: string | null;
+  personalDeletedAt: string | null;
+  personalDeletedByUserId: string | null;
+  personalDeletionReason: string | null;
+  retainedByTeamAt: string | null;
+  retentionReason: string;
 }
 
 export interface TeamInviteRecord {
@@ -129,6 +305,49 @@ export interface ApiTokenRecord {
   revokedAt: string | null;
 }
 
+export type DeviceCredentialVerifierKind = "secret_hash" | "public_key_jwk";
+
+export interface DeviceEnrollmentChallengeRecord {
+  id: string;
+  upstreamBackendId: string;
+  deviceInstanceId: string | null;
+  deviceLabel: string | null;
+  requestedOperationFamilies: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  expiresAt: string;
+  boundByUserId: string | null;
+  boundAt: string | null;
+  redeemedAt: string | null;
+}
+
+export interface DeviceCredentialRecord {
+  id: string;
+  ownerUserId: string;
+  enrollmentChallengeId: string | null;
+  credentialKeyId: string;
+  upstreamBackendId: string;
+  deviceInstanceId: string;
+  deviceLabel: string | null;
+  credentialVersion: number;
+  verifierKind: DeviceCredentialVerifierKind;
+  operationFamilies: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  lastValidatedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  revokedByUserId: string | null;
+  revocationReason: string | null;
+}
+
+export interface DeviceCredentialAuthContext {
+  user: UserRecord;
+  credential: DeviceCredentialRecord;
+}
+
 export type AuditActorType = "user" | "local_operator_script";
 
 export interface AuditActorInput {
@@ -148,6 +367,27 @@ export interface AuditEventRecord {
   createdAt: string;
 }
 
+export interface ActivationAnalyticsFunnelRecord {
+  generatedAt: string;
+  scope: {
+    ownerUserId: string | null;
+    teamId: string | null;
+    teamWorkspaceId: string | null;
+  };
+  window: {
+    since: string | null;
+    until: string | null;
+  };
+  events: Array<{
+    event: string;
+    count: number;
+    firstSeenAt: string | null;
+    lastSeenAt: string | null;
+    surfaces: Record<string, number>;
+    deploymentProfiles: Record<string, number>;
+  }>;
+}
+
 export interface RecordAuditEventInput {
   actorUserId?: string | null;
   ownerUserId?: string | null;
@@ -161,6 +401,13 @@ export interface RecordAuditEventInput {
 export interface ListAuditEventsInput {
   action?: string;
   limit?: number;
+}
+
+export interface GetActivationAnalyticsFunnelInput {
+  teamId?: string;
+  teamWorkspaceId?: string;
+  since?: Date;
+  until?: Date;
 }
 
 export interface ListTeamAuditEventsInput {
@@ -693,6 +940,8 @@ export interface MemorySourceRepository
     MemoryEngineRepository,
     CapturedSessionRepository,
     ConversationItemRepository,
+    CrossIdentitySyncRepository,
+    EncryptedPayloadRepository,
     LocalEmbeddingStatusRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
@@ -702,11 +951,61 @@ export interface MemorySourceRepository
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
   getUser(userId: string): Promise<UserRecord | null>;
+  upsertExternalAuthSession(input: {
+    provider: ExternalAuthProvider;
+    providerEnvironment?: string;
+    providerUserId: string;
+    email: string;
+    emailVerified?: boolean;
+    displayName?: string | null;
+    profile?: Record<string, unknown>;
+    organization?: {
+      providerOrganizationId: string;
+      name?: string | null;
+      metadata?: Record<string, unknown>;
+    } | null;
+  }): Promise<ExternalAuthSessionResult>;
+  getExternalAuthIdentity(input: {
+    provider: ExternalAuthProvider;
+    providerEnvironment?: string;
+    providerUserId: string;
+  }): Promise<ExternalAuthIdentityRecord | null>;
   createTeam(actor: ActorContext, input: { name: string }): Promise<TeamRecord>;
   getTeamMembership(
     actor: ActorContext,
     teamId: string
   ): Promise<TeamMembershipRecord | null>;
+  getTeamEntitlementGate(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamEntitlementGateRecord | null>;
+  setTeamEntitlementState(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      status: TeamEntitlementStatus;
+      reason?: string | null;
+    }
+  ): Promise<TeamEntitlementGateRecord | null>;
+  getTeamBillingSeatState(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamBillingSeatStateRecord | null>;
+  setTeamBillingSeatPolicy(
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      seatLimit: number | null;
+    }
+  ): Promise<TeamBillingSeatStateRecord | null>;
+  getTeamSupportOverview(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamSupportOverviewRecord | null>;
+  getHostedSupportOverview(
+    actor: ActorContext,
+    teamId: string
+  ): Promise<TeamSupportOverviewRecord | null>;
   upsertTeamMember(
     actor: ActorContext,
     input: {
@@ -756,6 +1055,22 @@ export interface MemorySourceRepository
     actor: ActorContext,
     teamWorkspaceId: string
   ): Promise<TeamWorkspaceAccessRecord | null>;
+  createTeamSessionShareGrant(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; sessionId: string }
+  ): Promise<TeamSessionShareGrantRecord | null>;
+  revokeTeamSessionShareGrant(
+    actor: ActorContext,
+    input: {
+      teamWorkspaceId: string;
+      shareGrantId: string;
+      reason?: string | null;
+    }
+  ): Promise<TeamSessionShareGrantRecord | null>;
+  listTeamSessionShareGrants(
+    actor: ActorContext,
+    input: { teamWorkspaceId: string; includeRevoked?: boolean; limit?: number }
+  ): Promise<TeamSessionShareGrantRecord[] | null>;
   listTeamAuditEvents(
     actor: ActorContext,
     input: ListTeamAuditEventsInput
@@ -783,11 +1098,50 @@ export interface MemorySourceRepository
     audit?: AuditActorInput
   ): Promise<boolean>;
   getApiTokenUser(tokenHash: string): Promise<UserRecord | null>;
+  createDeviceEnrollmentChallenge(input: {
+    challengeHash: string;
+    upstreamBackendId: string;
+    deviceInstanceId?: string | null;
+    deviceLabel?: string | null;
+    requestedOperationFamilies?: string[];
+    metadata?: Record<string, unknown>;
+    expiresAt: Date;
+  }): Promise<DeviceEnrollmentChallengeRecord>;
+  redeemDeviceEnrollmentChallenge(
+    actor: ActorContext,
+    input: {
+      challengeHash: string;
+      credentialKeyId: string;
+      verifierKind: DeviceCredentialVerifierKind;
+      verifierHash?: string | null;
+      publicKeyJwk?: Record<string, unknown> | null;
+      operationFamilies?: string[];
+      metadata?: Record<string, unknown>;
+      expiresAt?: Date | null;
+    }
+  ): Promise<DeviceCredentialRecord | null>;
+  listDeviceCredentials(
+    actor: ActorContext,
+    input?: { upstreamBackendId?: string }
+  ): Promise<DeviceCredentialRecord[]>;
+  revokeDeviceCredential(
+    actor: ActorContext,
+    credentialId: string,
+    reason?: string
+  ): Promise<boolean>;
+  getDeviceCredentialUser(input: {
+    credentialKeyId: string;
+    verifierHash: string;
+  }): Promise<DeviceCredentialAuthContext | null>;
   recordAuditEvent(input: RecordAuditEventInput): Promise<AuditEventRecord>;
   listAuditEvents(
     actor: ActorContext,
     input?: ListAuditEventsInput
   ): Promise<AuditEventRecord[]>;
+  getActivationAnalyticsFunnel(
+    actor: ActorContext,
+    input?: GetActivationAnalyticsFunnelInput
+  ): Promise<ActivationAnalyticsFunnelRecord | null>;
   projectPendingConversationItems(
     actor: ActorContext,
     input?: ConversationProjectionInput

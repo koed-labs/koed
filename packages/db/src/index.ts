@@ -16,6 +16,35 @@ export {
   type WaitForDbMigrationsOptions
 } from "./connection.js";
 export { createConversationItemRepository } from "./conversation-item-repository.js";
+export {
+  createCrossIdentitySyncRepository,
+  type CrossIdentitySyncRelationshipRecord,
+  type CrossIdentitySyncRepository,
+  type DeploymentIdentityRecord,
+  type DeploymentProfile,
+  type LogicalMemoryRecord,
+  type MemoryReplicaRecord,
+  type SyncMode,
+  type SyncPackageChunkRecord,
+  type SyncPackageState,
+  type SyncPackageUploadSessionRecord,
+  type SyncQueueEntryRecord,
+  type SyncQueueEntryState,
+  type SyncRelationshipState,
+  type SyncReplicaRole,
+  type SyncSourceBoundary
+} from "./cross-identity-sync-repository.js";
+export { createDeviceCredentialRepository } from "./device-credential-repository.js";
+export {
+  createEncryptedPayloadRepository,
+  type EncryptedFieldBackfillRunRecord,
+  type EncryptedFieldBackfillStatus,
+  type EncryptedFieldReference,
+  type EncryptedFieldSourceTable,
+  type EncryptedPayloadRepository,
+  type StoredEncryptedFieldRecord
+} from "./encrypted-payload-repository.js";
+export { createExternalAuthRepository } from "./external-auth-repository.js";
 export { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 export {
   createLocalWorkQueueRepository,

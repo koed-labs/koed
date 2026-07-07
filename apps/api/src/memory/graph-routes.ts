@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { createEncryptedJsonPackage } from "@koed/shared";
+import { z } from "zod";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   clusterIdParamsSchema,
@@ -18,14 +20,32 @@ import {
   updateMemorySchema
 } from "./graph-schemas.js";
 
+const hostedExportProfiles = new Set([
+  "private_vps",
+  "team_self_hosted",
+  "koed_managed_cloud"
+]);
+
+const memoryExportQuerySchema = z.object({
+  reason: z.string().trim().min(1).max(160).optional(),
+  target: z.string().trim().min(1).max(160).optional(),
+  expires_at: z.coerce.date().optional()
+});
+
 export const registerGraphRoutes = (
   app: FastifyInstance,
   context: ApiRouteContext
 ) => {
   const {
     requireRepository,
-    auth: { authenticate, authenticateApiToken, authenticateSession },
+    config,
+    auth: {
+      authenticate,
+      authenticateApiToken,
+      authenticateSessionOrDeviceCredential
+    },
     graph: { cacheProvider, graphCacheTtlSeconds, hashCacheKey },
+    encryption: { envelopeEncryptionProvider },
     rateLimit: {
       memoryRead: memoryReadRateLimit,
       memoryWrite: memoryWriteRateLimit
@@ -34,7 +54,10 @@ export const registerGraphRoutes = (
   const authenticateGraphRead = async (
     request: Parameters<typeof authenticate>[0],
     teamWorkspaceId?: string
-  ) => (teamWorkspaceId ? authenticateSession(request) : authenticate(request));
+  ) =>
+    teamWorkspaceId
+      ? authenticateSessionOrDeviceCredential(request, "team_workspace_read")
+      : authenticate(request);
 
   app.get(
     "/v1/memory/clusters",
@@ -276,7 +299,78 @@ export const registerGraphRoutes = (
     async (request) => {
       const repo = requireRepository();
       const user = await authenticate(request);
-      return await repo.exportMemoryRecords({ userId: user.id });
+      const query = memoryExportQuerySchema.parse(request.query);
+      if (
+        hostedExportProfiles.has(config.deploymentProfile) &&
+        !envelopeEncryptionProvider
+      ) {
+        throw Object.assign(
+          new Error("Encrypted export package provider required"),
+          { statusCode: 503 }
+        );
+      }
+      const records = await repo.exportMemoryRecords({ userId: user.id });
+      if (!envelopeEncryptionProvider) {
+        return records;
+      }
+      const now = new Date();
+      const expiresAt =
+        query.expires_at ?? new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const reason = query.reason ?? "user_requested_export";
+      const target = query.target ?? "self";
+      const encryptedPackage = await createEncryptedJsonPackage(
+        envelopeEncryptionProvider,
+        {
+          objectClass: "memory_export",
+          payload: records,
+          scope: {
+            tenantId: user.id
+          },
+          provenance: {
+            rowFamily: "memory_exports",
+            sourceId: user.id
+          },
+          ciphertextLocation: "memory_export.payload",
+          aad: {
+            route: "/v1/memory/export",
+            actorUserId: user.id,
+            reason,
+            target
+          },
+          metadata: {
+            exportedAt: records.exportedAt,
+            nodeCount: records.nodes.length,
+            eventCount: records.events.length,
+            actorUserId: user.id,
+            reason,
+            target,
+            expiresAt: expiresAt.toISOString()
+          },
+          expiresAt,
+          now
+        }
+      );
+      await repo.recordAuditEvent({
+        actorUserId: user.id,
+        ownerUserId: user.id,
+        visibility: "personal",
+        action: "memory.export.created",
+        targetTable: "memory_exports",
+        targetId: encryptedPackage.manifest.packageId,
+        metadata: {
+          objectClass: encryptedPackage.manifest.objectClass,
+          packageId: encryptedPackage.manifest.packageId,
+          reason,
+          target,
+          expiresAt: encryptedPackage.manifest.expiresAt,
+          nodeCount: records.nodes.length,
+          eventCount: records.events.length,
+          providerMode: encryptedPackage.manifest.payload.providerMode,
+          keyId: encryptedPackage.manifest.payload.keyId,
+          keyVersion: encryptedPackage.manifest.payload.keyVersion
+        }
+      });
+      return encryptedPackage;
     }
   );
 
@@ -355,7 +449,10 @@ export const registerGraphRoutes = (
       const params = nodeIdParamsSchema.parse(request.params);
       const query = expandMemoryNodeQuerySchema.parse(request.query);
       const user = query.team_workspace_id
-        ? await authenticateSession(request)
+        ? await authenticateSessionOrDeviceCredential(
+            request,
+            "team_workspace_read"
+          )
         : await authenticateApiToken(request);
       const expanded = await repo.expandMemoryNode(
         params.nodeId,

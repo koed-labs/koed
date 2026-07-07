@@ -2,7 +2,8 @@ export type TeamWorkspaceAuthorizationRejectionReason =
   | "personal_only"
   | "missing_workspace_access"
   | "workspace_access_mismatch"
-  | "workspace_access_disabled";
+  | "workspace_access_disabled"
+  | "team_entitlement_blocked";
 
 export interface TeamWorkspaceAccessBoundary {
   teamWorkspaceId: string;
@@ -11,6 +12,8 @@ export interface TeamWorkspaceAccessBoundary {
   access: "disabled" | "read" | "write";
   canRecall: boolean;
   membershipStatus: "invited" | "enabled" | "disabled" | null;
+  teamEntitlementStatus?: "active" | "grace" | "suspended" | "revoked";
+  teamEntitlementAllowsAccess?: boolean;
 }
 
 export type TeamWorkspaceAuthorizationDecision =
@@ -69,6 +72,15 @@ export const resolveTeamWorkspaceAuthorization = (input: {
       authorized: false,
       teamWorkspaceId: input.teamWorkspaceId,
       reason: "workspace_access_mismatch"
+    };
+  }
+
+  if (access.teamEntitlementAllowsAccess === false) {
+    return {
+      mode: "team_workspace",
+      authorized: false,
+      teamWorkspaceId: input.teamWorkspaceId,
+      reason: "team_entitlement_blocked"
     };
   }
 

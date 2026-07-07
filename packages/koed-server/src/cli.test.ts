@@ -27,6 +27,14 @@ const status: KoedServerStatus = {
   captureHook: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
+  upstreamBackends: {
+    state: "healthy",
+    registered: 0,
+    validated: 0,
+    stale: 0,
+    failed: 0,
+    notChecked: 0
+  },
   explorer: { state: "healthy", url: "http://localhost:5174" },
   lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
 };
@@ -46,6 +54,14 @@ const runtimeBinaries = () => ({
   initdb: { path: "/opt/homebrew/opt/postgresql@17/bin/initdb", exists: true },
   pg_ctl: { path: "/opt/homebrew/opt/postgresql@17/bin/pg_ctl", exists: true },
   psql: { path: "/opt/homebrew/opt/postgresql@17/bin/psql", exists: true },
+  pg_dump: {
+    path: "/opt/homebrew/opt/postgresql@17/bin/pg_dump",
+    exists: true
+  },
+  pg_restore: {
+    path: "/opt/homebrew/opt/postgresql@17/bin/pg_restore",
+    exists: true
+  },
   pg_config: {
     path: "/opt/homebrew/opt/postgresql@17/bin/pg_config",
     exists: true
@@ -450,6 +466,268 @@ describe("JSON command output", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({
       ok: true,
       state: "healthy"
+    });
+  });
+
+  it("prints upstream list --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["upstream", "list", "--json"], {
+      stdout: stdout.stream,
+      resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+      listUpstreams: () => ({
+        ok: true,
+        state: "listed",
+        message: "1 upstream backend(s) registered.",
+        backends: [
+          {
+            id: "team-vps",
+            displayName: "Team VPS",
+            baseUrl: "https://team.example.test",
+            profile: "private_vps",
+            routePolicy: {
+              personalMemoryRead: "disabled",
+              teamWorkspaceRead: "disabled",
+              shareGrantManagement: "disabled",
+              captureWrites: "disabled",
+              sync: "disabled",
+              admin: "disabled"
+            },
+            credential: { status: "not_configured" },
+            capabilities: {
+              state: "not_checked",
+              checkedAt: null,
+              expiresAt: null,
+              schemaVersion: null,
+              profile: null,
+              releaseVersion: null
+            }
+          }
+        ]
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      backends: [{ id: "team-vps", credential: { status: "not_configured" } }]
+    });
+  });
+
+  it("prints upstream register --json", async () => {
+    const stdout = writer();
+    const seen: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      [
+        "upstream",
+        "register",
+        "--url",
+        "https://team.example.test",
+        "--id",
+        "team-vps",
+        "--name",
+        "Team VPS",
+        "--profile",
+        "private-vps",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        registerUpstream: (_paths, input) => {
+          seen.push(input);
+          return {
+            ok: true,
+            state: "registered",
+            message: "registered",
+            backend: {
+              id: "team-vps",
+              displayName: "Team VPS",
+              baseUrl: "https://team.example.test",
+              profile: "private_vps",
+              routePolicy: {
+                personalMemoryRead: "disabled",
+                teamWorkspaceRead: "disabled",
+                shareGrantManagement: "disabled",
+                captureWrites: "disabled",
+                sync: "disabled",
+                admin: "disabled"
+              },
+              credential: { status: "not_configured" },
+              capabilities: {
+                state: "not_checked",
+                checkedAt: null,
+                expiresAt: null,
+                schemaVersion: null,
+                profile: null,
+                releaseVersion: null
+              }
+            }
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(seen[0]).toEqual({
+      url: "https://team.example.test",
+      id: "team-vps",
+      displayName: "Team VPS",
+      profile: "private-vps"
+    });
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "registered"
+    });
+  });
+
+  it("prints upstream refresh failures as non-zero JSON", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "refresh", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        refreshUpstream: async () => ({
+          ok: false,
+          state: "failed",
+          message: "failed",
+          backend: {
+            id: "team-vps",
+            displayName: "Team VPS",
+            baseUrl: "https://team.example.test",
+            profile: "private_vps",
+            routePolicy: {
+              personalMemoryRead: "disabled",
+              teamWorkspaceRead: "disabled",
+              shareGrantManagement: "disabled",
+              captureWrites: "disabled",
+              sync: "disabled",
+              admin: "disabled"
+            },
+            credential: { status: "not_configured" },
+            capabilities: {
+              state: "failed",
+              checkedAt: "2026-01-01T00:00:00.000Z",
+              expiresAt: null,
+              schemaVersion: null,
+              profile: null,
+              releaseVersion: null,
+              failureCategory: "network"
+            }
+          }
+        })
+      }
+    );
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: false,
+      state: "failed",
+      backend: {
+        capabilities: { failureCategory: "network" }
+      }
+    });
+  });
+
+  it("prints upstream policy --json", async () => {
+    const stdout = writer();
+    const seen: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      [
+        "upstream",
+        "policy",
+        "--id",
+        "team-vps",
+        "--team-workspace-read",
+        "enabled",
+        "--share-grant-management",
+        "enabled",
+        "--capture-writes",
+        "disabled",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        updateUpstreamPolicy: (_paths, id, update) => {
+          seen.push({ id, update });
+          return {
+            ok: true,
+            state: "updated",
+            message: "updated",
+            backend: {
+              id: "team-vps",
+              displayName: "Team VPS",
+              baseUrl: "https://team.example.test",
+              profile: "private_vps",
+              routePolicy: {
+                personalMemoryRead: "disabled",
+                teamWorkspaceRead: "enabled",
+                shareGrantManagement: "enabled",
+                captureWrites: "disabled",
+                sync: "disabled",
+                admin: "disabled"
+              },
+              credential: { status: "not_configured" },
+              capabilities: {
+                state: "validated",
+                checkedAt: "2026-01-01T00:00:00.000Z",
+                expiresAt: "2026-01-01T01:00:00.000Z",
+                schemaVersion: 3,
+                profile: "private_vps",
+                releaseVersion: "0.2.0"
+              }
+            }
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(seen[0]).toEqual({
+      id: "team-vps",
+      update: {
+        teamWorkspaceRead: "enabled",
+        shareGrantManagement: "enabled",
+        captureWrites: "disabled"
+      }
+    });
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      backend: {
+        routePolicy: {
+          teamWorkspaceRead: "enabled",
+          shareGrantManagement: "enabled",
+          captureWrites: "disabled"
+        }
+      }
+    });
+  });
+
+  it("prints upstream remove --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(
+      ["upstream", "remove", "--id", "team-vps", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        removeUpstream: () => ({
+          ok: true,
+          state: "removed",
+          message: "removed"
+        })
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "removed"
     });
   });
 

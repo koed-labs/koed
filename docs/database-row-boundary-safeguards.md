@@ -1,7 +1,11 @@
 # Database Row-Boundary Safeguards
 
 This note records the KOE-127 review of database-level safeguards for Koed
-Koed memory storage. It is an implementation plan, not an accepted ADR.
+memory storage. It is background planning. The current hosted launch decision
+is documented in
+[hosted-database-roles.md](hosted-database-roles.md): split migration/runtime
+roles first, keep repository authorization authoritative, and defer broad RLS
+until a focused spike.
 
 ## Current State
 

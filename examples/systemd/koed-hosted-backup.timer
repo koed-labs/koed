@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Koed hosted backup verification hourly
+Documentation=https://github.com/koed-labs/koed/blob/main/docs/hosted-backups.md
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=true
+Unit=koed-hosted-backup.service
+
+[Install]
+WantedBy=timers.target

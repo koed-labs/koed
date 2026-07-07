@@ -6,7 +6,11 @@ import {
 } from "@koed/db";
 import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
-import { lcmEmbedQueueName, workerQueueNames } from "@koed/shared";
+import {
+  createEnvelopeEncryptionProviderFromEnvironment,
+  lcmEmbedQueueName,
+  workerQueueNames
+} from "@koed/shared";
 import {
   createWorkerJobWorkflow,
   enqueueLcmNodeEmbeddings,
@@ -34,7 +38,12 @@ const pool = workerEnv.databaseUrl
 if (pool) {
   await waitForCurrentDbMigrations(pool);
 }
-const repository = pool ? createMemorySourceRepository(pool) : null;
+const repository = pool
+  ? createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider:
+        createEnvelopeEncryptionProviderFromEnvironment()
+    })
+  : null;
 const requireRepository = (): MemorySourceRepository => {
   if (!repository) {
     throw new Error("DATABASE_URL is required for worker business logic");

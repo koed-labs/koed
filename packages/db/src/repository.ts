@@ -21,6 +21,13 @@ import {
   type SemanticBundleSealReason
 } from "./conversation-semantic-projection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
+import { createCrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
+import { createDeviceCredentialRepository } from "./device-credential-repository.js";
+import {
+  createEncryptedPayloadRepository,
+  upsertEncryptedFieldPayloadWithClient
+} from "./encrypted-payload-repository.js";
+import { createExternalAuthRepository } from "./external-auth-repository.js";
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
@@ -59,7 +66,10 @@ import {
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
-  sanitizeForPostgresStorage
+  sanitizeForPostgresStorage,
+  decryptEnvelopeToUtf8,
+  type EncryptedPayloadEnvelope,
+  type EnvelopeEncryptionProvider
 } from "@koed/shared";
 
 import type {
@@ -76,8 +86,13 @@ import type {
   MemorySourceRepository,
   SemanticMemoryRebuildResult,
   SourceRuntime,
+  TeamSessionShareGrantRecord,
   Visibility
 } from "./types.js";
+
+export interface MemorySourceRepositoryOptions {
+  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+}
 
 interface LcmNodeForSummarizationRow {
   id: string;
@@ -238,6 +253,7 @@ const mapLcmGraphNode = (row: {
 
 const mapLcmGraphEvent = (row: {
   id: string;
+  owner_user_id?: string | null;
   actor: string | null;
   event_type: string;
   source_runtime: SourceRuntime | null;
@@ -1204,6 +1220,87 @@ const isTransportChunkRow = (row: {
   row.transport_chunk_count > 1 ||
   row.transport_chunk_text !== null;
 
+const encryptedConversationItemColumns = (
+  row: Pick<ConversationProjectionRawRow, "metadata" | "raw_json">
+): Set<string> => {
+  const columns = row.metadata?.encryptedConversationItemColumns;
+  const values = Array.isArray(columns)
+    ? columns.filter((column): column is string => typeof column === "string")
+    : [];
+  if (
+    isRecord(row.raw_json) &&
+    row.raw_json.contentEncrypted === true &&
+    row.raw_json.encryptedSourceTable === "conversation_items"
+  ) {
+    values.push("raw_json");
+  }
+  return new Set(values);
+};
+
+const decryptConversationItemColumn = async (
+  pool: pg.Pool,
+  provider: EnvelopeEncryptionProvider | undefined,
+  row: ConversationProjectionRawRow,
+  sourceColumn: "raw_json" | "raw_text" | "transport_chunk_text"
+): Promise<unknown> => {
+  const plaintext = await decryptAuthorizedEncryptedFieldPayload(
+    pool,
+    provider,
+    {
+      ownerUserId: row.owner_user_id,
+      sourceTable: "conversation_items",
+      sourceId: row.id,
+      sourceColumn
+    }
+  );
+  if (plaintext === null) {
+    throw new Error(
+      `Encrypted conversation item source is missing ${sourceColumn}`
+    );
+  }
+  return plaintext;
+};
+
+const hydrateConversationProjectionRow = async (
+  pool: pg.Pool,
+  provider: EnvelopeEncryptionProvider | undefined,
+  row: ConversationProjectionRawRow
+): Promise<ConversationProjectionRawRow> => {
+  const encryptedColumns = encryptedConversationItemColumns(row);
+  if (encryptedColumns.size === 0) {
+    return row;
+  }
+  if (!provider) {
+    throw new Error(
+      "Envelope encryption provider is required to project encrypted conversation items"
+    );
+  }
+  const rawJson = encryptedColumns.has("raw_json")
+    ? await decryptConversationItemColumn(pool, provider, row, "raw_json")
+    : row.raw_json;
+  const rawText = encryptedColumns.has("raw_text")
+    ? await decryptConversationItemColumn(pool, provider, row, "raw_text")
+    : row.raw_text;
+  const transportChunkText = encryptedColumns.has("transport_chunk_text")
+    ? await decryptConversationItemColumn(
+        pool,
+        provider,
+        row,
+        "transport_chunk_text"
+      )
+    : row.transport_chunk_text;
+
+  return {
+    ...row,
+    raw_json: rawJson,
+    raw_text: typeof rawText === "string" ? rawText : row.raw_text,
+    transport_chunk_text:
+      typeof transportChunkText === "string"
+        ? transportChunkText
+        : row.transport_chunk_text
+  };
+};
+
 const decodeTransportChunkEnvelope = (
   text: string,
   encoding: string | null
@@ -1223,6 +1320,7 @@ const decodeTransportChunkEnvelope = (
 
 const loadLogicalConversationProjectionItem = async (
   pool: pg.Pool,
+  provider: EnvelopeEncryptionProvider | undefined,
   row: ConversationProjectionRawRow
 ): Promise<LogicalConversationProjectionItem> => {
   if (!isTransportChunkRow(row)) {
@@ -1264,15 +1362,20 @@ const loadLogicalConversationProjectionItem = async (
     [row.logical_source_id, row.visibility, row.owner_user_id]
   );
 
+  const hydratedChunks = await Promise.all(
+    chunks.rows.map((chunk) =>
+      hydrateConversationProjectionRow(pool, provider, chunk)
+    )
+  );
   const expectedCount = row.transport_chunk_count;
-  if (chunks.rowCount !== expectedCount) {
+  if (hydratedChunks.length !== expectedCount) {
     throw new Error(
-      `Incomplete transport chunk group: expected ${expectedCount}, found ${chunks.rowCount}`
+      `Incomplete transport chunk group: expected ${expectedCount}, found ${hydratedChunks.length}`
     );
   }
 
   const seen = new Set<number>();
-  for (const chunk of chunks.rows) {
+  for (const chunk of hydratedChunks) {
     if (chunk.transport_chunk_count !== expectedCount) {
       throw new Error("Transport chunk count mismatch");
     }
@@ -1296,7 +1399,7 @@ const loadLogicalConversationProjectionItem = async (
     }
   }
 
-  const sorted = [...chunks.rows].sort(
+  const sorted = [...hydratedChunks].sort(
     (a, b) => a.transport_chunk_index - b.transport_chunk_index
   );
   const encoding = sorted[0]?.transport_chunk_encoding ?? null;
@@ -1579,6 +1682,405 @@ const booleanEnv = (name: string, fallback: boolean): boolean => {
     return false;
   }
   return fallback;
+};
+
+const optionalBooleanEnv = (name: string): boolean | null => {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) {
+    return null;
+  }
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+  return null;
+};
+
+const deploymentProfile = (): string =>
+  process.env.KOED_DEPLOYMENT_PROFILE?.trim().toLowerCase() ?? "";
+
+const plaintextLexicalSearchEnabled = (): boolean => {
+  const explicit = optionalBooleanEnv(
+    "MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED"
+  );
+  if (explicit !== null) {
+    return explicit;
+  }
+  return !["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(
+    deploymentProfile()
+  );
+};
+
+const managedCloudPlaintextMemoryPayloadsDisabled = (): boolean => {
+  const profile = deploymentProfile();
+  const releaseStage =
+    process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE?.trim().toLowerCase() ?? "";
+  return (
+    ["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(profile) &&
+    ["paid", "production"].includes(releaseStage)
+  );
+};
+
+const ENCRYPTED_MESSAGE_CONTENT = "[koed encrypted message]";
+const ENCRYPTED_MEMORY_NODE_TEXT = "[koed encrypted memory node]";
+const ENCRYPTED_EMBEDDING_SOURCE_TEXT = "[koed encrypted embedding source]";
+
+const encryptedDisplayPayloadMarker = (
+  sourceTable: "messages" | "tool_events"
+): Record<string, unknown> => ({
+  contentEncrypted: true,
+  encryptedSourceTable: sourceTable
+});
+
+const isEncryptedDisplayPayloadMarker = (
+  value: unknown,
+  sourceTable: "messages" | "tool_events"
+): boolean =>
+  isRecord(value) &&
+  value.contentEncrypted === true &&
+  value.encryptedSourceTable === sourceTable;
+
+const encryptedMemoryNodeJsonMarker = (): Record<string, unknown> => ({
+  contentEncrypted: true,
+  encryptedSourceTable: "memory_nodes"
+});
+
+const isEncryptedMemoryNodeJsonMarker = (value: unknown): boolean =>
+  isRecord(value) &&
+  value.contentEncrypted === true &&
+  value.encryptedSourceTable === "memory_nodes";
+
+const compactJson = (value: unknown): string => {
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value);
+};
+
+const formatToolEventContent = (
+  toolName: string,
+  toolInput: unknown,
+  toolResponse: unknown
+): string =>
+  [
+    `Tool call: ${toolName}`,
+    toolInput === null || toolInput === undefined
+      ? null
+      : `Input:\n${compactJson(toolInput)}`,
+    toolResponse === null || toolResponse === undefined
+      ? null
+      : `Output:\n${compactJson(toolResponse)}`
+  ]
+    .filter((part): part is string => typeof part === "string")
+    .join("\n\n");
+
+type MemoryEventPayload = MemoryEventRecord["metadata"] & {
+  actor?: MemoryActor;
+  content?: string;
+  contentEncrypted?: boolean;
+  metadata?: Record<string, unknown>;
+  rawEventType?: string;
+  workspaceId?: string;
+};
+
+const redactMemoryEventPayloadForPlaintextStorage = (
+  payload: MemoryEventPayload
+): MemoryEventPayload => {
+  const redacted: MemoryEventPayload = {
+    ...payload,
+    contentEncrypted: true
+  };
+  delete redacted.content;
+  return redacted;
+};
+
+type EncryptedFieldPayloadLookupRow = {
+  plaintext_content_type: string;
+  envelope_version: number;
+  provider_mode: EncryptedPayloadEnvelope["providerMode"];
+  key_id: string;
+  key_version: number;
+  scope: EncryptedPayloadEnvelope["scope"];
+  provenance: EncryptedPayloadEnvelope["provenance"];
+  algorithm: EncryptedPayloadEnvelope["algorithm"];
+  ciphertext: string;
+  nonce: string;
+  tag: string;
+  wrapped_dek: EncryptedPayloadEnvelope["wrappedDek"];
+  ciphertext_location: string;
+  aad: EncryptedPayloadEnvelope["aad"];
+  envelope_created_at: Date;
+  envelope_reencrypted_at: Date | null;
+};
+
+const encryptedEnvelopeFromLookupRow = (
+  row: EncryptedFieldPayloadLookupRow
+): EncryptedPayloadEnvelope => ({
+  version: row.envelope_version as EncryptedPayloadEnvelope["version"],
+  providerMode: row.provider_mode,
+  keyId: row.key_id,
+  keyVersion: row.key_version,
+  scope: row.scope,
+  provenance: row.provenance,
+  algorithm: row.algorithm,
+  ciphertext: row.ciphertext,
+  nonce: row.nonce,
+  tag: row.tag,
+  wrappedDek: row.wrapped_dek,
+  ciphertextLocation: row.ciphertext_location,
+  aad: row.aad,
+  createdAt: row.envelope_created_at.toISOString(),
+  reencryptedAt: row.envelope_reencrypted_at?.toISOString() ?? null
+});
+
+const decryptAuthorizedEncryptedFieldPayload = async (
+  pool: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider | undefined,
+  input: {
+    ownerUserId: string | null;
+    sourceTable: string;
+    sourceId: string;
+    sourceColumn: string;
+  }
+): Promise<unknown | null> => {
+  if (!provider || !input.ownerUserId) {
+    return null;
+  }
+  const encrypted = await pool.query<EncryptedFieldPayloadLookupRow>(
+    `
+      select
+        plaintext_content_type,
+        envelope_version,
+        provider_mode,
+        key_id,
+        key_version,
+        scope,
+        provenance,
+        algorithm,
+        ciphertext,
+        nonce,
+        tag,
+        wrapped_dek,
+        ciphertext_location,
+        aad,
+        envelope_created_at,
+        envelope_reencrypted_at
+      from encrypted_field_payloads
+      where owner_user_id = $1
+        and source_table = $2
+        and source_id = $3
+        and source_column = $4
+        and invalidated_at is null
+      limit 1
+    `,
+    [input.ownerUserId, input.sourceTable, input.sourceId, input.sourceColumn]
+  );
+  const row = encrypted.rows[0];
+  if (!row) {
+    return null;
+  }
+  const plaintext = await decryptEnvelopeToUtf8(
+    provider,
+    encryptedEnvelopeFromLookupRow(row)
+  );
+  if (row.plaintext_content_type === "application/json") {
+    return JSON.parse(plaintext) as unknown;
+  }
+  return plaintext;
+};
+
+type HydratableMemoryNodeRow = {
+  id: string;
+  owner_user_id: string | null;
+  summary_text?: string;
+  body_text?: string | null;
+  source_items_json?: unknown;
+  summary_structured_json?: unknown;
+};
+
+const encryptedMemoryNodeColumns = (
+  row: HydratableMemoryNodeRow
+): Set<
+  "summary_text" | "body_text" | "source_items_json" | "summary_structured_json"
+> => {
+  const columns = new Set<
+    | "summary_text"
+    | "body_text"
+    | "source_items_json"
+    | "summary_structured_json"
+  >();
+  if (row.summary_text === ENCRYPTED_MEMORY_NODE_TEXT) {
+    columns.add("summary_text");
+  }
+  if (row.body_text === ENCRYPTED_MEMORY_NODE_TEXT) {
+    columns.add("body_text");
+  }
+  if (isEncryptedMemoryNodeJsonMarker(row.source_items_json)) {
+    columns.add("source_items_json");
+  }
+  if (isEncryptedMemoryNodeJsonMarker(row.summary_structured_json)) {
+    columns.add("summary_structured_json");
+  }
+  return columns;
+};
+
+const hydrateMemoryNodeRow = async <T extends HydratableMemoryNodeRow>(
+  pool: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider | undefined,
+  row: T
+): Promise<T> => {
+  const columns = encryptedMemoryNodeColumns(row);
+  if (columns.size === 0) {
+    return row;
+  }
+  if (!provider) {
+    throw new Error(
+      "Envelope encryption provider is required to expand encrypted Memory Nodes"
+    );
+  }
+
+  const hydrated: HydratableMemoryNodeRow = { ...row };
+  for (const column of columns) {
+    const plaintext = await decryptAuthorizedEncryptedFieldPayload(
+      pool,
+      provider,
+      {
+        ownerUserId: row.owner_user_id,
+        sourceTable: "memory_nodes",
+        sourceId: row.id,
+        sourceColumn: column
+      }
+    );
+    if (plaintext === null) {
+      throw new Error(`Encrypted Memory Node source is missing ${column}`);
+    }
+    if (column === "summary_text" || column === "body_text") {
+      if (typeof plaintext !== "string") {
+        throw new Error(`Encrypted Memory Node ${column} is invalid`);
+      }
+      hydrated[column] = plaintext;
+    } else {
+      hydrated[column] = plaintext;
+    }
+  }
+  return hydrated as T;
+};
+
+const hydrateMemoryNodeRows = async <T extends HydratableMemoryNodeRow>(
+  pool: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider | undefined,
+  rows: T[]
+): Promise<T[]> =>
+  Promise.all(rows.map((row) => hydrateMemoryNodeRow(pool, provider, row)));
+
+const persistEncryptedMemoryNodeField = async (
+  client: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    ownerUserId: string;
+    visibility: Visibility;
+    nodeId: string;
+    sourceColumn:
+      | "summary_text"
+      | "body_text"
+      | "source_items_json"
+      | "summary_structured_json";
+    plaintext: unknown;
+  }
+): Promise<void> => {
+  await upsertEncryptedFieldPayloadWithClient(
+    client,
+    { userId: input.ownerUserId },
+    provider,
+    {
+      sourceTable: "memory_nodes",
+      sourceId: input.nodeId,
+      sourceColumn: input.sourceColumn,
+      plaintext: input.plaintext,
+      visibility: input.visibility,
+      rowFamily: "memory_node",
+      scope: {
+        tenantId: input.ownerUserId,
+        objectClass: "memory_node"
+      },
+      aad: {
+        nodeId: input.nodeId
+      }
+    }
+  );
+};
+
+const persistEncryptedMemoryNodeFields = async (
+  client: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    ownerUserId: string;
+    visibility: Visibility;
+    nodeId: string;
+    summaryText?: string;
+    bodyText?: string | null;
+    sourceItems?: unknown;
+    summaryStructuredJson?: unknown;
+  }
+): Promise<void> => {
+  if (input.summaryText !== undefined) {
+    await persistEncryptedMemoryNodeField(client, provider, {
+      ownerUserId: input.ownerUserId,
+      visibility: input.visibility,
+      nodeId: input.nodeId,
+      sourceColumn: "summary_text",
+      plaintext: input.summaryText
+    });
+  }
+  if (input.bodyText !== undefined && input.bodyText !== null) {
+    await persistEncryptedMemoryNodeField(client, provider, {
+      ownerUserId: input.ownerUserId,
+      visibility: input.visibility,
+      nodeId: input.nodeId,
+      sourceColumn: "body_text",
+      plaintext: input.bodyText
+    });
+  }
+  if (input.sourceItems !== undefined) {
+    await persistEncryptedMemoryNodeField(client, provider, {
+      ownerUserId: input.ownerUserId,
+      visibility: input.visibility,
+      nodeId: input.nodeId,
+      sourceColumn: "source_items_json",
+      plaintext: input.sourceItems
+    });
+  }
+  if (
+    input.summaryStructuredJson !== undefined &&
+    input.summaryStructuredJson !== null
+  ) {
+    await persistEncryptedMemoryNodeField(client, provider, {
+      ownerUserId: input.ownerUserId,
+      visibility: input.visibility,
+      nodeId: input.nodeId,
+      sourceColumn: "summary_structured_json",
+      plaintext: input.summaryStructuredJson
+    });
+  }
+};
+
+const decryptAuthorizedMemoryEventPayload = async (
+  pool: pg.Pool,
+  provider: EnvelopeEncryptionProvider | undefined,
+  input: {
+    ownerUserId: string | null;
+    memoryEventId: string;
+  }
+): Promise<MemoryEventPayload | null> => {
+  const parsed = await decryptAuthorizedEncryptedFieldPayload(pool, provider, {
+    ownerUserId: input.ownerUserId,
+    sourceTable: "memory_events",
+    sourceId: input.memoryEventId,
+    sourceColumn: "payload"
+  });
+  return isRecord(parsed) ? (parsed as MemoryEventPayload) : null;
 };
 
 const nonNegativeFloatEnv = (name: string, fallback: number): number => {
@@ -1896,6 +2398,52 @@ type TeamWorkspaceReadBoundary = {
   teamId: string;
 } | null;
 
+type TeamSessionShareGrantRow = {
+  id: string;
+  owner_user_id: string | null;
+  session_id: string | null;
+  team_id: string;
+  team_workspace_id: string;
+  granted_by_user_id: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  revoked_at: Date | string | null;
+  revoked_by_user_id: string | null;
+  revocation_reason: string | null;
+  personal_deleted_at: Date | string | null;
+  personal_deleted_by_user_id: string | null;
+  personal_deletion_reason: string | null;
+  retained_by_team_at: Date | string | null;
+  retention_reason: string;
+};
+
+const isoTimestamp = (value: Date | string): string =>
+  value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+
+const nullableIsoTimestamp = (value: Date | string | null): string | null =>
+  value ? isoTimestamp(value) : null;
+
+const mapTeamSessionShareGrant = (
+  row: TeamSessionShareGrantRow
+): TeamSessionShareGrantRecord => ({
+  id: row.id,
+  ownerUserId: row.owner_user_id,
+  sessionId: row.session_id,
+  teamId: row.team_id,
+  teamWorkspaceId: row.team_workspace_id,
+  grantedByUserId: row.granted_by_user_id,
+  createdAt: isoTimestamp(row.created_at),
+  updatedAt: isoTimestamp(row.updated_at),
+  revokedAt: nullableIsoTimestamp(row.revoked_at),
+  revokedByUserId: row.revoked_by_user_id,
+  revocationReason: row.revocation_reason,
+  personalDeletedAt: nullableIsoTimestamp(row.personal_deleted_at),
+  personalDeletedByUserId: row.personal_deleted_by_user_id,
+  personalDeletionReason: row.personal_deletion_reason,
+  retainedByTeamAt: nullableIsoTimestamp(row.retained_by_team_at),
+  retentionReason: row.retention_reason
+});
+
 const emptySearchResult = (
   overrides: Partial<RetrievalMetadata> = {}
 ): {
@@ -2163,6 +2711,7 @@ const sourceMemoryEventType = (row: {
 
 const rebuiltSemanticMemoryEventsFromSources = async (
   pool: pg.Pool,
+  provider: EnvelopeEncryptionProvider | undefined,
   input: {
     actorUserId: string;
     memoryEventId: string;
@@ -2255,9 +2804,15 @@ const rebuiltSemanticMemoryEventsFromSources = async (
   const semanticItems: ConversationSemanticProjectionItem[] = [];
   const projectionRules = await loadConversationProjectionPolicyRules(pool);
   for (const sourceRow of sourceRows.rows) {
+    const hydratedSourceRow = await hydrateConversationProjectionRow(
+      pool,
+      provider,
+      sourceRow
+    );
     const logicalItem = await loadLogicalConversationProjectionItem(
       pool,
-      sourceRow
+      provider,
+      hydratedSourceRow
     );
     if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
       continue;
@@ -2706,34 +3261,42 @@ const mapMemoryEvent = (row: {
 });
 
 const mapLcmNodeForSummarization = async (
-  pool: pg.Pool,
-  row: LcmNodeForSummarizationRow
+  pool: pg.Pool | pg.PoolClient,
+  row: LcmNodeForSummarizationRow,
+  provider: EnvelopeEncryptionProvider | undefined
 ): Promise<LcmNodeForSummarization> => {
-  let sourceItems = Array.isArray(row.source_items_json)
-    ? row.source_items_json
+  const hydratedRow = await hydrateMemoryNodeRow(pool, provider, row);
+  let sourceItems = Array.isArray(hydratedRow.source_items_json)
+    ? hydratedRow.source_items_json
     : [];
 
   if (
-    row.kind === "rollup" &&
+    hydratedRow.kind === "rollup" &&
     sourceItems.some((item) => item.kind === "lcm_child")
   ) {
     const children = await pool.query<{
       id: string;
+      owner_user_id: string | null;
       depth: number;
       summary_text: string;
     }>(
       `
-        select child.id, child.depth, child.summary_text
+        select child.id, child.owner_user_id, child.depth, child.summary_text
         from memory_node_children mnc
         join memory_nodes child on child.id = mnc.child_memory_node_id
         where mnc.parent_memory_node_id = $1
           and child.invalidated_at is null and child.personal_deleted_at is null
         order by mnc.child_order asc
       `,
-      [row.id]
+      [hydratedRow.id]
+    );
+    const hydratedChildren = await hydrateMemoryNodeRows(
+      pool,
+      provider,
+      children.rows
     );
     const childSummaries = new Map(
-      children.rows.map((child) => [
+      hydratedChildren.map((child) => [
         child.id,
         { depth: child.depth, summaryText: child.summary_text }
       ])
@@ -2763,47 +3326,300 @@ const mapLcmNodeForSummarization = async (
   }
 
   return {
-    id: row.id,
-    ownerUserId: row.owner_user_id,
-    visibility: row.visibility,
-    kind: row.kind,
-    depth: row.depth,
-    summaryText: row.summary_text,
+    id: hydratedRow.id,
+    ownerUserId: hydratedRow.owner_user_id,
+    visibility: hydratedRow.visibility,
+    kind: hydratedRow.kind,
+    depth: hydratedRow.depth,
+    summaryText: hydratedRow.summary_text,
     sourceItems,
-    sourceTokenEstimate: row.source_token_estimate,
-    summaryTokenEstimate: row.summary_token_estimate,
-    summaryModel: row.summary_model,
-    summaryPromptVersion: row.summary_prompt_version,
-    summaryStructuredJson: row.summary_structured_json,
-    summaryStructuredSchemaVersion: row.summary_structured_schema_version,
-    lcmAlgorithmVersion: row.lcm_algorithm_version
+    sourceTokenEstimate: hydratedRow.source_token_estimate,
+    summaryTokenEstimate: hydratedRow.summary_token_estimate,
+    summaryModel: hydratedRow.summary_model,
+    summaryPromptVersion: hydratedRow.summary_prompt_version,
+    summaryStructuredJson: hydratedRow.summary_structured_json,
+    summaryStructuredSchemaVersion:
+      hydratedRow.summary_structured_schema_version,
+    lcmAlgorithmVersion: hydratedRow.lcm_algorithm_version
   };
 };
 
 export const createMemorySourceRepository = (
-  pool: pg.Pool
-): MemorySourceRepository => ({
-  // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
-  // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
-  ...createUserApiTokenRepository(createDb(pool)),
-  ...createSettingsRepository(createDb(pool)),
-  ...createAuthSessionRepository(createDb(pool)),
-  ...createAuditRepository(createDb(pool)),
-  ...createTeamAccessRepository(createDb(pool)),
-  ...createCapturedSessionRepository(pool),
-  ...createConversationItemRepository(pool),
-  ...createLocalEmbeddingStatusRepository(),
-  ...createMemoryNodeRepository(pool),
-  ...createMemoryQuestionRepository(pool),
-  ...createWorkflowTokenUsageRepository(pool),
+  pool: pg.Pool,
+  options: MemorySourceRepositoryOptions = {}
+): MemorySourceRepository => {
+  const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
 
-  health: () => checkDatabase(pool),
+  return {
+    // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
+    // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
+    ...createUserApiTokenRepository(createDb(pool)),
+    ...createSettingsRepository(createDb(pool)),
+    ...createAuthSessionRepository(createDb(pool)),
+    ...createDeviceCredentialRepository(createDb(pool)),
+    ...createExternalAuthRepository(createDb(pool)),
+    ...createAuditRepository(createDb(pool)),
+    ...createTeamAccessRepository(createDb(pool)),
+    ...createCapturedSessionRepository(pool),
+    ...createConversationItemRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createCrossIdentitySyncRepository(pool),
+    ...encryptedPayloadRepository,
+    ...createLocalEmbeddingStatusRepository(),
+    ...createMemoryNodeRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createMemoryQuestionRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
+    ...createWorkflowTokenUsageRepository(pool),
 
-  async projectPendingConversationItems(actor, input = {}) {
-    const conversationItemIds = input.conversationItemIds ?? null;
-    const visibility = input.visibility ?? null;
-    if (conversationItemIds && conversationItemIds.length === 0) {
-      return {
+    health: () => checkDatabase(pool),
+
+    async createTeamSessionShareGrant(actor, input) {
+      const access = await this.getTeamWorkspaceAccess(
+        actor,
+        input.teamWorkspaceId
+      );
+      if (!access?.canCreateShare) {
+        return null;
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const sessionRows = await client.query<{
+          id: string;
+          owner_user_id: string;
+        }>(
+          `
+          select id, owner_user_id
+          from sessions
+          where id = $1
+            and owner_user_id = $2
+            and visibility = 'personal'
+            and invalidated_at is null
+            and personal_deleted_at is null
+          limit 1
+          for update
+        `,
+          [input.sessionId, actor.userId]
+        );
+        const session = sessionRows.rows[0];
+        if (!session) {
+          await client.query("rollback");
+          return null;
+        }
+
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1::text, 0))",
+          [`team-session-share:${session.id}:${access.teamWorkspaceId}`]
+        );
+
+        const grantRows = await client.query<
+          TeamSessionShareGrantRow & { created: boolean }
+        >(
+          `
+          with existing as (
+            select *
+            from team_session_share_grants
+            where session_id = $2
+              and team_workspace_id = $4
+              and revoked_at is null
+            limit 1
+          ),
+          inserted as (
+            insert into team_session_share_grants (
+              owner_user_id,
+              session_id,
+              team_id,
+              team_workspace_id,
+              granted_by_user_id
+            )
+            select $1, $2, $3, $4, $5
+            where not exists (select 1 from existing)
+            returning *, true as created
+          )
+          select * from inserted
+          union all
+          select existing.*, false as created
+          from existing
+        `,
+          [
+            session.owner_user_id,
+            session.id,
+            access.teamId,
+            access.teamWorkspaceId,
+            actor.userId
+          ]
+        );
+        const row = grantRows.rows[0];
+        if (!row) {
+          await client.query("rollback");
+          return null;
+        }
+
+        if (row.created) {
+          await recordAuditEventWithClient(client, {
+            actorUserId: actor.userId,
+            ownerUserId: session.owner_user_id,
+            visibility: "personal",
+            action: "team.session_share.created",
+            targetTable: "team_session_share_grants",
+            targetId: row.id,
+            metadata: {
+              teamId: access.teamId,
+              teamWorkspaceId: access.teamWorkspaceId,
+              sessionId: session.id
+            }
+          });
+        }
+
+        await client.query("commit");
+        return mapTeamSessionShareGrant(row);
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async revokeTeamSessionShareGrant(actor, input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const existingRows = await client.query<TeamSessionShareGrantRow>(
+          `
+          select *
+          from team_session_share_grants
+          where id = $1
+            and team_workspace_id = $2
+            and revoked_at is null
+          limit 1
+          for update
+        `,
+          [input.shareGrantId, input.teamWorkspaceId]
+        );
+        const existing = existingRows.rows[0];
+        if (!existing) {
+          await client.query("rollback");
+          return null;
+        }
+
+        let canRevoke = existing.owner_user_id === actor.userId;
+        if (!canRevoke) {
+          const access = await this.getTeamWorkspaceAccess(
+            actor,
+            existing.team_workspace_id
+          );
+          canRevoke = access?.canCreateShare === true;
+        }
+        if (!canRevoke) {
+          await client.query("rollback");
+          return null;
+        }
+
+        const revokedRows = await client.query<TeamSessionShareGrantRow>(
+          `
+          update team_session_share_grants
+          set
+            revoked_at = now(),
+            revoked_by_user_id = $1,
+            revocation_reason = nullif(trim($4::text), ''),
+            updated_at = now()
+          where id = $2
+            and team_workspace_id = $3
+            and revoked_at is null
+          returning *
+        `,
+          [
+            actor.userId,
+            input.shareGrantId,
+            input.teamWorkspaceId,
+            input.reason ?? null
+          ]
+        );
+        const revoked = revokedRows.rows[0];
+        if (!revoked) {
+          await client.query("rollback");
+          return null;
+        }
+        await recordAuditEventWithClient(client, {
+          actorUserId: actor.userId,
+          ownerUserId: existing.owner_user_id,
+          visibility: "personal",
+          action: "team.session_share.revoked",
+          targetTable: "team_session_share_grants",
+          targetId: revoked.id,
+          metadata: {
+            teamId: revoked.team_id,
+            teamWorkspaceId: revoked.team_workspace_id,
+            sessionId: revoked.session_id
+          }
+        });
+
+        await client.query("commit");
+        return mapTeamSessionShareGrant(revoked);
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async listTeamSessionShareGrants(actor, input) {
+      const access = await this.getTeamWorkspaceAccess(
+        actor,
+        input.teamWorkspaceId
+      );
+      if (!access?.canRecall) {
+        return null;
+      }
+      const limit = Math.min(Math.max(input.limit ?? 100, 1), 200);
+      const rows = await pool.query<TeamSessionShareGrantRow>(
+        `
+        select *
+        from team_session_share_grants
+        where team_workspace_id = $1
+          and team_id = $2
+          and ($3::boolean = true or revoked_at is null)
+        order by created_at desc, id desc
+        limit $4
+      `,
+        [
+          input.teamWorkspaceId,
+          access.teamId,
+          input.includeRevoked ?? false,
+          limit
+        ]
+      );
+      return rows.rows.map(mapTeamSessionShareGrant);
+    },
+
+    async projectPendingConversationItems(actor, input = {}) {
+      const conversationItemIds = input.conversationItemIds ?? null;
+      const visibility = input.visibility ?? null;
+      if (conversationItemIds && conversationItemIds.length === 0) {
+        return {
+          rawItemsScanned: 0,
+          rawItemsProjected: 0,
+          rawItemsWaitingForAgentSeal: 0,
+          messagesCreated: 0,
+          toolEventsCreated: 0,
+          memoryEventsCreated: 0,
+          tokenUsageRowsCreated: 0,
+          memoryEventIds: [],
+          memoryEventScopes: []
+        };
+      }
+      const limit = Math.min(
+        Math.max(input.limit ?? conversationItemIds?.length ?? 100, 1),
+        1000
+      );
+      const result: ConversationProjectionResult = {
         rawItemsScanned: 0,
         rawItemsProjected: 0,
         rawItemsWaitingForAgentSeal: 0,
@@ -2814,24 +3630,18 @@ export const createMemorySourceRepository = (
         memoryEventIds: [],
         memoryEventScopes: []
       };
-    }
-    const limit = Math.min(
-      Math.max(input.limit ?? conversationItemIds?.length ?? 100, 1),
-      1000
-    );
-    const result: ConversationProjectionResult = {
-      rawItemsScanned: 0,
-      rawItemsProjected: 0,
-      rawItemsWaitingForAgentSeal: 0,
-      messagesCreated: 0,
-      toolEventsCreated: 0,
-      memoryEventsCreated: 0,
-      tokenUsageRowsCreated: 0,
-      memoryEventIds: [],
-      memoryEventScopes: []
-    };
-    const rows = await pool.query<ConversationProjectionRawRow>(
-      `
+      const suppressPlaintextDisplayPayloads =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (
+        suppressPlaintextDisplayPayloads &&
+        !options.envelopeEncryptionProvider
+      ) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext display row storage is disabled"
+        );
+      }
+      const rows = await pool.query<ConversationProjectionRawRow>(
+        `
         with pending_items as (
           select
             ci.id, ci.owner_user_id, ci.visibility, ci.session_id,
@@ -2859,7 +3669,7 @@ export const createMemorySourceRepository = (
             coalesce(ci.event_time, ci.observed_at) as boundary_order_at,
             (
               ci.source_record_type = 'hook_payload'
-              and lower(coalesce(ci.source_event_type, ci.raw_json ->> 'hook_event_name', ci.metadata ->> 'hookEventName', '')) in ('stop', 'subagentstop')
+              and lower(coalesce(ci.source_event_type, ci.metadata ->> 'hookEventName', '')) in ('stop', 'subagentstop')
             ) as is_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
@@ -2920,19 +3730,19 @@ export const createMemorySourceRepository = (
           pi.boundary_order_at asc,
           pi.id asc
       `,
-      [actor.userId, limit, conversationItemIds, visibility]
-    );
-
-    const projectedStatusSourceIds = new Set<string>();
-    const markProjected = async (sourceIds: string[]) => {
-      const pendingIds = sourceIds.filter(
-        (sourceId) => !projectedStatusSourceIds.has(sourceId)
+        [actor.userId, limit, conversationItemIds, visibility]
       );
-      if (pendingIds.length === 0) {
-        return;
-      }
-      await pool.query(
-        `
+
+      const projectedStatusSourceIds = new Set<string>();
+      const markProjected = async (sourceIds: string[]) => {
+        const pendingIds = sourceIds.filter(
+          (sourceId) => !projectedStatusSourceIds.has(sourceId)
+        );
+        if (pendingIds.length === 0) {
+          return;
+        }
+        await pool.query(
+          `
           update conversation_items
           set projection_status = 'projected',
               projection_version = $2,
@@ -2940,439 +3750,526 @@ export const createMemorySourceRepository = (
               projected_at = now()
           where id = any($1::uuid[])
         `,
-        [pendingIds, CURRENT_CONVERSATION_PROJECTION_VERSION]
-      );
-      for (const sourceId of pendingIds) {
-        projectedStatusSourceIds.add(sourceId);
-      }
-      result.rawItemsProjected += pendingIds.length;
-    };
+          [pendingIds, CURRENT_CONVERSATION_PROJECTION_VERSION]
+        );
+        for (const sourceId of pendingIds) {
+          projectedStatusSourceIds.add(sourceId);
+        }
+        result.rawItemsProjected += pendingIds.length;
+      };
 
-    const markProjectionError = async (sourceIds: string[], error: unknown) => {
-      const pendingIds = sourceIds.filter(
-        (sourceId) => !projectedStatusSourceIds.has(sourceId)
-      );
-      if (pendingIds.length === 0) {
-        return;
-      }
-      await pool.query(
-        `
+      const markProjectionError = async (
+        sourceIds: string[],
+        error: unknown
+      ) => {
+        const pendingIds = sourceIds.filter(
+          (sourceId) => !projectedStatusSourceIds.has(sourceId)
+        );
+        if (pendingIds.length === 0) {
+          return;
+        }
+        await pool.query(
+          `
           update conversation_items
           set projection_status = 'error',
               projection_error = $2
           where id = any($1::uuid[])
         `,
-        [pendingIds, error instanceof Error ? error.message : String(error)]
-      );
-    };
-
-    const processedSourceIdentities = new Set<string>();
-    const candidates: ConversationProjectionCandidate[] = [];
-    const projectionRules = await loadConversationProjectionPolicyRules(pool);
-    for (const sourceRow of rows.rows) {
-      result.rawItemsScanned += 1;
-      let sourceIds = [sourceRow.id];
-      try {
-        const logicalItem = await loadLogicalConversationProjectionItem(
-          pool,
-          sourceRow
+          [pendingIds, error instanceof Error ? error.message : String(error)]
         );
-        if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
-          continue;
+      };
+
+      const runDisplayRowUpsert = async <T extends { id: string }>(
+        sql: string,
+        params: unknown[],
+        persistEncryptedFields: (
+          client: pg.Pool | pg.PoolClient,
+          row: T
+        ) => Promise<void>
+      ): Promise<pg.QueryResult<T>> => {
+        if (!suppressPlaintextDisplayPayloads) {
+          return pool.query<T>(sql, params);
         }
-        processedSourceIdentities.add(logicalItem.sourceIdentity);
-        const row = logicalItem.row;
-        sourceIds = logicalItem.sourceIds;
-        const content = conversationItemContent(row);
-        const actorType = actorFromConversationItem(row);
-        const messageRole = messageRoleForActor(actorType);
-        const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
-        const transcriptTokenUsage = tokenUsage
-          ? null
-          : transcriptTokenUsageFromRaw(row.raw_json);
-        const projectionMetadata = canonicalProjectMetadata({
-          metadata: row.metadata,
-          sessionMetadata: row.session_metadata,
-          sessionId: row.session_id,
-          sessionWorkspaceId: row.session_workspace_id,
-          sessionCwd: row.session_cwd
+        const client = await pool.connect();
+        try {
+          await client.query("begin");
+          const upserted = await client.query<T>(sql, params);
+          for (const row of upserted.rows) {
+            await persistEncryptedFields(client, row);
+          }
+          await client.query("commit");
+          return upserted;
+        } catch (error) {
+          await client.query("rollback");
+          throw error;
+        } finally {
+          client.release();
+        }
+      };
+
+      const processedSourceIdentities = new Set<string>();
+      const candidates: ConversationProjectionCandidate[] = [];
+      const projectionRules = await loadConversationProjectionPolicyRules(pool);
+      for (const sourceRow of rows.rows) {
+        result.rawItemsScanned += 1;
+        let sourceIds = [sourceRow.id];
+        try {
+          const hydratedSourceRow = await hydrateConversationProjectionRow(
+            pool,
+            options.envelopeEncryptionProvider,
+            sourceRow
+          );
+          const logicalItem = await loadLogicalConversationProjectionItem(
+            pool,
+            options.envelopeEncryptionProvider,
+            hydratedSourceRow
+          );
+          if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
+            continue;
+          }
+          processedSourceIdentities.add(logicalItem.sourceIdentity);
+          const row = logicalItem.row;
+          sourceIds = logicalItem.sourceIds;
+          const content = conversationItemContent(row);
+          const actorType = actorFromConversationItem(row);
+          const messageRole = messageRoleForActor(actorType);
+          const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
+          const transcriptTokenUsage = tokenUsage
+            ? null
+            : transcriptTokenUsageFromRaw(row.raw_json);
+          const projectionMetadata = canonicalProjectMetadata({
+            metadata: row.metadata,
+            sessionMetadata: row.session_metadata,
+            sessionId: row.session_id,
+            sessionWorkspaceId: row.session_workspace_id,
+            sessionCwd: row.session_cwd
+          });
+          const projectionPolicy = classifyConversationItemProjection(row, {
+            actorType,
+            content,
+            projectionRules
+          });
+          const semanticUnitType =
+            content && actorType && projectionPolicy.createSemanticEvent
+              ? conversationSemanticUnitTypeForActor(actorType)
+              : null;
+          const semanticItem: ConversationSemanticProjectionItem | null =
+            content && actorType && semanticUnitType
+              ? {
+                  row,
+                  sourceIds,
+                  sourceIdentity: logicalItem.sourceIdentity,
+                  sourceHash: logicalItem.sourceHash,
+                  actorType,
+                  content,
+                  includeInLcm: projectionPolicy.includeInLcm,
+                  projectionMetadata
+                }
+              : null;
+          const disposition: ConversationProjectionDisposition =
+            !semanticItem || !semanticUnitType
+              ? "raw_only"
+              : semanticUnitType === "agent_turn"
+                ? "waiting_for_agent_seal"
+                : "ready_for_semantic_projection";
+          candidates.push({
+            logicalItem,
+            row,
+            sourceIds,
+            content,
+            actorType,
+            messageRole,
+            tokenUsage,
+            transcriptTokenUsage,
+            projectionMetadata,
+            projectionPolicy,
+            turnCompleteSignal: conversationItemIsTurnCompleteSignal(row),
+            boundary: conversationProjectionBoundary(row),
+            semanticUnitType,
+            semanticItem,
+            disposition
+          });
+        } catch (error) {
+          await markProjectionError(sourceIds, error);
+        }
+      }
+
+      const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
+      const pendingSupportingContextsByBoundary = new Map<
+        string,
+        SupportingContextProjectionItem[]
+      >();
+
+      const createSemanticMemoryUnit = async (
+        unitType: ConversationSemanticUnitType,
+        items: ConversationSemanticProjectionItem[],
+        sealedReason: SemanticBundleSealReason
+      ) => {
+        if (items.length === 0) {
+          return;
+        }
+        const first = items[0]!;
+        const model = stringField(first.row.metadata ?? {}, "model");
+        const chunks = conversationSemanticUnitChunks(items, {
+          model,
+          maxTokens: projectionMaxTokens(),
+          hardMaxTokens: projectionHardMaxTokens()
         });
-        const projectionPolicy = classifyConversationItemProjection(row, {
-          actorType,
-          content,
-          projectionRules
+        const sourceCapturedAt =
+          items
+            .map((item) => item.row.event_time ?? item.row.observed_at)
+            .filter((value): value is Date => value instanceof Date)
+            .sort((left, right) => left.getTime() - right.getTime())[0] ??
+          undefined;
+        const sourceActors = uniqueOrderedStrings(
+          items.map((item) => item.actorType)
+        );
+        const unitActor = conversationSemanticUnitActor(unitType, sourceActors);
+        const allSourceIds = uniqueOrderedStrings(
+          items.flatMap((item) => item.sourceIds)
+        );
+        const includeInLcmBySourceIdentity = new Map(
+          items.map((item) => [item.sourceIdentity, item.includeInLcm])
+        );
+        const boundaryKey = conversationSemanticBoundaryKey(first);
+        const supportingContexts =
+          unitType === "user_turn"
+            ? (pendingSupportingContextsByBoundary.get(boundaryKey) ?? [])
+            : [];
+        if (unitType === "user_turn") {
+          pendingSupportingContextsByBoundary.delete(boundaryKey);
+        }
+        const supportingSourceIds = uniqueOrderedStrings(
+          supportingContexts.flatMap((item) => item.sourceIds)
+        );
+        const createdEventIds: string[] = [];
+
+        for (const chunk of chunks) {
+          const includeInLcm = chunk.sourceIdentities.some(
+            (sourceIdentity) =>
+              includeInLcmBySourceIdentity.get(sourceIdentity) === true
+          );
+          const unitHash = createHash("sha256")
+            .update(
+              JSON.stringify({
+                projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                unitType,
+                sourceIdentities: chunk.sourceIdentities,
+                chunkIndex: chunk.chunkIndex
+              })
+            )
+            .digest("hex");
+          const contentHash = createHash("sha256")
+            .update(
+              JSON.stringify({
+                projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                unitType,
+                sourceHashes: chunk.sourceHashes,
+                content: chunk.content,
+                chunkIndex: chunk.chunkIndex
+              })
+            )
+            .digest("hex");
+          const event = await this.createMemoryEvent(
+            { userId: actor.userId },
+            {
+              workspaceId: canonicalWorkspaceId({
+                metadata: first.row.metadata,
+                sessionId: first.row.session_id,
+                sessionWorkspaceId: first.row.session_workspace_id,
+                sessionCwd: first.row.session_cwd
+              }),
+              sessionId: first.row.session_id ?? undefined,
+              turnId: first.row.turn_id ?? undefined,
+              actor: unitActor,
+              eventType: "captured",
+              rawEventType: unitType,
+              content: chunk.content,
+              metadata: conversationSemanticEventMetadata({
+                first,
+                chunk,
+                allSourceIds,
+                sourceActors,
+                unitType,
+                sealedReason,
+                includeInLcm,
+                projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                model
+              }),
+              visibility: first.row.visibility,
+              sourceRuntime:
+                first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+              captureMethod: captureMethodForConversationItem({
+                sourceTransport: first.row.source_transport
+              }),
+              codexTranscriptPath: first.row.source_path ?? undefined,
+              idempotencyKey: `projection:${unitType}:${unitHash}`,
+              sourceHash: `projection:${unitType}:${contentHash}`,
+              capturedAt: sourceCapturedAt?.toISOString(),
+              sourceEventTime: chunk.sourceEventTime?.toISOString(),
+              sourceSequence: chunk.sourceSequence ?? undefined,
+              tokenModel: model ?? undefined,
+              sealReason: sealedReason
+            }
+          );
+          if (event.id) {
+            createdEventIds.push(event.id);
+            if (supportingSourceIds.length > 0) {
+              await linkMemoryEventSources(
+                pool,
+                event.id,
+                supportingSourceIds,
+                SUPPORTING_CONTEXT_SOURCE_ROLE,
+                chunk.sourceIds.length
+              );
+            }
+            result.memoryEventsCreated += 1;
+            result.memoryEventIds.push(event.id);
+            result.memoryEventScopes.push({
+              eventId: event.id,
+              visibility: first.row.visibility
+            });
+          }
+        }
+        if (createdEventIds.length > 0 && supportingSourceIds.length > 0) {
+          await markProjected(supportingSourceIds);
+        }
+      };
+
+      const flushAgentBundle = async (
+        boundaryKey: string,
+        sealedReason: SemanticBundleSealReason
+      ) => {
+        const bundle = pendingAgentBundles.get(boundaryKey);
+        if (!bundle || bundle.items.length === 0) {
+          pendingAgentBundles.delete(boundaryKey);
+          return;
+        }
+        pendingAgentBundles.delete(boundaryKey);
+        const items = bundle.items;
+        const sourceIds = uniqueOrderedStrings(
+          items.flatMap((item) => item.sourceIds)
+        );
+        try {
+          for (const group of conversationSemanticProjectionGroups(
+            "agent_turn",
+            items
+          )) {
+            await createSemanticMemoryUnit(
+              group.unitType,
+              group.items,
+              sealedReason
+            );
+          }
+          await markProjected(sourceIds);
+        } catch (error) {
+          await markProjectionError(sourceIds, error);
+        }
+      };
+
+      const flushAgentBundlesForScope = async (
+        scopeKey: string,
+        sealedReason: SemanticBundleSealReason
+      ) => {
+        for (const [boundaryKey, bundle] of [...pendingAgentBundles]) {
+          const first = bundle.items[0];
+          if (first && conversationProjectionScopeKey(first.row) === scopeKey) {
+            await flushAgentBundle(boundaryKey, sealedReason);
+          }
+        }
+      };
+
+      const pendingAgentLatestActivityTime = (
+        bundle: PendingAgentSemanticBundle
+      ): Date | null =>
+        bundle.items
+          .map((item) => item.row.event_time ?? item.row.observed_at)
+          .filter((value): value is Date => value instanceof Date)
+          .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+
+      const pendingAgentBundleIsStale = (
+        bundle: PendingAgentSemanticBundle
+      ): boolean => {
+        if (bundle.items.length === 0) {
+          return false;
+        }
+        const staleMs = projectionAgentTurnStaleMs();
+        if (staleMs <= 0) {
+          return true;
+        }
+        const latestActivityTime = pendingAgentLatestActivityTime(bundle);
+        if (!latestActivityTime) {
+          return false;
+        }
+        return Date.now() - latestActivityTime.getTime() >= staleMs;
+      };
+
+      const flushStaleAgentBundles = async () => {
+        for (const [boundaryKey, bundle] of pendingAgentBundles) {
+          if (pendingAgentBundleIsStale(bundle)) {
+            await flushAgentBundle(boundaryKey, "catch_up_stale");
+          }
+        }
+      };
+
+      const queueAgentSemanticItem = async (
+        semanticItem: ConversationSemanticProjectionItem
+      ): Promise<AgentSemanticQueueResult> => {
+        const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
+        const model = stringField(semanticItem.row.metadata ?? {}, "model");
+        const itemTokens = estimateTokens(semanticItem.content, {
+          model: model ?? "gpt-5.4-mini"
         });
-        const semanticUnitType =
-          content && actorType && projectionPolicy.createSemanticEvent
-            ? conversationSemanticUnitTypeForActor(actorType)
-            : null;
-        const semanticItem: ConversationSemanticProjectionItem | null =
-          content && actorType && semanticUnitType
-            ? {
-                row,
-                sourceIds,
-                sourceIdentity: logicalItem.sourceIdentity,
-                sourceHash: logicalItem.sourceHash,
-                actorType,
-                content,
-                includeInLcm: projectionPolicy.includeInLcm,
-                projectionMetadata
-              }
-            : null;
-        const disposition: ConversationProjectionDisposition =
-          !semanticItem || !semanticUnitType
-            ? "raw_only"
-            : semanticUnitType === "agent_turn"
-              ? "waiting_for_agent_seal"
-              : "ready_for_semantic_projection";
-        candidates.push({
+        const maxTokens = projectionMaxTokens();
+        let bundle = pendingAgentBundles.get(boundaryKey);
+        if (!bundle) {
+          bundle = { items: [] };
+          pendingAgentBundles.set(boundaryKey, bundle);
+        }
+
+        const candidateTokens =
+          bundle.items.length > 0
+            ? joinedSemanticContentTokenCount(
+                [
+                  ...bundle.items.map((item) => item.content),
+                  semanticItem.content
+                ],
+                model
+              )
+            : itemTokens;
+        if (bundle.items.length > 0 && candidateTokens > maxTokens) {
+          await flushAgentBundle(boundaryKey, "token_limit");
+          bundle = { items: [] };
+          pendingAgentBundles.set(boundaryKey, bundle);
+        }
+
+        if (itemTokens > maxTokens) {
+          pendingAgentBundles.set(boundaryKey, {
+            items: [semanticItem]
+          });
+          await flushAgentBundle(boundaryKey, "token_limit");
+          return "projected_by_token_limit";
+        }
+
+        bundle.items.push(semanticItem);
+        return "waiting_for_agent_seal";
+      };
+
+      const waitingForAgentSealSourceIds = new Set<string>();
+
+      for (const candidate of candidates) {
+        const {
           logicalItem,
           row,
           sourceIds,
           content,
-          actorType,
           messageRole,
           tokenUsage,
           transcriptTokenUsage,
-          projectionMetadata,
           projectionPolicy,
-          turnCompleteSignal: conversationItemIsTurnCompleteSignal(row),
-          boundary: conversationProjectionBoundary(row),
+          turnCompleteSignal,
+          boundary,
           semanticUnitType,
           semanticItem,
           disposition
-        });
-      } catch (error) {
-        await markProjectionError(sourceIds, error);
-      }
-    }
-
-    const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
-    const pendingSupportingContextsByBoundary = new Map<
-      string,
-      SupportingContextProjectionItem[]
-    >();
-
-    const createSemanticMemoryUnit = async (
-      unitType: ConversationSemanticUnitType,
-      items: ConversationSemanticProjectionItem[],
-      sealedReason: SemanticBundleSealReason
-    ) => {
-      if (items.length === 0) {
-        return;
-      }
-      const first = items[0]!;
-      const model = stringField(first.row.metadata ?? {}, "model");
-      const chunks = conversationSemanticUnitChunks(items, {
-        model,
-        maxTokens: projectionMaxTokens(),
-        hardMaxTokens: projectionHardMaxTokens()
-      });
-      const sourceCapturedAt =
-        items
-          .map((item) => item.row.event_time ?? item.row.observed_at)
-          .filter((value): value is Date => value instanceof Date)
-          .sort((left, right) => left.getTime() - right.getTime())[0] ??
-        undefined;
-      const sourceActors = uniqueOrderedStrings(
-        items.map((item) => item.actorType)
-      );
-      const unitActor = conversationSemanticUnitActor(unitType, sourceActors);
-      const allSourceIds = uniqueOrderedStrings(
-        items.flatMap((item) => item.sourceIds)
-      );
-      const includeInLcmBySourceIdentity = new Map(
-        items.map((item) => [item.sourceIdentity, item.includeInLcm])
-      );
-      const boundaryKey = conversationSemanticBoundaryKey(first);
-      const supportingContexts =
-        unitType === "user_turn"
-          ? (pendingSupportingContextsByBoundary.get(boundaryKey) ?? [])
-          : [];
-      if (unitType === "user_turn") {
-        pendingSupportingContextsByBoundary.delete(boundaryKey);
-      }
-      const supportingSourceIds = uniqueOrderedStrings(
-        supportingContexts.flatMap((item) => item.sourceIds)
-      );
-      const createdEventIds: string[] = [];
-
-      for (const chunk of chunks) {
-        const includeInLcm = chunk.sourceIdentities.some(
-          (sourceIdentity) =>
-            includeInLcmBySourceIdentity.get(sourceIdentity) === true
-        );
-        const unitHash = createHash("sha256")
-          .update(
-            JSON.stringify({
-              projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-              unitType,
-              sourceIdentities: chunk.sourceIdentities,
-              chunkIndex: chunk.chunkIndex
-            })
-          )
-          .digest("hex");
-        const contentHash = createHash("sha256")
-          .update(
-            JSON.stringify({
-              projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-              unitType,
-              sourceHashes: chunk.sourceHashes,
-              content: chunk.content,
-              chunkIndex: chunk.chunkIndex
-            })
-          )
-          .digest("hex");
-        const event = await this.createMemoryEvent(
-          { userId: actor.userId },
-          {
-            workspaceId: canonicalWorkspaceId({
-              metadata: first.row.metadata,
-              sessionId: first.row.session_id,
-              sessionWorkspaceId: first.row.session_workspace_id,
-              sessionCwd: first.row.session_cwd
-            }),
-            sessionId: first.row.session_id ?? undefined,
-            turnId: first.row.turn_id ?? undefined,
-            actor: unitActor,
-            eventType: "captured",
-            rawEventType: unitType,
-            content: chunk.content,
-            metadata: conversationSemanticEventMetadata({
-              first,
-              chunk,
-              allSourceIds,
-              sourceActors,
-              unitType,
-              sealedReason,
-              includeInLcm,
-              projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-              model
-            }),
-            visibility: first.row.visibility,
-            sourceRuntime:
-              first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-            captureMethod: captureMethodForConversationItem({
-              sourceTransport: first.row.source_transport
-            }),
-            codexTranscriptPath: first.row.source_path ?? undefined,
-            idempotencyKey: `projection:${unitType}:${unitHash}`,
-            sourceHash: `projection:${unitType}:${contentHash}`,
-            capturedAt: sourceCapturedAt?.toISOString(),
-            sourceEventTime: chunk.sourceEventTime?.toISOString(),
-            sourceSequence: chunk.sourceSequence ?? undefined,
-            tokenModel: model ?? undefined,
-            sealReason: sealedReason
-          }
-        );
-        if (event.id) {
-          createdEventIds.push(event.id);
-          if (supportingSourceIds.length > 0) {
-            await linkMemoryEventSources(
-              pool,
-              event.id,
-              supportingSourceIds,
-              SUPPORTING_CONTEXT_SOURCE_ROLE,
-              chunk.sourceIds.length
+        } = candidate;
+        try {
+          const ownerUserId = actor.userId;
+          const requiresTranscriptSourceTime =
+            row.source_transport === "hook" && row.source_kind === "codex";
+          if (
+            requiresTranscriptSourceTime &&
+            (projectionPolicy.createMessage ||
+              projectionPolicy.createToolEvent) &&
+            !row.event_time
+          ) {
+            throw new Error(
+              "Transcript display projection requires source event timestamp"
             );
           }
-          result.memoryEventsCreated += 1;
-          result.memoryEventIds.push(event.id);
-          result.memoryEventScopes.push({
-            eventId: event.id,
-            visibility: first.row.visibility
-          });
-        }
-      }
-      if (createdEventIds.length > 0 && supportingSourceIds.length > 0) {
-        await markProjected(supportingSourceIds);
-      }
-    };
-
-    const flushAgentBundle = async (
-      boundaryKey: string,
-      sealedReason: SemanticBundleSealReason
-    ) => {
-      const bundle = pendingAgentBundles.get(boundaryKey);
-      if (!bundle || bundle.items.length === 0) {
-        pendingAgentBundles.delete(boundaryKey);
-        return;
-      }
-      pendingAgentBundles.delete(boundaryKey);
-      const items = bundle.items;
-      const sourceIds = uniqueOrderedStrings(
-        items.flatMap((item) => item.sourceIds)
-      );
-      try {
-        for (const group of conversationSemanticProjectionGroups(
-          "agent_turn",
-          items
-        )) {
-          await createSemanticMemoryUnit(
-            group.unitType,
-            group.items,
-            sealedReason
-          );
-        }
-        await markProjected(sourceIds);
-      } catch (error) {
-        await markProjectionError(sourceIds, error);
-      }
-    };
-
-    const flushAgentBundlesForScope = async (
-      scopeKey: string,
-      sealedReason: SemanticBundleSealReason
-    ) => {
-      for (const [boundaryKey, bundle] of [...pendingAgentBundles]) {
-        const first = bundle.items[0];
-        if (first && conversationProjectionScopeKey(first.row) === scopeKey) {
-          await flushAgentBundle(boundaryKey, sealedReason);
-        }
-      }
-    };
-
-    const pendingAgentLatestActivityTime = (
-      bundle: PendingAgentSemanticBundle
-    ): Date | null =>
-      bundle.items
-        .map((item) => item.row.event_time ?? item.row.observed_at)
-        .filter((value): value is Date => value instanceof Date)
-        .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
-
-    const pendingAgentBundleIsStale = (
-      bundle: PendingAgentSemanticBundle
-    ): boolean => {
-      if (bundle.items.length === 0) {
-        return false;
-      }
-      const staleMs = projectionAgentTurnStaleMs();
-      if (staleMs <= 0) {
-        return true;
-      }
-      const latestActivityTime = pendingAgentLatestActivityTime(bundle);
-      if (!latestActivityTime) {
-        return false;
-      }
-      return Date.now() - latestActivityTime.getTime() >= staleMs;
-    };
-
-    const flushStaleAgentBundles = async () => {
-      for (const [boundaryKey, bundle] of pendingAgentBundles) {
-        if (pendingAgentBundleIsStale(bundle)) {
-          await flushAgentBundle(boundaryKey, "catch_up_stale");
-        }
-      }
-    };
-
-    const queueAgentSemanticItem = async (
-      semanticItem: ConversationSemanticProjectionItem
-    ): Promise<AgentSemanticQueueResult> => {
-      const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
-      const model = stringField(semanticItem.row.metadata ?? {}, "model");
-      const itemTokens = estimateTokens(semanticItem.content, {
-        model: model ?? "gpt-5.4-mini"
-      });
-      const maxTokens = projectionMaxTokens();
-      let bundle = pendingAgentBundles.get(boundaryKey);
-      if (!bundle) {
-        bundle = { items: [] };
-        pendingAgentBundles.set(boundaryKey, bundle);
-      }
-
-      const candidateTokens =
-        bundle.items.length > 0
-          ? joinedSemanticContentTokenCount(
-              [
-                ...bundle.items.map((item) => item.content),
-                semanticItem.content
-              ],
-              model
-            )
-          : itemTokens;
-      if (bundle.items.length > 0 && candidateTokens > maxTokens) {
-        await flushAgentBundle(boundaryKey, "token_limit");
-        bundle = { items: [] };
-        pendingAgentBundles.set(boundaryKey, bundle);
-      }
-
-      if (itemTokens > maxTokens) {
-        pendingAgentBundles.set(boundaryKey, {
-          items: [semanticItem]
-        });
-        await flushAgentBundle(boundaryKey, "token_limit");
-        return "projected_by_token_limit";
-      }
-
-      bundle.items.push(semanticItem);
-      return "waiting_for_agent_seal";
-    };
-
-    const waitingForAgentSealSourceIds = new Set<string>();
-
-    for (const candidate of candidates) {
-      const {
-        logicalItem,
-        row,
-        sourceIds,
-        content,
-        messageRole,
-        tokenUsage,
-        transcriptTokenUsage,
-        projectionPolicy,
-        turnCompleteSignal,
-        boundary,
-        semanticUnitType,
-        semanticItem,
-        disposition
-      } = candidate;
-      try {
-        const ownerUserId = actor.userId;
-        const requiresTranscriptSourceTime =
-          row.source_transport === "hook" && row.source_kind === "codex";
-        if (
-          requiresTranscriptSourceTime &&
-          (projectionPolicy.createMessage ||
-            projectionPolicy.createToolEvent) &&
-          !row.event_time
-        ) {
-          throw new Error(
-            "Transcript display projection requires source event timestamp"
-          );
-        }
-        if (projectionPolicy.reason === "ide-client-supporting-context") {
-          if (content) {
-            const supportingContext: SupportingContextProjectionItem = {
-              row,
-              sourceIds,
-              content
-            };
-            pendingSupportingContextsByBoundary.set(boundary.key, [
-              ...(pendingSupportingContextsByBoundary.get(boundary.key) ?? []),
-              supportingContext
-            ]);
-          } else {
-            await markProjected(sourceIds);
-          }
-          continue;
-        }
-
-        if (tokenUsage) {
-          for (const scope of ["last", "total"] as const) {
-            const breakdown = tokenUsage[scope];
-            if (!breakdown) {
-              continue;
+          if (projectionPolicy.reason === "ide-client-supporting-context") {
+            if (content) {
+              const supportingContext: SupportingContextProjectionItem = {
+                row,
+                sourceIds,
+                content
+              };
+              pendingSupportingContextsByBoundary.set(boundary.key, [
+                ...(pendingSupportingContextsByBoundary.get(boundary.key) ??
+                  []),
+                supportingContext
+              ]);
+            } else {
+              await markProjected(sourceIds);
             }
+            continue;
+          }
+
+          if (tokenUsage) {
+            for (const scope of ["last", "total"] as const) {
+              const breakdown = tokenUsage[scope];
+              if (!breakdown) {
+                continue;
+              }
+              await this.recordWorkflowTokenUsage(
+                { userId: actor.userId },
+                {
+                  visibility: row.visibility,
+                  workflowType:
+                    stringField(row.metadata ?? {}, "workflow") ??
+                    "conversation_projection",
+                  workflowId:
+                    stringField(row.metadata ?? {}, "questionId") ??
+                    stringField(row.metadata ?? {}, "nodeId") ??
+                    logicalItem.sourceIdentity,
+                  sessionId: row.session_id ?? undefined,
+                  turnId: row.turn_id ?? undefined,
+                  conversationItemId: sourceIds[0],
+                  sourceRuntime:
+                    row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                  sourceKind: row.source_kind,
+                  sourceAdapterVersion: row.source_adapter_version,
+                  usageSource:
+                    row.source_transport === "hook"
+                      ? "transcript"
+                      : "app_server",
+                  usageAccuracy:
+                    scope === "last"
+                      ? "provider_reported"
+                      : "provider_replayed",
+                  usageKind:
+                    scope === "last" ? "turn_delta" : "cumulative_snapshot",
+                  connectorClient: row.source_kind,
+                  model: stringField(row.metadata ?? {}, "model") ?? undefined,
+                  modelContextWindow: tokenUsage.modelContextWindow,
+                  usageScope: scope,
+                  ...breakdown,
+                  metadata: {
+                    rawConversationItemId: sourceIds[0],
+                    rawConversationItemIds: sourceIds,
+                    logicalSourceId: logicalItem.sourceIdentity
+                  },
+                  idempotencyKey: `token:${logicalItem.sourceIdentity}:${scope}`
+                }
+              );
+              result.tokenUsageRowsCreated += 1;
+            }
+          }
+          if (transcriptTokenUsage) {
+            const threadKind =
+              stringField(row.metadata ?? {}, "threadKind") ??
+              stringField(row.session_metadata ?? {}, "threadKind");
+            const workflowType =
+              threadKind === "subagent" ? "subagent_turn" : "main_agent_turn";
             await this.recordWorkflowTokenUsage(
               { userId: actor.userId },
               {
                 visibility: row.visibility,
-                workflowType:
-                  stringField(row.metadata ?? {}, "workflow") ??
-                  "conversation_projection",
+                workflowType,
                 workflowId:
-                  stringField(row.metadata ?? {}, "questionId") ??
-                  stringField(row.metadata ?? {}, "nodeId") ??
+                  stringField(row.metadata ?? {}, "transcriptId") ??
+                  row.turn_id ??
+                  row.session_id ??
                   logicalItem.sourceIdentity,
                 sessionId: row.session_id ?? undefined,
                 turnId: row.turn_id ?? undefined,
@@ -3381,96 +4278,62 @@ export const createMemorySourceRepository = (
                   row.source_kind === "codex-cli" ? "codex-cli" : "codex",
                 sourceKind: row.source_kind,
                 sourceAdapterVersion: row.source_adapter_version,
-                usageSource:
-                  row.source_transport === "hook" ? "transcript" : "app_server",
-                usageAccuracy:
-                  scope === "last" ? "provider_reported" : "provider_replayed",
-                usageKind:
-                  scope === "last" ? "turn_delta" : "cumulative_snapshot",
+                usageSource: "transcript",
+                usageAccuracy: "provider_reported",
+                usageKind: "turn_delta",
                 connectorClient: row.source_kind,
-                model: stringField(row.metadata ?? {}, "model") ?? undefined,
-                modelContextWindow: tokenUsage.modelContextWindow,
-                usageScope: scope,
-                ...breakdown,
+                model:
+                  transcriptTokenUsage.model ??
+                  stringField(row.metadata ?? {}, "model") ??
+                  undefined,
+                modelContextWindow: transcriptTokenUsage.modelContextWindow,
+                inputTokens: transcriptTokenUsage.inputTokens,
+                cachedInputTokens: transcriptTokenUsage.cachedInputTokens,
+                outputTokens: transcriptTokenUsage.outputTokens,
+                reasoningOutputTokens:
+                  transcriptTokenUsage.reasoningOutputTokens,
+                totalTokens: transcriptTokenUsage.totalTokens,
+                usageScope: "last",
                 metadata: {
                   rawConversationItemId: sourceIds[0],
                   rawConversationItemIds: sourceIds,
-                  logicalSourceId: logicalItem.sourceIdentity
+                  logicalSourceId: logicalItem.sourceIdentity,
+                  threadKind: threadKind ?? "conversation",
+                  parentThreadId:
+                    stringField(row.metadata ?? {}, "parentThreadId") ??
+                    stringField(row.session_metadata ?? {}, "parentThreadId"),
+                  parentSessionId:
+                    stringField(row.metadata ?? {}, "parentSessionId") ??
+                    stringField(row.session_metadata ?? {}, "parentSessionId"),
+                  transcriptPath: row.source_path,
+                  sourceLineNumber: row.source_sequence
                 },
-                idempotencyKey: `token:${logicalItem.sourceIdentity}:${scope}`
+                idempotencyKey: `token:${logicalItem.sourceIdentity}:transcript:last`
               }
             );
             result.tokenUsageRowsCreated += 1;
           }
-        }
-        if (transcriptTokenUsage) {
-          const threadKind =
-            stringField(row.metadata ?? {}, "threadKind") ??
-            stringField(row.session_metadata ?? {}, "threadKind");
-          const workflowType =
-            threadKind === "subagent" ? "subagent_turn" : "main_agent_turn";
-          await this.recordWorkflowTokenUsage(
-            { userId: actor.userId },
-            {
-              visibility: row.visibility,
-              workflowType,
-              workflowId:
-                stringField(row.metadata ?? {}, "transcriptId") ??
-                row.turn_id ??
-                row.session_id ??
-                logicalItem.sourceIdentity,
-              sessionId: row.session_id ?? undefined,
-              turnId: row.turn_id ?? undefined,
-              conversationItemId: sourceIds[0],
-              sourceRuntime:
-                row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-              sourceKind: row.source_kind,
-              sourceAdapterVersion: row.source_adapter_version,
-              usageSource: "transcript",
-              usageAccuracy: "provider_reported",
-              usageKind: "turn_delta",
-              connectorClient: row.source_kind,
-              model:
-                transcriptTokenUsage.model ??
-                stringField(row.metadata ?? {}, "model") ??
-                undefined,
-              modelContextWindow: transcriptTokenUsage.modelContextWindow,
-              inputTokens: transcriptTokenUsage.inputTokens,
-              cachedInputTokens: transcriptTokenUsage.cachedInputTokens,
-              outputTokens: transcriptTokenUsage.outputTokens,
-              reasoningOutputTokens: transcriptTokenUsage.reasoningOutputTokens,
-              totalTokens: transcriptTokenUsage.totalTokens,
-              usageScope: "last",
-              metadata: {
-                rawConversationItemId: sourceIds[0],
-                rawConversationItemIds: sourceIds,
-                logicalSourceId: logicalItem.sourceIdentity,
-                threadKind: threadKind ?? "conversation",
-                parentThreadId:
-                  stringField(row.metadata ?? {}, "parentThreadId") ??
-                  stringField(row.session_metadata ?? {}, "parentThreadId"),
-                parentSessionId:
-                  stringField(row.metadata ?? {}, "parentSessionId") ??
-                  stringField(row.session_metadata ?? {}, "parentSessionId"),
-                transcriptPath: row.source_path,
-                sourceLineNumber: row.source_sequence
-              },
-              idempotencyKey: `token:${logicalItem.sourceIdentity}:transcript:last`
-            }
-          );
-          result.tokenUsageRowsCreated += 1;
-        }
 
-        if (
-          row.session_id &&
-          messageRole &&
-          content &&
-          projectionPolicy.createMessage
-        ) {
-          const inserted = await pool.query<{ id: string; inserted: boolean }>(
-            `
-              with existing as (
-                update messages
+          if (
+            row.session_id &&
+            messageRole &&
+            content &&
+            projectionPolicy.createMessage
+          ) {
+            const messageContentForStorage = suppressPlaintextDisplayPayloads
+              ? ENCRYPTED_MESSAGE_CONTENT
+              : content;
+            const messageContentJsonForStorage =
+              suppressPlaintextDisplayPayloads
+                ? encryptedDisplayPayloadMarker("messages")
+                : row.raw_json;
+            const inserted = await runDisplayRowUpsert<{
+              id: string;
+              inserted: boolean;
+            }>(
+              `
+	              with existing as (
+	                update messages
                 set
                   turn_id = coalesce($2::uuid, messages.turn_id),
                   role = $5,
@@ -3564,51 +4427,129 @@ export const createMemorySourceRepository = (
               select * from fallback
               limit 1
             `,
-            [
-              row.session_id,
-              row.turn_id,
-              ownerUserId,
-              row.visibility,
-              messageRole,
-              content,
-              row.raw_json,
-              row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-              captureMethodForConversationItem({
-                sourceTransport: row.source_transport
-              }),
-              row.source_path,
-              row.source_sequence === null ? null : String(row.source_sequence),
-              `message:${logicalItem.sourceIdentity}`,
-              `message:${logicalItem.sourceHash}`,
-              estimateTokens(content),
-              row.event_time,
-              row.observed_at
-            ]
-          );
-          if (inserted.rows.some((message) => message.inserted)) {
-            result.messagesCreated += 1;
+              [
+                row.session_id,
+                row.turn_id,
+                ownerUserId,
+                row.visibility,
+                messageRole,
+                messageContentForStorage,
+                messageContentJsonForStorage,
+                row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                captureMethodForConversationItem({
+                  sourceTransport: row.source_transport
+                }),
+                row.source_path,
+                row.source_sequence === null
+                  ? null
+                  : String(row.source_sequence),
+                `message:${logicalItem.sourceIdentity}`,
+                `message:${logicalItem.sourceHash}`,
+                estimateTokens(content),
+                row.event_time,
+                row.observed_at
+              ],
+              async (client, message) => {
+                await upsertEncryptedFieldPayloadWithClient(
+                  client,
+                  { userId: ownerUserId },
+                  options.envelopeEncryptionProvider!,
+                  {
+                    sourceTable: "messages",
+                    sourceId: message.id,
+                    sourceColumn: "content",
+                    plaintext: content,
+                    rowFamily: "message",
+                    scope: {
+                      tenantId: ownerUserId,
+                      workspaceId: row.session_workspace_id,
+                      objectClass: "message"
+                    },
+                    aad: {
+                      sessionId: row.session_id,
+                      transcriptItemId:
+                        row.source_sequence === null
+                          ? null
+                          : String(row.source_sequence)
+                    }
+                  }
+                );
+                await upsertEncryptedFieldPayloadWithClient(
+                  client,
+                  { userId: ownerUserId },
+                  options.envelopeEncryptionProvider!,
+                  {
+                    sourceTable: "messages",
+                    sourceId: message.id,
+                    sourceColumn: "content_json",
+                    plaintext: row.raw_json,
+                    rowFamily: "message",
+                    scope: {
+                      tenantId: ownerUserId,
+                      workspaceId: row.session_workspace_id,
+                      objectClass: "message"
+                    },
+                    aad: {
+                      sessionId: row.session_id,
+                      transcriptItemId:
+                        row.source_sequence === null
+                          ? null
+                          : String(row.source_sequence)
+                    }
+                  }
+                );
+              }
+            );
+            if (inserted.rows.some((message) => message.inserted)) {
+              result.messagesCreated += 1;
+            }
           }
-        }
 
-        if (row.session_id && projectionPolicy.createToolEvent) {
-          const raw = isRecord(row.raw_json) ? row.raw_json : {};
-          const metadata = row.metadata ?? {};
-          const toolCall = isRecord(metadata.toolCall) ? metadata.toolCall : {};
-          const callId = conversationItemToolCallId(metadata, toolCall);
-          const linkedToolName = await loadLinkedToolNameForCallId(
-            pool,
-            row,
-            callId
-          );
-          const toolEventIdentity = conversationItemToolEventIdentity(
-            row,
-            logicalItem,
-            callId
-          );
-          const inserted = await pool.query<{ id: string; inserted: boolean }>(
-            `
-              with existing as (
-                update tool_events
+          if (row.session_id && projectionPolicy.createToolEvent) {
+            const raw = isRecord(row.raw_json) ? row.raw_json : {};
+            const metadata = row.metadata ?? {};
+            const toolCall = isRecord(metadata.toolCall)
+              ? metadata.toolCall
+              : {};
+            const callId = conversationItemToolCallId(metadata, toolCall);
+            const linkedToolName = await loadLinkedToolNameForCallId(
+              pool,
+              row,
+              callId
+            );
+            const toolEventIdentity = conversationItemToolEventIdentity(
+              row,
+              logicalItem,
+              callId
+            );
+            const toolInput = conversationItemToolInput(raw, toolCall);
+            const toolResponse = conversationItemToolResponse(
+              raw,
+              toolCall,
+              content,
+              {
+                allowContentFallback: row.source_record_type !== "hook_payload"
+              }
+            );
+            const toolInputForStorage =
+              suppressPlaintextDisplayPayloads &&
+              toolInput !== null &&
+              toolInput !== undefined
+                ? encryptedDisplayPayloadMarker("tool_events")
+                : toolInput;
+            const toolResponseForStorage =
+              suppressPlaintextDisplayPayloads &&
+              toolResponse !== null &&
+              toolResponse !== undefined
+                ? encryptedDisplayPayloadMarker("tool_events")
+                : toolResponse;
+            const inserted = await runDisplayRowUpsert<{
+              id: string;
+              inserted: boolean;
+            }>(
+              `
+	              with existing as (
+	                update tool_events
                 set
                   turn_id = coalesce($2::uuid, tool_events.turn_id),
                   tool_name = case
@@ -3726,90 +4667,146 @@ export const createMemorySourceRepository = (
               select * from fallback
               limit 1
             `,
-            [
-              row.session_id,
-              row.turn_id,
-              ownerUserId,
-              row.visibility,
-              conversationItemToolName(raw, metadata, toolCall, linkedToolName),
-              jsonbParam(conversationItemToolInput(raw, toolCall)),
-              jsonbParam(
-                conversationItemToolResponse(raw, toolCall, content, {
-                  allowContentFallback:
-                    row.source_record_type !== "hook_payload"
-                })
-              ),
-              stringField(metadata, "status") ?? null,
-              row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-              captureMethodForConversationItem({
-                sourceTransport: row.source_transport
-              }),
-              row.source_path,
-              row.source_sequence === null ? null : String(row.source_sequence),
-              `tool:${toolEventIdentity}`,
-              `tool:${toolEventIdentity}`,
-              row.event_time,
-              row.observed_at
-            ]
-          );
-          if (inserted.rows.some((toolEvent) => toolEvent.inserted)) {
-            result.toolEventsCreated += 1;
-          }
-        }
-
-        switch (disposition) {
-          case "ready_for_semantic_projection": {
-            if (!semanticItem || semanticUnitType !== "user_turn") {
-              await markProjected(sourceIds);
-              break;
-            }
-            await flushAgentBundlesForScope(
-              boundary.scopeKey,
-              "next_user_turn"
-            );
-            await createSemanticMemoryUnit(
-              "user_turn",
-              [semanticItem],
-              "user_turn"
-            );
-            await markProjected(sourceIds);
-            break;
-          }
-          case "waiting_for_agent_seal": {
-            if (!semanticItem || semanticUnitType !== "agent_turn") {
-              await markProjected(sourceIds);
-              break;
-            }
-            const queueResult = await queueAgentSemanticItem(semanticItem);
-            if (queueResult === "waiting_for_agent_seal") {
-              for (const sourceId of sourceIds) {
-                waitingForAgentSealSourceIds.add(sourceId);
+              [
+                row.session_id,
+                row.turn_id,
+                ownerUserId,
+                row.visibility,
+                conversationItemToolName(
+                  raw,
+                  metadata,
+                  toolCall,
+                  linkedToolName
+                ),
+                jsonbParam(toolInputForStorage),
+                jsonbParam(toolResponseForStorage),
+                stringField(metadata, "status") ?? null,
+                row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                captureMethodForConversationItem({
+                  sourceTransport: row.source_transport
+                }),
+                row.source_path,
+                row.source_sequence === null
+                  ? null
+                  : String(row.source_sequence),
+                `tool:${toolEventIdentity}`,
+                `tool:${toolEventIdentity}`,
+                row.event_time,
+                row.observed_at
+              ],
+              async (client, toolEvent) => {
+                if (toolInput !== null && toolInput !== undefined) {
+                  await upsertEncryptedFieldPayloadWithClient(
+                    client,
+                    { userId: ownerUserId },
+                    options.envelopeEncryptionProvider!,
+                    {
+                      sourceTable: "tool_events",
+                      sourceId: toolEvent.id,
+                      sourceColumn: "tool_input",
+                      plaintext: toolInput,
+                      rowFamily: "tool_event",
+                      scope: {
+                        tenantId: ownerUserId,
+                        workspaceId: row.session_workspace_id,
+                        objectClass: "tool_event"
+                      },
+                      aad: {
+                        sessionId: row.session_id,
+                        transcriptItemId:
+                          row.source_sequence === null
+                            ? null
+                            : String(row.source_sequence)
+                      }
+                    }
+                  );
+                }
+                if (toolResponse !== null && toolResponse !== undefined) {
+                  await upsertEncryptedFieldPayloadWithClient(
+                    client,
+                    { userId: ownerUserId },
+                    options.envelopeEncryptionProvider!,
+                    {
+                      sourceTable: "tool_events",
+                      sourceId: toolEvent.id,
+                      sourceColumn: "tool_response",
+                      plaintext: toolResponse,
+                      rowFamily: "tool_event",
+                      scope: {
+                        tenantId: ownerUserId,
+                        workspaceId: row.session_workspace_id,
+                        objectClass: "tool_event"
+                      },
+                      aad: {
+                        sessionId: row.session_id,
+                        transcriptItemId:
+                          row.source_sequence === null
+                            ? null
+                            : String(row.source_sequence)
+                      }
+                    }
+                  );
+                }
               }
+            );
+            if (inserted.rows.some((toolEvent) => toolEvent.inserted)) {
+              result.toolEventsCreated += 1;
             }
-            break;
           }
-          case "raw_only":
-          default:
-            await markProjected(sourceIds);
-        }
-        if (turnCompleteSignal) {
-          await flushAgentBundlesForScope(boundary.scopeKey, "stop_hook");
-        }
-      } catch (error) {
-        await markProjectionError(sourceIds, error);
-      }
-    }
-    await flushStaleAgentBundles();
-    result.rawItemsWaitingForAgentSeal = [
-      ...waitingForAgentSealSourceIds
-    ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
-    return result;
-  },
 
-  async listConversationProjectionActors(input = {}) {
-    const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
-    const result = await pool.query<{ user_id: string }>(
-      `
+          switch (disposition) {
+            case "ready_for_semantic_projection": {
+              if (!semanticItem || semanticUnitType !== "user_turn") {
+                await markProjected(sourceIds);
+                break;
+              }
+              await flushAgentBundlesForScope(
+                boundary.scopeKey,
+                "next_user_turn"
+              );
+              await createSemanticMemoryUnit(
+                "user_turn",
+                [semanticItem],
+                "user_turn"
+              );
+              await markProjected(sourceIds);
+              break;
+            }
+            case "waiting_for_agent_seal": {
+              if (!semanticItem || semanticUnitType !== "agent_turn") {
+                await markProjected(sourceIds);
+                break;
+              }
+              const queueResult = await queueAgentSemanticItem(semanticItem);
+              if (queueResult === "waiting_for_agent_seal") {
+                for (const sourceId of sourceIds) {
+                  waitingForAgentSealSourceIds.add(sourceId);
+                }
+              }
+              break;
+            }
+            case "raw_only":
+            default:
+              await markProjected(sourceIds);
+          }
+          if (turnCompleteSignal) {
+            await flushAgentBundlesForScope(boundary.scopeKey, "stop_hook");
+          }
+        } catch (error) {
+          await markProjectionError(sourceIds, error);
+        }
+      }
+      await flushStaleAgentBundles();
+      result.rawItemsWaitingForAgentSeal = [
+        ...waitingForAgentSealSourceIds
+      ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
+      return result;
+    },
+
+    async listConversationProjectionActors(input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
+      const result = await pool.query<{ user_id: string }>(
+        `
         select user_id
         from (
           select ci.owner_user_id as user_id, min(ci.observed_at) as oldest_at
@@ -3823,15 +4820,15 @@ export const createMemorySourceRepository = (
         order by oldest_at asc
         limit $1
       `,
-      [limit]
-    );
-    return result.rows.map((row) => ({ userId: row.user_id }));
-  },
+        [limit]
+      );
+      return result.rows.map((row) => ({ userId: row.user_id }));
+    },
 
-  async listSemanticMemoryRebuildActors(input = {}) {
-    const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
-    const result = await pool.query<{ user_id: string }>(
-      `
+    async listSemanticMemoryRebuildActors(input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
+      const result = await pool.query<{ user_id: string }>(
+        `
         select owner_user_id as user_id
         from semantic_memory_rebuild_jobs
         where status in ('pending', 'error')
@@ -3845,30 +4842,30 @@ export const createMemorySourceRepository = (
         order by min(scheduled_after) asc, owner_user_id asc
         limit $1
       `,
-      [limit]
-    );
-    return result.rows.map((row) => ({ userId: row.user_id }));
-  },
+        [limit]
+      );
+      return result.rows.map((row) => ({ userId: row.user_id }));
+    },
 
-  async processDueSemanticMemoryRebuilds(actor, input = {}) {
-    const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
-    const leaseSeconds = Math.min(
-      Math.max(input.leaseSeconds ?? 300, 30),
-      3600
-    );
-    const result: SemanticMemoryRebuildResult = {
-      jobsClaimed: 0,
-      jobsCompleted: 0,
-      jobsFailed: 0,
-      memoryEventsCreated: 0,
-      memoryEventIds: [],
-      memoryEventScopes: []
-    };
-    const claimed = await pool.query<{
-      id: string;
-      memory_event_id: string;
-    }>(
-      `
+    async processDueSemanticMemoryRebuilds(actor, input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
+      const leaseSeconds = Math.min(
+        Math.max(input.leaseSeconds ?? 300, 30),
+        3600
+      );
+      const result: SemanticMemoryRebuildResult = {
+        jobsClaimed: 0,
+        jobsCompleted: 0,
+        jobsFailed: 0,
+        memoryEventsCreated: 0,
+        memoryEventIds: [],
+        memoryEventScopes: []
+      };
+      const claimed = await pool.query<{
+        id: string;
+        memory_event_id: string;
+      }>(
+        `
         with candidates as (
           select id
           from semantic_memory_rebuild_jobs
@@ -3896,21 +4893,25 @@ export const createMemorySourceRepository = (
         where job.id = candidates.id
         returning job.id, job.memory_event_id
       `,
-      [actor.userId, limit, leaseSeconds]
-    );
-    result.jobsClaimed = claimed.rows.length;
+        [actor.userId, limit, leaseSeconds]
+      );
+      result.jobsClaimed = claimed.rows.length;
 
-    for (const job of claimed.rows) {
-      try {
-        const created = await rebuiltSemanticMemoryEventsFromSources(pool, {
-          actorUserId: actor.userId,
-          memoryEventId: job.memory_event_id,
-          createMemoryEvent: (eventActor, eventInput) =>
-            this.createMemoryEvent(eventActor, eventInput)
-        });
-        const eventIds = created.map((event) => event.eventId);
-        await pool.query(
-          `
+      for (const job of claimed.rows) {
+        try {
+          const created = await rebuiltSemanticMemoryEventsFromSources(
+            pool,
+            options.envelopeEncryptionProvider,
+            {
+              actorUserId: actor.userId,
+              memoryEventId: job.memory_event_id,
+              createMemoryEvent: (eventActor, eventInput) =>
+                this.createMemoryEvent(eventActor, eventInput)
+            }
+          );
+          const eventIds = created.map((event) => event.eventId);
+          await pool.query(
+            `
             update semantic_memory_rebuild_jobs
             set
               status = 'completed',
@@ -3920,20 +4921,20 @@ export const createMemorySourceRepository = (
               updated_at = now()
             where id = $1
           `,
-          [job.id, eventIds]
-        );
-        result.jobsCompleted += 1;
-        result.memoryEventsCreated += eventIds.length;
-        result.memoryEventIds.push(...eventIds);
-        result.memoryEventScopes.push(
-          ...created.map((event) => ({
-            eventId: event.eventId,
-            visibility: event.visibility
-          }))
-        );
-      } catch (error) {
-        await pool.query(
-          `
+            [job.id, eventIds]
+          );
+          result.jobsCompleted += 1;
+          result.memoryEventsCreated += eventIds.length;
+          result.memoryEventIds.push(...eventIds);
+          result.memoryEventScopes.push(
+            ...created.map((event) => ({
+              eventId: event.eventId,
+              visibility: event.visibility
+            }))
+          );
+        } catch (error) {
+          await pool.query(
+            `
             update semantic_memory_rebuild_jobs
             set
               status = 'error',
@@ -3943,27 +4944,27 @@ export const createMemorySourceRepository = (
               updated_at = now()
             where id = $1
           `,
-          [job.id, error instanceof Error ? error.message : String(error)]
-        );
-        result.jobsFailed += 1;
+            [job.id, error instanceof Error ? error.message : String(error)]
+          );
+          result.jobsFailed += 1;
+        }
       }
-    }
 
-    return result;
-  },
+      return result;
+    },
 
-  async getLcmGraphOverview(actor) {
-    const [embeddingStatus, counts, embeddings] = await Promise.all([
-      this.getLocalEmbeddingStatus(),
-      pool.query<{
-        captured_events: string;
-        leaf_nodes: string;
-        rollup_nodes: string;
-        pending_summaries: string;
-        oldest_pending_summary_created_at: Date | null;
-        invalidated_records: string;
-      }>(
-        `
+    async getLcmGraphOverview(actor) {
+      const [embeddingStatus, counts, embeddings] = await Promise.all([
+        this.getLocalEmbeddingStatus(),
+        pool.query<{
+          captured_events: string;
+          leaf_nodes: string;
+          rollup_nodes: string;
+          pending_summaries: string;
+          oldest_pending_summary_created_at: Date | null;
+          invalidated_records: string;
+        }>(
+          `
           with visible_nodes as (
             select *
             from memory_nodes mn
@@ -3987,15 +4988,15 @@ export const createMemorySourceRepository = (
               + (select count(*) from visible_nodes where invalidated_at is not null)
             )::text as invalidated_records
         `,
-        [actor.userId]
-      ),
-      pool.query<{
-        total: string;
-        memory_nodes: string;
-        memory_events: string;
-        messages: string;
-      }>(
-        `
+          [actor.userId]
+        ),
+        pool.query<{
+          total: string;
+          memory_nodes: string;
+          memory_events: string;
+          messages: string;
+        }>(
+          `
           select
             count(*)::text as total,
             count(*) filter (where memory_node_id is not null)::text as memory_nodes,
@@ -4027,73 +5028,73 @@ export const createMemorySourceRepository = (
               )
             )
         `,
-        [actor.userId]
-      )
-    ]);
-    const row = counts.rows[0]!;
-    const embeddingRow = embeddings.rows[0]!;
-    const pendingCount = Number(row.pending_summaries);
-    const oldestPendingCreatedAt =
-      row.oldest_pending_summary_created_at?.toISOString() ?? null;
-    const staleThresholdMinutes = 15;
-    const stale =
-      oldestPendingCreatedAt !== null &&
-      Date.now() - Date.parse(oldestPendingCreatedAt) >
-        staleThresholdMinutes * 60_000;
-    return {
-      capturedEvents: Number(row.captured_events),
-      leafNodes: Number(row.leaf_nodes),
-      rollupNodes: Number(row.rollup_nodes),
-      pendingSummaries: pendingCount,
-      pendingLcmDiagnostics: {
-        pendingCount,
-        oldestPendingCreatedAt,
-        staleThresholdMinutes,
-        stale
-      },
-      invalidatedRecords: Number(row.invalidated_records),
-      embeddings: {
-        enabled: embeddingStatus.enabled,
-        healthy: embeddingStatus.healthy,
-        model: embeddingStatus.model,
-        dimensions: embeddingStatus.dimensions,
-        total: Number(embeddingRow.total),
-        memoryNodes: Number(embeddingRow.memory_nodes),
-        memoryEvents: Number(embeddingRow.memory_events),
-        messages: Number(embeddingRow.messages)
-      }
-    };
-  },
+          [actor.userId]
+        )
+      ]);
+      const row = counts.rows[0]!;
+      const embeddingRow = embeddings.rows[0]!;
+      const pendingCount = Number(row.pending_summaries);
+      const oldestPendingCreatedAt =
+        row.oldest_pending_summary_created_at?.toISOString() ?? null;
+      const staleThresholdMinutes = 15;
+      const stale =
+        oldestPendingCreatedAt !== null &&
+        Date.now() - Date.parse(oldestPendingCreatedAt) >
+          staleThresholdMinutes * 60_000;
+      return {
+        capturedEvents: Number(row.captured_events),
+        leafNodes: Number(row.leaf_nodes),
+        rollupNodes: Number(row.rollup_nodes),
+        pendingSummaries: pendingCount,
+        pendingLcmDiagnostics: {
+          pendingCount,
+          oldestPendingCreatedAt,
+          staleThresholdMinutes,
+          stale
+        },
+        invalidatedRecords: Number(row.invalidated_records),
+        embeddings: {
+          enabled: embeddingStatus.enabled,
+          healthy: embeddingStatus.healthy,
+          model: embeddingStatus.model,
+          dimensions: embeddingStatus.dimensions,
+          total: Number(embeddingRow.total),
+          memoryNodes: Number(embeddingRow.memory_nodes),
+          memoryEvents: Number(embeddingRow.memory_events),
+          messages: Number(embeddingRow.messages)
+        }
+      };
+    },
 
-  async listLcmGraphNodes(actor, input = {}) {
-    const teamWorkspaceAccess = input.teamWorkspaceId
-      ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-      : null;
-    const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-      requesterUserId: actor.userId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      access: teamWorkspaceAccess
-    });
-    if (
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      !teamWorkspaceAuthorization.authorized
-    ) {
-      return [];
-    }
-    const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      teamWorkspaceAuthorization.authorized
-        ? {
-            teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-            teamId: teamWorkspaceAuthorization.teamId
-          }
+    async listLcmGraphNodes(actor, input = {}) {
+      const teamWorkspaceAccess = input.teamWorkspaceId
+        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
         : null;
-    const nodeIds = input.nodeIds?.filter(Boolean) ?? [];
-    const limit = nodeIds.length
-      ? Math.min(nodeIds.length, 500)
-      : Math.min(Math.max(input.limit ?? 100, 1), 500);
-    const result = await pool.query<Parameters<typeof mapLcmGraphNode>[0]>(
-      `
+      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
+        requesterUserId: actor.userId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        access: teamWorkspaceAccess
+      });
+      if (
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        !teamWorkspaceAuthorization.authorized
+      ) {
+        return [];
+      }
+      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        teamWorkspaceAuthorization.authorized
+          ? {
+              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
+              teamId: teamWorkspaceAuthorization.teamId
+            }
+          : null;
+      const nodeIds = input.nodeIds?.filter(Boolean) ?? [];
+      const limit = nodeIds.length
+        ? Math.min(nodeIds.length, 500)
+        : Math.min(Math.max(input.limit ?? 100, 1), 500);
+      const result = await pool.query<Parameters<typeof mapLcmGraphNode>[0]>(
+        `
         select
           mn.id, mn.owner_user_id, mn.visibility, mn.kind, mn.depth,
           mn.summary_text, mn.created_at, mn.updated_at, mn.invalidated_at,
@@ -4170,175 +5171,235 @@ export const createMemorySourceRepository = (
         order by mn.updated_at desc, mn.created_at desc
         limit $8
       `,
-      [
-        actor.userId,
-        input.includeInvalidated ?? false,
-        input.visibility ?? null,
-        input.projectId ?? null,
-        input.threadId ?? null,
-        input.query?.trim() || null,
-        nodeIds.length ? nodeIds : null,
-        limit,
-        teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-        teamWorkspaceBoundary?.teamId ?? null
-      ]
-    );
-    return result.rows.map(mapLcmGraphNode);
-  },
+        [
+          actor.userId,
+          input.includeInvalidated ?? false,
+          input.visibility ?? null,
+          input.projectId ?? null,
+          input.threadId ?? null,
+          input.query?.trim() || null,
+          nodeIds.length ? nodeIds : null,
+          limit,
+          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+          teamWorkspaceBoundary?.teamId ?? null
+        ]
+      );
+      const hydratedRows = await hydrateMemoryNodeRows(
+        pool,
+        options.envelopeEncryptionProvider,
+        result.rows
+      );
+      return hydratedRows.map(mapLcmGraphNode);
+    },
 
-  async getLcmGraphNode(actor, nodeId, input = {}) {
-    const nodes = await this.listLcmGraphNodes(actor, {
-      includeInvalidated: input.includeInvalidated,
-      teamWorkspaceId: input.teamWorkspaceId,
-      nodeIds: [nodeId],
-      limit: 1
-    });
-    const node = nodes.find((candidate) => candidate.id === nodeId);
-    if (!node) {
-      return null;
-    }
-    const [fullNode, childRows, parentRows, sourceRows] = await Promise.all([
-      pool.query<{ source_items_json: LcmSourceItem[] }>(
-        "select source_items_json from memory_nodes where id = $1",
-        [nodeId]
-      ),
-      pool.query<{ child_memory_node_id: string }>(
-        `
+    async getLcmGraphNode(actor, nodeId, input = {}) {
+      const nodes = await this.listLcmGraphNodes(actor, {
+        includeInvalidated: input.includeInvalidated,
+        teamWorkspaceId: input.teamWorkspaceId,
+        nodeIds: [nodeId],
+        limit: 1
+      });
+      const node = nodes.find((candidate) => candidate.id === nodeId);
+      if (!node) {
+        return null;
+      }
+      const [fullNode, childRows, parentRows, sourceRows] = await Promise.all([
+        pool.query<{
+          id: string;
+          owner_user_id: string | null;
+          source_items_json: LcmSourceItem[];
+        }>(
+          "select id, owner_user_id, source_items_json from memory_nodes where id = $1",
+          [nodeId]
+        ),
+        pool.query<{ child_memory_node_id: string }>(
+          `
           select child_memory_node_id
           from memory_node_children
           where parent_memory_node_id = $1
           order by child_order asc
         `,
-        [nodeId]
-      ),
-      pool.query<{ parent_memory_node_id: string }>(
-        `
+          [nodeId]
+        ),
+        pool.query<{ parent_memory_node_id: string }>(
+          `
           select parent_memory_node_id
           from memory_node_children
           where child_memory_node_id = $1
           order by created_at asc
         `,
-        [nodeId]
-      ),
-      pool.query<{ memory_event_id: string }>(
-        `
+          [nodeId]
+        ),
+        pool.query<{ memory_event_id: string }>(
+          `
           select memory_event_id
           from memory_node_sources
           where memory_node_id = $1 and memory_event_id is not null
           order by source_order asc
         `,
-        [nodeId]
-      )
-    ]);
-    const visibleNodes = await this.listLcmGraphNodes(actor, {
-      includeInvalidated: true,
-      teamWorkspaceId: input.teamWorkspaceId,
-      limit: 500
-    });
-    const visibleNodeById = new Map(
-      visibleNodes.map((item) => [item.id, item])
-    );
-    const [sources] = await Promise.all([
-      Promise.all(
-        sourceRows.rows.map((row) =>
-          this.getLcmGraphEvent(actor, row.memory_event_id, {
-            teamWorkspaceId: input.teamWorkspaceId,
-            includeInvalidated: true,
-            includeRaw: false
-          })
+          [nodeId]
         )
-      )
-    ]);
-    const childNodes = childRows.rows
-      .map((row) => visibleNodeById.get(row.child_memory_node_id))
-      .filter((candidate): candidate is LcmGraphNode => Boolean(candidate));
-    const parentNodes = parentRows.rows
-      .map((row) => visibleNodeById.get(row.parent_memory_node_id))
-      .filter((candidate): candidate is LcmGraphNode => Boolean(candidate));
-    return {
-      ...node,
-      sourceItems: fullNode.rows[0]?.source_items_json ?? [],
-      childNodes,
-      parentNodes,
-      sources: sources.filter((candidate): candidate is LcmGraphEvent =>
-        Boolean(candidate)
-      )
-    };
-  },
-
-  async updateLcmGraphNode(actor, nodeId, input) {
-    const existing = await this.getLcmGraphNode(actor, nodeId, {
-      includeInvalidated: false
-    });
-    if (!existing) {
-      return null;
-    }
-    await pool.query(
-      `
-        update memory_nodes
-        set
-          summary_text = coalesce($3, summary_text),
-          body_text = case when $3::text is null then body_text else $3 end,
-          summary_corrected_at = case when $3::text is null then summary_corrected_at else now() end,
-          summary_corrected_by_user_id = case when $3::text is null then summary_corrected_by_user_id else $1 end,
-          visibility = coalesce($4::visibility_scope, visibility),
-          owner_user_id = case
-            when $4::visibility_scope = 'personal' then $1
-            else owner_user_id
-          end,
-          updated_at = now()
-        where id = $2 and invalidated_at is null
-      `,
-      [
-        actor.userId,
-        nodeId,
-        input.summaryText ?? null,
-        input.visibility ?? null
-      ]
-    );
-    if (input.summaryText !== undefined) {
-      await pool.query(
-        `
-          update memory_embeddings
-          set invalidated_at = now(), invalidation_reason = 'lcm_summary_corrected'
-          where memory_node_id = $1 and invalidated_at is null
-        `,
-        [nodeId]
+      ]);
+      const visibleNodes = await this.listLcmGraphNodes(actor, {
+        includeInvalidated: true,
+        teamWorkspaceId: input.teamWorkspaceId,
+        limit: 500
+      });
+      const visibleNodeById = new Map(
+        visibleNodes.map((item) => [item.id, item])
       );
-    }
-    return this.getLcmGraphNode(actor, nodeId, { includeInvalidated: false });
-  },
-
-  async invalidateLcmGraphNode(actor, nodeId) {
-    return this.deleteMemory(actor, nodeId);
-  },
-
-  async listLcmGraphEvents(actor, input = {}) {
-    const teamWorkspaceAccess = input.teamWorkspaceId
-      ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-      : null;
-    const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-      requesterUserId: actor.userId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      access: teamWorkspaceAccess
-    });
-    if (
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      !teamWorkspaceAuthorization.authorized
-    ) {
-      return [];
-    }
-    const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      teamWorkspaceAuthorization.authorized
-        ? {
-            teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-            teamId: teamWorkspaceAuthorization.teamId
-          }
+      const [sources] = await Promise.all([
+        Promise.all(
+          sourceRows.rows.map((row) =>
+            this.getLcmGraphEvent(actor, row.memory_event_id, {
+              teamWorkspaceId: input.teamWorkspaceId,
+              includeInvalidated: true,
+              includeRaw: false
+            })
+          )
+        )
+      ]);
+      const childNodes = childRows.rows
+        .map((row) => visibleNodeById.get(row.child_memory_node_id))
+        .filter((candidate): candidate is LcmGraphNode => Boolean(candidate));
+      const parentNodes = parentRows.rows
+        .map((row) => visibleNodeById.get(row.parent_memory_node_id))
+        .filter((candidate): candidate is LcmGraphNode => Boolean(candidate));
+      const hydratedFullNode = fullNode.rows[0]
+        ? await hydrateMemoryNodeRow(
+            pool,
+            options.envelopeEncryptionProvider,
+            fullNode.rows[0]
+          )
         : null;
-    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
-    const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
-      `
+      return {
+        ...node,
+        sourceItems: Array.isArray(hydratedFullNode?.source_items_json)
+          ? hydratedFullNode.source_items_json
+          : [],
+        childNodes,
+        parentNodes,
+        sources: sources.filter((candidate): candidate is LcmGraphEvent =>
+          Boolean(candidate)
+        )
+      };
+    },
+
+    async updateLcmGraphNode(actor, nodeId, input) {
+      const existing = await this.getLcmGraphNode(actor, nodeId, {
+        includeInvalidated: false
+      });
+      if (!existing) {
+        return null;
+      }
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (
+        suppressPlaintextPayload &&
+        input.summaryText !== undefined &&
+        !options.envelopeEncryptionProvider
+      ) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Node storage is disabled"
+        );
+      }
+      const summaryTextForStorage =
+        suppressPlaintextPayload && input.summaryText !== undefined
+          ? ENCRYPTED_MEMORY_NODE_TEXT
+          : input.summaryText;
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          `
+          update memory_nodes
+          set
+            summary_text = coalesce($3, summary_text),
+            body_text = case when $3::text is null then body_text else $3 end,
+            summary_corrected_at = case when $3::text is null then summary_corrected_at else now() end,
+            summary_corrected_by_user_id = case when $3::text is null then summary_corrected_by_user_id else $1 end,
+            visibility = coalesce($4::visibility_scope, visibility),
+            owner_user_id = case
+              when $4::visibility_scope = 'personal' then $1
+              else owner_user_id
+            end,
+            updated_at = now()
+          where id = $2 and invalidated_at is null
+        `,
+          [
+            actor.userId,
+            nodeId,
+            summaryTextForStorage ?? null,
+            input.visibility ?? null
+          ]
+        );
+        if (
+          suppressPlaintextPayload &&
+          input.summaryText !== undefined &&
+          options.envelopeEncryptionProvider
+        ) {
+          await persistEncryptedMemoryNodeFields(
+            client,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId: actor.userId,
+              visibility: input.visibility ?? existing.visibility,
+              nodeId,
+              summaryText: input.summaryText,
+              bodyText: input.summaryText
+            }
+          );
+        }
+        if (input.summaryText !== undefined) {
+          await client.query(
+            `
+            update memory_embeddings
+            set invalidated_at = now(), invalidation_reason = 'lcm_summary_corrected'
+            where memory_node_id = $1 and invalidated_at is null
+          `,
+            [nodeId]
+          );
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      return this.getLcmGraphNode(actor, nodeId, { includeInvalidated: false });
+    },
+
+    async invalidateLcmGraphNode(actor, nodeId) {
+      return this.deleteMemory(actor, nodeId);
+    },
+
+    async listLcmGraphEvents(actor, input = {}) {
+      const teamWorkspaceAccess = input.teamWorkspaceId
+        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
+        : null;
+      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
+        requesterUserId: actor.userId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        access: teamWorkspaceAccess
+      });
+      if (
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        !teamWorkspaceAuthorization.authorized
+      ) {
+        return [];
+      }
+      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        teamWorkspaceAuthorization.authorized
+          ? {
+              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
+              teamId: teamWorkspaceAuthorization.teamId
+            }
+          : null;
+      const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+      const result = await pool.query<Parameters<typeof mapLcmGraphEvent>[0]>(
+        `
         with cursor_order as (
           select coalesce(
             $9::bigint,
@@ -4419,6 +5480,7 @@ export const createMemorySourceRepository = (
         visible_events as (
           select
             me.id,
+            me.owner_user_id,
             case
               when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
                 and me.payload ->> 'actor' = 'assistant'
@@ -4463,7 +5525,8 @@ export const createMemorySourceRepository = (
             me.invalidated_at,
             me.invalidation_reason,
             me.payload ->> 'content' as content,
-            coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata
+            jsonb_build_object('sourceTable', 'memory_events') ||
+              coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata
           from memory_events me
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
@@ -4526,6 +5589,7 @@ export const createMemorySourceRepository = (
           union all
           select
             msg.id,
+            msg.owner_user_id,
             case
               when coalesce(s.metadata ->> 'threadKind') = 'subagent'
                 and msg.role = 'assistant'
@@ -4656,6 +5720,7 @@ export const createMemorySourceRepository = (
           union all
           select
             te.id,
+            te.owner_user_id,
             'tool'::text as actor,
             case
               when te.tool_response is not null then 'tool_result'
@@ -4818,58 +5883,202 @@ export const createMemorySourceRepository = (
         order by ve.order_at desc, ve.source_sequence desc nulls last, ve.id desc
         limit $11
 	      `,
-      [
-        actor.userId,
-        input.includeInvalidated ?? false,
-        input.visibility ?? null,
-        input.projectId ?? null,
-        input.threadId ?? null,
-        input.eventId ?? null,
-        input.query?.trim() || null,
-        input.cursorTimestamp ?? null,
-        input.cursorSourceSequence ?? null,
-        input.cursorId ?? null,
-        limit,
-        teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-        teamWorkspaceBoundary?.teamId ?? null
-      ]
-    );
-    return result.rows.map((row) =>
-      mapLcmGraphEvent({
-        ...row,
-        includeContent: input.includeContent ?? false,
-        includeRaw: input.includeRaw ?? false
-      })
-    );
-  },
-
-  async listLcmGraphThreads(actor, input = {}) {
-    const teamWorkspaceAccess = input.teamWorkspaceId
-      ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-      : null;
-    const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-      requesterUserId: actor.userId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      access: teamWorkspaceAccess
-    });
-    if (
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      !teamWorkspaceAuthorization.authorized
-    ) {
-      return [];
-    }
-    const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      teamWorkspaceAuthorization.authorized
-        ? {
-            teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-            teamId: teamWorkspaceAuthorization.teamId
+        [
+          actor.userId,
+          input.includeInvalidated ?? false,
+          input.visibility ?? null,
+          input.projectId ?? null,
+          input.threadId ?? null,
+          input.eventId ?? null,
+          input.query?.trim() || null,
+          input.cursorTimestamp ?? null,
+          input.cursorSourceSequence ?? null,
+          input.cursorId ?? null,
+          limit,
+          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+          teamWorkspaceBoundary?.teamId ?? null
+        ]
+      );
+      const hydratedRows = await Promise.all(
+        result.rows.map(async (row) => {
+          if (
+            row.metadata?.sourceTable === "messages" &&
+            row.content === ENCRYPTED_MESSAGE_CONTENT
+          ) {
+            if (!options.envelopeEncryptionProvider) {
+              throw new Error(
+                "Envelope encryption provider is required to expand encrypted messages"
+              );
+            }
+            const content = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id ?? null,
+                sourceTable: "messages",
+                sourceId: row.id,
+                sourceColumn: "content"
+              }
+            );
+            const contentJson = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id ?? null,
+                sourceTable: "messages",
+                sourceId: row.id,
+                sourceColumn: "content_json"
+              }
+            );
+            if (typeof content !== "string" || contentJson === null) {
+              throw new Error("Encrypted message source is missing");
+            }
+            return {
+              ...row,
+              content,
+              metadata: {
+                ...row.metadata,
+                contentJson
+              }
+            };
           }
+          if (row.metadata?.sourceTable === "tool_events") {
+            const metadata = row.metadata ?? {};
+            const encryptedInput = isEncryptedDisplayPayloadMarker(
+              metadata.input,
+              "tool_events"
+            );
+            const encryptedOutput = isEncryptedDisplayPayloadMarker(
+              metadata.output,
+              "tool_events"
+            );
+            if (encryptedInput || encryptedOutput) {
+              if (!options.envelopeEncryptionProvider) {
+                throw new Error(
+                  "Envelope encryption provider is required to expand encrypted tool events"
+                );
+              }
+              const inputPayload = encryptedInput
+                ? await decryptAuthorizedEncryptedFieldPayload(
+                    pool,
+                    options.envelopeEncryptionProvider,
+                    {
+                      ownerUserId: row.owner_user_id ?? null,
+                      sourceTable: "tool_events",
+                      sourceId: row.id,
+                      sourceColumn: "tool_input"
+                    }
+                  )
+                : metadata.input;
+              const outputPayload = encryptedOutput
+                ? await decryptAuthorizedEncryptedFieldPayload(
+                    pool,
+                    options.envelopeEncryptionProvider,
+                    {
+                      ownerUserId: row.owner_user_id ?? null,
+                      sourceTable: "tool_events",
+                      sourceId: row.id,
+                      sourceColumn: "tool_response"
+                    }
+                  )
+                : metadata.output;
+              if (
+                (encryptedInput && inputPayload === null) ||
+                (encryptedOutput && outputPayload === null)
+              ) {
+                throw new Error("Encrypted tool event source is missing");
+              }
+              const toolName =
+                typeof metadata.toolName === "string"
+                  ? metadata.toolName
+                  : "tool";
+              return {
+                ...row,
+                content: formatToolEventContent(
+                  toolName,
+                  inputPayload,
+                  outputPayload
+                ),
+                metadata: {
+                  ...metadata,
+                  input: inputPayload,
+                  output: outputPayload,
+                  toolCall: {
+                    ...(isRecord(metadata.toolCall) ? metadata.toolCall : {}),
+                    input: inputPayload,
+                    output: outputPayload
+                  }
+                }
+              };
+            }
+          }
+          if (
+            row.metadata?.sourceTable !== "memory_events" ||
+            row.content ||
+            !options.envelopeEncryptionProvider
+          ) {
+            return row;
+          }
+          const payload = await decryptAuthorizedMemoryEventPayload(
+            pool,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId: row.owner_user_id ?? null,
+              memoryEventId: row.id
+            }
+          );
+          return payload?.content
+            ? {
+                ...row,
+                content: payload.content,
+                actor: row.actor ?? payload.actor ?? null,
+                metadata: {
+                  ...row.metadata,
+                  ...payload.metadata,
+                  sourceTable: "memory_events"
+                }
+              }
+            : row;
+        })
+      );
+      return hydratedRows.map((row) =>
+        mapLcmGraphEvent({
+          ...row,
+          includeContent: input.includeContent ?? false,
+          includeRaw: input.includeRaw ?? false
+        })
+      );
+    },
+
+    async listLcmGraphThreads(actor, input = {}) {
+      const teamWorkspaceAccess = input.teamWorkspaceId
+        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
         : null;
-    const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
-    const offset = Math.max(input.offset ?? 0, 0);
-    const result = await pool.query<Parameters<typeof mapLcmGraphThreadRow>[0]>(
-      `
+      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
+        requesterUserId: actor.userId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        access: teamWorkspaceAccess
+      });
+      if (
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        !teamWorkspaceAuthorization.authorized
+      ) {
+        return [];
+      }
+      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        teamWorkspaceAuthorization.authorized
+          ? {
+              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
+              teamId: teamWorkspaceAuthorization.teamId
+            }
+          : null;
+      const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+      const offset = Math.max(input.offset ?? 0, 0);
+      const result = await pool.query<
+        Parameters<typeof mapLcmGraphThreadRow>[0]
+      >(
+        `
         with visible_thread_rows as (
           select
             me.id::text as id,
@@ -5022,99 +6231,120 @@ export const createMemorySourceRepository = (
         from ranked_threads
         order by latest_at desc, thread_id desc
       `,
-      [
-        actor.userId,
-        input.includeInvalidated ?? false,
-        input.visibility ?? null,
-        input.projectId ?? null,
-        input.threadId ?? null,
-        input.query?.trim() || null,
-        limit,
-        offset,
-        teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-        teamWorkspaceBoundary?.teamId ?? null
-      ]
-    );
+        [
+          actor.userId,
+          input.includeInvalidated ?? false,
+          input.visibility ?? null,
+          input.projectId ?? null,
+          input.threadId ?? null,
+          input.query?.trim() || null,
+          limit,
+          offset,
+          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+          teamWorkspaceBoundary?.teamId ?? null
+        ]
+      );
 
-    const projects = new Map<string, LcmGraphProjectThreads>();
-    for (const thread of result.rows.map(mapLcmGraphThreadRow)) {
-      const project = projects.get(thread.projectId) ?? {
-        id: thread.projectId,
-        name: thread.projectName,
-        path: thread.projectPath,
-        eventCount: 0,
-        threads: []
-      };
-      project.eventCount += thread.eventCount;
-      project.threads.push({
-        id: thread.id,
-        name: thread.name,
-        sessionId: thread.sessionId,
-        projectId: thread.projectId,
-        projectName: thread.projectName,
-        eventCount: thread.eventCount,
-        invalidatedCount: thread.invalidatedCount,
-        latestAt: thread.latestAt,
-        sample: thread.sample,
-        threadKind: thread.threadKind,
-        parentThreadId: thread.parentThreadId,
-        parentSessionId: thread.parentSessionId
+      const threadRows = await Promise.all(
+        result.rows.map(async (row) => {
+          if (row.sample && row.sample !== ENCRYPTED_MESSAGE_CONTENT) {
+            return row;
+          }
+          const latestEvents = await this.listLcmGraphEvents(actor, {
+            includeInvalidated: input.includeInvalidated,
+            visibility: input.visibility,
+            projectId: input.projectId,
+            threadId: row.thread_id,
+            query: input.query,
+            includeContent: true,
+            teamWorkspaceId: input.teamWorkspaceId,
+            limit: 1
+          });
+          return {
+            ...row,
+            sample: latestEvents[0]?.content ?? row.sample
+          };
+        })
+      );
+      const projects = new Map<string, LcmGraphProjectThreads>();
+      for (const thread of threadRows.map(mapLcmGraphThreadRow)) {
+        const project = projects.get(thread.projectId) ?? {
+          id: thread.projectId,
+          name: thread.projectName,
+          path: thread.projectPath,
+          eventCount: 0,
+          threads: []
+        };
+        project.eventCount += thread.eventCount;
+        project.threads.push({
+          id: thread.id,
+          name: thread.name,
+          sessionId: thread.sessionId,
+          projectId: thread.projectId,
+          projectName: thread.projectName,
+          eventCount: thread.eventCount,
+          invalidatedCount: thread.invalidatedCount,
+          latestAt: thread.latestAt,
+          sample: thread.sample,
+          threadKind: thread.threadKind,
+          parentThreadId: thread.parentThreadId,
+          parentSessionId: thread.parentSessionId
+        });
+        projects.set(project.id, project);
+      }
+
+      return [...projects.values()];
+    },
+
+    async getLcmGraphEvent(actor, eventId, input = {}) {
+      const events = await this.listLcmGraphEvents(actor, {
+        eventId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        includeInvalidated: input.includeInvalidated,
+        includeRaw: input.includeRaw,
+        limit: 1
       });
-      projects.set(project.id, project);
-    }
+      const event = events.find((candidate) => candidate.id === eventId);
+      return event
+        ? {
+            ...event,
+            ...(input.includeRaw
+              ? {
+                  rawContent:
+                    event.rawContent ??
+                    (
+                      await pool.query<{ content: string | null }>(
+                        "select payload ->> 'content' as content from memory_events where id = $1",
+                        [eventId]
+                      )
+                    ).rows[0]?.content ??
+                    ""
+                }
+              : {})
+          }
+        : null;
+    },
 
-    return [...projects.values()];
-  },
-
-  async getLcmGraphEvent(actor, eventId, input = {}) {
-    const events = await this.listLcmGraphEvents(actor, {
-      eventId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      includeInvalidated: input.includeInvalidated,
-      includeRaw: input.includeRaw,
-      limit: 1
-    });
-    const event = events.find((candidate) => candidate.id === eventId);
-    return event
-      ? {
-          ...event,
-          ...(input.includeRaw
-            ? {
-                rawContent:
-                  event.rawContent ??
-                  (
-                    await pool.query<{ content: string | null }>(
-                      "select payload ->> 'content' as content from memory_events where id = $1",
-                      [eventId]
-                    )
-                  ).rows[0]?.content ??
-                  ""
-              }
-            : {})
-        }
-      : null;
-  },
-
-  async updateLcmGraphEvent(actor, eventId, input) {
-    const existing = await this.getLcmGraphEvent(actor, eventId, {
-      includeInvalidated: false
-    });
-    if (!existing) {
-      return null;
-    }
-    const sourceTable =
-      typeof existing.metadata.sourceTable === "string"
-        ? existing.metadata.sourceTable
-        : "memory_events";
-    const updateTable =
-      sourceTable === "messages" || sourceTable === "tool_events"
-        ? sourceTable
-        : "memory_events";
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        `
+    async updateLcmGraphEvent(actor, eventId, input) {
+      const existing = await this.getLcmGraphEvent(actor, eventId, {
+        includeInvalidated: false
+      });
+      if (!existing) {
+        return null;
+      }
+      const sourceTable =
+        typeof existing.metadata.sourceTable === "string"
+          ? existing.metadata.sourceTable
+          : "memory_events";
+      const updateTable =
+        sourceTable === "messages" || sourceTable === "tool_events"
+          ? sourceTable
+          : "memory_events";
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          `
           update ${updateTable}
           set
             visibility = coalesce($3::visibility_scope, visibility),
@@ -5126,116 +6356,116 @@ export const createMemorySourceRepository = (
             invalidation_reason = case when $4::boolean = true then coalesce(invalidation_reason, 'user_deleted') else invalidation_reason end
           where id = $2
         `,
-        [
-          actor.userId,
-          eventId,
-          input.visibility ?? null,
-          input.invalidated ?? null
-        ]
-      );
-      if (input.invalidated) {
-        if (updateTable === "memory_events") {
-          await client.query(
-            `
+          [
+            actor.userId,
+            eventId,
+            input.visibility ?? null,
+            input.invalidated ?? null
+          ]
+        );
+        if (input.invalidated) {
+          if (updateTable === "memory_events") {
+            await client.query(
+              `
               update memory_events
               set updated_at = now()
               where id = $1
             `,
-            [eventId]
-          );
-        }
-        await recordAuditEventWithClient(client, {
-          actorUserId: actor.userId,
-          ownerUserId: actor.userId,
-          visibility: input.visibility ?? existing.visibility,
-          action: "memory_event.invalidated",
-          targetTable: "memory_events",
-          targetId: eventId,
-          metadata: {
-            eventType: existing.eventType,
-            projectId: existing.projectId,
-            projectName: existing.projectName,
-            sessionId: existing.sessionId,
-            threadId: existing.threadId,
-            threadName: existing.threadName,
-            captureMethod: existing.captureMethod,
-            sourceRuntime: existing.sourceRuntime
+              [eventId]
+            );
           }
-        });
+          await recordAuditEventWithClient(client, {
+            actorUserId: actor.userId,
+            ownerUserId: actor.userId,
+            visibility: input.visibility ?? existing.visibility,
+            action: "memory_event.invalidated",
+            targetTable: "memory_events",
+            targetId: eventId,
+            metadata: {
+              eventType: existing.eventType,
+              projectId: existing.projectId,
+              projectName: existing.projectName,
+              sessionId: existing.sessionId,
+              threadId: existing.threadId,
+              threadName: existing.threadName,
+              captureMethod: existing.captureMethod,
+              sourceRuntime: existing.sourceRuntime
+            }
+          });
+        }
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
       }
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-    if (input.invalidated) {
-      if (updateTable === "memory_events") {
-        await invalidateDerivedMemoryForMemoryEvents(pool, [eventId]);
-      } else {
-        await invalidateSemanticMemoryForDisplayEvent(pool, {
-          actorUserId: actor.userId,
-          eventId,
-          sourceTable: updateTable
-        });
-        if (updateTable === "messages") {
-          await pool.query(
-            `
+      if (input.invalidated) {
+        if (updateTable === "memory_events") {
+          await invalidateDerivedMemoryForMemoryEvents(pool, [eventId]);
+        } else {
+          await invalidateSemanticMemoryForDisplayEvent(pool, {
+            actorUserId: actor.userId,
+            eventId,
+            sourceTable: updateTable
+          });
+          if (updateTable === "messages") {
+            await pool.query(
+              `
               update memory_embeddings
               set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
               where message_id = $1 and invalidated_at is null
             `,
-            [eventId]
-          );
+              [eventId]
+            );
+          }
         }
       }
-    }
-    return this.getLcmGraphEvent(actor, eventId, {
-      includeInvalidated: Boolean(input.invalidated)
-    });
-  },
+      return this.getLcmGraphEvent(actor, eventId, {
+        includeInvalidated: Boolean(input.invalidated)
+      });
+    },
 
-  async invalidateLcmGraphEvent(actor, eventId) {
-    const updated = await this.updateLcmGraphEvent(actor, eventId, {
-      invalidated: true
-    });
-    return Boolean(updated);
-  },
+    async invalidateLcmGraphEvent(actor, eventId) {
+      const updated = await this.updateLcmGraphEvent(actor, eventId, {
+        invalidated: true
+      });
+      return Boolean(updated);
+    },
 
-  async exportMemoryRecords(actor) {
-    const overview = await this.getLcmGraphOverview(actor);
-    const nodes = await this.listLcmGraphNodes(actor, {
-      includeInvalidated: true,
-      limit: 500
-    });
-    const events = await this.listLcmGraphEvents(actor, {
-      includeInvalidated: true,
-      limit: 500
-    });
-    return {
-      exportedAt: new Date().toISOString(),
-      overview,
-      nodes: (
-        await Promise.all(
-          nodes.map((node) =>
-            this.getLcmGraphNode(actor, node.id, { includeInvalidated: true })
+    async exportMemoryRecords(actor) {
+      const overview = await this.getLcmGraphOverview(actor);
+      const nodes = await this.listLcmGraphNodes(actor, {
+        includeInvalidated: true,
+        limit: 500
+      });
+      const events = await this.listLcmGraphEvents(actor, {
+        includeInvalidated: true,
+        limit: 500
+      });
+      return {
+        exportedAt: new Date().toISOString(),
+        overview,
+        nodes: (
+          await Promise.all(
+            nodes.map((node) =>
+              this.getLcmGraphNode(actor, node.id, { includeInvalidated: true })
+            )
           )
-        )
-      ).filter((node): node is LcmGraphNodeDetail => Boolean(node)),
-      events
-    };
-  },
+        ).filter((node): node is LcmGraphNodeDetail => Boolean(node)),
+        events
+      };
+    },
 
-  async listSourcesNeedingEmbeddings(limit = 100) {
-    const result = await pool.query<{
-      source_type: EmbeddableSourceType;
-      source_id: string;
-      owner_user_id: string | null;
-      visibility: Visibility;
-      text: string;
-    }>(
-      `
+    async listSourcesNeedingEmbeddings(limit = 100) {
+      const result = await pool.query<{
+        source_type: EmbeddableSourceType;
+        source_id: string;
+        owner_user_id: string | null;
+        visibility: Visibility;
+        text: string | null;
+      }>(
+        `
         with sources as (
           select
             'memory_node'::text as source_type,
@@ -5267,7 +6497,33 @@ export const createMemorySourceRepository = (
         )
         select source_type, source_id, owner_user_id, visibility, text
         from sources s
-        where length(trim(s.text)) > 0
+        where (
+            length(trim(coalesce(s.text, ''))) > 0
+            or (
+              s.source_type = 'memory_event'
+              and exists (
+                select 1
+                from encrypted_field_payloads encrypted
+                where encrypted.owner_user_id = s.owner_user_id
+                  and encrypted.source_table = 'memory_events'
+                  and encrypted.source_id = s.source_id
+                  and encrypted.source_column = 'payload'
+                  and encrypted.invalidated_at is null
+              )
+            )
+            or (
+              s.source_type = 'memory_node'
+              and exists (
+                select 1
+                from encrypted_field_payloads encrypted
+                where encrypted.owner_user_id = s.owner_user_id
+                  and encrypted.source_table = 'memory_nodes'
+                  and encrypted.source_id = s.source_id
+                  and encrypted.source_column = 'summary_text'
+                  and encrypted.invalidated_at is null
+              )
+            )
+          )
           and not exists (
             select 1
             from memory_embeddings me
@@ -5283,33 +6539,102 @@ export const createMemorySourceRepository = (
         order by s.created_at asc, s.source_id asc
         limit $4
       `,
-      [
-        localEmbeddingModel(),
-        localEmbeddingDimensions(),
-        localEmbeddingVersion(),
-        limit
-      ]
-    );
+        [
+          localEmbeddingModel(),
+          localEmbeddingDimensions(),
+          localEmbeddingVersion(),
+          limit
+        ]
+      );
 
-    return result.rows.map((row) => ({
-      sourceType: row.source_type,
-      sourceId: row.source_id,
-      ownerUserId: row.owner_user_id,
-      visibility: row.visibility,
-      text: row.text,
-      sourceHash: sourceHash(row.source_type, row.source_id, row.text)
-    }));
-  },
+      const hydratedRows = await Promise.all(
+        result.rows.map(async (row) => {
+          if (row.source_type === "memory_node") {
+            if (
+              row.text !== ENCRYPTED_MEMORY_NODE_TEXT &&
+              !row.text?.includes(ENCRYPTED_MEMORY_NODE_TEXT)
+            ) {
+              return row;
+            }
+            if (!options.envelopeEncryptionProvider) {
+              throw new Error(
+                "Envelope encryption provider is required to embed encrypted Memory Nodes"
+              );
+            }
+            const summaryText = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "memory_nodes",
+                sourceId: row.source_id,
+                sourceColumn: "summary_text"
+              }
+            );
+            const bodyText = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "memory_nodes",
+                sourceId: row.source_id,
+                sourceColumn: "body_text"
+              }
+            );
+            const text =
+              typeof bodyText === "string" &&
+              bodyText.trim() &&
+              bodyText.trim() !== String(summaryText).trim()
+                ? `${summaryText} ${bodyText}`
+                : summaryText;
+            return {
+              ...row,
+              text: typeof text === "string" ? text : row.text
+            };
+          }
+          if (
+            row.source_type !== "memory_event" ||
+            row.text ||
+            !options.envelopeEncryptionProvider
+          ) {
+            return row;
+          }
+          const payload = await decryptAuthorizedMemoryEventPayload(
+            pool,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId: row.owner_user_id,
+              memoryEventId: row.source_id
+            }
+          );
+          return {
+            ...row,
+            text: payload?.content ?? row.text
+          };
+        })
+      );
 
-  async getEmbeddableSource(sourceType, sourceId) {
-    const result = await pool.query<{
-      source_type: EmbeddableSourceType;
-      source_id: string;
-      owner_user_id: string | null;
-      visibility: Visibility;
-      text: string;
-    }>(
-      `
+      return hydratedRows
+        .filter((row) => row.text && row.text.trim().length > 0)
+        .map((row) => ({
+          sourceType: row.source_type,
+          sourceId: row.source_id,
+          ownerUserId: row.owner_user_id,
+          visibility: row.visibility,
+          text: row.text!,
+          sourceHash: sourceHash(row.source_type, row.source_id, row.text!)
+        }));
+    },
+
+    async getEmbeddableSource(sourceType, sourceId) {
+      const result = await pool.query<{
+        source_type: EmbeddableSourceType;
+        source_id: string;
+        owner_user_id: string | null;
+        visibility: Visibility;
+        text: string | null;
+      }>(
+        `
         with sources as (
           select
             'memory_node'::text as source_type,
@@ -5339,27 +6664,116 @@ export const createMemorySourceRepository = (
         )
         select source_type, source_id, owner_user_id, visibility, text
         from sources
-        where source_type = $1 and source_id = $2 and length(trim(text)) > 0
+        where source_type = $1
+          and source_id = $2
+          and (
+            length(trim(coalesce(text, ''))) > 0
+            or (
+              source_type = 'memory_event'
+              and exists (
+                select 1
+                from encrypted_field_payloads encrypted
+                where encrypted.owner_user_id = sources.owner_user_id
+                  and encrypted.source_table = 'memory_events'
+                  and encrypted.source_id = sources.source_id
+                  and encrypted.source_column = 'payload'
+                  and encrypted.invalidated_at is null
+              )
+            )
+            or (
+              source_type = 'memory_node'
+              and exists (
+                select 1
+                from encrypted_field_payloads encrypted
+                where encrypted.owner_user_id = sources.owner_user_id
+                  and encrypted.source_table = 'memory_nodes'
+                  and encrypted.source_id = sources.source_id
+                  and encrypted.source_column = 'summary_text'
+                  and encrypted.invalidated_at is null
+              )
+            )
+          )
         limit 1
       `,
-      [sourceType, sourceId]
-    );
-    const row = result.rows[0];
-    return row
-      ? {
-          sourceType: row.source_type,
-          sourceId: row.source_id,
-          ownerUserId: row.owner_user_id,
-          visibility: row.visibility,
-          text: row.text,
-          sourceHash: sourceHash(row.source_type, row.source_id, row.text)
-        }
-      : null;
-  },
+        [sourceType, sourceId]
+      );
+      const rawRow = result.rows[0];
+      const row =
+        rawRow?.source_type === "memory_node" &&
+        (rawRow.text === ENCRYPTED_MEMORY_NODE_TEXT ||
+          rawRow.text?.includes(ENCRYPTED_MEMORY_NODE_TEXT))
+          ? {
+              ...rawRow,
+              text: await (async () => {
+                if (!options.envelopeEncryptionProvider) {
+                  throw new Error(
+                    "Envelope encryption provider is required to embed encrypted Memory Nodes"
+                  );
+                }
+                const summaryText =
+                  await decryptAuthorizedEncryptedFieldPayload(
+                    pool,
+                    options.envelopeEncryptionProvider,
+                    {
+                      ownerUserId: rawRow.owner_user_id,
+                      sourceTable: "memory_nodes",
+                      sourceId: rawRow.source_id,
+                      sourceColumn: "summary_text"
+                    }
+                  );
+                const bodyText = await decryptAuthorizedEncryptedFieldPayload(
+                  pool,
+                  options.envelopeEncryptionProvider,
+                  {
+                    ownerUserId: rawRow.owner_user_id,
+                    sourceTable: "memory_nodes",
+                    sourceId: rawRow.source_id,
+                    sourceColumn: "body_text"
+                  }
+                );
+                if (typeof summaryText !== "string") {
+                  return rawRow.text;
+                }
+                return typeof bodyText === "string" &&
+                  bodyText.trim() &&
+                  bodyText.trim() !== summaryText.trim()
+                  ? `${summaryText} ${bodyText}`
+                  : summaryText;
+              })()
+            }
+          : rawRow?.source_type === "memory_event" &&
+              !rawRow.text &&
+              options.envelopeEncryptionProvider
+            ? {
+                ...rawRow,
+                text:
+                  (
+                    await decryptAuthorizedMemoryEventPayload(
+                      pool,
+                      options.envelopeEncryptionProvider,
+                      {
+                        ownerUserId: rawRow.owner_user_id,
+                        memoryEventId: rawRow.source_id
+                      }
+                    )
+                  )?.content ?? rawRow.text
+              }
+            : rawRow;
+      return row && row.text && row.text.trim().length > 0
+        ? {
+            sourceType: row.source_type,
+            sourceId: row.source_id,
+            ownerUserId: row.owner_user_id,
+            visibility: row.visibility,
+            text: row.text,
+            sourceHash: sourceHash(row.source_type, row.source_id, row.text)
+          }
+        : null;
+    },
 
-  async getLcmNodeForSummarization(nodeId) {
-    const result = await pool.query<LcmNodeForSummarizationRow>(
-      `
+    async getLcmNodeForSummarization(nodeId) {
+      const result = await pool.query<LcmNodeForSummarizationRow>(
+        `
         select
           id,
           owner_user_id,
@@ -5381,19 +6795,23 @@ export const createMemorySourceRepository = (
           and kind in ('leaf', 'rollup')
         limit 1
       `,
-      [nodeId]
-    );
-    const row = result.rows[0];
-    if (!row) {
-      return null;
-    }
-    return mapLcmNodeForSummarization(pool, row);
-  },
+        [nodeId]
+      );
+      const row = result.rows[0];
+      if (!row) {
+        return null;
+      }
+      return mapLcmNodeForSummarization(
+        pool,
+        row,
+        options.envelopeEncryptionProvider
+      );
+    },
 
-  async listLcmNodesNeedingSummaries(actor, input = {}) {
-    const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
-    const result = await pool.query<LcmNodeForSummarizationRow>(
-      `
+    async listLcmNodesNeedingSummaries(actor, input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 10, 1), 50);
+      const result = await pool.query<LcmNodeForSummarizationRow>(
+        `
         select
           mn.id,
           mn.owner_user_id,
@@ -5429,17 +6847,23 @@ export const createMemorySourceRepository = (
         order by mn.depth asc, mn.created_at asc, mn.id asc
         limit $2
       `,
-      [actor.userId, limit]
-    );
+        [actor.userId, limit]
+      );
 
-    return Promise.all(
-      result.rows.map((row) => mapLcmNodeForSummarization(pool, row))
-    );
-  },
+      return Promise.all(
+        result.rows.map((row) =>
+          mapLcmNodeForSummarization(
+            pool,
+            row,
+            options.envelopeEncryptionProvider
+          )
+        )
+      );
+    },
 
-  async getVisibleLcmNodeForSummarization(actor, nodeId) {
-    const result = await pool.query<LcmNodeForSummarizationRow>(
-      `
+    async getVisibleLcmNodeForSummarization(actor, nodeId) {
+      const result = await pool.query<LcmNodeForSummarizationRow>(
+        `
         select
           mn.id,
           mn.owner_user_id,
@@ -5463,42 +6887,67 @@ export const createMemorySourceRepository = (
           and mn.owner_user_id = $1
         limit 1
       `,
-      [actor.userId, nodeId]
-    );
-    const row = result.rows[0];
-    return row ? mapLcmNodeForSummarization(pool, row) : null;
-  },
+        [actor.userId, nodeId]
+      );
+      const row = result.rows[0];
+      return row
+        ? mapLcmNodeForSummarization(
+            pool,
+            row,
+            options.envelopeEncryptionProvider
+          )
+        : null;
+    },
 
-  async updateLcmNodeSummary(input) {
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      const current = await client.query<{
-        owner_user_id: string | null;
-        visibility: Visibility;
-        kind: "leaf" | "rollup";
-        summary_text: string;
-        source_items_json: LcmSourceItem[] | null;
-      }>(
-        `
-          select owner_user_id, visibility, kind, summary_text, source_items_json
+    async updateLcmNodeSummary(input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const current = await client.query<{
+          id: string;
+          owner_user_id: string | null;
+          visibility: Visibility;
+          kind: "leaf" | "rollup";
+          summary_text: string;
+          source_items_json: LcmSourceItem[] | null;
+        }>(
+          `
+          select id, owner_user_id, visibility, kind, summary_text, source_items_json
           from memory_nodes
           where id = $1
             and invalidated_at is null
             and kind in ('leaf', 'rollup')
           for update
         `,
-        [input.nodeId]
-      );
-      const currentNode = current.rows[0];
-      if (!currentNode) {
-        await client.query("commit");
-        return;
-      }
-      const previousSummary = currentNode.summary_text;
+          [input.nodeId]
+        );
+        const currentNode = current.rows[0];
+        if (!currentNode) {
+          await client.query("commit");
+          return;
+        }
+        const hydratedCurrentNode = await hydrateMemoryNodeRow(
+          client,
+          options.envelopeEncryptionProvider,
+          currentNode
+        );
+        const previousSummary = hydratedCurrentNode.summary_text;
+        const suppressPlaintextPayload =
+          managedCloudPlaintextMemoryPayloadsDisabled();
+        if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+          throw new Error(
+            "Envelope encryption provider is required when plaintext Memory Node storage is disabled"
+          );
+        }
+        const summaryStructuredJsonForStorage =
+          suppressPlaintextPayload &&
+          input.summaryStructuredJson !== undefined &&
+          input.summaryStructuredJson !== null
+            ? encryptedMemoryNodeJsonMarker()
+            : input.summaryStructuredJson;
 
-      await client.query(
-        `
+        await client.query(
+          `
           update memory_nodes
           set
             summary_text = $2,
@@ -5511,22 +6960,38 @@ export const createMemorySourceRepository = (
             updated_at = now()
           where id = $1
         `,
-        [
-          input.nodeId,
-          input.summaryText,
-          input.summaryModel,
-          input.summaryPromptVersion,
-          input.summaryTokenEstimate,
-          input.summaryStructuredJson === undefined
-            ? null
-            : JSON.stringify(input.summaryStructuredJson),
-          input.summaryStructuredSchemaVersion ?? null
-        ]
-      );
+          [
+            input.nodeId,
+            suppressPlaintextPayload
+              ? ENCRYPTED_MEMORY_NODE_TEXT
+              : input.summaryText,
+            input.summaryModel,
+            input.summaryPromptVersion,
+            input.summaryTokenEstimate,
+            summaryStructuredJsonForStorage === undefined
+              ? null
+              : JSON.stringify(summaryStructuredJsonForStorage),
+            input.summaryStructuredSchemaVersion ?? null
+          ]
+        );
+        if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
+          await persistEncryptedMemoryNodeFields(
+            client,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId: hydratedCurrentNode.owner_user_id!,
+              visibility: hydratedCurrentNode.visibility,
+              nodeId: input.nodeId,
+              summaryText: input.summaryText,
+              bodyText: input.summaryText,
+              summaryStructuredJson: input.summaryStructuredJson
+            }
+          );
+        }
 
-      if (previousSummary !== input.summaryText) {
-        await client.query(
-          `
+        if (previousSummary !== input.summaryText) {
+          await client.query(
+            `
             update memory_embeddings
             set
               invalidated_at = now(),
@@ -5534,26 +6999,26 @@ export const createMemorySourceRepository = (
             where memory_node_id = $1
               and invalidated_at is null
           `,
-          [input.nodeId]
-        );
-      }
+            [input.nodeId]
+          );
+        }
 
-      const generatedTitle = normalizeSessionTitle(
-        input.summaryStructuredJson?.title
-      );
-      const sourceItems = Array.isArray(currentNode.source_items_json)
-        ? currentNode.source_items_json
-        : [];
-      const generatedTitleSessionId = generatedTitle
-        ? singleSessionIdForLcmTitle(currentNode.kind, sourceItems)
-        : null;
-      if (
-        generatedTitle &&
-        generatedTitleSessionId &&
-        currentNode.owner_user_id
-      ) {
-        await client.query(
-          `
+        const generatedTitle = normalizeSessionTitle(
+          input.summaryStructuredJson?.title
+        );
+        const sourceItems = Array.isArray(hydratedCurrentNode.source_items_json)
+          ? hydratedCurrentNode.source_items_json
+          : [];
+        const generatedTitleSessionId = generatedTitle
+          ? singleSessionIdForLcmTitle(hydratedCurrentNode.kind, sourceItems)
+          : null;
+        if (
+          generatedTitle &&
+          generatedTitleSessionId &&
+          hydratedCurrentNode.owner_user_id
+        ) {
+          await client.query(
+            `
             update sessions
             set
               metadata = metadata || jsonb_build_object(
@@ -5575,37 +7040,53 @@ export const createMemorySourceRepository = (
                 or metadata ->> 'threadNameSource' in ('generated', 'lcm', 'provisional')
               )
           `,
-          [
-            generatedTitleSessionId,
-            currentNode.owner_user_id,
-            currentNode.visibility,
-            generatedTitle
-          ]
+            [
+              generatedTitleSessionId,
+              hydratedCurrentNode.owner_user_id,
+              hydratedCurrentNode.visibility,
+              generatedTitle
+            ]
+          );
+        }
+
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async upsertSourceEmbedding(input) {
+      const embeddingTable = embeddingTableForDimensions(input.dimensions);
+      if (input.vector.length !== input.dimensions) {
+        throw new Error(
+          `Expected ${input.dimensions} vector values, received ${input.vector.length}`
         );
       }
+      const sourceText = input.sourceText ?? input.source.text;
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext embedding source text storage is disabled"
+        );
+      }
+      if (suppressPlaintextPayload && !input.source.ownerUserId) {
+        throw new Error(
+          "Embedding source owner is required when plaintext embedding source text storage is disabled"
+        );
+      }
+      const sourceTextForStorage = suppressPlaintextPayload
+        ? ENCRYPTED_EMBEDDING_SOURCE_TEXT
+        : sourceText;
 
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-  },
-
-  async upsertSourceEmbedding(input) {
-    const embeddingTable = embeddingTableForDimensions(input.dimensions);
-    if (input.vector.length !== input.dimensions) {
-      throw new Error(
-        `Expected ${input.dimensions} vector values, received ${input.vector.length}`
-      );
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      const embedding = await client.query<{ id: string; inserted: boolean }>(
-        `
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const embedding = await client.query<{ id: string; inserted: boolean }>(
+          `
           insert into memory_embeddings (
             memory_node_id,
             memory_event_id,
@@ -5637,26 +7118,26 @@ export const createMemorySourceRepository = (
           on conflict do nothing
           returning id, true as inserted
         `,
-        [
-          input.source.sourceType,
-          input.source.sourceId,
-          input.source.ownerUserId,
-          input.source.visibility,
-          input.model,
-          input.dimensions,
-          input.version,
-          input.source.sourceHash,
-          input.chunkIndex ?? 0,
-          input.chunkCount ?? 1,
-          input.sourceText ?? input.source.text
-        ]
-      );
+          [
+            input.source.sourceType,
+            input.source.sourceId,
+            input.source.ownerUserId,
+            input.source.visibility,
+            input.model,
+            input.dimensions,
+            input.version,
+            input.source.sourceHash,
+            input.chunkIndex ?? 0,
+            input.chunkCount ?? 1,
+            sourceTextForStorage
+          ]
+        );
 
-      let id = embedding.rows[0]?.id;
-      const inserted = Boolean(embedding.rows[0]?.inserted);
-      if (!id) {
-        const existing = await client.query<{ id: string }>(
-          `
+        let id = embedding.rows[0]?.id;
+        const inserted = Boolean(embedding.rows[0]?.inserted);
+        if (!id) {
+          const existing = await client.query<{ id: string }>(
+            `
             select id
             from memory_embeddings
             where invalidated_at is null
@@ -5672,46 +7153,78 @@ export const createMemorySourceRepository = (
               )
             limit 1
           `,
-          [
-            input.model,
-            input.dimensions,
-            input.version,
-            input.source.sourceHash,
-            input.source.sourceType,
-            input.source.sourceId,
-            input.chunkIndex ?? 0
-          ]
-        );
-        id = existing.rows[0]?.id;
-      }
+            [
+              input.model,
+              input.dimensions,
+              input.version,
+              input.source.sourceHash,
+              input.source.sourceType,
+              input.source.sourceId,
+              input.chunkIndex ?? 0
+            ]
+          );
+          id = existing.rows[0]?.id;
+        }
 
-      if (!id) {
-        throw new Error("Could not create or locate embedding record");
-      }
+        if (!id) {
+          throw new Error("Could not create or locate embedding record");
+        }
+        if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
+          await client.query(
+            `
+            update memory_embeddings
+            set source_text = $2
+            where id = $1
+          `,
+            [id, ENCRYPTED_EMBEDDING_SOURCE_TEXT]
+          );
+          await upsertEncryptedFieldPayloadWithClient(
+            client,
+            { userId: input.source.ownerUserId! },
+            options.envelopeEncryptionProvider,
+            {
+              sourceTable: "memory_embeddings",
+              sourceId: id,
+              sourceColumn: "source_text",
+              plaintext: sourceText,
+              visibility: input.source.visibility,
+              rowFamily: "memory_embedding",
+              scope: {
+                tenantId: input.source.ownerUserId!,
+                objectClass: "memory_embedding"
+              },
+              aad: {
+                sourceType: input.source.sourceType,
+                sourceId: input.source.sourceId,
+                chunkIndex: input.chunkIndex ?? 0
+              }
+            }
+          );
+        }
 
-      await client.query(
-        `
+        await client.query(
+          `
           insert into ${embeddingTable} (memory_embedding_id, embedding)
           values ($1, $2::vector)
           on conflict (memory_embedding_id) do nothing
         `,
-        [id, vectorLiteral(input.vector)]
-      );
+          [id, vectorLiteral(input.vector)]
+        );
 
-      await client.query("commit");
-      return { id, inserted };
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-  },
+        await client.query("commit");
+        return { id, inserted };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
 
-  async createMemoryEvent(actor, input) {
-    if (input.sessionId) {
-      const visibleSession = await pool.query<{ id: string }>(
-        `
+    async createMemoryEvent(actor, input) {
+      if (input.sessionId) {
+        const visibleSession = await pool.query<{ id: string }>(
+          `
           select s.id
           from sessions s
           where s.id = $2
@@ -5720,117 +7233,155 @@ export const createMemorySourceRepository = (
             and s.owner_user_id = $1
           limit 1
         `,
-        [actor.userId, input.sessionId]
-      );
-      if (visibleSession.rowCount === 0) {
-        throw new Error("Session not found or not visible");
+          [actor.userId, input.sessionId]
+        );
+        if (visibleSession.rowCount === 0) {
+          throw new Error("Session not found or not visible");
+        }
       }
-    }
 
-    const ownerUserId = actor.userId;
-    const payload = {
-      actor: input.actor,
-      content: input.content,
-      metadata: input.metadata ?? {},
-      rawEventType: input.rawEventType,
-      workspaceId: input.workspaceId
-    };
-    const rawConversationItemIds = rawConversationItemIdsFromMetadata(
-      input.metadata
-    );
-    const capturedAt = input.capturedAt ? new Date(input.capturedAt) : null;
-    if (capturedAt && Number.isNaN(capturedAt.getTime())) {
-      throw new Error("capturedAt must be a valid timestamp");
-    }
-    const sourceEventTime = input.sourceEventTime
-      ? new Date(input.sourceEventTime)
-      : null;
-    if (sourceEventTime && Number.isNaN(sourceEventTime.getTime())) {
-      throw new Error("sourceEventTime must be a valid timestamp");
-    }
-    const tokenCount = estimateTokens(input.content, {
-      model: input.tokenModel ?? "gpt-5.4-mini"
-    });
-
-    type MemoryEventRow = {
-      id: string;
-      owner_user_id: string | null;
-      visibility: Visibility;
-      event_type: MemoryEventType;
-      session_id: string | null;
-      turn_id: string | null;
-      token_count: number | null;
-      seal_reason: string | null;
-      payload: MemoryEventRecord["metadata"] & {
-        actor?: MemoryActor;
-        content?: string;
-        metadata?: Record<string, unknown>;
-        rawEventType?: string;
-        workspaceId?: string;
+      const ownerUserId = actor.userId;
+      const payload: MemoryEventPayload = {
+        actor: input.actor,
+        content: input.content,
+        metadata: input.metadata ?? {},
+        rawEventType: input.rawEventType,
+        workspaceId: input.workspaceId
       };
-      created_at: Date;
-    };
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Event payload storage is disabled"
+        );
+      }
+      const payloadForStorage = suppressPlaintextPayload
+        ? redactMemoryEventPayloadForPlaintextStorage(payload)
+        : payload;
+      const rawConversationItemIds = rawConversationItemIdsFromMetadata(
+        input.metadata
+      );
+      const capturedAt = input.capturedAt ? new Date(input.capturedAt) : null;
+      if (capturedAt && Number.isNaN(capturedAt.getTime())) {
+        throw new Error("capturedAt must be a valid timestamp");
+      }
+      const sourceEventTime = input.sourceEventTime
+        ? new Date(input.sourceEventTime)
+        : null;
+      if (sourceEventTime && Number.isNaN(sourceEventTime.getTime())) {
+        throw new Error("sourceEventTime must be a valid timestamp");
+      }
+      const tokenCount = estimateTokens(input.content, {
+        model: input.tokenModel ?? "gpt-5.4-mini"
+      });
 
-    const result = await pool.query<MemoryEventRow>(
-      `
-        with refreshed as (
-          update memory_events
-          set
-            source_runtime = $5,
-            capture_method = $6,
-            codex_transcript_path = coalesce($7, memory_events.codex_transcript_path),
-            session_id = coalesce($8, memory_events.session_id),
-            turn_id = coalesce($9, memory_events.turn_id),
-            source_hash = $11,
-            payload = $12,
-            token_count = $13,
-            seal_reason = coalesce($14, memory_events.seal_reason),
-            captured_at = coalesce($15::timestamptz, now()),
-            source_event_time = coalesce($16, memory_events.source_event_time),
-            source_sequence = coalesce($17, memory_events.source_sequence)
-          where $10::text like 'projection:%'
-            and memory_events.idempotency_key = $10
-            and memory_events.visibility = $3::visibility_scope
-            and memory_events.owner_user_id = $2
-            and memory_events.invalidated_at is null
-          returning
-            id, owner_user_id, visibility, event_type, session_id, turn_id,
-            token_count, seal_reason, payload, created_at
-        ),
-        inserted as (
-          insert into memory_events (
-            actor_user_id,
-            owner_user_id,
-            visibility,
-            event_type,
-            source_runtime,
-            capture_method,
-            codex_transcript_path,
-            session_id,
-            turn_id,
-            idempotency_key,
-            source_hash,
-            payload,
-            token_count,
-            seal_reason,
-            captured_at,
-            source_event_time,
-            source_sequence
-          )
-          select
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-            coalesce($15::timestamptz, now()), $16, $17
-          where not exists (select 1 from refreshed)
-          on conflict do nothing
-          returning
-            id, owner_user_id, visibility, event_type, session_id, turn_id,
-            token_count, seal_reason, payload, created_at
+      type MemoryEventRow = {
+        id: string;
+        owner_user_id: string | null;
+        visibility: Visibility;
+        event_type: MemoryEventType;
+        session_id: string | null;
+        turn_id: string | null;
+        token_count: number | null;
+        seal_reason: string | null;
+        payload: MemoryEventPayload;
+        created_at: Date;
+      };
+
+      const persistMemoryEventEncryptedPayload = async (
+        row: MemoryEventRow,
+        plaintextPayload: MemoryEventPayload,
+        client: pg.Pool | pg.PoolClient = pool
+      ): Promise<void> => {
+        if (!options.envelopeEncryptionProvider) {
+          return;
+        }
+        await upsertEncryptedFieldPayloadWithClient(
+          client,
+          { userId: ownerUserId },
+          options.envelopeEncryptionProvider,
+          {
+            sourceTable: "memory_events",
+            sourceId: row.id,
+            sourceColumn: "payload",
+            plaintext: plaintextPayload,
+            rowFamily: "memory_event",
+            scope: {
+              tenantId: ownerUserId,
+              workspaceId:
+                typeof plaintextPayload.workspaceId === "string"
+                  ? plaintextPayload.workspaceId
+                  : null,
+              objectClass: "memory_event"
+            },
+            aad: {
+              eventType: row.event_type,
+              sessionId: row.session_id,
+              turnId: row.turn_id
+            }
+          }
+        );
+      };
+
+      const upsertMemoryEventSql = `
+      with refreshed as (
+        update memory_events
+        set
+          source_runtime = $5,
+          capture_method = $6,
+          codex_transcript_path = coalesce($7, memory_events.codex_transcript_path),
+          session_id = coalesce($8, memory_events.session_id),
+          turn_id = coalesce($9, memory_events.turn_id),
+          source_hash = $11,
+          payload = $12,
+          token_count = $13,
+          seal_reason = coalesce($14, memory_events.seal_reason),
+          captured_at = coalesce($15::timestamptz, now()),
+          source_event_time = coalesce($16, memory_events.source_event_time),
+          source_sequence = coalesce($17, memory_events.source_sequence)
+        where $10::text like 'projection:%'
+          and memory_events.idempotency_key = $10
+          and memory_events.visibility = $3::visibility_scope
+          and memory_events.owner_user_id = $2
+          and memory_events.invalidated_at is null
+        returning
+          id, owner_user_id, visibility, event_type, session_id, turn_id,
+          token_count, seal_reason, payload, created_at
+      ),
+      inserted as (
+        insert into memory_events (
+          actor_user_id,
+          owner_user_id,
+          visibility,
+          event_type,
+          source_runtime,
+          capture_method,
+          codex_transcript_path,
+          session_id,
+          turn_id,
+          idempotency_key,
+          source_hash,
+          payload,
+          token_count,
+          seal_reason,
+          captured_at,
+          source_event_time,
+          source_sequence
         )
-        select * from refreshed
-        union all
-        select * from inserted
-      `,
-      [
+        select
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+          coalesce($15::timestamptz, now()), $16, $17
+        where not exists (select 1 from refreshed)
+        on conflict do nothing
+        returning
+          id, owner_user_id, visibility, event_type, session_id, turn_id,
+          token_count, seal_reason, payload, created_at
+      )
+      select * from refreshed
+      union all
+      select * from inserted
+    `;
+      const upsertMemoryEventParams = [
         actor.userId,
         ownerUserId,
         input.visibility,
@@ -5842,35 +7393,72 @@ export const createMemorySourceRepository = (
         input.turnId ?? null,
         input.idempotencyKey ?? null,
         input.sourceHash ?? null,
-        payload,
+        payloadForStorage,
         tokenCount,
         input.sealReason ?? null,
         capturedAt,
         sourceEventTime,
         input.sourceSequence ?? null
-      ]
-    );
+      ];
 
-    const insertedRow = result.rows[0];
-    if (insertedRow) {
-      await linkMemoryEventSources(
-        pool,
-        insertedRow.id,
-        rawConversationItemIds
-      );
-      await applyProvisionalCapturedSessionTitle(pool, {
-        ownerUserId,
-        sessionId: insertedRow.session_id,
-        actor: input.actor,
-        content: input.content,
-        metadata: input.metadata
-      });
-      return mapMemoryEvent(insertedRow);
-    }
+      const upsertedRow = suppressPlaintextPayload
+        ? await (async (): Promise<MemoryEventRow | undefined> => {
+            const client = await pool.connect();
+            try {
+              await client.query("begin");
+              const result = await client.query<MemoryEventRow>(
+                upsertMemoryEventSql,
+                upsertMemoryEventParams
+              );
+              const row = result.rows[0];
+              if (row) {
+                await persistMemoryEventEncryptedPayload(row, payload, client);
+              }
+              await client.query("commit");
+              return row;
+            } catch (error) {
+              await client.query("rollback");
+              throw error;
+            } finally {
+              client.release();
+            }
+          })()
+        : await (async (): Promise<MemoryEventRow | undefined> => {
+            const result = await pool.query<MemoryEventRow>(
+              upsertMemoryEventSql,
+              upsertMemoryEventParams
+            );
+            const row = result.rows[0];
+            if (row) {
+              await persistMemoryEventEncryptedPayload(row, payload);
+            }
+            return row;
+          })();
 
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const duplicate = await pool.query<MemoryEventRow>(
-        `
+      const insertedRow = upsertedRow;
+      if (insertedRow) {
+        const hydratedRow = {
+          ...insertedRow,
+          payload
+        };
+        await linkMemoryEventSources(
+          pool,
+          insertedRow.id,
+          rawConversationItemIds
+        );
+        await applyProvisionalCapturedSessionTitle(pool, {
+          ownerUserId,
+          sessionId: insertedRow.session_id,
+          actor: input.actor,
+          content: input.content,
+          metadata: input.metadata
+        });
+        return mapMemoryEvent(hydratedRow);
+      }
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const duplicate = await pool.query<MemoryEventRow>(
+          `
           select
             me.id, me.owner_user_id, me.visibility, me.event_type,
             me.session_id, me.turn_id, me.token_count, me.seal_reason,
@@ -5891,325 +7479,407 @@ export const createMemorySourceRepository = (
             me.created_at desc
           limit 1
         `,
-        [actor.userId, input.idempotencyKey ?? null, input.sourceHash ?? null]
-      );
-      const duplicateRow = duplicate.rows[0];
-      if (duplicateRow) {
-        await linkMemoryEventSources(
-          pool,
-          duplicateRow.id,
-          rawConversationItemIds
+          [actor.userId, input.idempotencyKey ?? null, input.sourceHash ?? null]
         );
-        return mapMemoryEvent(duplicateRow);
-      }
-      if (attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)));
-      }
-    }
-
-    throw Object.assign(
-      new Error(
-        "Duplicate memory event conflicts with memory outside caller visibility"
-      ),
-      { statusCode: 409 }
-    );
-  },
-
-  async searchMemoryNodes(actor, input) {
-    const visibility = input.scope;
-    const searchDomain = input.searchDomain ?? "global";
-    if (searchDomain === "session" && !input.sessionId) {
-      throw new Error("Session-scoped memory search requires sessionId");
-    }
-    if (searchDomain === "project" && !input.workspaceId) {
-      throw new Error("Project-scoped memory search requires workspaceId");
-    }
-    const teamWorkspaceAccess = input.teamWorkspaceId
-      ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-      : null;
-    const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-      requesterUserId: actor.userId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      access: teamWorkspaceAccess
-    });
-    if (
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      !teamWorkspaceAuthorization.authorized
-    ) {
-      return emptySearchResult();
-    }
-    const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      teamWorkspaceAuthorization.authorized
-        ? {
-            teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-            teamId: teamWorkspaceAuthorization.teamId
-          }
-        : null;
-    const requestedLimit = input.limit ?? 10;
-    const shouldRerank = rerankingEnabled();
-    const now = new Date();
-    const sourceAfter = input.recentDays
-      ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
-      : input.sourceAfter
-        ? new Date(input.sourceAfter)
-        : null;
-    const sourceBefore = input.sourceBefore
-      ? new Date(input.sourceBefore)
-      : null;
-    if (
-      input.recentDays !== undefined &&
-      (input.sourceAfter !== undefined || input.sourceBefore !== undefined)
-    ) {
-      throw new Error(
-        "recentDays cannot be combined with explicit sourceAfter/sourceBefore bounds"
-      );
-    }
-    if (sourceAfter && Number.isNaN(sourceAfter.getTime())) {
-      throw new Error("sourceAfter must be a valid timestamp");
-    }
-    if (sourceBefore && Number.isNaN(sourceBefore.getTime())) {
-      throw new Error("sourceBefore must be a valid timestamp");
-    }
-    if (sourceAfter && sourceBefore && sourceAfter >= sourceBefore) {
-      throw new Error("sourceAfter must be earlier than sourceBefore");
-    }
-    const temporalFilter =
-      input.recentDays || sourceAfter || sourceBefore
-        ? {
-            recentDays: input.recentDays,
-            sourceAfter: sourceAfter?.toISOString(),
-            sourceBefore: sourceBefore?.toISOString()
-          }
-        : undefined;
-    let embeddingMetadata = defaultRetrievalMetadata({
-      rerankingEnabled: shouldRerank,
-      temporalFilter
-    });
-
-    type RetrievalStageName =
-      | "rollup_search"
-      | "scoped_leaf_search"
-      | "leaf_search"
-      | "fresh_pending_search"
-      | "raw_fallback_search"
-      | "lexical_search";
-    type VectorRow = {
-      id: string;
-      source_type: "memory_node" | "memory_event" | "message";
-      source_id: string;
-      retrieval_stage: RetrievalStageName;
-      parent_node_ids: string[] | null;
-      has_out_of_window_sources: boolean;
-      filtered_source_items: Array<{
-        createdAt?: string;
-        text?: string;
-        projectName?: string | null;
-        projectPath?: string | null;
-      }> | null;
-      visibility: Visibility;
-      summary_text: string;
-      rerank_text: string | null;
-      lcm_summary_model: string | null;
-      lcm_summary_pending: boolean;
-      score: number;
-      created_at: Date;
-      embedding_model: string;
-      embedding_dimensions: number;
-      source_chunk_index: number;
-      source_chunk_count: number;
-    };
-    type StageResult = {
-      name: RetrievalStageName;
-      rows: VectorRow[];
-      durationMs: number;
-      reranked: boolean;
-      rerankedCount: number;
-      rerankerModel?: string | null;
-      rerankingUnavailable?: boolean;
-      rerankingError?: string;
-      parentNodeIds?: string[];
-    };
-    const stageDiagnostics: NonNullable<RetrievalMetadata["stages"]> = [];
-    const stagePriority: Record<RetrievalStageName, number> = {
-      rollup_search: 5,
-      scoped_leaf_search: 4,
-      leaf_search: 3,
-      fresh_pending_search: 2,
-      raw_fallback_search: 1,
-      lexical_search: 2
-    };
-    const stageWeight: Record<RetrievalStageName, number> = {
-      rollup_search: 1.1,
-      scoped_leaf_search: 1.05,
-      leaf_search: 1,
-      fresh_pending_search: 0.95,
-      raw_fallback_search: 0.7,
-      lexical_search: 1.2
-    };
-    const stageCandidateLimit = (name: string, fallback: number): number =>
-      positiveIntEnv(name, fallback);
-    const rollupCandidateLimit = stageCandidateLimit(
-      "MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT",
-      shouldRerank
-        ? vectorCandidateLimit(requestedLimit)
-        : Math.max(requestedLimit, 20)
-    );
-    const leafCandidateLimit = stageCandidateLimit(
-      "MEMORY_RAG_LEAF_CANDIDATE_LIMIT",
-      shouldRerank
-        ? vectorCandidateLimit(requestedLimit * 2)
-        : Math.max(requestedLimit * 2, 20)
-    );
-    const freshCandidateLimit = stageCandidateLimit(
-      "MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT",
-      Math.max(requestedLimit, 20)
-    );
-    const rawCandidateLimit = stageCandidateLimit(
-      "MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT",
-      Math.max(requestedLimit, 20)
-    );
-    const lexicalCandidateLimit = stageCandidateLimit(
-      "MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT",
-      Math.max(requestedLimit, 20)
-    );
-    const rollupResultLimit = stageCandidateLimit(
-      "MEMORY_RAG_ROLLUP_RESULT_LIMIT",
-      Math.max(1, Math.min(requestedLimit, 5))
-    );
-    const scopedLeafCandidateLimit = stageCandidateLimit(
-      "MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT",
-      Math.max(requestedLimit * 2, 20)
-    );
-    const rawFallbackEnabled =
-      process.env.MEMORY_RAG_RAW_FALLBACK_ENABLED?.trim().toLowerCase() !==
-      "false";
-    const scoreThresholds: Record<RetrievalStageName, number> = {
-      rollup_search: nonNegativeFloatEnv("MEMORY_RAG_ROLLUP_MIN_SCORE", 0),
-      scoped_leaf_search: nonNegativeFloatEnv(
-        "MEMORY_RAG_SCOPED_LEAF_MIN_SCORE",
-        nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0)
-      ),
-      leaf_search: nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0),
-      fresh_pending_search: nonNegativeFloatEnv(
-        "MEMORY_RAG_FRESH_EVENT_MIN_SCORE",
-        0
-      ),
-      raw_fallback_search: nonNegativeFloatEnv(
-        "MEMORY_RAG_RAW_FALLBACK_MIN_SCORE",
-        0
-      ),
-      lexical_search: 0
-    };
-    const stageMaxAllowed: Record<RetrievalStageName, number> = {
-      rollup_search: rollupCandidateLimit,
-      scoped_leaf_search: scopedLeafCandidateLimit,
-      leaf_search: leafCandidateLimit,
-      fresh_pending_search: freshCandidateLimit,
-      raw_fallback_search: rawCandidateLimit,
-      lexical_search: lexicalCandidateLimit
-    };
-    const requestedStage =
-      input.retrievalStage && input.retrievalStage !== "score_scan"
-        ? input.retrievalStage
-        : null;
-    const scanOnly = input.retrievalStage === "score_scan";
-    const vectorRows: VectorRow[] = [];
-    const filteredNodeSourceText = (
-      items: VectorRow["filtered_source_items"]
-    ): string | null => {
-      if (!Array.isArray(items) || items.length === 0) {
-        return null;
-      }
-      const lines = items
-        .map((item) => {
-          const text = presentMemoryText(item.text ?? "", {
-            project_name: item.projectName ?? null,
-            project_path: item.projectPath ?? null
+        const duplicateRow = duplicate.rows[0];
+        if (duplicateRow) {
+          const duplicatePayload =
+            duplicateRow.payload.contentEncrypted === true
+              ? ((await decryptAuthorizedMemoryEventPayload(
+                  pool,
+                  options.envelopeEncryptionProvider,
+                  {
+                    ownerUserId: duplicateRow.owner_user_id,
+                    memoryEventId: duplicateRow.id
+                  }
+                )) ?? payload)
+              : duplicateRow.payload;
+          await linkMemoryEventSources(
+            pool,
+            duplicateRow.id,
+            rawConversationItemIds
+          );
+          await persistMemoryEventEncryptedPayload(
+            duplicateRow,
+            duplicatePayload
+          );
+          return mapMemoryEvent({
+            ...duplicateRow,
+            payload: duplicatePayload
           });
-          if (!text || text === "Captured memory.") {
-            return null;
+        }
+        if (attempt < 2) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 10 * (attempt + 1))
+          );
+        }
+      }
+
+      throw Object.assign(
+        new Error(
+          "Duplicate memory event conflicts with memory outside caller visibility"
+        ),
+        { statusCode: 409 }
+      );
+    },
+
+    async searchMemoryNodes(actor, input) {
+      const visibility = input.scope;
+      const searchDomain = input.searchDomain ?? "global";
+      if (searchDomain === "session" && !input.sessionId) {
+        throw new Error("Session-scoped memory search requires sessionId");
+      }
+      if (searchDomain === "project" && !input.workspaceId) {
+        throw new Error("Project-scoped memory search requires workspaceId");
+      }
+      const teamWorkspaceAccess = input.teamWorkspaceId
+        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
+        : null;
+      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
+        requesterUserId: actor.userId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        access: teamWorkspaceAccess
+      });
+      if (
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        !teamWorkspaceAuthorization.authorized
+      ) {
+        return emptySearchResult();
+      }
+      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        teamWorkspaceAuthorization.authorized
+          ? {
+              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
+              teamId: teamWorkspaceAuthorization.teamId
+            }
+          : null;
+      const requestedParentNodeIds = input.parentNodeIds?.filter(Boolean) ?? [];
+      const visibleParentNodeIds = requestedParentNodeIds.length
+        ? (
+            await this.listLcmGraphNodes(actor, {
+              teamWorkspaceId: input.teamWorkspaceId,
+              nodeIds: requestedParentNodeIds,
+              limit: requestedParentNodeIds.length
+            })
+          ).map((node) => node.id)
+        : [];
+      const requestedLimit = input.limit ?? 10;
+      const shouldRerank = rerankingEnabled();
+      const now = new Date();
+      const sourceAfter = input.recentDays
+        ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
+        : input.sourceAfter
+          ? new Date(input.sourceAfter)
+          : null;
+      const sourceBefore = input.sourceBefore
+        ? new Date(input.sourceBefore)
+        : null;
+      if (
+        input.recentDays !== undefined &&
+        (input.sourceAfter !== undefined || input.sourceBefore !== undefined)
+      ) {
+        throw new Error(
+          "recentDays cannot be combined with explicit sourceAfter/sourceBefore bounds"
+        );
+      }
+      if (sourceAfter && Number.isNaN(sourceAfter.getTime())) {
+        throw new Error("sourceAfter must be a valid timestamp");
+      }
+      if (sourceBefore && Number.isNaN(sourceBefore.getTime())) {
+        throw new Error("sourceBefore must be a valid timestamp");
+      }
+      if (sourceAfter && sourceBefore && sourceAfter >= sourceBefore) {
+        throw new Error("sourceAfter must be earlier than sourceBefore");
+      }
+      const temporalFilter =
+        input.recentDays || sourceAfter || sourceBefore
+          ? {
+              recentDays: input.recentDays,
+              sourceAfter: sourceAfter?.toISOString(),
+              sourceBefore: sourceBefore?.toISOString()
+            }
+          : undefined;
+      let embeddingMetadata = defaultRetrievalMetadata({
+        rerankingEnabled: shouldRerank,
+        temporalFilter
+      });
+
+      type RetrievalStageName =
+        | "rollup_search"
+        | "scoped_leaf_search"
+        | "leaf_search"
+        | "fresh_pending_search"
+        | "raw_fallback_search"
+        | "lexical_search";
+      type VectorRow = {
+        id: string;
+        embedding_id: string | null;
+        source_type: "memory_node" | "memory_event" | "message";
+        source_id: string;
+        owner_user_id: string | null;
+        retrieval_stage: RetrievalStageName;
+        parent_node_ids: string[] | null;
+        has_out_of_window_sources: boolean;
+        filtered_source_items: Array<{
+          createdAt?: string;
+          text?: string;
+          projectName?: string | null;
+          projectPath?: string | null;
+        }> | null;
+        visibility: Visibility;
+        summary_text: string;
+        rerank_text: string | null;
+        lcm_summary_model: string | null;
+        lcm_summary_pending: boolean;
+        score: number;
+        created_at: Date;
+        embedding_model: string;
+        embedding_dimensions: number;
+        source_chunk_index: number;
+        source_chunk_count: number;
+      };
+      type StageResult = {
+        name: RetrievalStageName;
+        rows: VectorRow[];
+        durationMs: number;
+        reranked: boolean;
+        rerankedCount: number;
+        rerankerModel?: string | null;
+        rerankingUnavailable?: boolean;
+        rerankingError?: string;
+        parentNodeIds?: string[];
+      };
+      const stageDiagnostics: NonNullable<RetrievalMetadata["stages"]> = [];
+      const stagePriority: Record<RetrievalStageName, number> = {
+        rollup_search: 5,
+        scoped_leaf_search: 4,
+        leaf_search: 3,
+        fresh_pending_search: 2,
+        raw_fallback_search: 1,
+        lexical_search: 2
+      };
+      const stageWeight: Record<RetrievalStageName, number> = {
+        rollup_search: 1.1,
+        scoped_leaf_search: 1.05,
+        leaf_search: 1,
+        fresh_pending_search: 0.95,
+        raw_fallback_search: 0.7,
+        lexical_search: 1.2
+      };
+      const stageCandidateLimit = (name: string, fallback: number): number =>
+        positiveIntEnv(name, fallback);
+      const rollupCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT",
+        shouldRerank
+          ? vectorCandidateLimit(requestedLimit)
+          : Math.max(requestedLimit, 20)
+      );
+      const leafCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_LEAF_CANDIDATE_LIMIT",
+        shouldRerank
+          ? vectorCandidateLimit(requestedLimit * 2)
+          : Math.max(requestedLimit * 2, 20)
+      );
+      const freshCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT",
+        Math.max(requestedLimit, 20)
+      );
+      const rawCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT",
+        Math.max(requestedLimit, 20)
+      );
+      const lexicalCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT",
+        Math.max(requestedLimit, 20)
+      );
+      const rollupResultLimit = stageCandidateLimit(
+        "MEMORY_RAG_ROLLUP_RESULT_LIMIT",
+        Math.max(1, Math.min(requestedLimit, 5))
+      );
+      const scopedLeafCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT",
+        Math.max(requestedLimit * 2, 20)
+      );
+      const rawFallbackEnabled =
+        process.env.MEMORY_RAG_RAW_FALLBACK_ENABLED?.trim().toLowerCase() !==
+        "false";
+      const scoreThresholds: Record<RetrievalStageName, number> = {
+        rollup_search: nonNegativeFloatEnv("MEMORY_RAG_ROLLUP_MIN_SCORE", 0),
+        scoped_leaf_search: nonNegativeFloatEnv(
+          "MEMORY_RAG_SCOPED_LEAF_MIN_SCORE",
+          nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0)
+        ),
+        leaf_search: nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0),
+        fresh_pending_search: nonNegativeFloatEnv(
+          "MEMORY_RAG_FRESH_EVENT_MIN_SCORE",
+          0
+        ),
+        raw_fallback_search: nonNegativeFloatEnv(
+          "MEMORY_RAG_RAW_FALLBACK_MIN_SCORE",
+          0
+        ),
+        lexical_search: 0
+      };
+      const stageMaxAllowed: Record<RetrievalStageName, number> = {
+        rollup_search: rollupCandidateLimit,
+        scoped_leaf_search: scopedLeafCandidateLimit,
+        leaf_search: leafCandidateLimit,
+        fresh_pending_search: freshCandidateLimit,
+        raw_fallback_search: rawCandidateLimit,
+        lexical_search: lexicalCandidateLimit
+      };
+      const requestedStage =
+        input.retrievalStage && input.retrievalStage !== "score_scan"
+          ? input.retrievalStage
+          : null;
+      if (
+        requestedStage === "lexical_search" &&
+        !plaintextLexicalSearchEnabled()
+      ) {
+        throw Object.assign(
+          new Error(
+            "Plaintext lexical search is disabled for this deployment profile"
+          ),
+          {
+            statusCode: 400,
+            payload: {
+              error: "plaintext_lexical_search_disabled",
+              deploymentProfile: deploymentProfile() || null
+            }
           }
-          return item.createdAt ? `[${item.createdAt}] ${text}` : text;
-        })
-        .filter((line): line is string => Boolean(line));
-      return lines.length > 0 ? lines.join("\n") : null;
-    };
-    const selectStageRowsForEvidence = (
-      stage: RetrievalStageName,
-      rows: VectorRow[]
-    ): VectorRow[] => {
-      if (stage === "rollup_search" && !requestedStage) {
-        return rows.slice(0, rollupResultLimit);
+        );
       }
-      return rows;
-    };
-    const lexicalStopWords = new Set([
-      "about",
-      "after",
-      "again",
-      "answer",
-      "before",
-      "being",
-      "could",
-      "does",
-      "from",
-      "have",
-      "into",
-      "that",
-      "their",
-      "there",
-      "these",
-      "this",
-      "what",
-      "when",
-      "where",
-      "which",
-      "while",
-      "with",
-      "would"
-    ]);
-    const lexicalTerms = (query: string): string[] => {
-      const quoted = [...query.matchAll(/"([^"]+)"/g)]
-        .map((match) => match[1]?.trim())
-        .filter((term): term is string => Boolean(term && term.length >= 2));
-      const words = query
-        .toLowerCase()
-        .split(/[^a-z0-9_'-]+/i)
-        .map((term) => term.trim())
-        .filter((term) => term.length >= 3 && !lexicalStopWords.has(term));
-      const terms = [...new Set([...quoted, ...words])]
-        .filter(Boolean)
-        .slice(0, 16);
-      return terms.length > 0 ? terms : [query.trim()].filter(Boolean);
-    };
-    const runLexicalStage = async (): Promise<StageResult> => {
-      const started = Date.now();
-      const terms = lexicalTerms(input.query);
-      if (terms.length === 0) {
-        return {
-          name: "lexical_search",
-          rows: [],
-          durationMs: Date.now() - started,
-          reranked: false,
-          rerankedCount: 0,
-          parentNodeIds: []
-        };
-      }
-      const patterns = terms.map((term) => `%${term.toLowerCase()}%`);
-      const exact = input.query.trim().toLowerCase();
-      const result = await pool.query<VectorRow>(
-        `
+      const scanOnly = input.retrievalStage === "score_scan";
+      const vectorRows: VectorRow[] = [];
+      const filteredNodeSourceText = (
+        items: VectorRow["filtered_source_items"]
+      ): string | null => {
+        if (!Array.isArray(items) || items.length === 0) {
+          return null;
+        }
+        const lines = items
+          .map((item) => {
+            const text = presentMemoryText(item.text ?? "", {
+              project_name: item.projectName ?? null,
+              project_path: item.projectPath ?? null
+            });
+            if (!text || text === "Captured memory.") {
+              return null;
+            }
+            return item.createdAt ? `[${item.createdAt}] ${text}` : text;
+          })
+          .filter((line): line is string => Boolean(line));
+        return lines.length > 0 ? lines.join("\n") : null;
+      };
+      const selectStageRowsForEvidence = (
+        stage: RetrievalStageName,
+        rows: VectorRow[]
+      ): VectorRow[] => {
+        if (stage === "rollup_search" && !requestedStage) {
+          return rows.slice(0, rollupResultLimit);
+        }
+        return rows;
+      };
+      const lexicalStopWords = new Set([
+        "about",
+        "after",
+        "again",
+        "answer",
+        "before",
+        "being",
+        "could",
+        "does",
+        "from",
+        "have",
+        "into",
+        "that",
+        "their",
+        "there",
+        "these",
+        "this",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "with",
+        "would"
+      ]);
+      const lexicalTerms = (query: string): string[] => {
+        const quoted = [...query.matchAll(/"([^"]+)"/g)]
+          .map((match) => match[1]?.trim())
+          .filter((term): term is string => Boolean(term && term.length >= 2));
+        const words = query
+          .toLowerCase()
+          .split(/[^a-z0-9_'-]+/i)
+          .map((term) => term.trim())
+          .filter((term) => term.length >= 3 && !lexicalStopWords.has(term));
+        const terms = [...new Set([...quoted, ...words])]
+          .filter(Boolean)
+          .slice(0, 16);
+        return terms.length > 0 ? terms : [query.trim()].filter(Boolean);
+      };
+      const runLexicalStage = async (): Promise<StageResult> => {
+        const started = Date.now();
+        const terms = lexicalTerms(input.query);
+        if (terms.length === 0) {
+          return {
+            name: "lexical_search",
+            rows: [],
+            durationMs: Date.now() - started,
+            reranked: false,
+            rerankedCount: 0,
+            parentNodeIds: []
+          };
+        }
+        const patterns = terms.map((term) => `%${term.toLowerCase()}%`);
+        const exact = input.query.trim().toLowerCase();
+        const result = await pool.query<VectorRow>(
+          `
           with lexical_sources as (
             select
               mn.id,
+              null::text as embedding_id,
               'memory_node'::text as source_type,
               mn.id as source_id,
+              mn.owner_user_id,
               coalesce(
                 (
                   select array_agg(parent.parent_memory_node_id::text order by parent.parent_memory_node_id::text)
                   from memory_node_children parent
+                  join memory_nodes parent_node
+                    on parent_node.id = parent.parent_memory_node_id
+                    and parent_node.invalidated_at is null
+                    and parent_node.personal_deleted_at is null
                   where parent.child_memory_node_id = mn.id
+                    and parent_node.visibility = 'personal'
+                    and (
+                      ($13::uuid is null and parent_node.owner_user_id = $1)
+                      or (
+                        $13::uuid is not null
+                        and exists (
+                          select 1
+                          from memory_node_sources parent_any_mns
+                          where parent_any_mns.memory_node_id = parent_node.id
+                        )
+                        and not exists (
+                          select 1
+                          from memory_node_sources parent_mns
+                          left join memory_events parent_ev on parent_ev.id = parent_mns.memory_event_id and parent_ev.invalidated_at is null
+                          left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null
+                          where parent_mns.memory_node_id = parent_node.id
+                            and not exists (
+                              select 1
+                              from team_session_share_grants parent_grant
+                              where parent_grant.session_id = coalesce(parent_ev.session_id, parent_msg.session_id)
+                                and parent_grant.team_workspace_id = $13::uuid
+                                and parent_grant.team_id = $14::uuid
+                                and parent_grant.revoked_at is null
+                            )
+                        )
+                      )
+                    )
                 ),
                 array[]::text[]
               ) as parent_node_ids,
@@ -6338,8 +8008,10 @@ export const createMemorySourceRepository = (
 
             select
               me.id,
+              null::text as embedding_id,
               'memory_event'::text as source_type,
               me.id as source_id,
+              me.owner_user_id,
               array[]::text[] as parent_node_ids,
               me.visibility,
               coalesce(me.payload ->> 'content', '') as summary_text,
@@ -6390,8 +8062,10 @@ export const createMemorySourceRepository = (
 
             select
               msg.id,
+              null::text as embedding_id,
               'message'::text as source_type,
               msg.id as source_id,
+              msg.owner_user_id,
               array[]::text[] as parent_node_ids,
               msg.visibility,
               msg.content as summary_text,
@@ -6451,8 +8125,10 @@ export const createMemorySourceRepository = (
           )
           select
             id,
+            embedding_id,
             source_type::text,
             source_id,
+            owner_user_id,
             'lexical_search'::text as retrieval_stage,
             parent_node_ids,
             coalesce(has_out_of_window_sources, false) as has_out_of_window_sources,
@@ -6483,140 +8159,255 @@ export const createMemorySourceRepository = (
           order by score desc, matched_terms desc, created_at desc, source_id
           limit $12
         `,
-        [
-          actor.userId,
-          visibility,
-          patterns,
-          exact,
-          searchDomain,
-          input.sessionId ?? null,
-          input.workspaceId ?? null,
-          sourceAfter,
-          sourceBefore,
-          localEmbeddingModel(),
-          localEmbeddingDimensions(),
-          lexicalCandidateLimit,
-          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-          teamWorkspaceBoundary?.teamId ?? null
-        ]
-      );
-      return {
-        name: "lexical_search",
-        rows: result.rows,
-        durationMs: Date.now() - started,
-        reranked: false,
-        rerankedCount: 0,
-        parentNodeIds: []
+          [
+            actor.userId,
+            visibility,
+            patterns,
+            exact,
+            searchDomain,
+            input.sessionId ?? null,
+            input.workspaceId ?? null,
+            sourceAfter,
+            sourceBefore,
+            localEmbeddingModel(),
+            localEmbeddingDimensions(),
+            lexicalCandidateLimit,
+            teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+            teamWorkspaceBoundary?.teamId ?? null
+          ]
+        );
+        return {
+          name: "lexical_search",
+          rows: result.rows,
+          durationMs: Date.now() - started,
+          reranked: false,
+          rerankedCount: 0,
+          parentNodeIds: []
+        };
       };
-    };
 
-    const rerankStageRows = async (
-      stage: RetrievalStageName,
-      rows: VectorRow[]
-    ): Promise<{
-      rows: VectorRow[];
-      reranked: boolean;
-      rerankedCount: number;
-      rerankerModel?: string | null;
-      rerankingUnavailable?: boolean;
-      rerankingError?: string;
-    }> => {
-      if (!shouldRerank || rows.length === 0) {
-        return { rows, reranked: false, rerankedCount: 0 };
-      }
-      const rerankableRows = rows.filter((row) => row.rerank_text?.trim());
-      if (rerankableRows.length === 0) {
-        return {
-          rows,
-          reranked: false,
-          rerankedCount: 0,
-          rerankingUnavailable: true,
-          rerankingError: `no completed summary nodes available for reranking in ${stage}`
-        };
-      }
-      try {
-        const reranked = await rerankTexts(
-          input.query,
-          rerankableRows.map((row) => prepareRerankDocument(row.rerank_text!))
+      const hydrateSearchRows = async (
+        rows: VectorRow[]
+      ): Promise<VectorRow[]> =>
+        Promise.all(
+          rows.map(async (row) => {
+            if (
+              row.summary_text === ENCRYPTED_EMBEDDING_SOURCE_TEXT ||
+              row.summary_text.includes(ENCRYPTED_EMBEDDING_SOURCE_TEXT)
+            ) {
+              if (!row.embedding_id) {
+                throw new Error(
+                  "Encrypted embedding source text is missing its embedding id"
+                );
+              }
+              if (!options.envelopeEncryptionProvider) {
+                throw new Error(
+                  "Envelope encryption provider is required to search encrypted embedding source text"
+                );
+              }
+              const sourceText = await decryptAuthorizedEncryptedFieldPayload(
+                pool,
+                options.envelopeEncryptionProvider,
+                {
+                  ownerUserId: row.owner_user_id,
+                  sourceTable: "memory_embeddings",
+                  sourceId: row.embedding_id,
+                  sourceColumn: "source_text"
+                }
+              );
+              if (typeof sourceText !== "string") {
+                throw new Error(
+                  "Encrypted embedding source_text companion is invalid"
+                );
+              }
+              return {
+                ...row,
+                summary_text: sourceText,
+                rerank_text:
+                  row.rerank_text === ENCRYPTED_EMBEDDING_SOURCE_TEXT ||
+                  row.rerank_text?.includes(ENCRYPTED_EMBEDDING_SOURCE_TEXT)
+                    ? sourceText
+                    : row.rerank_text
+              };
+            }
+            if (
+              row.source_type !== "memory_node" ||
+              (row.summary_text !== ENCRYPTED_MEMORY_NODE_TEXT &&
+                !row.summary_text.includes(ENCRYPTED_MEMORY_NODE_TEXT))
+            ) {
+              return row;
+            }
+            if (!options.envelopeEncryptionProvider) {
+              throw new Error(
+                "Envelope encryption provider is required to search encrypted Memory Nodes"
+              );
+            }
+            const summaryText = await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "memory_nodes",
+                sourceId: row.source_id,
+                sourceColumn: "summary_text"
+              }
+            );
+            if (typeof summaryText !== "string") {
+              throw new Error("Encrypted Memory Node summary_text is invalid");
+            }
+            return {
+              ...row,
+              summary_text: summaryText,
+              rerank_text:
+                row.rerank_text === ENCRYPTED_MEMORY_NODE_TEXT ||
+                row.rerank_text?.includes(ENCRYPTED_MEMORY_NODE_TEXT)
+                  ? summaryText
+                  : row.rerank_text
+            };
+          })
         );
-        const rerankedRows = rerankableRows.map((row, index) => ({
-          ...row,
-          score: reranked.scores[index] ?? row.score
-        }));
-        const rerankableKeys = new Set(
-          rerankableRows.map(
-            (row) =>
-              `${row.source_type}:${row.source_id}:${
-                row.source_chunk_index ?? 0
-              }`
-          )
-        );
-        const nonRerankableRows = rows.filter(
-          (row) =>
-            !rerankableKeys.has(
-              `${row.source_type}:${row.source_id}:${
-                row.source_chunk_index ?? 0
-              }`
-            )
-        );
-        return {
-          rows: [...rerankedRows, ...nonRerankableRows].sort(
-            (left, right) =>
-              Number(right.score) - Number(left.score) ||
-              right.created_at.getTime() - left.created_at.getTime() ||
-              left.source_id.localeCompare(right.source_id)
-          ),
-          reranked: true,
-          rerankedCount: reranked.scores.length,
-          rerankerModel: reranked.model
-        };
-      } catch (error) {
-        console.warn(
-          `Local reranking failed for ${stage}; using vector order: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-        return {
-          rows,
-          reranked: false,
-          rerankedCount: 0,
-          rerankingUnavailable: true,
-          rerankingError: error instanceof Error ? error.message : String(error)
-        };
-      }
-    };
 
-    try {
-      if (requestedStage !== "lexical_search") {
-        const embedded = await embedQueryTexts([input.query]);
-        if (embedded.vectors[0]) {
-          const queryVector = embedded.vectors[0];
-          const embeddingTable = embeddingTableForDimensions(
-            embedded.dimensions
+      const rerankStageRows = async (
+        stage: RetrievalStageName,
+        rows: VectorRow[]
+      ): Promise<{
+        rows: VectorRow[];
+        reranked: boolean;
+        rerankedCount: number;
+        rerankerModel?: string | null;
+        rerankingUnavailable?: boolean;
+        rerankingError?: string;
+      }> => {
+        if (!shouldRerank || rows.length === 0) {
+          return { rows, reranked: false, rerankedCount: 0 };
+        }
+        const rerankableRows = rows.filter((row) => row.rerank_text?.trim());
+        if (rerankableRows.length === 0) {
+          return {
+            rows,
+            reranked: false,
+            rerankedCount: 0,
+            rerankingUnavailable: true,
+            rerankingError: `no completed summary nodes available for reranking in ${stage}`
+          };
+        }
+        try {
+          const reranked = await rerankTexts(
+            input.query,
+            rerankableRows.map((row) => prepareRerankDocument(row.rerank_text!))
           );
-          const runStage = async (
-            stage: RetrievalStageName,
-            limit: number,
-            parentNodeIds: string[] = []
-          ): Promise<StageResult> => {
-            const started = Date.now();
-            const vectorResult = await pool.query<VectorRow>(
-              `
+          const rerankedRows = rerankableRows.map((row, index) => ({
+            ...row,
+            score: reranked.scores[index] ?? row.score
+          }));
+          const rerankableKeys = new Set(
+            rerankableRows.map(
+              (row) =>
+                `${row.source_type}:${row.source_id}:${
+                  row.source_chunk_index ?? 0
+                }`
+            )
+          );
+          const nonRerankableRows = rows.filter(
+            (row) =>
+              !rerankableKeys.has(
+                `${row.source_type}:${row.source_id}:${
+                  row.source_chunk_index ?? 0
+                }`
+              )
+          );
+          return {
+            rows: [...rerankedRows, ...nonRerankableRows].sort(
+              (left, right) =>
+                Number(right.score) - Number(left.score) ||
+                right.created_at.getTime() - left.created_at.getTime() ||
+                left.source_id.localeCompare(right.source_id)
+            ),
+            reranked: true,
+            rerankedCount: reranked.scores.length,
+            rerankerModel: reranked.model
+          };
+        } catch (error) {
+          console.warn(
+            `Local reranking failed for ${stage}; using vector order: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+          return {
+            rows,
+            reranked: false,
+            rerankedCount: 0,
+            rerankingUnavailable: true,
+            rerankingError:
+              error instanceof Error ? error.message : String(error)
+          };
+        }
+      };
+
+      try {
+        if (requestedStage !== "lexical_search") {
+          const embedded = await embedQueryTexts([input.query]);
+          if (embedded.vectors[0]) {
+            const queryVector = embedded.vectors[0];
+            const embeddingTable = embeddingTableForDimensions(
+              embedded.dimensions
+            );
+            const runStage = async (
+              stage: RetrievalStageName,
+              limit: number,
+              parentNodeIds: string[] = []
+            ): Promise<StageResult> => {
+              const started = Date.now();
+              const vectorResult = await pool.query<VectorRow>(
+                `
               with candidates as (
                 select
                   coalesce(mns.memory_node_id, me.memory_node_id, me.memory_event_id, me.message_id) as id,
+                  me.id::text as embedding_id,
                   case
                     when me.memory_node_id is not null then 'memory_node'
                     when me.memory_event_id is not null then 'memory_event'
                     else 'message'
                   end as source_type,
                   coalesce(me.memory_node_id, me.memory_event_id, me.message_id) as source_id,
+                  me.owner_user_id,
                   $11::text as retrieval_stage,
                   coalesce(
                     (
                       select array_agg(parent.parent_memory_node_id::text order by parent.parent_memory_node_id::text)
                       from memory_node_children parent
+                      join memory_nodes parent_node
+                        on parent_node.id = parent.parent_memory_node_id
+                        and parent_node.invalidated_at is null
+                        and parent_node.personal_deleted_at is null
                       where parent.child_memory_node_id = me.memory_node_id
+                        and parent_node.visibility = 'personal'
+                        and (
+                          ($15::uuid is null and parent_node.owner_user_id = $1)
+                          or (
+                            $15::uuid is not null
+                            and exists (
+                              select 1
+                              from memory_node_sources parent_any_mns
+                              where parent_any_mns.memory_node_id = parent_node.id
+                            )
+                            and not exists (
+                              select 1
+                              from memory_node_sources parent_mns
+                              left join memory_events parent_ev on parent_ev.id = parent_mns.memory_event_id and parent_ev.invalidated_at is null
+                              left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null
+                              where parent_mns.memory_node_id = parent_node.id
+                                and not exists (
+                                  select 1
+                                  from team_session_share_grants parent_grant
+                                  where parent_grant.session_id = coalesce(parent_ev.session_id, parent_msg.session_id)
+                                    and parent_grant.team_workspace_id = $15::uuid
+                                    and parent_grant.team_id = $16::uuid
+                                    and parent_grant.revoked_at is null
+                                )
+                            )
+                          )
+                        )
                     ),
                     array[]::text[]
                   ) as parent_node_ids,
@@ -6978,8 +8769,39 @@ export const createMemorySourceRepository = (
                       and exists (
                         select 1
                         from memory_node_children scoped_parent
+                        join memory_nodes scoped_parent_node
+                          on scoped_parent_node.id = scoped_parent.parent_memory_node_id
+                          and scoped_parent_node.invalidated_at is null
+                          and scoped_parent_node.personal_deleted_at is null
                         where scoped_parent.child_memory_node_id = me.memory_node_id
                           and scoped_parent.parent_memory_node_id = any($14::uuid[])
+                          and scoped_parent_node.visibility = 'personal'
+                          and (
+                            ($15::uuid is null and scoped_parent_node.owner_user_id = $1)
+                            or (
+                              $15::uuid is not null
+                              and exists (
+                                select 1
+                                from memory_node_sources scoped_parent_any_mns
+                                where scoped_parent_any_mns.memory_node_id = scoped_parent_node.id
+                              )
+                              and not exists (
+                                select 1
+                                from memory_node_sources scoped_parent_mns
+                                left join memory_events scoped_parent_ev on scoped_parent_ev.id = scoped_parent_mns.memory_event_id and scoped_parent_ev.invalidated_at is null
+                                left join messages scoped_parent_msg on scoped_parent_msg.id = scoped_parent_mns.message_id and scoped_parent_msg.invalidated_at is null
+                                where scoped_parent_mns.memory_node_id = scoped_parent_node.id
+                                  and not exists (
+                                    select 1
+                                    from team_session_share_grants scoped_parent_grant
+                                    where scoped_parent_grant.session_id = coalesce(scoped_parent_ev.session_id, scoped_parent_msg.session_id)
+                                      and scoped_parent_grant.team_workspace_id = $15::uuid
+                                      and scoped_parent_grant.team_id = $16::uuid
+                                      and scoped_parent_grant.revoked_at is null
+                                  )
+                              )
+                            )
+                          )
                       )
                     )
                     or (
@@ -7023,300 +8845,285 @@ export const createMemorySourceRepository = (
               order by score desc, created_at desc, source_id
               limit $4
             `,
-              [
-                actor.userId,
-                visibility,
-                vectorLiteral(queryVector),
-                limit,
-                embedded.model,
-                embedded.dimensions,
-                localEmbeddingVersion(),
-                searchDomain,
-                input.sessionId ?? null,
-                input.workspaceId ?? null,
-                stage,
-                sourceAfter,
-                sourceBefore,
-                parentNodeIds,
-                teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-                teamWorkspaceBoundary?.teamId ?? null
-              ]
-            );
-            const rows = vectorResult.rows.map((row) => {
-              const filteredSummary = row.has_out_of_window_sources
-                ? filteredNodeSourceText(row.filtered_source_items)
-                : null;
-              return filteredSummary
-                ? {
-                    ...row,
-                    summary_text: filteredSummary,
-                    rerank_text: filteredSummary
-                  }
-                : row;
-            });
-            const reranked = await rerankStageRows(stage, rows);
-            return {
-              name: stage,
-              rows: reranked.rows,
-              durationMs: Date.now() - started,
-              reranked: reranked.reranked,
-              rerankedCount: reranked.rerankedCount,
-              rerankerModel: reranked.rerankerModel,
-              rerankingUnavailable: reranked.rerankingUnavailable,
-              rerankingError: reranked.rerankingError,
-              parentNodeIds
+                [
+                  actor.userId,
+                  visibility,
+                  vectorLiteral(queryVector),
+                  limit,
+                  embedded.model,
+                  embedded.dimensions,
+                  localEmbeddingVersion(),
+                  searchDomain,
+                  input.sessionId ?? null,
+                  input.workspaceId ?? null,
+                  stage,
+                  sourceAfter,
+                  sourceBefore,
+                  parentNodeIds,
+                  teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+                  teamWorkspaceBoundary?.teamId ?? null
+                ]
+              );
+              const rows = await hydrateSearchRows(
+                vectorResult.rows.map((row) => {
+                  const filteredSummary = row.has_out_of_window_sources
+                    ? filteredNodeSourceText(row.filtered_source_items)
+                    : null;
+                  return filteredSummary
+                    ? {
+                        ...row,
+                        summary_text: filteredSummary,
+                        rerank_text: filteredSummary
+                      }
+                    : row;
+                })
+              );
+              const reranked = await rerankStageRows(stage, rows);
+              return {
+                name: stage,
+                rows: reranked.rows,
+                durationMs: Date.now() - started,
+                reranked: reranked.reranked,
+                rerankedCount: reranked.rerankedCount,
+                rerankerModel: reranked.rerankerModel,
+                rerankingUnavailable: reranked.rerankingUnavailable,
+                rerankingError: reranked.rerankingError,
+                parentNodeIds
+              };
             };
-          };
 
-          const skippedRawFallback: StageResult = {
-            name: "raw_fallback_search",
-            rows: [],
-            durationMs: 0,
-            reranked: false,
-            rerankedCount: 0,
-            parentNodeIds: []
-          };
-          const emptyStage = (
-            name: RetrievalStageName,
-            parentNodeIds: string[] = []
-          ): StageResult => ({
-            name,
-            rows: [],
-            durationMs: 0,
-            reranked: false,
-            rerankedCount: 0,
-            parentNodeIds
-          });
-          const runScopedLeaves = async (
-            parentNodeIds: string[]
-          ): Promise<StageResult> =>
-            parentNodeIds.length > 0
-              ? runStage(
-                  "scoped_leaf_search",
-                  scopedLeafCandidateLimit,
-                  parentNodeIds
-                )
-              : emptyStage("scoped_leaf_search", parentNodeIds);
-          const runRequestedSemanticStage = async (): Promise<
-            StageResult[]
-          > => {
-            if (!requestedStage) {
-              return [];
-            }
-            if (requestedStage === "rollup_search") {
-              return [await runStage("rollup_search", rollupCandidateLimit)];
-            }
-            if (requestedStage === "leaf_search") {
-              return [await runStage("leaf_search", leafCandidateLimit)];
-            }
-            if (requestedStage === "fresh_pending_search") {
-              return [
-                await runStage("fresh_pending_search", freshCandidateLimit)
-              ];
-            }
-            if (requestedStage === "raw_fallback_search") {
-              return [
-                rawFallbackEnabled
-                  ? await runStage("raw_fallback_search", rawCandidateLimit)
-                  : skippedRawFallback
-              ];
-            }
-            return [
-              await runScopedLeaves(
-                input.parentNodeIds && input.parentNodeIds.length > 0
-                  ? input.parentNodeIds
-                  : []
-              )
-            ];
-          };
-          const runDefaultSemanticStages = async (): Promise<StageResult[]> => {
-            const [rollups, leaves, fresh, rawFallback] = await Promise.all([
-              runStage("rollup_search", rollupCandidateLimit),
-              runStage("leaf_search", leafCandidateLimit),
-              runStage("fresh_pending_search", freshCandidateLimit),
-              rawFallbackEnabled
-                ? runStage("raw_fallback_search", rawCandidateLimit)
-                : Promise.resolve(skippedRawFallback)
-            ]);
-            const selectedRollupIds =
-              input.parentNodeIds && input.parentNodeIds.length > 0
-                ? input.parentNodeIds
-                : rollups.rows
-                    .slice(0, rollupResultLimit)
-                    .map((row) => row.source_id);
-            const scopedLeaves = await runScopedLeaves(selectedRollupIds);
-            return [rollups, leaves, fresh, rawFallback, scopedLeaves];
-          };
-          const stages = requestedStage
-            ? await runRequestedSemanticStage()
-            : await runDefaultSemanticStages();
-          if (stages.length > 0) {
-            vectorRows.push(
-              ...stages.flatMap((stage) =>
-                stage.rows.filter(
-                  (row) => Number(row.score) >= scoreThresholds[stage.name]
-                )
-              )
-            );
-            const anyReranked = stages.some((stage) => stage.reranked);
-            const rerankingErrors = stages
-              .map((stage) => stage.rerankingError)
-              .filter((value): value is string => Boolean(value));
-            embeddingMetadata = defaultRetrievalMetadata({
-              retrievalMode: anyReranked
-                ? "semantic_vector_reranked"
-                : "semantic_vector",
-              vectorHitsCount: vectorRows.length,
-              vectorCandidateCount: vectorRows.length,
-              embeddingModel: embedded.model,
-              embeddingDimensions: embedded.dimensions,
-              rerankedCount: stages.reduce(
-                (sum, stage) => sum + stage.rerankedCount,
-                0
-              ),
-              rerankerModel:
-                stages.find((stage) => stage.rerankerModel)?.rerankerModel ??
-                null,
-              rerankingEnabled: shouldRerank,
-              rerankingUnavailable:
-                shouldRerank &&
-                stages.some((stage) => stage.rerankingUnavailable),
-              rerankingError:
-                rerankingErrors.length > 0
-                  ? rerankingErrors.join("; ")
-                  : undefined,
-              temporalFilter
+            const skippedRawFallback: StageResult = {
+              name: "raw_fallback_search",
+              rows: [],
+              durationMs: 0,
+              reranked: false,
+              rerankedCount: 0,
+              parentNodeIds: []
+            };
+            const emptyStage = (
+              name: RetrievalStageName,
+              parentNodeIds: string[] = []
+            ): StageResult => ({
+              name,
+              rows: [],
+              durationMs: 0,
+              reranked: false,
+              rerankedCount: 0,
+              parentNodeIds
             });
-            stageDiagnostics.push(
-              ...stages.map((stage) => ({
-                name: stage.name,
-                ran:
-                  stage.name !== "raw_fallback_search" || rawFallbackEnabled
-                    ? true
-                    : false,
-                used: false,
-                candidateCount: stage.rows.length,
-                selectedCount: 0,
-                durationMs: stage.durationMs,
-                parallelGroup:
-                  stage.name === "scoped_leaf_search"
-                    ? "post_rollup"
-                    : "initial_candidates",
-                temporalFilterApplied: Boolean(temporalFilter),
-                reranked: stage.reranked,
-                parentNodeIds: stage.parentNodeIds,
-                topScore: stage.rows[0]?.score,
-                scoreThreshold: scoreThresholds[stage.name],
-                countAboveThreshold: stage.rows.filter(
-                  (row) => Number(row.score) >= scoreThresholds[stage.name]
-                ).length,
-                maxAllowed: stageMaxAllowed[stage.name],
-                rejectedCount: stage.rows.filter(
-                  (row) => Number(row.score) < scoreThresholds[stage.name]
-                ).length,
-                candidateIds: stage.rows
-                  .filter(
+            const runScopedLeaves = async (
+              parentNodeIds: string[]
+            ): Promise<StageResult> =>
+              parentNodeIds.length > 0
+                ? runStage(
+                    "scoped_leaf_search",
+                    scopedLeafCandidateLimit,
+                    parentNodeIds
+                  )
+                : emptyStage("scoped_leaf_search", parentNodeIds);
+            const runRequestedSemanticStage = async (): Promise<
+              StageResult[]
+            > => {
+              if (!requestedStage) {
+                return [];
+              }
+              if (requestedStage === "rollup_search") {
+                return [await runStage("rollup_search", rollupCandidateLimit)];
+              }
+              if (requestedStage === "leaf_search") {
+                return [await runStage("leaf_search", leafCandidateLimit)];
+              }
+              if (requestedStage === "fresh_pending_search") {
+                return [
+                  await runStage("fresh_pending_search", freshCandidateLimit)
+                ];
+              }
+              if (requestedStage === "raw_fallback_search") {
+                return [
+                  rawFallbackEnabled
+                    ? await runStage("raw_fallback_search", rawCandidateLimit)
+                    : skippedRawFallback
+                ];
+              }
+              return [
+                await runScopedLeaves(
+                  requestedParentNodeIds.length > 0 ? visibleParentNodeIds : []
+                )
+              ];
+            };
+            const runDefaultSemanticStages = async (): Promise<
+              StageResult[]
+            > => {
+              const [rollups, leaves, fresh, rawFallback] = await Promise.all([
+                runStage("rollup_search", rollupCandidateLimit),
+                runStage("leaf_search", leafCandidateLimit),
+                runStage("fresh_pending_search", freshCandidateLimit),
+                rawFallbackEnabled
+                  ? runStage("raw_fallback_search", rawCandidateLimit)
+                  : Promise.resolve(skippedRawFallback)
+              ]);
+              const selectedRollupIds =
+                requestedParentNodeIds.length > 0
+                  ? visibleParentNodeIds
+                  : rollups.rows
+                      .slice(0, rollupResultLimit)
+                      .map((row) => row.source_id);
+              const scopedLeaves = await runScopedLeaves(selectedRollupIds);
+              return [rollups, leaves, fresh, rawFallback, scopedLeaves];
+            };
+            const stages = requestedStage
+              ? await runRequestedSemanticStage()
+              : await runDefaultSemanticStages();
+            if (stages.length > 0) {
+              vectorRows.push(
+                ...stages.flatMap((stage) =>
+                  stage.rows.filter(
                     (row) => Number(row.score) >= scoreThresholds[stage.name]
                   )
-                  .slice(0, stageMaxAllowed[stage.name])
-                  .map((row) => row.source_id)
-              }))
-            );
+                )
+              );
+              const anyReranked = stages.some((stage) => stage.reranked);
+              const rerankingErrors = stages
+                .map((stage) => stage.rerankingError)
+                .filter((value): value is string => Boolean(value));
+              embeddingMetadata = defaultRetrievalMetadata({
+                retrievalMode: anyReranked
+                  ? "semantic_vector_reranked"
+                  : "semantic_vector",
+                vectorHitsCount: vectorRows.length,
+                vectorCandidateCount: vectorRows.length,
+                embeddingModel: embedded.model,
+                embeddingDimensions: embedded.dimensions,
+                rerankedCount: stages.reduce(
+                  (sum, stage) => sum + stage.rerankedCount,
+                  0
+                ),
+                rerankerModel:
+                  stages.find((stage) => stage.rerankerModel)?.rerankerModel ??
+                  null,
+                rerankingEnabled: shouldRerank,
+                rerankingUnavailable:
+                  shouldRerank &&
+                  stages.some((stage) => stage.rerankingUnavailable),
+                rerankingError:
+                  rerankingErrors.length > 0
+                    ? rerankingErrors.join("; ")
+                    : undefined,
+                temporalFilter
+              });
+              stageDiagnostics.push(
+                ...stages.map((stage) => ({
+                  name: stage.name,
+                  ran:
+                    stage.name !== "raw_fallback_search" || rawFallbackEnabled
+                      ? true
+                      : false,
+                  used: false,
+                  candidateCount: stage.rows.length,
+                  selectedCount: 0,
+                  durationMs: stage.durationMs,
+                  parallelGroup:
+                    stage.name === "scoped_leaf_search"
+                      ? "post_rollup"
+                      : "initial_candidates",
+                  temporalFilterApplied: Boolean(temporalFilter),
+                  reranked: stage.reranked,
+                  parentNodeIds: stage.parentNodeIds,
+                  topScore: stage.rows[0]?.score,
+                  scoreThreshold: scoreThresholds[stage.name],
+                  countAboveThreshold: stage.rows.filter(
+                    (row) => Number(row.score) >= scoreThresholds[stage.name]
+                  ).length,
+                  maxAllowed: stageMaxAllowed[stage.name],
+                  rejectedCount: stage.rows.filter(
+                    (row) => Number(row.score) < scoreThresholds[stage.name]
+                  ).length,
+                  candidateIds: stage.rows
+                    .filter(
+                      (row) => Number(row.score) >= scoreThresholds[stage.name]
+                    )
+                    .slice(0, stageMaxAllowed[stage.name])
+                    .map((row) => row.source_id)
+                }))
+              );
+            }
           }
         }
+      } catch (error) {
+        console.warn(
+          `Local embedding query failed; semantic retrieval unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
       }
-    } catch (error) {
-      console.warn(
-        `Local embedding query failed; semantic retrieval unavailable: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-    if (requestedStage === "lexical_search") {
-      const lexical = await runLexicalStage();
-      vectorRows.push(
-        ...lexical.rows.filter(
-          (row) => Number(row.score) >= scoreThresholds.lexical_search
-        )
-      );
-      stageDiagnostics.push({
-        name: lexical.name,
-        ran: true,
-        used: false,
-        candidateCount: lexical.rows.length,
-        selectedCount: 0,
-        durationMs: lexical.durationMs,
-        parallelGroup: "lexical_candidates",
-        temporalFilterApplied: Boolean(temporalFilter),
-        reranked: false,
-        parentNodeIds: [],
-        topScore: lexical.rows[0]?.score,
-        scoreThreshold: scoreThresholds.lexical_search,
-        countAboveThreshold: lexical.rows.length,
-        maxAllowed: stageMaxAllowed.lexical_search,
-        rejectedCount: 0,
-        candidateIds: lexical.rows
-          .slice(0, stageMaxAllowed.lexical_search)
-          .map((row) => row.source_id)
-      });
-    }
+      if (requestedStage === "lexical_search") {
+        const lexical = await runLexicalStage();
+        vectorRows.push(
+          ...lexical.rows.filter(
+            (row) => Number(row.score) >= scoreThresholds.lexical_search
+          )
+        );
+        stageDiagnostics.push({
+          name: lexical.name,
+          ran: true,
+          used: false,
+          candidateCount: lexical.rows.length,
+          selectedCount: 0,
+          durationMs: lexical.durationMs,
+          parallelGroup: "lexical_candidates",
+          temporalFilterApplied: Boolean(temporalFilter),
+          reranked: false,
+          parentNodeIds: [],
+          topScore: lexical.rows[0]?.score,
+          scoreThreshold: scoreThresholds.lexical_search,
+          countAboveThreshold: lexical.rows.length,
+          maxAllowed: stageMaxAllowed.lexical_search,
+          rejectedCount: 0,
+          candidateIds: lexical.rows
+            .slice(0, stageMaxAllowed.lexical_search)
+            .map((row) => row.source_id)
+        });
+      }
 
-    const merged = new Map<
-      string,
-      MemorySearchResult & {
-        createdAt: Date;
-        stagePriority: number;
-      }
-    >();
-    const addRow = (
-      row: {
-        id: string;
-        source_type: "memory_node" | "memory_event" | "message";
-        source_id: string;
-        retrieval_stage: RetrievalStageName;
-        parent_node_ids?: string[] | null;
-        visibility: Visibility;
-        summary_text: string;
-        lcm_summary_model?: string | null;
-        lcm_summary_pending?: boolean;
-        source_chunk_index?: number | null;
-        source_chunk_count?: number | null;
-        score: number;
-        created_at: Date;
-      },
-      weight: number
-    ) => {
-      const summaryText = codexIdePromptUserText(row.summary_text).trim();
-      const normalizedText = summaryText.toLowerCase();
-      const key = normalizedText
-        ? `${row.visibility}:${normalizedText}`
-        : `${row.source_type}:${row.source_id}`;
-      const score = Number(row.score) * weight;
-      const priority = stagePriority[row.retrieval_stage];
-      const existing = merged.get(key);
-      if (
-        !existing ||
-        priority > existing.stagePriority ||
-        (priority === existing.stagePriority && score > existing.score)
-      ) {
-        merged.set(key, {
-          nodeId: row.id,
-          sourceType: row.source_type,
-          sourceId: row.source_id,
-          sourceChunkIndex: row.source_chunk_index ?? undefined,
-          sourceChunkCount: row.source_chunk_count ?? undefined,
-          retrievalStage: row.retrieval_stage,
-          parentNodeIds: row.parent_node_ids ?? undefined,
-          visibility: row.visibility,
-          summaryText,
-          lcmNodeSummaryStatus: row.lcm_summary_pending
-            ? "pending"
-            : row.lcm_summary_model
-              ? "summarized"
-              : undefined,
-          lcmNodeSummaryModel: row.lcm_summary_model ?? undefined,
-          score,
-          citation: {
+      const merged = new Map<
+        string,
+        MemorySearchResult & {
+          createdAt: Date;
+          stagePriority: number;
+        }
+      >();
+      const addRow = (
+        row: {
+          id: string;
+          source_type: "memory_node" | "memory_event" | "message";
+          source_id: string;
+          retrieval_stage: RetrievalStageName;
+          parent_node_ids?: string[] | null;
+          visibility: Visibility;
+          summary_text: string;
+          lcm_summary_model?: string | null;
+          lcm_summary_pending?: boolean;
+          source_chunk_index?: number | null;
+          source_chunk_count?: number | null;
+          score: number;
+          created_at: Date;
+        },
+        weight: number
+      ) => {
+        const summaryText = codexIdePromptUserText(row.summary_text).trim();
+        const normalizedText = summaryText.toLowerCase();
+        const key = normalizedText
+          ? `${row.visibility}:${normalizedText}`
+          : `${row.source_type}:${row.source_id}`;
+        const score = Number(row.score) * weight;
+        const priority = stagePriority[row.retrieval_stage];
+        const existing = merged.get(key);
+        if (
+          !existing ||
+          priority > existing.stagePriority ||
+          (priority === existing.stagePriority && score > existing.score)
+        ) {
+          merged.set(key, {
             nodeId: row.id,
             sourceType: row.source_type,
             sourceId: row.source_id,
@@ -7324,169 +9131,189 @@ export const createMemorySourceRepository = (
             sourceChunkCount: row.source_chunk_count ?? undefined,
             retrievalStage: row.retrieval_stage,
             parentNodeIds: row.parent_node_ids ?? undefined,
-            visibility: row.visibility
-          },
-          createdAt: row.created_at,
-          stagePriority: priority
-        });
-      }
-    };
-
-    const rowsByStage = (stage: RetrievalStageName): VectorRow[] =>
-      vectorRows.filter((row) => row.retrieval_stage === stage);
-    const requestedStageDiagnostics = requestedStage
-      ? stageDiagnostics.find((stage) => stage.name === requestedStage)
-      : undefined;
-    if (requestedStage && input.strictLimit) {
-      const maxAllowed =
-        requestedStageDiagnostics?.maxAllowed ??
-        stageMaxAllowed[requestedStage];
-      const countAboveThreshold =
-        requestedStageDiagnostics?.countAboveThreshold ??
-        rowsByStage(requestedStage).length;
-      if (requestedLimit > maxAllowed) {
-        throw Object.assign(
-          new Error(
-            `Requested ${requestedLimit} ${requestedStage} candidates but the configured stage maximum is ${maxAllowed}`
-          ),
-          {
-            statusCode: 400,
-            payload: {
-              error: "limit_exceeds_stage_max",
-              stage: requestedStage,
-              requested: requestedLimit,
-              maxAllowed
-            }
-          }
-        );
-      }
-      if (requestedLimit > countAboveThreshold) {
-        throw Object.assign(
-          new Error(
-            `Requested ${requestedLimit} ${requestedStage} candidates but only ${countAboveThreshold} are above threshold`
-          ),
-          {
-            statusCode: 400,
-            payload: {
-              error: "limit_exceeds_available_candidates",
-              stage: requestedStage,
-              requested: requestedLimit,
-              countAboveThreshold,
-              maxAllowed
-            }
-          }
-        );
-      }
-    }
-    if (scanOnly) {
-      return {
-        results: [],
-        metadata: {
-          ...embeddingMetadata,
-          vectorHitsCount: 0,
-          textHitsCount: 0,
-          vectorCandidateCount: vectorRows.length,
-          stages: stageDiagnostics.map((stage) => ({
-            ...stage,
-            used: false,
-            selectedCount: 0
-          }))
+            visibility: row.visibility,
+            summaryText,
+            lcmNodeSummaryStatus: row.lcm_summary_pending
+              ? "pending"
+              : row.lcm_summary_model
+                ? "summarized"
+                : undefined,
+            lcmNodeSummaryModel: row.lcm_summary_model ?? undefined,
+            score,
+            citation: {
+              nodeId: row.id,
+              sourceType: row.source_type,
+              sourceId: row.source_id,
+              sourceChunkIndex: row.source_chunk_index ?? undefined,
+              sourceChunkCount: row.source_chunk_count ?? undefined,
+              retrievalStage: row.retrieval_stage,
+              parentNodeIds: row.parent_node_ids ?? undefined,
+              visibility: row.visibility
+            },
+            createdAt: row.created_at,
+            stagePriority: priority
+          });
         }
       };
-    }
-    for (const row of [
-      ...selectStageRowsForEvidence(
-        "rollup_search",
-        rowsByStage("rollup_search")
-      ),
-      ...rowsByStage("scoped_leaf_search"),
-      ...rowsByStage("leaf_search"),
-      ...rowsByStage("fresh_pending_search"),
-      ...rowsByStage("lexical_search")
-    ]) {
-      if (!requestedStage || row.retrieval_stage === requestedStage) {
-        addRow(row, stageWeight[row.retrieval_stage]);
+
+      const rowsByStage = (stage: RetrievalStageName): VectorRow[] =>
+        vectorRows.filter((row) => row.retrieval_stage === stage);
+      const requestedStageDiagnostics = requestedStage
+        ? stageDiagnostics.find((stage) => stage.name === requestedStage)
+        : undefined;
+      if (requestedStage && input.strictLimit) {
+        const maxAllowed =
+          requestedStageDiagnostics?.maxAllowed ??
+          stageMaxAllowed[requestedStage];
+        const countAboveThreshold =
+          requestedStageDiagnostics?.countAboveThreshold ??
+          rowsByStage(requestedStage).length;
+        if (requestedLimit > maxAllowed) {
+          throw Object.assign(
+            new Error(
+              `Requested ${requestedLimit} ${requestedStage} candidates but the configured stage maximum is ${maxAllowed}`
+            ),
+            {
+              statusCode: 400,
+              payload: {
+                error: "limit_exceeds_stage_max",
+                stage: requestedStage,
+                requested: requestedLimit,
+                maxAllowed
+              }
+            }
+          );
+        }
+        if (requestedLimit > countAboveThreshold) {
+          throw Object.assign(
+            new Error(
+              `Requested ${requestedLimit} ${requestedStage} candidates but only ${countAboveThreshold} are above threshold`
+            ),
+            {
+              statusCode: 400,
+              payload: {
+                error: "limit_exceeds_available_candidates",
+                stage: requestedStage,
+                requested: requestedLimit,
+                countAboveThreshold,
+                maxAllowed
+              }
+            }
+          );
+        }
       }
-    }
-
-    if (!requestedStage && merged.size < requestedLimit) {
-      for (const row of rowsByStage("raw_fallback_search")) {
-        addRow(row, stageWeight.raw_fallback_search);
-      }
-    } else if (requestedStage === "raw_fallback_search") {
-      for (const row of rowsByStage("raw_fallback_search")) {
-        addRow(row, stageWeight.raw_fallback_search);
-      }
-    }
-
-    const results = [...merged.values()]
-      .sort(
-        (left, right) =>
-          right.stagePriority - left.stagePriority ||
-          right.score - left.score ||
-          right.createdAt.getTime() - left.createdAt.getTime() ||
-          (left.sourceId ?? left.nodeId).localeCompare(
-            right.sourceId ?? right.nodeId
-          )
-      )
-      .slice(0, requestedLimit)
-      .map((result) => ({
-        nodeId: result.nodeId,
-        sourceType: result.sourceType,
-        sourceId: result.sourceId,
-        sourceChunkIndex: result.sourceChunkIndex,
-        sourceChunkCount: result.sourceChunkCount,
-        retrievalStage: result.retrievalStage,
-        parentNodeIds: result.parentNodeIds,
-        visibility: result.visibility,
-        summaryText: result.summaryText,
-        lcmNodeSummaryStatus: result.lcmNodeSummaryStatus,
-        lcmNodeSummaryModel: result.lcmNodeSummaryModel,
-        score: result.score,
-        citation: result.citation
-      }));
-
-    for (const stage of stageDiagnostics) {
-      const count = results.filter(
-        (result) => result.retrievalStage === stage.name
-      ).length;
-      stage.selectedCount = count;
-      stage.used = count > 0;
-    }
-    embeddingMetadata = {
-      ...embeddingMetadata,
-      stages: stageDiagnostics
-    };
-
-    return { results, metadata: embeddingMetadata };
-  },
-
-  async createLcmNodes(actor, input) {
-    const ownerUserId = actor.userId;
-    const client = await pool.connect();
-
-    try {
-      await client.query("begin");
-      const eventRows = await client.query<{
-        id: string;
-        visibility: Visibility;
-        actor: MemoryActor | null;
-        session_id: string | null;
-        turn_id: string | null;
-        payload: {
-          actor?: MemoryActor;
-          content?: string;
-          metadata?: Record<string, unknown>;
-          rawEventType?: string;
-          workspaceId?: string;
+      if (scanOnly) {
+        return {
+          results: [],
+          metadata: {
+            ...embeddingMetadata,
+            vectorHitsCount: 0,
+            textHitsCount: 0,
+            vectorCandidateCount: vectorRows.length,
+            stages: stageDiagnostics.map((stage) => ({
+              ...stage,
+              used: false,
+              selectedCount: 0
+            }))
+          }
         };
-        captured_at: Date;
-      }>(
-        `
+      }
+      for (const row of [
+        ...selectStageRowsForEvidence(
+          "rollup_search",
+          rowsByStage("rollup_search")
+        ),
+        ...rowsByStage("scoped_leaf_search"),
+        ...rowsByStage("leaf_search"),
+        ...rowsByStage("fresh_pending_search"),
+        ...rowsByStage("lexical_search")
+      ]) {
+        if (!requestedStage || row.retrieval_stage === requestedStage) {
+          addRow(row, stageWeight[row.retrieval_stage]);
+        }
+      }
+
+      if (!requestedStage && merged.size < requestedLimit) {
+        for (const row of rowsByStage("raw_fallback_search")) {
+          addRow(row, stageWeight.raw_fallback_search);
+        }
+      } else if (requestedStage === "raw_fallback_search") {
+        for (const row of rowsByStage("raw_fallback_search")) {
+          addRow(row, stageWeight.raw_fallback_search);
+        }
+      }
+
+      const results = [...merged.values()]
+        .sort(
+          (left, right) =>
+            right.stagePriority - left.stagePriority ||
+            right.score - left.score ||
+            right.createdAt.getTime() - left.createdAt.getTime() ||
+            (left.sourceId ?? left.nodeId).localeCompare(
+              right.sourceId ?? right.nodeId
+            )
+        )
+        .slice(0, requestedLimit)
+        .map((result) => ({
+          nodeId: result.nodeId,
+          sourceType: result.sourceType,
+          sourceId: result.sourceId,
+          sourceChunkIndex: result.sourceChunkIndex,
+          sourceChunkCount: result.sourceChunkCount,
+          retrievalStage: result.retrievalStage,
+          parentNodeIds: result.parentNodeIds,
+          visibility: result.visibility,
+          summaryText: result.summaryText,
+          lcmNodeSummaryStatus: result.lcmNodeSummaryStatus,
+          lcmNodeSummaryModel: result.lcmNodeSummaryModel,
+          score: result.score,
+          citation: result.citation
+        }));
+
+      for (const stage of stageDiagnostics) {
+        const count = results.filter(
+          (result) => result.retrievalStage === stage.name
+        ).length;
+        stage.selectedCount = count;
+        stage.used = count > 0;
+      }
+      embeddingMetadata = {
+        ...embeddingMetadata,
+        stages: stageDiagnostics
+      };
+
+      return { results, metadata: embeddingMetadata };
+    },
+
+    async createLcmNodes(actor, input) {
+      const ownerUserId = actor.userId;
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Node storage is disabled"
+        );
+      }
+      const client = await pool.connect();
+
+      try {
+        await client.query("begin");
+        const eventRows = await client.query<{
+          id: string;
+          visibility: Visibility;
+          actor: MemoryActor | null;
+          owner_user_id: string | null;
+          session_id: string | null;
+          turn_id: string | null;
+          payload: MemoryEventPayload;
+          captured_at: Date;
+        }>(
+          `
           select
             me.id,
             me.visibility,
             me.payload ->> 'actor' as actor,
+            me.owner_user_id,
             me.session_id,
             me.turn_id,
             me.payload,
@@ -7512,86 +9339,121 @@ export const createMemorySourceRepository = (
             )
           order by me.captured_at asc, me.id asc
         `,
-        [input.visibility, ownerUserId]
-      );
+          [input.visibility, ownerUserId]
+        );
 
-      const freshTail = lcmFreshEventTail();
-      const events =
-        freshTail > 0 && eventRows.rows.length > freshTail
-          ? eventRows.rows.slice(0, eventRows.rows.length - freshTail)
-          : freshTail === 0
-            ? eventRows.rows
-            : [];
-      const eventThreshold = lcmLeafEventThreshold();
-      const tokenThreshold = lcmLeafTokenThreshold();
-      const tokenModel = lcmSummaryModel();
-      const leafNodeIds: string[] = [];
+        const hydratedEventRows = await Promise.all(
+          eventRows.rows.map(async (event) => {
+            if (
+              event.payload.content ||
+              !options.envelopeEncryptionProvider ||
+              event.payload.contentEncrypted !== true
+            ) {
+              return event;
+            }
+            const payload = await decryptAuthorizedMemoryEventPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: event.owner_user_id,
+                memoryEventId: event.id
+              }
+            );
+            return payload
+              ? {
+                  ...event,
+                  actor: event.actor ?? payload.actor ?? null,
+                  payload
+                }
+              : event;
+          })
+        );
+        const freshTail = lcmFreshEventTail();
+        const events =
+          freshTail > 0 && hydratedEventRows.length > freshTail
+            ? hydratedEventRows.slice(0, hydratedEventRows.length - freshTail)
+            : freshTail === 0
+              ? hydratedEventRows
+              : [];
+        const eventThreshold = lcmLeafEventThreshold();
+        const tokenThreshold = lcmLeafTokenThreshold();
+        const tokenModel = lcmSummaryModel();
+        const leafNodeIds: string[] = [];
 
-      const spans: (typeof events)[] = [];
-      for (const sessionEvents of groupByLcmSessionKey(events)) {
-        let currentSpan: typeof events = [];
-        let currentTokens = 0;
-        for (const event of sessionEvents) {
-          const eventTokens = estimateTokens(event.payload.content ?? "", {
-            model: tokenModel
-          });
-          if (
-            currentSpan.length > 0 &&
-            currentTokens + eventTokens > tokenThreshold
-          ) {
-            spans.push(currentSpan);
-            currentSpan = [];
-            currentTokens = 0;
+        const spans: (typeof events)[] = [];
+        for (const sessionEvents of groupByLcmSessionKey(events)) {
+          let currentSpan: typeof events = [];
+          let currentTokens = 0;
+          for (const event of sessionEvents) {
+            const eventTokens = estimateTokens(event.payload.content ?? "", {
+              model: tokenModel
+            });
+            if (
+              currentSpan.length > 0 &&
+              currentTokens + eventTokens > tokenThreshold
+            ) {
+              spans.push(currentSpan);
+              currentSpan = [];
+              currentTokens = 0;
+            }
+            currentSpan.push(event);
+            currentTokens += eventTokens;
+            if (
+              currentSpan.length >= eventThreshold ||
+              currentTokens >= tokenThreshold
+            ) {
+              spans.push(currentSpan);
+              currentSpan = [];
+              currentTokens = 0;
+            }
           }
-          currentSpan.push(event);
-          currentTokens += eventTokens;
-          if (
-            currentSpan.length >= eventThreshold ||
-            currentTokens >= tokenThreshold
-          ) {
-            spans.push(currentSpan);
-            currentSpan = [];
-            currentTokens = 0;
+          if (currentSpan.length > 0) {
+            const remainingTokens = currentSpan.reduce(
+              (sum, event) =>
+                sum +
+                estimateTokens(event.payload.content ?? "", {
+                  model: tokenModel
+                }),
+              0
+            );
+            if (
+              currentSpan.length >= eventThreshold ||
+              remainingTokens >= tokenThreshold
+            ) {
+              spans.push(currentSpan);
+            }
           }
         }
-        if (currentSpan.length > 0) {
-          const remainingTokens = currentSpan.reduce(
-            (sum, event) =>
-              sum +
-              estimateTokens(event.payload.content ?? "", {
-                model: tokenModel
-              }),
-            0
+
+        for (const span of spans) {
+          if (span.length === 0) {
+            continue;
+          }
+          const sourceItems: LcmSourceItem[] = span.map((event, position) => ({
+            kind: "memory_event",
+            sourceTable: "memory_events",
+            sourceId: event.id,
+            visibility: event.visibility,
+            actor: event.actor ?? event.payload.actor,
+            turnId: event.turn_id,
+            createdAt: event.captured_at.toISOString(),
+            text: event.payload.content ?? "",
+            payload: lcmSourcePayloadForEvent(event),
+            position
+          }));
+          const summaryText = leafSummaryText(sourceItems);
+          const tokenEstimate = sourceItemsTokenEstimate(
+            sourceItems,
+            tokenModel
           );
-          if (
-            currentSpan.length >= eventThreshold ||
-            remainingTokens >= tokenThreshold
-          ) {
-            spans.push(currentSpan);
-          }
-        }
-      }
-
-      for (const span of spans) {
-        if (span.length === 0) {
-          continue;
-        }
-        const sourceItems: LcmSourceItem[] = span.map((event, position) => ({
-          kind: "memory_event",
-          sourceTable: "memory_events",
-          sourceId: event.id,
-          visibility: event.visibility,
-          actor: event.actor ?? event.payload.actor,
-          turnId: event.turn_id,
-          createdAt: event.captured_at.toISOString(),
-          text: event.payload.content ?? "",
-          payload: lcmSourcePayloadForEvent(event),
-          position
-        }));
-        const summaryText = leafSummaryText(sourceItems);
-        const tokenEstimate = sourceItemsTokenEstimate(sourceItems, tokenModel);
-        const node = await client.query<{ id: string }>(
-          `
+          const sourceItemsForStorage = suppressPlaintextPayload
+            ? encryptedMemoryNodeJsonMarker()
+            : sourceItems;
+          const summaryTextForStorage = suppressPlaintextPayload
+            ? ENCRYPTED_MEMORY_NODE_TEXT
+            : summaryText;
+          const node = await client.query<{ id: string }>(
+            `
             insert into memory_nodes (
               owner_user_id,
               created_by_user_id,
@@ -7614,67 +9476,101 @@ export const createMemorySourceRepository = (
             on conflict (source_hash) where source_hash is not null do nothing
             returning id
           `,
-          [
-            ownerUserId,
-            actor.userId,
-            input.visibility,
-            summaryText,
-            JSON.stringify(sourceItems),
-            span.length,
-            tokenEstimate,
-            estimateTokens(summaryText, { model: tokenModel }),
-            span[0]!.captured_at,
-            span.at(-1)!.captured_at,
-            sourceHash(
-              "memory_event",
-              span.map((event) => event.id).join(","),
-              JSON.stringify(sourceItems)
-            )
-          ]
-        );
-        const nodeId =
-          node.rows[0]?.id ??
-          (
-            await client.query<{ id: string }>(
-              `
+            [
+              ownerUserId,
+              actor.userId,
+              input.visibility,
+              summaryTextForStorage,
+              JSON.stringify(sourceItemsForStorage),
+              span.length,
+              tokenEstimate,
+              estimateTokens(summaryText, { model: tokenModel }),
+              span[0]!.captured_at,
+              span.at(-1)!.captured_at,
+              sourceHash(
+                "memory_event",
+                span.map((event) => event.id).join(","),
+                JSON.stringify(sourceItems)
+              )
+            ]
+          );
+          const nodeId =
+            node.rows[0]?.id ??
+            (
+              await client.query<{ id: string }>(
+                `
                 select id
                 from memory_nodes
                 where source_hash = $1 and invalidated_at is null
                 limit 1
               `,
+                [
+                  sourceHash(
+                    "memory_event",
+                    span.map((event) => event.id).join(","),
+                    JSON.stringify(sourceItems)
+                  )
+                ]
+              )
+            ).rows[0]!.id;
+          if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
+            await client.query(
+              `
+              update memory_nodes
+              set
+                summary_text = $2,
+                body_text = $2,
+                source_items_json = $3::jsonb
+              where id = $1
+            `,
               [
-                sourceHash(
-                  "memory_event",
-                  span.map((event) => event.id).join(","),
-                  JSON.stringify(sourceItems)
-                )
+                nodeId,
+                ENCRYPTED_MEMORY_NODE_TEXT,
+                JSON.stringify(encryptedMemoryNodeJsonMarker())
               ]
-            )
-          ).rows[0]!.id;
-        leafNodeIds.push(nodeId);
+            );
+            await persistEncryptedMemoryNodeFields(
+              client,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId,
+                visibility: input.visibility,
+                nodeId,
+                summaryText,
+                bodyText: summaryText,
+                sourceItems
+              }
+            );
+          }
+          leafNodeIds.push(nodeId);
 
-        for (let sourceOrder = 0; sourceOrder < span.length; sourceOrder += 1) {
-          await client.query(
-            `
+          for (
+            let sourceOrder = 0;
+            sourceOrder < span.length;
+            sourceOrder += 1
+          ) {
+            await client.query(
+              `
               insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
               values ($1, $2, $3)
               on conflict do nothing
             `,
-            [nodeId, span[sourceOrder]!.id, sourceOrder]
-          );
+              [nodeId, span[sourceOrder]!.id, sourceOrder]
+            );
+          }
         }
-      }
 
-      let rollupNodeId: string | null = null;
-      const fanout = lcmDepthOneFanout();
-      const unparented = await client.query<{
-        id: string;
-        depth: number;
-        summary_text: string;
-        source_items_json: LcmSourceItem[];
-      }>(
-        `
-          select mn.id, mn.depth, mn.summary_text, mn.source_items_json
+        let rollupNodeId: string | null = null;
+        const fanout = lcmDepthOneFanout();
+        const unparented = await client.query<{
+          id: string;
+          owner_user_id: string | null;
+          depth: number;
+          summary_text: string;
+          source_items_json: LcmSourceItem[];
+        }>(
+          `
+          select mn.id, mn.owner_user_id, mn.depth, mn.summary_text, mn.source_items_json
           from memory_nodes mn
           left join memory_node_children mnc on mnc.child_memory_node_id = mn.id
           where mn.invalidated_at is null and mn.personal_deleted_at is null
@@ -7685,41 +9581,54 @@ export const createMemorySourceRepository = (
             and mn.owner_user_id = $2
           order by mn.created_at asc, mn.id asc
         `,
-        [input.visibility, ownerUserId]
-      );
-      const unparentedBySession = new Map<string, typeof unparented.rows>();
-      for (const row of unparented.rows) {
-        const key = lcmSessionKeyForNodeRow(row);
-        const group = unparentedBySession.get(key);
-        if (group) {
-          group.push(row);
-        } else {
-          unparentedBySession.set(key, [row]);
+          [input.visibility, ownerUserId]
+        );
+        const hydratedUnparentedRows = await hydrateMemoryNodeRows(
+          client,
+          options.envelopeEncryptionProvider,
+          unparented.rows
+        );
+        const unparentedBySession = new Map<string, typeof unparented.rows>();
+        for (const row of hydratedUnparentedRows) {
+          const key = lcmSessionKeyForNodeRow(row);
+          const group = unparentedBySession.get(key);
+          if (group) {
+            group.push(row);
+          } else {
+            unparentedBySession.set(key, [row]);
+          }
         }
-      }
-      const children = [...unparentedBySession.values()].find(
-        (group) => group.length >= fanout
-      );
-      if (children) {
-        const rollupChildren = children.slice(0, fanout);
-        const rollupSummary = rollupSummaryText(rollupChildren);
-        const childSourceItems: LcmSourceItem[] = rollupChildren.map(
-          (child, position) => ({
-            kind: "lcm_child",
-            nodeId: child.id,
-            position,
-            text: child.summary_text,
-            payload: {
-              depth: child.depth,
-              lcmSessionKey: lcmSessionKeyForNodeRow(child)
-            }
-          })
+        const children = [...unparentedBySession.values()].find(
+          (group) => group.length >= fanout
         );
-        const eventSourceItems = rollupChildren.flatMap((child) =>
-          Array.isArray(child.source_items_json) ? child.source_items_json : []
-        );
-        const rollup = await client.query<{ id: string }>(
-          `
+        if (children) {
+          const rollupChildren = children.slice(0, fanout);
+          const rollupSummary = rollupSummaryText(rollupChildren);
+          const childSourceItems: LcmSourceItem[] = rollupChildren.map(
+            (child, position) => ({
+              kind: "lcm_child",
+              nodeId: child.id,
+              position,
+              text: child.summary_text,
+              payload: {
+                depth: child.depth,
+                lcmSessionKey: lcmSessionKeyForNodeRow(child)
+              }
+            })
+          );
+          const eventSourceItems = rollupChildren.flatMap((child) =>
+            Array.isArray(child.source_items_json)
+              ? child.source_items_json
+              : []
+          );
+          const childSourceItemsForStorage = suppressPlaintextPayload
+            ? encryptedMemoryNodeJsonMarker()
+            : childSourceItems;
+          const rollupSummaryForStorage = suppressPlaintextPayload
+            ? ENCRYPTED_MEMORY_NODE_TEXT
+            : rollupSummary;
+          const rollup = await client.query<{ id: string }>(
+            `
             insert into memory_nodes (
               owner_user_id,
               created_by_user_id,
@@ -7740,147 +9649,177 @@ export const createMemorySourceRepository = (
             on conflict (source_hash) where source_hash is not null do nothing
             returning id
           `,
-          [
-            ownerUserId,
-            actor.userId,
-            input.visibility,
-            rollupSummary,
-            JSON.stringify(childSourceItems),
-            eventSourceItems.length,
-            sourceItemsTokenEstimate(eventSourceItems, tokenModel),
-            estimateTokens(rollupSummary, { model: tokenModel }),
-            sourceHash(
-              "memory_node",
-              rollupChildren.map((child) => child.id).join(","),
-              rollupSummary
-            )
-          ]
-        );
-        rollupNodeId =
-          rollup.rows[0]?.id ??
-          (
-            await client.query<{ id: string }>(
-              `
+            [
+              ownerUserId,
+              actor.userId,
+              input.visibility,
+              rollupSummaryForStorage,
+              JSON.stringify(childSourceItemsForStorage),
+              eventSourceItems.length,
+              sourceItemsTokenEstimate(eventSourceItems, tokenModel),
+              estimateTokens(rollupSummary, { model: tokenModel }),
+              sourceHash(
+                "memory_node",
+                rollupChildren.map((child) => child.id).join(","),
+                rollupSummary
+              )
+            ]
+          );
+          rollupNodeId =
+            rollup.rows[0]?.id ??
+            (
+              await client.query<{ id: string }>(
+                `
                 select id
                 from memory_nodes
                 where source_hash = $1 and invalidated_at is null
                 limit 1
               `,
+                [
+                  sourceHash(
+                    "memory_node",
+                    rollupChildren.map((child) => child.id).join(","),
+                    rollupSummary
+                  )
+                ]
+              )
+            ).rows[0]!.id;
+          if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
+            await client.query(
+              `
+              update memory_nodes
+              set
+                summary_text = $2,
+                body_text = $2,
+                source_items_json = $3::jsonb
+              where id = $1
+            `,
               [
-                sourceHash(
-                  "memory_node",
-                  rollupChildren.map((child) => child.id).join(","),
-                  rollupSummary
-                )
+                rollupNodeId,
+                ENCRYPTED_MEMORY_NODE_TEXT,
+                JSON.stringify(encryptedMemoryNodeJsonMarker())
               ]
-            )
-          ).rows[0]!.id;
-        for (
-          let childOrder = 0;
-          childOrder < rollupChildren.length;
-          childOrder += 1
-        ) {
-          await client.query(
-            `
+            );
+            await persistEncryptedMemoryNodeFields(
+              client,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId,
+                visibility: input.visibility,
+                nodeId: rollupNodeId,
+                summaryText: rollupSummary,
+                bodyText: rollupSummary,
+                sourceItems: childSourceItems
+              }
+            );
+          }
+          for (
+            let childOrder = 0;
+            childOrder < rollupChildren.length;
+            childOrder += 1
+          ) {
+            await client.query(
+              `
               insert into memory_node_children (parent_memory_node_id, child_memory_node_id, child_order)
               values ($1, $2, $3)
               on conflict do nothing
             `,
-            [rollupNodeId, rollupChildren[childOrder]!.id, childOrder]
-          );
-        }
-        const sourceEventIds = eventSourceItems
-          .filter((item) => item.kind === "memory_event" && item.sourceId)
-          .map((item) => item.sourceId!);
-        for (
-          let sourceOrder = 0;
-          sourceOrder < sourceEventIds.length;
-          sourceOrder += 1
-        ) {
-          await client.query(
-            `
+              [rollupNodeId, rollupChildren[childOrder]!.id, childOrder]
+            );
+          }
+          const sourceEventIds = eventSourceItems
+            .filter((item) => item.kind === "memory_event" && item.sourceId)
+            .map((item) => item.sourceId!);
+          for (
+            let sourceOrder = 0;
+            sourceOrder < sourceEventIds.length;
+            sourceOrder += 1
+          ) {
+            await client.query(
+              `
               insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
               values ($1, $2, $3)
               on conflict do nothing
             `,
-            [rollupNodeId, sourceEventIds[sourceOrder]!, sourceOrder]
-          );
-        }
-      }
-
-      await client.query("commit");
-      return { leafNodeIds, rollupNodeId } satisfies CompactionResult;
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-  },
-
-  async expandMemoryNode(nodeId, actor, input = {}) {
-    const searchDomain = input.searchDomain ?? "global";
-    if (searchDomain === "session" && !input.sessionId) {
-      throw new Error("Session-scoped memory expansion requires sessionId");
-    }
-    if (searchDomain === "project" && !input.workspaceId) {
-      throw new Error("Project-scoped memory expansion requires workspaceId");
-    }
-    const now = new Date();
-    const sourceAfter = input.recentDays
-      ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
-      : input.sourceAfter
-        ? new Date(input.sourceAfter)
-        : null;
-    const sourceBefore = input.sourceBefore
-      ? new Date(input.sourceBefore)
-      : null;
-    if (
-      input.recentDays !== undefined &&
-      (input.sourceAfter !== undefined || input.sourceBefore !== undefined)
-    ) {
-      throw new Error(
-        "recentDays cannot be combined with explicit sourceAfter/sourceBefore bounds"
-      );
-    }
-    if (sourceAfter && Number.isNaN(sourceAfter.getTime())) {
-      throw new Error("sourceAfter must be a valid timestamp");
-    }
-    if (sourceBefore && Number.isNaN(sourceBefore.getTime())) {
-      throw new Error("sourceBefore must be a valid timestamp");
-    }
-    if (sourceAfter && sourceBefore && sourceAfter >= sourceBefore) {
-      throw new Error("sourceAfter must be earlier than sourceBefore");
-    }
-    const teamWorkspaceAccess = input.teamWorkspaceId
-      ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
-      : null;
-    const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
-      requesterUserId: actor.userId,
-      teamWorkspaceId: input.teamWorkspaceId,
-      access: teamWorkspaceAccess
-    });
-    if (
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      !teamWorkspaceAuthorization.authorized
-    ) {
-      throw new Error("Memory node not found or not visible");
-    }
-    const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
-      teamWorkspaceAuthorization.mode === "team_workspace" &&
-      teamWorkspaceAuthorization.authorized
-        ? {
-            teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
-            teamId: teamWorkspaceAuthorization.teamId
+              [rollupNodeId, sourceEventIds[sourceOrder]!, sourceOrder]
+            );
           }
+        }
+
+        await client.query("commit");
+        return { leafNodeIds, rollupNodeId } satisfies CompactionResult;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
+    async expandMemoryNode(nodeId, actor, input = {}) {
+      const searchDomain = input.searchDomain ?? "global";
+      if (searchDomain === "session" && !input.sessionId) {
+        throw new Error("Session-scoped memory expansion requires sessionId");
+      }
+      if (searchDomain === "project" && !input.workspaceId) {
+        throw new Error("Project-scoped memory expansion requires workspaceId");
+      }
+      const now = new Date();
+      const sourceAfter = input.recentDays
+        ? new Date(now.getTime() - input.recentDays * 24 * 60 * 60 * 1000)
+        : input.sourceAfter
+          ? new Date(input.sourceAfter)
+          : null;
+      const sourceBefore = input.sourceBefore
+        ? new Date(input.sourceBefore)
         : null;
-    const visibleNode = await pool.query<{
-      id: string;
-      visibility: Visibility;
-      source_items_json: LcmSourceItem[];
-    }>(
-      `
-        select mn.id, mn.visibility, mn.source_items_json
+      if (
+        input.recentDays !== undefined &&
+        (input.sourceAfter !== undefined || input.sourceBefore !== undefined)
+      ) {
+        throw new Error(
+          "recentDays cannot be combined with explicit sourceAfter/sourceBefore bounds"
+        );
+      }
+      if (sourceAfter && Number.isNaN(sourceAfter.getTime())) {
+        throw new Error("sourceAfter must be a valid timestamp");
+      }
+      if (sourceBefore && Number.isNaN(sourceBefore.getTime())) {
+        throw new Error("sourceBefore must be a valid timestamp");
+      }
+      if (sourceAfter && sourceBefore && sourceAfter >= sourceBefore) {
+        throw new Error("sourceAfter must be earlier than sourceBefore");
+      }
+      const teamWorkspaceAccess = input.teamWorkspaceId
+        ? await this.getTeamWorkspaceAccess(actor, input.teamWorkspaceId)
+        : null;
+      const teamWorkspaceAuthorization = resolveTeamWorkspaceAuthorization({
+        requesterUserId: actor.userId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        access: teamWorkspaceAccess
+      });
+      if (
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        !teamWorkspaceAuthorization.authorized
+      ) {
+        throw new Error("Memory node not found or not visible");
+      }
+      const teamWorkspaceBoundary: TeamWorkspaceReadBoundary =
+        teamWorkspaceAuthorization.mode === "team_workspace" &&
+        teamWorkspaceAuthorization.authorized
+          ? {
+              teamWorkspaceId: teamWorkspaceAuthorization.teamWorkspaceId,
+              teamId: teamWorkspaceAuthorization.teamId
+            }
+          : null;
+      const visibleNode = await pool.query<{
+        id: string;
+        owner_user_id: string | null;
+        visibility: Visibility;
+        source_items_json: LcmSourceItem[];
+      }>(
+        `
+        select mn.id, mn.owner_user_id, mn.visibility, mn.source_items_json
         from memory_nodes mn
         where mn.id = $2
           and mn.invalidated_at is null
@@ -7913,36 +9852,42 @@ export const createMemorySourceRepository = (
           )
         limit 1
       `,
-      [
-        actor.userId,
-        nodeId,
-        teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-        teamWorkspaceBoundary?.teamId ?? null
-      ]
-    );
-    const node = visibleNode.rows[0];
-    if (!node) {
-      throw new Error("Memory node not found or not visible");
-    }
+        [
+          actor.userId,
+          nodeId,
+          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+          teamWorkspaceBoundary?.teamId ?? null
+        ]
+      );
+      const node = visibleNode.rows[0];
+      if (!node) {
+        throw new Error("Memory node not found or not visible");
+      }
+      const hydratedNode = await hydrateMemoryNodeRow(
+        pool,
+        options.envelopeEncryptionProvider,
+        node
+      );
 
-    const sources = await pool.query<{
-      id: string;
-      owner_user_id: string | null;
-      visibility: Visibility;
-      event_type: MemoryEventType;
-      session_id: string | null;
-      turn_id: string | null;
-      payload: {
-        actor?: MemoryActor;
-        content?: string;
-        metadata?: Record<string, unknown>;
-        rawEventType?: string;
-        workspaceId?: string;
-      };
-      created_at: Date;
-      captured_at: Date;
-    }>(
-      `
+      const sources = await pool.query<{
+        id: string;
+        owner_user_id: string | null;
+        visibility: Visibility;
+        event_type: MemoryEventType;
+        session_id: string | null;
+        turn_id: string | null;
+        payload: {
+          actor?: MemoryActor;
+          content?: string;
+          contentEncrypted?: boolean;
+          metadata?: Record<string, unknown>;
+          rawEventType?: string;
+          workspaceId?: string;
+        };
+        created_at: Date;
+        captured_at: Date;
+      }>(
+        `
         select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at, me.captured_at
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
@@ -7972,37 +9917,64 @@ export const createMemorySourceRepository = (
           )
         order by me.captured_at asc, me.id asc
       `,
-      [
-        nodeId,
-        actor.userId,
-        sourceAfter,
-        sourceBefore,
-        searchDomain,
-        input.sessionId ?? null,
-        input.workspaceId ?? null,
-        teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-        teamWorkspaceBoundary?.teamId ?? null
-      ]
-    );
-    const supportingRows =
-      sources.rows.length > 0
-        ? await pool.query<{
-            memory_event_id: string;
-            conversation_item_id: string;
-            source_role: string | null;
-            source_event_type: string | null;
-            source_record_type: string;
-            raw_json: unknown;
-            raw_text: string | null;
-            metadata: Record<string, unknown> | null;
-          }>(
-            `
-	              select
-	                mes.memory_event_id,
-	                ci.id as conversation_item_id,
-	                mes.source_role,
-	                ci.source_event_type,
-	                ci.source_record_type,
+        [
+          nodeId,
+          actor.userId,
+          sourceAfter,
+          sourceBefore,
+          searchDomain,
+          input.sessionId ?? null,
+          input.workspaceId ?? null,
+          teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+          teamWorkspaceBoundary?.teamId ?? null
+        ]
+      );
+      const hydratedSources = await Promise.all(
+        sources.rows.map(async (source) => {
+          if (
+            source.payload.content ||
+            !options.envelopeEncryptionProvider ||
+            source.payload.contentEncrypted !== true
+          ) {
+            return source;
+          }
+          const payload = await decryptAuthorizedMemoryEventPayload(
+            pool,
+            options.envelopeEncryptionProvider,
+            {
+              ownerUserId: source.owner_user_id,
+              memoryEventId: source.id
+            }
+          );
+          return payload
+            ? {
+                ...source,
+                payload
+              }
+            : source;
+        })
+      );
+      const supportingRows =
+        hydratedSources.length > 0
+          ? await pool.query<{
+              memory_event_id: string;
+              conversation_item_id: string;
+              owner_user_id: string | null;
+              source_role: string | null;
+              source_event_type: string | null;
+              source_record_type: string;
+              raw_json: unknown;
+              raw_text: string | null;
+              metadata: Record<string, unknown> | null;
+            }>(
+              `
+		              select
+		                mes.memory_event_id,
+		                ci.id as conversation_item_id,
+		                ci.owner_user_id,
+		                mes.source_role,
+		                ci.source_event_type,
+		                ci.source_record_type,
 	                ci.raw_json,
 	                ci.raw_text,
 	                ci.metadata
@@ -8027,118 +9999,158 @@ export const createMemorySourceRepository = (
 	                )
 	              order by mes.memory_event_id, mes.source_order asc, ci.id asc
 	            `,
-            [
-              sources.rows.map((source) => source.id),
-              SUPPORTING_CONTEXT_SOURCE_ROLE,
-              actor.userId,
-              teamWorkspaceBoundary?.teamWorkspaceId ?? null,
-              teamWorkspaceBoundary?.teamId ?? null
-            ]
-          )
-        : { rows: [] };
-    const supportingContextByEventId = new Map<
-      string,
-      SupportingContextItem[]
-    >();
-    for (const row of supportingRows.rows) {
-      const text =
-        conversationItemContent({
-          source_event_type: row.source_event_type,
-          source_record_type: row.source_record_type,
-          metadata: row.metadata,
-          raw_json: row.raw_json,
-          raw_text: row.raw_text
-        }) ?? "";
-      if (!text.trim()) {
-        continue;
+              [
+                hydratedSources.map((source) => source.id),
+                SUPPORTING_CONTEXT_SOURCE_ROLE,
+                actor.userId,
+                teamWorkspaceBoundary?.teamWorkspaceId ?? null,
+                teamWorkspaceBoundary?.teamId ?? null
+              ]
+            )
+          : { rows: [] };
+      const supportingContextByEventId = new Map<
+        string,
+        SupportingContextItem[]
+      >();
+      for (const row of supportingRows.rows) {
+        const encryptedColumns = encryptedConversationItemColumns(row);
+        if (encryptedColumns.size > 0 && !options.envelopeEncryptionProvider) {
+          throw new Error(
+            "Envelope encryption provider is required to expand encrypted supporting context"
+          );
+        }
+        const decryptedRawJson = encryptedColumns.has("raw_json")
+          ? await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "conversation_items",
+                sourceId: row.conversation_item_id,
+                sourceColumn: "raw_json"
+              }
+            )
+          : row.raw_json;
+        const decryptedRawText = encryptedColumns.has("raw_text")
+          ? await decryptAuthorizedEncryptedFieldPayload(
+              pool,
+              options.envelopeEncryptionProvider,
+              {
+                ownerUserId: row.owner_user_id,
+                sourceTable: "conversation_items",
+                sourceId: row.conversation_item_id,
+                sourceColumn: "raw_text"
+              }
+            )
+          : row.raw_text;
+        if (
+          (encryptedColumns.has("raw_json") && decryptedRawJson === null) ||
+          (encryptedColumns.has("raw_text") && decryptedRawText === null)
+        ) {
+          throw new Error("Encrypted supporting context source is missing");
+        }
+        const text =
+          conversationItemContent({
+            source_event_type: row.source_event_type,
+            source_record_type: row.source_record_type,
+            metadata: row.metadata,
+            raw_json: decryptedRawJson ?? row.raw_json,
+            raw_text:
+              typeof decryptedRawText === "string"
+                ? decryptedRawText
+                : row.raw_text
+          }) ?? "";
+        if (!text.trim()) {
+          continue;
+        }
+        const item: SupportingContextItem = {
+          sourceId: row.conversation_item_id,
+          sourceRole: SUPPORTING_CONTEXT_SOURCE_ROLE,
+          contextKind: IDE_CLIENT_CONTEXT_KIND,
+          label: "IDE/client context",
+          text: text.trim()
+        };
+        supportingContextByEventId.set(row.memory_event_id, [
+          ...(supportingContextByEventId.get(row.memory_event_id) ?? []),
+          item
+        ]);
       }
-      const item: SupportingContextItem = {
-        sourceId: row.conversation_item_id,
-        sourceRole: SUPPORTING_CONTEXT_SOURCE_ROLE,
-        contextKind: IDE_CLIENT_CONTEXT_KIND,
-        label: "IDE/client context",
-        text: text.trim()
-      };
-      supportingContextByEventId.set(row.memory_event_id, [
-        ...(supportingContextByEventId.get(row.memory_event_id) ?? []),
-        item
-      ]);
-    }
-    const eventSourceItems: LcmSourceItem[] = sources.rows.map(
-      (source, position) => ({
-        kind: "memory_event",
-        sourceTable: "memory_events",
-        sourceId: source.id,
-        visibility: source.visibility,
-        actor: source.payload.actor,
-        turnId: source.turn_id,
-        createdAt: source.captured_at.toISOString(),
-        text: codexIdePromptUserText(source.payload.content ?? ""),
-        payload: lcmSourcePayloadForEvent(source),
-        ...(supportingContextByEventId.has(source.id)
-          ? {
-              supportingContext: supportingContextByEventId.get(source.id)
-            }
-          : {}),
-        position
-      })
-    );
-    const nodeSourceItems = Array.isArray(node.source_items_json)
-      ? node.source_items_json
-      : [];
-    const sourceItemInWindow = (item: LcmSourceItem): boolean => {
-      if (!sourceAfter && !sourceBefore) {
-        return true;
-      }
-      if (!item.createdAt) {
-        return false;
-      }
-      const itemDate = new Date(item.createdAt);
-      if (Number.isNaN(itemDate.getTime())) {
-        return false;
-      }
-      return (
-        (!sourceAfter || itemDate >= sourceAfter) &&
-        (!sourceBefore || itemDate < sourceBefore)
+      const eventSourceItems: LcmSourceItem[] = hydratedSources.map(
+        (source, position) => ({
+          kind: "memory_event",
+          sourceTable: "memory_events",
+          sourceId: source.id,
+          visibility: source.visibility,
+          actor: source.payload.actor,
+          turnId: source.turn_id,
+          createdAt: source.captured_at.toISOString(),
+          text: codexIdePromptUserText(source.payload.content ?? ""),
+          payload: lcmSourcePayloadForEvent(source),
+          ...(supportingContextByEventId.has(source.id)
+            ? {
+                supportingContext: supportingContextByEventId.get(source.id)
+              }
+            : {}),
+          position
+        })
       );
-    };
-    const sourceItemInBoundary = (item: LcmSourceItem): boolean => {
-      if (searchDomain === "global") {
-        return true;
-      }
-      if (item.kind === "lcm_child") {
-        return false;
-      }
-      const payload =
-        item.payload && typeof item.payload === "object"
-          ? (item.payload as Record<string, unknown>)
-          : {};
-      if (searchDomain === "session") {
+      const nodeSourceItems = Array.isArray(hydratedNode.source_items_json)
+        ? hydratedNode.source_items_json
+        : [];
+      const sourceItemInWindow = (item: LcmSourceItem): boolean => {
+        if (!sourceAfter && !sourceBefore) {
+          return true;
+        }
+        if (!item.createdAt) {
+          return false;
+        }
+        const itemDate = new Date(item.createdAt);
+        if (Number.isNaN(itemDate.getTime())) {
+          return false;
+        }
         return (
-          typeof input.sessionId === "string" &&
-          payload.sessionId === input.sessionId
+          (!sourceAfter || itemDate >= sourceAfter) &&
+          (!sourceBefore || itemDate < sourceBefore)
         );
-      }
-      return (
-        typeof input.workspaceId === "string" &&
-        payload.workspaceId === input.workspaceId
+      };
+      const sourceItemInBoundary = (item: LcmSourceItem): boolean => {
+        if (searchDomain === "global") {
+          return true;
+        }
+        if (item.kind === "lcm_child") {
+          return false;
+        }
+        const payload =
+          item.payload && typeof item.payload === "object"
+            ? (item.payload as Record<string, unknown>)
+            : {};
+        if (searchDomain === "session") {
+          return (
+            typeof input.sessionId === "string" &&
+            payload.sessionId === input.sessionId
+          );
+        }
+        return (
+          typeof input.workspaceId === "string" &&
+          payload.workspaceId === input.workspaceId
+        );
+      };
+      const filteredNodeSourceItems = nodeSourceItems.filter(
+        (item) => sourceItemInWindow(item) && sourceItemInBoundary(item)
       );
-    };
-    const filteredNodeSourceItems = nodeSourceItems.filter(
-      (item) => sourceItemInWindow(item) && sourceItemInBoundary(item)
-    );
 
-    return {
-      nodeId,
-      visibility: node.visibility,
-      sourceItems:
-        filteredNodeSourceItems.length > 0 &&
-        filteredNodeSourceItems.some((item) => item.kind === "lcm_child")
-          ? [...filteredNodeSourceItems, ...eventSourceItems]
-          : eventSourceItems.length > 0
-            ? eventSourceItems
-            : filteredNodeSourceItems,
-      sources: sources.rows.map(mapMemoryEvent)
-    } satisfies ExpandedMemoryNode;
-  }
-});
+      return {
+        nodeId,
+        visibility: hydratedNode.visibility,
+        sourceItems:
+          filteredNodeSourceItems.length > 0 &&
+          filteredNodeSourceItems.some((item) => item.kind === "lcm_child")
+            ? [...filteredNodeSourceItems, ...eventSourceItems]
+            : eventSourceItems.length > 0
+              ? eventSourceItems
+              : filteredNodeSourceItems,
+        sources: hydratedSources.map(mapMemoryEvent)
+      } satisfies ExpandedMemoryNode;
+    }
+  };
+};

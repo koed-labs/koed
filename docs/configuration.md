@@ -16,6 +16,12 @@ This creates `.env` and generates `API_DATA_ENCRYPTION_KEY`,
 values and adds any missing keys from
 `.env.example`.
 
+For server/private VPS deployments, treat `koed-server` as the application
+deployment unit and Postgres, queue backend, Embedding Service, reverse
+proxy/TLS, and backup/restore jobs as dependencies. See
+[server-deployment-boundary.md](server-deployment-boundary.md) for the
+operator-facing boundary and migration notes.
+
 ## `koed-server` Dependency Ownership
 
 `koed-server` reads `KOED_HOME/config/server.json` plus environment overrides.
@@ -32,6 +38,12 @@ Bundled-local dependency mode is a native local runtime for Postgres/pgvector an
 
 Supported mode fields:
 
+- `KOED_DEPLOYMENT_PROFILE`: capability profile reported by
+  `/v1/capabilities`. Supported values are `developer`, `local_personal`,
+  `private_vps`, `team_self_hosted`, and `koed_managed_cloud`. Hyphenated
+  aliases such as `local-personal`, `private-vps`, `team-self-hosted`, and
+  `koed-managed-cloud` are accepted. If omitted, `local-personal` runtime mode
+  reports `local_personal`; other source checkout runs report `developer`.
 - `KOED_RUNTIME_MODE`: `local-personal`, `external`, or `developer`.
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
@@ -68,6 +80,43 @@ Embedding Service reports the expected model and dimensions. Doctor repair
 actions point to migrations, pgvector setup, dependency URLs, queue backend, or
 model/runtime mismatch.
 
+## Local Edge Upstream Registry
+
+Local edge `koed-server` stores remote/private/cloud upstream backend metadata
+under `KOED_HOME/config/upstream-backends.json`. This registry is first-class
+local configuration, not a loose environment-variable convention. It stores the
+upstream id, display name, base URL, deployment profile, cached public
+capabilities, validation timestamps, credential status/reference metadata, and
+route-policy metadata.
+
+The registry must not contain reusable upstream credentials, WorkOS secrets,
+API Tokens, device secrets, bearer tokens, token prefixes, or database
+credentials. Upstream URLs with username/password material, query strings, or
+fragments are rejected. Device/upstream credential material is handled by the
+separate credential model; this registry only records non-secret existence and
+status metadata.
+
+Supported commands:
+
+```bash
+koed-server upstream register --url https://koed.example.test --id team-vps --name "Team VPS" --profile private_vps --json
+koed-server upstream list --json
+koed-server upstream refresh --id team-vps --json
+koed-server upstream policy --id team-vps --team-workspace-read enabled --share-grant-management enabled --json
+koed-server upstream remove --id team-vps --json
+```
+
+Capability refresh calls the upstream public `/v1/capabilities` endpoint,
+requires the versioned Koed capability schema, and records `validated`,
+`stale`, `failed`, or `not_checked` cache state. The cache expires after the
+local freshness window and status/doctor report stale or failed caches as
+attention items. Route-policy defaults are fail-closed: registering an upstream
+does not enable capture-bearing writes, Team Workspace recall, Share Grant
+management, sync/offload, or admin operations. Operators must explicitly enable
+allowed operation families with `koed-server upstream policy`; later routing and
+sync work must consume the cached capabilities and route policy before enabling
+remote-dependent surfaces.
+
 ## KOED_HOME Layout
 
 Koed-owned local state lives under `KOED_HOME`:
@@ -96,15 +145,47 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   local Docker Compose deployments. Use a deployment-specific secret for
   production.
 - `POSTGRES_HOST_PORT`: host port mapped to the Postgres container.
-- `DATABASE_URL`: local Postgres URL used by operator scripts such as `pnpm api-token:create`. Docker Compose derives service-internal database URLs from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
-- `API_NODE_ENV`: runtime environment for the API service. Use `production` for deployed compose runs.
+- `DATABASE_URL`: local Postgres URL used by operator scripts such as
+  `pnpm api-token:create`. Docker Compose derives service-internal database URLs
+  from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`. Hosted
+  `koed-server` traffic should use the runtime Postgres role; use the migration
+  role only for `pnpm --filter @koed/db migrate:up`. See
+  [hosted-database-roles.md](hosted-database-roles.md).
+- `API_NODE_ENV`: runtime environment for the internal API app. Use
+  `production` for deployed `koed-server` runs.
 - `API_HOST`: API bind host for direct local runs. Defaults to `127.0.0.1` in development and `0.0.0.0` in production. Override only when you intentionally want LAN access.
 - `API_HOST_PORT`: host port used by the local API process supervised by `koed-server`. The API listens on process-local `API_PORT`.
 - `API_LOG_LEVEL`: API log level. See [observability](observability.md) for
   the structured API log schema and redaction rules.
-- `API_DATA_ENCRYPTION_KEY`: reserved base64 32-byte key for encrypted server-side fields. In the current build, Memory Events, Memory Nodes, LCM source evidence and summaries, and embedding metadata remain plaintext at the application layer in Postgres.
+- `API_DATA_ENCRYPTION_KEY`: base64 32-byte key used by the `local_test_key`
+  envelope provider for local development, private/operator-managed, and non-paid
+  operator-managed deployments. It is not the paid Koed-managed cloud KMS.
+- `API_ENVELOPE_ENCRYPTION_PROVIDER`: envelope provider mode. Defaults to
+  `local_test_key`; paid Koed-managed cloud must use a KMS-backed mode:
+  `managed_kms`, `byok`, or `cmek`. Premium customer-controlled modes `byok`
+  and `cmek` use the same provider contract but require a customer
+  key-reference onboarding flow before use. `operator_kms` is reserved for
+  Team Self-Hosted/private VPS KMS integration and is not implemented in this
+  build.
+- `KOED_MANAGED_CLOUD_RELEASE_STAGE`: `alpha` or `paid`. When set to `paid`
+  with `KOED_DEPLOYMENT_PROFILE=koed_managed_cloud`, the API and Worker refuse
+  to start unless `API_ENVELOPE_ENCRYPTION_PROVIDER` is KMS-backed.
+- `MANAGED_KMS_KEY_ID` and `MANAGED_KMS_KEY_VERSION`: safe managed KMS key
+  reference metadata required when the API or Worker is configured for
+  `managed_kms`, `byok`, or `cmek`.
+- `MANAGED_KMS_ENDPOINT_URL` and `MANAGED_KMS_AUTH_TOKEN`: managed KMS
+  wrap/unwrap endpoint and bearer credential for the generic HTTPS KMS adapter.
+  The endpoint must use HTTPS unless it targets localhost for local tests. KMS
+  credentials and key material must live in deployment secret management, not in
+  app rows, diagnostics, logs, or client-visible configuration.
+  After a KMS key version is rotated, run `pnpm hosted:encryption-rewrap` in
+  bounded batches to rewrap encrypted-field DEKs to the configured current key
+  version without rewriting plaintext payload bytes.
 - `API_TOKEN_PEPPER`: server-side pepper used when hashing API Tokens.
 - `API_CORS_ORIGINS`: comma-separated allowed browser origins, such as the Explorer.
+- `EXPLORER_WEB_HOST`: host used by the Explorer preview process supervised by
+  `koed-server`. Defaults to `127.0.0.1` for local runs; server/container
+  wrappers may set `0.0.0.0` and publish the port through the wrapper boundary.
 - `API_REQUEST_BODY_LIMIT_BYTES`: maximum API request body size. Default `4194304`.
 - `API_AUTH_RATE_LIMIT_WINDOW_MS`: auth rate-limit window.
 - `API_AUTH_RATE_LIMIT_MAX`: auth requests allowed per window.
@@ -120,6 +201,69 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS`: shorter debounce window for captured event stream updates that drive the open history thread.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
+- `KOED_BACKUP_STATUS_PATH`: optional path to a redacted JSON backup status file consumed by `/ops/status`. When omitted, backup freshness is reported as `not_configured`.
+- `KOED_BACKUP_MAX_AGE_SECONDS`: maximum acceptable age for `lastSuccessfulAt` in the backup status file. Default `86400`.
+- `KOED_OPS_REQUEST_METRICS_STATUS_PATH`: optional path to a redacted JSON request-metrics status file consumed by `/ops/status`. This is the integration point for reverse proxy, load balancer, or external telemetry jobs that calculate request latency and error-rate health.
+- `KOED_OPS_REQUEST_METRICS_MAX_AGE_SECONDS`: maximum acceptable age for `checkedAt` in the request-metrics status file. Default `300`.
+- `KOED_OPS_MAX_RSS_BYTES`: maximum acceptable API process resident set size before `/ops/status` reports runtime resource pressure. Default `1610612736`.
+- `KOED_OPS_OPERATOR_EMAILS`: comma-separated allowlist of browser-session email addresses that may access hosted `/ops/status` and `/ops/test-alert` in `private_vps`, `team_self_hosted`, and `koed_managed_cloud` profiles. Local personal/developer profiles do not require this allowlist.
+- `KOED_RUNBOOK_BASE_URL`: optional base URL used by `/ops/status` to attach runbook links to generated operational alerts.
+- `KOED_OPS_ALERT_WEBHOOK_URL`: optional HTTPS webhook endpoint used by `/ops/test-alert` to validate alert delivery. `/ops/status` reports only that a webhook sink is configured; it does not disclose the URL.
+- `KOED_OPS_ALERT_WEBHOOK_TOKEN`: optional bearer token sent only to `KOED_OPS_ALERT_WEBHOOK_URL` during test-alert delivery. It must not appear in `/ops/status`, `/ops/test-alert` responses, diagnostics, logs, or support exports.
+- `KOED_CAPACITY_API_TOKEN`: optional API Token consumed by `pnpm hosted:capacity -- run` for personal capture and recall load checks.
+- `KOED_CAPACITY_SESSION_COOKIE`: optional browser session Cookie header consumed by `pnpm hosted:capacity -- run` for private operations-status and Team Workspace recall load checks.
+- `KOED_CAPACITY_DEVICE_CREDENTIAL`: optional scoped `Koed-Device` credential consumed by `pnpm hosted:capacity -- run` for Team Workspace device-route and local-edge proxy load checks.
+- `KOED_CAPACITY_TEAM_WORKSPACE_ID`: optional Team Workspace id consumed by `pnpm hosted:capacity -- run` for Team Workspace recall and local-edge proxy scenarios.
+- `KOED_CAPACITY_UPSTREAM_BACKEND_ID`: optional local-edge upstream backend id consumed by `pnpm hosted:capacity -- run --scenario local-edge-team-proxy`.
+- `KOED_LAUNCH_BASE_URL`: optional running API target consumed by `pnpm team-launch:validate --with-staged-remote`.
+- `KOED_LAUNCH_SESSION_COOKIE`: optional browser session Cookie header consumed by staged launch validation for Team Workspace routes.
+- `KOED_LAUNCH_DEVICE_CREDENTIAL`: optional scoped `Koed-Device` credential consumed by staged launch validation for Team Workspace routes.
+- `KOED_LAUNCH_API_TOKEN`: optional API Token consumed by staged launch validation to prove Team Workspace recall rejects API Tokens.
+- `KOED_LAUNCH_TEAM_WORKSPACE_ID`: optional Team Workspace id consumed by staged launch validation; defaults to the synthetic fixture Workspace.
+- `KOED_LAUNCH_TEAM_NODE_ID`: optional Memory node id consumed by staged launch validation; defaults to a synthetic fixture node.
+- `KOED_LAUNCH_LOCAL_EDGE_BASE_URL`: optional local-edge API target consumed by staged launch validation for proxy probes.
+- `KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID`: optional registered upstream backend id consumed by staged launch validation for proxy probes.
+- `WORKOS_AUTHKIT_ENABLED`: set `true` on Team Self-Hosted or Koed-managed cloud backends that use WorkOS/AuthKit for browser-session identity. The backend still uses Koed Team Membership, Workspace Access, Share Grants, lifecycle state, and entitlement records for Memory authorization.
+- `WORKOS_CLIENT_ID`: WorkOS/AuthKit client id used to build `/auth/workos/login` authorization redirects.
+- `WORKOS_API_KEY`: WorkOS server API key used only by `koed-server`/API when exchanging an AuthKit callback code. It must not be exposed to Explorer, MCP Server, Capture Hook, upstream registries, logs, or diagnostics.
+- `WORKOS_REDIRECT_URI`: absolute callback URL registered with WorkOS, normally ending in `/auth/workos/callback`.
+- `WORKOS_PROVIDER_ENVIRONMENT`: stable namespace for WorkOS identity mappings, such as `production`, `staging`, or `default`. Provider user ids are unique only inside this namespace.
+
+`KOED_BACKUP_STATUS_PATH` should point to JSON written by the deployment's
+backup verification job. See [hosted backups](hosted-backups.md) for the
+operator runbook. Example status payload:
+
+```json
+{
+  "status": "ok",
+  "provider": "pgbackrest",
+  "checkedAt": "2026-07-03T10:00:00.000Z",
+  "lastSuccessfulAt": "2026-07-03T09:55:00.000Z"
+}
+```
+
+The file must not contain storage credentials, customer data, raw Memory,
+database URLs, or backup object paths with embedded secrets.
+
+`KOED_OPS_REQUEST_METRICS_STATUS_PATH` should point to redacted JSON written by
+deployment telemetry or a scheduled probe. Example payload:
+
+```json
+{
+  "status": "ok",
+  "checkedAt": "2026-07-03T10:00:00.000Z",
+  "windowSeconds": 60,
+  "requestRatePerSecond": 12.5,
+  "p95LatencyMs": 250,
+  "p99LatencyMs": 400,
+  "errorRate": 0.001
+}
+```
+
+The file must not contain request bodies, prompts, raw Memory, cookies, API
+Tokens, provider secrets, IP addresses unless explicitly approved by deployment
+policy, or full URLs containing customer content.
+
 - `EXPLORER_NODE_ENV`: runtime environment for the Explorer service.
 - `EXPLORER_API_BASE_URL`: browser-visible API base URL used when building the Explorer.
 - `EXPLORER_WEB_HOST_PORT`: host port used by the local Explorer preview process supervised by `koed-server`.
@@ -128,10 +272,11 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `WORK_QUEUE_BACKEND`: `bullmq` by default for Redis/BullMQ queues. Set `local` to use the Postgres-backed `local_work_queue` table for API/Worker jobs; this does not require Redis for job queues, though Redis may still be used for rate-limit or cache stores if configured.
 - `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
-- `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
-- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. Install writes to `KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
+- `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.
+- `KOED_EMBEDDING_MODEL_URL` / `KOED_EMBEDDING_MODEL_SHA256`: optional custom artifact URL and expected SHA-256 used by `koed-server models install --kind embedding`. When unset, Koed installs the default pinned Qwen embedding model. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_EMBEDDING_MODEL_PATH` overrides the destination.
+- `KOED_RERANKER_MODEL_URL` / `KOED_RERANKER_MODEL_SHA256`: artifact URL and expected SHA-256 used by `koed-server models install --kind reranker`. Install writes to `KOED_MODELS_DIR`/`KOED_HOME/models` unless `KOED_RERANKER_MODEL_PATH` overrides the destination.
 - `KOED_BUNDLED_POSTGRES_MODE`: deprecated. Bundled-local Postgres is native-only; `compose` is ignored and missing native binaries report setup guidance.
-- `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, and `psql` binaries for bundled-local Postgres. Defaults to `KOED_HOME/runtime/postgres/bin`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/postgres/bin` only as a development fallback. Individual binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`.
+- `KOED_POSTGRES_BIN_DIR`: directory containing native `initdb`, `pg_ctl`, `psql`, `pg_dump`, and `pg_restore` binaries for bundled-local Postgres. Defaults to `KOED_HOME/runtime/postgres/bin`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/postgres/bin` only as a development fallback. Individual startup binary overrides are also available with `KOED_POSTGRES_INITDB_BIN`, `KOED_POSTGRES_PG_CTL_BIN`, and `KOED_POSTGRES_PSQL_BIN`; hosted backup commands may use `PSQL_BIN`, `PG_DUMP_BIN`, and `PG_RESTORE_BIN` for external database operators.
 - `KOED_POSTGRES_DATA_DIR`, `KOED_POSTGRES_RUN_DIR`, `KOED_POSTGRES_LOG_PATH`: optional native bundled-local Postgres data, socket/runtime, and log paths. Defaults live under `KOED_HOME`.
 - `KOED_BUNDLED_EMBEDDING_MODE`: deprecated. Bundled-local Embedding Service is native-only; `compose` is ignored and missing native assets report setup guidance.
 - `KOED_EMBEDDING_LLAMA_SERVER_BIN`: llama-server executable for the native bundled-local Embedding Service. Defaults to `KOED_HOME/runtime/llama.cpp/llama-server`, then packaged Desktop resources when running packaged Desktop, with source-checkout `vendor/llama.cpp/llama-server` only as a development fallback; the Docker default `EMBEDDING_LLAMA_SERVER_BINARY=/opt/llama.cpp/llama-server` is ignored for native auto-detection unless overridden with this setting.
@@ -148,6 +293,10 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
 - `MEMORY_RAG_RAW_FALLBACK_ENABLED`: set `false` to disable raw fallback retrieval.
+- `MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED`: explicit opt-in for plaintext
+  `lexical_search`. Koed-managed cloud disables plaintext lexical search by
+  default because encrypted Memory text should not be searched through raw
+  plaintext SQL columns. Leave unset for the profile default.
 - `MEMORY_RAG_ROLLUP_MIN_SCORE`, `MEMORY_RAG_SCOPED_LEAF_MIN_SCORE`, `MEMORY_RAG_LEAF_MIN_SCORE`, `MEMORY_RAG_FRESH_EVENT_MIN_SCORE`, `MEMORY_RAG_RAW_FALLBACK_MIN_SCORE`: optional per-stage minimum score thresholds. Leave blank to use the default threshold of `0`.
 - `MEMORY_EVENT_MAX_TOKENS`: soft token target for projected semantic Memory Event bundle rollover. Default `2048`; values above `32768` are clamped to the Qwen operational cap. Projection rolls over only between complete source items at this target.
 - `MEMORY_AGENT_TURN_STALE_MS`: quiet-time fallback for sealing an incomplete agent-turn Memory Event during catch-up if no turn-complete Capture Hook or next user prompt arrives. Default `900000` (15 minutes). Set `0` only in tests or controlled recovery runs to seal any incomplete agent turn immediately.
@@ -261,6 +410,20 @@ recall-only transcript types without a schema change.
 
 ## Data At Rest
 
-Postgres is the source of truth for Users, API Tokens, Capture Policies, Memory Events, Memory Nodes, embeddings, LCM placeholders, LCM summaries, and related evidence. The application hashes API Tokens with `API_TOKEN_PEPPER`, but captured memory content, generated summaries, graph text, and embedding metadata are stored as normal database rows.
+Postgres is the source of truth for Users, API Tokens, Capture Policies, raw
+`conversation_items`, messages, tool events, Memory Events, Memory Nodes,
+embeddings, LCM placeholders, LCM summaries, Memory Questions, and related
+evidence. The application hashes API Tokens with `API_TOKEN_PEPPER`. Local
+personal, private VPS, and Team Self-Hosted deployments still store operational
+Memory rows as normal database rows unless application-layer encryption is
+explicitly configured. Paid Koed-managed cloud must use a KMS-backed envelope
+provider; new raw conversation-item source fields, projected message/tool
+payloads, Memory Event payloads, Memory Node text/source/structured-summary
+fields, embedding source text, and Memory Question query/answer/evidence/worker
+payloads in that mode store redacted operational payloads and keep full
+human-readable content in encrypted field companions. Projection hydrates raw
+conversation-item companions inside the trusted repository boundary before
+deriving semantic rows. Authorized graph, embedding, retrieval, LCM, and Memory
+Question paths hydrate encrypted companions after access checks.
 
 Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.

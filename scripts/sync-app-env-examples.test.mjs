@@ -34,7 +34,7 @@ test("parses root mappings and omit directives", () => {
       "NODE_ENV=development",
       "# @root omit",
       "REDIS_URL=redis://local",
-      "PORT=3000"
+      "PORT=3300"
     ].join("\n"),
     { label: "API", prefix: "API" }
   );
@@ -48,7 +48,7 @@ test("parses root mappings and omit directives", () => {
         value: "postgres://local"
       },
       { appKey: "NODE_ENV", rootKey: "ROOT_NODE_ENV", value: "production" },
-      { appKey: "PORT", rootKey: "API_PORT", value: "3000" }
+      { appKey: "PORT", rootKey: "API_PORT", value: "3300" }
     ]
   );
 });
@@ -99,18 +99,18 @@ test("replaces only the generated block and preserves manual sections", () => {
       "# END GENERATED APP ENV EXAMPLES",
       "",
       "# Manual after",
-      "MEMORY_API_URL=http://localhost:3000",
+      "MEMORY_API_URL=http://localhost:3300",
       ""
     ].join("\n"),
     renderGeneratedBlock([
-      { source: "API", appKey: "PORT", rootKey: "API_PORT", value: "3000" }
+      { source: "API", appKey: "PORT", rootKey: "API_PORT", value: "3300" }
     ])
   );
 
   assert.match(next, /POSTGRES_DB=koed/);
-  assert.match(next, /API_PORT=3000/);
+  assert.match(next, /API_PORT=3300/);
   assert.doesNotMatch(next, /OLD=value/);
-  assert.match(next, /MEMORY_API_URL=http:\/\/localhost:3000/);
+  assert.match(next, /MEMORY_API_URL=http:\/\/localhost:3300/);
 });
 
 test("renders shared memory config outside app sections", () => {
@@ -139,12 +139,12 @@ test("renders shared memory config outside app sections", () => {
       rootKey: "SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS",
       value: "300000"
     },
-    { source: "API", appKey: "PORT", rootKey: "API_PORT", value: "3000" }
+    { source: "API", appKey: "PORT", rootKey: "API_PORT", value: "3300" }
   ]);
 
   assert.match(
     block,
-    /# Shared app config\nMEMORY_LIMIT=20\nEMBEDDING_MODEL_KEY=qwen3-0.6b\nEMBEDDING_RERANKER_KEY=\nSEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS=300000\n\n# API app\nAPI_PORT=3000/
+    /# Shared app config\nMEMORY_LIMIT=20\nEMBEDDING_MODEL_KEY=qwen3-0.6b\nEMBEDDING_RERANKER_KEY=\nSEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS=300000\n\n# API app\nAPI_PORT=3300/
   );
 });
 
@@ -158,13 +158,13 @@ test("sync output is deterministic", () => {
   for (const app of ["api", "worker", "embedding-service", "explorer"]) {
     fs.writeFileSync(
       path.join(root, `apps/${app}/.env.example`),
-      "PORT=3000\n# @root omit\nLOCAL_ONLY=1\n"
+      "PORT=3300\n# @root omit\nLOCAL_ONLY=1\n"
     );
   }
 
   fs.writeFileSync(
     path.join(root, ".env.example"),
-    "# Infra\nPOSTGRES_DB=koed\n\n# Local AI-client integration values.\nMEMORY_API_URL=http://localhost:3000\n"
+    "# Infra\nPOSTGRES_DB=koed\n\n# Local AI-client integration values.\nMEMORY_API_URL=http://localhost:3300\n"
   );
 
   const first = syncRootEnvExample(root).next;

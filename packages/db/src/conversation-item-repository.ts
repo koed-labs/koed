@@ -1,9 +1,11 @@
 import pg from "pg";
 import { createHash } from "node:crypto";
+import { upsertEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import {
   combineStorageSanitizationCounts,
   metadataWithStorageSanitization,
-  sanitizeForPostgresStorage
+  sanitizeForPostgresStorage,
+  type EnvelopeEncryptionProvider
 } from "@koed/shared";
 import type {
   ActorContext,
@@ -20,8 +22,13 @@ export interface ConversationItemRepository {
   ): Promise<ConversationItemRecord[]>;
 }
 
+export interface ConversationItemRepositoryOptions {
+  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+}
+
 type ConversationItemRow = {
   id: string;
+  owner_user_id: string | null;
   session_id: string | null;
   turn_id: string | null;
   source_kind: string;
@@ -37,6 +44,32 @@ type ConversationItemRow = {
   idempotency_key: string;
   created_at: Date;
 };
+
+const ENCRYPTED_CONVERSATION_ITEM_JSON = {
+  contentEncrypted: true,
+  encryptedSourceTable: "conversation_items"
+} as const;
+
+const ENCRYPTED_CONVERSATION_ITEM_TEXT = "[koed encrypted conversation item]";
+
+const deploymentProfile = (): string =>
+  process.env.KOED_DEPLOYMENT_PROFILE?.trim().toLowerCase() ?? "";
+
+const managedCloudPlaintextConversationItemsDisabled = (): boolean => {
+  const releaseStage =
+    process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE?.trim().toLowerCase() ?? "";
+  return (
+    ["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(
+      deploymentProfile()
+    ) && ["paid", "production"].includes(releaseStage)
+  );
+};
+
+const isPresent = (value: unknown): boolean =>
+  value !== null && value !== undefined;
+
+const rawJsonConflictPriority = (sourceRecordType: string): number =>
+  sourceRecordType === "hook_payload" ? 0 : 1;
 
 const sanitizeConversationItemForStorage = (
   item: ConversationItemInput
@@ -500,7 +533,8 @@ const ensureConversationItemTurn = async (
 };
 
 export const createConversationItemRepository = (
-  pool: pg.Pool
+  pool: pg.Pool,
+  options: ConversationItemRepositoryOptions = {}
 ): ConversationItemRepository => ({
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
@@ -510,6 +544,36 @@ export const createConversationItemRepository = (
       );
       const visibility = item.visibility ?? "personal";
       const ownerUserId = actor.userId;
+      const suppressPlaintextRaw =
+        managedCloudPlaintextConversationItemsDisabled();
+      if (suppressPlaintextRaw && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext conversation item storage is disabled"
+        );
+      }
+      const rawJsonForStorage = suppressPlaintextRaw
+        ? ENCRYPTED_CONVERSATION_ITEM_JSON
+        : item.rawJson;
+      const rawTextForStorage =
+        suppressPlaintextRaw && isPresent(item.rawText)
+          ? ENCRYPTED_CONVERSATION_ITEM_TEXT
+          : (item.rawText ?? null);
+      const transportChunkTextForStorage =
+        suppressPlaintextRaw && isPresent(item.transportChunkText)
+          ? ENCRYPTED_CONVERSATION_ITEM_TEXT
+          : (item.transportChunkText ?? null);
+      const metadataForStorage = suppressPlaintextRaw
+        ? {
+            ...(item.metadata ?? {}),
+            encryptedConversationItemColumns: [
+              "raw_json",
+              ...(isPresent(item.rawText) ? ["raw_text"] : []),
+              ...(isPresent(item.transportChunkText)
+                ? ["transport_chunk_text"]
+                : [])
+            ]
+          }
+        : (item.metadata ?? {});
       if (item.sessionId) {
         const visibleSession = await pool.query<{ id: string }>(
           `
@@ -533,240 +597,361 @@ export const createConversationItemRepository = (
         visibility,
         item
       });
-      const result = await pool.query<ConversationItemRow>(
-        `
-          insert into conversation_items (
-            owner_user_id,
-            visibility,
-            session_id,
-            turn_id,
-            source_kind,
-            source_adapter_version,
-            source_transport,
-            external_session_id,
-            external_thread_id,
-            external_turn_id,
-            external_item_id,
-            parent_external_item_id,
-            source_record_type,
-            source_event_type,
-            source_path,
-            source_line_number,
-            source_sequence,
-            event_time,
-            raw_json,
-            raw_text,
-            logical_source_id,
-            transport_chunk_index,
-            transport_chunk_count,
-            transport_chunk_text,
-            transport_chunk_encoding,
-            source_hash,
-            idempotency_key,
-            projection_status,
-            projection_version,
-            projection_error,
-            metadata
-          )
-          values (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9,
-            $10, $11, $12, $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-            $29, $30, $31
-          )
-          on conflict (owner_user_id, idempotency_key)
-            where visibility = 'personal'
-          do update set
-            session_id = coalesce(excluded.session_id, conversation_items.session_id),
-            turn_id = coalesce(excluded.turn_id, conversation_items.turn_id),
-            source_kind = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.source_kind
-              else conversation_items.source_kind
-            end,
-            source_adapter_version = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.source_adapter_version
-              else conversation_items.source_adapter_version
-            end,
-            source_transport = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.source_transport
-              else conversation_items.source_transport
-            end,
-            external_session_id = coalesce(
-              excluded.external_session_id,
-              conversation_items.external_session_id
-            ),
-            external_thread_id = coalesce(
-              excluded.external_thread_id,
-              conversation_items.external_thread_id
-            ),
-            external_turn_id = coalesce(
-              excluded.external_turn_id,
-              conversation_items.external_turn_id
-            ),
-            external_item_id = coalesce(
-              excluded.external_item_id,
-              conversation_items.external_item_id
-            ),
-            parent_external_item_id = coalesce(
-              excluded.parent_external_item_id,
-              conversation_items.parent_external_item_id
-            ),
-            source_record_type = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.source_record_type
-              else conversation_items.source_record_type
-            end,
-            source_event_type = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.source_event_type
-              else conversation_items.source_event_type
-            end,
-            source_path = coalesce(
-              excluded.source_path,
-              conversation_items.source_path
-            ),
-            source_line_number = coalesce(
-              excluded.source_line_number,
-              conversation_items.source_line_number
-            ),
-            source_sequence = coalesce(
-              excluded.source_sequence,
-              conversation_items.source_sequence
-            ),
-            event_time = coalesce(
-              excluded.event_time,
-              conversation_items.event_time
-            ),
-            raw_json = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.raw_json
-              else conversation_items.raw_json
-            end,
-            raw_text = coalesce(excluded.raw_text, conversation_items.raw_text),
-            logical_source_id = coalesce(
-              excluded.logical_source_id,
-              conversation_items.logical_source_id
-            ),
-            transport_chunk_index = case
-              when excluded.transport_chunk_count > conversation_items.transport_chunk_count
-              then excluded.transport_chunk_index
-              else conversation_items.transport_chunk_index
-            end,
-            transport_chunk_count = greatest(
-              conversation_items.transport_chunk_count,
-              excluded.transport_chunk_count
-            ),
-            transport_chunk_text = coalesce(
-              excluded.transport_chunk_text,
-              conversation_items.transport_chunk_text
-            ),
-            transport_chunk_encoding = coalesce(
-              excluded.transport_chunk_encoding,
-              conversation_items.transport_chunk_encoding
-            ),
-            projection_status = case
-              when conversation_items.projection_status = 'projected'
-                and excluded.metadata ? 'canonicalConversationItemKey'
-                and (
-                  case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-                ) >= (
-                  case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-                )
-              then 'pending'
-              else conversation_items.projection_status
-            end,
-            projection_version = case
-              when excluded.metadata ? 'canonicalConversationItemKey' and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-              ) then excluded.projection_version
-              else conversation_items.projection_version
-            end,
-            projection_error = null,
-            projected_at = case
-              when conversation_items.projection_status = 'projected'
-                and excluded.metadata ? 'canonicalConversationItemKey'
-                and (
-                  case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-                ) >= (
-                  case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-                )
-              then null
-              else conversation_items.projected_at
-            end,
-            metadata = conversation_items.metadata || excluded.metadata
-          returning
-            id, session_id, turn_id, source_kind, source_adapter_version,
-            source_transport, external_session_id, external_thread_id,
-            external_turn_id, external_item_id, source_record_type,
-            source_event_type, source_sequence, idempotency_key, created_at
-        `,
-        [
-          ownerUserId,
+      const upsertSql = `
+        insert into conversation_items (
+          owner_user_id,
           visibility,
-          item.sessionId ?? null,
-          turnId,
-          item.sourceKind,
-          item.sourceAdapterVersion,
-          item.sourceTransport,
-          item.externalSessionId ?? null,
-          item.externalThreadId ?? item.externalSessionId ?? null,
-          item.externalTurnId ?? null,
-          item.externalItemId ?? null,
-          item.parentExternalItemId ?? null,
-          item.sourceRecordType,
-          item.sourceEventType ?? null,
-          item.sourcePath ?? null,
-          item.sourceLineNumber ?? null,
-          item.sourceSequence ?? null,
-          item.eventTime ?? null,
-          JSON.stringify(item.rawJson),
-          item.rawText ?? null,
-          item.logicalSourceId ?? null,
-          item.transportChunkIndex ?? 0,
-          item.transportChunkCount ?? 1,
-          item.transportChunkText ?? null,
-          item.transportChunkEncoding ?? null,
-          item.sourceHash,
-          item.idempotencyKey,
-          item.projectionStatus ?? "pending",
-          item.projectionVersion ?? null,
-          item.projectionError ?? null,
-          item.metadata ?? {}
-        ]
-      );
+          session_id,
+          turn_id,
+          source_kind,
+          source_adapter_version,
+          source_transport,
+          external_session_id,
+          external_thread_id,
+          external_turn_id,
+          external_item_id,
+          parent_external_item_id,
+          source_record_type,
+          source_event_type,
+          source_path,
+          source_line_number,
+          source_sequence,
+          event_time,
+          raw_json,
+          raw_text,
+          logical_source_id,
+          transport_chunk_index,
+          transport_chunk_count,
+          transport_chunk_text,
+          transport_chunk_encoding,
+          source_hash,
+          idempotency_key,
+          projection_status,
+          projection_version,
+          projection_error,
+          metadata
+        )
+        values (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          $10, $11, $12, $13, $14, $15, $16, $17, $18,
+          $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+          $29, $30, $31
+        )
+        on conflict (owner_user_id, idempotency_key)
+          where visibility = 'personal'
+        do update set
+          session_id = coalesce(excluded.session_id, conversation_items.session_id),
+          turn_id = coalesce(excluded.turn_id, conversation_items.turn_id),
+          source_kind = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.source_kind
+            else conversation_items.source_kind
+          end,
+          source_adapter_version = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.source_adapter_version
+            else conversation_items.source_adapter_version
+          end,
+          source_transport = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.source_transport
+            else conversation_items.source_transport
+          end,
+          external_session_id = coalesce(
+            excluded.external_session_id,
+            conversation_items.external_session_id
+          ),
+          external_thread_id = coalesce(
+            excluded.external_thread_id,
+            conversation_items.external_thread_id
+          ),
+          external_turn_id = coalesce(
+            excluded.external_turn_id,
+            conversation_items.external_turn_id
+          ),
+          external_item_id = coalesce(
+            excluded.external_item_id,
+            conversation_items.external_item_id
+          ),
+          parent_external_item_id = coalesce(
+            excluded.parent_external_item_id,
+            conversation_items.parent_external_item_id
+          ),
+          source_record_type = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.source_record_type
+            else conversation_items.source_record_type
+          end,
+          source_event_type = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.source_event_type
+            else conversation_items.source_event_type
+          end,
+          source_path = coalesce(
+            excluded.source_path,
+            conversation_items.source_path
+          ),
+          source_line_number = coalesce(
+            excluded.source_line_number,
+            conversation_items.source_line_number
+          ),
+          source_sequence = coalesce(
+            excluded.source_sequence,
+            conversation_items.source_sequence
+          ),
+          event_time = coalesce(
+            excluded.event_time,
+            conversation_items.event_time
+          ),
+          raw_json = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.raw_json
+            else conversation_items.raw_json
+          end,
+          raw_text = coalesce(excluded.raw_text, conversation_items.raw_text),
+          logical_source_id = coalesce(
+            excluded.logical_source_id,
+            conversation_items.logical_source_id
+          ),
+          transport_chunk_index = case
+            when excluded.transport_chunk_count > conversation_items.transport_chunk_count
+            then excluded.transport_chunk_index
+            else conversation_items.transport_chunk_index
+          end,
+          transport_chunk_count = greatest(
+            conversation_items.transport_chunk_count,
+            excluded.transport_chunk_count
+          ),
+          transport_chunk_text = coalesce(
+            excluded.transport_chunk_text,
+            conversation_items.transport_chunk_text
+          ),
+          transport_chunk_encoding = coalesce(
+            excluded.transport_chunk_encoding,
+            conversation_items.transport_chunk_encoding
+          ),
+          projection_status = case
+            when conversation_items.projection_status = 'projected'
+              and excluded.metadata ? 'canonicalConversationItemKey'
+              and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              )
+            then 'pending'
+            else conversation_items.projection_status
+          end,
+          projection_version = case
+            when excluded.metadata ? 'canonicalConversationItemKey' and (
+              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+            ) >= (
+              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+            ) then excluded.projection_version
+            else conversation_items.projection_version
+          end,
+          projection_error = null,
+          projected_at = case
+            when conversation_items.projection_status = 'projected'
+              and excluded.metadata ? 'canonicalConversationItemKey'
+              and (
+                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
+              ) >= (
+                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+              )
+            then null
+            else conversation_items.projected_at
+          end,
+          metadata = conversation_items.metadata || excluded.metadata
+        returning
+          id, owner_user_id, session_id, turn_id, source_kind,
+          source_adapter_version, source_transport, external_session_id,
+          external_thread_id, external_turn_id, external_item_id,
+          source_record_type, source_event_type, source_sequence,
+          idempotency_key, created_at
+      `;
+      const upsertParams = [
+        ownerUserId,
+        visibility,
+        item.sessionId ?? null,
+        turnId,
+        item.sourceKind,
+        item.sourceAdapterVersion,
+        item.sourceTransport,
+        item.externalSessionId ?? null,
+        item.externalThreadId ?? item.externalSessionId ?? null,
+        item.externalTurnId ?? null,
+        item.externalItemId ?? null,
+        item.parentExternalItemId ?? null,
+        item.sourceRecordType,
+        item.sourceEventType ?? null,
+        item.sourcePath ?? null,
+        item.sourceLineNumber ?? null,
+        item.sourceSequence ?? null,
+        item.eventTime ?? null,
+        JSON.stringify(rawJsonForStorage),
+        rawTextForStorage,
+        item.logicalSourceId ?? null,
+        item.transportChunkIndex ?? 0,
+        item.transportChunkCount ?? 1,
+        transportChunkTextForStorage,
+        item.transportChunkEncoding ?? null,
+        item.sourceHash,
+        item.idempotencyKey,
+        item.projectionStatus ?? "pending",
+        item.projectionVersion ?? null,
+        item.projectionError ?? null,
+        metadataForStorage
+      ];
+      const upsertedRow = suppressPlaintextRaw
+        ? await (async (): Promise<ConversationItemRow | undefined> => {
+            const client = await pool.connect();
+            try {
+              await client.query("begin");
+              await client.query(
+                "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+                [
+                  `conversation_items:${ownerUserId ?? "anonymous"}:${visibility}:${item.idempotencyKey}`
+                ]
+              );
+              const existing = await client.query<{
+                source_record_type: string;
+              }>(
+                `
+	                  select source_record_type
+	                  from conversation_items
+	                  where owner_user_id = $1
+	                    and idempotency_key = $2
+	                    and visibility = $3::visibility_scope
+	                  for update
+	                `,
+                [ownerUserId, item.idempotencyKey, visibility]
+              );
+              const existingSourceRecordType =
+                existing.rows[0]?.source_record_type;
+              const incomingHasCanonicalIdentity =
+                Object.prototype.hasOwnProperty.call(
+                  metadataForStorage,
+                  "canonicalConversationItemKey"
+                );
+              const shouldWriteRawJson =
+                !existingSourceRecordType ||
+                (incomingHasCanonicalIdentity &&
+                  rawJsonConflictPriority(item.sourceRecordType) >=
+                    rawJsonConflictPriority(existingSourceRecordType));
+              const result = await client.query<ConversationItemRow>(
+                upsertSql,
+                upsertParams
+              );
+              const row = result.rows[0];
+              if (row && shouldWriteRawJson) {
+                await upsertEncryptedFieldPayloadWithClient(
+                  client,
+                  { userId: ownerUserId },
+                  options.envelopeEncryptionProvider!,
+                  {
+                    sourceTable: "conversation_items",
+                    sourceId: row.id,
+                    sourceColumn: "raw_json",
+                    plaintext: item.rawJson,
+                    rowFamily: "conversation_item",
+                    scope: {
+                      tenantId: ownerUserId,
+                      workspaceId: item.sessionId ?? null,
+                      objectClass: "conversation_item"
+                    },
+                    aad: {
+                      sourceRecordType: item.sourceRecordType,
+                      sourceEventType: item.sourceEventType ?? null
+                    }
+                  }
+                );
+              }
+              if (row && isPresent(item.rawText)) {
+                await upsertEncryptedFieldPayloadWithClient(
+                  client,
+                  { userId: ownerUserId },
+                  options.envelopeEncryptionProvider!,
+                  {
+                    sourceTable: "conversation_items",
+                    sourceId: row.id,
+                    sourceColumn: "raw_text",
+                    plaintext: item.rawText,
+                    rowFamily: "conversation_item",
+                    scope: {
+                      tenantId: ownerUserId,
+                      workspaceId: item.sessionId ?? null,
+                      objectClass: "conversation_item"
+                    },
+                    aad: {
+                      sourceRecordType: item.sourceRecordType,
+                      sourceEventType: item.sourceEventType ?? null
+                    }
+                  }
+                );
+              }
+              if (row && isPresent(item.transportChunkText)) {
+                await upsertEncryptedFieldPayloadWithClient(
+                  client,
+                  { userId: ownerUserId },
+                  options.envelopeEncryptionProvider!,
+                  {
+                    sourceTable: "conversation_items",
+                    sourceId: row.id,
+                    sourceColumn: "transport_chunk_text",
+                    plaintext: item.transportChunkText,
+                    rowFamily: "conversation_item",
+                    scope: {
+                      tenantId: ownerUserId,
+                      workspaceId: item.sessionId ?? null,
+                      objectClass: "conversation_item"
+                    },
+                    aad: {
+                      sourceRecordType: item.sourceRecordType,
+                      sourceEventType: item.sourceEventType ?? null
+                    }
+                  }
+                );
+              }
+              await client.query("commit");
+              return row;
+            } catch (error) {
+              await client.query("rollback");
+              throw error;
+            } finally {
+              client.release();
+            }
+          })()
+        : (await pool.query<ConversationItemRow>(upsertSql, upsertParams))
+            .rows[0];
       const row =
-        result.rows[0] ??
+        upsertedRow ??
         (
           await pool.query<ConversationItemRow>(
             `
               select
-                id, session_id, turn_id, source_kind, source_adapter_version,
-                source_transport, external_session_id, external_thread_id,
-                external_turn_id, external_item_id, source_record_type,
-                source_event_type, source_sequence, idempotency_key, created_at
+                id, owner_user_id, session_id, turn_id, source_kind,
+                source_adapter_version, source_transport, external_session_id,
+                external_thread_id, external_turn_id, external_item_id,
+                source_record_type, source_event_type, source_sequence,
+                idempotency_key, created_at
               from conversation_items
               where idempotency_key = $1
                 and visibility = $2::visibility_scope

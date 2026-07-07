@@ -1,4 +1,9 @@
-import { randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  randomUUID
+} from "node:crypto";
 import {
   afterAll,
   afterEach,
@@ -11,11 +16,22 @@ import {
 import type pg from "pg";
 import { createMemoryEngine, estimateTokens } from "@koed/core";
 import {
+  createLocalWorkQueueRepository,
+  createEncryptedPayloadRepository,
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations,
   type MemorySourceRepository
 } from "../src/index.js";
+import {
+  createEncryptedJsonPackage,
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  createManagedKmsEnvelopeEncryptionProvider,
+  decryptEnvelopeToUtf8,
+  type EncryptedPayloadEnvelope,
+  type EnvelopeEncryptionProvider,
+  type ManagedKmsKeyring
+} from "@koed/shared";
 
 const databaseUrl = process.env.DATABASE_URL;
 const runDbTests = Boolean(databaseUrl);
@@ -35,6 +51,11 @@ const originalEmbeddingQueryInstruction =
   process.env.EMBEDDING_QUERY_INSTRUCTION;
 const originalSemanticMemoryRebuildDebounceMs =
   process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS;
+const originalKoedDeploymentProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+const originalKoedManagedCloudReleaseStage =
+  process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE;
+const originalPlaintextLexicalSearchEnabled =
+  process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
 
 const describeDb = runDbTests ? describe : describe.skip;
 
@@ -118,6 +139,92 @@ describeDb("memory repository visibility", () => {
       });
   };
 
+  const withPaidManagedCloudProfile = async <T>(
+    callback: () => Promise<T>
+  ): Promise<T> => {
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    const previousReleaseStage = process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE;
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE = "paid";
+    try {
+      return await callback();
+    } finally {
+      if (previousProfile === undefined) {
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      } else {
+        process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+      }
+      if (previousReleaseStage === undefined) {
+        delete process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE;
+      } else {
+        process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE = previousReleaseStage;
+      }
+    }
+  };
+
+  const createManagedTestKeyring = ({
+    currentVersion,
+    keys,
+    fail = false
+  }: {
+    currentVersion: number;
+    keys: Record<number, Buffer>;
+    fail?: boolean;
+  }): ManagedKmsKeyring => ({
+    keyId: "managed-kms:fixture-tenant-key",
+    keyVersion: currentVersion,
+    wrapDek(input) {
+      if (fail) {
+        throw new Error("kms unavailable");
+      }
+      const key = keys[input.keyVersion];
+      if (!key) {
+        throw new Error("unknown kms key version");
+      }
+      const nonce = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", key, nonce);
+      cipher.setAAD(input.aad);
+      const ciphertext = Buffer.concat([
+        cipher.update(input.dek),
+        cipher.final()
+      ]);
+      const tag = cipher.getAuthTag();
+      return {
+        ciphertext: ciphertext.toString("base64"),
+        nonce: nonce.toString("base64"),
+        tag: tag.toString("base64")
+      };
+    },
+    unwrapDek(input) {
+      if (fail) {
+        throw new Error("kms unavailable");
+      }
+      const key = keys[input.keyVersion];
+      if (!key) {
+        throw new Error("unknown kms key version");
+      }
+      const decipher = createDecipheriv(
+        "aes-256-gcm",
+        key,
+        Buffer.from(input.wrappedDek.nonce, "base64")
+      );
+      decipher.setAAD(input.aad);
+      decipher.setAuthTag(Buffer.from(input.wrappedDek.tag, "base64"));
+      return Buffer.concat([
+        decipher.update(Buffer.from(input.wrappedDek.ciphertext, "base64")),
+        decipher.final()
+      ]);
+    },
+    status() {
+      return {
+        mode: "managed_kms",
+        keyId: "managed-kms:fixture-tenant-key",
+        keyVersion: currentVersion,
+        status: fail ? "degraded" : "available"
+      };
+    }
+  });
+
   beforeAll(async () => {
     process.env.MEMORY_LCM_LEAF_EVENT_THRESHOLD = "5";
     process.env.MEMORY_LCM_LEAF_TOKEN_THRESHOLD = "6000";
@@ -134,12 +241,26 @@ describeDb("memory repository visibility", () => {
       `
         truncate table
           audit_events,
+          encrypted_field_backfill_runs,
+          encrypted_field_payloads,
+          local_work_queue,
+          sync_inbox_entries,
+          sync_outbox_entries,
+          sync_package_chunks,
+          sync_package_upload_sessions,
+          cross_identity_sync_relationships,
+          memory_replicas,
+          logical_memories,
+          deployment_identities,
+          team_billing_seat_states,
           team_session_share_grants,
           team_workspace_access_grants,
           team_invites,
           team_workspaces,
+          external_auth_organizations,
           team_memberships,
           teams,
+          external_auth_identities,
           api_tokens,
           memory_questions,
           memory_embeddings_3072,
@@ -236,6 +357,23 @@ describeDb("memory repository visibility", () => {
       process.env.SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS =
         originalSemanticMemoryRebuildDebounceMs;
     }
+    if (originalKoedDeploymentProfile === undefined) {
+      delete process.env.KOED_DEPLOYMENT_PROFILE;
+    } else {
+      process.env.KOED_DEPLOYMENT_PROFILE = originalKoedDeploymentProfile;
+    }
+    if (originalKoedManagedCloudReleaseStage === undefined) {
+      delete process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE;
+    } else {
+      process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE =
+        originalKoedManagedCloudReleaseStage;
+    }
+    if (originalPlaintextLexicalSearchEnabled === undefined) {
+      delete process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
+    } else {
+      process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED =
+        originalPlaintextLexicalSearchEnabled;
+    }
     await pool?.end();
   });
 
@@ -292,6 +430,1945 @@ describeDb("memory repository visibility", () => {
     expect(await repo.getApiTokenUser(tokenHash)).toBeNull();
   });
 
+  it("stores encrypted field payloads and authorizes before decrypting", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 7).toString("base64")
+    );
+    const decrypt = vi.fn(provider.decrypt.bind(provider));
+    const instrumentedProvider = {
+      mode: provider.mode,
+      keyId: provider.keyId,
+      keyVersion: provider.keyVersion,
+      encrypt: provider.encrypt.bind(provider),
+      decrypt
+    };
+    const owner = await repo.createUser({
+      email: `encrypted-owner-${randomUUID()}@example.com`
+    });
+    const other = await repo.createUser({
+      email: `encrypted-other-${randomUUID()}@example.com`
+    });
+    const sourceId = randomUUID();
+    const plaintext = {
+      content: "commercial memory plaintext must not sit in the encrypted row",
+      evidence: [{ source: "test", quote: "sensitive evidence" }]
+    };
+
+    const stored = await encryptedRepo.upsertEncryptedField(
+      { userId: owner.id },
+      instrumentedProvider,
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload",
+        plaintext,
+        scope: {
+          tenantId: owner.id,
+          objectClass: "memory_event"
+        },
+        rowFamily: "memory_event"
+      }
+    );
+
+    expect(stored.ownerUserId).toBe(owner.id);
+    expect(stored.envelope.providerMode).toBe("local_test_key");
+    expect(stored.envelope.provenance).toMatchObject({
+      rowFamily: "memory_event",
+      sourceTable: "memory_events",
+      sourceColumn: "payload",
+      sourceId
+    });
+    expect(JSON.stringify(stored.envelope)).not.toContain(
+      "commercial memory plaintext"
+    );
+    expect(JSON.stringify(stored.envelope)).not.toContain("sensitive evidence");
+
+    const raw = await pool.query(
+      `
+        select ciphertext, nonce, tag, wrapped_dek, provenance
+        from encrypted_field_payloads
+        where id = $1
+      `,
+      [stored.id]
+    );
+    expect(JSON.stringify(raw.rows[0])).not.toContain(
+      "commercial memory plaintext"
+    );
+    expect(JSON.stringify(raw.rows[0])).not.toContain("sensitive evidence");
+
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: other.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toBeNull();
+    expect(decrypt).not.toHaveBeenCalled();
+
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: owner.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toMatchObject({
+      plaintext
+    });
+    expect(decrypt).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores Team-scoped encrypted field metadata without granting generic personal decrypt", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 17).toString("base64")
+    );
+    const decrypt = vi.fn(provider.decrypt.bind(provider));
+    const instrumentedProvider = {
+      mode: provider.mode,
+      keyId: provider.keyId,
+      keyVersion: provider.keyVersion,
+      encrypt: provider.encrypt.bind(provider),
+      decrypt
+    };
+    const owner = await repo.createUser({
+      email: `encrypted-team-owner-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Encrypted Team Scope" }
+    );
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Encrypted Workspace Scope" }
+    );
+    const sourceId = randomUUID();
+    const plaintext = {
+      content: "team encrypted field plaintext",
+      source: "fixture"
+    };
+
+    const stored = await encryptedRepo.upsertEncryptedField(
+      { userId: owner.id },
+      instrumentedProvider,
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload",
+        plaintext,
+        visibility: "team",
+        teamId: team.id,
+        teamWorkspaceId: workspace!.id,
+        scope: {
+          tenantId: team.id,
+          objectClass: "memory_event",
+          teamId: team.id,
+          workspaceId: workspace!.id
+        },
+        rowFamily: "team_memory_event"
+      }
+    );
+
+    expect(stored).toMatchObject({
+      ownerUserId: owner.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id,
+      visibility: "personal",
+      encryptionScope: "team"
+    });
+    expect(stored.envelope.aad).toMatchObject({
+      ownerUserId: owner.id,
+      visibility: "personal",
+      encryptionScope: "team",
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id,
+      sourceTable: "memory_events",
+      sourceId,
+      sourceColumn: "payload"
+    });
+    const raw = await pool.query(
+      `
+        select owner_user_id, team_id, team_workspace_id, visibility, encryption_scope, aad
+        from encrypted_field_payloads
+        where id = $1
+      `,
+      [stored.id]
+    );
+    expect(raw.rows[0]).toMatchObject({
+      owner_user_id: owner.id,
+      team_id: team.id,
+      team_workspace_id: workspace!.id,
+      visibility: "personal",
+      encryption_scope: "team"
+    });
+    expect(JSON.stringify(raw.rows[0])).not.toContain(
+      "team encrypted field plaintext"
+    );
+
+    await expect(
+      encryptedRepo.upsertEncryptedField(
+        { userId: owner.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId: randomUUID(),
+          sourceColumn: "payload",
+          plaintext,
+          visibility: "team"
+        }
+      )
+    ).rejects.toThrow("Team encrypted fields require teamId");
+
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: owner.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toBeNull();
+    expect(decrypt).not.toHaveBeenCalled();
+  });
+
+  it("tracks encrypted field backfill progress for resumable commercial migrations", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const owner = await repo.createUser({
+      email: `encrypted-backfill-${randomUUID()}@example.com`
+    });
+
+    const run = await encryptedRepo.createEncryptedFieldBackfillRun(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_questions",
+        sourceColumn: "evidence",
+        providerMode: "local_test_key",
+        totalRows: 12
+      }
+    );
+
+    expect(run).toMatchObject({
+      ownerUserId: owner.id,
+      sourceTable: "memory_questions",
+      sourceColumn: "evidence",
+      status: "pending",
+      totalRows: 12,
+      processedRows: 0,
+      encryptedRows: 0,
+      failedRows: 0
+    });
+
+    const cursorSourceId = randomUUID();
+    const updated = await encryptedRepo.updateEncryptedFieldBackfillRun(
+      { userId: owner.id },
+      run.id,
+      {
+        status: "processing",
+        cursorSourceId,
+        processedRows: 8,
+        encryptedRows: 7,
+        failedRows: 1,
+        lastErrorMessage: "one row had malformed historical JSON"
+      }
+    );
+
+    expect(updated).toMatchObject({
+      id: run.id,
+      status: "processing",
+      cursorSourceId,
+      processedRows: 8,
+      encryptedRows: 7,
+      failedRows: 1,
+      lastErrorMessage: "one row had malformed historical JSON"
+    });
+
+    const completed = await encryptedRepo.updateEncryptedFieldBackfillRun(
+      { userId: owner.id },
+      run.id,
+      {
+        status: "completed",
+        processedRows: 12,
+        encryptedRows: 11,
+        failedRows: 1
+      }
+    );
+    expect(completed).toMatchObject({
+      status: "completed",
+      processedRows: 12,
+      encryptedRows: 11,
+      failedRows: 1
+    });
+    expect(completed?.completedAt).not.toBeNull();
+  });
+
+  it("backfills Memory Event payload encryption idempotently and fails closed on provider errors", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 8).toString("base64")
+    );
+    const owner = await repo.createUser({
+      email: `encrypted-memory-event-${randomUUID()}@example.com`
+    });
+    const firstEvent = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        workspaceId: "encrypted-backfill",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        content: "First commercial Memory Event payload.",
+        captureMethod: "api",
+        idempotencyKey: `encrypted-backfill-${randomUUID()}`
+      }
+    );
+    await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        workspaceId: "encrypted-backfill",
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_message",
+        content: "Second commercial Memory Event payload.",
+        captureMethod: "api",
+        idempotencyKey: `encrypted-backfill-${randomUUID()}`
+      }
+    );
+
+    const run = await encryptedRepo.createEncryptedFieldBackfillRun(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        providerMode: "local_test_key",
+        totalRows: 2
+      }
+    );
+    const backfill = await encryptedRepo.backfillEncryptedFieldBatch(
+      { userId: owner.id },
+      provider,
+      {
+        runId: run.id,
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        batchSize: 10
+      }
+    );
+
+    expect(backfill).toMatchObject({
+      processedRows: 2,
+      encryptedRows: 2,
+      failedRows: 0,
+      done: true
+    });
+    expect(backfill.run.status).toBe("completed");
+
+    const rawEncryptedRows = await pool.query<{
+      count: number;
+      ciphertext: string | null;
+    }>(
+      `
+        select count(*)::int as count, string_agg(ciphertext, '') as ciphertext
+        from encrypted_field_payloads
+        where owner_user_id = $1
+          and source_table = 'memory_events'
+          and source_column = 'payload'
+          and invalidated_at is null
+      `,
+      [owner.id]
+    );
+    expect(rawEncryptedRows.rows[0]).toMatchObject({ count: 2 });
+    expect(rawEncryptedRows.rows[0]!.ciphertext).not.toContain(
+      "commercial Memory Event payload"
+    );
+
+    const redactedSources = await pool.query<{ payload_text: string }>(
+      `
+        select payload::text as payload_text
+        from memory_events
+        where owner_user_id = $1
+        order by id::text asc
+      `,
+      [owner.id]
+    );
+    expect(redactedSources.rows).toHaveLength(2);
+    expect(
+      redactedSources.rows.map((row) => row.payload_text).join(" ")
+    ).not.toContain("commercial Memory Event payload");
+    expect(redactedSources.rows[0]?.payload_text).toContain("contentEncrypted");
+    expect(redactedSources.rows[0]?.payload_text).toContain("memory_events");
+
+    const decrypted = await encryptedRepo.decryptAuthorizedEncryptedField(
+      { userId: owner.id },
+      provider,
+      {
+        sourceTable: "memory_events",
+        sourceId: firstEvent.id,
+        sourceColumn: "payload"
+      }
+    );
+    expect(decrypted?.plaintext).toMatchObject({
+      content: "First commercial Memory Event payload.",
+      workspaceId: "encrypted-backfill"
+    });
+
+    await expect(
+      encryptedRepo.backfillEncryptedFieldBatch(
+        { userId: owner.id },
+        provider,
+        {
+          runId: run.id,
+          sourceTable: "memory_events",
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toMatchObject({
+      processedRows: 0,
+      encryptedRows: 0,
+      failedRows: 0,
+      done: true
+    });
+
+    const mismatchRun = await encryptedRepo.createEncryptedFieldBackfillRun(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        providerMode: "local_test_key"
+      }
+    );
+    const mismatchedProvider = {
+      ...provider,
+      mode: "managed_kms"
+    } satisfies EnvelopeEncryptionProvider;
+
+    await expect(
+      encryptedRepo.backfillEncryptedFieldBatch(
+        { userId: owner.id },
+        mismatchedProvider,
+        {
+          runId: mismatchRun.id,
+          sourceTable: "memory_events",
+          sourceColumn: "payload"
+        }
+      )
+    ).rejects.toThrow("Backfill provider mismatch");
+
+    const failedRun = await pool.query(
+      `
+        select status, last_error_message
+        from encrypted_field_backfill_runs
+        where id = $1
+      `,
+      [mismatchRun.id]
+    );
+    expect(failedRun.rows[0]).toMatchObject({
+      status: "error",
+      last_error_message:
+        "Backfill provider mismatch: expected local_test_key, received managed_kms"
+    });
+
+    const failureOwner = await repo.createUser({
+      email: `encrypted-memory-event-failure-${randomUUID()}@example.com`
+    });
+    await repo.createMemoryEvent(
+      { userId: failureOwner.id },
+      {
+        visibility: "personal",
+        workspaceId: "encrypted-backfill-failure",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        content: "First provider failure Memory Event payload.",
+        captureMethod: "api",
+        idempotencyKey: `encrypted-backfill-failure-${randomUUID()}`
+      }
+    );
+    await repo.createMemoryEvent(
+      { userId: failureOwner.id },
+      {
+        visibility: "personal",
+        workspaceId: "encrypted-backfill-failure",
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_message",
+        content: "Second provider failure Memory Event payload.",
+        captureMethod: "api",
+        idempotencyKey: `encrypted-backfill-failure-${randomUUID()}`
+      }
+    );
+    const providerErrorRun =
+      await encryptedRepo.createEncryptedFieldBackfillRun(
+        { userId: failureOwner.id },
+        {
+          sourceTable: "memory_events",
+          sourceColumn: "payload",
+          providerMode: "local_test_key"
+        }
+      );
+    const failingProvider = {
+      ...provider,
+      encrypt() {
+        throw new Error("simulated KMS encrypt failure");
+      }
+    } satisfies EnvelopeEncryptionProvider;
+
+    await expect(
+      encryptedRepo.backfillEncryptedFieldBatch(
+        { userId: failureOwner.id },
+        failingProvider,
+        {
+          runId: providerErrorRun.id,
+          sourceTable: "memory_events",
+          sourceColumn: "payload"
+        }
+      )
+    ).rejects.toThrow("simulated KMS encrypt failure");
+
+    const providerFailure = await pool.query(
+      `
+        select status, cursor_source_id, processed_rows, encrypted_rows, failed_rows, last_error_message
+        from encrypted_field_backfill_runs
+        where id = $1
+      `,
+      [providerErrorRun.id]
+    );
+    expect(providerFailure.rows[0]).toMatchObject({
+      status: "error",
+      cursor_source_id: null,
+      processed_rows: 1,
+      encrypted_rows: 0,
+      failed_rows: 1,
+      last_error_message: "simulated KMS encrypt failure"
+    });
+
+    const failedSourceStillPlaintext = await pool.query<{
+      payload_text: string;
+    }>(
+      `
+        select string_agg(payload::text, ' ') as payload_text
+        from memory_events
+        where owner_user_id = $1
+      `,
+      [failureOwner.id]
+    );
+    expect(failedSourceStillPlaintext.rows[0]?.payload_text).toContain(
+      "provider failure Memory Event payload"
+    );
+
+    const retried = await encryptedRepo.backfillEncryptedFieldBatch(
+      { userId: failureOwner.id },
+      provider,
+      {
+        runId: providerErrorRun.id,
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        batchSize: 10
+      }
+    );
+    expect(retried).toMatchObject({
+      processedRows: 2,
+      encryptedRows: 2,
+      failedRows: 0,
+      done: true
+    });
+    const retriedSourceRedacted = await pool.query<{ payload_text: string }>(
+      `
+        select string_agg(payload::text, ' ') as payload_text
+        from memory_events
+        where owner_user_id = $1
+      `,
+      [failureOwner.id]
+    );
+    expect(retriedSourceRedacted.rows[0]?.payload_text).not.toContain(
+      "provider failure Memory Event payload"
+    );
+    expect(retriedSourceRedacted.rows[0]?.payload_text).toContain(
+      "contentEncrypted"
+    );
+  });
+
+  it("rewraps encrypted field DEKs for managed KMS key rotation", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const owner = await repo.createUser({
+      email: `encrypted-rewrap-${randomUUID()}@example.com`
+    });
+    const sourceId = randomUUID();
+    const keyV1 = randomBytes(32);
+    const keyV2 = randomBytes(32);
+    const originalProvider = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 1,
+        keys: { 1: keyV1, 2: keyV2 }
+      })
+    );
+    const rotatedProvider = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 2,
+        keys: { 1: keyV1, 2: keyV2 }
+      })
+    );
+
+    const stored = await encryptedRepo.upsertEncryptedField(
+      { userId: owner.id },
+      originalProvider,
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload",
+        plaintext: {
+          content: "managed KMS rotated memory payload",
+          workspaceId: "encrypted-rewrap"
+        },
+        scope: {
+          tenantId: owner.id,
+          objectClass: "memory_event"
+        }
+      }
+    );
+    expect(stored.envelope).toMatchObject({
+      providerMode: "managed_kms",
+      keyVersion: 1
+    });
+
+    const rewrap = await encryptedRepo.rewrapEncryptedFieldBatch(
+      rotatedProvider,
+      {
+        ownerUserId: owner.id,
+        sourceTable: "memory_events",
+        sourceColumn: "payload",
+        batchSize: 10
+      }
+    );
+    expect(rewrap).toEqual({
+      processedRows: 1,
+      rewrappedRows: 1,
+      failedRows: 0,
+      done: true
+    });
+
+    const rotated = await encryptedRepo.getAuthorizedEncryptedField(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload"
+      }
+    );
+    expect(rotated?.envelope.keyVersion).toBe(2);
+    expect(rotated?.envelope.wrappedDek.version).toBe(2);
+    expect(rotated?.envelope.reencryptedAt).not.toBeNull();
+    await expect(
+      decryptEnvelopeToUtf8(rotatedProvider, rotated!.envelope)
+    ).resolves.toContain("managed KMS rotated memory payload");
+
+    const failingProvider = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 3,
+        keys: { 1: keyV1, 2: keyV2, 3: randomBytes(32) },
+        fail: true
+      })
+    );
+    await expect(
+      encryptedRepo.rewrapEncryptedFieldBatch(failingProvider, {
+        ownerUserId: owner.id,
+        force: true
+      })
+    ).rejects.toThrow(
+      "Encrypted field rewrap failed after 0 successful row(s)"
+    );
+
+    const afterFailure = await encryptedRepo.getAuthorizedEncryptedField(
+      { userId: owner.id },
+      {
+        sourceTable: "memory_events",
+        sourceId,
+        sourceColumn: "payload"
+      }
+    );
+    expect(afterFailure?.envelope.keyVersion).toBe(2);
+  });
+
+  it("writes encrypted Memory Event payload companions when the repository has an envelope provider", async () => {
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 9).toString("base64")
+    );
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `encrypted-projection-${randomUUID()}@example.com`
+    });
+
+    const event = await encryptedRepo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        workspaceId: "encrypted-projection",
+        actor: "assistant",
+        eventType: "captured",
+        rawEventType: "agent_message",
+        content: "Projection-created Memory Event should have ciphertext.",
+        captureMethod: "api",
+        idempotencyKey: `encrypted-projection-${randomUUID()}`
+      }
+    );
+
+    const encryptedRow = await pool.query(
+      `
+        select ciphertext, provenance
+        from encrypted_field_payloads
+        where owner_user_id = $1
+          and source_table = 'memory_events'
+          and source_id = $2
+          and source_column = 'payload'
+          and invalidated_at is null
+      `,
+      [owner.id, event.id]
+    );
+    expect(encryptedRow.rowCount).toBe(1);
+    expect(JSON.stringify(encryptedRow.rows[0])).not.toContain(
+      "Projection-created Memory Event"
+    );
+
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: owner.id },
+        provider,
+        {
+          sourceTable: "memory_events",
+          sourceId: event.id,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toMatchObject({
+      plaintext: {
+        content: "Projection-created Memory Event should have ciphertext.",
+        workspaceId: "encrypted-projection"
+      }
+    });
+  });
+
+  it("fails closed before storing paid managed-cloud Memory Events without an envelope provider", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const owner = await repo.createUser({
+        email: `managed-cloud-no-provider-${randomUUID()}@example.com`
+      });
+      const sentinel =
+        "Managed cloud missing provider sentinel must never be stored.";
+      const idempotencyKey = `managed-cloud-no-provider-${randomUUID()}`;
+
+      await expect(
+        repo.createMemoryEvent(
+          { userId: owner.id },
+          {
+            visibility: "personal",
+            workspaceId: "managed-cloud-no-provider",
+            actor: "assistant",
+            eventType: "captured",
+            rawEventType: "agent_turn",
+            content: sentinel,
+            captureMethod: "api",
+            idempotencyKey
+          }
+        )
+      ).rejects.toThrow(
+        "Envelope encryption provider is required when plaintext Memory Event payload storage is disabled"
+      );
+
+      const stored = await pool.query<{ count: number; payloads: string }>(
+        `
+          select
+            count(*)::int as count,
+            coalesce(string_agg(payload::text, ' '), '') as payloads
+          from memory_events
+          where owner_user_id = $1 or idempotency_key = $2
+        `,
+        [owner.id, idempotencyKey]
+      );
+      expect(stored.rows[0]).toMatchObject({ count: 0, payloads: "" });
+    });
+  });
+
+  it("stores paid managed-cloud Memory Event content only in encrypted companions and hydrates authorized reads", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 11).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-encrypted-event-${randomUUID()}@example.com`
+      });
+      const sentinel =
+        "Paid managed cloud encrypted Memory Event sentinel 1a8e87.";
+
+      const event = await encryptedRepo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          workspaceId: "managed-cloud-encrypted-event",
+          actor: "assistant",
+          eventType: "captured",
+          rawEventType: "agent_turn",
+          content: sentinel,
+          captureMethod: "api",
+          idempotencyKey: `managed-cloud-encrypted-event-${randomUUID()}`
+        }
+      );
+
+      const storedEvent = await pool.query<{
+        payload: { content?: string; contentEncrypted?: boolean };
+        payload_text: string;
+      }>(
+        `
+          select payload, payload::text as payload_text
+          from memory_events
+          where id = $1
+        `,
+        [event.id]
+      );
+      expect(storedEvent.rows[0]?.payload).toMatchObject({
+        contentEncrypted: true
+      });
+      expect(storedEvent.rows[0]?.payload.content).toBeUndefined();
+      expect(storedEvent.rows[0]?.payload_text).not.toContain(sentinel);
+
+      const encryptedRow = await pool.query<{ ciphertext: string }>(
+        `
+          select ciphertext
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'memory_events'
+            and source_id = $2
+            and source_column = 'payload'
+            and invalidated_at is null
+        `,
+        [owner.id, event.id]
+      );
+      expect(encryptedRow.rowCount).toBe(1);
+      expect(JSON.stringify(encryptedRow.rows[0])).not.toContain(sentinel);
+
+      await expect(
+        encryptedRepo.decryptAuthorizedEncryptedField(
+          { userId: owner.id },
+          provider,
+          {
+            sourceTable: "memory_events",
+            sourceId: event.id,
+            sourceColumn: "payload"
+          }
+        )
+      ).resolves.toMatchObject({
+        plaintext: {
+          content: sentinel,
+          workspaceId: "managed-cloud-encrypted-event"
+        }
+      });
+
+      const graphEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: owner.id },
+        { includeContent: true, limit: 10 }
+      );
+      expect(graphEvents.find((item) => item.id === event.id)?.content).toBe(
+        sentinel
+      );
+
+      const embeddable = await encryptedRepo.getEmbeddableSource(
+        "memory_event",
+        event.id
+      );
+      expect(embeddable).toMatchObject({
+        sourceType: "memory_event",
+        sourceId: event.id,
+        text: sentinel
+      });
+      expect(embeddable?.sourceHash).toBeDefined();
+    });
+  });
+
+  it("stores paid managed-cloud LCM leaf node content only in encrypted companions and hydrates authorized reads", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 12).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-encrypted-lcm-${randomUUID()}@example.com`
+      });
+      const workspaceId = "managed-cloud-encrypted-lcm";
+      const sentinel = "Managed cloud encrypted LCM source sentinel c2d19f";
+
+      for (let index = 1; index <= 5; index += 1) {
+        await encryptedRepo.createMemoryEvent(
+          { userId: owner.id },
+          {
+            visibility: "personal",
+            workspaceId,
+            actor: "user",
+            eventType: "captured",
+            rawEventType: "user_prompt",
+            content: `${sentinel} item ${index}`,
+            captureMethod: "api",
+            idempotencyKey: `managed-cloud-encrypted-lcm-${index}-${randomUUID()}`
+          }
+        );
+      }
+
+      const storedPayloads = await pool.query<{ payloads: string }>(
+        `
+          select string_agg(payload::text, ' ') as payloads
+          from memory_events
+          where owner_user_id = $1
+        `,
+        [owner.id]
+      );
+      expect(storedPayloads.rows[0]?.payloads).not.toContain(sentinel);
+
+      const compacted = await encryptedRepo.createLcmNodes(
+        { userId: owner.id },
+        { visibility: "personal" }
+      );
+      expect(compacted.leafNodeIds).toHaveLength(1);
+
+      const node = await pool.query<{ source_items_json: unknown }>(
+        `
+          select summary_text, body_text, source_items_json::text as source_items_json
+          from memory_nodes
+          where id = $1
+        `,
+        [compacted.leafNodeIds[0]]
+      );
+      expect(JSON.stringify(node.rows[0])).toContain(
+        "[koed encrypted memory node]"
+      );
+      expect(JSON.stringify(node.rows[0])).not.toContain(`${sentinel} item 1`);
+      expect(JSON.stringify(node.rows[0])).not.toContain(`${sentinel} item 5`);
+
+      const encryptedRows = await pool.query<{
+        source_column: string;
+        ciphertext: string;
+      }>(
+        `
+          select source_column, ciphertext
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'memory_nodes'
+            and source_id = $2
+            and invalidated_at is null
+          order by source_column
+        `,
+        [owner.id, compacted.leafNodeIds[0]]
+      );
+      expect(encryptedRows.rows.map((row) => row.source_column)).toEqual([
+        "body_text",
+        "source_items_json",
+        "summary_text"
+      ]);
+      expect(JSON.stringify(encryptedRows.rows)).not.toContain(sentinel);
+
+      const decryptedSourceItems =
+        await encryptedRepo.decryptAuthorizedEncryptedField(
+          { userId: owner.id },
+          provider,
+          {
+            sourceTable: "memory_nodes",
+            sourceId: compacted.leafNodeIds[0]!,
+            sourceColumn: "source_items_json"
+          }
+        );
+      expect(JSON.stringify(decryptedSourceItems?.plaintext)).toContain(
+        `${sentinel} item 1`
+      );
+      expect(JSON.stringify(decryptedSourceItems?.plaintext)).toContain(
+        `${sentinel} item 5`
+      );
+
+      const graphNode = await encryptedRepo.getLcmGraphNode(
+        { userId: owner.id },
+        compacted.leafNodeIds[0]!
+      );
+      expect(graphNode?.summaryText).toContain(`${sentinel} item 1`);
+      expect(JSON.stringify(graphNode?.sourceItems)).toContain(
+        `${sentinel} item 5`
+      );
+
+      const summarizationNode = await encryptedRepo.getLcmNodeForSummarization(
+        compacted.leafNodeIds[0]!
+      );
+      expect(summarizationNode?.summaryText).toContain(`${sentinel} item 1`);
+      expect(JSON.stringify(summarizationNode?.sourceItems)).toContain(
+        `${sentinel} item 5`
+      );
+
+      const embeddable = await encryptedRepo.getEmbeddableSource(
+        "memory_node",
+        compacted.leafNodeIds[0]!
+      );
+      expect(embeddable?.text).toContain(`${sentinel} item 1`);
+      expect(embeddable?.text).toContain(`${sentinel} item 5`);
+    });
+  });
+
+  it("stores paid managed-cloud LCM summary updates only in encrypted companions and hydrates authorized reads", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 13).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-node-summary-${randomUUID()}@example.com`
+      });
+      const node = await encryptedRepo.createMemoryNode(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          summaryText: "Managed cloud pending summary sentinel 731f3c"
+        }
+      );
+      const structured = {
+        title: "Encrypted managed cloud node",
+        summary_text: "Managed cloud finished summary sentinel 731f3c",
+        facts: ["The LCM worker summary is encrypted at rest."]
+      };
+
+      await encryptedRepo.updateLcmNodeSummary({
+        nodeId: node.id,
+        summaryText: "Managed cloud finished summary sentinel 731f3c",
+        summaryModel: "codex:test",
+        summaryPromptVersion: "lcm-codex-summary-json-v2",
+        summaryTokenEstimate: 23,
+        summaryStructuredJson: structured,
+        summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+      });
+
+      const stored = await pool.query<{
+        summary_text: string;
+        body_text: string | null;
+        summary_structured_json: unknown;
+        row_text: string;
+      }>(
+        `
+          select summary_text, body_text, summary_structured_json, to_jsonb(memory_nodes)::text as row_text
+          from memory_nodes
+          where id = $1
+        `,
+        [node.id]
+      );
+      expect(stored.rows[0]?.summary_text).toBe("[koed encrypted memory node]");
+      expect(stored.rows[0]?.body_text).toBe("[koed encrypted memory node]");
+      expect(stored.rows[0]?.summary_structured_json).toMatchObject({
+        contentEncrypted: true,
+        encryptedSourceTable: "memory_nodes"
+      });
+      expect(stored.rows[0]?.row_text).not.toContain(
+        "Managed cloud finished summary sentinel"
+      );
+
+      const encryptedRows = await pool.query<{ source_column: string }>(
+        `
+          select source_column
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'memory_nodes'
+            and source_id = $2
+            and invalidated_at is null
+          order by source_column
+        `,
+        [owner.id, node.id]
+      );
+      expect(encryptedRows.rows.map((row) => row.source_column)).toContain(
+        "summary_structured_json"
+      );
+
+      const fetched = await encryptedRepo.getLcmNodeForSummarization(node.id);
+      const visible = await encryptedRepo.getVisibleLcmNodeForSummarization(
+        { userId: owner.id },
+        node.id
+      );
+      const graphNode = await encryptedRepo.getLcmGraphNode(
+        { userId: owner.id },
+        node.id
+      );
+      expect(fetched?.summaryText).toBe(
+        "Managed cloud finished summary sentinel 731f3c"
+      );
+      expect(fetched?.summaryStructuredJson).toEqual(structured);
+      expect(visible?.summaryStructuredJson).toEqual(structured);
+      expect(graphNode?.summaryText).toBe(
+        "Managed cloud finished summary sentinel 731f3c"
+      );
+      expect(graphNode?.summaryStructuredJson).toEqual(structured);
+    });
+  });
+
+  it("stores paid managed-cloud embedding source text only in encrypted companions and hydrates retrieval rows", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 14).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-embedding-source-${randomUUID()}@example.com`
+      });
+      const sentinel =
+        "Managed cloud encrypted embedding source sentinel 98b8b7";
+      const event = await encryptedRepo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          workspaceId: "managed-cloud-embedding-source",
+          actor: "assistant",
+          eventType: "captured",
+          rawEventType: "agent_turn",
+          content: sentinel,
+          captureMethod: "api",
+          idempotencyKey: `managed-cloud-embedding-source-${randomUUID()}`
+        }
+      );
+      const vector = Array.from({ length: 1024 }, (_, index) =>
+        index === 0 ? 1 : 0
+      );
+
+      await encryptedRepo.upsertSourceEmbedding({
+        source: {
+          sourceType: "memory_event",
+          sourceId: event.id,
+          ownerUserId: owner.id,
+          visibility: "personal",
+          text: sentinel,
+          sourceHash: `managed-cloud-embedding-source-${randomUUID()}`
+        },
+        model: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        dimensions: 1024,
+        version: process.env.EMBEDDING_MODEL ?? "qwen3-0.6b",
+        vector,
+        sourceText: sentinel
+      });
+
+      const storedEmbedding = await pool.query<{
+        id: string;
+        source_text: string;
+        queryable_vector_strategy: string;
+        search_boundary: string;
+        canonical_embedding_state: string;
+      }>(
+        `
+          select
+            id,
+            source_text,
+            queryable_vector_strategy,
+            search_boundary,
+            canonical_embedding_state
+          from memory_embeddings
+          where memory_event_id = $1
+        `,
+        [event.id]
+      );
+      expect(storedEmbedding.rows[0]?.source_text).toBe(
+        "[koed encrypted embedding source]"
+      );
+      expect(storedEmbedding.rows[0]).toMatchObject({
+        queryable_vector_strategy: "trusted_backend_pgvector_v1",
+        search_boundary: "owner_user_dynamic_grants",
+        canonical_embedding_state: "not_stored"
+      });
+
+      const encryptedRows = await pool.query<{ ciphertext: string }>(
+        `
+          select ciphertext
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'memory_embeddings'
+            and source_id = $2
+            and source_column = 'source_text'
+            and invalidated_at is null
+        `,
+        [owner.id, storedEmbedding.rows[0]!.id]
+      );
+      expect(encryptedRows.rowCount).toBe(1);
+      expect(JSON.stringify(encryptedRows.rows)).not.toContain(sentinel);
+
+      const fetchMock = mockEmbeddingQuery();
+      try {
+        const search = await encryptedRepo.searchMemoryNodes(
+          { userId: owner.id },
+          {
+            query: "managed cloud encrypted embedding source",
+            scope: "personal",
+            searchDomain: "global",
+            retrievalStage: "raw_fallback_search",
+            limit: 5
+          }
+        );
+        expect(search.results[0]?.summaryText).toContain(sentinel);
+      } finally {
+        fetchMock.mockRestore();
+      }
+    });
+  });
+
+  it("fails closed before storing paid managed-cloud raw conversation items without an envelope provider", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const owner = await repo.createUser({
+        email: `managed-cloud-raw-no-provider-${randomUUID()}@example.com`
+      });
+      const idempotencyKey = `managed-cloud-raw-no-provider-${randomUUID()}`;
+
+      await expect(
+        repo.createConversationItems(
+          { userId: owner.id },
+          {
+            items: [
+              {
+                sourceKind: "codex",
+                sourceAdapterVersion: "codex-transcript-v1",
+                sourceTransport: "hook",
+                sourceRecordType: "event_msg",
+                sourceEventType: "user_message",
+                rawJson: {
+                  type: "event_msg",
+                  payload: {
+                    type: "user_message",
+                    role: "user",
+                    content: "Raw provider missing sentinel."
+                  }
+                },
+                rawText: "Raw provider missing sentinel.",
+                sourceHash: `managed-cloud-raw-no-provider-${randomUUID()}`,
+                idempotencyKey,
+                metadata: { transcriptType: "user_message" }
+              }
+            ]
+          }
+        )
+      ).rejects.toThrow(
+        "Envelope encryption provider is required when plaintext conversation item storage is disabled"
+      );
+
+      const stored = await pool.query<{ count: number }>(
+        "select count(*)::int as count from conversation_items where owner_user_id = $1 or idempotency_key = $2",
+        [owner.id, idempotencyKey]
+      );
+      expect(stored.rows[0]?.count).toBe(0);
+    });
+  });
+
+  it("projects paid managed-cloud raw conversation items from encrypted companions", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 15).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-raw-project-${randomUUID()}@example.com`
+      });
+      const workspaceId = randomUUID();
+      await pool.query(
+        `
+          insert into workspaces (id, owner_user_id, visibility, name)
+          values ($1, $2, 'personal', 'Managed Cloud Raw Projection')
+        `,
+        [workspaceId, owner.id]
+      );
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          workspaceId,
+          externalSessionId: `managed-cloud-raw-project-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const sentinel =
+        "Paid managed cloud raw transcript projection sentinel 930f51.";
+      const [rawItem] = await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-raw-user-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "user_message",
+                  role: "user",
+                  content: sentinel
+                }
+              },
+              rawText: sentinel,
+              sourceHash: `managed-cloud-raw-project-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-raw-project-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: {
+                workspaceId,
+                transcriptType: "user_message"
+              }
+            }
+          ]
+        }
+      );
+
+      const storedRaw = await pool.query<{
+        raw_json_text: string;
+        raw_text: string | null;
+        metadata: Record<string, unknown>;
+      }>(
+        `
+          select raw_json::text as raw_json_text, raw_text, metadata
+          from conversation_items
+          where id = $1
+        `,
+        [rawItem!.id]
+      );
+      expect(storedRaw.rows[0]?.raw_json_text).not.toContain(sentinel);
+      expect(storedRaw.rows[0]?.raw_text).not.toContain(sentinel);
+      expect(storedRaw.rows[0]?.metadata).toMatchObject({
+        encryptedConversationItemColumns: ["raw_json", "raw_text"]
+      });
+
+      const encryptedFields = await pool.query<{
+        source_column: string;
+        ciphertext: string;
+      }>(
+        `
+          select source_column, ciphertext
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'conversation_items'
+            and source_id = $2
+            and invalidated_at is null
+          order by source_column asc
+        `,
+        [owner.id, rawItem!.id]
+      );
+      expect(encryptedFields.rows.map((row) => row.source_column)).toEqual([
+        "raw_json",
+        "raw_text"
+      ]);
+      expect(JSON.stringify(encryptedFields.rows)).not.toContain(sentinel);
+
+      const projection = await encryptedRepo.projectPendingConversationItems(
+        { userId: owner.id },
+        { limit: 10 }
+      );
+      expect(projection).toMatchObject({
+        messagesCreated: 1,
+        memoryEventsCreated: 1
+      });
+      const messages = await pool.query<{
+        id: string;
+        content: string;
+        content_json_text: string | null;
+      }>(
+        "select id, content, content_json::text as content_json_text from messages where session_id = $1",
+        [session.id]
+      );
+      expect(messages.rows.map((row) => row.content)).toEqual([
+        "[koed encrypted message]"
+      ]);
+      expect(JSON.stringify(messages.rows)).not.toContain(sentinel);
+      const encryptedMessageFields = await pool.query<{
+        source_column: string;
+      }>(
+        `
+	          select source_column
+	          from encrypted_field_payloads
+	          where owner_user_id = $1
+	            and source_table = 'messages'
+	            and source_id = $2
+	            and invalidated_at is null
+	          order by source_column asc
+	        `,
+        [owner.id, messages.rows[0]!.id]
+      );
+      expect(
+        encryptedMessageFields.rows.map((row) => row.source_column)
+      ).toEqual(["content", "content_json"]);
+      const graphEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: owner.id },
+        { includeContent: true, limit: 10 }
+      );
+      expect(graphEvents.map((event) => event.content)).toContain(sentinel);
+      const graphThreads = await encryptedRepo.listLcmGraphThreads({
+        userId: owner.id
+      });
+      expect(
+        graphThreads.flatMap((project) =>
+          project.threads.map((thread) => thread.sample)
+        )
+      ).toContain(sentinel);
+    });
+  });
+
+  it("keeps encrypted raw_json companions aligned with canonical duplicate winners", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 18).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-raw-canonical-${randomUUID()}@example.com`
+      });
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          externalSessionId: `managed-cloud-raw-canonical-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const transcriptSentinel =
+        "Paid managed cloud canonical transcript winner sentinel 5a7420.";
+      const lowerPrioritySentinel =
+        "Paid managed cloud lower priority hook duplicate sentinel 3ef915.";
+      const idempotencyKey = `managed-cloud-raw-canonical-${randomUUID()}`;
+      const [stored] = await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-raw-canonical-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "user_message",
+                  role: "user",
+                  content: transcriptSentinel
+                }
+              },
+              rawText: transcriptSentinel,
+              sourceHash: `managed-cloud-raw-canonical-transcript-${randomUUID()}`,
+              idempotencyKey,
+              projectionStatus: "pending",
+              metadata: { transcriptType: "user_message" }
+            }
+          ]
+        }
+      );
+
+      await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-raw-canonical-turn",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "Stop",
+              sourceSequence: 2,
+              eventTime: "2026-04-01T12:00:01.000Z",
+              rawJson: {
+                hook_event_name: "Stop",
+                message: lowerPrioritySentinel
+              },
+              sourceHash: `managed-cloud-raw-canonical-hook-${randomUUID()}`,
+              idempotencyKey,
+              metadata: {}
+            }
+          ]
+        }
+      );
+
+      const encrypted = await pool.query<{
+        envelope_version: number;
+        provider_mode: EncryptedPayloadEnvelope["providerMode"];
+        key_id: string;
+        key_version: number;
+        scope: EncryptedPayloadEnvelope["scope"];
+        provenance: EncryptedPayloadEnvelope["provenance"];
+        algorithm: EncryptedPayloadEnvelope["algorithm"];
+        ciphertext: string;
+        nonce: string;
+        tag: string;
+        wrapped_dek: EncryptedPayloadEnvelope["wrappedDek"];
+        ciphertext_location: EncryptedPayloadEnvelope["ciphertextLocation"];
+        aad: EncryptedPayloadEnvelope["aad"];
+        envelope_created_at: Date;
+        envelope_reencrypted_at: Date | null;
+      }>(
+        `
+          select
+            envelope_version,
+            provider_mode,
+            key_id,
+            key_version,
+            scope,
+            provenance,
+            algorithm,
+            ciphertext,
+            nonce,
+            tag,
+            wrapped_dek,
+            ciphertext_location,
+            aad,
+            envelope_created_at,
+            envelope_reencrypted_at
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'conversation_items'
+            and source_id = $2
+            and source_column = 'raw_json'
+            and invalidated_at is null
+        `,
+        [owner.id, stored!.id]
+      );
+      expect(encrypted.rows).toHaveLength(1);
+      const row = encrypted.rows[0]!;
+      const decrypted = await decryptEnvelopeToUtf8(provider, {
+        version: row.envelope_version as 1,
+        providerMode: row.provider_mode,
+        keyId: row.key_id,
+        keyVersion: row.key_version,
+        scope: row.scope,
+        provenance: row.provenance,
+        algorithm: row.algorithm,
+        ciphertext: row.ciphertext,
+        nonce: row.nonce,
+        tag: row.tag,
+        wrappedDek: row.wrapped_dek,
+        ciphertextLocation: row.ciphertext_location,
+        aad: row.aad,
+        createdAt: row.envelope_created_at.toISOString(),
+        reencryptedAt: row.envelope_reencrypted_at?.toISOString() ?? null
+      });
+      expect(decrypted).toContain(transcriptSentinel);
+      expect(decrypted).not.toContain(lowerPrioritySentinel);
+    });
+  });
+
+  it("projects paid managed-cloud tool events from encrypted display companions", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 19).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-tool-event-${randomUUID()}@example.com`
+      });
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          externalSessionId: `managed-cloud-tool-event-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const callId = `managed-cloud-tool-call-${randomUUID()}`;
+      const inputSentinel = "paid managed cloud tool input sentinel 08cab1";
+      const outputSentinel = "paid managed cloud tool output sentinel aa3914";
+      await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-tool-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "function_call",
+              sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "function_call",
+                  name: "exec_command",
+                  arguments: { cmd: inputSentinel }
+                }
+              },
+              rawText: `Tool call: ${inputSentinel}`,
+              sourceHash: `managed-cloud-tool-call-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-tool-call-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: {
+                transcriptType: "function_call",
+                toolName: "exec_command",
+                toolCall: {
+                  kind: "call",
+                  id: callId,
+                  name: "exec_command",
+                  input: { cmd: inputSentinel }
+                }
+              }
+            },
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-tool-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "function_call_output",
+              sourceSequence: 2,
+              eventTime: "2026-04-01T12:00:01.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: {
+                  type: "function_call_output",
+                  output: outputSentinel
+                }
+              },
+              rawText: outputSentinel,
+              sourceHash: `managed-cloud-tool-output-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-tool-output-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: {
+                transcriptType: "function_call_output",
+                toolName: "exec_command",
+                toolEventKind: "function_call_output",
+                toolCall: {
+                  kind: "output",
+                  id: callId,
+                  name: "exec_command",
+                  output: outputSentinel
+                }
+              }
+            },
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-tool-turn",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "Stop",
+              sourceSequence: 3,
+              eventTime: "2026-04-01T12:00:02.000Z",
+              rawJson: { hook_event_name: "Stop" },
+              sourceHash: `managed-cloud-tool-stop-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-tool-stop-${randomUUID()}`,
+              metadata: {}
+            }
+          ]
+        }
+      );
+
+      const projection = await encryptedRepo.projectPendingConversationItems(
+        { userId: owner.id },
+        { limit: 10 }
+      );
+      expect(projection.toolEventsCreated).toBe(1);
+      const storedToolEvents = await pool.query<{
+        id: string;
+        tool_input_text: string | null;
+        tool_response_text: string | null;
+      }>(
+        `
+          select id, tool_input::text as tool_input_text, tool_response::text as tool_response_text
+          from tool_events
+          where session_id = $1
+        `,
+        [session.id]
+      );
+      expect(storedToolEvents.rows).toHaveLength(1);
+      expect(JSON.stringify(storedToolEvents.rows)).not.toContain(
+        inputSentinel
+      );
+      expect(JSON.stringify(storedToolEvents.rows)).not.toContain(
+        outputSentinel
+      );
+      const encryptedFields = await pool.query<{ source_column: string }>(
+        `
+          select source_column
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'tool_events'
+            and source_id = $2
+            and invalidated_at is null
+          order by source_column asc
+        `,
+        [owner.id, storedToolEvents.rows[0]!.id]
+      );
+      expect(encryptedFields.rows.map((row) => row.source_column)).toEqual([
+        "tool_input",
+        "tool_response"
+      ]);
+
+      const graphEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: owner.id },
+        { includeContent: true, limit: 10 }
+      );
+      const toolEvent = graphEvents.find(
+        (event) => event.metadata.sourceTable === "tool_events"
+      );
+      expect(toolEvent?.content).toContain(inputSentinel);
+      expect(toolEvent?.content).toContain(outputSentinel);
+      expect(JSON.stringify(toolEvent?.metadata)).toContain(inputSentinel);
+      expect(JSON.stringify(toolEvent?.metadata)).toContain(outputSentinel);
+    });
+  });
+
+  it("seals paid managed-cloud agent turns from Stop source event type without plaintext raw_json", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 16).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-stop-seal-${randomUUID()}@example.com`
+      });
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          externalSessionId: `managed-cloud-stop-seal-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const sentinel =
+        "Paid managed cloud Stop-sealed agent turn sentinel 0180ba.";
+      await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-stop-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "agent_message",
+              sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: {
+                type: "event_msg",
+                payload: { type: "agent_message", message: sentinel }
+              },
+              rawText: sentinel,
+              sourceHash: `managed-cloud-stop-agent-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-stop-agent-${randomUUID()}`,
+              metadata: { transcriptType: "agent_message" }
+            },
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-hook-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-stop-turn",
+              sourceRecordType: "hook_payload",
+              sourceEventType: "Stop",
+              sourceSequence: 2,
+              eventTime: "2026-04-01T12:00:01.000Z",
+              rawJson: {
+                hook_event_name: "Stop",
+                turn_id: "managed-cloud-stop-turn"
+              },
+              sourceHash: `managed-cloud-stop-hook-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-stop-hook-${randomUUID()}`,
+              metadata: {}
+            }
+          ]
+        }
+      );
+      const stored = await pool.query<{ raw_json_text: string }>(
+        `
+          select string_agg(raw_json::text, ' ') as raw_json_text
+          from conversation_items
+          where session_id = $1
+        `,
+        [session.id]
+      );
+      expect(stored.rows[0]?.raw_json_text).not.toContain("hook_event_name");
+      expect(stored.rows[0]?.raw_json_text).not.toContain(sentinel);
+
+      const projection = await encryptedRepo.projectPendingConversationItems(
+        { userId: owner.id },
+        { limit: 10 }
+      );
+      expect(projection).toMatchObject({
+        rawItemsWaitingForAgentSeal: 0,
+        memoryEventsCreated: 1
+      });
+      const graphEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: owner.id },
+        { includeContent: true, limit: 10 }
+      );
+      expect(graphEvents.map((event) => event.content)).toContain(sentinel);
+    });
+  });
+
+  it("reconstructs paid managed-cloud encrypted transport chunk conversation items for Projection", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 17).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-chunk-project-${randomUUID()}@example.com`
+      });
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          externalSessionId: `managed-cloud-chunk-project-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const sentinel =
+        "Paid managed cloud encrypted transport chunk sentinel 111d29.";
+      const envelope = JSON.stringify({
+        rawJson: {
+          type: "event_msg",
+          payload: { type: "user_message", role: "user", content: sentinel }
+        },
+        rawText: sentinel
+      });
+      const logicalSourceId = `managed-cloud-chunk-${randomUUID()}`;
+      const firstHalf = envelope.slice(0, Math.ceil(envelope.length / 2));
+      const secondHalf = envelope.slice(Math.ceil(envelope.length / 2));
+      await encryptedRepo.createConversationItems(
+        { userId: owner.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-chunk-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: { chunk: 0 },
+              logicalSourceId,
+              transportChunkIndex: 0,
+              transportChunkCount: 2,
+              transportChunkText: firstHalf,
+              transportChunkEncoding: "conversation-item-json-v1",
+              sourceHash: `managed-cloud-chunk-0-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-chunk-0-${randomUUID()}`,
+              metadata: { transcriptType: "user_message" }
+            },
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-transcript-v1",
+              sourceTransport: "hook",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "managed-cloud-chunk-turn",
+              sourceRecordType: "event_msg",
+              sourceEventType: "user_message",
+              sourceSequence: 2,
+              eventTime: "2026-04-01T12:00:00.001Z",
+              rawJson: { chunk: 1 },
+              logicalSourceId,
+              transportChunkIndex: 1,
+              transportChunkCount: 2,
+              transportChunkText: secondHalf,
+              transportChunkEncoding: "conversation-item-json-v1",
+              sourceHash: `managed-cloud-chunk-1-${randomUUID()}`,
+              idempotencyKey: `managed-cloud-chunk-1-${randomUUID()}`,
+              metadata: { transcriptType: "user_message" }
+            }
+          ]
+        }
+      );
+      const stored = await pool.query<{ chunk_text: string }>(
+        `
+          select string_agg(transport_chunk_text, '') as chunk_text
+          from conversation_items
+          where logical_source_id = $1
+        `,
+        [logicalSourceId]
+      );
+      expect(stored.rows[0]?.chunk_text).not.toContain(sentinel);
+
+      const projection = await encryptedRepo.projectPendingConversationItems(
+        { userId: owner.id },
+        { limit: 10 }
+      );
+      expect(projection).toMatchObject({
+        rawItemsProjected: 2,
+        messagesCreated: 1,
+        memoryEventsCreated: 1
+      });
+      const messages = await pool.query<{ content: string }>(
+        "select content from messages where session_id = $1",
+        [session.id]
+      );
+      expect(messages.rows.map((row) => row.content)).toEqual([
+        "[koed encrypted message]"
+      ]);
+      expect(JSON.stringify(messages.rows)).not.toContain(sentinel);
+      const graphEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: owner.id },
+        { includeContent: true, limit: 10 }
+      );
+      expect(graphEvents.map((event) => event.content)).toContain(sentinel);
+    });
+  });
+
   it("rejects tombstoned users from account and API token authentication", async () => {
     const email = `deleted-api-token-${randomUUID()}@example.com`;
     const user = await repo.createUser({
@@ -313,6 +2390,136 @@ describeDb("memory repository visibility", () => {
     await expect(repo.getUser(user.id)).resolves.toBeNull();
     await expect(repo.findUserByEmail(email)).resolves.toBeNull();
     await expect(repo.getApiTokenUser(tokenHash)).resolves.toBeNull();
+  });
+
+  it("manages browser-mediated device credentials without storing reusable secrets in audit metadata", async () => {
+    const user = await repo.createUser({
+      email: `device-credential-${randomUUID()}@example.com`,
+      displayName: "Device Credential User"
+    });
+    const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const verifierHash = `verifier-${randomUUID()}-${randomUUID()}`;
+
+    const challenge = await repo.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: "desktop-1",
+      deviceLabel: "Desktop",
+      requestedOperationFamilies: ["team.recall", "sync.outbox"],
+      metadata: { platform: "linux" },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const overScopedChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    await repo.createDeviceEnrollmentChallenge({
+      challengeHash: overScopedChallengeHash,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: "desktop-over-scoped",
+      requestedOperationFamilies: ["team.recall"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    await expect(
+      repo.redeemDeviceEnrollmentChallenge(
+        { userId: user.id },
+        {
+          challengeHash: overScopedChallengeHash,
+          credentialKeyId: `device-key-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash,
+          operationFamilies: ["team.recall", "admin"]
+        }
+      )
+    ).rejects.toThrow(
+      "Device credential operation families exceed enrollment challenge"
+    );
+    const boundedCredential = await repo.redeemDeviceEnrollmentChallenge(
+      { userId: user.id },
+      {
+        challengeHash: overScopedChallengeHash,
+        credentialKeyId: `device-key-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash,
+        operationFamilies: ["team.recall"]
+      }
+    );
+    expect(boundedCredential?.operationFamilies).toEqual(["team.recall"]);
+
+    const credential = await repo.redeemDeviceEnrollmentChallenge(
+      { userId: user.id },
+      {
+        challengeHash,
+        credentialKeyId: `device-key-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash
+      }
+    );
+
+    expect(credential).toMatchObject({
+      ownerUserId: user.id,
+      enrollmentChallengeId: challenge.id,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: "desktop-1",
+      deviceLabel: "Desktop",
+      operationFamilies: ["team.recall", "sync.outbox"],
+      lastUsedAt: null,
+      revokedAt: null
+    });
+    expect(
+      await repo.redeemDeviceEnrollmentChallenge(
+        { userId: user.id },
+        {
+          challengeHash,
+          credentialKeyId: `device-key-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash
+        }
+      )
+    ).toBeNull();
+
+    const listed = await repo.listDeviceCredentials(
+      { userId: user.id },
+      { upstreamBackendId: "team-vps" }
+    );
+    expect(listed.map((item) => item.id).sort()).toEqual(
+      [boundedCredential!.id, credential!.id].sort()
+    );
+
+    const authenticated = await repo.getDeviceCredentialUser({
+      credentialKeyId: credential!.credentialKeyId,
+      verifierHash
+    });
+    expect(authenticated?.user).toMatchObject({ id: user.id });
+    expect(authenticated?.credential.lastUsedAt).not.toBeNull();
+    expect(authenticated?.credential.lastValidatedAt).not.toBeNull();
+
+    expect(
+      await repo.revokeDeviceCredential(
+        { userId: user.id },
+        credential!.id,
+        "rotated"
+      )
+    ).toBe(true);
+    expect(
+      await repo.revokeDeviceCredential(
+        { userId: user.id },
+        credential!.id,
+        "rotated"
+      )
+    ).toBe(false);
+    expect(
+      await repo.getDeviceCredentialUser({
+        credentialKeyId: credential!.credentialKeyId,
+        verifierHash
+      })
+    ).toBeNull();
+
+    const audit = await repo.listAuditEvents(
+      { userId: user.id },
+      { action: "device_credential.created", limit: 10 }
+    );
+    const auditJson = JSON.stringify(audit);
+    expect(auditJson).toContain("team-vps");
+    expect(auditJson).not.toContain(verifierHash);
+    expect(auditJson).not.toContain(challengeHash);
   });
 
   it("enforces Team roles and Workspace access at request time", async () => {
@@ -394,6 +2601,23 @@ describeDb("memory repository visibility", () => {
       role: "owner",
       status: "enabled"
     });
+    await expect(
+      repo.upsertTeamMember(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          userId: owner.id,
+          role: "member",
+          status: "disabled"
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getTeamMembership({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      role: "owner",
+      status: "enabled"
+    });
 
     const workspace = await repo.createTeamWorkspace(
       { userId: owner.id },
@@ -461,10 +2685,94 @@ describeDb("memory repository visibility", () => {
     );
     expect(readAccess).toMatchObject({
       access: "read",
+      teamEntitlementStatus: "active",
+      teamEntitlementAllowsAccess: true,
       canRecall: true,
       canCreateShare: false,
       canManageWorkspace: false
     });
+    await expect(
+      repo.getTeamEntitlementGate({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      teamId: team.id,
+      status: "active",
+      allowsTeamAccess: true,
+      deniedOperationFamilies: []
+    });
+    const graceGate = await repo.setTeamEntitlementState(
+      { userId: owner.id },
+      { teamId: team.id, status: "grace", reason: "payment_retry" }
+    );
+    expect(graceGate).toMatchObject({
+      status: "grace",
+      allowsTeamAccess: true,
+      reason: "payment_retry"
+    });
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      teamEntitlementStatus: "grace",
+      teamEntitlementAllowsAccess: true,
+      access: "read",
+      canRecall: true
+    });
+    const suspendedGate = await repo.setTeamEntitlementState(
+      { userId: owner.id },
+      { teamId: team.id, status: "suspended", reason: "billing_suspended" }
+    );
+    expect(suspendedGate).not.toBeNull();
+    expect(suspendedGate).toMatchObject({
+      status: "suspended",
+      allowsTeamAccess: false
+    });
+    expect(suspendedGate!.deniedOperationFamilies).toEqual(
+      expect.arrayContaining([
+        "ingestion",
+        "recall",
+        "share",
+        "sync",
+        "team_admin"
+      ])
+    );
+    await expect(
+      repo.getTeamWorkspaceAccess({ userId: member.id }, workspace!.id)
+    ).resolves.toMatchObject({
+      teamEntitlementStatus: "suspended",
+      teamEntitlementAllowsAccess: false,
+      access: "disabled",
+      canRecall: false,
+      canCreateShare: false
+    });
+    await expect(
+      repo.createTeamWorkspace(
+        { userId: owner.id },
+        { teamId: team.id, name: "Blocked Workspace" }
+      )
+    ).resolves.toBeNull();
+    const revokedGate = await repo.setTeamEntitlementState(
+      { userId: owner.id },
+      { teamId: team.id, status: "revoked", reason: "license_revoked" }
+    );
+    expect(revokedGate).toMatchObject({
+      status: "revoked",
+      allowsTeamAccess: false
+    });
+    await expect(
+      repo.createTeamInvite(
+        { userId: owner.id },
+        {
+          teamId: team.id,
+          email: `revoked-invite-${randomUUID()}@example.com`,
+          role: "member",
+          tokenHash: `token-${randomUUID()}`,
+          expiresAt: new Date(Date.now() + 60_000)
+        }
+      )
+    ).resolves.toBeNull();
+    await repo.setTeamEntitlementState(
+      { userId: owner.id },
+      { teamId: team.id, status: "active", reason: "billing_restored" }
+    );
     await pool.query(
       `
         update team_workspace_access_grants
@@ -648,6 +2956,885 @@ describeDb("memory repository visibility", () => {
       acceptedAt: memberAcceptedAt,
       disabledAt: null
     });
+    await expect(
+      repo.listTeamAuditEvents(
+        { userId: owner.id },
+        { teamId: team.id, action: "team.entitlement.changed", limit: 10 }
+      )
+    ).resolves.toHaveLength(4);
+  });
+
+  it("tracks Team billing seats through member lifecycle and over-limit recovery", async () => {
+    const owner = await repo.createUser({
+      email: `seat-owner-${randomUUID()}@example.com`,
+      displayName: "Seat Owner"
+    });
+    const admin = await repo.createUser({
+      email: `seat-admin-${randomUUID()}@example.com`,
+      displayName: "Seat Admin"
+    });
+    const invitedEmail = `seat-invitee-${randomUUID()}@example.com`;
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Seat Team" }
+    );
+
+    await expect(
+      repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      teamId: team.id,
+      seatLimit: null,
+      billableSeatCount: 1,
+      pendingBillingSeatCount: 1,
+      syncStatus: "synced"
+    });
+
+    const adminMembership = await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: admin.id, role: "admin" }
+    );
+    expect(adminMembership).toMatchObject({ status: "enabled" });
+
+    await expect(
+      repo.setTeamBillingSeatPolicy(
+        { userId: admin.id },
+        { teamId: team.id, seatLimit: 1 }
+      )
+    ).resolves.toBeNull();
+
+    const overLimit = await repo.setTeamBillingSeatPolicy(
+      { userId: owner.id },
+      { teamId: team.id, seatLimit: 1 }
+    );
+    expect(overLimit).toMatchObject({
+      seatLimit: 1,
+      billableSeatCount: 2,
+      pendingBillingSeatCount: 2,
+      syncStatus: "over_limit"
+    });
+    expect(typeof overLimit?.overLimitAt).toBe("string");
+    await expect(
+      repo.getTeamEntitlementGate({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      status: "grace",
+      allowsTeamAccess: true,
+      reason: "seat_limit_exceeded"
+    });
+
+    const inviteTokenHash = `seat-token-${randomUUID()}`;
+    const invite = await repo.createTeamInvite(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        email: invitedEmail,
+        role: "member",
+        tokenHash: inviteTokenHash,
+        expiresAt: new Date(Date.now() + 60_000)
+      }
+    );
+    expect(invite).not.toBeNull();
+    const accepted = await repo.acceptTeamInvite({
+      tokenHash: `missing-${randomUUID()}`
+    });
+    expect(accepted).toBeNull();
+    const acceptedInvite = await repo.acceptTeamInvite({
+      tokenHash: inviteTokenHash,
+      email: invitedEmail,
+      displayName: "Seat Invitee"
+    });
+    expect(acceptedInvite).toMatchObject({
+      createdUser: true,
+      membership: { status: "enabled", role: "member" }
+    });
+    await expect(
+      repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      seatLimit: 1,
+      billableSeatCount: 3,
+      pendingBillingSeatCount: 3,
+      syncStatus: "over_limit"
+    });
+
+    await expect(
+      repo.disableTeamMember(
+        { userId: owner.id },
+        { teamId: team.id, userId: acceptedInvite!.user.id }
+      )
+    ).resolves.toMatchObject({ status: "disabled" });
+    await expect(
+      repo.disableTeamMember(
+        { userId: owner.id },
+        { teamId: team.id, userId: admin.id }
+      )
+    ).resolves.toMatchObject({ status: "disabled" });
+    await expect(
+      repo.getTeamBillingSeatState({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      seatLimit: 1,
+      billableSeatCount: 1,
+      pendingBillingSeatCount: 1,
+      syncStatus: "pending_provider_update",
+      overLimitAt: null
+    });
+    await expect(
+      repo.getTeamEntitlementGate({ userId: owner.id }, team.id)
+    ).resolves.toMatchObject({
+      status: "active",
+      allowsTeamAccess: true,
+      reason: "seat_limit_restored"
+    });
+
+    const auditEvents = await repo.listTeamAuditEvents(
+      { userId: owner.id },
+      { teamId: team.id, action: "team.billing_seats.changed", limit: 20 }
+    );
+    expect(auditEvents?.length).toBeGreaterThanOrEqual(5);
+    expect(JSON.stringify(auditEvents?.map((event) => event.metadata))).toEqual(
+      expect.stringContaining('"syncStatus":"over_limit"')
+    );
+  });
+
+  it("returns a redacted Team support overview and audits the view", async () => {
+    const owner = await repo.createUser({
+      email: `support-owner-${randomUUID()}@example.com`,
+      displayName: "Support Owner"
+    });
+    const member = await repo.createUser({
+      email: `support-member-${randomUUID()}@example.com`,
+      displayName: "Support Member"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Support Team" }
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Support Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "support-overview-project",
+        externalSessionId: `support-overview-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const grant = await repo.createTeamSessionShareGrant(
+      { userId: owner.id },
+      { teamWorkspaceId: workspace!.id, sessionId: session.id }
+    );
+    await repo.revokeTeamSessionShareGrant(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        shareGrantId: grant!.id,
+        reason: "support_overview_test"
+      }
+    );
+    const challengeHash = `support-challenge-${randomUUID()}`;
+    const verifierHash = `support-verifier-${randomUUID()}`;
+    const credentialKeyId = `support-device-key-${randomUUID()}`;
+    await repo.createDeviceEnrollmentChallenge({
+      challengeHash,
+      upstreamBackendId: "support-overview-vps",
+      deviceInstanceId: "support-device-instance",
+      deviceLabel: "Support overview desktop",
+      requestedOperationFamilies: ["team.recall"],
+      metadata: { secretMarker: "support-device-metadata-secret" },
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const credential = await repo.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash,
+        credentialKeyId,
+        verifierKind: "secret_hash",
+        verifierHash
+      }
+    );
+    await repo.getDeviceCredentialUser({
+      credentialKeyId,
+      verifierHash
+    });
+
+    await expect(
+      repo.getTeamSupportOverview({ userId: member.id }, team.id)
+    ).resolves.toBeNull();
+
+    const overview = await repo.getTeamSupportOverview(
+      { userId: owner.id },
+      team.id
+    );
+    expect(overview).toMatchObject({
+      supportAccess: {
+        policy: "team_manager_redacted",
+        actorUserId: owner.id,
+        actorRole: "owner",
+        rawContentAccess: "not_permitted",
+        breakGlassRequiredForRawContent: true
+      },
+      team: { id: team.id, name: "Support Team" },
+      entitlement: { teamId: team.id, status: "active" },
+      billingSeats: {
+        teamId: team.id,
+        billableSeatCount: 2,
+        pendingBillingSeatCount: 2
+      },
+      diagnosticSurfaces: {
+        auth: "browser_session",
+        rawContentAccess: "not_permitted",
+        operationsStatusPath: "/ops/status",
+        capabilitiesPath: `/v1/capabilities/authenticated?teamId=${team.id}`,
+        auditEventsPath: `/v1/teams/${team.id}/audit-events`,
+        entitlementPath: `/v1/teams/${team.id}/entitlement`,
+        billingSeatsPath: `/v1/teams/${team.id}/billing-seats`,
+        supportOverviewPath: `/v1/teams/${team.id}/support/overview`
+      },
+      counts: {
+        memberships: { enabled: 2, invited: 0, disabled: 0 },
+        workspaces: { active: 1, archived: 0 },
+        workspaceAccess: { read: 1, write: 1, disabled: 0 },
+        invites: { pending: 0, accepted: 0, revoked: 0, expired: 0 },
+        sessionShareGrants: {
+          active: 0,
+          revoked: 1,
+          retainedAfterPersonalDeletion: 0
+        },
+        setupAndIntegrations: {
+          externalAuthOrganizations: {
+            linked: 0,
+            disabled: 0,
+            lastSeenAt: null
+          },
+          externalAuthIdentities: {
+            linked: 0,
+            disabled: 0,
+            emailVerified: 0,
+            lastSeenAt: null
+          },
+          deviceCredentials: {
+            active: 1,
+            revoked: 0,
+            expired: 0
+          }
+        }
+      }
+    });
+    expect(
+      typeof overview?.counts.setupAndIntegrations.deviceCredentials
+        .lastValidatedAt
+    ).toBe("string");
+    const overviewJson = JSON.stringify(overview);
+    expect(overviewJson).not.toContain("support_overview_test");
+    expect(overviewJson).not.toContain(session.id);
+    expect(overviewJson).not.toContain(grant!.id);
+    expect(overviewJson).not.toContain(credential!.credentialKeyId);
+    expect(overviewJson).not.toContain(verifierHash);
+    expect(overviewJson).not.toContain("Support overview desktop");
+    expect(overviewJson).not.toContain("support-device-metadata-secret");
+
+    const supportAuditEvents = await repo.listTeamAuditEvents(
+      { userId: owner.id },
+      { teamId: team.id, action: "team.support_overview.viewed", limit: 5 }
+    );
+    expect(supportAuditEvents).toEqual([
+      expect.objectContaining({
+        actorUserId: owner.id,
+        targetTable: "teams",
+        targetId: team.id,
+        metadata: {
+          teamId: team.id,
+          policy: "team_manager_redacted",
+          rawContentAccess: "not_permitted"
+        }
+      })
+    ]);
+  });
+
+  it("creates, lists, and revokes Captured Session Share Grants through repository policy", async () => {
+    const owner = await repo.createUser({
+      email: `share-owner-${randomUUID()}@example.com`,
+      displayName: "Share Owner"
+    });
+    const member = await repo.createUser({
+      email: `share-member-${randomUUID()}@example.com`,
+      displayName: "Share Member"
+    });
+    const outsider = await repo.createUser({
+      email: `share-outsider-${randomUUID()}@example.com`,
+      displayName: "Share Outsider"
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Share Team" }
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+    const workspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Share Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+    const ownerSession = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "share-project",
+        externalSessionId: `share-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const memberSession = await repo.createCapturedSession(
+      { userId: member.id },
+      {
+        workspaceId: "member-share-project",
+        externalSessionId: `member-share-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+
+    await expect(
+      repo.createTeamSessionShareGrant(
+        { userId: member.id },
+        { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.createTeamSessionShareGrant(
+        { userId: owner.id },
+        { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.listTeamSessionShareGrants(
+        { userId: outsider.id },
+        { teamWorkspaceId: workspace!.id }
+      )
+    ).resolves.toBeNull();
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "write"
+      }
+    );
+    const memberOwnedGrant = await repo.createTeamSessionShareGrant(
+      { userId: member.id },
+      { teamWorkspaceId: workspace!.id, sessionId: memberSession.id }
+    );
+    expect(memberOwnedGrant).toMatchObject({
+      ownerUserId: member.id,
+      sessionId: memberSession.id,
+      revokedAt: null
+    });
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+    const revokedBySourceOwner = await repo.revokeTeamSessionShareGrant(
+      { userId: member.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        shareGrantId: memberOwnedGrant!.id,
+        reason: "source_owner_exit"
+      }
+    );
+    expect(revokedBySourceOwner).toMatchObject({
+      id: memberOwnedGrant!.id,
+      revokedByUserId: member.id,
+      revocationReason: "source_owner_exit"
+    });
+
+    const created = await repo.createTeamSessionShareGrant(
+      { userId: owner.id },
+      { teamWorkspaceId: workspace!.id, sessionId: ownerSession.id }
+    );
+    expect(created).toMatchObject({
+      ownerUserId: owner.id,
+      sessionId: ownerSession.id,
+      teamId: team.id,
+      teamWorkspaceId: workspace!.id,
+      grantedByUserId: owner.id,
+      revokedAt: null,
+      retentionReason: "active_team_share"
+    });
+    expect(typeof created?.retainedByTeamAt).toBe("string");
+
+    const duplicate = await repo.createTeamSessionShareGrant(
+      { userId: owner.id },
+      { teamWorkspaceId: workspace!.id, sessionId: ownerSession.id }
+    );
+    expect(duplicate?.id).toBe(created?.id);
+
+    await expect(
+      repo.listTeamSessionShareGrants(
+        { userId: member.id },
+        { teamWorkspaceId: workspace!.id }
+      )
+    ).resolves.toEqual([expect.objectContaining({ id: created!.id })]);
+
+    await expect(
+      repo.revokeTeamSessionShareGrant(
+        { userId: member.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          shareGrantId: created!.id,
+          reason: "readers_cannot_revoke"
+        }
+      )
+    ).resolves.toBeNull();
+
+    const revoked = await repo.revokeTeamSessionShareGrant(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        shareGrantId: created!.id,
+        reason: "owner_revoked"
+      }
+    );
+    expect(revoked).toMatchObject({
+      id: created!.id,
+      revokedByUserId: owner.id,
+      revocationReason: "owner_revoked"
+    });
+
+    await expect(
+      repo.listTeamSessionShareGrants(
+        { userId: owner.id },
+        { teamWorkspaceId: workspace!.id }
+      )
+    ).resolves.toEqual([]);
+    const revokedGrants = await repo.listTeamSessionShareGrants(
+      { userId: owner.id },
+      { teamWorkspaceId: workspace!.id, includeRevoked: true }
+    );
+    expect(revokedGrants).toHaveLength(2);
+    const ownerRevokedGrant = revokedGrants?.find(
+      (grant) => grant.id === created!.id
+    );
+    expect(ownerRevokedGrant).toMatchObject({ id: created!.id });
+    expect(typeof ownerRevokedGrant?.revokedAt).toBe("string");
+
+    const auditEvents = await repo.listTeamAuditEvents(
+      { userId: owner.id },
+      { teamId: team.id, action: "team.session_share.created", limit: 10 }
+    );
+    expect(auditEvents).toHaveLength(2);
+  });
+
+  const createCrossIdentitySyncFixture = async (input?: {
+    relationshipIdempotencyKey?: string;
+  }) => {
+    const owner = await repo.createUser({
+      email: `sync-owner-${randomUUID()}@example.com`,
+      displayName: "Sync Owner"
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "sync-project",
+        externalSessionId: `sync-session-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const localDeployment = await repo.upsertDeploymentIdentity(
+      { userId: owner.id },
+      {
+        deploymentKey: "local-laptop",
+        profile: "local_personal",
+        displayName: "Local laptop"
+      }
+    );
+    const hostedDeployment = await repo.upsertDeploymentIdentity(
+      { userId: owner.id },
+      {
+        deploymentKey: "koed-cloud",
+        profile: "koed_managed_cloud",
+        displayName: "Koed Cloud"
+      }
+    );
+    const logical = await repo.upsertCapturedSessionLogicalMemory(
+      { userId: owner.id },
+      {
+        sessionId: session.id,
+        deploymentIdentityId: localDeployment.id,
+        externalReplicaId: `source-${session.id}`,
+        metadata: { source: "fixture" },
+        policyManifest: { sourceBoundary: "captured_session" }
+      }
+    );
+    const sync = await repo.upsertCrossIdentitySyncRelationship(
+      { userId: owner.id },
+      {
+        logicalMemoryId: logical!.logicalMemory.id,
+        sourceReplicaId: logical!.sourceReplica.id,
+        targetDeploymentIdentityId: hostedDeployment.id,
+        idempotencyKey:
+          input?.relationshipIdempotencyKey ?? `sync:${session.id}:cloud`,
+        targetExternalReplicaId: `target-${session.id}`,
+        syncMode: "live",
+        policyManifest: {
+          sourceBoundary: "captured_session",
+          shareGrantRevocation: "separate"
+        },
+        consentManifest: { consentRecordId: `consent-${session.id}` }
+      }
+    );
+    return {
+      owner,
+      session,
+      localDeployment,
+      hostedDeployment,
+      logical: logical!,
+      sync: sync!
+    };
+  };
+
+  it("keeps Cross-Identity Sync logical memory and replicas idempotent", async () => {
+    const fixture = await createCrossIdentitySyncFixture();
+    const replayedLogical = await repo.upsertCapturedSessionLogicalMemory(
+      { userId: fixture.owner.id },
+      {
+        sessionId: fixture.session.id,
+        deploymentIdentityId: fixture.localDeployment.id,
+        logicalKey: `captured-session:${fixture.session.id}`,
+        metadata: { replayed: true }
+      }
+    );
+    expect(replayedLogical?.logicalMemory.id).toBe(
+      fixture.logical.logicalMemory.id
+    );
+    expect(replayedLogical?.sourceReplica.id).toBe(
+      fixture.logical.sourceReplica.id
+    );
+
+    const replayedSync = await repo.upsertCrossIdentitySyncRelationship(
+      { userId: fixture.owner.id },
+      {
+        logicalMemoryId: fixture.logical.logicalMemory.id,
+        sourceReplicaId: fixture.logical.sourceReplica.id,
+        targetDeploymentIdentityId: fixture.hostedDeployment.id,
+        idempotencyKey: fixture.sync.relationship.idempotencyKey,
+        policyManifest: { replayed: true }
+      }
+    );
+    expect(replayedSync?.relationship.id).toBe(fixture.sync.relationship.id);
+    expect(replayedSync?.targetReplica.id).toBe(fixture.sync.targetReplica.id);
+
+    const counts = await pool.query<{
+      logical_memories: string;
+      replicas: string;
+      relationships: string;
+    }>(
+      `
+        select
+          (select count(*) from logical_memories) as logical_memories,
+          (select count(*) from memory_replicas) as replicas,
+          (select count(*) from cross_identity_sync_relationships) as relationships
+      `
+    );
+    expect(counts.rows[0]).toEqual({
+      logical_memories: "1",
+      replicas: "2",
+      relationships: "1"
+    });
+  });
+
+  it("scopes Cross-Identity Sync idempotency by source owner and rejects mismatched replay", async () => {
+    const sharedIdempotencyKey = `sync:shared:${randomUUID()}`;
+    const first = await createCrossIdentitySyncFixture({
+      relationshipIdempotencyKey: sharedIdempotencyKey
+    });
+    const second = await createCrossIdentitySyncFixture({
+      relationshipIdempotencyKey: sharedIdempotencyKey
+    });
+
+    const mismatch = await repo.upsertCrossIdentitySyncRelationship(
+      { userId: first.owner.id },
+      {
+        logicalMemoryId: first.logical.logicalMemory.id,
+        sourceReplicaId: first.logical.sourceReplica.id,
+        targetDeploymentIdentityId: first.localDeployment.id,
+        idempotencyKey: first.sync.relationship.idempotencyKey,
+        syncMode: "live"
+      }
+    );
+    expect(mismatch).toBeNull();
+
+    expect(second.sync.relationship.idempotencyKey).toBe(sharedIdempotencyKey);
+    expect(second.sync.relationship.sourceOwnerUserId).toBe(second.owner.id);
+
+    const counts = await pool.query<{
+      relationships: string;
+    }>(
+      `
+        select count(*) as relationships
+        from cross_identity_sync_relationships
+        where idempotency_key = $1
+      `,
+      [sharedIdempotencyKey]
+    );
+    expect(counts.rows[0]).toEqual({ relationships: "2" });
+  });
+
+  it("stores resumable sync packages, chunks, and queue entries idempotently", async () => {
+    const fixture = await createCrossIdentitySyncFixture();
+    const packageProvider = createLocalTestKeyEnvelopeEncryptionProvider(
+      randomBytes(32).toString("base64")
+    );
+    const packageManifest = (
+      await createEncryptedJsonPackage(packageProvider, {
+        objectClass: "sync_package",
+        payload: {
+          logicalMemoryId: fixture.logical.logicalMemory.id,
+          sourceSessionId: fixture.session.id,
+          chunks: [{ index: 0, checksum: "sha256:first" }]
+        },
+        metadata: {
+          chunkCount: 1
+        }
+      })
+    ).manifest;
+    const replayManifest = (
+      await createEncryptedJsonPackage(packageProvider, {
+        objectClass: "sync_package",
+        payload: { ignored: true },
+        metadata: {
+          chunkCount: 1
+        }
+      })
+    ).manifest;
+    await expect(
+      repo.createSyncPackageUploadSession(
+        { userId: fixture.owner.id },
+        {
+          syncRelationshipId: fixture.sync.relationship.id,
+          idempotencyKey: "bad-package",
+          packageManifest: {},
+          packageChecksum: "sha256:bad-package",
+          totalBytes: 0
+        }
+      )
+    ).rejects.toThrow("encrypted package manifest");
+    await expect(
+      repo.createSyncPackageUploadSession(
+        { userId: fixture.owner.id },
+        {
+          syncRelationshipId: fixture.sync.relationship.id,
+          idempotencyKey: "leaky-package",
+          packageManifest: {
+            ...packageManifest,
+            plaintext: "raw Memory must not be stored in manifests"
+          },
+          packageChecksum: "sha256:leaky-package",
+          totalBytes: 0
+        }
+      )
+    ).rejects.toThrow("must be redacted");
+    const upload = await repo.createSyncPackageUploadSession(
+      { userId: fixture.owner.id },
+      {
+        syncRelationshipId: fixture.sync.relationship.id,
+        idempotencyKey: "package-1",
+        packageManifest: packageManifest as unknown as Record<string, unknown>,
+        packageChecksum: "sha256:package",
+        totalBytes: 20
+      }
+    );
+    const replayedUpload = await repo.createSyncPackageUploadSession(
+      { userId: fixture.owner.id },
+      {
+        syncRelationshipId: fixture.sync.relationship.id,
+        idempotencyKey: "package-1",
+        packageManifest: replayManifest as unknown as Record<string, unknown>,
+        packageChecksum: "sha256:ignored",
+        totalBytes: 20
+      }
+    );
+    expect(replayedUpload?.id).toBe(upload?.id);
+    expect(replayedUpload?.packageChecksum).toBe("sha256:package");
+
+    const chunk = await repo.recordSyncPackageChunk(
+      { userId: fixture.owner.id },
+      {
+        uploadSessionId: upload!.id,
+        chunkIndex: 0,
+        chunkChecksum: "sha256:first",
+        byteCount: 12,
+        storageRef: "object://sync/package-1/0"
+      }
+    );
+    const replayedChunk = await repo.recordSyncPackageChunk(
+      { userId: fixture.owner.id },
+      {
+        uploadSessionId: upload!.id,
+        chunkIndex: 0,
+        chunkChecksum: "sha256:first",
+        byteCount: 12,
+        storageRef: "object://sync/package-1/0-replay"
+      }
+    );
+    expect(replayedChunk?.id).toBe(chunk?.id);
+
+    const outbox = await repo.enqueueSyncOutboxEntry(
+      { userId: fixture.owner.id },
+      {
+        syncRelationshipId: fixture.sync.relationship.id,
+        uploadSessionId: upload!.id,
+        idempotencyKey: "outbox-package-1",
+        payloadManifest: { packageId: upload!.id }
+      }
+    );
+    const replayedOutbox = await repo.enqueueSyncOutboxEntry(
+      { userId: fixture.owner.id },
+      {
+        syncRelationshipId: fixture.sync.relationship.id,
+        uploadSessionId: upload!.id,
+        idempotencyKey: "outbox-package-1",
+        payloadManifest: { ignored: true }
+      }
+    );
+    expect(replayedOutbox?.id).toBe(outbox?.id);
+
+    const inbox = await repo.recordSyncInboxEntry(
+      { userId: fixture.owner.id },
+      {
+        syncRelationshipId: fixture.sync.relationship.id,
+        uploadSessionId: upload!.id,
+        idempotencyKey: "inbox-package-1",
+        payloadManifest: { packageId: upload!.id }
+      }
+    );
+    expect(inbox).toMatchObject({
+      syncRelationshipId: fixture.sync.relationship.id,
+      uploadSessionId: upload!.id,
+      state: "pending"
+    });
+
+    const persisted = await pool.query<{
+      uploaded_bytes: string;
+      chunk_count: number;
+      outbox_count: string;
+      inbox_count: string;
+    }>(
+      `
+        select
+          spu.uploaded_bytes,
+          spu.chunk_count,
+          (select count(*) from sync_outbox_entries) as outbox_count,
+          (select count(*) from sync_inbox_entries) as inbox_count
+        from sync_package_upload_sessions spu
+        where spu.id = $1
+      `,
+      [upload!.id]
+    );
+    expect(persisted.rows[0]).toEqual({
+      uploaded_bytes: "12",
+      chunk_count: 1,
+      outbox_count: "1",
+      inbox_count: "1"
+    });
+  });
+
+  it("revokes future Cross-Identity Sync without deleting local offline state", async () => {
+    const fixture = await createCrossIdentitySyncFixture();
+    const revoked = await repo.revokeCrossIdentitySyncRelationship(
+      { userId: fixture.owner.id },
+      {
+        syncRelationshipId: fixture.sync.relationship.id,
+        reason: "operator_requested"
+      }
+    );
+    expect(revoked).toMatchObject({
+      id: fixture.sync.relationship.id,
+      state: "revoked",
+      revokedByUserId: fixture.owner.id,
+      revocationReason: "operator_requested"
+    });
+
+    await expect(
+      repo.createSyncPackageUploadSession(
+        { userId: fixture.owner.id },
+        {
+          syncRelationshipId: fixture.sync.relationship.id,
+          idempotencyKey: "after-revoke",
+          packageManifest: {},
+          packageChecksum: "sha256:after-revoke",
+          totalBytes: 0
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.enqueueSyncOutboxEntry(
+        { userId: fixture.owner.id },
+        {
+          syncRelationshipId: fixture.sync.relationship.id,
+          idempotencyKey: "outbox-after-revoke"
+        }
+      )
+    ).resolves.toBeNull();
+
+    const persisted = await pool.query<{
+      session_count: string;
+      logical_count: string;
+      source_replica_disabled_at: Date | null;
+      target_replica_status: string;
+      target_replica_disabled_at: Date | null;
+    }>(
+      `
+        select
+          (select count(*) from sessions where id = $1) as session_count,
+          (select count(*) from logical_memories where id = $2) as logical_count,
+          source.disabled_at as source_replica_disabled_at,
+          target.freshness_status as target_replica_status,
+          target.disabled_at as target_replica_disabled_at
+        from memory_replicas source
+        join memory_replicas target on target.id = $4
+        where source.id = $3
+      `,
+      [
+        fixture.session.id,
+        fixture.logical.logicalMemory.id,
+        fixture.logical.sourceReplica.id,
+        fixture.sync.targetReplica.id
+      ]
+    );
+    expect(persisted.rows[0]).toMatchObject({
+      session_count: "1",
+      logical_count: "1",
+      source_replica_disabled_at: null,
+      target_replica_status: "revoked"
+    });
+    expect(persisted.rows[0]?.target_replica_disabled_at).toBeInstanceOf(Date);
   });
 
   it("retains Team session share grants through personal deletion and member exit", async () => {
@@ -1041,6 +4228,66 @@ describeDb("memory repository visibility", () => {
       grantWorkspaceId: electronWorkspace!.id,
       revoked: true
     });
+    const visibleRollup = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "BoundaryVisibleRollupUnique summarizes only active Electron sources.",
+        bodyText:
+          "BoundaryVisibleRollupUnique body includes SharedElectronBoundaryUnique.",
+        captureMethod: "hook",
+        sourceRuntime: "codex",
+        sourceHash: `boundary-visible-rollup-${randomUUID()}`
+      }
+    );
+    const hiddenMixedRollup = await repo.createMemoryNode(
+      { userId: owner.id },
+      {
+        visibility: "personal",
+        summaryText:
+          "BoundaryHiddenMixedRollupUnique mixes active and revoked Electron sources.",
+        bodyText:
+          "BoundaryHiddenMixedRollupUnique body includes RevokedElectronBoundaryUnique.",
+        captureMethod: "hook",
+        sourceRuntime: "codex",
+        sourceHash: `boundary-hidden-mixed-rollup-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      "update memory_nodes set kind = 'rollup', depth = 1 where id = any($1::uuid[])",
+      [[visibleRollup.id, hiddenMixedRollup.id]]
+    );
+    await pool.query(
+      `
+        insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+        values
+          ($1, $2, 0),
+          ($3, $2, 0),
+          ($3, $4, 1)
+      `,
+      [
+        visibleRollup.id,
+        sharedElectron.event.id,
+        hiddenMixedRollup.id,
+        revokedElectron.event.id
+      ]
+    );
+    await pool.query(
+      `
+        insert into memory_node_children (parent_memory_node_id, child_memory_node_id, child_order)
+        values
+          ($1, $2, 0),
+          ($3, $2, 0),
+          ($3, $4, 1)
+      `,
+      [
+        visibleRollup.id,
+        sharedElectron.node.id,
+        hiddenMixedRollup.id,
+        revokedElectron.node.id
+      ]
+    );
 
     const electronActor = { userId: owner.id };
     const graphNodes = await repo.listLcmGraphNodes(electronActor, {
@@ -1097,9 +4344,15 @@ describeDb("memory repository visibility", () => {
       expect.arrayContaining([
         privateCloud.node.id,
         cloudOnly.node.id,
-        revokedElectron.node.id
+        revokedElectron.node.id,
+        hiddenMixedRollup.id
       ])
     );
+    const sharedLeafResult = lexical.results.find(
+      (result) => result.nodeId === sharedElectron.node.id
+    );
+    expect(sharedLeafResult?.parentNodeIds).toContain(visibleRollup.id);
+    expect(sharedLeafResult?.parentNodeIds).not.toContain(hiddenMixedRollup.id);
 
     await expect(
       repo.expandMemoryNode(privateCloud.node.id, electronActor, {
@@ -1123,6 +4376,748 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       nodeId: sharedElectron.node.id,
       sources: [expect.objectContaining({ id: sharedElectron.event.id })]
+    });
+  });
+
+  it("resolves Team Workspace authorization and lifecycle gates before encrypted companion decrypt", async () => {
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 13).toString("base64")
+    );
+    const decrypt = vi.fn(provider.decrypt.bind(provider));
+    const instrumentedProvider = {
+      mode: provider.mode,
+      keyId: provider.keyId,
+      keyVersion: provider.keyVersion,
+      encrypt: provider.encrypt.bind(provider),
+      decrypt
+    } satisfies EnvelopeEncryptionProvider;
+    const encryptedRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: instrumentedProvider
+    });
+    const owner = await encryptedRepo.createUser({
+      email: `encrypted-team-owner-${randomUUID()}@example.com`
+    });
+    const member = await encryptedRepo.createUser({
+      email: `encrypted-team-member-${randomUUID()}@example.com`
+    });
+    const outsider = await encryptedRepo.createUser({
+      email: `encrypted-team-outsider-${randomUUID()}@example.com`
+    });
+    const team = await encryptedRepo.createTeam(
+      { userId: owner.id },
+      { name: "Encrypted Boundary Team" }
+    );
+    await encryptedRepo.upsertTeamMember(
+      { userId: owner.id },
+      {
+        teamId: team.id,
+        userId: member.id,
+        role: "member"
+      }
+    );
+    const workspace = await encryptedRepo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Encrypted Boundary Workspace" }
+    );
+    await encryptedRepo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+
+    const createEncryptedNode = async (input: {
+      label: string;
+      shared?: boolean;
+      revoked?: boolean;
+    }) => {
+      const session = await encryptedRepo.createCapturedSession(
+        { userId: owner.id },
+        {
+          workspaceId: "encrypted-team-boundary",
+          externalSessionId: `encrypted-team-${randomUUID()}`,
+          sourceRuntime: "codex",
+          captureMethod: "hook"
+        }
+      );
+      const event = await encryptedRepo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          workspaceId: "encrypted-team-boundary",
+          sessionId: session.id,
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "user_prompt",
+          content: `${input.label} encrypted Team payload sentinel.`,
+          captureMethod: "api",
+          idempotencyKey: `encrypted-team-${randomUUID()}`
+        }
+      );
+      const node = await encryptedRepo.createMemoryNode(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          summaryText: `${input.label} encrypted Team summary sentinel.`,
+          bodyText: `${input.label} encrypted Team payload sentinel.`,
+          captureMethod: "hook",
+          sourceRuntime: "codex",
+          sourceHash: `encrypted-team-node-${randomUUID()}`
+        }
+      );
+      await pool.query(
+        `
+          insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+          values ($1, $2, 0)
+        `,
+        [node.id, event.id]
+      );
+      if (input.shared) {
+        await pool.query(
+          `
+            insert into team_session_share_grants (
+              owner_user_id,
+              session_id,
+              team_id,
+              team_workspace_id,
+              granted_by_user_id,
+              revoked_at,
+              revoked_by_user_id,
+              revocation_reason
+            )
+            values (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              case when $6::boolean then now() else null end,
+              case when $6::boolean then $5::uuid else null end,
+              case when $6::boolean then 'encrypted_boundary_revoked' else null end
+            )
+          `,
+          [
+            owner.id,
+            session.id,
+            team.id,
+            workspace!.id,
+            owner.id,
+            input.revoked ?? false
+          ]
+        );
+      }
+      return { session, event, node };
+    };
+
+    const shared = await createEncryptedNode({
+      label: "SharedEncryptedBoundaryUnique",
+      shared: true
+    });
+    const privateOnly = await createEncryptedNode({
+      label: "PrivateEncryptedBoundaryUnique"
+    });
+    const revoked = await createEncryptedNode({
+      label: "RevokedEncryptedBoundaryUnique",
+      shared: true,
+      revoked: true
+    });
+    expect(decrypt).not.toHaveBeenCalled();
+
+    const graphEvents = await encryptedRepo.listLcmGraphEvents(
+      { userId: member.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        includeContent: true,
+        query: "EncryptedBoundaryUnique",
+        limit: 20
+      }
+    );
+    const graphNodes = await encryptedRepo.listLcmGraphNodes(
+      { userId: member.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        query: "EncryptedBoundaryUnique",
+        limit: 20
+      }
+    );
+    const lexical = await encryptedRepo.searchMemoryNodes(
+      { userId: member.id },
+      {
+        query: "EncryptedBoundaryUnique",
+        scope: "personal",
+        teamWorkspaceId: workspace!.id,
+        retrievalStage: "lexical_search",
+        limit: 20
+      }
+    );
+
+    expect(graphEvents.map((event) => event.id)).toEqual([shared.event.id]);
+    expect(graphNodes.map((node) => node.id)).toEqual([shared.node.id]);
+    expect(
+      lexical.results
+        .filter((result) => result.sourceType === "memory_node")
+        .map((result) => result.sourceId)
+    ).toEqual([shared.node.id]);
+    expect(
+      lexical.results
+        .filter((result) => result.sourceType === "memory_event")
+        .map((result) => result.sourceId)
+    ).toEqual([shared.event.id]);
+    expect(lexical.results.map((result) => result.sourceId)).not.toEqual(
+      expect.arrayContaining([
+        privateOnly.node.id,
+        privateOnly.event.id,
+        revoked.node.id,
+        revoked.event.id
+      ])
+    );
+    expect(JSON.stringify(graphEvents)).not.toContain(
+      "PrivateEncryptedBoundaryUnique"
+    );
+    expect(JSON.stringify(graphNodes)).not.toContain(
+      "RevokedEncryptedBoundaryUnique"
+    );
+    expect(decrypt).not.toHaveBeenCalled();
+
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: member.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId: shared.event.id,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: outsider.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId: privateOnly.event.id,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toBeNull();
+    expect(decrypt).not.toHaveBeenCalled();
+
+    await encryptedRepo.setTeamEntitlementState(
+      { userId: owner.id },
+      { teamId: team.id, status: "suspended", reason: "test_suspension" }
+    );
+    await expect(
+      encryptedRepo.listLcmGraphEvents(
+        { userId: member.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          includeContent: true,
+          query: "SharedEncryptedBoundaryUnique"
+        }
+      )
+    ).resolves.toEqual([]);
+    expect(decrypt).not.toHaveBeenCalled();
+
+    const ownerDecryptedShared =
+      await encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: owner.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId: shared.event.id,
+          sourceColumn: "payload"
+        }
+      );
+    expect(ownerDecryptedShared?.plaintext).toMatchObject({
+      content: "SharedEncryptedBoundaryUnique encrypted Team payload sentinel."
+    });
+    expect(decrypt).toHaveBeenCalledTimes(1);
+
+    await expect(
+      encryptedRepo.invalidateEncryptedField(
+        { userId: owner.id },
+        {
+          sourceTable: "memory_events",
+          sourceId: shared.event.id,
+          sourceColumn: "payload",
+          reason: "owner_redaction"
+        }
+      )
+    ).resolves.toBe(true);
+    await expect(
+      encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: owner.id },
+        instrumentedProvider,
+        {
+          sourceTable: "memory_events",
+          sourceId: shared.event.id,
+          sourceColumn: "payload"
+        }
+      )
+    ).resolves.toBeNull();
+    expect(decrypt).toHaveBeenCalledTimes(1);
+
+    const auditMetadata = await pool.query<{ metadata: unknown }>(
+      `
+        select metadata
+        from audit_events
+        where metadata ->> 'teamId' = $1
+        order by created_at asc
+      `,
+      [team.id]
+    );
+    const auditText = JSON.stringify(auditMetadata.rows);
+    expect(auditText).not.toContain("SharedEncryptedBoundaryUnique");
+    expect(auditText).not.toContain("PrivateEncryptedBoundaryUnique");
+    expect(auditText).not.toContain("RevokedEncryptedBoundaryUnique");
+  });
+
+  it("validates encrypted Team fixture boundaries before decrypt, queue, and audit exposure", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 36).toString("base64")
+      );
+      const decrypt = vi.fn(provider.decrypt.bind(provider));
+      const instrumentedProvider = {
+        mode: provider.mode,
+        keyId: provider.keyId,
+        keyVersion: provider.keyVersion,
+        encrypt: provider.encrypt.bind(provider),
+        decrypt
+      } satisfies EnvelopeEncryptionProvider;
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: instrumentedProvider
+      });
+      const queueRepo = createLocalWorkQueueRepository(pool);
+
+      const owner = await encryptedRepo.createUser({
+        email: `encrypted-fixture-owner-${randomUUID()}@example.com`
+      });
+      const member = await encryptedRepo.createUser({
+        email: `encrypted-fixture-member-${randomUUID()}@example.com`
+      });
+      const removedMember = await encryptedRepo.createUser({
+        email: `encrypted-fixture-removed-${randomUUID()}@example.com`
+      });
+      const outsider = await encryptedRepo.createUser({
+        email: `encrypted-fixture-outsider-${randomUUID()}@example.com`
+      });
+      const team = await encryptedRepo.createTeam(
+        { userId: owner.id },
+        { name: "Encrypted Fixture Team" }
+      );
+      await encryptedRepo.upsertTeamMember(
+        { userId: owner.id },
+        { teamId: team.id, userId: member.id, role: "member" }
+      );
+      await encryptedRepo.upsertTeamMember(
+        { userId: owner.id },
+        { teamId: team.id, userId: removedMember.id, role: "member" }
+      );
+      const workspace = await encryptedRepo.createTeamWorkspace(
+        { userId: owner.id },
+        { teamId: team.id, name: "Encrypted Fixture Workspace" }
+      );
+      await encryptedRepo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: member.id,
+          access: "read"
+        }
+      );
+      await encryptedRepo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: removedMember.id,
+          access: "disabled"
+        }
+      );
+
+      const createCase = async (input: {
+        label: string;
+        shared?: boolean;
+        revoked?: boolean;
+      }) => {
+        const session = await encryptedRepo.createCapturedSession(
+          { userId: owner.id },
+          {
+            workspaceId: "encrypted-fixture",
+            externalSessionId: `encrypted-fixture-${randomUUID()}`,
+            sourceRuntime: "codex",
+            captureMethod: "hook"
+          }
+        );
+        const event = await encryptedRepo.createMemoryEvent(
+          { userId: owner.id },
+          {
+            visibility: "personal",
+            workspaceId: "encrypted-fixture",
+            sessionId: session.id,
+            actor: "user",
+            eventType: "captured",
+            rawEventType: "user_prompt",
+            content: `${input.label} fixture memory payload sentinel.`,
+            captureMethod: "api",
+            idempotencyKey: `encrypted-fixture-event-${randomUUID()}`
+          }
+        );
+        const node = await encryptedRepo.createMemoryNode(
+          { userId: owner.id },
+          {
+            visibility: "personal",
+            summaryText: `${input.label} fixture summary sentinel.`,
+            bodyText: `${input.label} fixture body sentinel.`,
+            captureMethod: "hook",
+            sourceRuntime: "codex",
+            sourceHash: `encrypted-fixture-node-${randomUUID()}`
+          }
+        );
+        await pool.query(
+          `
+            insert into memory_node_sources (memory_node_id, memory_event_id, source_order)
+            values ($1, $2, 0)
+          `,
+          [node.id, event.id]
+        );
+        await encryptedRepo.upsertSourceEmbedding({
+          source: {
+            sourceType: "memory_event",
+            sourceId: event.id,
+            ownerUserId: owner.id,
+            visibility: "personal",
+            text: `${input.label} fixture embedding source sentinel.`,
+            sourceHash: `encrypted-fixture-embedding-${randomUUID()}`
+          },
+          model: "qwen3-0.6b",
+          dimensions: 1024,
+          version: "qwen3-0.6b",
+          vector: Array.from({ length: 1024 }, (_, index) =>
+            index === 0 ? 1 : 0
+          )
+        });
+        if (input.shared) {
+          const grant = await encryptedRepo.createTeamSessionShareGrant(
+            { userId: owner.id },
+            { teamWorkspaceId: workspace!.id, sessionId: session.id }
+          );
+          if (input.revoked) {
+            await encryptedRepo.revokeTeamSessionShareGrant(
+              { userId: owner.id },
+              {
+                teamWorkspaceId: workspace!.id,
+                shareGrantId: grant!.id,
+                reason: `${input.label} revoked fixture sentinel`
+              }
+            );
+          }
+        }
+        return { session, event, node };
+      };
+
+      const shared = await createCase({
+        label: "SharedEncryptedFixtureUnique",
+        shared: true
+      });
+      const privateOnly = await createCase({
+        label: "PrivateEncryptedFixtureUnique"
+      });
+      const revoked = await createCase({
+        label: "RevokedEncryptedFixtureUnique",
+        shared: true,
+        revoked: true
+      });
+
+      await queueRepo.enqueue({
+        queueName: "memory-embed",
+        jobName: "embed-source",
+        data: { sourceType: "memory_event", sourceId: shared.event.id },
+        jobKey: `encrypted-fixture-${shared.event.id}`
+      });
+      await queueRepo.enqueue({
+        queueName: "lcm-compact",
+        jobName: "compact-scope",
+        data: { userId: owner.id, visibility: "personal" },
+        jobKey: `encrypted-fixture-lcm-${owner.id}`
+      });
+
+      decrypt.mockClear();
+      const rawStores = await pool.query<{ raw_payload: string }>(
+        `
+          select coalesce(string_agg(raw_payload, ' '), '') as raw_payload
+          from (
+            select row_to_json(memory_events)::text as raw_payload
+            from memory_events
+            where id = any($1::uuid[])
+            union all
+            select row_to_json(memory_nodes)::text as raw_payload
+            from memory_nodes
+            where id = any($2::uuid[])
+            union all
+            select row_to_json(memory_embeddings)::text as raw_payload
+            from memory_embeddings
+            where memory_event_id = any($1::uuid[])
+            union all
+            select row_to_json(local_work_queue)::text as raw_payload
+            from local_work_queue
+            union all
+            select row_to_json(audit_events)::text as raw_payload
+            from audit_events
+            where metadata ->> 'teamId' = $3
+          ) stores
+        `,
+        [
+          [shared.event.id, privateOnly.event.id, revoked.event.id],
+          [shared.node.id, privateOnly.node.id, revoked.node.id],
+          team.id
+        ]
+      );
+      const rawPayload = rawStores.rows[0]?.raw_payload ?? "";
+      expect(rawPayload).not.toContain("FixtureUnique");
+      expect(rawPayload).not.toContain("fixture memory payload sentinel");
+      expect(rawPayload).not.toContain("fixture summary sentinel");
+      expect(rawPayload).not.toContain("fixture embedding source sentinel");
+      expect(rawPayload).not.toContain("revoked fixture sentinel");
+      expect(decrypt).not.toHaveBeenCalled();
+
+      const outsiderEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: outsider.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          includeContent: true,
+          limit: 20
+        }
+      );
+      const removedMemberNodes = await encryptedRepo.listLcmGraphNodes(
+        { userId: removedMember.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          limit: 20
+        }
+      );
+      expect(outsiderEvents).toEqual([]);
+      expect(removedMemberNodes).toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
+
+      const memberEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: member.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          includeContent: true,
+          limit: 20
+        }
+      );
+      expect(memberEvents).toEqual([
+        expect.objectContaining({
+          id: shared.event.id,
+          content:
+            "SharedEncryptedFixtureUnique fixture memory payload sentinel."
+        })
+      ]);
+      expect(JSON.stringify(memberEvents)).not.toContain(
+        "PrivateEncryptedFixtureUnique"
+      );
+      expect(JSON.stringify(memberEvents)).not.toContain(
+        "RevokedEncryptedFixtureUnique"
+      );
+      expect(decrypt).toHaveBeenCalledTimes(1);
+
+      decrypt.mockClear();
+      await encryptedRepo.setTeamEntitlementState(
+        { userId: owner.id },
+        { teamId: team.id, status: "suspended", reason: "fixture_suspended" }
+      );
+      await expect(
+        encryptedRepo.listLcmGraphEvents(
+          { userId: member.id },
+          {
+            teamWorkspaceId: workspace!.id,
+            includeContent: true,
+            limit: 20
+          }
+        )
+      ).resolves.toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
+    });
+  });
+
+  it("decrypts paid managed-cloud redacted Memory Event payloads only after Team authorization", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 14).toString("base64")
+      );
+      const decrypt = vi.fn(provider.decrypt.bind(provider));
+      const instrumentedProvider = {
+        mode: provider.mode,
+        keyId: provider.keyId,
+        keyVersion: provider.keyVersion,
+        encrypt: provider.encrypt.bind(provider),
+        decrypt
+      } satisfies EnvelopeEncryptionProvider;
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: instrumentedProvider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `redacted-team-owner-${randomUUID()}@example.com`
+      });
+      const member = await encryptedRepo.createUser({
+        email: `redacted-team-member-${randomUUID()}@example.com`
+      });
+      const team = await encryptedRepo.createTeam(
+        { userId: owner.id },
+        { name: "Redacted Team Boundary" }
+      );
+      await encryptedRepo.upsertTeamMember(
+        { userId: owner.id },
+        { teamId: team.id, userId: member.id, role: "member" }
+      );
+      const workspace = await encryptedRepo.createTeamWorkspace(
+        { userId: owner.id },
+        { teamId: team.id, name: "Redacted Boundary Workspace" }
+      );
+      await encryptedRepo.setTeamWorkspaceAccess(
+        { userId: owner.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          userId: member.id,
+          access: "read"
+        }
+      );
+
+      const createRedactedEvent = async (input: {
+        label: string;
+        shared?: boolean;
+        revoked?: boolean;
+      }) => {
+        const session = await encryptedRepo.createCapturedSession(
+          { userId: owner.id },
+          {
+            workspaceId: "redacted-team-boundary",
+            externalSessionId: `redacted-team-${randomUUID()}`,
+            sourceRuntime: "codex",
+            captureMethod: "hook"
+          }
+        );
+        const event = await encryptedRepo.createMemoryEvent(
+          { userId: owner.id },
+          {
+            visibility: "personal",
+            workspaceId: "redacted-team-boundary",
+            sessionId: session.id,
+            actor: "user",
+            eventType: "captured",
+            rawEventType: "user_prompt",
+            content: `${input.label} paid cloud redacted payload sentinel.`,
+            captureMethod: "api",
+            idempotencyKey: `redacted-team-${randomUUID()}`
+          }
+        );
+        if (input.shared) {
+          await pool.query(
+            `
+              insert into team_session_share_grants (
+                owner_user_id,
+                session_id,
+                team_id,
+                team_workspace_id,
+                granted_by_user_id,
+                revoked_at,
+                revoked_by_user_id,
+                revocation_reason
+              )
+              values (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                case when $6::boolean then now() else null end,
+                case when $6::boolean then $5::uuid else null end,
+                case when $6::boolean then 'redacted_boundary_revoked' else null end
+              )
+            `,
+            [
+              owner.id,
+              session.id,
+              team.id,
+              workspace!.id,
+              owner.id,
+              input.revoked ?? false
+            ]
+          );
+        }
+        return event;
+      };
+
+      const shared = await createRedactedEvent({
+        label: "SharedRedactedBoundaryUnique",
+        shared: true
+      });
+      const privateOnly = await createRedactedEvent({
+        label: "PrivateRedactedBoundaryUnique"
+      });
+      const revoked = await createRedactedEvent({
+        label: "RevokedRedactedBoundaryUnique",
+        shared: true,
+        revoked: true
+      });
+
+      const storedPayloads = await pool.query<{ payloads: string }>(
+        `
+          select string_agg(payload::text, ' ') as payloads
+          from memory_events
+          where id = any($1::uuid[])
+        `,
+        [[shared.id, privateOnly.id, revoked.id]]
+      );
+      expect(storedPayloads.rows[0]?.payloads).not.toContain(
+        "RedactedBoundaryUnique"
+      );
+      expect(decrypt).not.toHaveBeenCalled();
+
+      const graphEvents = await encryptedRepo.listLcmGraphEvents(
+        { userId: member.id },
+        {
+          teamWorkspaceId: workspace!.id,
+          includeContent: true,
+          limit: 20
+        }
+      );
+      expect(graphEvents).toEqual([
+        expect.objectContaining({
+          id: shared.id,
+          content:
+            "SharedRedactedBoundaryUnique paid cloud redacted payload sentinel."
+        })
+      ]);
+      expect(JSON.stringify(graphEvents)).not.toContain(
+        "PrivateRedactedBoundaryUnique"
+      );
+      expect(JSON.stringify(graphEvents)).not.toContain(
+        "RevokedRedactedBoundaryUnique"
+      );
+      expect(decrypt).toHaveBeenCalledTimes(1);
+
+      decrypt.mockClear();
+      await encryptedRepo.setTeamEntitlementState(
+        { userId: owner.id },
+        { teamId: team.id, status: "suspended", reason: "test_suspension" }
+      );
+      await expect(
+        encryptedRepo.listLcmGraphEvents(
+          { userId: member.id },
+          {
+            teamWorkspaceId: workspace!.id,
+            includeContent: true,
+            limit: 20
+          }
+        )
+      ).resolves.toEqual([]);
+      expect(decrypt).not.toHaveBeenCalled();
     });
   });
 
@@ -1732,7 +5727,9 @@ describeDb("memory repository visibility", () => {
     const removedAccessAudit = teamAuditEvents?.find(
       (event) => event.action === "team.workspace_access.removed"
     );
-    expect(teamAuditEvents?.[0]).toMatchObject({
+    expect(
+      teamAuditEvents?.find((event) => event.action === "team.member.enabled")
+    ).toMatchObject({
       action: "team.member.enabled"
     });
     expect(removedAccessAudit).toMatchObject({
@@ -1857,6 +5854,122 @@ describeDb("memory repository visibility", () => {
     expect(await repo.getSessionUser(deletedHash)).toBeNull();
   });
 
+  it("maps external AuthKit identities by provider user id instead of email", async () => {
+    const existingEmail = `external-auth-existing-${randomUUID()}@example.com`;
+    await repo.createUser({
+      email: existingEmail,
+      displayName: "Existing Local User"
+    });
+
+    await expect(
+      repo.upsertExternalAuthSession({
+        provider: "workos_authkit",
+        providerEnvironment: "test",
+        providerUserId: `workos-${randomUUID()}`,
+        email: existingEmail,
+        emailVerified: true,
+        displayName: "External Same Email"
+      })
+    ).rejects.toThrow(
+      "External identity is not linked to the existing Koed account"
+    );
+
+    const providerUserId = `workos-${randomUUID()}`;
+    const created = await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: `external-auth-created-${randomUUID()}@example.com`,
+      emailVerified: true,
+      displayName: "External User",
+      profile: {
+        safe: true,
+        refresh_token: "should-not-be-supplied-by-route"
+      }
+    });
+    const seenAgain = await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: `external-auth-renamed-${randomUUID()}@example.com`,
+      emailVerified: false,
+      displayName: "External Renamed"
+    });
+
+    expect(created.createdUser).toBe(true);
+    expect(seenAgain.createdUser).toBe(false);
+    expect(seenAgain.user.id).toBe(created.user.id);
+    const identity = await repo.getExternalAuthIdentity({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId
+    });
+    expect(identity).toMatchObject({
+      userId: created.user.id,
+      emailVerified: false,
+      displayName: "External Renamed"
+    });
+    expect(JSON.stringify(identity?.profile)).not.toContain("refresh_token");
+  });
+
+  it("records WorkOS organization mapping without granting Team membership", async () => {
+    const providerUserId = `workos-${randomUUID()}`;
+    const providerOrganizationId = `org-${randomUUID()}`;
+    const result = await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: `external-auth-org-${randomUUID()}@example.com`,
+      organization: {
+        providerOrganizationId,
+        name: "Mapped Organization",
+        metadata: { source: "test" }
+      }
+    });
+    await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: `external-auth-org-updated-${randomUUID()}@example.com`,
+      organization: {
+        providerOrganizationId,
+        name: "Mapped Organization Renamed",
+        metadata: { source: "test-again" }
+      }
+    });
+    const mappedTeamCount = await pool.query<{ count: string }>(
+      `
+        select count(*)::text as count
+        from teams t
+        join external_auth_organizations eao on eao.team_id = t.id
+        where eao.provider_organization_id = $1
+      `,
+      [providerOrganizationId]
+    );
+    const namedTeamCount = await pool.query<{ count: string }>(
+      `
+        select count(*)::text as count
+        from teams
+        where name like 'Mapped Organization%'
+      `
+    );
+
+    expect(result.organization).toMatchObject({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      name: "Mapped Organization",
+      status: "linked"
+    });
+    expect(
+      await repo.getTeamMembership(
+        { userId: result.user.id },
+        result.organization!.teamId
+      )
+    ).toBeNull();
+    expect(mappedTeamCount.rows[0]?.count).toBe("1");
+    expect(namedTeamCount.rows[0]?.count).toBe("1");
+  });
+
   it("records user-scoped audit events through the Drizzle-backed repository slice", async () => {
     const alice = await repo.createUser({
       email: `audit-alice-${randomUUID()}@example.com`
@@ -1921,6 +6034,119 @@ describeDb("memory repository visibility", () => {
     expect(
       await repo.listAuditEvents({ userId: alice.id }, { limit: 1 })
     ).toHaveLength(1);
+  });
+
+  it("summarizes activation analytics without exposing event attributes", async () => {
+    const owner = await repo.createUser({
+      email: `analytics-owner-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `analytics-member-${randomUUID()}@example.com`
+    });
+    const outsider = await repo.createUser({
+      email: `analytics-outsider-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Analytics Team" }
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+
+    await repo.recordAuditEvent({
+      actorUserId: owner.id,
+      ownerUserId: owner.id,
+      action: "analytics.activation.desktop_connected",
+      targetTable: "teams",
+      targetId: team.id,
+      metadata: {
+        event: "desktop_connected",
+        surface: "desktop",
+        deploymentProfile: "koed_managed_cloud",
+        teamId: team.id,
+        attributes: { os: "linux", rawPromptLikeValue: "must not appear" }
+      }
+    });
+    await repo.recordAuditEvent({
+      actorUserId: member.id,
+      ownerUserId: member.id,
+      action: "analytics.activation.first_recall_completed",
+      targetTable: "teams",
+      targetId: team.id,
+      metadata: {
+        event: "first_recall_completed",
+        surface: "explorer",
+        deploymentProfile: "koed_managed_cloud",
+        teamId: team.id,
+        attributes: { route: "memory_answer" }
+      }
+    });
+    await repo.recordAuditEvent({
+      actorUserId: outsider.id,
+      ownerUserId: outsider.id,
+      action: "analytics.activation.desktop_connected",
+      targetTable: "users",
+      targetId: outsider.id,
+      metadata: {
+        event: "desktop_connected",
+        surface: "desktop",
+        deploymentProfile: "private_vps"
+      }
+    });
+
+    const teamFunnel = await repo.getActivationAnalyticsFunnel(
+      { userId: owner.id },
+      { teamId: team.id }
+    );
+    expect(teamFunnel).toMatchObject({
+      scope: { ownerUserId: null, teamId: team.id, teamWorkspaceId: null },
+      window: { since: null, until: null },
+      events: [
+        {
+          event: "desktop_connected",
+          count: 1,
+          surfaces: { desktop: 1 },
+          deploymentProfiles: { koed_managed_cloud: 1 }
+        },
+        {
+          event: "first_recall_completed",
+          count: 1,
+          surfaces: { explorer: 1 },
+          deploymentProfiles: { koed_managed_cloud: 1 }
+        }
+      ]
+    });
+    expect(JSON.stringify(teamFunnel)).not.toContain("must not appear");
+    expect(JSON.stringify(teamFunnel)).not.toContain("memory_answer");
+    await expect(
+      repo.getActivationAnalyticsFunnel(
+        { userId: member.id },
+        { teamId: team.id }
+      )
+    ).resolves.toBeNull();
+    await expect(
+      repo.getActivationAnalyticsFunnel(
+        { userId: outsider.id },
+        { teamId: team.id }
+      )
+    ).resolves.toBeNull();
+
+    const personalFunnel = await repo.getActivationAnalyticsFunnel({
+      userId: outsider.id
+    });
+    expect(personalFunnel).toMatchObject({
+      scope: { ownerUserId: outsider.id, teamId: null, teamWorkspaceId: null },
+      events: [
+        {
+          event: "desktop_connected",
+          count: 1,
+          surfaces: { desktop: 1 },
+          deploymentProfiles: { private_vps: 1 }
+        }
+      ]
+    });
   });
 
   it("filters personal memory to the owning user", async () => {
@@ -3749,6 +7975,132 @@ describeDb("memory repository visibility", () => {
     ]);
   });
 
+  it("keeps LCM graph hydration working with encrypted Memory Event and Node fields present", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 10).toString("base64")
+    );
+    const encryptedMemoryRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const alice = await repo.createUser({
+      email: `alice-lcm-encrypted-${randomUUID()}@example.com`
+    });
+    const engine = createMemoryEngine(repo);
+    const workspaceId = randomUUID();
+    await pool.query(
+      `
+        insert into workspaces (id, owner_user_id, visibility, name)
+        values ($1, $2, 'personal', 'Encrypted LCM Project')
+      `,
+      [workspaceId, alice.id]
+    );
+
+    for (let index = 1; index <= 5; index += 1) {
+      await captureUserEvent(engine, alice.id, {
+        workspaceId,
+        content: `Encrypted LCM source ${index}: retain falcon database shard detail.`
+      });
+    }
+
+    const compacted = await repo.createLcmNodes(
+      { userId: alice.id },
+      { visibility: "personal" }
+    );
+    expect(compacted.leafNodeIds).toHaveLength(1);
+    const leafNodeId = compacted.leafNodeIds[0]!;
+
+    for (const source of [
+      { sourceTable: "memory_events", sourceColumn: "payload", totalRows: 5 },
+      {
+        sourceTable: "memory_nodes",
+        sourceColumn: "summary_text",
+        totalRows: 1
+      },
+      {
+        sourceTable: "memory_nodes",
+        sourceColumn: "source_items_json",
+        totalRows: 1
+      }
+    ] as const) {
+      const run = await encryptedRepo.createEncryptedFieldBackfillRun(
+        { userId: alice.id },
+        {
+          sourceTable: source.sourceTable,
+          sourceColumn: source.sourceColumn,
+          providerMode: "local_test_key",
+          totalRows: source.totalRows
+        }
+      );
+      await expect(
+        encryptedRepo.backfillEncryptedFieldBatch(
+          { userId: alice.id },
+          provider,
+          {
+            runId: run.id,
+            sourceTable: source.sourceTable,
+            sourceColumn: source.sourceColumn,
+            batchSize: 20
+          }
+        )
+      ).resolves.toMatchObject({
+        failedRows: 0,
+        done: true
+      });
+    }
+
+    const encryptedCount = await pool.query<{ count: number }>(
+      `
+        select count(*)::int as count
+        from encrypted_field_payloads
+        where owner_user_id = $1
+          and invalidated_at is null
+      `,
+      [alice.id]
+    );
+    expect(encryptedCount.rows[0]?.count).toBe(7);
+
+    const graphNode = await encryptedMemoryRepo.getLcmGraphNode(
+      { userId: alice.id },
+      leafNodeId
+    );
+    expect(JSON.stringify(graphNode)).toContain("falcon database shard detail");
+
+    const lexical = await encryptedMemoryRepo.searchMemoryNodes(
+      { userId: alice.id },
+      {
+        query: "falcon database shard",
+        scope: "personal",
+        searchDomain: "project",
+        workspaceId,
+        retrievalStage: "lexical_search"
+      }
+    );
+    expect(JSON.stringify(lexical.results)).not.toContain(
+      "falcon database shard detail"
+    );
+
+    const decryptedSourceItems =
+      await encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: alice.id },
+        provider,
+        {
+          sourceTable: "memory_nodes",
+          sourceId: leafNodeId,
+          sourceColumn: "source_items_json"
+        }
+      );
+    const decryptedItems = decryptedSourceItems?.plaintext;
+    expect(Array.isArray(decryptedItems)).toBe(true);
+    expect(
+      (decryptedItems as Array<{ text?: unknown }>).some(
+        (item) =>
+          typeof item.text === "string" &&
+          item.text.includes("falcon database shard detail")
+      )
+    ).toBe(true);
+  });
+
   it("persists personal memory questions as shells and hydrated detail", async () => {
     const alice = await repo.createUser({
       email: `alice-question-${randomUUID()}@example.com`
@@ -4037,6 +8389,532 @@ describeDb("memory repository visibility", () => {
     expect(slowCompletion?.answerMarkdown).toBe(
       "Slow answers complete if no newer attempt exists."
     );
+  });
+
+  it("encrypts paid managed-cloud Memory Question payloads on live writes", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 34).toString("base64")
+      );
+      const encryptedQuestionRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const encryptedPayloadRepo = createEncryptedPayloadRepository(pool);
+      const alice = await repo.createUser({
+        email: `alice-question-live-encrypted-${randomUUID()}@example.com`
+      });
+      const bob = await repo.createUser({
+        email: `bob-question-live-encrypted-${randomUUID()}@example.com`
+      });
+      const created = await encryptedQuestionRepo.createMemoryQuestion(
+        { userId: alice.id },
+        {
+          origin: "mcp_memory_answer",
+          query: "Where did the obsidian retrieval plan land?",
+          searchDomain: "global",
+          localMemoryWorkerConfig: {
+            provider: "codex",
+            model: "gpt-5.4-mini",
+            prompt: "obsidian worker config must stay encrypted"
+          }
+        }
+      );
+
+      expect(created).toMatchObject({
+        query: "Where did the obsidian retrieval plan land?",
+        localMemoryWorkerConfig: {
+          provider: "codex",
+          model: "gpt-5.4-mini",
+          prompt: "obsidian worker config must stay encrypted"
+        }
+      });
+
+      const claimed = await encryptedQuestionRepo.claimPendingMemoryQuestions(
+        { userId: alice.id },
+        { questionId: created.id, limit: 1, leaseSeconds: 120 }
+      );
+      expect(claimed[0]).toMatchObject({
+        id: created.id,
+        query: "Where did the obsidian retrieval plan land?",
+        localMemoryWorkerConfig: {
+          prompt: "obsidian worker config must stay encrypted"
+        }
+      });
+
+      const answered = await encryptedQuestionRepo.updateMemoryQuestion(
+        { userId: alice.id },
+        created.id,
+        {
+          status: "answered",
+          attemptCount: claimed[0]!.attemptCount,
+          answerMarkdown:
+            "The obsidian retrieval plan landed in the Team launch doc.",
+          evidence: [
+            {
+              sourceId: "obsidian-evidence-1",
+              text: "First obsidian evidence snippet"
+            },
+            {
+              sourceId: "obsidian-evidence-2",
+              text: "Second obsidian evidence snippet"
+            }
+          ],
+          citations: [
+            {
+              sourceId: "obsidian-evidence-1",
+              label: "Obsidian source"
+            }
+          ],
+          retrieval: {
+            query: "obsidian retrieval plan",
+            stages: ["vector_search", "rerank"]
+          },
+          localMemoryWorker: {
+            provider: "codex",
+            model: "gpt-5.4-mini",
+            summary: "obsidian local worker details"
+          },
+          response: {
+            markdown:
+              "The obsidian retrieval plan landed in the Team launch doc."
+          }
+        }
+      );
+
+      expect(answered).toMatchObject({
+        id: created.id,
+        status: "answered",
+        query: "Where did the obsidian retrieval plan land?",
+        answerMarkdown:
+          "The obsidian retrieval plan landed in the Team launch doc.",
+        evidenceCount: 2,
+        evidence: [
+          {
+            sourceId: "obsidian-evidence-1",
+            text: "First obsidian evidence snippet"
+          },
+          {
+            sourceId: "obsidian-evidence-2",
+            text: "Second obsidian evidence snippet"
+          }
+        ]
+      });
+
+      const rawQuestion = await pool.query<{
+        query: string;
+        answer_markdown: string | null;
+        evidence: unknown[] | null;
+        local_memory_worker_config: Record<string, unknown> | null;
+        raw_payload: string;
+      }>(
+        `
+          select
+            query,
+            answer_markdown,
+            evidence,
+            local_memory_worker_config,
+            row_to_json(memory_questions)::text as raw_payload
+          from memory_questions
+          where id = $1
+        `,
+        [created.id]
+      );
+      expect(rawQuestion.rows[0]).toMatchObject({
+        query: "[koed encrypted memory question]",
+        answer_markdown: "[koed encrypted memory question]"
+      });
+      expect(rawQuestion.rows[0]?.local_memory_worker_config).toMatchObject({
+        contentEncrypted: true,
+        encryptedSourceTable: "memory_questions"
+      });
+      expect(rawQuestion.rows[0]?.evidence).toEqual([
+        {
+          contentEncrypted: true,
+          encryptedSourceTable: "memory_questions"
+        }
+      ]);
+      expect(rawQuestion.rows[0]?.raw_payload).not.toContain("obsidian");
+      expect(rawQuestion.rows[0]?.raw_payload).not.toContain("Team launch doc");
+
+      const encryptedColumns = await pool.query<{ source_column: string }>(
+        `
+          select source_column
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'memory_questions'
+            and source_id = $2
+            and invalidated_at is null
+          order by source_column
+        `,
+        [alice.id, created.id]
+      );
+      expect(encryptedColumns.rows.map((row) => row.source_column)).toEqual([
+        "answer_markdown",
+        "citations",
+        "evidence",
+        "local_memory_worker",
+        "local_memory_worker_config",
+        "query",
+        "response",
+        "retrieval"
+      ]);
+
+      const hidden = await encryptedPayloadRepo.decryptAuthorizedEncryptedField(
+        { userId: bob.id },
+        provider,
+        {
+          sourceTable: "memory_questions",
+          sourceId: created.id,
+          sourceColumn: "query"
+        }
+      );
+      expect(hidden).toBeNull();
+
+      const detail = await encryptedQuestionRepo.getMemoryQuestion(
+        { userId: alice.id },
+        created.id
+      );
+      expect(detail).toMatchObject({
+        id: created.id,
+        answerMarkdown:
+          "The obsidian retrieval plan landed in the Team launch doc.",
+        evidenceCount: 2,
+        retrieval: {
+          query: "obsidian retrieval plan"
+        },
+        localMemoryWorker: {
+          summary: "obsidian local worker details"
+        }
+      });
+
+      const shells = await encryptedQuestionRepo.listMemoryQuestions(
+        { userId: alice.id },
+        { query: "Team launch doc", limit: 10 }
+      );
+      expect(shells).toHaveLength(1);
+      expect(shells[0]).toMatchObject({
+        id: created.id,
+        query: "Where did the obsidian retrieval plan land?",
+        answerPreview:
+          "The obsidian retrieval plan landed in the Team launch doc.",
+        evidenceCount: 2
+      });
+    });
+  });
+
+  it("encrypts paid managed-cloud Memory Question retry and error payloads", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 35).toString("base64")
+      );
+      const encryptedQuestionRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const alice = await repo.createUser({
+        email: `alice-question-error-encrypted-${randomUUID()}@example.com`
+      });
+      const pending = await encryptedQuestionRepo.createMemoryQuestion(
+        { userId: alice.id },
+        {
+          query: "Can garnet memory worker failures be retried?",
+          searchDomain: "global"
+        }
+      );
+      const claimed = await encryptedQuestionRepo.claimPendingMemoryQuestions(
+        { userId: alice.id },
+        { questionId: pending.id, limit: 1, leaseSeconds: 120 }
+      );
+      const released = await encryptedQuestionRepo.updateMemoryQuestion(
+        { userId: alice.id },
+        pending.id,
+        {
+          status: "pending",
+          attemptCount: claimed[0]!.attemptCount,
+          lastErrorMessage: "garnet worker timed out",
+          retrieval: { query: "garnet retry retrieval" },
+          response: { markdown: "garnet retry raw response" },
+          localMemoryWorker: { error: "garnet worker timed out" }
+        }
+      );
+
+      expect(released).toMatchObject({
+        status: "pending",
+        lastErrorMessage: "garnet worker timed out",
+        retrieval: { query: "garnet retry retrieval" },
+        response: { markdown: "garnet retry raw response" },
+        localMemoryWorker: { error: "garnet worker timed out" }
+      });
+
+      const finalError = await encryptedQuestionRepo.createFinalMemoryQuestion(
+        { userId: alice.id },
+        {
+          origin: "mcp_memory_answer",
+          query: "Why did the garnet memory answer fail?",
+          searchDomain: "global",
+          status: "error",
+          errorMessage: "garnet memory answer failed permanently",
+          response: { error: "garnet permanent failure" },
+          retrieval: { query: "garnet error retrieval" },
+          localMemoryWorker: { error: "garnet permanent failure" }
+        }
+      );
+
+      expect(finalError).toMatchObject({
+        status: "error",
+        query: "Why did the garnet memory answer fail?",
+        errorMessage: "garnet memory answer failed permanently",
+        lastErrorMessage: "garnet memory answer failed permanently",
+        response: { error: "garnet permanent failure" },
+        retrieval: { query: "garnet error retrieval" }
+      });
+
+      const rawQuestions = await pool.query<{ raw_payload: string }>(
+        `
+          select string_agg(row_to_json(memory_questions)::text, E'\n') as raw_payload
+          from memory_questions
+          where owner_user_id = $1
+        `,
+        [alice.id]
+      );
+      expect(rawQuestions.rows[0]?.raw_payload).not.toContain("garnet");
+
+      const encryptedColumns = await pool.query<{
+        source_id: string;
+        source_column: string;
+      }>(
+        `
+          select source_id::text, source_column
+          from encrypted_field_payloads
+          where owner_user_id = $1
+            and source_table = 'memory_questions'
+            and invalidated_at is null
+          order by source_id::text, source_column
+        `,
+        [alice.id]
+      );
+      const retryColumns = encryptedColumns.rows
+        .filter((row) => row.source_id === pending.id)
+        .map((row) => row.source_column);
+      const errorColumns = encryptedColumns.rows
+        .filter((row) => row.source_id === finalError.id)
+        .map((row) => row.source_column);
+      expect(retryColumns).toEqual([
+        "last_error_message",
+        "local_memory_worker",
+        "query",
+        "response",
+        "retrieval"
+      ]);
+      expect(errorColumns).toEqual([
+        "error_message",
+        "last_error_message",
+        "local_memory_worker",
+        "query",
+        "response",
+        "retrieval"
+      ]);
+    });
+  });
+
+  it("backfills Memory Question answers, evidence, citations, and retrieval as encrypted fields", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 11).toString("base64")
+    );
+    const encryptedQuestionRepo = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const alice = await repo.createUser({
+      email: `alice-question-encrypted-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-question-encrypted-${randomUUID()}@example.com`
+    });
+    const question = await repo.createFinalMemoryQuestion(
+      { userId: alice.id },
+      {
+        origin: "mcp_memory_answer",
+        query: "What evidence did encrypted questions retain?",
+        searchDomain: "global",
+        status: "answered",
+        answerMarkdown: "The encrypted question retained source evidence.",
+        response: {
+          markdown: "The encrypted question retained source evidence."
+        },
+        evidence: [
+          {
+            sourceId: "evidence-1",
+            text: "Evidence quote about the cobalt cache key."
+          }
+        ],
+        citations: [
+          {
+            sourceId: "evidence-1",
+            label: "Cobalt cache source"
+          }
+        ],
+        retrieval: {
+          stages: ["lexical_search"],
+          query: "cobalt cache key"
+        },
+        localMemoryWorker: {
+          usedFallback: false,
+          model: "gpt-5.4-mini"
+        }
+      }
+    );
+
+    for (const sourceColumn of [
+      "answer_markdown",
+      "evidence",
+      "citations",
+      "retrieval",
+      "local_memory_worker",
+      "response"
+    ]) {
+      const run = await encryptedRepo.createEncryptedFieldBackfillRun(
+        { userId: alice.id },
+        {
+          sourceTable: "memory_questions",
+          sourceColumn,
+          providerMode: "local_test_key",
+          totalRows: 1
+        }
+      );
+      await expect(
+        encryptedRepo.backfillEncryptedFieldBatch(
+          { userId: alice.id },
+          provider,
+          {
+            runId: run.id,
+            sourceTable: "memory_questions",
+            sourceColumn,
+            batchSize: 10
+          }
+        )
+      ).resolves.toMatchObject({
+        processedRows: 1,
+        encryptedRows: 1,
+        failedRows: 0,
+        done: true
+      });
+    }
+
+    const rawEncryptedRows = await pool.query<{
+      count: number;
+      ciphertext: string | null;
+    }>(
+      `
+        select count(*)::int as count, string_agg(ciphertext, '') as ciphertext
+        from encrypted_field_payloads
+        where owner_user_id = $1
+          and source_table = 'memory_questions'
+          and source_id = $2
+          and invalidated_at is null
+      `,
+      [alice.id, question.id]
+    );
+    expect(rawEncryptedRows.rows[0]).toMatchObject({ count: 6 });
+    expect(rawEncryptedRows.rows[0]?.ciphertext).not.toContain(
+      "cobalt cache key"
+    );
+    expect(rawEncryptedRows.rows[0]?.ciphertext).not.toContain(
+      "encrypted question retained"
+    );
+
+    const hidden = await encryptedRepo.decryptAuthorizedEncryptedField(
+      { userId: bob.id },
+      provider,
+      {
+        sourceTable: "memory_questions",
+        sourceId: question.id,
+        sourceColumn: "evidence"
+      }
+    );
+    expect(hidden).toBeNull();
+
+    const decryptedEvidence =
+      await encryptedRepo.decryptAuthorizedEncryptedField(
+        { userId: alice.id },
+        provider,
+        {
+          sourceTable: "memory_questions",
+          sourceId: question.id,
+          sourceColumn: "evidence"
+        }
+      );
+    expect(decryptedEvidence?.plaintext).toEqual([
+      {
+        sourceId: "evidence-1",
+        text: "Evidence quote about the cobalt cache key."
+      }
+    ]);
+
+    const detail = await encryptedQuestionRepo.getMemoryQuestion(
+      { userId: alice.id },
+      question.id
+    );
+    expect(detail).toMatchObject({
+      id: question.id,
+      status: "answered",
+      answerMarkdown: "The encrypted question retained source evidence.",
+      evidenceCount: 1
+    });
+  });
+
+  it("disables plaintext lexical search by default in managed SaaS profile", async () => {
+    const alice = await repo.createUser({
+      email: `alice-managed-lexical-${randomUUID()}@example.com`
+    });
+    try {
+      process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+      delete process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
+
+      await expect(
+        repo.searchMemoryNodes(
+          { userId: alice.id },
+          {
+            query: "plaintext lexical should not run",
+            scope: "personal",
+            searchDomain: "global",
+            retrievalStage: "lexical_search"
+          }
+        )
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        payload: {
+          error: "plaintext_lexical_search_disabled",
+          deploymentProfile: "koed_managed_cloud"
+        }
+      });
+
+      process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED = "true";
+      await expect(
+        repo.searchMemoryNodes(
+          { userId: alice.id },
+          {
+            query: "plaintext lexical allowed only by explicit opt-in",
+            scope: "personal",
+            searchDomain: "global",
+            retrievalStage: "lexical_search"
+          }
+        )
+      ).resolves.toMatchObject({
+        results: []
+      });
+    } finally {
+      if (originalKoedDeploymentProfile === undefined) {
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      } else {
+        process.env.KOED_DEPLOYMENT_PROFILE = originalKoedDeploymentProfile;
+      }
+      if (originalPlaintextLexicalSearchEnabled === undefined) {
+        delete process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED;
+      } else {
+        process.env.MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED =
+          originalPlaintextLexicalSearchEnabled;
+      }
+    }
   });
 
   it("returns the original memory event for duplicate capture keys", async () => {

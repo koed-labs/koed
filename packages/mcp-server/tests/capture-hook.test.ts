@@ -6,6 +6,7 @@ import { defaultConfig, MemoryApiError } from "../src/index.js";
 import {
   buildRawTranscriptConversationItems,
   captureTranscriptPathForPayload,
+  detachedHookChildEnv,
   emptyHookBreakerState,
   effectiveCaptureContext,
   extractTranscriptSessionMetadata,
@@ -40,7 +41,7 @@ const withHookStateFile = async (
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-hook-state-"));
   const statePath = path.join(dir, "hook-state.json");
   process.env.MEMORY_HOOK_STATE_PATH = statePath;
-  process.env.MEMORY_API_URL = "http://127.0.0.1:3000";
+  process.env.MEMORY_API_URL = "http://127.0.0.1:3300";
   process.env.MEMORY_API_TOKEN = "test-token";
   try {
     await run({ dir, statePath });
@@ -76,6 +77,32 @@ const readOnlyTranscriptCatchupStatus = (
 };
 
 describe("Codex capture hook transcript parsing", () => {
+  it("keeps upstream and device credentials out of detached hook children", () => {
+    const env = detachedHookChildEnv({
+      PATH: "/usr/bin",
+      CODEX_HOME: "/tmp/codex",
+      MEMORY_API_URL: "http://127.0.0.1:3300",
+      MEMORY_API_TOKEN: "local-capture-token",
+      KOED_UPSTREAM_ACCESS_TOKEN: "upstream-token",
+      KOED_DEVICE_CREDENTIAL_SECRET: "device-secret",
+      WORKOS_API_KEY: "workos-secret",
+      AUTHKIT_CLIENT_SECRET: "authkit-secret",
+      UPSTREAM_COOKIE: "cloud-cookie"
+    });
+
+    expect(env).toMatchObject({
+      PATH: "/usr/bin",
+      CODEX_HOME: "/tmp/codex",
+      MEMORY_API_URL: "http://127.0.0.1:3300",
+      MEMORY_API_TOKEN: "local-capture-token"
+    });
+    expect(env.KOED_UPSTREAM_ACCESS_TOKEN).toBeUndefined();
+    expect(env.KOED_DEVICE_CREDENTIAL_SECRET).toBeUndefined();
+    expect(env.WORKOS_API_KEY).toBeUndefined();
+    expect(env.AUTHKIT_CLIENT_SECRET).toBeUndefined();
+    expect(env.UPSTREAM_COOKIE).toBeUndefined();
+  });
+
   it("uses a short hook API timeout without changing the MCP default timeout", () => {
     const priorApiTimeout = process.env.MEMORY_API_REQUEST_TIMEOUT_MS;
     const priorHookTimeout = process.env.MEMORY_HOOK_API_REQUEST_TIMEOUT_MS;
@@ -96,7 +123,7 @@ describe("Codex capture hook transcript parsing", () => {
       fs.writeFileSync(
         configPath,
         JSON.stringify({
-          apiUrl: "http://127.0.0.1:3000",
+          apiUrl: "http://127.0.0.1:3300",
           requestTimeoutMs: 1500
         })
       );
@@ -107,7 +134,7 @@ describe("Codex capture hook transcript parsing", () => {
       fs.writeFileSync(
         catchupConfigPath,
         JSON.stringify({
-          apiUrl: "http://127.0.0.1:3000",
+          apiUrl: "http://127.0.0.1:3300",
           requestTimeoutMs: 1500,
           catchupRequestTimeoutMs: 45000
         })
@@ -552,13 +579,13 @@ describe("Codex capture hook transcript parsing", () => {
 
     expect(
       stateScopeKey(
-        { apiUrl: "http://localhost:3000", apiToken: "old-token" },
+        { apiUrl: "http://localhost:3300", apiToken: "old-token" },
         workspaceId,
         "user-1"
       )
     ).toBe(
       stateScopeKey(
-        { apiUrl: "http://localhost:3000/", apiToken: "new-token" },
+        { apiUrl: "http://localhost:3300/", apiToken: "new-token" },
         workspaceId,
         "user-1"
       )
@@ -570,13 +597,13 @@ describe("Codex capture hook transcript parsing", () => {
 
     expect(
       stateScopeKey(
-        { apiUrl: "http://localhost:3000", apiToken: "token-a" },
+        { apiUrl: "http://localhost:3300", apiToken: "token-a" },
         workspaceId,
         "user-1"
       )
     ).not.toBe(
       stateScopeKey(
-        { apiUrl: "http://localhost:3000", apiToken: "token-b" },
+        { apiUrl: "http://localhost:3300", apiToken: "token-b" },
         workspaceId,
         "user-2"
       )

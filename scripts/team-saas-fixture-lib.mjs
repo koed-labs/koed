@@ -917,6 +917,27 @@ export const listTeamVisibleMessages = async (
 };
 
 const titlesFor = (rows) => rows.map((row) => row.title).sort();
+const workspaceAccessFor = (workspaceKey, userKey) =>
+  fixtureWorkspaceAccess.find(
+    ([candidateWorkspace, candidateUser]) =>
+      candidateWorkspace === workspaceKey && candidateUser === userKey
+  )?.[2] ?? null;
+const expectedTeamVisibleTitles = ({ userKey, workspaceKey }) => {
+  const access = workspaceAccessFor(workspaceKey, userKey);
+  if (access !== "read" && access !== "write") {
+    return [];
+  }
+
+  return fixtureMemoryRows
+    .filter(
+      (memory) =>
+        memory.workspace === workspaceKey &&
+        memory.shareState !== "private" &&
+        memory.shareState !== "revoked"
+    )
+    .map((memory) => memory.title)
+    .sort();
+};
 const assertIncludes = (titles, title, label) => {
   if (!titles.includes(title)) {
     throw new Error(
@@ -927,6 +948,13 @@ const assertIncludes = (titles, title, label) => {
 const assertExcludes = (titles, title, label) => {
   if (titles.includes(title)) {
     throw new Error(`${label}: expected ${JSON.stringify(title)} to be hidden`);
+  }
+};
+const assertDeepEqual = (actual, expected, label) => {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
+    );
   }
 };
 const fixtureMemory = (key) => {
@@ -1189,6 +1217,17 @@ export const validateFixture = async (client) => {
     "Managed Knowledge Ingestion for Bob"
   );
 
+  for (const userKey of Object.keys(fixtureUsers)) {
+    for (const workspaceKey of Object.keys(fixtureWorkspaces)) {
+      const label = `${fixtureWorkspaces[workspaceKey].name} for ${fixtureUsers[userKey].displayName}`;
+      const actual = titlesFor(
+        await listTeamVisibleMemories(client, { userKey, workspaceKey })
+      );
+      const expected = expectedTeamVisibleTitles({ userKey, workspaceKey });
+      assertDeepEqual(actual, expected, `${label} Team-visible candidates`);
+    }
+  }
+
   const electronMessagesForCarol = (
     await listTeamVisibleMessages(client, {
       userKey: "carol",
@@ -1220,9 +1259,13 @@ export const validateFixture = async (client) => {
       "Fixture API sessions are available when API_TOKEN_PEPPER is configured",
       "Electron hides revoked and private memories",
       "Electron has hook message rows for graph/timeline checks",
+      "Team-visible candidate selection matches the full user and Workspace truth matrix",
+      "Team-visible graph sources preserve memory_event and message evidence items",
       "Cloud includes retained Team knowledge after personal deletion",
       "Cloud blocks Bob after Workspace removal",
-      "Managed Knowledge Ingestion hides private agent prompt scratchpad"
+      "Workspace access removal does not delete Team-retained source rows",
+      "Managed Knowledge Ingestion hides private agent prompt scratchpad",
+      "API-session-backed fixture users support remote browser validation"
     ]
   };
 };

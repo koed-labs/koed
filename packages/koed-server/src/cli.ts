@@ -20,6 +20,14 @@ import {
   installPackagedRuntime
 } from "./runtime-packaged.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import {
+  listUpstreamBackends,
+  refreshUpstreamBackendCapabilities,
+  registerUpstreamBackend,
+  removeUpstreamBackend,
+  updateUpstreamBackendRoutePolicy,
+  type UpstreamRoutePolicyUpdate
+} from "./upstream-registry.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -36,6 +44,11 @@ Commands:
   models install --json  Download bundled local model with SHA-256 verification
   runtime status --json  Print native bundled-local runtime install state
   runtime install --json Install native bundled-local runtime assets explicitly
+  upstream list --json   List registered upstream backend status
+  upstream register --json Register or update an upstream backend
+  upstream refresh --json Refresh cached upstream capabilities
+  upstream policy --json  Update explicit upstream route-policy families
+  upstream remove --json Remove an upstream backend
 
 Runtime providers:
   --provider homebrew       Use Homebrew-backed runtime assets (default)
@@ -65,6 +78,11 @@ export interface KoedServerCliDependencies {
   installRuntime?: typeof installHomebrewRuntime;
   collectPackagedRuntimeStatus?: typeof collectPackagedRuntimeStatus;
   installPackagedRuntime?: typeof installPackagedRuntime;
+  listUpstreams?: typeof listUpstreamBackends;
+  registerUpstream?: typeof registerUpstreamBackend;
+  refreshUpstream?: typeof refreshUpstreamBackendCapabilities;
+  updateUpstreamPolicy?: typeof updateUpstreamBackendRoutePolicy;
+  removeUpstream?: typeof removeUpstreamBackend;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -78,9 +96,30 @@ const printJson = (
   stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 };
 
+const mergeRepoEnvironment = (
+  repoEnv: Record<string, string>,
+  environment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv => {
+  const nonEmptyEnvironment = Object.fromEntries(
+    Object.entries(environment).filter(([, value]) => value?.trim())
+  );
+  return {
+    ...repoEnv,
+    ...nonEmptyEnvironment
+  };
+};
+
 const flagValue = (args: string[], name: string): string | undefined => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
+};
+
+const requireFlagValue = (args: string[], name: string): string => {
+  const value = flagValue(args, name);
+  if (!value) {
+    throw new Error(`${name} is required.`);
+  }
+  return value;
 };
 
 type SpawnLike = typeof nodeSpawn;
@@ -197,6 +236,31 @@ const assertRuntimeFlags = (
   return provider;
 };
 
+const routePolicyFlags: Array<{
+  flag: string;
+  key: keyof UpstreamRoutePolicyUpdate;
+}> = [
+  { flag: "--personal-memory-read", key: "personalMemoryRead" },
+  { flag: "--team-workspace-read", key: "teamWorkspaceRead" },
+  { flag: "--share-grant-management", key: "shareGrantManagement" },
+  { flag: "--capture-writes", key: "captureWrites" },
+  { flag: "--sync", key: "sync" },
+  { flag: "--admin", key: "admin" }
+];
+
+const parseRoutePolicyUpdate = (args: string[]): UpstreamRoutePolicyUpdate => {
+  const update: UpstreamRoutePolicyUpdate = {};
+  for (const { flag, key } of routePolicyFlags) {
+    const value = flagValue(args, flag);
+    if (!value) continue;
+    if (value !== "enabled" && value !== "disabled") {
+      throw new Error(`${flag} must be enabled or disabled.`);
+    }
+    update[key] = value;
+  }
+  return update;
+};
+
 export const runKoedServerCli = async (
   args: string[],
   {
@@ -215,6 +279,11 @@ export const runKoedServerCli = async (
     collectPackagedRuntimeStatus:
       collectPackagedRuntime = collectPackagedRuntimeStatus,
     installPackagedRuntime: installPackaged = installPackagedRuntime,
+    listUpstreams = listUpstreamBackends,
+    registerUpstream = registerUpstreamBackend,
+    refreshUpstream = refreshUpstreamBackendCapabilities,
+    updateUpstreamPolicy = updateUpstreamBackendRoutePolicy,
+    removeUpstream = removeUpstreamBackend,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -323,10 +392,9 @@ export const runKoedServerCli = async (
         throw new Error("--kind must be embedding or reranker.");
       }
       const paths = resolvePaths();
-      const modelEnvironment = {
-        ...loadEnvironment(paths.repoRoot),
-        ...process.env
-      };
+      const modelEnvironment = mergeRepoEnvironment(
+        loadEnvironment(paths.repoRoot)
+      );
       const result = await collectModelStatus(
         paths,
         modelKind,
@@ -345,10 +413,9 @@ export const runKoedServerCli = async (
         throw new Error("--kind must be embedding or reranker.");
       }
       const paths = resolvePaths();
-      const modelEnvironment = {
-        ...loadEnvironment(paths.repoRoot),
-        ...process.env
-      };
+      const modelEnvironment = mergeRepoEnvironment(
+        loadEnvironment(paths.repoRoot)
+      );
       const result = await installModel(paths, modelKind, modelEnvironment);
       if (wantsJson) {
         printJson(stdout, result);
@@ -361,10 +428,9 @@ export const runKoedServerCli = async (
     if (command === "runtime" && subcommand === "status") {
       const provider = assertRuntimeFlags(args, "status");
       const paths = resolvePaths();
-      const runtimeEnvironment = {
-        ...loadEnvironment(paths.repoRoot),
-        ...process.env
-      };
+      const runtimeEnvironment = mergeRepoEnvironment(
+        loadEnvironment(paths.repoRoot)
+      );
       const result =
         provider === "packaged"
           ? collectPackagedRuntime(paths, runtimeEnvironment)
@@ -380,14 +446,80 @@ export const runKoedServerCli = async (
     if (command === "runtime" && subcommand === "install") {
       const provider = assertRuntimeFlags(args, "install");
       const paths = resolvePaths();
-      const runtimeEnvironment = {
-        ...loadEnvironment(paths.repoRoot),
-        ...process.env
-      };
+      const runtimeEnvironment = mergeRepoEnvironment(
+        loadEnvironment(paths.repoRoot)
+      );
       const result =
         provider === "packaged"
           ? installPackaged(paths, runtimeEnvironment)
           : installRuntime(paths, runtimeEnvironment);
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "list") {
+      const paths = resolvePaths();
+      const result = listUpstreams(paths);
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "register") {
+      const paths = resolvePaths();
+      const result = registerUpstream(paths, {
+        url: requireFlagValue(args, "--url"),
+        id: flagValue(args, "--id"),
+        displayName: flagValue(args, "--name"),
+        profile: flagValue(args, "--profile")
+      });
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "refresh") {
+      const paths = resolvePaths();
+      const result = await refreshUpstream(
+        paths,
+        requireFlagValue(args, "--id")
+      );
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "policy") {
+      const paths = resolvePaths();
+      const result = updateUpstreamPolicy(
+        paths,
+        requireFlagValue(args, "--id"),
+        parseRoutePolicyUpdate(args)
+      );
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "upstream" && subcommand === "remove") {
+      const paths = resolvePaths();
+      const result = removeUpstream(paths, requireFlagValue(args, "--id"));
       if (wantsJson) {
         printJson(stdout, result);
       } else {

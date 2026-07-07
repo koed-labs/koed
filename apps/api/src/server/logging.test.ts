@@ -36,6 +36,69 @@ describe("API logging", () => {
     expect(JSON.stringify(serialized)).not.toContain("cm_session");
   });
 
+  it("serializes POST requests without body payloads or memory text", () => {
+    const serialized = serializeApiRequest({
+      id: "req-body-redaction",
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers: {
+        authorization: "Bearer cmt_raw_secret"
+      },
+      body: {
+        query: "raw memory sentinel should never enter API request logs",
+        apiKey: "sk-do-not-log"
+      },
+      routeOptions: { url: "/v1/memory/answer" }
+    });
+
+    expect(serialized).toEqual({
+      id: "req-body-redaction",
+      method: "POST",
+      path: "/v1/memory/answer",
+      route: "/v1/memory/answer"
+    });
+    expect(JSON.stringify(serialized)).not.toContain("raw memory sentinel");
+    expect(JSON.stringify(serialized)).not.toContain("sk-do-not-log");
+    expect(JSON.stringify(serialized)).not.toContain("Bearer");
+  });
+
+  it("redacts Team Memory request bodies from diagnostic logs", () => {
+    const serialized = serializeApiRequest({
+      id: "req-team-memory-redaction",
+      method: "POST",
+      url: "/v1/team-workspaces/workspace-1/memory/questions",
+      headers: {
+        authorization: "Bearer cmt_team_secret",
+        cookie: "cm_session=cms_team_secret"
+      },
+      body: {
+        query: "shared roadmap memory sentinel",
+        evidence: [{ text: "private customer evidence sentinel" }],
+        localMemoryWorkerConfig: {
+          prompt: "worker prompt sentinel"
+        },
+        apiKey: "sk-team-do-not-log"
+      },
+      routeOptions: {
+        url: "/v1/team-workspaces/:teamWorkspaceId/memory/questions"
+      }
+    });
+
+    expect(serialized).toEqual({
+      id: "req-team-memory-redaction",
+      method: "POST",
+      path: "/v1/team-workspaces/workspace-1/memory/questions",
+      route: "/v1/team-workspaces/:teamWorkspaceId/memory/questions"
+    });
+    const serializedText = JSON.stringify(serialized);
+    expect(serializedText).not.toContain("shared roadmap memory sentinel");
+    expect(serializedText).not.toContain("private customer evidence sentinel");
+    expect(serializedText).not.toContain("worker prompt sentinel");
+    expect(serializedText).not.toContain("sk-team-do-not-log");
+    expect(serializedText).not.toContain("cmt_team_secret");
+    expect(serializedText).not.toContain("cms_team_secret");
+  });
+
   it("preserves W3C trace ids without logging all headers", () => {
     const serialized = serializeApiRequest({
       id: "req-2",

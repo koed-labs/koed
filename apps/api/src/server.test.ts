@@ -1,4 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   ExpandedMemoryNode,
@@ -9,30 +12,47 @@ import type {
 import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 import type {
   ActorContext,
+  ActivationAnalyticsFunnelRecord,
   AuditEventRecord,
   ApiTokenRecord,
   AcceptedTeamInviteRecord,
   CapturedSessionRecord,
   CreateMemoryNodeInput,
   CreateUserInput,
+  DeviceCredentialRecord,
+  DeviceEnrollmentChallengeRecord,
+  ExternalAuthIdentityRecord,
+  ExternalAuthOrganizationRecord,
   LocalMemoryAgentSettingRecord,
   MemoryQuestionDetailRecord,
   MemoryNodeRecord,
   MemorySourceRepository,
+  TeamBillingSeatStateRecord,
   TeamInviteRecord,
+  TeamEntitlementGateRecord,
   TeamMembershipRecord,
   TeamRecord,
+  TeamSessionShareGrantRecord,
+  TeamSupportOverviewRecord,
   TeamWorkspaceAccessRecord,
   TeamWorkspaceRecord,
   UserRecord,
   Visibility
 } from "@koed/db";
+import { createDbPool } from "@koed/db";
+import {
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  decryptEncryptedJsonPackage,
+  type EnvelopeEncryptionProvider,
+  type EncryptedJsonPackage
+} from "@koed/shared";
 import {
   buildServer,
   canReceiveGraphStreamPayload,
   graphUpdateActionForPayload,
   shouldIgnoreGraphStreamPayload
 } from "./server/index.js";
+import type { WorkosAuthKitClient } from "./auth/workos.js";
 
 afterEach(() => {
   for (const name of [
@@ -53,8 +73,31 @@ afterEach(() => {
     "CACHE_REDIS_URL",
     "GRAPH_CACHE_TTL_SECONDS",
     "KOED_HOST_CHECKOUT_PATH",
+    "KOED_DEPLOYMENT_PROFILE",
+    "KOED_RUNTIME_MODE",
+    "KOED_DEPENDENCY_MODE",
     "CORS_ORIGINS",
-    "API_CORS_ORIGINS"
+    "API_CORS_ORIGINS",
+    "WORKOS_AUTHKIT_ENABLED",
+    "WORKOS_API_BASE_URL",
+    "WORKOS_CLIENT_ID",
+    "WORKOS_API_KEY",
+    "WORKOS_REDIRECT_URI",
+    "WORKOS_PROVIDER_ENVIRONMENT",
+    "API_DATA_ENCRYPTION_KEY",
+    "API_ENVELOPE_ENCRYPTION_PROVIDER",
+    "MANAGED_KMS_KEY_ID",
+    "MANAGED_KMS_KEY_VERSION",
+    "MANAGED_KMS_ENDPOINT_URL",
+    "MANAGED_KMS_AUTH_TOKEN",
+    "KOED_HOME",
+    "KOED_BACKUP_STATUS_PATH",
+    "KOED_BACKUP_MAX_AGE_SECONDS",
+    "KOED_OPS_REQUEST_METRICS_STATUS_PATH",
+    "KOED_RUNBOOK_BASE_URL",
+    "KOED_OPS_OPERATOR_EMAILS",
+    "KOED_OPS_ALERT_WEBHOOK_URL",
+    "KOED_OPS_ALERT_WEBHOOK_TOKEN"
   ]) {
     delete process.env[name];
   }
@@ -72,11 +115,124 @@ const cookieHeader = (response: {
   return firstCookie?.split(";")[0] ?? "";
 };
 
+const cookieJarHeader = (response: {
+  headers: Record<string, unknown>;
+}): string => {
+  const cookie = response.headers["set-cookie"];
+  const cookies = isStringArray(cookie)
+    ? cookie
+    : typeof cookie === "string"
+      ? [cookie]
+      : [];
+  return cookies.map((item) => item.split(";")[0]).join("; ");
+};
+
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string");
 
 const jsonBody = <T>(response: { body: string }): T =>
   JSON.parse(response.body) as T;
+
+const hashSecretForTest = (secret: string): string =>
+  createHash("sha256")
+    .update(`${process.env.API_TOKEN_PEPPER ?? ""}${secret}`)
+    .digest("hex");
+
+const enrollDeviceCredentialForTest = async (
+  app: Awaited<ReturnType<typeof buildServer>>,
+  cookie: string,
+  operationFamilies: string[],
+  upstreamBackendId = "team-vps"
+): Promise<{
+  authorization: string;
+  credentialKeyId: string;
+  deviceSecret: string;
+}> => {
+  const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+  const deviceSecret = `device-secret-${randomUUID()}`;
+  const credentialKeyId = `device-key-${randomUUID()}`;
+  await app.inject({
+    method: "POST",
+    url: "/v1/local-edge/device-enrollments/challenges",
+    headers: { cookie },
+    payload: {
+      challenge_hash: challengeHash,
+      upstream_backend_id: upstreamBackendId,
+      device_instance_id: `device-${randomUUID()}`,
+      requested_operation_families: operationFamilies
+    }
+  });
+  const redeemed = await app.inject({
+    method: "POST",
+    url: "/v1/local-edge/device-enrollments/credentials",
+    headers: { cookie },
+    payload: {
+      challenge_hash: challengeHash,
+      credential_key_id: credentialKeyId,
+      verifier_kind: "secret_hash",
+      verifier_hash: hashSecretForTest(deviceSecret)
+    }
+  });
+  expect(redeemed.statusCode).toBe(200);
+
+  return {
+    authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`,
+    credentialKeyId,
+    deviceSecret
+  };
+};
+
+const writeUpstreamRegistryFixture = (
+  input: {
+    id?: string;
+    baseUrl?: string;
+    routePolicy?: Record<string, string>;
+    capabilityState?: string;
+    credentialStatus?: string;
+    expiresAt?: string | null;
+  } = {}
+): string => {
+  const dir = mkdtempSync(resolve(tmpdir(), "koed-api-upstreams-"));
+  const path = resolve(dir, "upstream-backends.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      backends: [
+        {
+          id: input.id ?? "team-vps",
+          displayName: "Team VPS",
+          baseUrl: input.baseUrl ?? "https://team.example.test/koed",
+          profile: "private_vps",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          routePolicy: {
+            personalMemoryRead: "disabled",
+            teamWorkspaceRead: "disabled",
+            shareGrantManagement: "disabled",
+            captureWrites: "disabled",
+            sync: "disabled",
+            admin: "disabled",
+            ...input.routePolicy
+          },
+          credential: {
+            status: input.credentialStatus ?? "configured"
+          },
+          capabilities: {
+            state: input.capabilityState ?? "validated",
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            expiresAt: input.expiresAt ?? "2099-01-01T00:00:00.000Z",
+            schemaVersion: 2,
+            profile: "private_vps",
+            releaseVersion: "0.2.0"
+          }
+        }
+      ]
+    })
+  );
+  return path;
+};
 
 type TokenResponse = {
   token: string;
@@ -98,14 +254,85 @@ type CapabilitiesResponse = {
   product: string;
   apiVersion: string;
   capabilitySchemaVersion: number;
+  audience: string;
   releaseVersion: string;
   deployment: {
-    mode: string;
+    profile: string;
     distribution: string;
     managedBy: string;
+    productBoundary: string;
+  };
+  runtime: {
+    localEdge: boolean;
+    remoteUpstreams: string;
+    dependencyMode: string;
   };
   auth: {
-    modes: string[];
+    providers: string[];
+    session: string;
+    apiTokens: string;
+    deviceEnrollment: string;
+    enrollment: {
+      setupPath: string;
+      deviceEnrollment: string;
+      apiTokenFallback: string;
+      authenticatedStatusEndpoint: string;
+      mcpAndCaptureHookTarget: string;
+      notes: string[];
+    };
+  };
+  memory: {
+    personal: string;
+    teamWorkspaces: string;
+    shareGrants: string;
+    crossIdentitySync: string;
+    memoryInbox: string;
+  };
+  commercial: {
+    billingEntitlements: string;
+    accessSuspension: string;
+    supportAdmin: string;
+    stateVocabulary: {
+      entitlementStatuses: string[];
+      billingStatuses: string[];
+      billingSeatSyncStatuses: string[];
+    };
+    entitlement: {
+      scope: string;
+      status: string;
+      allowsTeamAccess: boolean | null;
+      deniedOperationFamilies: string[];
+      teamId?: string;
+      requiresAuthentication: boolean;
+    };
+    billing: {
+      scope: string;
+      status: string;
+      overLimit: boolean | null;
+      seatSyncStatus: string | null;
+      requiresAuthentication: boolean;
+    };
+    featureGates: Record<
+      string,
+      {
+        capability: string;
+        availability: string;
+        entitlementStatus: string;
+        billingStatus: string;
+        enforcement: string;
+        requiresAuthentication: boolean;
+      }
+    >;
+  };
+  security: {
+    applicationLayerEncryption: string;
+    queryableVectors: string;
+    objectStorage: string;
+    deploymentTlsRequired: boolean;
+  };
+  authenticatedCapabilities: {
+    available: boolean;
+    endpoint: string;
   };
   providers: string[];
   capabilities: Record<
@@ -114,6 +341,7 @@ type CapabilitiesResponse = {
       availability: string;
       description: string;
       endpoints?: string[];
+      requiresAuthentication?: boolean;
     }
   >;
 };
@@ -129,6 +357,14 @@ type TeamInviteAcceptResponse = {
   user: { id: string; email: string };
   createdUser: boolean;
 };
+type TeamMembershipResponse = {
+  membership: {
+    teamId: string;
+    userId: string;
+    status: string;
+    role: string;
+  };
+};
 type TeamWorkspaceResponse = {
   teamWorkspace: { id: string; teamId: string; name: string };
 };
@@ -138,13 +374,37 @@ type TeamWorkspaceAccessResponse = {
     teamId: string;
     userId: string;
     access: string;
+    teamEntitlementStatus: string;
+    teamEntitlementAllowsAccess: boolean;
     canManageWorkspace: boolean;
     canRecall: boolean;
     canCreateShare: boolean;
   };
 };
+type TeamEntitlementResponse = {
+  entitlement: {
+    teamId: string;
+    status: string;
+    allowsTeamAccess: boolean;
+    deniedOperationFamilies: string[];
+    reason: string | null;
+  };
+};
+type TeamBillingSeatResponse = {
+  billingSeats: TeamBillingSeatStateRecord;
+};
+type TeamSupportOverviewResponse = {
+  supportOverview: TeamSupportOverviewRecord;
+};
+type TeamSessionShareGrantResponse = {
+  shareGrant: TeamSessionShareGrantRecord;
+};
+type TeamSessionShareGrantsResponse = {
+  shareGrants: TeamSessionShareGrantRecord[];
+};
 type TeamAuditEventsResponse = {
   auditEvents: Array<{
+    actorUserId: string | null;
     action: string;
     targetTable: string | null;
     targetId: string | null;
@@ -215,16 +475,33 @@ type GraphEventResponse = {
   event: Record<string, unknown> & { rawContent?: string };
 };
 type MemoryExportResponse = { nodes: Array<Record<string, unknown>> };
+type EncryptedMemoryExportResponse = EncryptedJsonPackage;
 type SessionResponse = { session: { id: string } };
 type ExpandedResponse = { expanded: { sources: Array<{ content: string }> } };
 type OpenApiResponse = { paths: Record<string, unknown> };
 type MemoryQuestionResponse = { question: MemoryQuestionDetailRecord };
 type MemoryQuestionsResponse = { questions: MemoryQuestionDetailRecord[] };
 
-const createFakeRepository = (): MemorySourceRepository => {
+const createFakeRepository = () => {
   const users = new Map<string, UserRecord>();
   const sessions = new Map<string, string>();
   const tokens = new Map<string, ApiTokenRecord & { tokenHash: string }>();
+  const deviceChallenges = new Map<
+    string,
+    DeviceEnrollmentChallengeRecord & { challengeHash: string }
+  >();
+  const deviceCredentials = new Map<
+    string,
+    DeviceCredentialRecord & {
+      verifierHash?: string | null;
+      publicKeyJwk?: Record<string, unknown> | null;
+    }
+  >();
+  const externalAuthIdentities = new Map<string, ExternalAuthIdentityRecord>();
+  const externalAuthOrganizations = new Map<
+    string,
+    ExternalAuthOrganizationRecord
+  >();
   const memories: MemoryNodeRecord[] = [];
   const policies: Array<{
     id: string;
@@ -248,8 +525,10 @@ const createFakeRepository = (): MemorySourceRepository => {
     TeamInviteRecord & { tokenHash: string }
   >();
   const teamMemberships = new Map<string, TeamMembershipRecord>();
+  const teamBillingSeatStates = new Map<string, TeamBillingSeatStateRecord>();
   const teamWorkspaces = new Map<string, TeamWorkspaceRecord>();
   const teamWorkspaceAccess = new Map<string, TeamWorkspaceAccessRecord>();
+  const teamSessionShareGrants = new Map<string, TeamSessionShareGrantRecord>();
   const auditEvents: AuditEventRecord[] = [];
   const events: MemoryEventRecord[] = [];
   const eventIdempotencyKeys = new Map<string, string>();
@@ -282,8 +561,293 @@ const createFakeRepository = (): MemorySourceRepository => {
       createdAt: new Date().toISOString()
     });
   };
+  const teamAllowsAccess = (team: TeamRecord | undefined): boolean =>
+    team?.entitlementStatus === "active" || team?.entitlementStatus === "grace";
+  const entitlementGateForTeam = (
+    team: TeamRecord
+  ): TeamEntitlementGateRecord => ({
+    teamId: team.id,
+    status: team.entitlementStatus,
+    allowsTeamAccess: teamAllowsAccess(team),
+    deniedOperationFamilies: teamAllowsAccess(team)
+      ? []
+      : ["ingestion", "recall", "share", "sync", "team_admin"],
+    reason: team.entitlementReason,
+    updatedAt: team.entitlementUpdatedAt
+  });
+  const reconcileTeamBillingSeats = (
+    teamId: string,
+    actorUserId: string | null,
+    reason: string,
+    initialSync = false
+  ): TeamBillingSeatStateRecord => {
+    const now = new Date().toISOString();
+    const previous = teamBillingSeatStates.get(teamId);
+    const billableSeatCount = [...teamMemberships.values()].filter(
+      (membership) =>
+        membership.teamId === teamId && membership.status === "enabled"
+    ).length;
+    const seatLimit = previous?.seatLimit ?? null;
+    const overLimit = seatLimit !== null && billableSeatCount > seatLimit;
+    const syncStatus = overLimit
+      ? "over_limit"
+      : initialSync && !previous
+        ? "synced"
+        : "pending_provider_update";
+    const state: TeamBillingSeatStateRecord = {
+      teamId,
+      seatLimit,
+      billableSeatCount,
+      pendingBillingSeatCount: billableSeatCount,
+      syncStatus,
+      overLimitAt: overLimit ? (previous?.overLimitAt ?? now) : null,
+      lastSyncedAt: previous?.lastSyncedAt ?? null,
+      lastErrorMessage: null,
+      updatedByUserId: actorUserId,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now
+    };
+    teamBillingSeatStates.set(teamId, state);
 
-  return {
+    const team = teams.get(teamId);
+    if (team) {
+      if (overLimit && team.entitlementStatus === "active") {
+        team.entitlementStatus = "grace";
+        team.entitlementReason = "seat_limit_exceeded";
+        team.entitlementUpdatedAt = now;
+        team.updatedAt = now;
+      } else if (
+        !overLimit &&
+        team.entitlementStatus === "grace" &&
+        team.entitlementReason === "seat_limit_exceeded"
+      ) {
+        team.entitlementStatus = "active";
+        team.entitlementReason = "seat_limit_restored";
+        team.entitlementUpdatedAt = now;
+        team.updatedAt = now;
+      }
+    }
+
+    if (
+      !previous ||
+      previous.billableSeatCount !== billableSeatCount ||
+      previous.pendingBillingSeatCount !== billableSeatCount ||
+      previous.syncStatus !== syncStatus ||
+      previous.seatLimit !== seatLimit
+    ) {
+      pushTeamAudit({
+        actorUserId: actorUserId ?? "",
+        action: "team.billing_seats.changed",
+        targetTable: "team_billing_seat_states",
+        targetId: teamId,
+        metadata: {
+          teamId,
+          reason,
+          previousBillableSeatCount: previous?.billableSeatCount ?? null,
+          billableSeatCount,
+          pendingBillingSeatCount: billableSeatCount,
+          seatLimit,
+          syncStatus,
+          overLimit
+        }
+      });
+    }
+
+    return state;
+  };
+  const buildSupportOverview = (
+    actor: ActorContext,
+    input: {
+      teamId: string;
+      policy: TeamSupportOverviewRecord["supportAccess"]["policy"];
+      actorRole: TeamSupportOverviewRecord["supportAccess"]["actorRole"];
+      auditAction: string;
+      supportOverviewPath: string;
+    }
+  ): TeamSupportOverviewRecord | null => {
+    const team = teams.get(input.teamId);
+    if (!team || team.archivedAt !== null) {
+      return null;
+    }
+    const now = new Date().toISOString();
+    const memberships = [...teamMemberships.values()].filter(
+      (item) => item.teamId === input.teamId
+    );
+    const workspaces = [...teamWorkspaces.values()].filter(
+      (item) => item.teamId === input.teamId
+    );
+    const workspaceAccess = [...teamWorkspaceAccess.values()].filter(
+      (item) => item.teamId === input.teamId
+    );
+    const invites = [...teamInvites.values()].filter(
+      (item) => item.teamId === input.teamId
+    );
+    const shareGrants = [...teamSessionShareGrants.values()].filter(
+      (item) => item.teamId === input.teamId
+    );
+    const teamUserIds = new Set(memberships.map((item) => item.userId));
+    const teamExternalAuthOrganizations = [
+      ...externalAuthOrganizations.values()
+    ].filter((item) => item.teamId === input.teamId);
+    const teamExternalAuthIdentities = [
+      ...externalAuthIdentities.values()
+    ].filter((item) => teamUserIds.has(item.userId));
+    const teamDeviceCredentials = [...deviceCredentials.values()].filter(
+      (item) => teamUserIds.has(item.ownerUserId)
+    );
+    const latestTimestamp = (
+      values: Array<string | null | undefined>
+    ): string | null =>
+      values.reduce<string | null>((latest, value) => {
+        if (!value) {
+          return latest;
+        }
+        if (!latest || Date.parse(value) > Date.parse(latest)) {
+          return value;
+        }
+        return latest;
+      }, null);
+    const existingAuditEvents = auditEvents.filter(
+      (event) =>
+        event.action.startsWith("team.") &&
+        event.metadata?.teamId === input.teamId
+    );
+
+    pushTeamAudit({
+      actorUserId: actor.userId,
+      action: input.auditAction,
+      targetTable: "teams",
+      targetId: input.teamId,
+      metadata: {
+        teamId: input.teamId,
+        policy: input.policy,
+        rawContentAccess: "not_permitted"
+      }
+    });
+
+    return {
+      generatedAt: now,
+      supportAccess: {
+        policy: input.policy,
+        actorUserId: actor.userId,
+        actorRole: input.actorRole,
+        rawContentAccess: "not_permitted",
+        breakGlassRequiredForRawContent: true
+      },
+      team,
+      entitlement: entitlementGateForTeam(team),
+      billingSeats: teamBillingSeatStates.get(input.teamId) ?? null,
+      diagnosticSurfaces: {
+        auth: "browser_session",
+        rawContentAccess: "not_permitted",
+        operationsStatusPath: "/ops/status",
+        capabilitiesPath: `/v1/capabilities/authenticated?teamId=${team.id}`,
+        auditEventsPath: `/v1/teams/${team.id}/audit-events`,
+        entitlementPath: `/v1/teams/${team.id}/entitlement`,
+        billingSeatsPath: `/v1/teams/${team.id}/billing-seats`,
+        supportOverviewPath: input.supportOverviewPath
+      },
+      counts: {
+        memberships: {
+          enabled: memberships.filter((item) => item.status === "enabled")
+            .length,
+          invited: memberships.filter((item) => item.status === "invited")
+            .length,
+          disabled: memberships.filter((item) => item.status === "disabled")
+            .length
+        },
+        workspaces: {
+          active: workspaces.filter((item) => item.archivedAt === null).length,
+          archived: workspaces.filter((item) => item.archivedAt !== null).length
+        },
+        workspaceAccess: {
+          read: workspaceAccess.filter((item) => item.access === "read").length,
+          write: workspaceAccess.filter((item) => item.access === "write")
+            .length,
+          disabled: workspaceAccess.filter((item) => item.access === "disabled")
+            .length
+        },
+        invites: {
+          pending: invites.filter(
+            (item) =>
+              item.acceptedAt === null &&
+              item.revokedAt === null &&
+              Date.parse(item.expiresAt) > Date.now()
+          ).length,
+          accepted: invites.filter((item) => item.acceptedAt !== null).length,
+          revoked: invites.filter((item) => item.revokedAt !== null).length,
+          expired: invites.filter(
+            (item) =>
+              item.acceptedAt === null &&
+              item.revokedAt === null &&
+              Date.parse(item.expiresAt) <= Date.now()
+          ).length
+        },
+        sessionShareGrants: {
+          active: shareGrants.filter((item) => item.revokedAt === null).length,
+          revoked: shareGrants.filter((item) => item.revokedAt !== null).length,
+          retainedAfterPersonalDeletion: shareGrants.filter(
+            (item) =>
+              item.personalDeletedAt !== null && item.retainedByTeamAt !== null
+          ).length
+        },
+        auditEvents: {
+          teamEventCount: existingAuditEvents.length,
+          lastTeamEventAt:
+            existingAuditEvents[existingAuditEvents.length - 1]?.createdAt ??
+            null
+        },
+        setupAndIntegrations: {
+          externalAuthOrganizations: {
+            linked: teamExternalAuthOrganizations.filter(
+              (item) => item.status === "linked"
+            ).length,
+            disabled: teamExternalAuthOrganizations.filter(
+              (item) => item.status === "disabled"
+            ).length,
+            lastSeenAt: latestTimestamp(
+              teamExternalAuthOrganizations.map((item) => item.lastSeenAt)
+            )
+          },
+          externalAuthIdentities: {
+            linked: teamExternalAuthIdentities.filter(
+              (item) => item.status === "linked"
+            ).length,
+            disabled: teamExternalAuthIdentities.filter(
+              (item) => item.status === "disabled"
+            ).length,
+            emailVerified: teamExternalAuthIdentities.filter(
+              (item) => item.emailVerified
+            ).length,
+            lastSeenAt: latestTimestamp(
+              teamExternalAuthIdentities.map((item) => item.lastSeenAt)
+            )
+          },
+          deviceCredentials: {
+            active: teamDeviceCredentials.filter(
+              (item) =>
+                item.revokedAt === null &&
+                (!item.expiresAt || Date.parse(item.expiresAt) > Date.now())
+            ).length,
+            revoked: teamDeviceCredentials.filter(
+              (item) => item.revokedAt !== null
+            ).length,
+            expired: teamDeviceCredentials.filter(
+              (item) =>
+                item.revokedAt === null &&
+                item.expiresAt !== null &&
+                Date.parse(item.expiresAt) <= Date.now()
+            ).length,
+            lastValidatedAt: latestTimestamp(
+              teamDeviceCredentials.map((item) => item.lastValidatedAt)
+            )
+          }
+        }
+      }
+    };
+  };
+
+  const repository = {
     health: async () => true,
     async countUsers() {
       return users.size;
@@ -308,11 +872,128 @@ const createFakeRepository = (): MemorySourceRepository => {
     async getUser(userId: string) {
       return users.get(userId) ?? null;
     },
+    async getExternalAuthIdentity(input) {
+      return (
+        externalAuthIdentities.get(
+          `${input.provider}:${input.providerEnvironment ?? "default"}:${input.providerUserId}`
+        ) ?? null
+      );
+    },
+    async upsertExternalAuthSession(input) {
+      const now = new Date().toISOString();
+      const providerEnvironment = input.providerEnvironment ?? "default";
+      const identityKey = `${input.provider}:${providerEnvironment}:${input.providerUserId}`;
+      const existingIdentity = externalAuthIdentities.get(identityKey);
+      if (existingIdentity?.status === "disabled") {
+        throw Object.assign(new Error("External identity is disabled"), {
+          statusCode: 403
+        });
+      }
+      let user = existingIdentity
+        ? (users.get(existingIdentity.userId) ?? null)
+        : null;
+      let createdUser = false;
+      if (!user) {
+        const existingEmailUser = [...users.values()].find(
+          (candidate) => candidate.email === input.email.toLowerCase()
+        );
+        if (existingEmailUser && !existingIdentity) {
+          throw Object.assign(
+            new Error(
+              "External identity is not linked to the existing Koed account"
+            ),
+            { statusCode: 409 }
+          );
+        }
+        user = {
+          id: randomUUID(),
+          email: input.email.toLowerCase(),
+          displayName: input.displayName ?? null,
+          passwordHash: null
+        };
+        users.set(user.id, user);
+        createdUser = true;
+      }
+      const identity: ExternalAuthIdentityRecord = {
+        id: existingIdentity?.id ?? randomUUID(),
+        provider: input.provider,
+        providerEnvironment,
+        providerUserId: input.providerUserId,
+        userId: user.id,
+        email: input.email.toLowerCase(),
+        emailVerified: input.emailVerified ?? false,
+        displayName: input.displayName ?? null,
+        status: "linked",
+        profile: input.profile ?? {},
+        createdAt: existingIdentity?.createdAt ?? now,
+        updatedAt: now,
+        lastSeenAt: now
+      };
+      externalAuthIdentities.set(identityKey, identity);
+
+      let organization: ExternalAuthOrganizationRecord | null = null;
+      if (input.organization) {
+        const organizationKey = `${input.provider}:${providerEnvironment}:${input.organization.providerOrganizationId}`;
+        const existing = externalAuthOrganizations.get(organizationKey);
+        const teamId = existing?.teamId ?? randomUUID();
+        if (!existing) {
+          teams.set(teamId, {
+            id: teamId,
+            name:
+              input.organization.name ??
+              input.organization.providerOrganizationId,
+            entitlementStatus: "active",
+            entitlementReason: null,
+            entitlementUpdatedAt: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null
+          });
+        }
+        organization = {
+          id: existing?.id ?? randomUUID(),
+          provider: input.provider,
+          providerEnvironment,
+          providerOrganizationId: input.organization.providerOrganizationId,
+          teamId,
+          name: input.organization.name ?? null,
+          status: "linked",
+          metadata: input.organization.metadata ?? {},
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+          lastSeenAt: now
+        };
+        externalAuthOrganizations.set(organizationKey, organization);
+      }
+
+      auditEvents.push({
+        id: randomUUID(),
+        actorUserId: user.id,
+        ownerUserId: user.id,
+        visibility: "personal",
+        action: createdUser
+          ? "external_auth.user_created"
+          : "external_auth.identity_seen",
+        targetTable: "external_auth_identities",
+        targetId: identity.id,
+        metadata: {
+          provider: input.provider,
+          providerEnvironment,
+          providerUserId: input.providerUserId,
+          organizationId: organization?.id ?? null
+        },
+        createdAt: now
+      });
+      return { user, identity, organization, createdUser };
+    },
     async createTeam(actor, input) {
       const now = new Date().toISOString();
       const team: TeamRecord = {
         id: randomUUID(),
         name: input.name,
+        entitlementStatus: "active",
+        entitlementReason: null,
+        entitlementUpdatedAt: null,
         createdAt: now,
         updatedAt: now,
         archivedAt: null
@@ -337,10 +1018,136 @@ const createFakeRepository = (): MemorySourceRepository => {
         targetId: team.id,
         metadata: { teamId: team.id }
       });
+      reconcileTeamBillingSeats(team.id, actor.userId, "team_created", true);
       return team;
     },
     async getTeamMembership(actor, teamId) {
       return teamMemberships.get(`${teamId}:${actor.userId}`) ?? null;
+    },
+    async getTeamEntitlementGate(actor, teamId) {
+      const membership = teamMemberships.get(`${teamId}:${actor.userId}`);
+      const team = teams.get(teamId);
+      if (
+        !team ||
+        !membership ||
+        membership.status !== "enabled" ||
+        !["owner", "admin"].includes(membership.role)
+      ) {
+        return null;
+      }
+      return entitlementGateForTeam(team);
+    },
+    async setTeamEntitlementState(actor, input) {
+      const membership = teamMemberships.get(`${input.teamId}:${actor.userId}`);
+      const team = teams.get(input.teamId);
+      if (
+        !team ||
+        !membership ||
+        membership.status !== "enabled" ||
+        membership.role !== "owner"
+      ) {
+        return null;
+      }
+      const previousStatus = team.entitlementStatus;
+      team.entitlementStatus = input.status;
+      team.entitlementReason = input.reason ?? null;
+      team.entitlementUpdatedAt = new Date().toISOString();
+      team.updatedAt = team.entitlementUpdatedAt;
+      const gate = entitlementGateForTeam(team);
+      auditEvents.push({
+        id: randomUUID(),
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: null,
+        action: "team.entitlement.changed",
+        targetTable: "teams",
+        targetId: team.id,
+        metadata: {
+          teamId: team.id,
+          previousStatus,
+          status: gate.status,
+          reason: gate.reason,
+          deniedOperationFamilies: gate.deniedOperationFamilies
+        },
+        createdAt: new Date().toISOString()
+      });
+      return gate;
+    },
+    async getTeamBillingSeatState(actor, teamId) {
+      const membership = teamMemberships.get(`${teamId}:${actor.userId}`);
+      if (
+        !membership ||
+        membership.status !== "enabled" ||
+        !["owner", "admin"].includes(membership.role)
+      ) {
+        return null;
+      }
+      return teamBillingSeatStates.get(teamId) ?? null;
+    },
+    async setTeamBillingSeatPolicy(actor, input) {
+      const membership = teamMemberships.get(`${input.teamId}:${actor.userId}`);
+      if (
+        !membership ||
+        membership.status !== "enabled" ||
+        membership.role !== "owner"
+      ) {
+        return null;
+      }
+      if (
+        input.seatLimit !== null &&
+        (!Number.isInteger(input.seatLimit) || input.seatLimit < 0)
+      ) {
+        throw new Error("seatLimit must be a non-negative integer or null");
+      }
+      const now = new Date().toISOString();
+      const previous = teamBillingSeatStates.get(input.teamId);
+      teamBillingSeatStates.set(input.teamId, {
+        teamId: input.teamId,
+        seatLimit: input.seatLimit,
+        billableSeatCount: previous?.billableSeatCount ?? 0,
+        pendingBillingSeatCount: previous?.pendingBillingSeatCount ?? 0,
+        syncStatus: "pending_provider_update",
+        overLimitAt: previous?.overLimitAt ?? null,
+        lastSyncedAt: previous?.lastSyncedAt ?? null,
+        lastErrorMessage: null,
+        updatedByUserId: actor.userId,
+        createdAt: previous?.createdAt ?? now,
+        updatedAt: now
+      });
+      return reconcileTeamBillingSeats(
+        input.teamId,
+        actor.userId,
+        "seat_policy_changed"
+      );
+    },
+    async getTeamSupportOverview(actor, teamId) {
+      const membership = teamMemberships.get(`${teamId}:${actor.userId}`);
+      if (
+        !membership ||
+        membership.status !== "enabled" ||
+        !["owner", "admin"].includes(membership.role)
+      ) {
+        return null;
+      }
+      return buildSupportOverview(actor, {
+        teamId,
+        policy: "team_manager_redacted",
+        actorRole: membership.role as Exclude<
+          TeamSupportOverviewRecord["supportAccess"]["actorRole"],
+          "member"
+        >,
+        auditAction: "team.support_overview.viewed",
+        supportOverviewPath: `/v1/teams/${teamId}/support/overview`
+      });
+    },
+    async getHostedSupportOverview(actor, teamId) {
+      return buildSupportOverview(actor, {
+        teamId,
+        policy: "hosted_operator_redacted",
+        actorRole: "hosted_operator",
+        auditAction: "team.hosted_support_overview.viewed",
+        supportOverviewPath: `/ops/support/teams/${teamId}/overview`
+      });
     },
     async upsertTeamMember(actor, input) {
       const actorMembership = teamMemberships.get(
@@ -349,39 +1156,58 @@ const createFakeRepository = (): MemorySourceRepository => {
       if (
         !actorMembership ||
         actorMembership.status !== "enabled" ||
-        !["owner", "admin"].includes(actorMembership.role)
+        !["owner", "admin"].includes(actorMembership.role) ||
+        !teamAllowsAccess(teams.get(input.teamId))
       ) {
         return null;
       }
       if (input.role === "owner" && actorMembership.role !== "owner") {
         return null;
       }
+      if (input.userId === actor.userId) {
+        return null;
+      }
       const now = new Date().toISOString();
       const status = input.status ?? "enabled";
+      const previous = teamMemberships.get(`${input.teamId}:${input.userId}`);
+      const removesEnabledOwner =
+        previous?.role === "owner" &&
+        previous.status === "enabled" &&
+        previous.disabledAt === null &&
+        (input.role !== "owner" || status !== "enabled");
+      if (removesEnabledOwner) {
+        const enabledOwnerCount = [...teamMemberships.values()].filter(
+          (membership) =>
+            membership.teamId === input.teamId &&
+            membership.role === "owner" &&
+            membership.status === "enabled" &&
+            membership.disabledAt === null
+        ).length;
+        if (enabledOwnerCount <= 1) {
+          return null;
+        }
+      }
       const membership: TeamMembershipRecord = {
-        id:
-          teamMemberships.get(`${input.teamId}:${input.userId}`)?.id ??
-          randomUUID(),
+        id: previous?.id ?? randomUUID(),
         teamId: input.teamId,
         userId: input.userId,
         role: input.role,
         status,
-        createdAt:
-          teamMemberships.get(`${input.teamId}:${input.userId}`)?.createdAt ??
-          now,
+        createdAt: previous?.createdAt ?? now,
         updatedAt: now,
         acceptedAt: status === "enabled" ? now : null,
         disabledAt: status === "disabled" ? now : null
       };
       teamMemberships.set(`${input.teamId}:${input.userId}`, membership);
+      const action =
+        status === "disabled"
+          ? "team.member.disabled"
+          : status === "enabled"
+            ? "team.member.enabled"
+            : "team.member.upserted";
       pushTeamAudit({
         actorUserId: actor.userId,
-        action:
-          status === "disabled"
-            ? "team.member.disabled"
-            : status === "enabled"
-              ? "team.member.enabled"
-              : "team.member.upserted",
+        action,
         targetTable: "team_memberships",
         targetId: membership.id,
         metadata: {
@@ -391,6 +1217,7 @@ const createFakeRepository = (): MemorySourceRepository => {
           status
         }
       });
+      reconcileTeamBillingSeats(input.teamId, actor.userId, action);
       return membership;
     },
     async createTeamWorkspace(actor, input) {
@@ -398,7 +1225,8 @@ const createFakeRepository = (): MemorySourceRepository => {
       if (
         !membership ||
         membership.status !== "enabled" ||
-        !["owner", "admin"].includes(membership.role)
+        !["owner", "admin"].includes(membership.role) ||
+        !teamAllowsAccess(teams.get(input.teamId))
       ) {
         return null;
       }
@@ -419,6 +1247,8 @@ const createFakeRepository = (): MemorySourceRepository => {
         role: membership.role,
         membershipStatus: membership.status,
         access: "write",
+        teamEntitlementStatus: "active",
+        teamEntitlementAllowsAccess: true,
         canManageTeam: true,
         canManageWorkspace: true,
         canRecall: true,
@@ -443,7 +1273,8 @@ const createFakeRepository = (): MemorySourceRepository => {
       if (
         !actorMembership ||
         actorMembership.status !== "enabled" ||
-        !["owner", "admin"].includes(actorMembership.role)
+        !["owner", "admin"].includes(actorMembership.role) ||
+        !teamAllowsAccess(teams.get(input.teamId))
       ) {
         return null;
       }
@@ -510,6 +1341,9 @@ const createFakeRepository = (): MemorySourceRepository => {
         invite.revokedAt ||
         new Date(invite.expiresAt).getTime() <= Date.now()
       ) {
+        return null;
+      }
+      if (!teamAllowsAccess(teams.get(invite.teamId))) {
         return null;
       }
       return invite;
@@ -597,6 +1431,7 @@ const createFakeRepository = (): MemorySourceRepository => {
           source: "invite_acceptance"
         }
       });
+      reconcileTeamBillingSeats(invite.teamId, user.id, "team.invite.accepted");
 
       const result: AcceptedTeamInviteRecord = {
         invite,
@@ -614,6 +1449,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         !actorMembership ||
         actorMembership.status !== "enabled" ||
         !["owner", "admin"].includes(actorMembership.role) ||
+        !teamAllowsAccess(teams.get(input.teamId)) ||
         input.userId === actor.userId
       ) {
         return null;
@@ -652,6 +1488,11 @@ const createFakeRepository = (): MemorySourceRepository => {
           status: disabledMembership.status
         }
       });
+      reconcileTeamBillingSeats(
+        input.teamId,
+        actor.userId,
+        "team.member.disabled"
+      );
       return disabledMembership;
     },
     async setTeamWorkspaceAccess(actor, input) {
@@ -659,7 +1500,12 @@ const createFakeRepository = (): MemorySourceRepository => {
         `${input.teamWorkspaceId}:${actor.userId}`
       );
       const workspace = teamWorkspaces.get(input.teamWorkspaceId);
-      if (!workspace || !actorAccess?.canManageWorkspace) {
+      const team = workspace ? teams.get(workspace.teamId) : undefined;
+      if (
+        !workspace ||
+        !actorAccess?.canManageWorkspace ||
+        !teamAllowsAccess(team)
+      ) {
         return null;
       }
       const membership = teamMemberships.get(
@@ -678,18 +1524,25 @@ const createFakeRepository = (): MemorySourceRepository => {
         role: membership.role,
         membershipStatus: membership.status,
         access: input.access,
+        teamEntitlementStatus: team?.entitlementStatus ?? "active",
+        teamEntitlementAllowsAccess: teamAllowsAccess(team),
         canManageTeam:
           membership.status === "enabled" &&
+          teamAllowsAccess(team) &&
           ["owner", "admin"].includes(membership.role),
         canManageWorkspace:
           membership.status === "enabled" &&
+          teamAllowsAccess(team) &&
           input.access === "write" &&
           ["owner", "admin"].includes(membership.role),
         canRecall:
           membership.status === "enabled" &&
+          teamAllowsAccess(team) &&
           (input.access === "read" || input.access === "write"),
         canCreateShare:
-          membership.status === "enabled" && input.access === "write"
+          membership.status === "enabled" &&
+          teamAllowsAccess(team) &&
+          input.access === "write"
       };
       teamWorkspaceAccess.set(`${workspace.id}:${input.userId}`, access);
       pushTeamAudit({
@@ -713,9 +1566,136 @@ const createFakeRepository = (): MemorySourceRepository => {
       return access;
     },
     async getTeamWorkspaceAccess(actor, teamWorkspaceId) {
-      return (
-        teamWorkspaceAccess.get(`${teamWorkspaceId}:${actor.userId}`) ?? null
+      const access = teamWorkspaceAccess.get(
+        `${teamWorkspaceId}:${actor.userId}`
       );
+      const workspace = teamWorkspaces.get(teamWorkspaceId);
+      const team = workspace ? teams.get(workspace.teamId) : undefined;
+      const entitlementAllowsAccess = teamAllowsAccess(team);
+      return access
+        ? {
+            ...access,
+            teamEntitlementStatus: team?.entitlementStatus ?? "active",
+            teamEntitlementAllowsAccess: entitlementAllowsAccess,
+            canManageTeam: access.canManageTeam && entitlementAllowsAccess,
+            canManageWorkspace:
+              access.canManageWorkspace && entitlementAllowsAccess,
+            canRecall: access.canRecall && entitlementAllowsAccess,
+            canCreateShare: access.canCreateShare && entitlementAllowsAccess
+          }
+        : null;
+    },
+    async createTeamSessionShareGrant(actor, input) {
+      const access = await this.getTeamWorkspaceAccess!(
+        actor,
+        input.teamWorkspaceId
+      );
+      const session = capturedSessions.get(input.sessionId);
+      if (
+        !access?.canCreateShare ||
+        !session ||
+        session.ownerUserId !== actor.userId ||
+        session.visibility !== "personal"
+      ) {
+        return null;
+      }
+      const existing = [...teamSessionShareGrants.values()].find(
+        (grant) =>
+          grant.sessionId === input.sessionId &&
+          grant.teamWorkspaceId === input.teamWorkspaceId &&
+          !grant.revokedAt
+      );
+      if (existing) {
+        return existing;
+      }
+      const now = new Date().toISOString();
+      const shareGrant: TeamSessionShareGrantRecord = {
+        id: randomUUID(),
+        ownerUserId: actor.userId,
+        sessionId: input.sessionId,
+        teamId: access.teamId,
+        teamWorkspaceId: input.teamWorkspaceId,
+        grantedByUserId: actor.userId,
+        createdAt: now,
+        updatedAt: now,
+        revokedAt: null,
+        revokedByUserId: null,
+        revocationReason: null,
+        personalDeletedAt: null,
+        personalDeletedByUserId: null,
+        personalDeletionReason: null,
+        retainedByTeamAt: now,
+        retentionReason: "active_team_share"
+      };
+      teamSessionShareGrants.set(shareGrant.id, shareGrant);
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action: "team.session_share.created",
+        targetTable: "team_session_share_grants",
+        targetId: shareGrant.id,
+        metadata: {
+          teamId: access.teamId,
+          teamWorkspaceId: input.teamWorkspaceId,
+          sessionId: input.sessionId
+        }
+      });
+      return shareGrant;
+    },
+    async revokeTeamSessionShareGrant(actor, input) {
+      const shareGrant = teamSessionShareGrants.get(input.shareGrantId);
+      if (
+        !shareGrant ||
+        shareGrant.teamWorkspaceId !== input.teamWorkspaceId ||
+        shareGrant.revokedAt
+      ) {
+        return null;
+      }
+      const access = await this.getTeamWorkspaceAccess!(
+        actor,
+        input.teamWorkspaceId
+      );
+      if (shareGrant.ownerUserId !== actor.userId && !access?.canCreateShare) {
+        return null;
+      }
+      const now = new Date().toISOString();
+      const revoked: TeamSessionShareGrantRecord = {
+        ...shareGrant,
+        updatedAt: now,
+        revokedAt: now,
+        revokedByUserId: actor.userId,
+        revocationReason: input.reason?.trim() || null
+      };
+      teamSessionShareGrants.set(revoked.id, revoked);
+      pushTeamAudit({
+        actorUserId: actor.userId,
+        action: "team.session_share.revoked",
+        targetTable: "team_session_share_grants",
+        targetId: revoked.id,
+        metadata: {
+          teamId: revoked.teamId,
+          teamWorkspaceId: revoked.teamWorkspaceId,
+          sessionId: revoked.sessionId
+        }
+      });
+      return revoked;
+    },
+    async listTeamSessionShareGrants(actor, input) {
+      const access = await this.getTeamWorkspaceAccess!(
+        actor,
+        input.teamWorkspaceId
+      );
+      if (!access?.canRecall) {
+        return null;
+      }
+      const limit = Math.min(Math.max(input.limit ?? 100, 1), 200);
+      return [...teamSessionShareGrants.values()]
+        .filter(
+          (grant) =>
+            grant.teamWorkspaceId === input.teamWorkspaceId &&
+            (input.includeRevoked || !grant.revokedAt)
+        )
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .slice(0, limit);
     },
     async listTeamAuditEvents(actor, input) {
       const membership = teamMemberships.get(`${input.teamId}:${actor.userId}`);
@@ -815,6 +1795,156 @@ const createFakeRepository = (): MemorySourceRepository => {
       const token = tokens.get(tokenHash);
       return token ? (users.get(token.ownerUserId) ?? null) : null;
     },
+    async createDeviceEnrollmentChallenge(input) {
+      const record = {
+        id: randomUUID(),
+        challengeHash: input.challengeHash,
+        upstreamBackendId: input.upstreamBackendId,
+        deviceInstanceId: input.deviceInstanceId ?? null,
+        deviceLabel: input.deviceLabel ?? null,
+        requestedOperationFamilies: input.requestedOperationFamilies ?? [],
+        metadata: input.metadata ?? {},
+        createdAt: new Date().toISOString(),
+        expiresAt: input.expiresAt.toISOString(),
+        boundByUserId: null,
+        boundAt: null,
+        redeemedAt: null
+      };
+      deviceChallenges.set(input.challengeHash, record);
+      return record;
+    },
+    async redeemDeviceEnrollmentChallenge(actor, input) {
+      const challenge = deviceChallenges.get(input.challengeHash);
+      if (
+        !challenge ||
+        challenge.redeemedAt ||
+        Date.parse(challenge.expiresAt) <= Date.now()
+      ) {
+        return null;
+      }
+      const operationFamilies = Array.from(
+        new Set(input.operationFamilies ?? challenge.requestedOperationFamilies)
+      );
+      const allowedFamilies = new Set(challenge.requestedOperationFamilies);
+      if (operationFamilies.some((family) => !allowedFamilies.has(family))) {
+        throw Object.assign(
+          new Error(
+            "Device credential operation families exceed enrollment challenge"
+          ),
+          { statusCode: 400 }
+        );
+      }
+      const now = new Date().toISOString();
+      challenge.boundByUserId = actor.userId;
+      challenge.boundAt = now;
+      challenge.redeemedAt = now;
+      const credential = {
+        id: randomUUID(),
+        ownerUserId: actor.userId,
+        enrollmentChallengeId: challenge.id,
+        credentialKeyId: input.credentialKeyId,
+        upstreamBackendId: challenge.upstreamBackendId,
+        deviceInstanceId:
+          challenge.deviceInstanceId ?? `device-${challenge.id}`,
+        deviceLabel: challenge.deviceLabel,
+        credentialVersion: 1,
+        verifierKind: input.verifierKind,
+        verifierHash: input.verifierHash ?? null,
+        publicKeyJwk: input.publicKeyJwk ?? null,
+        operationFamilies,
+        metadata: input.metadata ?? challenge.metadata,
+        createdAt: now,
+        updatedAt: now,
+        lastUsedAt: null,
+        lastValidatedAt: null,
+        expiresAt: input.expiresAt?.toISOString() ?? null,
+        revokedAt: null,
+        revokedByUserId: null,
+        revocationReason: null
+      } satisfies DeviceCredentialRecord & {
+        verifierHash?: string | null;
+        publicKeyJwk?: Record<string, unknown> | null;
+      };
+      deviceCredentials.set(credential.id, credential);
+      auditEvents.push({
+        id: randomUUID(),
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: "personal",
+        action: "device_credential.created",
+        targetTable: "device_credentials",
+        targetId: credential.id,
+        metadata: {
+          credentialKeyId: credential.credentialKeyId,
+          upstreamBackendId: credential.upstreamBackendId,
+          deviceInstanceId: credential.deviceInstanceId,
+          operationFamilies: credential.operationFamilies
+        },
+        createdAt: now
+      });
+      return credential;
+    },
+    async listDeviceCredentials(actor, input) {
+      return [...deviceCredentials.values()].filter(
+        (credential) =>
+          credential.ownerUserId === actor.userId &&
+          !credential.revokedAt &&
+          (!input?.upstreamBackendId ||
+            credential.upstreamBackendId === input.upstreamBackendId)
+      );
+    },
+    async revokeDeviceCredential(actor, credentialId, reason) {
+      const credential = deviceCredentials.get(credentialId);
+      if (
+        !credential ||
+        credential.ownerUserId !== actor.userId ||
+        credential.revokedAt
+      ) {
+        return false;
+      }
+      credential.revokedAt = new Date().toISOString();
+      credential.revokedByUserId = actor.userId;
+      credential.revocationReason = reason ?? null;
+      auditEvents.push({
+        id: randomUUID(),
+        actorUserId: actor.userId,
+        ownerUserId: actor.userId,
+        visibility: "personal",
+        action: "device_credential.revoked",
+        targetTable: "device_credentials",
+        targetId: credential.id,
+        metadata: {
+          credentialKeyId: credential.credentialKeyId,
+          upstreamBackendId: credential.upstreamBackendId,
+          deviceInstanceId: credential.deviceInstanceId,
+          reason: reason ?? null
+        },
+        createdAt: new Date().toISOString()
+      });
+      return true;
+    },
+    async getDeviceCredentialUser(input) {
+      const credential = [...deviceCredentials.values()].find(
+        (candidate) =>
+          candidate.credentialKeyId === input.credentialKeyId &&
+          candidate.verifierHash === input.verifierHash &&
+          candidate.verifierKind === "secret_hash" &&
+          !candidate.revokedAt &&
+          (!candidate.expiresAt || Date.parse(candidate.expiresAt) > Date.now())
+      );
+      if (!credential) {
+        return null;
+      }
+      const user = users.get(credential.ownerUserId);
+      if (!user) {
+        return null;
+      }
+      const now = new Date().toISOString();
+      credential.lastUsedAt = now;
+      credential.lastValidatedAt = now;
+      credential.updatedAt = now;
+      return { user, credential };
+    },
     async recordAuditEvent(input) {
       const record: AuditEventRecord = {
         id: randomUUID(),
@@ -839,6 +1969,117 @@ const createFakeRepository = (): MemorySourceRepository => {
             (!input.action || event.action === input.action)
         )
         .slice(0, limit);
+    },
+    async getActivationAnalyticsFunnel(actor, input = {}) {
+      let teamId = input.teamId ?? null;
+      const teamWorkspaceId = input.teamWorkspaceId ?? null;
+      if (teamWorkspaceId) {
+        const workspace = teamWorkspaces.get(teamWorkspaceId);
+        if (!workspace || (teamId && teamId !== workspace.teamId)) {
+          return null;
+        }
+        teamId = workspace.teamId;
+      }
+      if (teamId) {
+        const membership = teamMemberships.get(`${teamId}:${actor.userId}`);
+        if (
+          !membership ||
+          membership.status !== "enabled" ||
+          !["owner", "admin"].includes(membership.role)
+        ) {
+          return null;
+        }
+      }
+      const events = auditEvents.filter((event) => {
+        if (!event.action.startsWith("analytics.activation.")) {
+          return false;
+        }
+        if (teamId) {
+          if (event.metadata.teamId !== teamId) {
+            return false;
+          }
+        } else if (event.ownerUserId !== actor.userId) {
+          return false;
+        }
+        if (
+          teamWorkspaceId &&
+          event.metadata.teamWorkspaceId !== teamWorkspaceId
+        ) {
+          return false;
+        }
+        if (
+          input.since &&
+          Date.parse(event.createdAt) < input.since.getTime()
+        ) {
+          return false;
+        }
+        if (
+          input.until &&
+          Date.parse(event.createdAt) > input.until.getTime()
+        ) {
+          return false;
+        }
+        return true;
+      });
+      const byEvent = new Map<
+        string,
+        ActivationAnalyticsFunnelRecord["events"][number]
+      >();
+      for (const auditEvent of events) {
+        const event =
+          typeof auditEvent.metadata.event === "string"
+            ? auditEvent.metadata.event
+            : auditEvent.action.replace("analytics.activation.", "");
+        const summary =
+          byEvent.get(event) ??
+          ({
+            event,
+            count: 0,
+            firstSeenAt: null,
+            lastSeenAt: null,
+            surfaces: {},
+            deploymentProfiles: {}
+          } satisfies ActivationAnalyticsFunnelRecord["events"][number]);
+        summary.count += 1;
+        if (
+          !summary.firstSeenAt ||
+          Date.parse(auditEvent.createdAt) < Date.parse(summary.firstSeenAt)
+        ) {
+          summary.firstSeenAt = auditEvent.createdAt;
+        }
+        if (
+          !summary.lastSeenAt ||
+          Date.parse(auditEvent.createdAt) > Date.parse(summary.lastSeenAt)
+        ) {
+          summary.lastSeenAt = auditEvent.createdAt;
+        }
+        if (typeof auditEvent.metadata.surface === "string") {
+          summary.surfaces[auditEvent.metadata.surface] =
+            (summary.surfaces[auditEvent.metadata.surface] ?? 0) + 1;
+        }
+        if (typeof auditEvent.metadata.deploymentProfile === "string") {
+          summary.deploymentProfiles[auditEvent.metadata.deploymentProfile] =
+            (summary.deploymentProfiles[
+              auditEvent.metadata.deploymentProfile
+            ] ?? 0) + 1;
+        }
+        byEvent.set(event, summary);
+      }
+      return {
+        generatedAt: new Date().toISOString(),
+        scope: {
+          ownerUserId: teamId ? null : actor.userId,
+          teamId,
+          teamWorkspaceId
+        },
+        window: {
+          since: input.since ? input.since.toISOString() : null,
+          until: input.until ? input.until.toISOString() : null
+        },
+        events: [...byEvent.values()].sort((left, right) =>
+          left.event.localeCompare(right.event)
+        )
+      };
     },
     async createCapturedSession(actor: ActorContext, input) {
       const id = randomUUID();
@@ -1517,7 +2758,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         }));
     },
     async listMemoryClusters(actor, input = {}) {
-      const items = await this.listMemoryBrowserItems(actor, input);
+      const items = await this.listMemoryBrowserItems!(actor, input);
       const groups = new Map<
         string,
         {
@@ -1548,33 +2789,33 @@ const createFakeRepository = (): MemorySourceRepository => {
       return [...groups.values()];
     },
     async listMemoriesInCluster(actor, clusterId, input = {}) {
-      const items = await this.listMemoryBrowserItems(actor, input);
+      const items = await this.listMemoryBrowserItems!(actor, input);
       return items.filter((item) => item.clusterId === clusterId);
     },
     async updateMemoryPresentation(actor, nodeId, input) {
-      const memory = await this.getVisibleMemoryNode(actor, nodeId);
+      const memory = await this.getVisibleMemoryNode!(actor, nodeId);
       if (!memory) return null;
       if (input.summaryText) memory.summaryText = input.summaryText;
       if (input.pinned !== undefined)
         memory.pinnedAt = input.pinned ? new Date().toISOString() : null;
       if (input.visibility) memory.visibility = input.visibility;
       return (
-        (await this.listMemoryBrowserItems(actor)).find(
+        (await this.listMemoryBrowserItems!(actor)).find(
           (item) => item.id === nodeId
         ) ?? null
       );
     },
     async deleteMemory(actor, nodeId) {
-      const memory = await this.getVisibleMemoryNode(actor, nodeId);
+      const memory = await this.getVisibleMemoryNode!(actor, nodeId);
       if (!memory) return false;
       invalidatedNodes.add(memory.id);
       return true;
     },
     async getLcmGraphOverview(actor) {
-      const visibleNodes = await this.listLcmGraphNodes(actor, {
+      const visibleNodes = await this.listLcmGraphNodes!(actor, {
         includeInvalidated: true
       });
-      const visibleEvents = await this.listLcmGraphEvents(actor, {
+      const visibleEvents = await this.listLcmGraphEvents!(actor, {
         includeInvalidated: true
       });
       return {
@@ -1675,7 +2916,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     },
     async getLcmGraphNode(actor, nodeId, input = {}) {
       const node = (
-        await this.listLcmGraphNodes(actor, {
+        await this.listLcmGraphNodes!(actor, {
           includeInvalidated: input.includeInvalidated,
           query: nodeId,
           limit: 1
@@ -1684,7 +2925,7 @@ const createFakeRepository = (): MemorySourceRepository => {
       if (!node) return null;
       const sourceIds = nodeSources.get(nodeId) ?? [];
       const sources = (
-        await this.listLcmGraphEvents(actor, {
+        await this.listLcmGraphEvents!(actor, {
           includeInvalidated: true,
           limit: 500
         })
@@ -1703,7 +2944,7 @@ const createFakeRepository = (): MemorySourceRepository => {
       };
     },
     async updateLcmGraphNode(actor, nodeId, input) {
-      const memory = await this.getVisibleMemoryNode(actor, nodeId);
+      const memory = await this.getVisibleMemoryNode!(actor, nodeId);
       if (!memory) return null;
       if (input.summaryText) {
         memory.summaryText = input.summaryText;
@@ -1711,10 +2952,10 @@ const createFakeRepository = (): MemorySourceRepository => {
         summaryCorrections.set(nodeId, "user-corrected");
       }
       if (input.visibility) memory.visibility = input.visibility;
-      return this.getLcmGraphNode(actor, nodeId);
+      return this.getLcmGraphNode!(actor, nodeId);
     },
     async invalidateLcmGraphNode(actor, nodeId) {
-      return this.deleteMemory(actor, nodeId);
+      return this.deleteMemory!(actor, nodeId);
     },
     async listLcmGraphEvents(actor, input = {}) {
       return events
@@ -1824,7 +3065,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         });
     },
     async listLcmGraphThreads(actor, input = {}) {
-      const visibleEvents = await this.listLcmGraphEvents(actor, {
+      const visibleEvents = await this.listLcmGraphEvents!(actor, {
         ...input,
         limit: 500
       });
@@ -2054,7 +3295,7 @@ const createFakeRepository = (): MemorySourceRepository => {
     },
     async getLcmGraphEvent(actor, eventId, input = {}) {
       const event = (
-        await this.listLcmGraphEvents(actor, {
+        await this.listLcmGraphEvents!(actor, {
           includeInvalidated: input.includeInvalidated,
           query: eventId,
           limit: 1
@@ -2070,27 +3311,28 @@ const createFakeRepository = (): MemorySourceRepository => {
         : (event ?? null);
     },
     async updateLcmGraphEvent(actor, eventId, input) {
-      const event = await this.getLcmGraphEvent(actor, eventId);
+      const event = await this.getLcmGraphEvent!(actor, eventId);
       if (!event) return null;
       const raw = events.find((candidate) => candidate.id === eventId);
       if (raw && input.visibility) raw.visibility = input.visibility;
       if (input.invalidated) invalidatedEvents.add(eventId);
-      return this.getLcmGraphEvent(actor, eventId, {
+      return this.getLcmGraphEvent!(actor, eventId, {
         includeInvalidated: Boolean(input.invalidated)
       });
     },
     async invalidateLcmGraphEvent(actor, eventId) {
-      const event = await this.getLcmGraphEvent(actor, eventId);
+      const event = await this.getLcmGraphEvent!(actor, eventId);
       if (!event) return false;
       invalidatedEvents.add(eventId);
       return true;
     },
     async exportMemoryRecords(actor) {
-      const overview = await this.getLcmGraphOverview(actor);
+      const overview = await this.getLcmGraphOverview!(actor);
       const nodes = await Promise.all(
-        (await this.listLcmGraphNodes(actor, { includeInvalidated: true })).map(
-          (node) =>
-            this.getLcmGraphNode(actor, node.id, { includeInvalidated: true })
+        (
+          await this.listLcmGraphNodes!(actor, { includeInvalidated: true })
+        ).map((node) =>
+          this.getLcmGraphNode!(actor, node.id, { includeInvalidated: true })
         )
       );
       return {
@@ -2099,7 +3341,7 @@ const createFakeRepository = (): MemorySourceRepository => {
         nodes: nodes.filter((node): node is NonNullable<typeof node> =>
           Boolean(node)
         ),
-        events: await this.listLcmGraphEvents(actor, {
+        events: await this.listLcmGraphEvents!(actor, {
           includeInvalidated: true
         })
       };
@@ -2274,7 +3516,8 @@ const createFakeRepository = (): MemorySourceRepository => {
         )
       } satisfies ExpandedMemoryNode;
     }
-  };
+  } satisfies Partial<MemorySourceRepository>;
+  return repository as unknown as MemorySourceRepository;
 };
 
 describe("api health", () => {
@@ -2404,6 +3647,8 @@ describe("api health", () => {
 
   it("publishes a safe unauthenticated capability contract", async () => {
     process.env.KOED_HOST_CHECKOUT_PATH = "/sensitive/local/path";
+    process.env.KOED_RUNTIME_MODE = "local-personal";
+    process.env.KOED_DEPENDENCY_MODE = "bundled-local";
     const app = await buildServer();
     const response = await app.inject({
       method: "GET",
@@ -2418,11 +3663,121 @@ describe("api health", () => {
     expect(capabilities).toMatchObject({
       product: "koed",
       apiVersion: "v1",
-      capabilitySchemaVersion: 1,
+      capabilitySchemaVersion: 3,
+      audience: "public",
       deployment: {
-        mode: "self_hosted",
+        profile: "local_personal",
         distribution: "source_available",
-        managedBy: "operator"
+        managedBy: "operator",
+        productBoundary: "koed-server"
+      },
+      runtime: {
+        localEdge: true,
+        remoteUpstreams: "partial",
+        dependencyMode: "bundled-local"
+      },
+      auth: {
+        providers: ["local"],
+        session: "available",
+        apiTokens: "available",
+        deviceEnrollment: "available",
+        enrollment: {
+          setupPath: "local_simple_api_token",
+          deviceEnrollment: "available",
+          apiTokenFallback: "personal_ai_client_only",
+          authenticatedStatusEndpoint: "/v1/capabilities/authenticated",
+          mcpAndCaptureHookTarget: "local_koed_server"
+        }
+      },
+      memory: {
+        personal: "available",
+        teamWorkspaces: "unavailable",
+        shareGrants: "unavailable",
+        crossIdentitySync: "unavailable",
+        memoryInbox: "unavailable"
+      },
+      commercial: {
+        billingEntitlements: "unavailable",
+        accessSuspension: "unavailable",
+        supportAdmin: "unavailable",
+        stateVocabulary: {
+          entitlementStatuses: [
+            "not_applicable",
+            "not_requested",
+            "active",
+            "grace",
+            "suspended",
+            "revoked"
+          ],
+          billingStatuses: [
+            "not_applicable",
+            "not_requested",
+            "inactive",
+            "trial",
+            "active",
+            "grace",
+            "pending_provider_update",
+            "expired",
+            "canceled",
+            "over_limit",
+            "suspended",
+            "revoked",
+            "error",
+            "unsupported"
+          ],
+          billingSeatSyncStatuses: [
+            "synced",
+            "pending_provider_update",
+            "over_limit",
+            "error"
+          ]
+        },
+        entitlement: {
+          scope: "none",
+          status: "not_applicable",
+          allowsTeamAccess: null,
+          deniedOperationFamilies: [],
+          requiresAuthentication: false
+        },
+        billing: {
+          scope: "none",
+          status: "not_applicable",
+          overLimit: null,
+          seatSyncStatus: null,
+          requiresAuthentication: false
+        },
+        featureGates: {
+          teamWorkspaces: {
+            capability: "memory.teamWorkspaces",
+            availability: "unavailable",
+            entitlementStatus: "not_applicable",
+            billingStatus: "not_applicable",
+            enforcement: "not_applicable",
+            requiresAuthentication: false
+          },
+          memoryInbox: {
+            capability: "memory.memoryInbox",
+            availability: "unavailable",
+            entitlementStatus: "not_applicable",
+            billingStatus: "not_applicable",
+            enforcement: "not_applicable",
+            requiresAuthentication: false
+          },
+          teamLimits: {
+            capability: "commercial.billingEntitlements",
+            availability: "unavailable",
+            entitlementStatus: "not_applicable",
+            billingStatus: "not_applicable",
+            enforcement: "not_applicable",
+            requiresAuthentication: false
+          }
+        }
+      },
+      security: {
+        applicationLayerEncryption: "unavailable",
+        queryableVectors: "unavailable",
+        objectStorage: "unavailable",
+        deploymentTlsRequired: false
       },
       capabilities: {
         "clients.codex": {
@@ -2443,38 +3798,559 @@ describe("api health", () => {
         "memory.localLcmSummaries": {
           availability: "available"
         },
-        "teams.management": {
-          availability: "partial"
+        "memory.teamWorkspaces": {
+          availability: "unavailable"
         },
-        "teams.workspaces": {
-          availability: "partial"
+        "memory.shareGrants": {
+          availability: "unavailable"
         },
         "operations.diagnostics": {
-          availability: "authenticated"
+          availability: "available",
+          requiresAuthentication: true
+        },
+        "auth.enrollment": {
+          availability: "available",
+          endpoints: ["/v1/capabilities", "/v1/capabilities/authenticated"]
+        },
+        "auth.deviceEnrollment": {
+          availability: "available",
+          requiresAuthentication: true
         }
       }
     });
     expect(capabilities.providers).toEqual(
-      expect.arrayContaining(["operations", "auth", "clients", "memory"])
+      expect.arrayContaining([
+        "deployment",
+        "operations",
+        "auth",
+        "clients",
+        "memory"
+      ])
     );
-    expect(capabilities.auth.modes).toEqual(
-      expect.arrayContaining(["session_cookie", "api_token"])
-    );
-    for (const privateCapability of [
-      "billing",
-      "memoryInbox",
-      "managedConnectors",
-      "teamMemoryRecall",
-      "shareGrants"
-    ]) {
-      expect(capabilities.capabilities).not.toHaveProperty(privateCapability);
-    }
+    expect(capabilities.auth.providers).toEqual(["local"]);
+    expect(capabilities.authenticatedCapabilities).toEqual({
+      available: true,
+      endpoint: "/v1/capabilities/authenticated"
+    });
     expect(response.body).not.toContain("/sensitive/local/path");
     expect(response.body).not.toContain("DATABASE_URL");
     expect(response.body).not.toContain("API_TOKEN");
-    expect(response.body).not.toContain("unsupported");
-    expect(response.body).not.toContain("memoryInbox");
-    expect(response.body).not.toContain("billing");
+    expect(response.body).not.toContain("replace_with_generated");
+    expect(response.body).not.toContain("WORKOS_API_KEY");
+  });
+
+  it("publishes cloud and Team self-hosted profile capabilities without route probing", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.KOED_DEPENDENCY_MODE = "server";
+    process.env.WORKOS_AUTHKIT_ENABLED = "false";
+    const cloudApp = await buildServer();
+    const cloudResponse = await cloudApp.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await cloudApp.close();
+
+    const cloud = jsonBody<CapabilitiesResponse>(cloudResponse);
+    expect(cloud).toMatchObject({
+      deployment: {
+        profile: "koed_managed_cloud",
+        distribution: "managed_service",
+        managedBy: "koed"
+      },
+      runtime: {
+        localEdge: false,
+        remoteUpstreams: "unavailable",
+        dependencyMode: "server"
+      },
+      auth: {
+        providers: ["local"],
+        deviceEnrollment: "available",
+        enrollment: {
+          setupPath: "remote_device_enrollment",
+          deviceEnrollment: "available",
+          apiTokenFallback: "personal_ai_client_only",
+          authenticatedStatusEndpoint: "/v1/capabilities/authenticated",
+          mcpAndCaptureHookTarget: "local_koed_server"
+        }
+      },
+      memory: {
+        teamWorkspaces: "partial",
+        shareGrants: "partial",
+        crossIdentitySync: "unavailable"
+      },
+      commercial: {
+        billingEntitlements: "partial",
+        accessSuspension: "available",
+        supportAdmin: "partial",
+        entitlement: {
+          scope: "team",
+          status: "not_requested",
+          allowsTeamAccess: null,
+          deniedOperationFamilies: [],
+          requiresAuthentication: true
+        },
+        billing: {
+          scope: "team",
+          status: "not_requested",
+          overLimit: null,
+          seatSyncStatus: null,
+          requiresAuthentication: true
+        },
+        featureGates: {
+          teamWorkspaces: {
+            capability: "memory.teamWorkspaces",
+            availability: "partial",
+            entitlementStatus: "not_requested",
+            billingStatus: "not_requested",
+            enforcement: "server_side",
+            requiresAuthentication: true
+          },
+          hostedOperations: {
+            capability: "operations.hostedStatus",
+            availability: "partial",
+            entitlementStatus: "not_requested",
+            billingStatus: "not_requested",
+            enforcement: "server_side",
+            requiresAuthentication: true
+          },
+          teamLimits: {
+            capability: "commercial.billingEntitlements",
+            availability: "partial",
+            entitlementStatus: "not_requested",
+            billingStatus: "not_requested",
+            enforcement: "server_side",
+            requiresAuthentication: true
+          }
+        }
+      },
+      security: {
+        queryableVectors: "partial",
+        objectStorage: "partial",
+        deploymentTlsRequired: true
+      }
+    });
+    expect(cloud.capabilities["auth.workos"]!.availability).toBe("unavailable");
+    expect(cloud.capabilities["auth.deviceEnrollment"]!).toMatchObject({
+      availability: "available",
+      requiresAuthentication: true
+    });
+    expect(cloud.capabilities["memory.crossIdentitySync"]!.availability).toBe(
+      "unavailable"
+    );
+    expect(cloudResponse.body).not.toContain("WORKOS_API_KEY");
+    expect(cloudResponse.body).not.toContain("COOKIE_PASSWORD");
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "team-self-hosted";
+    process.env.KOED_DEPENDENCY_MODE = "external";
+    const teamApp = await buildServer();
+    const teamResponse = await teamApp.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await teamApp.close();
+
+    const teamSelfHosted = jsonBody<CapabilitiesResponse>(teamResponse);
+    expect(teamSelfHosted).toMatchObject({
+      deployment: {
+        profile: "team_self_hosted",
+        distribution: "source_available",
+        managedBy: "team_operator"
+      },
+      runtime: {
+        localEdge: false,
+        remoteUpstreams: "unavailable",
+        dependencyMode: "external"
+      },
+      auth: {
+        providers: ["local"],
+        deviceEnrollment: "available",
+        enrollment: {
+          setupPath: "remote_device_enrollment",
+          deviceEnrollment: "available",
+          apiTokenFallback: "personal_ai_client_only",
+          authenticatedStatusEndpoint: "/v1/capabilities/authenticated",
+          mcpAndCaptureHookTarget: "local_koed_server"
+        }
+      },
+      memory: {
+        teamWorkspaces: "partial",
+        shareGrants: "partial"
+      },
+      commercial: {
+        billingEntitlements: "unavailable",
+        accessSuspension: "available",
+        entitlement: {
+          scope: "team",
+          status: "not_requested",
+          allowsTeamAccess: null,
+          deniedOperationFamilies: []
+        },
+        billing: {
+          scope: "team",
+          status: "not_requested",
+          overLimit: null,
+          seatSyncStatus: null
+        },
+        featureGates: {
+          teamWorkspaces: {
+            capability: "memory.teamWorkspaces",
+            availability: "partial",
+            entitlementStatus: "not_requested",
+            billingStatus: "not_requested",
+            enforcement: "server_side"
+          },
+          teamLimits: {
+            capability: "commercial.billingEntitlements",
+            availability: "unavailable",
+            entitlementStatus: "not_requested",
+            billingStatus: "not_requested",
+            enforcement: "server_side"
+          }
+        },
+        supportAdmin: "unavailable"
+      }
+    });
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "private-vps";
+    const privateVpsApp = await buildServer();
+    const privateVpsResponse = await privateVpsApp.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await privateVpsApp.close();
+
+    const privateVps = jsonBody<CapabilitiesResponse>(privateVpsResponse);
+    expect(privateVps).toMatchObject({
+      deployment: {
+        profile: "private_vps",
+        distribution: "source_available",
+        managedBy: "operator"
+      },
+      runtime: {
+        localEdge: false,
+        remoteUpstreams: "unavailable"
+      },
+      auth: {
+        providers: ["local"],
+        deviceEnrollment: "available",
+        enrollment: {
+          setupPath: "remote_device_enrollment",
+          apiTokenFallback: "personal_ai_client_only"
+        }
+      },
+      memory: {
+        teamWorkspaces: "partial",
+        shareGrants: "partial"
+      },
+      commercial: {
+        billingEntitlements: "unavailable",
+        accessSuspension: "available",
+        supportAdmin: "unavailable"
+      }
+    });
+  });
+
+  it("advertises KMS-backed application-layer encryption when configured", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "managed_kms";
+    process.env.MANAGED_KMS_KEY_ID = "managed-kms:capability-key";
+    process.env.MANAGED_KMS_KEY_VERSION = "3";
+    process.env.MANAGED_KMS_ENDPOINT_URL = "http://localhost:19999/kms/";
+    process.env.MANAGED_KMS_AUTH_TOKEN = "capability-token";
+
+    const app = await buildServer({ repository: createFakeRepository() });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await app.close();
+
+    const capabilities = jsonBody<CapabilitiesResponse>(response);
+
+    expect(response.statusCode).toBe(200);
+    expect(capabilities.deployment.profile).toBe("koed_managed_cloud");
+    expect(capabilities.security.applicationLayerEncryption).toBe("available");
+    expect(
+      capabilities.capabilities["security.applicationLayerEncryption"]
+    ).toMatchObject({
+      availability: "available"
+    });
+  });
+
+  it("advertises WorkOS only when AuthKit is configured", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.WORKOS_AUTHKIT_ENABLED = "true";
+    process.env.WORKOS_CLIENT_ID = "client_test_123";
+    process.env.WORKOS_API_KEY = "sk_test_hidden";
+    process.env.WORKOS_REDIRECT_URI =
+      "https://cloud.example.test/auth/workos/callback";
+
+    const app = await buildServer();
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    await app.close();
+
+    const capabilities = jsonBody<CapabilitiesResponse>(response);
+    expect(capabilities.auth.providers).toEqual(["local", "workos"]);
+    expect(capabilities.capabilities["auth.workos"]!.availability).toBe(
+      "partial"
+    );
+    expect(response.body).not.toContain("sk_test_hidden");
+    expect(response.body).not.toContain("client_test_123");
+  });
+
+  it("does not expose WorkOS auth routes when the deployment profile does not support WorkOS", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "developer";
+    process.env.WORKOS_AUTHKIT_ENABLED = "true";
+    process.env.WORKOS_CLIENT_ID = "client_test_123";
+    process.env.WORKOS_API_KEY = "sk_test_hidden";
+    process.env.WORKOS_REDIRECT_URI =
+      "https://cloud.example.test/auth/workos/callback";
+
+    const app = await buildServer();
+    const capabilities = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities"
+    });
+    const login = await app.inject({
+      method: "GET",
+      url: "/auth/workos/login"
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code&state=state"
+    });
+    await app.close();
+
+    expect(jsonBody<CapabilitiesResponse>(capabilities).auth.providers).toEqual(
+      ["local"]
+    );
+    expect(login.statusCode).toBe(404);
+    expect(callback.statusCode).toBe(404);
+    expect(login.body).not.toContain("client_test_123");
+    expect(login.body).not.toContain("sk_test_hidden");
+  });
+
+  it("requires session authentication for authenticated capabilities", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const denied = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities/authenticated"
+    });
+    const register = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "capability-user@example.test",
+        password: "correct horse battery staple"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(register) },
+      payload: { name: "Client Integration" }
+    });
+    const token = jsonBody<TokenResponse>(createdToken).token;
+    const deniedBearer = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities/authenticated",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/v1/capabilities/authenticated",
+      headers: { cookie: cookieHeader(register) }
+    });
+    await app.close();
+
+    expect(denied.statusCode).toBe(401);
+    expect(deniedBearer.statusCode).toBe(401);
+    expect(jsonBody<{ error: string }>(deniedBearer).error).toBe(
+      "Session cookie required"
+    );
+    expect(allowed.statusCode).toBe(200);
+    expect(jsonBody<CapabilitiesResponse>(allowed)).toMatchObject({
+      audience: "authenticated",
+      capabilitySchemaVersion: 3
+    });
+  });
+
+  it("reports Team entitlement state through authenticated capability discovery", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const register = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "capability-team-owner@example.test",
+        password: "correct horse battery staple"
+      }
+    });
+    const cookie = cookieHeader(register);
+    const createdTeam = await app.inject({
+      method: "POST",
+      url: "/v1/teams",
+      headers: { cookie },
+      payload: { name: "Capability Team" }
+    });
+    const team = jsonBody<TeamResponse>(createdTeam).team;
+    const initial = await app.inject({
+      method: "GET",
+      url: `/v1/capabilities/authenticated?teamId=${team.id}`,
+      headers: { cookie }
+    });
+    const overLimitPolicy = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/billing-seats/policy`,
+      headers: { cookie },
+      payload: { seatLimit: 0 }
+    });
+    const overLimit = await app.inject({
+      method: "GET",
+      url: `/v1/capabilities/authenticated?teamId=${team.id}`,
+      headers: { cookie }
+    });
+    const suspended = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie },
+      payload: { status: "suspended", reason: "do_not_expose_this_reason" }
+    });
+    const blocked = await app.inject({
+      method: "GET",
+      url: `/v1/capabilities/authenticated?teamId=${team.id}`,
+      headers: { cookie }
+    });
+    const unauthorized = await app.inject({
+      method: "GET",
+      url: `/v1/capabilities/authenticated?teamId=00000000-0000-4000-8000-000000000000`,
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(createdTeam.statusCode).toBe(200);
+    expect(initial.statusCode).toBe(200);
+    const initialCommercial =
+      jsonBody<CapabilitiesResponse>(initial).commercial;
+    expect(initialCommercial).toMatchObject({
+      billingEntitlements: "partial",
+      accessSuspension: "available",
+      entitlement: {
+        scope: "team",
+        teamId: team.id,
+        status: "active",
+        allowsTeamAccess: true,
+        deniedOperationFamilies: [],
+        requiresAuthentication: true
+      },
+      billing: {
+        scope: "team",
+        status: "active",
+        overLimit: false,
+        seatSyncStatus: "synced",
+        requiresAuthentication: true
+      },
+      featureGates: {
+        teamWorkspaces: {
+          capability: "memory.teamWorkspaces",
+          availability: "partial",
+          entitlementStatus: "active",
+          billingStatus: "active",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        },
+        memoryInbox: {
+          capability: "memory.memoryInbox",
+          availability: "unavailable",
+          entitlementStatus: "active",
+          billingStatus: "active",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        },
+        teamLimits: {
+          capability: "commercial.billingEntitlements",
+          availability: "partial",
+          entitlementStatus: "active",
+          billingStatus: "active",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        }
+      }
+    });
+    expect(initialCommercial.stateVocabulary.billingStatuses).toEqual(
+      expect.arrayContaining([
+        "trial",
+        "inactive",
+        "expired",
+        "canceled",
+        "over_limit",
+        "unsupported"
+      ])
+    );
+    expect(overLimitPolicy.statusCode).toBe(200);
+    expect(overLimit.statusCode).toBe(200);
+    expect(jsonBody<CapabilitiesResponse>(overLimit).commercial).toMatchObject({
+      entitlement: {
+        status: "grace",
+        allowsTeamAccess: true
+      },
+      billing: {
+        status: "over_limit",
+        overLimit: true,
+        seatSyncStatus: "over_limit",
+        requiresAuthentication: true
+      },
+      featureGates: {
+        teamWorkspaces: {
+          entitlementStatus: "grace",
+          billingStatus: "over_limit",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        },
+        teamLimits: {
+          entitlementStatus: "grace",
+          billingStatus: "over_limit",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        }
+      }
+    });
+    expect(suspended.statusCode).toBe(200);
+    expect(blocked.statusCode).toBe(200);
+    expect(jsonBody<CapabilitiesResponse>(blocked).commercial).toMatchObject({
+      entitlement: {
+        status: "suspended",
+        allowsTeamAccess: false,
+        deniedOperationFamilies: [
+          "ingestion",
+          "recall",
+          "share",
+          "sync",
+          "team_admin"
+        ]
+      },
+      featureGates: {
+        teamWorkspaces: {
+          entitlementStatus: "suspended",
+          billingStatus: "over_limit",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        },
+        shareGrants: {
+          entitlementStatus: "suspended",
+          billingStatus: "over_limit",
+          enforcement: "server_side",
+          requiresAuthentication: false
+        }
+      }
+    });
+    expect(blocked.body).not.toContain("do_not_expose_this_reason");
+    expect(unauthorized.statusCode).toBe(403);
   });
 
   it("allows browser write preflight requests", async () => {
@@ -2800,6 +4676,239 @@ describe("account and access flows", () => {
     }
   });
 
+  it("creates browser sessions from WorkOS AuthKit callbacks without storing provider tokens", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.WORKOS_AUTHKIT_ENABLED = "true";
+    process.env.WORKOS_CLIENT_ID = "client_test_123";
+    process.env.WORKOS_API_KEY = "sk_test_hidden";
+    process.env.WORKOS_REDIRECT_URI =
+      "https://cloud.example.test/auth/workos/callback";
+    process.env.WORKOS_PROVIDER_ENVIRONMENT = "test";
+    const repository = createFakeRepository();
+    const workosClient: WorkosAuthKitClient = {
+      getAuthorizationUrl: ({ state }) =>
+        `https://workos.example.test/authorize?state=${state}`,
+      async authenticateWithCode(input) {
+        expect(input.code).toBe("auth-code-1");
+        return {
+          user: {
+            id: "user_01HZ",
+            email: "Remote.User@example.test",
+            emailVerified: true,
+            firstName: "Remote",
+            lastName: "User",
+            profile: {
+              id: "user_01HZ",
+              email: "Remote.User@example.test"
+            }
+          },
+          organizationId: "org_01HZ"
+        };
+      }
+    };
+
+    const app = await buildServer({ repository, workosClient });
+    const login = await app.inject({
+      method: "GET",
+      url: "/auth/workos/login?return_to=/settings"
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url:
+        "/auth/workos/callback?code=auth-code-1&state=" +
+        new URL(login.headers.location as string).searchParams.get("state"),
+      headers: { cookie: cookieJarHeader(login) }
+    });
+    const me = await app.inject({
+      method: "GET",
+      url: "/me",
+      headers: { cookie: cookieHeader(callback) }
+    });
+    const identity = await repository.getExternalAuthIdentity({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId: "user_01HZ"
+    });
+    await app.close();
+
+    expect(login.statusCode).toBe(302);
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe("/settings");
+    const meBody = jsonBody<{
+      user: { email: string; displayName: string | null };
+    }>(me);
+    expect(meBody.user.email).toBe("remote.user@example.test");
+    expect(meBody.user.displayName).toBe("Remote User");
+    expect(identity).toMatchObject({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId: "user_01HZ",
+      email: "remote.user@example.test",
+      emailVerified: true
+    });
+    expect(JSON.stringify(identity?.profile)).not.toContain("refresh_token");
+  });
+
+  it("rejects WorkOS AuthKit callbacks without verified email", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.WORKOS_AUTHKIT_ENABLED = "true";
+    process.env.WORKOS_CLIENT_ID = "client_test_123";
+    process.env.WORKOS_API_KEY = "sk_test_hidden";
+    process.env.WORKOS_REDIRECT_URI =
+      "https://cloud.example.test/auth/workos/callback";
+    const repository = createFakeRepository();
+    const workosClient: WorkosAuthKitClient = {
+      getAuthorizationUrl: ({ state }) =>
+        `https://workos.example.test/authorize?state=${state}`,
+      async authenticateWithCode() {
+        return {
+          user: {
+            id: "user_unverified",
+            email: "unverified@example.test",
+            emailVerified: false,
+            firstName: "Unverified",
+            lastName: "User",
+            profile: {}
+          },
+          organizationId: "org_unverified"
+        };
+      }
+    };
+
+    const app = await buildServer({ repository, workosClient });
+    const login = await app.inject({
+      method: "GET",
+      url: "/auth/workos/login"
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url:
+        "/auth/workos/callback?code=auth-code-unverified&state=" +
+        new URL(login.headers.location as string).searchParams.get("state"),
+      headers: { cookie: cookieJarHeader(login) }
+    });
+    const identity = await repository.getExternalAuthIdentity({
+      provider: "workos_authkit",
+      providerEnvironment: "default",
+      providerUserId: "user_unverified"
+    });
+    await app.close();
+
+    expect(callback.statusCode).toBe(403);
+    expect(jsonBody<{ error: string }>(callback).error).toBe(
+      "Verified WorkOS email required"
+    );
+    expect(identity).toBeNull();
+  });
+
+  it("normalizes unsafe WorkOS return targets before redirecting", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.WORKOS_AUTHKIT_ENABLED = "true";
+    process.env.WORKOS_CLIENT_ID = "client_test_123";
+    process.env.WORKOS_API_KEY = "sk_test_hidden";
+    process.env.WORKOS_REDIRECT_URI =
+      "https://cloud.example.test/auth/workos/callback";
+    const repository = createFakeRepository();
+    const workosClient: WorkosAuthKitClient = {
+      getAuthorizationUrl: ({ state }) =>
+        `https://workos.example.test/authorize?state=${state}`,
+      async authenticateWithCode() {
+        return {
+          user: {
+            id: "user_unsafe_return",
+            email: "unsafe-return@example.test",
+            emailVerified: true,
+            firstName: "Unsafe",
+            lastName: "Return",
+            profile: {}
+          },
+          organizationId: null
+        };
+      }
+    };
+
+    const app = await buildServer({ repository, workosClient });
+    const login = await app.inject({
+      method: "GET",
+      url:
+        "/auth/workos/login?return_to=" +
+        encodeURIComponent("//evil.example.test/phish")
+    });
+    const callback = await app.inject({
+      method: "GET",
+      url:
+        "/auth/workos/callback?code=auth-code-open-redirect&state=" +
+        new URL(login.headers.location as string).searchParams.get("state"),
+      headers: { cookie: cookieJarHeader(login) }
+    });
+    await app.close();
+
+    expect(login.statusCode).toBe(302);
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe("/");
+  });
+
+  it("rejects WorkOS callbacks with invalid state or email-only account matches", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    process.env.WORKOS_AUTHKIT_ENABLED = "true";
+    process.env.WORKOS_CLIENT_ID = "client_test_123";
+    process.env.WORKOS_API_KEY = "sk_test_hidden";
+    process.env.WORKOS_REDIRECT_URI =
+      "https://cloud.example.test/auth/workos/callback";
+    const repository = createFakeRepository();
+    await repository.createUser({
+      email: "existing@example.test",
+      displayName: "Existing Local User",
+      passwordHash: "hash"
+    });
+    const workosClient: WorkosAuthKitClient = {
+      getAuthorizationUrl: ({ state }) =>
+        `https://workos.example.test/authorize?state=${state}`,
+      async authenticateWithCode() {
+        return {
+          user: {
+            id: "user_different_provider_id",
+            email: "existing@example.test",
+            emailVerified: true,
+            firstName: "Existing",
+            lastName: "Remote",
+            profile: {}
+          },
+          organizationId: null
+        };
+      }
+    };
+
+    const app = await buildServer({ repository, workosClient });
+    const login = await app.inject({
+      method: "GET",
+      url: "/auth/workos/login"
+    });
+    const badState = await app.inject({
+      method: "GET",
+      url: "/auth/workos/callback?code=auth-code-2&state=wrong-state",
+      headers: { cookie: cookieJarHeader(login) }
+    });
+    const state = new URL(login.headers.location as string).searchParams.get(
+      "state"
+    );
+    const emailConflict = await app.inject({
+      method: "GET",
+      url: `/auth/workos/callback?code=auth-code-2&state=${state}`,
+      headers: { cookie: cookieJarHeader(login) }
+    });
+    await app.close();
+
+    expect(badState.statusCode).toBe(400);
+    expect(jsonBody<{ error: string }>(badState).error).toBe(
+      "Invalid WorkOS callback state"
+    );
+    expect(emailConflict.statusCode).toBe(409);
+    expect(jsonBody<{ error: string }>(emailConflict).error).toBe(
+      "External identity is not linked to the existing Koed account"
+    );
+  });
+
   it("registers a solo user without exposing manual memory-node writes", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
@@ -2858,13 +4967,15 @@ describe("account and access flows", () => {
   });
 
   it("exposes session-only team management APIs", async () => {
-    const app = await buildServer({ repository: createFakeRepository() });
+    const repository = createFakeRepository();
+    const app = await buildServer({ repository });
     const ownerRegistered = await app.inject({
       method: "POST",
       url: "/auth/register",
       payload: { email: "team-owner@example.com", password: "password123" }
     });
     const ownerCookie = cookieHeader(ownerRegistered);
+    const owner = jsonBody<{ user: { id: string } }>(ownerRegistered).user;
 
     const createdTeam = await app.inject({
       method: "POST",
@@ -2920,10 +5031,178 @@ describe("account and access flows", () => {
       url: `/v1/team-workspaces/${teamWorkspace.id}/access`,
       headers: { cookie: memberCookie }
     });
+    const ownedSession = await repository.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "team-share-project",
+        externalSessionId: `team-share-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "hook"
+      }
+    );
+    const ownerShareDevice = await enrollDeviceCredentialForTest(
+      app,
+      ownerCookie,
+      ["share_grant_management"]
+    );
+    const rejectedMemberShare = await app.inject({
+      method: "POST",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { cookie: memberCookie },
+      payload: { sessionId: ownedSession.id }
+    });
+    const createdShare = await app.inject({
+      method: "POST",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { cookie: ownerCookie },
+      payload: { sessionId: ownedSession.id }
+    });
+    const shareGrant =
+      jsonBody<TeamSessionShareGrantResponse>(createdShare).shareGrant;
+    const duplicateShare = await app.inject({
+      method: "POST",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { cookie: ownerCookie },
+      payload: { sessionId: ownedSession.id }
+    });
+    const listedShares = await app.inject({
+      method: "GET",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { cookie: memberCookie }
+    });
+    const rejectedDeviceShareList = await app.inject({
+      method: "GET",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { authorization: ownerShareDevice.authorization }
+    });
+    const ownerDeviceStatus = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: { authorization: ownerShareDevice.authorization }
+    });
+    const rejectedMemberRevoke = await app.inject({
+      method: "DELETE",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants/${shareGrant.id}`,
+      headers: { cookie: memberCookie },
+      payload: { reason: "member_read_only" }
+    });
+    const revokedShare = await app.inject({
+      method: "DELETE",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants/${shareGrant.id}`,
+      headers: { cookie: ownerCookie },
+      payload: { reason: "owner_revoked" }
+    });
+    const activeSharesAfterRevoke = await app.inject({
+      method: "GET",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { cookie: ownerCookie }
+    });
+    const allSharesAfterRevoke = await app.inject({
+      method: "GET",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants?includeRevoked=true`,
+      headers: { cookie: ownerCookie }
+    });
+    const initialEntitlement = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie: ownerCookie }
+    });
+    const graceEntitlement = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie: ownerCookie },
+      payload: { status: "grace", reason: "payment_retry" }
+    });
+    const suspendedEntitlement = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie: ownerCookie },
+      payload: { status: "suspended", reason: "billing_suspended" }
+    });
+    const memberAccessSuspended = await app.inject({
+      method: "GET",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/access`,
+      headers: { cookie: memberCookie }
+    });
+    const rejectedSuspendedShareList = await app.inject({
+      method: "GET",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants?includeRevoked=true`,
+      headers: { cookie: ownerCookie }
+    });
+    const rejectedSuspendedShareCreate = await app.inject({
+      method: "POST",
+      url: `/v1/team-workspaces/${teamWorkspace.id}/session-share-grants`,
+      headers: { cookie: ownerCookie },
+      payload: { sessionId: ownedSession.id }
+    });
+    const rejectedSuspendedInvite = await app.inject({
+      method: "POST",
+      url: `/v1/teams/${team.id}/invites`,
+      headers: { cookie: ownerCookie },
+      payload: {
+        email: "suspended-invite@example.com",
+        role: "member"
+      }
+    });
+    const revokedEntitlement = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie: ownerCookie },
+      payload: { status: "revoked", reason: "license_revoked" }
+    });
+    const rejectedRevokedWorkspace = await app.inject({
+      method: "POST",
+      url: "/v1/team-workspaces",
+      headers: { cookie: ownerCookie },
+      payload: { teamId: team.id, name: "Blocked Workspace" }
+    });
+    const reactivatedEntitlement = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie: ownerCookie },
+      payload: { status: "active", reason: "billing_restored" }
+    });
+    const initialBillingSeats = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/billing-seats`,
+      headers: { cookie: ownerCookie }
+    });
+    const rejectedMemberBillingPolicy = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/billing-seats/policy`,
+      headers: { cookie: memberCookie },
+      payload: { seatLimit: 1 }
+    });
+    const overLimitBillingSeats = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/billing-seats/policy`,
+      headers: { cookie: ownerCookie },
+      payload: { seatLimit: 1 }
+    });
+    const supportOverview = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/support/overview`,
+      headers: { cookie: ownerCookie }
+    });
+    const rejectedMemberSupportOverview = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/support/overview`,
+      headers: { cookie: memberCookie }
+    });
     const teamAuditEvents = await app.inject({
       method: "GET",
       url: `/v1/teams/${team.id}/audit-events`,
       headers: { cookie: ownerCookie }
+    });
+    const rejectedOwnerSelfDisable = await app.inject({
+      method: "POST",
+      url: `/v1/teams/${team.id}/members`,
+      headers: { cookie: ownerCookie },
+      payload: {
+        userId: owner.id,
+        role: "member",
+        status: "disabled"
+      }
     });
 
     const rejectedMemberInvite = await app.inject({
@@ -2981,9 +5260,206 @@ describe("account and access flows", () => {
       teamWorkspaceId: teamWorkspace.id,
       userId: accepted.user.id,
       access: "read",
+      teamEntitlementStatus: "active",
+      teamEntitlementAllowsAccess: true,
       canRecall: true
     });
+    expect(rejectedMemberShare.statusCode).toBe(403);
+    expect(createdShare.statusCode).toBe(200);
+    expect(shareGrant).toMatchObject({
+      ownerUserId: owner.id,
+      sessionId: ownedSession.id,
+      teamId: team.id,
+      teamWorkspaceId: teamWorkspace.id,
+      revokedAt: null
+    });
+    expect(duplicateShare.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamSessionShareGrantResponse>(duplicateShare).shareGrant.id
+    ).toBe(shareGrant.id);
+    expect(listedShares.statusCode).toBe(200);
+    expect(rejectedDeviceShareList.statusCode).toBe(401);
+    expect(ownerDeviceStatus.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamSessionShareGrantsResponse>(listedShares).shareGrants
+    ).toEqual([expect.objectContaining({ id: shareGrant.id })]);
+    expect(rejectedMemberRevoke.statusCode).toBe(403);
+    expect(revokedShare.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamSessionShareGrantResponse>(revokedShare).shareGrant
+    ).toMatchObject({
+      id: shareGrant.id,
+      revokedByUserId: owner.id,
+      revocationReason: "owner_revoked"
+    });
+    expect(activeSharesAfterRevoke.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamSessionShareGrantsResponse>(activeSharesAfterRevoke)
+        .shareGrants
+    ).toEqual([]);
+    expect(allSharesAfterRevoke.statusCode).toBe(200);
+    const allSharesAfterRevokeBody =
+      jsonBody<TeamSessionShareGrantsResponse>(allSharesAfterRevoke);
+    expect(allSharesAfterRevokeBody.shareGrants).toHaveLength(1);
+    expect(allSharesAfterRevokeBody.shareGrants[0]).toMatchObject({
+      id: shareGrant.id
+    });
+    expect(typeof allSharesAfterRevokeBody.shareGrants[0]?.revokedAt).toBe(
+      "string"
+    );
+    expect(initialEntitlement.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamEntitlementResponse>(initialEntitlement).entitlement
+    ).toMatchObject({
+      teamId: team.id,
+      status: "active",
+      allowsTeamAccess: true,
+      deniedOperationFamilies: []
+    });
+    expect(graceEntitlement.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamEntitlementResponse>(graceEntitlement).entitlement
+    ).toMatchObject({
+      status: "grace",
+      allowsTeamAccess: true,
+      reason: "payment_retry"
+    });
+    expect(suspendedEntitlement.statusCode).toBe(200);
+    const suspendedEntitlementBody =
+      jsonBody<TeamEntitlementResponse>(suspendedEntitlement).entitlement;
+    expect(suspendedEntitlementBody).toMatchObject({
+      status: "suspended",
+      allowsTeamAccess: false
+    });
+    expect(suspendedEntitlementBody.deniedOperationFamilies).toEqual(
+      expect.arrayContaining([
+        "ingestion",
+        "recall",
+        "share",
+        "sync",
+        "team_admin"
+      ])
+    );
+    expect(
+      jsonBody<TeamWorkspaceAccessResponse>(memberAccessSuspended).access
+    ).toMatchObject({
+      teamEntitlementStatus: "suspended",
+      teamEntitlementAllowsAccess: false,
+      canRecall: false,
+      canCreateShare: false
+    });
+    expect(rejectedSuspendedShareList.statusCode).toBe(403);
+    expect(rejectedSuspendedShareCreate.statusCode).toBe(403);
+    expect(rejectedSuspendedInvite.statusCode).toBe(403);
+    expect(revokedEntitlement.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamEntitlementResponse>(revokedEntitlement).entitlement
+    ).toMatchObject({
+      status: "revoked",
+      allowsTeamAccess: false
+    });
+    expect(rejectedRevokedWorkspace.statusCode).toBe(403);
+    expect(reactivatedEntitlement.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamEntitlementResponse>(reactivatedEntitlement).entitlement
+    ).toMatchObject({
+      status: "active",
+      allowsTeamAccess: true
+    });
+    expect(initialBillingSeats.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamBillingSeatResponse>(initialBillingSeats).billingSeats
+    ).toMatchObject({
+      teamId: team.id,
+      seatLimit: null,
+      billableSeatCount: 2,
+      pendingBillingSeatCount: 2,
+      syncStatus: "pending_provider_update"
+    });
+    expect(rejectedMemberBillingPolicy.statusCode).toBe(403);
+    expect(overLimitBillingSeats.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamBillingSeatResponse>(overLimitBillingSeats).billingSeats
+    ).toMatchObject({
+      teamId: team.id,
+      seatLimit: 1,
+      billableSeatCount: 2,
+      pendingBillingSeatCount: 2,
+      syncStatus: "over_limit"
+    });
+    expect(supportOverview.statusCode).toBe(200);
+    const supportOverviewBody =
+      jsonBody<TeamSupportOverviewResponse>(supportOverview).supportOverview;
+    expect(supportOverviewBody).toMatchObject({
+      supportAccess: {
+        policy: "team_manager_redacted",
+        actorUserId: owner.id,
+        actorRole: "owner",
+        rawContentAccess: "not_permitted",
+        breakGlassRequiredForRawContent: true
+      },
+      team: { id: team.id, name: "A-Team" },
+      entitlement: { teamId: team.id, status: "grace" },
+      billingSeats: {
+        teamId: team.id,
+        seatLimit: 1,
+        billableSeatCount: 2,
+        syncStatus: "over_limit"
+      },
+      diagnosticSurfaces: {
+        auth: "browser_session",
+        rawContentAccess: "not_permitted",
+        operationsStatusPath: "/ops/status",
+        capabilitiesPath: `/v1/capabilities/authenticated?teamId=${team.id}`,
+        auditEventsPath: `/v1/teams/${team.id}/audit-events`,
+        entitlementPath: `/v1/teams/${team.id}/entitlement`,
+        billingSeatsPath: `/v1/teams/${team.id}/billing-seats`,
+        supportOverviewPath: `/v1/teams/${team.id}/support/overview`
+      },
+      counts: {
+        memberships: { enabled: 2, invited: 0, disabled: 0 },
+        workspaces: { active: 1, archived: 0 },
+        workspaceAccess: { read: 1, write: 1, disabled: 0 },
+        invites: { pending: 0, accepted: 1, revoked: 0, expired: 0 },
+        sessionShareGrants: {
+          active: 0,
+          revoked: 1,
+          retainedAfterPersonalDeletion: 0
+        },
+        setupAndIntegrations: {
+          externalAuthOrganizations: {
+            linked: 0,
+            disabled: 0,
+            lastSeenAt: null
+          },
+          externalAuthIdentities: {
+            linked: 0,
+            disabled: 0,
+            emailVerified: 0,
+            lastSeenAt: null
+          },
+          deviceCredentials: {
+            active: 1,
+            revoked: 0,
+            expired: 0
+          }
+        }
+      }
+    });
+    expect(
+      supportOverviewBody.counts.setupAndIntegrations.deviceCredentials
+        .lastValidatedAt
+    ).toEqual(expect.any(String));
+    expect(JSON.stringify(supportOverviewBody)).not.toContain(
+      invite.inviteToken
+    );
+    expect(JSON.stringify(supportOverviewBody)).not.toContain("password123");
+    expect(JSON.stringify(supportOverviewBody)).not.toContain(
+      "Smoke from owner"
+    );
+    expect(rejectedMemberSupportOverview.statusCode).toBe(403);
     expect(teamAuditEvents.statusCode).toBe(200);
+    expect(rejectedOwnerSelfDisable.statusCode).toBe(403);
     const auditEvents =
       jsonBody<TeamAuditEventsResponse>(teamAuditEvents).auditEvents;
     expect(auditEvents.map((event) => event.action)).toEqual(
@@ -2993,9 +5469,15 @@ describe("account and access flows", () => {
         "team.invite.created",
         "team.invite.accepted",
         "team.member.enabled",
-        "team.workspace_access.created"
+        "team.workspace_access.created",
+        "team.billing_seats.changed",
+        "team.entitlement.changed",
+        "team.support_overview.viewed"
       ])
     );
+    expect(
+      auditEvents.filter((event) => event.action === "team.entitlement.changed")
+    ).toHaveLength(4);
     expect(
       auditEvents.find(
         (event) => event.action === "team.workspace_access.created"
@@ -3035,18 +5517,592 @@ describe("account and access flows", () => {
       payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
-    const rejected = await app.inject({
+    const teamId = randomUUID();
+    const userId = randomUUID();
+    const teamWorkspaceId = randomUUID();
+    const bearerHeaders = { authorization: `Bearer ${token}` };
+    const rejectedRoutes = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/v1/teams",
+        headers: bearerHeaders,
+        payload: { name: "Bearer Team" }
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/teams/${teamId}/membership`,
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/teams/${teamId}/audit-events`,
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/teams/${teamId}/support/overview`,
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "POST",
+        url: `/v1/teams/${teamId}/members`,
+        headers: bearerHeaders,
+        payload: { userId, role: "member", status: "enabled" }
+      }),
+      app.inject({
+        method: "POST",
+        url: `/v1/teams/${teamId}/invites`,
+        headers: bearerHeaders,
+        payload: { email: "invitee@example.test", role: "member" }
+      }),
+      app.inject({
+        method: "POST",
+        url: `/v1/teams/${teamId}/members/${userId}/disable`,
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/team-workspaces",
+        headers: bearerHeaders,
+        payload: { teamId, name: "Bearer Workspace" }
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/team-workspaces/${teamWorkspaceId}/access`,
+        headers: bearerHeaders
+      }),
+      app.inject({
+        method: "PUT",
+        url: `/v1/team-workspaces/${teamWorkspaceId}/access`,
+        headers: bearerHeaders,
+        payload: { userId, access: "read" }
+      })
+    ]);
+    await app.close();
+
+    expect(rejectedRoutes.map((response) => response.statusCode)).toEqual(
+      rejectedRoutes.map(() => 401)
+    );
+    for (const response of rejectedRoutes) {
+      expect(jsonBody<{ error: string }>(response).error).toBe(
+        "Session cookie required"
+      );
+    }
+  });
+
+  it("reconciles billing seats when a Team member is disabled through the API", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registeredOwner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "seat-api-owner@example.com",
+        password: "password123"
+      }
+    });
+    const ownerCookie = cookieHeader(registeredOwner);
+    const createdTeam = await app.inject({
       method: "POST",
       url: "/v1/teams",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { name: "Bearer Team" }
+      headers: { cookie: ownerCookie },
+      payload: { name: "Seat API Team" }
+    });
+    const team = jsonBody<TeamResponse>(createdTeam).team;
+    const createdInvite = await app.inject({
+      method: "POST",
+      url: `/v1/teams/${team.id}/invites`,
+      headers: { cookie: ownerCookie },
+      payload: {
+        email: "seat-api-member@example.com",
+        role: "member"
+      }
+    });
+    const invite = jsonBody<TeamInviteResponse>(createdInvite);
+    const acceptedInvite = await app.inject({
+      method: "POST",
+      url: "/v1/team-invites/accept",
+      payload: {
+        inviteToken: invite.inviteToken,
+        email: "seat-api-member@example.com",
+        password: "password123"
+      }
+    });
+    const accepted = jsonBody<TeamInviteAcceptResponse>(acceptedInvite);
+    const overLimitSeats = await app.inject({
+      method: "PUT",
+      url: `/v1/teams/${team.id}/billing-seats/policy`,
+      headers: { cookie: ownerCookie },
+      payload: { seatLimit: 1 }
+    });
+    const disabledMember = await app.inject({
+      method: "POST",
+      url: `/v1/teams/${team.id}/members/${accepted.user.id}/disable`,
+      headers: { cookie: ownerCookie }
+    });
+    const restoredSeats = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/billing-seats`,
+      headers: { cookie: ownerCookie }
+    });
+    const restoredEntitlement = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/entitlement`,
+      headers: { cookie: ownerCookie }
+    });
+    const teamAuditEvents = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/audit-events`,
+      headers: { cookie: ownerCookie }
     });
     await app.close();
 
-    expect(rejected.statusCode).toBe(401);
-    expect(jsonBody<{ error: string }>(rejected).error).toBe(
+    expect(overLimitSeats.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamBillingSeatResponse>(overLimitSeats).billingSeats
+    ).toMatchObject({
+      billableSeatCount: 2,
+      seatLimit: 1,
+      syncStatus: "over_limit"
+    });
+    expect(disabledMember.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamMembershipResponse>(disabledMember).membership
+    ).toMatchObject({
+      userId: accepted.user.id,
+      status: "disabled"
+    });
+    expect(restoredSeats.statusCode).toBe(200);
+    expect(
+      jsonBody<TeamBillingSeatResponse>(restoredSeats).billingSeats
+    ).toMatchObject({
+      billableSeatCount: 1,
+      seatLimit: 1,
+      syncStatus: "pending_provider_update"
+    });
+    expect(
+      jsonBody<TeamEntitlementResponse>(restoredEntitlement).entitlement
+    ).toMatchObject({
+      status: "active",
+      reason: "seat_limit_restored",
+      allowsTeamAccess: true
+    });
+    expect(
+      jsonBody<TeamAuditEventsResponse>(teamAuditEvents).auditEvents.map(
+        (event) => event.action
+      )
+    ).toEqual(
+      expect.arrayContaining([
+        "team.member.disabled",
+        "team.billing_seats.changed"
+      ])
+    );
+  });
+
+  it("enrolls and revokes device credentials independently from API Tokens", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "device-owner@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const apiToken = jsonBody<TokenResponse>(createdToken).token;
+    const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const overScopedChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const deviceSecret = `device-secret-${randomUUID()}`;
+    const credentialKeyId = `device-key-${randomUUID()}`;
+    const deniedTokenChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { authorization: `Bearer ${apiToken}` },
+      payload: {
+        challenge_hash: challengeHash,
+        upstream_backend_id: "team-vps"
+      }
+    });
+    const createdChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        upstream_backend_id: "team-vps",
+        device_instance_id: "desktop-1",
+        device_label: "Desktop",
+        requested_operation_families: ["team.recall", "sync.outbox"],
+        metadata: {
+          platform: "linux",
+          deviceSecret: "metadata-device-secret",
+          nested: { apiKey: "metadata-api-key" }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: overScopedChallengeHash,
+        upstream_backend_id: "team-vps",
+        device_instance_id: "desktop-over-scoped",
+        requested_operation_families: ["team_workspace_read"]
+      }
+    });
+    const deniedOverScopedRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: overScopedChallengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "secret_hash",
+        verifier_hash: hashSecretForTest(deviceSecret),
+        operation_families: ["team_workspace_read", "admin"]
+      }
+    });
+    const boundedOverScopedRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: overScopedChallengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "secret_hash",
+        verifier_hash: hashSecretForTest(deviceSecret),
+        operation_families: ["team_workspace_read"]
+      }
+    });
+    const redeemed = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        credential_key_id: credentialKeyId,
+        verifier_kind: "secret_hash",
+        verifier_hash: hashSecretForTest(deviceSecret)
+      }
+    });
+    const credential = jsonBody<{
+      credential: {
+        id: string;
+        verifierHash?: string;
+        metadata: Record<string, unknown>;
+      };
+    }>(redeemed).credential;
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials?upstream_backend_id=team-vps",
+      headers: { cookie }
+    });
+    const deniedBearerStatus = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: { authorization: `Bearer ${apiToken}` }
+    });
+    const deviceStatus = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      }
+    });
+    const deniedTeamRoute = await app.inject({
+      method: "POST",
+      url: "/v1/team-workspaces",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      },
+      payload: { teamId: randomUUID(), name: "Workspace" }
+    });
+    const revoked = await app.inject({
+      method: "DELETE",
+      url: `/v1/local-edge/device-credentials/${credential.id}`,
+      headers: { cookie },
+      payload: { reason: "rotated" }
+    });
+    const revokedDeviceStatus = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      }
+    });
+    const apiTokenStillWorks = await app.inject({
+      method: "GET",
+      url: "/v1/access/check",
+      headers: { authorization: `Bearer ${apiToken}` }
+    });
+    await app.close();
+
+    expect(deniedTokenChallenge.statusCode).toBe(401);
+    expect(createdChallenge.statusCode).toBe(200);
+    expect(deniedOverScopedRedeem.statusCode).toBe(400);
+    expect(boundedOverScopedRedeem.statusCode).toBe(200);
+    expect(redeemed.statusCode).toBe(200);
+    expect(JSON.stringify(redeemed.json())).not.toContain(deviceSecret);
+    expect(JSON.stringify(redeemed.json())).not.toContain(
+      "metadata-device-secret"
+    );
+    expect(JSON.stringify(redeemed.json())).not.toContain("metadata-api-key");
+    expect(credential.verifierHash).toBeUndefined();
+    expect(credential.metadata).toMatchObject({
+      platform: "linux",
+      deviceSecret: "[redacted]",
+      nested: { apiKey: "[redacted]" }
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(
+      jsonBody<{ credentials: unknown[] }>(listed).credentials
+    ).toHaveLength(2);
+    expect(deniedBearerStatus.statusCode).toBe(401);
+    expect(jsonBody<{ error: string }>(deniedBearerStatus).error).toBe(
+      "Device credential required"
+    );
+    expect(deviceStatus.statusCode).toBe(200);
+    expect(jsonBody<{ auth: string }>(deviceStatus).auth).toBe(
+      "device_credential"
+    );
+    expect(deniedTeamRoute.statusCode).toBe(401);
+    expect(jsonBody<{ error: string }>(deniedTeamRoute).error).toBe(
       "Session cookie required"
     );
+    expect(revoked.statusCode).toBe(200);
+    expect(revokedDeviceStatus.statusCode).toBe(401);
+    expect(apiTokenStillWorks.statusCode).toBe(200);
+  });
+
+  it("routes local-edge upstream operations only after policy, capability, and device checks", async () => {
+    const upstreamBackendsPath = writeUpstreamRegistryFixture({
+      baseUrl: "https://team.example.test",
+      routePolicy: {
+        teamWorkspaceRead: "enabled",
+        sync: "enabled"
+      }
+    });
+    const repository = createFakeRepository();
+    const upstreamCalls: Array<{ url: string; init: RequestInit }> = [];
+    const app = await buildServer({
+      repository,
+      upstreamBackendsPath,
+      fetch: async (url, init) => {
+        upstreamCalls.push({ url: String(url), init: init ?? {} });
+        return new Response(JSON.stringify({ markdown: "proxied" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "route-owner@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const deviceSecret = `device-secret-${randomUUID()}`;
+    const credentialKeyId = `device-key-${randomUUID()}`;
+    await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        upstream_backend_id: "team-vps",
+        device_instance_id: "desktop-1",
+        requested_operation_families: ["team_workspace_read", "sync"]
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        credential_key_id: credentialKeyId,
+        verifier_kind: "secret_hash",
+        verifier_hash: hashSecretForTest(deviceSecret)
+      }
+    });
+
+    const localDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: { operation_family: "personal_memory_read" }
+    });
+    const teamDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    const syncDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "sync",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    const deniedCaptureDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "capture_writes",
+        upstream_backend_id: "team-vps",
+        capture_context: { workspace_id: "repo" }
+      }
+    });
+    const proxied = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/memory/answer",
+        body: { query: "postgres", team_workspace_id: randomUUID() }
+      }
+    });
+    const blockedLocalEdgeProxy = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/local-edge/route-decisions",
+        body: {}
+      }
+    });
+    const blockedMislabeledAdminProxy = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: {
+        authorization: `Koed-Device ${credentialKeyId}:${deviceSecret}`
+      },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/teams/team-id/members",
+        body: { userId: randomUUID(), role: "owner" }
+      }
+    });
+    await app.close();
+
+    expect(
+      jsonBody<{ decision: { action: string } }>(localDecision).decision
+    ).toMatchObject({ action: "local_only" });
+    expect(
+      jsonBody<{ decision: { action: string } }>(teamDecision).decision
+    ).toMatchObject({ action: "live_upstream_proxy" });
+    expect(
+      jsonBody<{ decision: { action: string } }>(syncDecision).decision
+    ).toMatchObject({ action: "queued_sync_handoff" });
+    expect(
+      jsonBody<{ decision: { action: string; reason: string } }>(
+        deniedCaptureDecision
+      ).decision
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "route_policy_disabled"
+    });
+    expect(proxied.statusCode).toBe(200);
+    expect(jsonBody<{ markdown: string }>(proxied).markdown).toBeDefined();
+    expect(upstreamCalls).toHaveLength(1);
+    expect(upstreamCalls[0]).toMatchObject({
+      url: "https://team.example.test/v1/memory/answer"
+    });
+    expect(
+      (upstreamCalls[0]?.init.headers as Record<string, string>).authorization
+    ).toBeUndefined();
+    expect(blockedLocalEdgeProxy.statusCode).toBe(400);
+    expect(blockedMislabeledAdminProxy.statusCode).toBe(400);
+    expect(upstreamCalls).toHaveLength(1);
+  });
+
+  it("does not route local-edge operations with only expired device credentials", async () => {
+    const upstreamPath = writeUpstreamRegistryFixture({
+      baseUrl: "https://team.example.test",
+      routePolicy: { teamWorkspaceRead: "enabled" }
+    });
+    process.env.KOED_HOME = mkdtempSync(resolve(tmpdir(), "koed-api-home-"));
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      upstreamBackendsPath: upstreamPath
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "expired-device-owner@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        upstream_backend_id: "team-vps",
+        device_instance_id: "expired-desktop",
+        requested_operation_families: ["team_workspace_read"]
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "secret_hash",
+        verifier_hash: hashSecretForTest(`expired-device-${randomUUID()}`),
+        expires_at: new Date(Date.now() - 60_000).toISOString()
+      }
+    });
+
+    const decision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    await app.close();
+
+    expect(decision.statusCode).toBe(200);
+    expect(
+      jsonBody<{ decision: { action: string; reason: string } }>(decision)
+        .decision
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "missing"
+    });
   });
 
   it("verifies the invited email before issuing an invite session", async () => {
@@ -3172,6 +6228,191 @@ describe("account and access flows", () => {
       targetId: apiToken.id,
       metadata: { actorType: "user" }
     });
+  });
+
+  it("records privacy-safe activation analytics through session auth", async () => {
+    const repository = createFakeRepository();
+    const app = await buildServer({ repository });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "analytics-owner@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const createdTeam = await app.inject({
+      method: "POST",
+      url: "/v1/teams",
+      headers: { cookie },
+      payload: { name: "Activation Analytics" }
+    });
+    const team = jsonBody<TeamResponse>(createdTeam).team;
+    const createdEvent = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie },
+      payload: {
+        event: "desktop_connected",
+        surface: "desktop",
+        deploymentProfile: "private_vps",
+        teamId: team.id,
+        metadata: {
+          os: "linux",
+          durationMs: 42,
+          repaired: false
+        }
+      }
+    });
+    const createdSecondEvent = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie },
+      payload: {
+        event: "first_memory_answer_completed",
+        surface: "explorer",
+        deploymentProfile: "private_vps",
+        teamId: team.id,
+        metadata: {
+          source: "manual"
+        }
+      }
+    });
+    const rejectedSecret = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie },
+      payload: {
+        event: "first_memory_answer_completed",
+        surface: "explorer",
+        metadata: {
+          promptText: "this must not be accepted"
+        }
+      }
+    });
+    const rejectedFreeTextValue = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie },
+      payload: {
+        event: "first_memory_answer_completed",
+        surface: "explorer",
+        metadata: {
+          source: "raw memory sentinel should never enter analytics"
+        }
+      }
+    });
+    const rejectedWrongShape = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie },
+      payload: {
+        event: "desktop_connected",
+        surface: "desktop",
+        metadata: {
+          durationMs: -1,
+          repaired: "false"
+        }
+      }
+    });
+    const rejectedApiToken = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { authorization: "Bearer not-a-session" },
+      payload: {
+        event: "desktop_connected",
+        surface: "desktop"
+      }
+    });
+    const otherRegistered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "analytics-other@example.com",
+        password: "password123"
+      }
+    });
+    const rejectedOtherTeam = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie: cookieHeader(otherRegistered) },
+      payload: {
+        event: "workspace_created",
+        surface: "explorer",
+        teamId: team.id
+      }
+    });
+    const funnel = await app.inject({
+      method: "GET",
+      url: `/v1/analytics/activation-funnel?teamId=${team.id}`,
+      headers: { cookie }
+    });
+    const rejectedOtherTeamFunnel = await app.inject({
+      method: "GET",
+      url: `/v1/analytics/activation-funnel?teamId=${team.id}`,
+      headers: { cookie: cookieHeader(otherRegistered) }
+    });
+    const auditEvents = await repository.listAuditEvents({
+      userId: jsonBody<{ user: { id: string } }>(registered).user.id
+    });
+    await app.close();
+
+    expect(createdEvent.statusCode).toBe(200);
+    expect(
+      jsonBody<{ event: AuditEventRecord }>(createdEvent).event
+    ).toMatchObject({
+      action: "analytics.activation.desktop_connected",
+      targetTable: "teams",
+      targetId: team.id,
+      visibility: null,
+      metadata: {
+        event: "desktop_connected",
+        surface: "desktop",
+        deploymentProfile: "private_vps",
+        teamId: team.id,
+        attributes: {
+          os: "linux",
+          durationMs: 42,
+          repaired: false
+        }
+      }
+    });
+    expect(createdSecondEvent.statusCode).toBe(200);
+    expect(rejectedSecret.statusCode).toBe(400);
+    expect(rejectedFreeTextValue.statusCode).toBe(400);
+    expect(rejectedWrongShape.statusCode).toBe(400);
+    expect(rejectedApiToken.statusCode).toBe(401);
+    expect(rejectedOtherTeam.statusCode).toBe(403);
+    expect(rejectedOtherTeamFunnel.statusCode).toBe(403);
+    expect(funnel.statusCode).toBe(200);
+    expect(
+      jsonBody<{ funnel: ActivationAnalyticsFunnelRecord }>(funnel).funnel
+    ).toMatchObject({
+      scope: { ownerUserId: null, teamId: team.id, teamWorkspaceId: null },
+      events: [
+        {
+          event: "desktop_connected",
+          count: 1,
+          surfaces: { desktop: 1 },
+          deploymentProfiles: { private_vps: 1 }
+        },
+        {
+          event: "first_memory_answer_completed",
+          count: 1,
+          surfaces: { explorer: 1 },
+          deploymentProfiles: { private_vps: 1 }
+        }
+      ]
+    });
+    expect(JSON.stringify(jsonBody(funnel))).not.toContain("manual");
+    expect(JSON.stringify(jsonBody(funnel))).not.toContain("linux");
+    expect(
+      JSON.stringify(auditEvents.map((event) => event.metadata))
+    ).not.toContain("this must not be accepted");
+    expect(
+      JSON.stringify(auditEvents.map((event) => event.metadata))
+    ).not.toContain("raw memory sentinel");
   });
 
   it("rejects cross-origin browser-session writes without blocking bearer API tokens", async () => {
@@ -3346,6 +6587,11 @@ describe("account and access flows", () => {
         method: "GET",
         url: "/self-host/status",
         headers: bearerHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: "/ops/status",
+        headers: bearerHeaders
       })
     ]);
     const accessCheck = await app.inject({
@@ -3362,13 +6608,590 @@ describe("account and access flows", () => {
 
     expect(createdToken.statusCode).toBe(200);
     expect(consoleRequests.map((response) => response.statusCode)).toEqual([
-      401, 401, 401, 401, 200
+      401, 401, 401, 401, 200, 401
     ]);
     expect(jsonBody<{ redacted: boolean }>(consoleRequests[4]).redacted).toBe(
       true
     );
     expect(accessCheck.statusCode).toBe(200);
     expect(sessionMe.statusCode).toBe(200);
+  });
+
+  it("exposes redacted hosted operations status to browser sessions", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-ops-status-"));
+    const backupStatusPath = resolve(koedHome, "backup-status.json");
+    const requestMetricsStatusPath = resolve(
+      koedHome,
+      "request-metrics-status.json"
+    );
+    const rawMemorySentinel =
+      "RawMemorySentinel: customer pricing decision must not enter diagnostics";
+    const secretSentinel = "sk-koed-diagnostics-secret-must-not-leak";
+    writeFileSync(
+      backupStatusPath,
+      JSON.stringify({
+        status: "ok",
+        provider: "smoke",
+        checkedAt: new Date().toISOString(),
+        lastSuccessfulAt: new Date().toISOString(),
+        ignoredRawMemory: rawMemorySentinel,
+        ignoredProviderSecret: secretSentinel
+      })
+    );
+    writeFileSync(
+      requestMetricsStatusPath,
+      JSON.stringify({
+        status: "ok",
+        checkedAt: new Date().toISOString(),
+        windowSeconds: 60,
+        requestRatePerSecond: 12.5,
+        p95LatencyMs: 250,
+        p99LatencyMs: 400,
+        errorRate: 0.001,
+        ignoredRawMemory: rawMemorySentinel,
+        ignoredProviderSecret: secretSentinel
+      })
+    );
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.WORK_QUEUE_BACKEND = "local";
+    process.env.KOED_HOME = koedHome;
+    process.env.KOED_BACKUP_STATUS_PATH = backupStatusPath;
+    process.env.KOED_OPS_REQUEST_METRICS_STATUS_PATH = requestMetricsStatusPath;
+    process.env.KOED_OPS_MAX_RSS_BYTES = "999999999999";
+    process.env.KOED_RUNBOOK_BASE_URL = "https://runbooks.example.test/koed";
+    process.env.KOED_OPS_ALERT_WEBHOOK_URL = "https://alerts.example.test/koed";
+    process.env.KOED_OPS_ALERT_WEBHOOK_TOKEN = secretSentinel;
+    process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "managed_kms";
+    process.env.MANAGED_KMS_KEY_ID = "managed-kms:ops-status-key";
+    process.env.MANAGED_KMS_KEY_VERSION = "4";
+    process.env.MANAGED_KMS_ENDPOINT_URL = "https://kms.ops-status.test/v1/";
+    process.env.MANAGED_KMS_AUTH_TOKEN = secretSentinel;
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "ops-status@example.com", password: "password123" }
+    });
+    const status = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: { cookie: cookieHeader(registered) }
+    });
+    const rejected = await app.inject({ method: "GET", url: "/ops/status" });
+    await app.close();
+
+    const body = jsonBody<{
+      status: string;
+      redacted: boolean;
+      deployment: { queueBackend: string };
+      components: {
+        api: { status: string };
+        backups: { status: string; details: { provider: string | null } };
+        requestMetrics: {
+          status: string;
+          details: { p95LatencyMs: number; errorRate: number };
+        };
+        runtimeResources: {
+          status: string;
+          details: { rssBytes: number; maxRssBytes: number };
+        };
+        redis: { status: string };
+        disk: { status: string; details: { path: string } };
+        envelopeEncryption: {
+          status: string;
+          details: {
+            mode: string;
+            keyId: string;
+            keyVersion: number;
+            status: string;
+            details: { endpointOrigin: string };
+          };
+        };
+        alertDelivery: {
+          status: string;
+          details: {
+            sink: string;
+            tokenConfigured: boolean;
+            endpointConfigured: boolean;
+          };
+        };
+      };
+      alerts: Array<{ code: string; runbookUrl: string | null }>;
+    }>(status);
+
+    expect(status.statusCode).toBe(200);
+    expect(rejected.statusCode).toBe(401);
+    expect(body.redacted).toBe(true);
+    expect(body.deployment.queueBackend).toBe("local");
+    expect(body.components.api.status).toBe("ok");
+    expect(body.components.redis.status).toBe("not_required");
+    expect(body.components.backups).toMatchObject({
+      status: "ok",
+      details: { provider: "smoke" }
+    });
+    expect(body.components.requestMetrics).toMatchObject({
+      status: "ok",
+      details: { p95LatencyMs: 250, errorRate: 0.001 }
+    });
+    expect(body.components.runtimeResources.status).toBe("ok");
+    expect(body.components.runtimeResources.details.maxRssBytes).toBe(
+      999999999999
+    );
+    expect(body.components.disk.details.path).toBe(koedHome);
+    expect(body.components.envelopeEncryption).toEqual({
+      status: "ok",
+      details: {
+        mode: "managed_kms",
+        keyId: "managed-kms:ops-status-key",
+        keyVersion: 4,
+        status: "configured",
+        details: {
+          endpointOrigin: "https://kms.ops-status.test"
+        }
+      }
+    });
+    expect(body.components.alertDelivery).toEqual({
+      status: "ok",
+      details: {
+        sink: "webhook",
+        tokenConfigured: true,
+        endpointConfigured: true
+      }
+    });
+    expect(
+      body.alerts.some((alert) => alert.code === "embeddingService.degraded")
+    ).toBe(true);
+    expect(
+      body.alerts.every((alert) =>
+        alert.runbookUrl?.startsWith("https://runbooks.example.test/koed/")
+      )
+    ).toBe(true);
+    expect(status.body).not.toContain(rawMemorySentinel);
+    expect(status.body).not.toContain(secretSentinel);
+  });
+
+  it("reports managed KMS status failures as redacted operations alerts", async () => {
+    const secretSentinel = "kms-status-secret-must-not-leak";
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_RUNBOOK_BASE_URL = "https://runbooks.example.test/koed";
+    const failingProvider = {
+      mode: "managed_kms",
+      keyId: "managed-kms:degraded-status-key",
+      keyVersion: 7,
+      async encrypt() {
+        throw new Error("not used");
+      },
+      async decrypt() {
+        throw new Error("not used");
+      },
+      async status() {
+        throw new Error(`KMS unavailable: ${secretSentinel}`);
+      }
+    } satisfies EnvelopeEncryptionProvider;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      envelopeEncryptionProvider: failingProvider
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "ops-kms-status@example.com", password: "password123" }
+    });
+    const status = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: { cookie: cookieHeader(registered) }
+    });
+    await app.close();
+
+    const body = jsonBody<{
+      status: string;
+      redacted: boolean;
+      components: {
+        envelopeEncryption: {
+          status: string;
+          details: {
+            mode: string;
+            keyId: string;
+            keyVersion: number;
+          };
+        };
+      };
+      alerts: Array<{ code: string; runbookUrl: string | null }>;
+    }>(status);
+
+    expect(status.statusCode).toBe(200);
+    expect(body.status).toBe("error");
+    expect(body.redacted).toBe(true);
+    expect(body.components.envelopeEncryption).toEqual({
+      status: "error",
+      details: {
+        mode: "managed_kms",
+        keyId: "managed-kms:degraded-status-key",
+        keyVersion: 7
+      }
+    });
+    expect(body.alerts).toContainEqual(
+      expect.objectContaining({
+        code: "envelopeEncryption.error",
+        runbookUrl:
+          "https://runbooks.example.test/koed/envelopeEncryption.error"
+      })
+    );
+    expect(status.body).not.toContain(secretSentinel);
+  });
+
+  it("exposes a redacted hosted operations test-alert path to browser sessions", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_RUNBOOK_BASE_URL = "https://runbooks.example.test/koed";
+    process.env.KOED_OPS_ALERT_WEBHOOK_URL = "https://alerts.example.test/koed";
+    process.env.KOED_OPS_ALERT_WEBHOOK_TOKEN = "test-alert-secret";
+    const alertRequests: Array<{ url: string; init: RequestInit }> = [];
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      fetch: async (url, init) => {
+        alertRequests.push({ url: String(url), init: init ?? {} });
+        return new Response("ok", { status: 202 });
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "ops-test-alert@example.com", password: "password123" }
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/ops/test-alert",
+      headers: { cookie: cookieHeader(registered) }
+    });
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/ops/test-alert"
+    });
+    await app.close();
+
+    const body = jsonBody<{
+      redacted: boolean;
+      test: boolean;
+      alert: { code: string; runbookUrl: string | null };
+      delivery: { status: string; sink: string; redacted: boolean };
+    }>(accepted);
+
+    expect(accepted.statusCode).toBe(200);
+    expect(rejected.statusCode).toBe(401);
+    expect(body.redacted).toBe(true);
+    expect(body.test).toBe(true);
+    expect(body.alert.code).toBe("testAlert.degraded");
+    expect(body.alert.runbookUrl).toBe(
+      "https://runbooks.example.test/koed/testAlert.degraded"
+    );
+    expect(body.delivery).toEqual({
+      status: "sent",
+      sink: "webhook",
+      redacted: true
+    });
+    expect(alertRequests).toHaveLength(1);
+    expect(alertRequests[0]).toMatchObject({
+      url: "https://alerts.example.test/koed",
+      init: {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-alert-secret"
+        }
+      }
+    });
+    expect(String(alertRequests[0]?.init.body)).toContain("testAlert.degraded");
+    expect(accepted.body).not.toContain("test-alert-secret");
+  });
+
+  it("restricts hosted operations status to configured operator sessions", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+    process.env.KOED_OPS_OPERATOR_EMAILS = "ops@example.test";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const operator = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "ops@example.test", password: "password123" }
+    });
+    const user = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "user@example.test", password: "password123" }
+    });
+    const operatorStatus = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: { cookie: cookieHeader(operator) }
+    });
+    const userStatus = await app.inject({
+      method: "GET",
+      url: "/ops/status",
+      headers: { cookie: cookieHeader(user) }
+    });
+    const operatorAlert = await app.inject({
+      method: "POST",
+      url: "/ops/test-alert",
+      headers: { cookie: cookieHeader(operator) }
+    });
+    const userAlert = await app.inject({
+      method: "POST",
+      url: "/ops/test-alert",
+      headers: { cookie: cookieHeader(user) }
+    });
+    await app.close();
+
+    expect(operatorStatus.statusCode).toBe(200);
+    expect(operatorAlert.statusCode).toBe(200);
+    expect(userStatus.statusCode).toBe(403);
+    expect(userAlert.statusCode).toBe(403);
+  });
+
+  it("exposes hosted support overview only to configured ops operators", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+    process.env.KOED_OPS_OPERATOR_EMAILS = "ops-support@example.test";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "hosted-support-owner@example.test",
+        password: "password123"
+      }
+    });
+    const operator = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "ops-support@example.test",
+        password: "password123"
+      }
+    });
+    const normalUser = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "hosted-support-user@example.test",
+        password: "password123"
+      }
+    });
+    const createdTeam = await app.inject({
+      method: "POST",
+      url: "/v1/teams",
+      headers: { cookie: cookieHeader(owner) },
+      payload: { name: "Hosted Support Team" }
+    });
+    const team = jsonBody<TeamResponse>(createdTeam).team;
+    const accepted = await app.inject({
+      method: "GET",
+      url: `/ops/support/teams/${team.id}/overview`,
+      headers: { cookie: cookieHeader(operator) }
+    });
+    const rejectedNormalUser = await app.inject({
+      method: "GET",
+      url: `/ops/support/teams/${team.id}/overview`,
+      headers: { cookie: cookieHeader(normalUser) }
+    });
+    const rejectedAnonymous = await app.inject({
+      method: "GET",
+      url: `/ops/support/teams/${team.id}/overview`
+    });
+    const auditEventsResponse = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/audit-events`,
+      headers: { cookie: cookieHeader(owner) }
+    });
+    await app.close();
+
+    expect(accepted.statusCode).toBe(200);
+    expect(rejectedNormalUser.statusCode).toBe(403);
+    expect(rejectedAnonymous.statusCode).toBe(401);
+    const body =
+      jsonBody<TeamSupportOverviewResponse>(accepted).supportOverview;
+    expect(body).toMatchObject({
+      supportAccess: {
+        policy: "hosted_operator_redacted",
+        actorRole: "hosted_operator",
+        rawContentAccess: "not_permitted",
+        breakGlassRequiredForRawContent: true
+      },
+      team: { id: team.id, name: "Hosted Support Team" },
+      diagnosticSurfaces: {
+        auth: "browser_session",
+        rawContentAccess: "not_permitted",
+        operationsStatusPath: "/ops/status",
+        capabilitiesPath: `/v1/capabilities/authenticated?teamId=${team.id}`,
+        auditEventsPath: `/v1/teams/${team.id}/audit-events`,
+        entitlementPath: `/v1/teams/${team.id}/entitlement`,
+        billingSeatsPath: `/v1/teams/${team.id}/billing-seats`,
+        supportOverviewPath: `/ops/support/teams/${team.id}/overview`
+      }
+    });
+    expect(accepted.body).not.toContain("password123");
+    const auditEvents =
+      jsonBody<TeamAuditEventsResponse>(auditEventsResponse).auditEvents;
+    expect(auditEvents.map((event) => event.action)).toContain(
+      "team.hosted_support_overview.viewed"
+    );
+    expect(
+      auditEvents.find(
+        (event) => event.action === "team.hosted_support_overview.viewed"
+      )
+    ).toMatchObject({
+      actorUserId: jsonBody<{ user: { id: string } }>(operator).user.id,
+      targetTable: "teams",
+      targetId: team.id,
+      metadata: {
+        teamId: team.id,
+        policy: "hosted_operator_redacted",
+        rawContentAccess: "not_permitted"
+      }
+    });
+  });
+
+  it("creates encrypted hosted support bundles without exposing raw content", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+    process.env.KOED_OPS_OPERATOR_EMAILS = "ops-bundle@example.test";
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 31).toString("base64")
+    );
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      envelopeEncryptionProvider: provider
+    });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "hosted-support-bundle-owner@example.test",
+        password: "password123"
+      }
+    });
+    const operator = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "ops-bundle@example.test",
+        password: "password123"
+      }
+    });
+    const createdTeam = await app.inject({
+      method: "POST",
+      url: "/v1/teams",
+      headers: { cookie: cookieHeader(owner) },
+      payload: { name: "Hosted Support Bundle Team" }
+    });
+    const team = jsonBody<TeamResponse>(createdTeam).team;
+    const bundleResponse = await app.inject({
+      method: "POST",
+      url: `/ops/support/teams/${team.id}/bundle`,
+      headers: { cookie: cookieHeader(operator) }
+    });
+    const auditEventsResponse = await app.inject({
+      method: "GET",
+      url: `/v1/teams/${team.id}/audit-events`,
+      headers: { cookie: cookieHeader(owner) }
+    });
+    await app.close();
+
+    expect(bundleResponse.statusCode).toBe(200);
+    expect(bundleResponse.body).not.toContain("password123");
+    expect(bundleResponse.body).not.toContain("cm_session=");
+    const body = jsonBody<{
+      redacted: boolean;
+      encryptedPackage: EncryptedJsonPackage;
+    }>(bundleResponse);
+    expect(body.redacted).toBe(true);
+    expect(body.encryptedPackage.manifest).toMatchObject({
+      objectClass: "support_bundle",
+      scope: {
+        tenantId: team.id,
+        teamId: team.id,
+        objectClass: "support_bundle"
+      },
+      metadata: {
+        teamId: team.id,
+        reason: "hosted_support_diagnostics",
+        redacted: true
+      }
+    });
+    expect(JSON.stringify(body.encryptedPackage.manifest)).not.toContain(
+      "Hosted Support Bundle Team"
+    );
+    const decrypted = await decryptEncryptedJsonPackage<{
+      redacted: boolean;
+      supportOverview: TeamSupportOverviewRecord;
+    }>(provider, body.encryptedPackage);
+    expect(decrypted).toMatchObject({
+      redacted: true,
+      supportOverview: {
+        team: { id: team.id, name: "Hosted Support Bundle Team" },
+        supportAccess: {
+          policy: "hosted_operator_redacted",
+          rawContentAccess: "not_permitted"
+        }
+      }
+    });
+    const auditEvents =
+      jsonBody<TeamAuditEventsResponse>(auditEventsResponse).auditEvents;
+    expect(auditEvents.map((event) => event.action)).toContain(
+      "team.hosted_support_bundle.created"
+    );
+    expect(
+      auditEvents.find(
+        (event) => event.action === "team.hosted_support_bundle.created"
+      )
+    ).toMatchObject({
+      targetTable: "teams",
+      targetId: team.id,
+      metadata: {
+        teamId: team.id,
+        policy: "hosted_operator_redacted",
+        rawContentAccess: "not_permitted"
+      }
+    });
+  });
+
+  it("fails closed for hosted support bundles without envelope encryption", async () => {
+    process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+    process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+    process.env.KOED_OPS_OPERATOR_EMAILS = "ops-bundle-required@example.test";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const owner = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "hosted-support-bundle-required-owner@example.test",
+        password: "password123"
+      }
+    });
+    const operator = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "ops-bundle-required@example.test",
+        password: "password123"
+      }
+    });
+    const createdTeam = await app.inject({
+      method: "POST",
+      url: "/v1/teams",
+      headers: { cookie: cookieHeader(owner) },
+      payload: { name: "Hosted Support Bundle Required Team" }
+    });
+    const team = jsonBody<TeamResponse>(createdTeam).team;
+    const response = await app.inject({
+      method: "POST",
+      url: `/ops/support/teams/${team.id}/bundle`,
+      headers: { cookie: cookieHeader(operator) }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).not.toContain("password123");
   });
 
   it("does not expose provider configuration routes", async () => {
@@ -3432,12 +7255,136 @@ describe("account and access flows", () => {
       url: "/v1/access/check",
       headers: { authorization: `Bearer ${token}` }
     });
+    const rejectedCookieRoutes = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: "/v1/capture-policy/effective?projectId=repo-a",
+        headers: { cookie }
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        headers: { cookie },
+        payload: {}
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/capture-personal-event",
+        headers: { cookie },
+        payload: {}
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/conversation-items",
+        headers: { cookie },
+        payload: {}
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/token-usage",
+        headers: { cookie },
+        payload: {}
+      }),
+      app.inject({
+        method: "GET",
+        url: "/v1/memory/token-usage/rollups",
+        headers: { cookie }
+      }),
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/conversation-items/project",
+        headers: { cookie },
+        payload: {}
+      })
+    ]);
     await app.close();
 
     expect(rejectedCookie.statusCode).toBe(401);
     expect(checked.statusCode).toBe(200);
     expect(jsonBody<AccessResponse>(checked).auth).toBe("bearer_api_token");
+    expect(rejectedCookieRoutes.map((response) => response.statusCode)).toEqual(
+      rejectedCookieRoutes.map(() => 401)
+    );
+    for (const response of rejectedCookieRoutes) {
+      expect(jsonBody<{ error: string }>(response).error).toBe(
+        "Bearer API token required"
+      );
+    }
   });
+
+  it.skipIf(!process.env.DATABASE_URL)(
+    "writes encrypted Memory Event companions through the real API repository wiring",
+    async () => {
+      process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+      process.env.API_DATA_ENCRYPTION_KEY = randomBytes(32).toString("base64");
+      process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "local_test_key";
+      const app = await buildServer({ runMemoryJobsInlineForTests: true });
+      const queryPool = createDbPool();
+      try {
+        const registered = await app.inject({
+          method: "POST",
+          url: "/auth/register",
+          payload: {
+            email: `encrypted-api-capture-${randomUUID()}@example.com`,
+            password: "password123"
+          }
+        });
+        const cookie = cookieHeader(registered);
+        const createdToken = await app.inject({
+          method: "POST",
+          url: "/api-tokens",
+          headers: { cookie },
+          payload: { name: "Encrypted Capture Client" }
+        });
+        const token = jsonBody<TokenResponse>(createdToken).token;
+        const content =
+          "Runtime API encryption wiring sentinel should not appear in encrypted payload rows";
+        const captured = await app.inject({
+          method: "POST",
+          url: "/v1/memory/capture-personal-event",
+          headers: { authorization: `Bearer ${token}` },
+          payload: {
+            actor: "user",
+            eventType: "user_prompt",
+            content,
+            sourceHash: `encrypted-api-${randomUUID()}`
+          }
+        });
+
+        expect(captured.statusCode).toBe(200);
+        const event = jsonBody<CaptureResponse>(captured).event;
+        const encrypted = await queryPool.query<{
+          provider_mode: string;
+          source_table: string;
+          source_column: string;
+          ciphertext: string;
+          provenance: { sourceId?: string };
+        }>(
+          `
+            select provider_mode, source_table, source_column, ciphertext, provenance
+            from encrypted_field_payloads
+            where source_table = 'memory_events'
+              and source_id = $1
+              and source_column = 'payload'
+              and invalidated_at is null
+          `,
+          [event.id]
+        );
+
+        expect(encrypted.rowCount).toBe(1);
+        expect(encrypted.rows[0]).toMatchObject({
+          provider_mode: "local_test_key",
+          source_table: "memory_events",
+          source_column: "payload"
+        });
+        expect(encrypted.rows[0]?.provenance.sourceId).toBe(event.id);
+        expect(JSON.stringify(encrypted.rows[0])).not.toContain(content);
+      } finally {
+        await queryPool.end();
+        await app.close();
+      }
+    }
+  );
 
   it("captures conversation memory through MCP endpoints", async () => {
     const app = await buildServer({
@@ -3706,6 +7653,12 @@ describe("account and access flows", () => {
       payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
+    const device = await enrollDeviceCredentialForTest(app, cookie, [
+      "team_workspace_read"
+    ]);
+    const wrongScopeDevice = await enrollDeviceCredentialForTest(app, cookie, [
+      "sync"
+    ]);
     const parentNodeId = randomUUID();
     const teamWorkspaceId = randomUUID();
 
@@ -3735,11 +7688,39 @@ describe("account and access flows", () => {
     const rejectedTeamAnswer = await app.inject({
       method: "POST",
       url: "/v1/memory/answer",
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `bEaReR ${token}` },
       payload: {
         query: "Seraphina",
         retrieval_scope: "personal",
         team_workspace_id: teamWorkspaceId
+      }
+    });
+    const rejectedWrongScopeDeviceAnswer = await app.inject({
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers: { authorization: wrongScopeDevice.authorization },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        team_workspace_id: teamWorkspaceId
+      }
+    });
+    const deviceAnswer = await app.inject({
+      method: "POST",
+      url: "/v1/memory/answer",
+      headers: {
+        authorization: device.authorization.replace(
+          "Koed-Device",
+          "kOeD-dEvIcE"
+        )
+      },
+      payload: {
+        query: "Seraphina",
+        retrieval_scope: "personal",
+        retrieval_stage: "score_scan",
+        team_workspace_id: teamWorkspaceId,
+        strict_limit: true,
+        limit: 1
       }
     });
     const answer = await app.inject({
@@ -3759,6 +7740,7 @@ describe("account and access flows", () => {
 
     expect(search.statusCode).toBe(200);
     expect(answer.statusCode).toBe(200);
+    expect(deviceAnswer.statusCode).toBe(200);
     expect(recallInputs[0]).toMatchObject({
       retrievalStage: "lexical_search",
       parentNodeIds: [parentNodeId],
@@ -3767,13 +7749,23 @@ describe("account and access flows", () => {
     });
     expect(rejectedTeamSearch.statusCode).toBe(403);
     expect(jsonBody<{ error: string }>(rejectedTeamSearch).error).toBe(
-      "Session cookie required for Team Workspace recall"
+      "Session cookie or scoped device credential required for Team Workspace recall"
     );
-    expect(rejectedTeamAnswer.statusCode).toBe(401);
+    expect(rejectedTeamAnswer.statusCode).toBe(403);
     expect(jsonBody<{ error: string }>(rejectedTeamAnswer).error).toBe(
-      "Session cookie required"
+      "Session cookie or scoped device credential required for Team Workspace recall"
     );
+    expect(rejectedWrongScopeDeviceAnswer.statusCode).toBe(403);
+    expect(
+      jsonBody<{ error: string }>(rejectedWrongScopeDeviceAnswer).error
+    ).toBe("Device credential is not allowed for this operation");
     expect(recallInputs[1]).toMatchObject({
+      retrievalStage: "score_scan",
+      teamWorkspaceId,
+      strictLimit: true,
+      limit: 1
+    });
+    expect(recallInputs[2]).toMatchObject({
       retrievalStage: "score_scan",
       teamWorkspaceId,
       strictLimit: true,
@@ -3810,12 +7802,20 @@ describe("account and access flows", () => {
       payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
+    const device = await enrollDeviceCredentialForTest(app, cookie, [
+      "team_workspace_read"
+    ]);
     const nodeId = randomUUID();
     const teamWorkspaceId = randomUUID();
     const rejectedTokenExpand = await app.inject({
       method: "GET",
       url: `/v1/memory/nodes/${nodeId}/expand?team_workspace_id=${teamWorkspaceId}`,
       headers: { authorization: `Bearer ${token}` }
+    });
+    const deviceExpand = await app.inject({
+      method: "GET",
+      url: `/v1/memory/nodes/${nodeId}/expand?team_workspace_id=${teamWorkspaceId}`,
+      headers: { authorization: device.authorization }
     });
     const sessionExpand = await app.inject({
       method: "GET",
@@ -3824,12 +7824,14 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(rejectedTokenExpand.statusCode).toBe(401);
+    expect(rejectedTokenExpand.statusCode).toBe(403);
     expect(jsonBody<{ error: string }>(rejectedTokenExpand).error).toBe(
-      "Session cookie required"
+      "Session cookie or scoped device credential required"
     );
+    expect(deviceExpand.statusCode).toBe(200);
     expect(sessionExpand.statusCode).toBe(200);
     expect(expandInputs).toEqual([
+      expect.objectContaining({ nodeId, teamWorkspaceId }),
       expect.objectContaining({ nodeId, teamWorkspaceId })
     ]);
   });
@@ -3852,48 +7854,82 @@ describe("account and access flows", () => {
       payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
-    const headers = { authorization: `Bearer ${token}` };
+    const tokenHeaders = { authorization: `Bearer ${token}` };
+    const device = await enrollDeviceCredentialForTest(app, cookie, [
+      "team_workspace_read"
+    ]);
+    const deviceHeaders = { authorization: device.authorization };
     const teamWorkspaceId = randomUUID();
     const nodeId = randomUUID();
     const eventId = randomUUID();
 
-    const responses = await Promise.all([
+    const tokenResponses = await Promise.all([
       app.inject({
         method: "GET",
         url: `/v1/memory/graph/nodes?teamWorkspaceId=${teamWorkspaceId}`,
-        headers
+        headers: tokenHeaders
       }),
       app.inject({
         method: "GET",
         url: `/v1/memory/graph/events?teamWorkspaceId=${teamWorkspaceId}`,
-        headers
+        headers: tokenHeaders
       }),
       app.inject({
         method: "GET",
         url: `/v1/memory/graph/threads?teamWorkspaceId=${teamWorkspaceId}`,
-        headers
+        headers: tokenHeaders
       }),
       app.inject({
         method: "GET",
         url: `/v1/memory/graph/nodes/${nodeId}?teamWorkspaceId=${teamWorkspaceId}`,
-        headers
+        headers: tokenHeaders
       }),
       app.inject({
         method: "GET",
         url: `/v1/memory/graph/events/${eventId}?teamWorkspaceId=${teamWorkspaceId}`,
-        headers
+        headers: tokenHeaders
+      })
+    ]);
+    const deviceResponses = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/nodes?teamWorkspaceId=${teamWorkspaceId}`,
+        headers: deviceHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/events?teamWorkspaceId=${teamWorkspaceId}`,
+        headers: deviceHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/threads?teamWorkspaceId=${teamWorkspaceId}`,
+        headers: deviceHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/nodes/${nodeId}?teamWorkspaceId=${teamWorkspaceId}`,
+        headers: deviceHeaders
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/memory/graph/events/${eventId}?teamWorkspaceId=${teamWorkspaceId}`,
+        headers: deviceHeaders
       })
     ]);
     await app.close();
 
-    expect(responses.map((response) => response.statusCode)).toEqual([
-      401, 401, 401, 401, 401
+    expect(tokenResponses.map((response) => response.statusCode)).toEqual([
+      403, 403, 403, 403, 403
     ]);
-    for (const response of responses) {
+    for (const response of tokenResponses) {
       expect(jsonBody<{ error: string }>(response).error).toBe(
-        "Session cookie required"
+        "Session cookie or scoped device credential required"
       );
     }
+    expect(deviceResponses.map((response) => response.statusCode)).toEqual([
+      200, 200, 200, 404, 404
+    ]);
   });
 
   it("rejects unsupported capture policy visibility for API-token setup", async () => {
@@ -4388,6 +8424,117 @@ describe("account and access flows", () => {
       id: nodeId,
       invalidationReason: "user_deleted"
     });
+  });
+
+  it("encrypts memory export packages when envelope encryption is configured", async () => {
+    const rootKey = randomBytes(32).toString("base64");
+    process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "local_test_key";
+    process.env.API_DATA_ENCRYPTION_KEY = rootKey;
+    const repository = createFakeRepository();
+    const app = await buildServer({
+      repository,
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "encrypted-export@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const plaintext = "Encrypted export should hide this Memory text";
+    const captured = await app.inject({
+      method: "POST",
+      url: "/v1/memory/capture-personal-event",
+      headers,
+      payload: {
+        workspaceId: "repo-encrypted-export",
+        actor: "user",
+        eventType: "user_prompt",
+        content: plaintext,
+        metadata: {
+          projectName: "Encrypted Export Repo",
+          externalSessionId: "thread-encrypted-export",
+          threadName: "Encrypted export thread"
+        }
+      }
+    });
+    const exported = await app.inject({
+      method: "GET",
+      url: "/v1/memory/export",
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(captured.statusCode).toBe(200);
+    const body = jsonBody<EncryptedMemoryExportResponse>(exported);
+    expect(body.manifest).toMatchObject({
+      objectClass: "memory_export",
+      metadata: {
+        eventCount: 1,
+        nodeCount: 1
+      }
+    });
+    expect(JSON.stringify(body.manifest)).not.toContain(plaintext);
+    expect(exported.body).not.toContain(plaintext);
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(rootKey);
+    await expect(
+      decryptEncryptedJsonPackage(provider, body)
+    ).resolves.toMatchObject({
+      events: [expect.objectContaining({ contentPreview: plaintext })]
+    });
+    const auditEvents = await repository.listAuditEvents(
+      { userId: jsonBody<{ user: { id: string } }>(registered).user.id },
+      { action: "memory.export.created" }
+    );
+    expect(auditEvents).toHaveLength(1);
+    expect(auditEvents[0]).toMatchObject({
+      action: "memory.export.created",
+      targetTable: "memory_exports"
+    });
+    expect(auditEvents[0]?.metadata).toMatchObject({
+      objectClass: "memory_export",
+      reason: "user_requested_export",
+      target: "self"
+    });
+  });
+
+  it("fails closed for hosted memory exports without envelope encryption", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      runMemoryJobsInlineForTests: true
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "hosted-export@example.com",
+        password: "password123"
+      }
+    });
+    const exported = await app.inject({
+      method: "GET",
+      url: "/v1/memory/export",
+      headers: { cookie: cookieHeader(registered) }
+    });
+    await app.close();
+
+    expect(exported.statusCode).toBe(503);
+    expect(jsonBody<{ error: string }>(exported).error).toBe(
+      "Encrypted export package provider required"
+    );
   });
 
   it("serves a lightweight graph thread index without raw event rows", async () => {

@@ -19,6 +19,7 @@ import {
   vector,
   type AnyPgColumn
 } from "drizzle-orm/pg-core";
+import type { EncryptedPayloadEnvelope } from "@koed/shared";
 
 const id = () =>
   uuid("id")
@@ -75,6 +76,71 @@ export const teamWorkspaceAccess = pgEnum("team_workspace_access", [
   "read",
   "write"
 ]);
+export const teamEntitlementStatus = pgEnum("team_entitlement_status", [
+  "active",
+  "grace",
+  "suspended",
+  "revoked"
+]);
+export const teamBillingSeatSyncStatus = pgEnum(
+  "team_billing_seat_sync_status",
+  ["synced", "pending_provider_update", "over_limit", "error"]
+);
+export const deviceCredentialVerifierKind = pgEnum(
+  "device_credential_verifier_kind",
+  ["secret_hash", "public_key_jwk"]
+);
+export const externalAuthProvider = pgEnum("external_auth_provider", [
+  "workos_authkit"
+]);
+export const externalAuthLinkStatus = pgEnum("external_auth_link_status", [
+  "linked",
+  "disabled"
+]);
+export const deploymentProfile = pgEnum("deployment_profile", [
+  "developer_local",
+  "local_personal",
+  "private_vps",
+  "team_self_hosted",
+  "koed_managed_cloud"
+]);
+export const syncSourceBoundary = pgEnum("sync_source_boundary", [
+  "captured_session"
+]);
+export const syncReplicaRole = pgEnum("sync_replica_role", [
+  "source",
+  "target"
+]);
+export const syncMode = pgEnum("sync_mode", ["live", "offload"]);
+export const syncRelationshipState = pgEnum("sync_relationship_state", [
+  "created",
+  "uploading",
+  "uploaded",
+  "verified",
+  "processing",
+  "partially_available",
+  "ready",
+  "stale",
+  "failed",
+  "revoked",
+  "purge_pending"
+]);
+export const syncPackageState = pgEnum("sync_package_state", [
+  "created",
+  "uploading",
+  "uploaded",
+  "verified",
+  "processing",
+  "completed",
+  "failed"
+]);
+export const syncQueueEntryState = pgEnum("sync_queue_entry_state", [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled"
+]);
 
 export const users = pgTable("users", {
   id: id(),
@@ -89,11 +155,56 @@ export const users = pgTable("users", {
   deletionReason: text("deletion_reason")
 });
 
+export const externalAuthIdentities = pgTable(
+  "external_auth_identities",
+  {
+    id: id(),
+    provider: externalAuthProvider("provider").notNull(),
+    providerEnvironment: text("provider_environment")
+      .notNull()
+      .default("default"),
+    providerUserId: text("provider_user_id").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    displayName: text("display_name"),
+    status: externalAuthLinkStatus("status").notNull().default("linked"),
+    profile: jsonb("profile")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("external_auth_identities_provider_user_unique").on(
+      table.provider,
+      table.providerEnvironment,
+      table.providerUserId
+    ),
+    index("external_auth_identities_user_idx").on(table.userId, table.status),
+    check(
+      "external_auth_identities_provider_user_id_not_empty_check",
+      sql`length(trim(${table.providerUserId})) > 0`
+    )
+  ]
+);
+
 export const teams = pgTable(
   "teams",
   {
     id: id(),
     name: text("name").notNull(),
+    entitlementStatus: teamEntitlementStatus("entitlement_status")
+      .notNull()
+      .default("active"),
+    entitlementReason: text("entitlement_reason"),
+    entitlementUpdatedAt: timestamp("entitlement_updated_at", {
+      withTimezone: true
+    }),
     createdAt: now(),
     updatedAt: updatedNow(),
     archivedAt: timestamp("archived_at", { withTimezone: true })
@@ -102,6 +213,45 @@ export const teams = pgTable(
     index("teams_active_idx")
       .on(table.createdAt.desc())
       .where(sql`${table.archivedAt} is null`)
+  ]
+);
+
+export const externalAuthOrganizations = pgTable(
+  "external_auth_organizations",
+  {
+    id: id(),
+    provider: externalAuthProvider("provider").notNull(),
+    providerEnvironment: text("provider_environment")
+      .notNull()
+      .default("default"),
+    providerOrganizationId: text("provider_organization_id").notNull(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    name: text("name"),
+    status: externalAuthLinkStatus("status").notNull().default("linked"),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("external_auth_organizations_provider_org_unique").on(
+      table.provider,
+      table.providerEnvironment,
+      table.providerOrganizationId
+    ),
+    index("external_auth_organizations_team_idx").on(
+      table.teamId,
+      table.status
+    ),
+    check(
+      "external_auth_organizations_provider_org_id_not_empty_check",
+      sql`length(trim(${table.providerOrganizationId})) > 0`
+    )
   ]
 );
 
@@ -127,6 +277,43 @@ export const teamMemberships = pgTable(
     unique("team_memberships_team_user_unique").on(table.teamId, table.userId),
     index("team_memberships_user_idx").on(table.userId, table.status),
     index("team_memberships_team_idx").on(table.teamId, table.role)
+  ]
+);
+
+export const teamBillingSeatStates = pgTable(
+  "team_billing_seat_states",
+  {
+    teamId: uuid("team_id")
+      .primaryKey()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    seatLimit: integer("seat_limit"),
+    billableSeatCount: integer("billable_seat_count").notNull().default(0),
+    pendingBillingSeatCount: integer("pending_billing_seat_count")
+      .notNull()
+      .default(0),
+    syncStatus: teamBillingSeatSyncStatus("sync_status")
+      .notNull()
+      .default("synced"),
+    overLimitAt: timestamp("over_limit_at", { withTimezone: true }),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    lastErrorMessage: text("last_error_message"),
+    updatedByUserId: uuid("updated_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    index("team_billing_seat_states_status_idx").on(
+      table.syncStatus,
+      table.updatedAt.desc()
+    ),
+    check(
+      "team_billing_seat_states_counts_check",
+      sql`${table.billableSeatCount} >= 0
+        and ${table.pendingBillingSeatCount} >= 0
+        and (${table.seatLimit} is null or ${table.seatLimit} >= 0)`
+    )
   ]
 );
 
@@ -737,6 +924,15 @@ export const memoryEmbeddings = pgTable(
     sourceChunkIndex: integer("source_chunk_index").notNull().default(0),
     sourceChunkCount: integer("source_chunk_count").notNull().default(1),
     sourceText: text("source_text"),
+    queryableVectorStrategy: text("queryable_vector_strategy")
+      .notNull()
+      .default("trusted_backend_pgvector_v1"),
+    searchBoundary: text("search_boundary")
+      .notNull()
+      .default("owner_user_dynamic_grants"),
+    canonicalEmbeddingState: text("canonical_embedding_state")
+      .notNull()
+      .default("not_stored"),
     createdAt: now(),
     invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
     invalidationReason: text("invalidation_reason"),
@@ -810,6 +1006,18 @@ export const memoryEmbeddings = pgTable(
     check(
       "memory_embeddings_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "memory_embeddings_queryable_vector_strategy_check",
+      sql`${table.queryableVectorStrategy} in ('trusted_backend_pgvector_v1')`
+    ),
+    check(
+      "memory_embeddings_search_boundary_check",
+      sql`${table.searchBoundary} in ('owner_user_dynamic_grants')`
+    ),
+    check(
+      "memory_embeddings_canonical_embedding_state_check",
+      sql`${table.canonicalEmbeddingState} in ('not_stored', 'encrypted_payload')`
     )
   ]
 );
@@ -868,6 +1076,198 @@ export const memoryEmbeddings3072 = pgTable("memory_embeddings_3072", {
     .references(() => memoryEmbeddings.id, { onDelete: "cascade" }),
   embedding: vector("embedding", { dimensions: 3072 }).notNull()
 });
+
+export const encryptedFieldPayloads = pgTable(
+  "encrypted_field_payloads",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "cascade"
+    }),
+    teamId: uuid("team_id").references(() => teams.id, {
+      onDelete: "cascade"
+    }),
+    teamWorkspaceId: uuid("team_workspace_id"),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    encryptionScope: text("encryption_scope").notNull().default("personal"),
+    sourceTable: text("source_table").notNull(),
+    sourceId: uuid("source_id").notNull(),
+    sourceColumn: text("source_column").notNull(),
+    plaintextContentType: text("plaintext_content_type")
+      .notNull()
+      .default("application/json"),
+    plaintextEncoding: text("plaintext_encoding").notNull().default("utf8"),
+    envelopeVersion: integer("envelope_version").notNull(),
+    providerMode: text("provider_mode").notNull(),
+    keyId: text("key_id").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    scope: jsonb("scope")
+      .$type<EncryptedPayloadEnvelope["scope"]>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    provenance: jsonb("provenance")
+      .$type<EncryptedPayloadEnvelope["provenance"]>()
+      .notNull(),
+    algorithm: text("algorithm").notNull(),
+    ciphertext: text("ciphertext").notNull(),
+    nonce: text("nonce").notNull(),
+    tag: text("tag").notNull(),
+    wrappedDek: jsonb("wrapped_dek")
+      .$type<EncryptedPayloadEnvelope["wrappedDek"]>()
+      .notNull(),
+    ciphertextLocation: text("ciphertext_location").notNull(),
+    aad: jsonb("aad")
+      .$type<EncryptedPayloadEnvelope["aad"]>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    envelopeCreatedAt: timestamp("envelope_created_at", {
+      withTimezone: true
+    }).notNull(),
+    envelopeReencryptedAt: timestamp("envelope_reencrypted_at", {
+      withTimezone: true
+    }),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason")
+  },
+  (table) => [
+    uniqueIndex("encrypted_field_payloads_source_unique")
+      .on(table.sourceTable, table.sourceId, table.sourceColumn)
+      .where(sql`${table.invalidatedAt} is null`),
+    index("encrypted_field_payloads_owner_idx")
+      .on(table.ownerUserId, table.sourceTable, table.updatedAt.desc())
+      .where(sql`${table.visibility} = 'personal'`),
+    index("encrypted_field_payloads_team_idx")
+      .on(table.teamId, table.teamWorkspaceId, table.sourceTable)
+      .where(sql`${table.encryptionScope} = 'team'`),
+    index("encrypted_field_payloads_key_idx").on(
+      table.providerMode,
+      table.keyId,
+      table.keyVersion
+    ),
+    foreignKey({
+      columns: [table.teamWorkspaceId, table.teamId],
+      foreignColumns: [teamWorkspaces.id, teamWorkspaces.teamId]
+    }),
+    check(
+      "encrypted_field_payloads_scope_owner_check",
+      sql`(
+        ${table.encryptionScope} = 'personal'
+        and ${table.visibility} = 'personal'
+        and ${table.ownerUserId} is not null
+        and ${table.teamId} is null
+        and ${table.teamWorkspaceId} is null
+      ) or (
+        ${table.encryptionScope} = 'team'
+        and ${table.visibility} = 'personal'
+        and ${table.teamId} is not null
+      )`
+    ),
+    check(
+      "encrypted_field_payloads_encryption_scope_check",
+      sql`${table.encryptionScope} in ('personal', 'team')`
+    ),
+    check(
+      "encrypted_field_payloads_source_table_check",
+      sql`${table.sourceTable} in (
+        'conversation_items',
+        'memory_embeddings',
+        'memory_events',
+        'memory_nodes',
+        'memory_questions',
+        'messages',
+        'tool_events'
+      )`
+    ),
+    check(
+      "encrypted_field_payloads_provider_mode_check",
+      sql`${table.providerMode} in (
+        'local_test_key',
+        'managed_kms',
+        'operator_kms',
+        'byok',
+        'cmek'
+      )`
+    ),
+    check(
+      "encrypted_field_payloads_key_version_check",
+      sql`${table.keyVersion} >= 0`
+    ),
+    check(
+      "encrypted_field_payloads_envelope_version_check",
+      sql`${table.envelopeVersion} >= 1`
+    ),
+    check(
+      "encrypted_field_payloads_ciphertext_not_empty_check",
+      sql`length(${table.ciphertext}) > 0 and length(${table.nonce}) > 0 and length(${table.tag}) > 0`
+    )
+  ]
+);
+
+export const encryptedFieldBackfillRuns = pgTable(
+  "encrypted_field_backfill_runs",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    sourceTable: text("source_table").notNull(),
+    sourceColumn: text("source_column").notNull(),
+    providerMode: text("provider_mode").notNull(),
+    status: text("status").notNull().default("pending"),
+    cursorSourceId: uuid("cursor_source_id"),
+    totalRows: integer("total_rows").notNull().default(0),
+    processedRows: integer("processed_rows").notNull().default(0),
+    encryptedRows: integer("encrypted_rows").notNull().default(0),
+    failedRows: integer("failed_rows").notNull().default(0),
+    lastErrorMessage: text("last_error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    index("encrypted_field_backfill_runs_status_idx").on(
+      table.status,
+      table.createdAt
+    ),
+    check(
+      "encrypted_field_backfill_runs_source_table_check",
+      sql`${table.sourceTable} in (
+        'conversation_items',
+        'memory_embeddings',
+        'memory_events',
+        'memory_nodes',
+        'memory_questions',
+        'messages',
+        'tool_events'
+      )`
+    ),
+    check(
+      "encrypted_field_backfill_runs_provider_mode_check",
+      sql`${table.providerMode} in (
+        'local_test_key',
+        'managed_kms',
+        'operator_kms',
+        'byok',
+        'cmek'
+      )`
+    ),
+    check(
+      "encrypted_field_backfill_runs_status_check",
+      sql`${table.status} in ('pending', 'processing', 'completed', 'error')`
+    ),
+    check(
+      "encrypted_field_backfill_runs_counts_check",
+      sql`${table.totalRows} >= 0
+        and ${table.processedRows} >= 0
+        and ${table.encryptedRows} >= 0
+        and ${table.failedRows} >= 0`
+    )
+  ]
+);
 
 export const apiTokens = pgTable(
   "api_tokens",
@@ -934,6 +1334,15 @@ export const auditEvents = pgTable(
       )
       .where(
         sql`${table.action} like 'team.%' and ${table.metadata} ? 'teamId'`
+      ),
+    index("audit_events_activation_team_idx")
+      .on(
+        sql`(${table.metadata} ->> 'teamId')`,
+        table.createdAt.desc(),
+        table.auditSequence.desc()
+      )
+      .where(
+        sql`${table.action} like 'analytics.activation.%' and ${table.metadata} ? 'teamId'`
       )
   ]
 );
@@ -957,6 +1366,116 @@ export const userSessions = pgTable(
     check(
       "user_sessions_session_hash_length_check",
       sql`length(${table.sessionHash}) >= 32`
+    )
+  ]
+);
+
+export const deviceEnrollmentChallenges = pgTable(
+  "device_enrollment_challenges",
+  {
+    id: id(),
+    challengeHash: text("challenge_hash").notNull().unique(),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    deviceInstanceId: text("device_instance_id"),
+    deviceLabel: text("device_label"),
+    requestedOperationFamilies: text("requested_operation_families")
+      .array()
+      .notNull()
+      .default(sql`array[]::text[]`),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    boundByUserId: uuid("bound_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    boundAt: timestamp("bound_at", { withTimezone: true }),
+    redeemedAt: timestamp("redeemed_at", { withTimezone: true })
+  },
+  (table) => [
+    index("device_enrollment_challenges_active_idx")
+      .on(table.challengeHash)
+      .where(sql`${table.redeemedAt} is null`),
+    check(
+      "device_enrollment_challenges_challenge_hash_length_check",
+      sql`length(${table.challengeHash}) >= 32`
+    )
+  ]
+);
+
+export const deviceCredentials = pgTable(
+  "device_credentials",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    enrollmentChallengeId: uuid("enrollment_challenge_id").references(
+      () => deviceEnrollmentChallenges.id,
+      { onDelete: "set null" }
+    ),
+    credentialKeyId: text("credential_key_id").notNull().unique(),
+    upstreamBackendId: text("upstream_backend_id").notNull(),
+    deviceInstanceId: text("device_instance_id").notNull(),
+    deviceLabel: text("device_label"),
+    credentialVersion: integer("credential_version").notNull().default(1),
+    verifierKind: deviceCredentialVerifierKind("verifier_kind").notNull(),
+    verifierHash: text("verifier_hash"),
+    publicKeyJwk: jsonb("public_key_jwk").$type<Record<string, unknown>>(),
+    operationFamilies: text("operation_families")
+      .array()
+      .notNull()
+      .default(sql`array[]::text[]`),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    revocationReason: text("revocation_reason")
+  },
+  (table) => [
+    index("device_credentials_active_lookup_idx")
+      .on(table.credentialKeyId)
+      .where(sql`${table.revokedAt} is null`),
+    index("device_credentials_owner_upstream_idx")
+      .on(table.ownerUserId, table.upstreamBackendId, table.createdAt.desc())
+      .where(sql`${table.revokedAt} is null`),
+    uniqueIndex("device_credentials_active_device_unique")
+      .on(table.ownerUserId, table.upstreamBackendId, table.deviceInstanceId)
+      .where(sql`${table.revokedAt} is null`),
+    check(
+      "device_credentials_credential_version_check",
+      sql`${table.credentialVersion} > 0`
+    ),
+    check(
+      "device_credentials_credential_key_id_length_check",
+      sql`length(${table.credentialKeyId}) >= 16`
+    ),
+    check(
+      "device_credentials_verifier_hash_length_check",
+      sql`${table.verifierHash} is null or length(${table.verifierHash}) >= 32`
+    ),
+    check(
+      "device_credentials_verifier_shape_check",
+      sql`(
+        ${table.verifierKind} = 'secret_hash'
+        and ${table.verifierHash} is not null
+        and ${table.publicKeyJwk} is null
+      ) or (
+        ${table.verifierKind} = 'public_key_jwk'
+        and ${table.publicKeyJwk} is not null
+        and ${table.verifierHash} is null
+      )`
     )
   ]
 );
@@ -1178,6 +1697,437 @@ export const teamSessionShareGrants = pgTable(
     index("team_session_share_grants_owner_idx").on(
       table.ownerUserId,
       table.createdAt.desc()
+    )
+  ]
+);
+
+export const deploymentIdentities = pgTable(
+  "deployment_identities",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    deploymentKey: text("deployment_key").notNull(),
+    profile: deploymentProfile("profile").notNull(),
+    displayName: text("display_name"),
+    baseUrl: text("base_url"),
+    upstreamBackendId: text("upstream_backend_id"),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    disabledReason: text("disabled_reason")
+  },
+  (table) => [
+    unique("deployment_identities_owner_key_unique").on(
+      table.ownerUserId,
+      table.deploymentKey
+    ),
+    index("deployment_identities_owner_profile_idx").on(
+      table.ownerUserId,
+      table.profile,
+      table.createdAt.desc()
+    ),
+    check(
+      "deployment_identities_deployment_key_not_empty_check",
+      sql`length(trim(${table.deploymentKey})) > 0`
+    )
+  ]
+);
+
+export const logicalMemories = pgTable(
+  "logical_memories",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
+    sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
+      onDelete: "set null"
+    }),
+    logicalKey: text("logical_key").notNull(),
+    lineage: jsonb("lineage")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidationReason: text("invalidation_reason")
+  },
+  (table) => [
+    unique("logical_memories_owner_key_unique").on(
+      table.ownerUserId,
+      table.logicalKey
+    ),
+    uniqueIndex("logical_memories_owner_session_unique")
+      .on(table.ownerUserId, table.sourceSessionId)
+      .where(sql`${table.sourceSessionId} is not null`),
+    index("logical_memories_owner_boundary_idx").on(
+      table.ownerUserId,
+      table.sourceBoundary,
+      table.createdAt.desc()
+    ),
+    check(
+      "logical_memories_captured_session_source_check",
+      sql`${table.sourceBoundary} <> 'captured_session' or ${table.sourceSessionId} is not null`
+    ),
+    check(
+      "logical_memories_logical_key_not_empty_check",
+      sql`length(trim(${table.logicalKey})) > 0`
+    )
+  ]
+);
+
+export const memoryReplicas = pgTable(
+  "memory_replicas",
+  {
+    id: id(),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references(() => logicalMemories.id, { onDelete: "cascade" }),
+    deploymentIdentityId: uuid("deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    replicaRole: syncReplicaRole("replica_role").notNull(),
+    sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
+    sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
+      onDelete: "set null"
+    }),
+    externalReplicaId: text("external_replica_id"),
+    freshnessStatus: text("freshness_status").notNull().default("unknown"),
+    cursorManifest: jsonb("cursor_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    policyManifest: jsonb("policy_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    staleAfter: timestamp("stale_after", { withTimezone: true }),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    disabledReason: text("disabled_reason")
+  },
+  (table) => [
+    unique("memory_replicas_logical_deployment_role_unique").on(
+      table.logicalMemoryId,
+      table.deploymentIdentityId,
+      table.replicaRole
+    ),
+    uniqueIndex("memory_replicas_external_replica_unique")
+      .on(table.deploymentIdentityId, table.externalReplicaId)
+      .where(sql`${table.externalReplicaId} is not null`),
+    index("memory_replicas_owner_status_idx").on(
+      table.ownerUserId,
+      table.freshnessStatus,
+      table.updatedAt.desc()
+    ),
+    check(
+      "memory_replicas_captured_session_source_check",
+      sql`${table.sourceBoundary} <> 'captured_session' or ${table.sourceSessionId} is not null`
+    ),
+    check(
+      "memory_replicas_freshness_status_check",
+      sql`${table.freshnessStatus} in ('unknown', 'fresh', 'stale', 'revoked', 'failed')`
+    )
+  ]
+);
+
+export const crossIdentitySyncRelationships = pgTable(
+  "cross_identity_sync_relationships",
+  {
+    id: id(),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references(() => logicalMemories.id, { onDelete: "cascade" }),
+    sourceReplicaId: uuid("source_replica_id")
+      .notNull()
+      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
+    targetReplicaId: uuid("target_replica_id")
+      .notNull()
+      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
+    sourceDeploymentIdentityId: uuid("source_deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
+    targetDeploymentIdentityId: uuid("target_deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
+    sourceOwnerUserId: uuid("source_owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    targetUserId: uuid("target_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    targetTeamId: uuid("target_team_id").references(() => teams.id, {
+      onDelete: "set null"
+    }),
+    sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
+    sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
+      onDelete: "set null"
+    }),
+    syncMode: syncMode("sync_mode").notNull().default("live"),
+    state: syncRelationshipState("state").notNull().default("created"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    policyManifest: jsonb("policy_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    consentManifest: jsonb("consent_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    cursorManifest: jsonb("cursor_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    lastPackageId: uuid("last_package_id"),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastErrorMessage: text("last_error_message"),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null"
+    }),
+    revocationReason: text("revocation_reason")
+  },
+  (table) => [
+    unique("cross_identity_sync_relationships_owner_idempotency_unique").on(
+      table.sourceOwnerUserId,
+      table.idempotencyKey
+    ),
+    uniqueIndex("cross_identity_sync_relationships_active_replicas_unique")
+      .on(table.sourceReplicaId, table.targetReplicaId, table.syncMode)
+      .where(sql`${table.revokedAt} is null`),
+    index("cross_identity_sync_relationships_source_owner_idx").on(
+      table.sourceOwnerUserId,
+      table.updatedAt.desc()
+    ),
+    index("cross_identity_sync_relationships_target_user_idx").on(
+      table.targetUserId,
+      table.updatedAt.desc()
+    ),
+    index("cross_identity_sync_relationships_state_idx").on(
+      table.state,
+      table.updatedAt.desc()
+    ),
+    check(
+      "cross_identity_sync_relationships_captured_session_source_check",
+      sql`${table.sourceBoundary} <> 'captured_session' or ${table.sourceSessionId} is not null`
+    ),
+    check(
+      "cross_identity_sync_relationships_idempotency_key_not_empty_check",
+      sql`length(trim(${table.idempotencyKey})) > 0`
+    )
+  ]
+);
+
+export const syncPackageUploadSessions = pgTable(
+  "sync_package_upload_sessions",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    logicalMemoryId: uuid("logical_memory_id")
+      .notNull()
+      .references(() => logicalMemories.id, { onDelete: "cascade" }),
+    sourceReplicaId: uuid("source_replica_id")
+      .notNull()
+      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
+    targetReplicaId: uuid("target_replica_id")
+      .notNull()
+      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
+    state: syncPackageState("state").notNull().default("created"),
+    packageFormatVersion: integer("package_format_version")
+      .notNull()
+      .default(1),
+    packageManifest: jsonb("package_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    packageChecksum: text("package_checksum").notNull(),
+    totalBytes: bigint("total_bytes", { mode: "number" }).notNull().default(0),
+    uploadedBytes: bigint("uploaded_bytes", { mode: "number" })
+      .notNull()
+      .default(0),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    verifiedChunkCount: integer("verified_chunk_count").notNull().default(0),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastErrorMessage: text("last_error_message")
+  },
+  (table) => [
+    unique("sync_package_upload_sessions_idempotency_unique").on(
+      table.syncRelationshipId,
+      table.idempotencyKey
+    ),
+    index("sync_package_upload_sessions_state_idx").on(
+      table.state,
+      table.updatedAt.desc()
+    ),
+    check(
+      "sync_package_upload_sessions_checksum_not_empty_check",
+      sql`length(trim(${table.packageChecksum})) > 0`
+    ),
+    check(
+      "sync_package_upload_sessions_idempotency_key_not_empty_check",
+      sql`length(trim(${table.idempotencyKey})) > 0`
+    ),
+    check(
+      "sync_package_upload_sessions_counts_check",
+      sql`${table.packageFormatVersion} > 0
+        and ${table.totalBytes} >= 0
+        and ${table.uploadedBytes} >= 0
+        and ${table.uploadedBytes} <= ${table.totalBytes}
+        and ${table.chunkCount} >= 0
+        and ${table.verifiedChunkCount} >= 0
+        and ${table.verifiedChunkCount} <= ${table.chunkCount}`
+    )
+  ]
+);
+
+export const syncPackageChunks = pgTable(
+  "sync_package_chunks",
+  {
+    id: id(),
+    uploadSessionId: uuid("upload_session_id")
+      .notNull()
+      .references(() => syncPackageUploadSessions.id, { onDelete: "cascade" }),
+    chunkIndex: integer("chunk_index").notNull(),
+    chunkChecksum: text("chunk_checksum").notNull(),
+    byteCount: integer("byte_count").notNull(),
+    storageRef: text("storage_ref"),
+    receivedAt: timestamp("received_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+  },
+  (table) => [
+    unique("sync_package_chunks_session_index_unique").on(
+      table.uploadSessionId,
+      table.chunkIndex
+    ),
+    check("sync_package_chunks_index_check", sql`${table.chunkIndex} >= 0`),
+    check("sync_package_chunks_byte_count_check", sql`${table.byteCount} >= 0`),
+    check(
+      "sync_package_chunks_checksum_not_empty_check",
+      sql`length(trim(${table.chunkChecksum})) > 0`
+    )
+  ]
+);
+
+export const syncOutboxEntries = pgTable(
+  "sync_outbox_entries",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    uploadSessionId: uuid("upload_session_id").references(
+      () => syncPackageUploadSessions.id,
+      { onDelete: "set null" }
+    ),
+    state: syncQueueEntryState("state").notNull().default("pending"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    payloadManifest: jsonb("payload_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    lastErrorMessage: text("last_error_message"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("sync_outbox_entries_idempotency_unique").on(
+      table.syncRelationshipId,
+      table.idempotencyKey
+    ),
+    index("sync_outbox_entries_state_idx").on(table.state, table.availableAt),
+    check(
+      "sync_outbox_entries_attempts_check",
+      sql`${table.attemptCount} >= 0 and ${table.maxAttempts} > 0 and ${table.attemptCount} <= ${table.maxAttempts}`
+    ),
+    check(
+      "sync_outbox_entries_idempotency_key_not_empty_check",
+      sql`length(trim(${table.idempotencyKey})) > 0`
+    )
+  ]
+);
+
+export const syncInboxEntries = pgTable(
+  "sync_inbox_entries",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    uploadSessionId: uuid("upload_session_id").references(
+      () => syncPackageUploadSessions.id,
+      { onDelete: "set null" }
+    ),
+    state: syncQueueEntryState("state").notNull().default("pending"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    payloadManifest: jsonb("payload_manifest")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    availableAt: timestamp("available_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    lastErrorMessage: text("last_error_message"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("sync_inbox_entries_idempotency_unique").on(
+      table.syncRelationshipId,
+      table.idempotencyKey
+    ),
+    index("sync_inbox_entries_state_idx").on(table.state, table.availableAt),
+    check(
+      "sync_inbox_entries_attempts_check",
+      sql`${table.attemptCount} >= 0 and ${table.maxAttempts} > 0 and ${table.attemptCount} <= ${table.maxAttempts}`
+    ),
+    check(
+      "sync_inbox_entries_idempotency_key_not_empty_check",
+      sql`length(trim(${table.idempotencyKey})) > 0`
     )
   ]
 );

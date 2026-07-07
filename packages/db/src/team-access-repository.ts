@@ -7,8 +7,13 @@ import {
 import type { KoedDb } from "./connection.js";
 import {
   auditEvents,
+  deviceCredentials,
+  externalAuthIdentities,
+  externalAuthOrganizations,
   teamInvites,
+  teamBillingSeatStates,
   teamMemberships,
+  teamSessionShareGrants,
   teams,
   teamWorkspaceAccessGrants,
   teamWorkspaces,
@@ -19,11 +24,16 @@ import type {
   ActorContext,
   AuditEventRecord,
   ListTeamAuditEventsInput,
+  TeamBillingSeatStateRecord,
+  TeamBillingSeatSyncStatus,
   TeamInviteRecord,
+  TeamEntitlementGateRecord,
+  TeamEntitlementStatus,
   TeamMembershipRecord,
   TeamMembershipStatus,
   TeamRecord,
   TeamRole,
+  TeamSupportOverviewRecord,
   TeamWorkspaceAccessLevel,
   TeamWorkspaceAccessRecord,
   TeamWorkspaceRecord,
@@ -36,12 +46,20 @@ const timestampIso = (value: Date | string): string =>
 const mapTeamRecord = (row: {
   id: string;
   name: string;
+  entitlementStatus: TeamEntitlementStatus;
+  entitlementReason: string | null;
+  entitlementUpdatedAt: Date | string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
   archivedAt: Date | string | null;
 }): TeamRecord => ({
   id: row.id,
   name: row.name,
+  entitlementStatus: row.entitlementStatus,
+  entitlementReason: row.entitlementReason,
+  entitlementUpdatedAt: row.entitlementUpdatedAt
+    ? timestampIso(row.entitlementUpdatedAt)
+    : null,
   createdAt: timestampIso(row.createdAt),
   updatedAt: timestampIso(row.updatedAt),
   archivedAt: row.archivedAt ? timestampIso(row.archivedAt) : null
@@ -121,6 +139,32 @@ const mapWorkspaceRecord = (row: {
   archivedAt: row.archivedAt ? timestampIso(row.archivedAt) : null
 });
 
+const mapTeamBillingSeatState = (row: {
+  teamId: string;
+  seatLimit: number | null;
+  billableSeatCount: number;
+  pendingBillingSeatCount: number;
+  syncStatus: TeamBillingSeatSyncStatus;
+  overLimitAt: Date | string | null;
+  lastSyncedAt: Date | string | null;
+  lastErrorMessage: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}): TeamBillingSeatStateRecord => ({
+  teamId: row.teamId,
+  seatLimit: row.seatLimit,
+  billableSeatCount: row.billableSeatCount,
+  pendingBillingSeatCount: row.pendingBillingSeatCount,
+  syncStatus: row.syncStatus,
+  overLimitAt: row.overLimitAt ? timestampIso(row.overLimitAt) : null,
+  lastSyncedAt: row.lastSyncedAt ? timestampIso(row.lastSyncedAt) : null,
+  lastErrorMessage: row.lastErrorMessage,
+  updatedByUserId: row.updatedByUserId,
+  createdAt: timestampIso(row.createdAt),
+  updatedAt: timestampIso(row.updatedAt)
+});
+
 const membershipManages = (
   membership:
     | { role: TeamRole; status: TeamMembershipStatus; disabledAt: unknown }
@@ -133,6 +177,34 @@ const membershipManages = (
     membership.disabledAt === null &&
     (membership.role === "owner" || membership.role === "admin")
   );
+
+const teamEntitlementAllowsAccess = (status: TeamEntitlementStatus): boolean =>
+  status === "active" || status === "grace";
+
+const deniedOperationFamiliesForStatus = (
+  status: TeamEntitlementStatus
+): string[] =>
+  teamEntitlementAllowsAccess(status)
+    ? []
+    : ["ingestion", "recall", "share", "sync", "team_admin"];
+
+const mapTeamEntitlementGate = (row: {
+  id: string;
+  entitlementStatus: TeamEntitlementStatus;
+  entitlementReason: string | null;
+  entitlementUpdatedAt: Date | string | null;
+}): TeamEntitlementGateRecord => ({
+  teamId: row.id,
+  status: row.entitlementStatus,
+  allowsTeamAccess: teamEntitlementAllowsAccess(row.entitlementStatus),
+  deniedOperationFamilies: deniedOperationFamiliesForStatus(
+    row.entitlementStatus
+  ),
+  reason: row.entitlementReason,
+  updatedAt: row.entitlementUpdatedAt
+    ? timestampIso(row.entitlementUpdatedAt)
+    : null
+});
 
 const accessRank = (access: TeamWorkspaceAccessLevel): number => {
   if (access === "write") return 2;
@@ -148,13 +220,18 @@ const buildAccessRecord = (row: {
   membershipStatus: TeamMembershipStatus | null;
   membershipDisabledAt: Date | string | null;
   teamArchivedAt: Date | string | null;
+  teamEntitlementStatus: TeamEntitlementStatus;
   workspaceArchivedAt: Date | string | null;
   access: TeamWorkspaceAccessLevel | null;
   accessDisabledAt: Date | string | null;
 }): TeamWorkspaceAccessRecord => {
   const workspaceActive = !row.teamArchivedAt && !row.workspaceArchivedAt;
+  const entitlementAllowsAccess = teamEntitlementAllowsAccess(
+    row.teamEntitlementStatus
+  );
   const membershipEnabled =
     workspaceActive &&
+    entitlementAllowsAccess &&
     row.membershipStatus === "enabled" &&
     row.membershipDisabledAt === null;
   const access =
@@ -174,6 +251,8 @@ const buildAccessRecord = (row: {
     role: row.role,
     membershipStatus: row.membershipStatus,
     access,
+    teamEntitlementStatus: row.teamEntitlementStatus,
+    teamEntitlementAllowsAccess: entitlementAllowsAccess,
     canManageTeam,
     canManageWorkspace,
     canRecall,
@@ -201,6 +280,163 @@ export const createTeamAccessRepository = (db: KoedDb) => {
     return rows[0]?.team_memberships ?? null;
   };
 
+  const getTeamEntitlementGateById = async (
+    teamId: string
+  ): Promise<TeamEntitlementGateRecord | null> => {
+    const rows = await db
+      .select({
+        id: teams.id,
+        entitlementStatus: teams.entitlementStatus,
+        entitlementReason: teams.entitlementReason,
+        entitlementUpdatedAt: teams.entitlementUpdatedAt
+      })
+      .from(teams)
+      .where(and(eq(teams.id, teamId), isNull(teams.archivedAt)))
+      .limit(1);
+
+    return rows[0] ? mapTeamEntitlementGate(rows[0]) : null;
+  };
+
+  const teamGateAllowsAccess = async (teamId: string): Promise<boolean> => {
+    const gate = await getTeamEntitlementGateById(teamId);
+    return gate?.allowsTeamAccess === true;
+  };
+
+  type TeamAccessTransaction = Parameters<
+    Parameters<typeof db.transaction>[0]
+  >[0];
+
+  const reconcileTeamBillingSeats = async (
+    tx: TeamAccessTransaction,
+    input: {
+      teamId: string;
+      actorUserId: string | null;
+      reason: string;
+      initialSync?: boolean;
+    }
+  ): Promise<TeamBillingSeatStateRecord | null> => {
+    const existingRows = await tx
+      .select()
+      .from(teamBillingSeatStates)
+      .where(eq(teamBillingSeatStates.teamId, input.teamId))
+      .limit(1)
+      .for("update");
+    const existing = existingRows[0] ?? null;
+
+    const countRows = await tx
+      .select({
+        billableSeatCount: sql<number>`count(*)::int`
+      })
+      .from(teamMemberships)
+      .where(
+        and(
+          eq(teamMemberships.teamId, input.teamId),
+          eq(teamMemberships.status, "enabled")
+        )
+      );
+    const billableSeatCount = Number(countRows[0]?.billableSeatCount ?? 0);
+    const seatLimit = existing?.seatLimit ?? null;
+    const overLimit = seatLimit !== null && billableSeatCount > seatLimit;
+    const syncStatus: TeamBillingSeatSyncStatus = overLimit
+      ? "over_limit"
+      : input.initialSync && !existing
+        ? "synced"
+        : "pending_provider_update";
+
+    const rows = await tx
+      .insert(teamBillingSeatStates)
+      .values({
+        teamId: input.teamId,
+        seatLimit,
+        billableSeatCount,
+        pendingBillingSeatCount: billableSeatCount,
+        syncStatus,
+        overLimitAt: overLimit ? sql`now()` : null,
+        updatedByUserId: input.actorUserId
+      })
+      .onConflictDoUpdate({
+        target: teamBillingSeatStates.teamId,
+        set: {
+          billableSeatCount,
+          pendingBillingSeatCount: billableSeatCount,
+          syncStatus,
+          overLimitAt: overLimit
+            ? sql`coalesce(${teamBillingSeatStates.overLimitAt}, now())`
+            : null,
+          lastErrorMessage: null,
+          updatedByUserId: input.actorUserId,
+          updatedAt: sql`now()`
+        }
+      })
+      .returning();
+    const state = mapTeamBillingSeatState(rows[0]!);
+
+    const teamRows = await tx
+      .select({
+        entitlementStatus: teams.entitlementStatus,
+        entitlementReason: teams.entitlementReason
+      })
+      .from(teams)
+      .where(and(eq(teams.id, input.teamId), isNull(teams.archivedAt)))
+      .limit(1)
+      .for("update");
+    const team = teamRows[0];
+    if (team) {
+      if (overLimit && team.entitlementStatus === "active") {
+        await tx
+          .update(teams)
+          .set({
+            entitlementStatus: "grace",
+            entitlementReason: "seat_limit_exceeded",
+            entitlementUpdatedAt: sql`now()`,
+            updatedAt: sql`now()`
+          })
+          .where(eq(teams.id, input.teamId));
+      } else if (
+        !overLimit &&
+        team.entitlementStatus === "grace" &&
+        team.entitlementReason === "seat_limit_exceeded"
+      ) {
+        await tx
+          .update(teams)
+          .set({
+            entitlementStatus: "active",
+            entitlementReason: "seat_limit_restored",
+            entitlementUpdatedAt: sql`now()`,
+            updatedAt: sql`now()`
+          })
+          .where(eq(teams.id, input.teamId));
+      }
+    }
+
+    if (
+      !existing ||
+      existing.billableSeatCount !== billableSeatCount ||
+      existing.pendingBillingSeatCount !== billableSeatCount ||
+      existing.syncStatus !== syncStatus ||
+      existing.seatLimit !== seatLimit
+    ) {
+      await insertTeamAudit(tx, {
+        actorUserId: input.actorUserId,
+        action: "team.billing_seats.changed",
+        targetTable: "team_billing_seat_states",
+        targetId: input.teamId,
+        metadata: {
+          teamId: input.teamId,
+          reason: input.reason,
+          previousBillableSeatCount: existing?.billableSeatCount ?? null,
+          billableSeatCount,
+          pendingBillingSeatCount: billableSeatCount,
+          seatLimit,
+          syncStatus,
+          overLimit
+        }
+      });
+    }
+
+    return state;
+  };
+
   const getTeamWorkspaceAccess = async (
     actor: ActorContext,
     teamWorkspaceId: string
@@ -214,6 +450,7 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         membershipStatus: teamMemberships.status,
         membershipDisabledAt: teamMemberships.disabledAt,
         teamArchivedAt: teams.archivedAt,
+        teamEntitlementStatus: teams.entitlementStatus,
         workspaceArchivedAt: teamWorkspaces.archivedAt,
         access: teamWorkspaceAccessGrants.access,
         accessDisabledAt: teamWorkspaceAccessGrants.disabledAt
@@ -298,6 +535,12 @@ export const createTeamAccessRepository = (db: KoedDb) => {
             teamId: record.id
           }
         });
+        await reconcileTeamBillingSeats(tx, {
+          teamId: team.id,
+          actorUserId: actor.userId,
+          reason: "team_created",
+          initialSync: true
+        });
 
         return record;
       });
@@ -321,6 +564,696 @@ export const createTeamAccessRepository = (db: KoedDb) => {
       return rows[0] ? mapMembershipRecord(rows[0]) : null;
     },
 
+    async getTeamEntitlementGate(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<TeamEntitlementGateRecord | null> {
+      const membership = await getManagingMembership(actor, teamId);
+      if (!membershipManages(membership)) {
+        return null;
+      }
+      return getTeamEntitlementGateById(teamId);
+    },
+
+    async setTeamEntitlementState(
+      actor: ActorContext,
+      input: {
+        teamId: string;
+        status: TeamEntitlementStatus;
+        reason?: string | null;
+      }
+    ): Promise<TeamEntitlementGateRecord | null> {
+      const manager = await getManagingMembership(actor, input.teamId);
+      if (!membershipManages(manager)) {
+        return null;
+      }
+      if (manager!.role !== "owner") {
+        return null;
+      }
+
+      return db.transaction(async (tx) => {
+        const existingRows = await tx
+          .select({
+            id: teams.id,
+            entitlementStatus: teams.entitlementStatus,
+            entitlementReason: teams.entitlementReason,
+            entitlementUpdatedAt: teams.entitlementUpdatedAt
+          })
+          .from(teams)
+          .where(and(eq(teams.id, input.teamId), isNull(teams.archivedAt)))
+          .limit(1)
+          .for("update");
+        const existing = existingRows[0];
+        if (!existing) {
+          return null;
+        }
+
+        const rows = await tx
+          .update(teams)
+          .set({
+            entitlementStatus: input.status,
+            entitlementReason: input.reason?.trim() || null,
+            entitlementUpdatedAt: sql`now()`,
+            updatedAt: sql`now()`
+          })
+          .where(eq(teams.id, input.teamId))
+          .returning({
+            id: teams.id,
+            entitlementStatus: teams.entitlementStatus,
+            entitlementReason: teams.entitlementReason,
+            entitlementUpdatedAt: teams.entitlementUpdatedAt
+          });
+        const gate = mapTeamEntitlementGate(rows[0]!);
+
+        await insertTeamAudit(tx, {
+          actorUserId: actor.userId,
+          action: "team.entitlement.changed",
+          targetTable: "teams",
+          targetId: input.teamId,
+          metadata: {
+            teamId: input.teamId,
+            previousStatus: existing.entitlementStatus,
+            status: gate.status,
+            reason: gate.reason,
+            deniedOperationFamilies: gate.deniedOperationFamilies
+          }
+        });
+
+        return gate;
+      });
+    },
+
+    async getTeamBillingSeatState(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<TeamBillingSeatStateRecord | null> {
+      const manager = await getManagingMembership(actor, teamId);
+      if (!membershipManages(manager)) {
+        return null;
+      }
+      const rows = await db
+        .select()
+        .from(teamBillingSeatStates)
+        .where(eq(teamBillingSeatStates.teamId, teamId))
+        .limit(1);
+      return rows[0] ? mapTeamBillingSeatState(rows[0]) : null;
+    },
+
+    async setTeamBillingSeatPolicy(
+      actor: ActorContext,
+      input: { teamId: string; seatLimit: number | null }
+    ): Promise<TeamBillingSeatStateRecord | null> {
+      const manager = await getManagingMembership(actor, input.teamId);
+      if (!membershipManages(manager) || manager!.role !== "owner") {
+        return null;
+      }
+      if (
+        input.seatLimit !== null &&
+        (!Number.isInteger(input.seatLimit) || input.seatLimit < 0)
+      ) {
+        throw new Error("seatLimit must be a non-negative integer or null");
+      }
+
+      return db.transaction(async (tx) => {
+        await tx
+          .insert(teamBillingSeatStates)
+          .values({
+            teamId: input.teamId,
+            seatLimit: input.seatLimit,
+            syncStatus: "pending_provider_update",
+            updatedByUserId: actor.userId
+          })
+          .onConflictDoUpdate({
+            target: teamBillingSeatStates.teamId,
+            set: {
+              seatLimit: input.seatLimit,
+              syncStatus: "pending_provider_update",
+              updatedByUserId: actor.userId,
+              updatedAt: sql`now()`
+            }
+          });
+
+        return reconcileTeamBillingSeats(tx, {
+          teamId: input.teamId,
+          actorUserId: actor.userId,
+          reason: "seat_policy_changed"
+        });
+      });
+    },
+
+    async getTeamSupportOverview(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<TeamSupportOverviewRecord | null> {
+      const manager = await getManagingMembership(actor, teamId);
+      if (!manager || !membershipManages(manager)) {
+        return null;
+      }
+
+      const [
+        teamRows,
+        billingRows,
+        membershipCountRows,
+        workspaceCountRows,
+        workspaceAccessCountRows,
+        inviteCountRows,
+        shareGrantCountRows,
+        auditCountRows,
+        externalAuthOrganizationRows,
+        externalAuthIdentityRows,
+        deviceCredentialRows
+      ] = await Promise.all([
+        db
+          .select()
+          .from(teams)
+          .where(and(eq(teams.id, teamId), isNull(teams.archivedAt)))
+          .limit(1),
+        db
+          .select()
+          .from(teamBillingSeatStates)
+          .where(eq(teamBillingSeatStates.teamId, teamId))
+          .limit(1),
+        db
+          .select({
+            enabled: sql<number>`count(*) filter (where ${teamMemberships.status} = 'enabled')::int`,
+            invited: sql<number>`count(*) filter (where ${teamMemberships.status} = 'invited')::int`,
+            disabled: sql<number>`count(*) filter (where ${teamMemberships.status} = 'disabled')::int`
+          })
+          .from(teamMemberships)
+          .where(eq(teamMemberships.teamId, teamId)),
+        db
+          .select({
+            active: sql<number>`count(*) filter (where ${teamWorkspaces.archivedAt} is null)::int`,
+            archived: sql<number>`count(*) filter (where ${teamWorkspaces.archivedAt} is not null)::int`
+          })
+          .from(teamWorkspaces)
+          .where(eq(teamWorkspaces.teamId, teamId)),
+        db
+          .select({
+            read: sql<number>`count(*) filter (where ${teamWorkspaceAccessGrants.access} = 'read' and ${teamWorkspaceAccessGrants.disabledAt} is null)::int`,
+            write: sql<number>`count(*) filter (where ${teamWorkspaceAccessGrants.access} = 'write' and ${teamWorkspaceAccessGrants.disabledAt} is null)::int`,
+            disabled: sql<number>`count(*) filter (where ${teamWorkspaceAccessGrants.access} = 'disabled' or ${teamWorkspaceAccessGrants.disabledAt} is not null)::int`
+          })
+          .from(teamWorkspaceAccessGrants)
+          .where(eq(teamWorkspaceAccessGrants.teamId, teamId)),
+        db
+          .select({
+            pending: sql<number>`count(*) filter (where ${teamInvites.acceptedAt} is null and ${teamInvites.revokedAt} is null and ${teamInvites.expiresAt} > now())::int`,
+            accepted: sql<number>`count(*) filter (where ${teamInvites.acceptedAt} is not null)::int`,
+            revoked: sql<number>`count(*) filter (where ${teamInvites.revokedAt} is not null)::int`,
+            expired: sql<number>`count(*) filter (where ${teamInvites.acceptedAt} is null and ${teamInvites.revokedAt} is null and ${teamInvites.expiresAt} <= now())::int`
+          })
+          .from(teamInvites)
+          .where(eq(teamInvites.teamId, teamId)),
+        db
+          .select({
+            active: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is null)::int`,
+            revoked: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is not null)::int`,
+            retainedAfterPersonalDeletion: sql<number>`count(*) filter (where ${teamSessionShareGrants.personalDeletedAt} is not null and ${teamSessionShareGrants.retainedByTeamAt} is not null)::int`
+          })
+          .from(teamSessionShareGrants)
+          .where(eq(teamSessionShareGrants.teamId, teamId)),
+        db
+          .select({
+            teamEventCount: sql<number>`count(*)::int`,
+            lastTeamEventAt: sql<Date | null>`max(${auditEvents.createdAt})`
+          })
+          .from(auditEvents)
+          .where(
+            and(
+              sql`${auditEvents.metadata} ->> 'teamId' = ${teamId}`,
+              sql`${auditEvents.action} like 'team.%'`
+            )
+          ),
+        db
+          .select({
+            linked: sql<number>`count(*) filter (where ${externalAuthOrganizations.status} = 'linked')::int`,
+            disabled: sql<number>`count(*) filter (where ${externalAuthOrganizations.status} = 'disabled')::int`,
+            lastSeenAt: sql<Date | null>`max(${externalAuthOrganizations.lastSeenAt})`
+          })
+          .from(externalAuthOrganizations)
+          .where(eq(externalAuthOrganizations.teamId, teamId)),
+        db
+          .select({
+            linked: sql<number>`count(*) filter (where ${externalAuthIdentities.status} = 'linked')::int`,
+            disabled: sql<number>`count(*) filter (where ${externalAuthIdentities.status} = 'disabled')::int`,
+            emailVerified: sql<number>`count(*) filter (where ${externalAuthIdentities.emailVerified} = true)::int`,
+            lastSeenAt: sql<Date | null>`max(${externalAuthIdentities.lastSeenAt})`
+          })
+          .from(externalAuthIdentities)
+          .innerJoin(
+            teamMemberships,
+            eq(teamMemberships.userId, externalAuthIdentities.userId)
+          )
+          .where(eq(teamMemberships.teamId, teamId)),
+        db
+          .select({
+            active: sql<number>`count(*) filter (where ${deviceCredentials.revokedAt} is null and (${deviceCredentials.expiresAt} is null or ${deviceCredentials.expiresAt} > now()))::int`,
+            revoked: sql<number>`count(*) filter (where ${deviceCredentials.revokedAt} is not null)::int`,
+            expired: sql<number>`count(*) filter (where ${deviceCredentials.revokedAt} is null and ${deviceCredentials.expiresAt} is not null and ${deviceCredentials.expiresAt} <= now())::int`,
+            lastValidatedAt: sql<Date | null>`max(${deviceCredentials.lastValidatedAt})`
+          })
+          .from(deviceCredentials)
+          .innerJoin(
+            teamMemberships,
+            eq(teamMemberships.userId, deviceCredentials.ownerUserId)
+          )
+          .where(eq(teamMemberships.teamId, teamId))
+      ]);
+
+      const team = teamRows[0];
+      if (!team) {
+        return null;
+      }
+      const membershipCounts = membershipCountRows[0] ?? {
+        enabled: 0,
+        invited: 0,
+        disabled: 0
+      };
+      const workspaceCounts = workspaceCountRows[0] ?? {
+        active: 0,
+        archived: 0
+      };
+      const workspaceAccessCounts = workspaceAccessCountRows[0] ?? {
+        read: 0,
+        write: 0,
+        disabled: 0
+      };
+      const inviteCounts = inviteCountRows[0] ?? {
+        pending: 0,
+        accepted: 0,
+        revoked: 0,
+        expired: 0
+      };
+      const shareGrantCounts = shareGrantCountRows[0] ?? {
+        active: 0,
+        revoked: 0,
+        retainedAfterPersonalDeletion: 0
+      };
+      const auditCounts = auditCountRows[0] ?? {
+        teamEventCount: 0,
+        lastTeamEventAt: null
+      };
+      const externalAuthOrganizationCounts =
+        externalAuthOrganizationRows[0] ?? {
+          linked: 0,
+          disabled: 0,
+          lastSeenAt: null
+        };
+      const externalAuthIdentityCounts = externalAuthIdentityRows[0] ?? {
+        linked: 0,
+        disabled: 0,
+        emailVerified: 0,
+        lastSeenAt: null
+      };
+      const deviceCredentialCounts = deviceCredentialRows[0] ?? {
+        active: 0,
+        revoked: 0,
+        expired: 0,
+        lastValidatedAt: null
+      };
+      const entitlement = mapTeamEntitlementGate({
+        id: team.id,
+        entitlementStatus: team.entitlementStatus,
+        entitlementReason: team.entitlementReason,
+        entitlementUpdatedAt: team.entitlementUpdatedAt
+      });
+
+      await insertTeamAudit(db, {
+        actorUserId: actor.userId,
+        action: "team.support_overview.viewed",
+        targetTable: "teams",
+        targetId: teamId,
+        metadata: {
+          teamId,
+          policy: "team_manager_redacted",
+          rawContentAccess: "not_permitted"
+        }
+      });
+
+      return {
+        generatedAt: new Date().toISOString(),
+        supportAccess: {
+          policy: "team_manager_redacted",
+          actorUserId: actor.userId,
+          actorRole: manager.role as Exclude<TeamRole, "member">,
+          rawContentAccess: "not_permitted",
+          breakGlassRequiredForRawContent: true
+        },
+        team: mapTeamRecord(team),
+        entitlement,
+        billingSeats: billingRows[0]
+          ? mapTeamBillingSeatState(billingRows[0])
+          : null,
+        diagnosticSurfaces: {
+          auth: "browser_session",
+          rawContentAccess: "not_permitted",
+          operationsStatusPath: "/ops/status",
+          capabilitiesPath: `/v1/capabilities/authenticated?teamId=${team.id}`,
+          auditEventsPath: `/v1/teams/${team.id}/audit-events`,
+          entitlementPath: `/v1/teams/${team.id}/entitlement`,
+          billingSeatsPath: `/v1/teams/${team.id}/billing-seats`,
+          supportOverviewPath: `/v1/teams/${team.id}/support/overview`
+        },
+        counts: {
+          memberships: {
+            enabled: Number(membershipCounts.enabled ?? 0),
+            invited: Number(membershipCounts.invited ?? 0),
+            disabled: Number(membershipCounts.disabled ?? 0)
+          },
+          workspaces: {
+            active: Number(workspaceCounts.active ?? 0),
+            archived: Number(workspaceCounts.archived ?? 0)
+          },
+          workspaceAccess: {
+            read: Number(workspaceAccessCounts.read ?? 0),
+            write: Number(workspaceAccessCounts.write ?? 0),
+            disabled: Number(workspaceAccessCounts.disabled ?? 0)
+          },
+          invites: {
+            pending: Number(inviteCounts.pending ?? 0),
+            accepted: Number(inviteCounts.accepted ?? 0),
+            revoked: Number(inviteCounts.revoked ?? 0),
+            expired: Number(inviteCounts.expired ?? 0)
+          },
+          sessionShareGrants: {
+            active: Number(shareGrantCounts.active ?? 0),
+            revoked: Number(shareGrantCounts.revoked ?? 0),
+            retainedAfterPersonalDeletion: Number(
+              shareGrantCounts.retainedAfterPersonalDeletion ?? 0
+            )
+          },
+          auditEvents: {
+            teamEventCount: Number(auditCounts.teamEventCount ?? 0),
+            lastTeamEventAt: auditCounts.lastTeamEventAt
+              ? timestampIso(auditCounts.lastTeamEventAt)
+              : null
+          },
+          setupAndIntegrations: {
+            externalAuthOrganizations: {
+              linked: Number(externalAuthOrganizationCounts.linked ?? 0),
+              disabled: Number(externalAuthOrganizationCounts.disabled ?? 0),
+              lastSeenAt: externalAuthOrganizationCounts.lastSeenAt
+                ? timestampIso(externalAuthOrganizationCounts.lastSeenAt)
+                : null
+            },
+            externalAuthIdentities: {
+              linked: Number(externalAuthIdentityCounts.linked ?? 0),
+              disabled: Number(externalAuthIdentityCounts.disabled ?? 0),
+              emailVerified: Number(
+                externalAuthIdentityCounts.emailVerified ?? 0
+              ),
+              lastSeenAt: externalAuthIdentityCounts.lastSeenAt
+                ? timestampIso(externalAuthIdentityCounts.lastSeenAt)
+                : null
+            },
+            deviceCredentials: {
+              active: Number(deviceCredentialCounts.active ?? 0),
+              revoked: Number(deviceCredentialCounts.revoked ?? 0),
+              expired: Number(deviceCredentialCounts.expired ?? 0),
+              lastValidatedAt: deviceCredentialCounts.lastValidatedAt
+                ? timestampIso(deviceCredentialCounts.lastValidatedAt)
+                : null
+            }
+          }
+        }
+      };
+    },
+
+    async getHostedSupportOverview(
+      actor: ActorContext,
+      teamId: string
+    ): Promise<TeamSupportOverviewRecord | null> {
+      const [
+        teamRows,
+        billingRows,
+        membershipCountRows,
+        workspaceCountRows,
+        workspaceAccessCountRows,
+        inviteCountRows,
+        shareGrantCountRows,
+        auditCountRows,
+        externalAuthOrganizationRows,
+        externalAuthIdentityRows,
+        deviceCredentialRows
+      ] = await Promise.all([
+        db
+          .select()
+          .from(teams)
+          .where(and(eq(teams.id, teamId), isNull(teams.archivedAt)))
+          .limit(1),
+        db
+          .select()
+          .from(teamBillingSeatStates)
+          .where(eq(teamBillingSeatStates.teamId, teamId))
+          .limit(1),
+        db
+          .select({
+            enabled: sql<number>`count(*) filter (where ${teamMemberships.status} = 'enabled')::int`,
+            invited: sql<number>`count(*) filter (where ${teamMemberships.status} = 'invited')::int`,
+            disabled: sql<number>`count(*) filter (where ${teamMemberships.status} = 'disabled')::int`
+          })
+          .from(teamMemberships)
+          .where(eq(teamMemberships.teamId, teamId)),
+        db
+          .select({
+            active: sql<number>`count(*) filter (where ${teamWorkspaces.archivedAt} is null)::int`,
+            archived: sql<number>`count(*) filter (where ${teamWorkspaces.archivedAt} is not null)::int`
+          })
+          .from(teamWorkspaces)
+          .where(eq(teamWorkspaces.teamId, teamId)),
+        db
+          .select({
+            read: sql<number>`count(*) filter (where ${teamWorkspaceAccessGrants.access} = 'read' and ${teamWorkspaceAccessGrants.disabledAt} is null)::int`,
+            write: sql<number>`count(*) filter (where ${teamWorkspaceAccessGrants.access} = 'write' and ${teamWorkspaceAccessGrants.disabledAt} is null)::int`,
+            disabled: sql<number>`count(*) filter (where ${teamWorkspaceAccessGrants.access} = 'disabled' or ${teamWorkspaceAccessGrants.disabledAt} is not null)::int`
+          })
+          .from(teamWorkspaceAccessGrants)
+          .where(eq(teamWorkspaceAccessGrants.teamId, teamId)),
+        db
+          .select({
+            pending: sql<number>`count(*) filter (where ${teamInvites.acceptedAt} is null and ${teamInvites.revokedAt} is null and ${teamInvites.expiresAt} > now())::int`,
+            accepted: sql<number>`count(*) filter (where ${teamInvites.acceptedAt} is not null)::int`,
+            revoked: sql<number>`count(*) filter (where ${teamInvites.revokedAt} is not null)::int`,
+            expired: sql<number>`count(*) filter (where ${teamInvites.acceptedAt} is null and ${teamInvites.revokedAt} is null and ${teamInvites.expiresAt} <= now())::int`
+          })
+          .from(teamInvites)
+          .where(eq(teamInvites.teamId, teamId)),
+        db
+          .select({
+            active: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is null)::int`,
+            revoked: sql<number>`count(*) filter (where ${teamSessionShareGrants.revokedAt} is not null)::int`,
+            retainedAfterPersonalDeletion: sql<number>`count(*) filter (where ${teamSessionShareGrants.personalDeletedAt} is not null and ${teamSessionShareGrants.retainedByTeamAt} is not null)::int`
+          })
+          .from(teamSessionShareGrants)
+          .where(eq(teamSessionShareGrants.teamId, teamId)),
+        db
+          .select({
+            teamEventCount: sql<number>`count(*)::int`,
+            lastTeamEventAt: sql<Date | null>`max(${auditEvents.createdAt})`
+          })
+          .from(auditEvents)
+          .where(
+            and(
+              sql`${auditEvents.metadata} ->> 'teamId' = ${teamId}`,
+              sql`${auditEvents.action} like 'team.%'`
+            )
+          ),
+        db
+          .select({
+            linked: sql<number>`count(*) filter (where ${externalAuthOrganizations.status} = 'linked')::int`,
+            disabled: sql<number>`count(*) filter (where ${externalAuthOrganizations.status} = 'disabled')::int`,
+            lastSeenAt: sql<Date | null>`max(${externalAuthOrganizations.lastSeenAt})`
+          })
+          .from(externalAuthOrganizations)
+          .where(eq(externalAuthOrganizations.teamId, teamId)),
+        db
+          .select({
+            linked: sql<number>`count(*) filter (where ${externalAuthIdentities.status} = 'linked')::int`,
+            disabled: sql<number>`count(*) filter (where ${externalAuthIdentities.status} = 'disabled')::int`,
+            emailVerified: sql<number>`count(*) filter (where ${externalAuthIdentities.emailVerified} = true)::int`,
+            lastSeenAt: sql<Date | null>`max(${externalAuthIdentities.lastSeenAt})`
+          })
+          .from(externalAuthIdentities)
+          .innerJoin(
+            teamMemberships,
+            eq(teamMemberships.userId, externalAuthIdentities.userId)
+          )
+          .where(eq(teamMemberships.teamId, teamId)),
+        db
+          .select({
+            active: sql<number>`count(*) filter (where ${deviceCredentials.revokedAt} is null and (${deviceCredentials.expiresAt} is null or ${deviceCredentials.expiresAt} > now()))::int`,
+            revoked: sql<number>`count(*) filter (where ${deviceCredentials.revokedAt} is not null)::int`,
+            expired: sql<number>`count(*) filter (where ${deviceCredentials.revokedAt} is null and ${deviceCredentials.expiresAt} is not null and ${deviceCredentials.expiresAt} <= now())::int`,
+            lastValidatedAt: sql<Date | null>`max(${deviceCredentials.lastValidatedAt})`
+          })
+          .from(deviceCredentials)
+          .innerJoin(
+            teamMemberships,
+            eq(teamMemberships.userId, deviceCredentials.ownerUserId)
+          )
+          .where(eq(teamMemberships.teamId, teamId))
+      ]);
+
+      const team = teamRows[0];
+      if (!team) {
+        return null;
+      }
+      const membershipCounts = membershipCountRows[0] ?? {
+        enabled: 0,
+        invited: 0,
+        disabled: 0
+      };
+      const workspaceCounts = workspaceCountRows[0] ?? {
+        active: 0,
+        archived: 0
+      };
+      const workspaceAccessCounts = workspaceAccessCountRows[0] ?? {
+        read: 0,
+        write: 0,
+        disabled: 0
+      };
+      const inviteCounts = inviteCountRows[0] ?? {
+        pending: 0,
+        accepted: 0,
+        revoked: 0,
+        expired: 0
+      };
+      const shareGrantCounts = shareGrantCountRows[0] ?? {
+        active: 0,
+        revoked: 0,
+        retainedAfterPersonalDeletion: 0
+      };
+      const auditCounts = auditCountRows[0] ?? {
+        teamEventCount: 0,
+        lastTeamEventAt: null
+      };
+      const externalAuthOrganizationCounts =
+        externalAuthOrganizationRows[0] ?? {
+          linked: 0,
+          disabled: 0,
+          lastSeenAt: null
+        };
+      const externalAuthIdentityCounts = externalAuthIdentityRows[0] ?? {
+        linked: 0,
+        disabled: 0,
+        emailVerified: 0,
+        lastSeenAt: null
+      };
+      const deviceCredentialCounts = deviceCredentialRows[0] ?? {
+        active: 0,
+        revoked: 0,
+        expired: 0,
+        lastValidatedAt: null
+      };
+      const entitlement = mapTeamEntitlementGate({
+        id: team.id,
+        entitlementStatus: team.entitlementStatus,
+        entitlementReason: team.entitlementReason,
+        entitlementUpdatedAt: team.entitlementUpdatedAt
+      });
+
+      await insertTeamAudit(db, {
+        actorUserId: actor.userId,
+        action: "team.hosted_support_overview.viewed",
+        targetTable: "teams",
+        targetId: teamId,
+        metadata: {
+          teamId,
+          policy: "hosted_operator_redacted",
+          rawContentAccess: "not_permitted"
+        }
+      });
+
+      return {
+        generatedAt: new Date().toISOString(),
+        supportAccess: {
+          policy: "hosted_operator_redacted",
+          actorUserId: actor.userId,
+          actorRole: "hosted_operator",
+          rawContentAccess: "not_permitted",
+          breakGlassRequiredForRawContent: true
+        },
+        team: mapTeamRecord(team),
+        entitlement,
+        billingSeats: billingRows[0]
+          ? mapTeamBillingSeatState(billingRows[0])
+          : null,
+        diagnosticSurfaces: {
+          auth: "browser_session",
+          rawContentAccess: "not_permitted",
+          operationsStatusPath: "/ops/status",
+          capabilitiesPath: `/v1/capabilities/authenticated?teamId=${team.id}`,
+          auditEventsPath: `/v1/teams/${team.id}/audit-events`,
+          entitlementPath: `/v1/teams/${team.id}/entitlement`,
+          billingSeatsPath: `/v1/teams/${team.id}/billing-seats`,
+          supportOverviewPath: `/ops/support/teams/${team.id}/overview`
+        },
+        counts: {
+          memberships: {
+            enabled: Number(membershipCounts.enabled ?? 0),
+            invited: Number(membershipCounts.invited ?? 0),
+            disabled: Number(membershipCounts.disabled ?? 0)
+          },
+          workspaces: {
+            active: Number(workspaceCounts.active ?? 0),
+            archived: Number(workspaceCounts.archived ?? 0)
+          },
+          workspaceAccess: {
+            read: Number(workspaceAccessCounts.read ?? 0),
+            write: Number(workspaceAccessCounts.write ?? 0),
+            disabled: Number(workspaceAccessCounts.disabled ?? 0)
+          },
+          invites: {
+            pending: Number(inviteCounts.pending ?? 0),
+            accepted: Number(inviteCounts.accepted ?? 0),
+            revoked: Number(inviteCounts.revoked ?? 0),
+            expired: Number(inviteCounts.expired ?? 0)
+          },
+          sessionShareGrants: {
+            active: Number(shareGrantCounts.active ?? 0),
+            revoked: Number(shareGrantCounts.revoked ?? 0),
+            retainedAfterPersonalDeletion: Number(
+              shareGrantCounts.retainedAfterPersonalDeletion ?? 0
+            )
+          },
+          auditEvents: {
+            teamEventCount: Number(auditCounts.teamEventCount ?? 0),
+            lastTeamEventAt: auditCounts.lastTeamEventAt
+              ? timestampIso(auditCounts.lastTeamEventAt)
+              : null
+          },
+          setupAndIntegrations: {
+            externalAuthOrganizations: {
+              linked: Number(externalAuthOrganizationCounts.linked ?? 0),
+              disabled: Number(externalAuthOrganizationCounts.disabled ?? 0),
+              lastSeenAt: externalAuthOrganizationCounts.lastSeenAt
+                ? timestampIso(externalAuthOrganizationCounts.lastSeenAt)
+                : null
+            },
+            externalAuthIdentities: {
+              linked: Number(externalAuthIdentityCounts.linked ?? 0),
+              disabled: Number(externalAuthIdentityCounts.disabled ?? 0),
+              emailVerified: Number(
+                externalAuthIdentityCounts.emailVerified ?? 0
+              ),
+              lastSeenAt: externalAuthIdentityCounts.lastSeenAt
+                ? timestampIso(externalAuthIdentityCounts.lastSeenAt)
+                : null
+            },
+            deviceCredentials: {
+              active: Number(deviceCredentialCounts.active ?? 0),
+              revoked: Number(deviceCredentialCounts.revoked ?? 0),
+              expired: Number(deviceCredentialCounts.expired ?? 0),
+              lastValidatedAt: deviceCredentialCounts.lastValidatedAt
+                ? timestampIso(deviceCredentialCounts.lastValidatedAt)
+                : null
+            }
+          }
+        }
+      };
+    },
+
     async upsertTeamMember(
       actor: ActorContext,
       input: {
@@ -334,7 +1267,13 @@ export const createTeamAccessRepository = (db: KoedDb) => {
       if (!membershipManages(manager)) {
         return null;
       }
+      if (!(await teamGateAllowsAccess(input.teamId))) {
+        return null;
+      }
       if (input.role === "owner" && manager!.role !== "owner") {
+        return null;
+      }
+      if (input.userId === actor.userId) {
         return null;
       }
 
@@ -353,6 +1292,28 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         const previous = existing[0];
         if (previous?.role === "owner" && manager!.role !== "owner") {
           return null;
+        }
+        const removesEnabledOwner =
+          previous?.role === "owner" &&
+          previous.status === "enabled" &&
+          previous.disabledAt === null &&
+          (input.role !== "owner" || status !== "enabled");
+        if (removesEnabledOwner) {
+          const ownerRows = await tx
+            .select({ id: teamMemberships.id })
+            .from(teamMemberships)
+            .where(
+              and(
+                eq(teamMemberships.teamId, input.teamId),
+                eq(teamMemberships.role, "owner"),
+                eq(teamMemberships.status, "enabled"),
+                isNull(teamMemberships.disabledAt)
+              )
+            )
+            .for("update");
+          if (ownerRows.length <= 1) {
+            return null;
+          }
         }
 
         const rows = await tx
@@ -402,6 +1363,11 @@ export const createTeamAccessRepository = (db: KoedDb) => {
             status
           }
         });
+        await reconcileTeamBillingSeats(tx, {
+          teamId: input.teamId,
+          actorUserId: actor.userId,
+          reason: action
+        });
 
         return membership;
       });
@@ -413,6 +1379,9 @@ export const createTeamAccessRepository = (db: KoedDb) => {
     ): Promise<TeamWorkspaceRecord | null> {
       const manager = await getManagingMembership(actor, input.teamId);
       if (!membershipManages(manager)) {
+        return null;
+      }
+      if (!(await teamGateAllowsAccess(input.teamId))) {
         return null;
       }
 
@@ -459,6 +1428,9 @@ export const createTeamAccessRepository = (db: KoedDb) => {
     ): Promise<TeamInviteRecord | null> {
       const manager = await getManagingMembership(actor, input.teamId);
       if (!membershipManages(manager)) {
+        return null;
+      }
+      if (!(await teamGateAllowsAccess(input.teamId))) {
         return null;
       }
       if (input.role === "owner" && manager!.role !== "owner") {
@@ -588,6 +1560,10 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         if (!inviteRow) {
           return null;
         }
+        const gate = await getTeamEntitlementGateById(inviteRow.teamId);
+        if (!gate?.allowsTeamAccess) {
+          return null;
+        }
 
         const inviteEmail = inviteRow.email.toLowerCase();
         let createdUser = false;
@@ -713,6 +1689,11 @@ export const createTeamAccessRepository = (db: KoedDb) => {
             source: "invite_acceptance"
           }
         });
+        await reconcileTeamBillingSeats(tx, {
+          teamId: invite.teamId,
+          actorUserId: user.id,
+          reason: "team.invite.accepted"
+        });
 
         return {
           invite,
@@ -729,6 +1710,9 @@ export const createTeamAccessRepository = (db: KoedDb) => {
     ): Promise<TeamMembershipRecord | null> {
       const manager = await getManagingMembership(actor, input.teamId);
       if (!membershipManages(manager)) {
+        return null;
+      }
+      if (!(await teamGateAllowsAccess(input.teamId))) {
         return null;
       }
       if (input.userId === actor.userId) {
@@ -785,6 +1769,11 @@ export const createTeamAccessRepository = (db: KoedDb) => {
             status: membership.status
           }
         });
+        await reconcileTeamBillingSeats(tx, {
+          teamId: input.teamId,
+          actorUserId: actor.userId,
+          reason: "team.member.disabled"
+        });
 
         return membership;
       });
@@ -803,6 +1792,9 @@ export const createTeamAccessRepository = (db: KoedDb) => {
         input.teamWorkspaceId
       );
       if (!accessContext?.canManageWorkspace) {
+        return null;
+      }
+      if (!accessContext.teamEntitlementAllowsAccess) {
         return null;
       }
 

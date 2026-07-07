@@ -16,6 +16,11 @@ import {
   registerAuthRoutes,
   sessionCookieName
 } from "../auth/index.js";
+import { registerAnalyticsRoutes } from "../analytics/index.js";
+import {
+  createWorkosAuthKitClient,
+  type WorkosAuthKitClient
+} from "../auth/workos.js";
 import { registerApiTokenRoutes } from "../api-tokens/index.js";
 import {
   type CacheProvider,
@@ -27,6 +32,7 @@ import {
   resetMemoryRateLimitStore,
   type RateLimitStore
 } from "../infra/index.js";
+import { registerLocalEdgeRoutes } from "../local-edge/routes.js";
 import {
   canReceiveGraphStreamPayload,
   createGraphStreamService,
@@ -42,7 +48,12 @@ import {
   registerRecallRoutes,
   shouldIgnoreGraphStreamPayload
 } from "../memory/index.js";
-import { lcmCompactQueueName, memoryEmbedQueueName } from "@koed/shared";
+import {
+  createEnvelopeEncryptionProviderFromEnvironment,
+  type EnvelopeEncryptionProvider,
+  lcmCompactQueueName,
+  memoryEmbedQueueName
+} from "@koed/shared";
 import { registerTeamRoutes } from "../team/index.js";
 import { resolveApiServerConfig } from "./config.js";
 import {
@@ -69,6 +80,10 @@ interface BuildServerOptions {
   runMemoryJobsInlineForTests?: boolean;
   rateLimitStore?: RateLimitStore;
   cacheProvider?: CacheProvider;
+  upstreamBackendsPath?: string;
+  fetch?: typeof fetch;
+  workosClient?: WorkosAuthKitClient;
+  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
 }
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
@@ -141,8 +156,16 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   if (pool) {
     await runDbMigrations(pool);
   }
+  const envelopeEncryptionProvider: EnvelopeEncryptionProvider | undefined =
+    options.envelopeEncryptionProvider ??
+    createEnvelopeEncryptionProviderFromEnvironment();
   const repository =
-    options.repository ?? (pool ? createMemorySourceRepository(pool) : null);
+    options.repository ??
+    (pool
+      ? createMemorySourceRepository(pool, {
+          envelopeEncryptionProvider
+        })
+      : null);
   const createQueue = <TJobData>(name: string) =>
     createMemoryJobQueue<TJobData>(name, {
       backend: config.queueBackend,
@@ -314,11 +337,24 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       graphCacheTtlSeconds: config.cache.graphCacheTtlSeconds,
       hashCacheKey: hashSecret
     },
+    encryption: {
+      envelopeEncryptionProvider
+    },
     capture: {
       scheduleMemoryEventProcessing,
       scheduleProjectedMemoryEventProcessing,
       resolveCapturePolicyForRequest,
       rejectUnsupportedCapturePolicy
+    },
+    localEdge: {
+      upstreamBackendsPath:
+        options.upstreamBackendsPath ?? config.upstreamBackendsPath,
+      fetch: options.fetch ?? globalThis.fetch.bind(globalThis)
+    },
+    workos: {
+      client:
+        options.workosClient ??
+        createWorkosAuthKitClient(config.workos, options.fetch)
     }
   };
   graphStreamService = await createGraphStreamService({
@@ -392,13 +428,17 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     repository,
     embeddingQueue,
     compactionQueue,
+    envelopeEncryptionProvider,
+    alertFetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     runCompactionInline,
     enqueueEmbedding
   });
 
   registerAuthRoutes(app, routeContext);
+  registerAnalyticsRoutes(app, routeContext);
   registerApiTokenRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);
+  registerLocalEdgeRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);

@@ -9,7 +9,11 @@ export const registerRecallRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticate, authenticateApiToken, authenticateSession },
+    auth: {
+      authenticate,
+      authenticateApiToken,
+      authenticateSessionOrDeviceCredential
+    },
     rateLimit: { memoryRecall: memoryRecallRateLimit }
   } = context;
 
@@ -18,14 +22,17 @@ export const registerRecallRoutes = (
     { preHandler: memoryRecallRateLimit },
     async (request) => {
       const repo = requireRepository();
-      const user = await authenticateApiToken(request);
       const input = searchMemorySchema.parse(request.body);
-      if (input.team_workspace_id) {
-        throw Object.assign(
-          new Error("Session cookie required for Team Workspace recall"),
-          { statusCode: 403 }
-        );
-      }
+      const user = input.team_workspace_id
+        ? await authenticateSessionOrDeviceCredential(
+            request,
+            "team_workspace_read",
+            {
+              apiTokenError:
+                "Session cookie or scoped device credential required for Team Workspace recall"
+            }
+          )
+        : await authenticateApiToken(request);
       const result = await searchMemory({
         repository: repo,
         requesterContext: { userId: user.id },
@@ -74,7 +81,14 @@ export const registerRecallRoutes = (
       const repo = requireRepository();
       const input = searchMemorySchema.parse(request.body);
       const user = input.team_workspace_id
-        ? await authenticateSession(request)
+        ? await authenticateSessionOrDeviceCredential(
+            request,
+            "team_workspace_read",
+            {
+              apiTokenError:
+                "Session cookie or scoped device credential required for Team Workspace recall"
+            }
+          )
         : await authenticate(request);
       const result = await answerMemory({
         repository: repo,

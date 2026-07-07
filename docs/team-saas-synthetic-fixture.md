@@ -13,6 +13,10 @@ of inventing one-off examples for each PR.
 
 For release readiness, use this fixture with the launch validation checklist in
 [Team SaaS Launch Validation](./team-saas-launch-validation.md).
+The launch validation suite also includes encrypted fixture-boundary
+regressions that mirror this truth sheet with encrypted shared, private,
+revoked, removed-member, suspended-entitlement, queue, audit, and embedding
+source cases.
 
 ## Commands
 
@@ -51,22 +55,13 @@ environment file as the other operator scripts.
 ## API Session Cookies
 
 When `API_TOKEN_PEPPER` is configured, seeding creates active synthetic web
-sessions for API-level checks. Use the `cm_session` cookie with the matching
-fixture secret:
+sessions for API-level checks. Use only locally generated session cookies from
+the disposable fixture database being tested.
 
-| Person | Cookie header                                                                               |
-| ------ | ------------------------------------------------------------------------------------------- |
-| Alice  | `Cookie: cm_session=cms_team-saas-fixture-v1_alice_session_secret_000000000000000000000000` |
-| Bob    | `Cookie: cm_session=cms_team-saas-fixture-v1_bob_session_secret_000000000000000000000000`   |
-| Carol  | `Cookie: cm_session=cms_team-saas-fixture-v1_carol_session_secret_000000000000000000000000` |
-| David  | `Cookie: cm_session=cms_team-saas-fixture-v1_david_session_secret_000000000000000000000000` |
-
-The fixture passwords are intentionally not login credentials. Use the session
-cookies for deterministic API calls.
-
-These deterministic cookies are only for disposable local fixture databases.
-Do not seed this fixture into shared, staging, or production environments with a
-normal shared `API_TOKEN_PEPPER`, because the documented cookie values are valid
+Do not publish or copy fixed fixture cookie values into documentation, issue
+comments, shared chat, or committed config. Do not seed this fixture into
+shared, staging, or production environments with a normal shared
+`API_TOKEN_PEPPER`, because any deterministic fixture sessions would be valid
 for the seeded synthetic users until the fixture is reset or the sessions
 expire.
 

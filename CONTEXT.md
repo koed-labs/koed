@@ -62,9 +62,9 @@ Recalled memory evidence plus citation and retrieval metadata handed to an AI cl
 _Avoid_: Answer, summary, search result
 
 **Koed**:
-The source-available Koed distribution for operator-managed memory
+The AGPL-licensed Koed distribution for operator-managed memory
 infrastructure.
-_Avoid_: Koed Cloud, hosted Koed, open-source Koed
+_Avoid_: Koed Cloud, hosted Koed, open-source Koed as a separate product name
 
 **LCM Placeholder**:
 A deterministic backend-created source outline used until an LCM summary is submitted.

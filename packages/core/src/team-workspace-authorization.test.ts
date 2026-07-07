@@ -66,4 +66,21 @@ describe("resolveTeamWorkspaceAuthorization", () => {
       })
     ).toMatchObject({ authorized: false, reason: "workspace_access_disabled" });
   });
+
+  it("rejects entitlement-blocked Team Workspace access before generic access denial", () => {
+    expect(
+      resolveTeamWorkspaceAuthorization({
+        requesterUserId: "user-a",
+        teamWorkspaceId: "workspace-a",
+        access: {
+          ...access,
+          teamEntitlementStatus: "suspended",
+          teamEntitlementAllowsAccess: false
+        }
+      })
+    ).toMatchObject({
+      authorized: false,
+      reason: "team_entitlement_blocked"
+    });
+  });
 });

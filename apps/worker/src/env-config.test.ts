@@ -94,7 +94,19 @@ describe("resolveWorkerEnv", () => {
 
   it("requires production BullMQ service configuration", () => {
     expect(() => resolveWorkerEnv({ NODE_ENV: "production" })).toThrow(
-      "DATABASE_URL, REDIS_URL, DATA_ENCRYPTION_KEY, EMBEDDING_SERVICE_URL, EMBEDDING_SERVICE_TOKEN, EMBEDDING_MODEL"
+      "DATABASE_URL, REDIS_URL, EMBEDDING_SERVICE_URL, EMBEDDING_SERVICE_TOKEN, EMBEDDING_MODEL"
+    );
+    expect(() =>
+      resolveWorkerEnv({
+        NODE_ENV: "production",
+        DATABASE_URL: "postgres://local",
+        REDIS_URL: "redis://localhost:6379",
+        EMBEDDING_SERVICE_URL: "http://localhost:8000",
+        EMBEDDING_SERVICE_TOKEN: "token",
+        EMBEDDING_MODEL: "qwen3-0.6b"
+      })
+    ).toThrow(
+      "Missing required environment variable: API_DATA_ENCRYPTION_KEY (or DATA_ENCRYPTION_KEY)"
     );
   });
 
@@ -110,5 +122,65 @@ describe("resolveWorkerEnv", () => {
         EMBEDDING_MODEL: "qwen3-0.6b"
       })
     ).not.toThrow();
+  });
+
+  it("requires a KMS-backed provider for paid Koed-managed cloud", () => {
+    const base = {
+      NODE_ENV: "production",
+      KOED_DEPLOYMENT_PROFILE: "koed_managed_cloud",
+      KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
+      WORK_QUEUE_BACKEND: "local",
+      DATABASE_URL: "postgres://local",
+      EMBEDDING_SERVICE_URL: "http://localhost:8000",
+      EMBEDDING_SERVICE_TOKEN: "token",
+      EMBEDDING_MODEL: "qwen3-0.6b"
+    };
+
+    expect(() => resolveWorkerEnv(base)).toThrow(
+      "A KMS-backed API_ENVELOPE_ENCRYPTION_PROVIDER"
+    );
+    expect(() =>
+      resolveWorkerEnv({
+        ...base,
+        DATA_ENCRYPTION_KEY: "secret",
+        API_ENVELOPE_ENCRYPTION_PROVIDER: "managed_kms"
+      })
+    ).toThrow(
+      "MANAGED_KMS_KEY_ID, MANAGED_KMS_KEY_VERSION, MANAGED_KMS_ENDPOINT_URL, MANAGED_KMS_AUTH_TOKEN"
+    );
+    expect(() =>
+      resolveWorkerEnv({
+        ...base,
+        API_ENVELOPE_ENCRYPTION_PROVIDER: "byok",
+        MANAGED_KMS_KEY_ID: "byok:customer-key",
+        MANAGED_KMS_KEY_VERSION: "1",
+        MANAGED_KMS_ENDPOINT_URL: "https://kms.koed.example",
+        MANAGED_KMS_AUTH_TOKEN: "secret-token"
+      })
+    ).not.toThrow();
+  });
+
+  it("rejects unsupported commercial encryption providers", () => {
+    const base = {
+      NODE_ENV: "production",
+      WORK_QUEUE_BACKEND: "local",
+      DATABASE_URL: "postgres://local",
+      EMBEDDING_SERVICE_URL: "http://localhost:8000",
+      EMBEDDING_SERVICE_TOKEN: "token",
+      EMBEDDING_MODEL: "qwen3-0.6b"
+    };
+
+    expect(() =>
+      resolveWorkerEnv({
+        ...base,
+        API_ENVELOPE_ENCRYPTION_PROVIDER: "nonsense"
+      })
+    ).toThrow("Unsupported API_ENVELOPE_ENCRYPTION_PROVIDER");
+    expect(() =>
+      resolveWorkerEnv({
+        ...base,
+        API_ENVELOPE_ENCRYPTION_PROVIDER: "operator_kms"
+      })
+    ).toThrow("Envelope encryption provider is not implemented: operator_kms");
   });
 });

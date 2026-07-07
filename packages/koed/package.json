@@ -3,5 +3,5 @@
   "version": "0.3.1",
   "private": true,
   "license": "AGPL-3.0-only",
-  "description": "Release manifest for the Koed Docker Compose distribution"
+  "description": "Release manifest for the Koed distribution"
 }

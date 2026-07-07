@@ -23,6 +23,7 @@ export interface KoedServerPaths {
   serverConfigPath: string;
   localPortsPath: string;
   explorerTokenPath: string;
+  upstreamBackendsPath: string;
   repoRoot: string;
 }
 
@@ -73,13 +74,16 @@ export const resolveKoedServerPaths = (
 ): KoedServerPaths => {
   const koedHome = resolveKoedHome(environment);
   const repoRoot = resolveRepoRoot(environment);
+  const modelsDir = environment.KOED_MODELS_DIR?.trim()
+    ? resolve(environment.KOED_MODELS_DIR)
+    : resolve(koedHome, "models");
   return {
     koedHome,
     configDir: resolve(koedHome, "config"),
     logsDir: resolve(koedHome, "logs"),
     runDir: resolve(koedHome, "run"),
     dataDir: resolve(koedHome, "data"),
-    modelsDir: resolve(koedHome, "models"),
+    modelsDir,
     cacheDir: resolve(koedHome, "cache"),
     postgresDataDir: resolve(koedHome, "data", "postgres"),
     postgresRunDir: resolve(koedHome, "run", "postgres"),
@@ -89,6 +93,7 @@ export const resolveKoedServerPaths = (
     serverConfigPath: resolve(koedHome, "config", "server.json"),
     localPortsPath: resolve(koedHome, "config", "local-ports.json"),
     explorerTokenPath: resolve(koedHome, "config", "explorer-token.json"),
+    upstreamBackendsPath: resolve(koedHome, "config", "upstream-backends.json"),
     repoRoot
   };
 };

@@ -59,7 +59,7 @@ Working directory: /path/to/koed
 ```
 
 The supervised `koed-server` default API host port is `3300`; direct app-local
-API runs may use `3000`. If your API runs on a different host port, use that
+API runs use `3300` by default. If your API runs on a different host port, use that
 port in `MEMORY_API_URL`.
 If Codex Desktop cannot resolve `node`, set the command to an absolute Node path
 or run setup with `MEMORY_NODE_COMMAND=/path/to/node`. Shell-managed versions

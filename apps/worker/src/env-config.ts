@@ -7,6 +7,7 @@ import {
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
+  validateEnvelopeEncryptionProviderEnvironment,
   type KoedQueueBackend
 } from "@koed/shared";
 import {
@@ -72,13 +73,13 @@ export const resolveWorkerEnv = (
       [
         "DATABASE_URL",
         ...(queueBackend === "bullmq" ? ["REDIS_URL"] : []),
-        "DATA_ENCRYPTION_KEY",
         "EMBEDDING_SERVICE_URL",
         "EMBEDDING_SERVICE_TOKEN",
         "EMBEDDING_MODEL"
       ],
       environment
     );
+    validateEnvelopeEncryptionProviderEnvironment({ environment });
   }
 
   return {

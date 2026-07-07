@@ -57,6 +57,13 @@
       "when": 1782918107977,
       "tag": "0007_goofy_rockslide",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783435413683,
+      "tag": "0008_mean_gressill",
+      "breakpoints": true
     }
   ]
 }

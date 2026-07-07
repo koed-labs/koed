@@ -30,12 +30,13 @@ services:
 
   embedding-service:
     build:
-      context: ../../apps/embedding-service
+      context: ../..
+      dockerfile: apps/embedding-service/Dockerfile
     ports:
       - "127.0.0.1:${EMBEDDING_SERVICE_HOST_PORT:-3800}:8000"
     environment:
       MODEL_KEY: ${EMBEDDING_MODEL_KEY}
-      MODEL_PATH: ${EMBEDDING_MODEL_PATH:-}
+      MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/models/Qwen3-Embedding-0.6B-Q8_0.gguf}
       EMBEDDING_BATCH_LIMIT: ${EMBEDDING_BATCH_LIMIT}
       EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS}
       EMBEDDING_MAX_TEXT_CHARS: ${EMBEDDING_MAX_TEXT_CHARS}
@@ -64,12 +65,12 @@ services:
       RERANKER_PROMPT_CACHE_ENABLED: ${EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED:-true}
     volumes:
       - embedding-model-cache:/root/.cache/huggingface
-      - ${KOED_MODELS_DIR:-../../models}:/models:ro
+      - ${KOED_MODELS_DIR:-${HOME}/.koed/models}:/models:ro
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          'python -c "import urllib.request; urllib.request.urlopen(''http://127.0.0.1:8000/health'', timeout=5)"'
+          'node -e "fetch(''http://127.0.0.1:8000/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"'
         ]
       interval: 15s
       timeout: 10s

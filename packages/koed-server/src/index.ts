@@ -37,6 +37,13 @@ export {
   installPackagedRuntime,
   sha256PackagedRuntimeFiles
 } from "./runtime-packaged.js";
+export {
+  collectUpstreamRegistryStatus,
+  listUpstreamBackends,
+  refreshUpstreamBackendCapabilities,
+  registerUpstreamBackend,
+  removeUpstreamBackend
+} from "./upstream-registry.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
 export type {
   KoedDependencyMode,
@@ -75,6 +82,17 @@ export type {
   PackagedRuntimeInstallResult,
   PackagedRuntimeStatus
 } from "./runtime-packaged.js";
+export type {
+  UpstreamBackendRecord,
+  UpstreamBackendRegistry,
+  UpstreamBackendSummary,
+  UpstreamCapabilityCache,
+  UpstreamCapabilityState,
+  UpstreamDeploymentProfile,
+  UpstreamFailureCategory,
+  UpstreamRegistryResult,
+  UpstreamRoutePolicy
+} from "./upstream-registry.js";
 export type {
   KoedServerComponentState,
   KoedServerComponentStatus,

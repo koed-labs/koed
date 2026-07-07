@@ -1,6 +1,6 @@
 # Self-Hosted To Hosted Sync
 
-Status: Draft planning document.
+Status: Accepted direction for the Team SaaS launch plan.
 
 This document defines the V1.0 direction for moving selected memory from a
 self-hosted Koed deployment into a hosted Team-personal identity without
@@ -61,6 +61,25 @@ Required V1.0 decisions:
   automatically revoke existing Workspace shares or hard-delete retained data.
 - Forking: any independently evolving target memory must be created through a
   future explicit Fork/Import operation.
+- First selectable source boundary: Captured Session only. Project-wide,
+  date-range, explicit Memory Node, and all-Personal-Memory sync are later
+  expansions because they need separate closure, consent, and retention rules.
+- Freshness: synchronized memory becomes stale when the sync relationship's
+  `stale_after` timestamp has passed. Hosted recall may still use the last
+  synchronized state, but API/UI surfaces must expose the stale state rather
+  than pretending the source is current.
+- Hosted processing outputs: the hosted side validates package provenance and
+  may reuse source projection metadata, but hosted indexing owns the target
+  processing cursor and rebuilds or verifies derived search artifacts under the
+  target deployment's authorization and encryption policy.
+- Transfer path: V1.0 uses chunked, resumable application-level upload
+  sessions. Object storage is an implementation detail used when package size
+  or deployment topology requires it; raw database replication is not the
+  product primitive.
+- Support diagnostics: failed sync support views may expose redacted package,
+  cursor, checksum, state, and error-code metadata only. Raw Memory, source
+  payloads, embeddings, package bytes, and provider credentials require the
+  normal hosted support/break-glass policy before access.
 
 ## Architecture Principles
 
@@ -83,6 +102,15 @@ Required V1.0 decisions:
 A sync package should be a signed or checksummed application-level bundle with
 versioned manifests and byte payloads. It should be safe to upload in chunks,
 resume after failure, and process idempotently.
+
+Sync/offload packages must use the shared encrypted package envelope. The
+upload-session manifest is the redacted encrypted package manifest only; it may
+carry object class, checksum, byte count, provider/key metadata, timestamps,
+scope, and consent/provenance references. It must not carry raw Memory, source
+payloads, credentials, plaintext-equivalent vectors, raw DEKs, wrapped DEK
+ciphertext, or object-storage credentials. If the envelope provider cannot
+encrypt or decrypt the package, package creation, intake, and restore must fail
+closed.
 
 Minimum package contents:
 
@@ -155,6 +183,24 @@ projection job must not duplicate memory or create another logical lifespan.
 Hosted processing cursors belong in hosted upload-session and sync-relationship
 persistence. The source package carries source cursors only, so target-side
 resume state cannot be advanced or rewound by package payload data.
+
+The persistence model is intentionally explicit:
+
+- `deployment_identities` identify source and target Koed deployments.
+- `logical_memories` represent the one memory lifespan that must not fork
+  accidentally.
+- `memory_replicas` represent physical source and target copies of that logical
+  memory.
+- `cross_identity_sync_relationships` record sync/offload policy, consent,
+  cursor, revocation, and state.
+- `sync_package_upload_sessions` and `sync_package_chunks` make large package
+  upload resumable and checksummed.
+- `sync_outbox_entries` and `sync_inbox_entries` make source and target
+  processing durable instead of ad hoc request forwarding.
+
+V1.0 supports `captured_session` as the first source boundary. Project-wide or
+global Personal Memory sync must be added deliberately later with its own
+policy and closure rules.
 
 ## Large Transfer Flow
 
@@ -244,9 +290,6 @@ Deferred from the V1.0 implementation unless explicitly prioritized:
 
 Backend/API:
 
-- Define `cross_identity_sync_relationships` and upload-session persistence.
-- Add source deployment, source identity, target identity, logical memory, sync
-  cursor, state, consent, and revocation fields.
 - Add hosted sync package intake endpoints.
 - Add sync package validation, idempotency, and manifest versioning.
 - Add processing jobs for transform, Projection, embedding, and indexing.
@@ -279,15 +322,15 @@ Docs/support:
 - Explain revocation and retention boundaries.
 - Explain that unsupported one-time database migration is not the product path.
 
-## Open Questions
+## Launch Decisions
 
-- Which source boundaries are selectable in the first implementation: Captured
-  Session, Project, date range, explicit Memory Nodes, or all Personal Memory?
-- What freshness threshold and UI treatment should mark synchronized memory as
-  stale while still allowing recall of the last synchronized state?
-- Which hosted processing outputs are reused from the package versus rebuilt in
-  cloud?
-- What is the maximum package size before requiring cloud object storage rather
-  than direct API upload?
-- What support/admin tooling is needed to diagnose failed sync without exposing
-  Memory content?
+- V1.0 starts with Captured Session sync as the only selectable source
+  boundary.
+- Staleness is controlled by explicit sync relationship state and
+  `stale_after`, not by inference from UI activity.
+- Target-side processing cursors are authoritative for hosted projection,
+  embedding, indexing, and retry state.
+- Chunked upload sessions are the API contract. Object storage can back large
+  uploads, but clients should not depend on a specific storage provider.
+- Failed sync diagnostics are redacted operational metadata unless a separate
+  scoped support/break-glass workflow is approved.

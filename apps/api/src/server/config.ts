@@ -1,8 +1,17 @@
 import {
+  resolveApiDataEncryptionKeyFromEnv,
   resolveKoedQueueBackend,
   type KoedQueueBackend,
   resolveRerankerKeyFromEnv
 } from "@koed/shared";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+import {
+  resolveDeploymentProfile,
+  resolveRuntimeDependencyMode,
+  type DeploymentProfile,
+  type RuntimeDependencyMode
+} from "./capabilities.js";
 import type { RateLimitName, RateLimitPolicy } from "../infra/rate-limit.js";
 import { parseCsv } from "./utils.js";
 
@@ -15,7 +24,12 @@ export interface ApiServerConfig {
   databaseUrl?: string;
   redisUrl?: string;
   queueBackend: KoedQueueBackend;
+  deploymentProfile: DeploymentProfile;
+  runtimeMode: "developer" | "local-personal" | "external";
+  dependencyMode: RuntimeDependencyMode;
   apiPort?: string;
+  koedHome: string;
+  upstreamBackendsPath: string;
   dataEncryptionKeyConfigured: boolean;
   apiTokenPepperConfigured: boolean;
   apiTokenPepper: string;
@@ -38,6 +52,25 @@ export interface ApiServerConfig {
   };
   embeddingModel?: string;
   rerankerKey?: string;
+  workos: {
+    authkitEnabled: boolean;
+    apiBaseUrl: string;
+    clientId?: string;
+    clientSecret?: string;
+    redirectUri?: string;
+    providerEnvironment: string;
+  };
+  ops: {
+    backupStatusPath?: string;
+    backupMaxAgeSeconds: number;
+    requestMetricsStatusPath?: string;
+    requestMetricsMaxAgeSeconds: number;
+    maxRssBytes: number;
+    runbookBaseUrl?: string;
+    operatorEmails: string[];
+    alertWebhookUrl?: string;
+    alertWebhookToken?: string;
+  };
 }
 
 const optionalEnv = (value: string | undefined): string | undefined => {
@@ -56,6 +89,13 @@ const positiveIntEnv = (
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
 
+const resolveRuntimeMode = (
+  value: string | undefined
+): ApiServerConfig["runtimeMode"] =>
+  value === "local-personal" || value === "external" || value === "developer"
+    ? value
+    : "developer";
+
 const resolveCorsOrigins = (
   environment: NodeJS.ProcessEnv,
   nodeEnv: string
@@ -70,7 +110,7 @@ const resolveCorsOrigins = (
       : [
           "http://localhost:5174",
           "http://127.0.0.1:5174",
-          "http://localhost:3000"
+          "http://localhost:3300"
         ];
 
   return new Set(
@@ -84,6 +124,13 @@ export const resolveApiServerConfig = (
   const nodeEnv = environment.NODE_ENV ?? "development";
   const databaseUrl = optionalEnv(environment.DATABASE_URL);
   const redisUrl = optionalEnv(environment.REDIS_URL);
+  const koedHome = resolve(
+    optionalEnv(environment.KOED_HOME) ?? `${homedir()}/.koed`
+  );
+  const runtimeMode = resolveRuntimeMode(environment.KOED_RUNTIME_MODE);
+  const dependencyMode = resolveRuntimeDependencyMode(
+    environment.KOED_DEPENDENCY_MODE
+  );
   const memoryRateLimitWindowMs = positiveIntEnv(
     environment,
     "MEMORY_RATE_LIMIT_WINDOW_MS",
@@ -113,9 +160,17 @@ export const resolveApiServerConfig = (
     databaseUrl,
     redisUrl,
     queueBackend: resolveKoedQueueBackend(environment.WORK_QUEUE_BACKEND),
+    deploymentProfile: resolveDeploymentProfile(
+      environment.KOED_DEPLOYMENT_PROFILE,
+      runtimeMode
+    ),
+    runtimeMode,
+    dependencyMode,
     apiPort: optionalEnv(environment.API_PORT),
+    koedHome,
+    upstreamBackendsPath: resolve(koedHome, "config", "upstream-backends.json"),
     dataEncryptionKeyConfigured: Boolean(
-      optionalEnv(environment.DATA_ENCRYPTION_KEY)
+      resolveApiDataEncryptionKeyFromEnv(environment)
     ),
     apiTokenPepperConfigured: Boolean(
       optionalEnv(environment.API_TOKEN_PEPPER)
@@ -193,6 +248,44 @@ export const resolveApiServerConfig = (
       )
     },
     embeddingModel: optionalEnv(environment.EMBEDDING_MODEL),
-    rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment))
+    rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment)),
+    workos: {
+      authkitEnabled: environment.WORKOS_AUTHKIT_ENABLED === "true",
+      apiBaseUrl:
+        optionalEnv(environment.WORKOS_API_BASE_URL) ??
+        "https://api.workos.com",
+      clientId: optionalEnv(environment.WORKOS_CLIENT_ID),
+      clientSecret: optionalEnv(environment.WORKOS_API_KEY),
+      redirectUri: optionalEnv(environment.WORKOS_REDIRECT_URI),
+      providerEnvironment:
+        optionalEnv(environment.WORKOS_PROVIDER_ENVIRONMENT) ?? "default"
+    },
+    ops: {
+      backupStatusPath: optionalEnv(environment.KOED_BACKUP_STATUS_PATH),
+      backupMaxAgeSeconds: positiveIntEnv(
+        environment,
+        "KOED_BACKUP_MAX_AGE_SECONDS",
+        24 * 60 * 60
+      ),
+      requestMetricsStatusPath: optionalEnv(
+        environment.KOED_OPS_REQUEST_METRICS_STATUS_PATH
+      ),
+      requestMetricsMaxAgeSeconds: positiveIntEnv(
+        environment,
+        "KOED_OPS_REQUEST_METRICS_MAX_AGE_SECONDS",
+        5 * 60
+      ),
+      maxRssBytes: positiveIntEnv(
+        environment,
+        "KOED_OPS_MAX_RSS_BYTES",
+        1536 * 1024 * 1024
+      ),
+      runbookBaseUrl: optionalEnv(environment.KOED_RUNBOOK_BASE_URL),
+      operatorEmails: parseCsv(environment.KOED_OPS_OPERATOR_EMAILS).map(
+        (email) => email.toLowerCase()
+      ),
+      alertWebhookUrl: optionalEnv(environment.KOED_OPS_ALERT_WEBHOOK_URL),
+      alertWebhookToken: optionalEnv(environment.KOED_OPS_ALERT_WEBHOOK_TOKEN)
+    }
   };
 };

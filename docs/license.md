@@ -6,6 +6,8 @@ AGPL-3.0-only is an OSI-approved open source license with network copyleft oblig
 
 Koed Labs may offer separate commercial licenses for organizations that need different terms, including for proprietary modified SaaS products. Public AGPL recipients keep their AGPL rights for the versions they receive.
 
+The product and hosted-service boundary is documented in [Commercial Feature Boundary](commercial-feature-boundary.md). Team Self-Hosted is treated as a self-operated deployment mode, not as a paid boundary by itself.
+
 Contributor licensing matters for this dual-license model. Koed Labs should accept non-trivial external code contributions only when the contributor has signed terms granting Koed Labs the rights needed to use, modify, sublicense, and relicense the contribution, including under commercial terms. See [../CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Third-party dependencies keep their own licenses. Koed Labs' commercial licensing terms cannot override obligations imposed by dependency licenses.

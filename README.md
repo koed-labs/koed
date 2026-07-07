@@ -77,11 +77,43 @@ The README keeps to one basic local path. For other options, see:
 - [Security](docs/security.md), [Backup and restore](docs/backup-restore.md),
   and [Upgrades](docs/upgrades.md) for operational guidance.
 
+For local Desktop, private VPS, Team Self-Hosted, and cloud deployment
+language, use `koed-server` plus dependencies as the product boundary. API,
+Worker, and Explorer remain useful implementation names for code, logs, and
+troubleshooting.
+
 ## Security Notes
 
-Koed is designed for an Operator-controlled deployment. Protect local data,
-backups, logs, and administrator access. Report suspected vulnerabilities
-privately; see [SECURITY.md](SECURITY.md).
+Koed assumes the operator controls the deployment. The API supports bearer API
+tokens for AI-client integrations. Local operators create tokens with
+`pnpm api-token:create`, which uses trusted database access and stores only token
+hashes. Postgres and Redis should stay on private Docker/internal networks in
+production deployments. See [docs/security.md](docs/security.md).
+
+Local personal deployments may keep operational Memory rows in Postgres unless
+app-layer encryption is configured. Private VPS, Team Self-Hosted, and
+Koed-managed cloud deployments should configure envelope encryption for
+human-readable Memory and evidence payloads; queryable vectors still remain
+sensitive trusted-boundary data. Protect the database, volumes, backups, and
+administrator access with deployment-level controls.
+
+Report suspected vulnerabilities privately. See [SECURITY.md](SECURITY.md) for
+supported versions, the reporting channel, and guidance on not disclosing user
+Memory data publicly.
+
+## Operations
+
+Use normal Postgres backups and restore into the same Koed version before
+upgrading. The API runs database migrations during startup.
+
+Local Operators can also run the same Drizzle migration path manually with:
+
+```bash
+pnpm --filter @koed/db migrate:up
+```
+
+See [docs/backup-restore.md](docs/backup-restore.md) and
+[docs/upgrades.md](docs/upgrades.md).
 
 ## Releases
 
@@ -98,14 +130,20 @@ See [docs/upgrades.md](docs/upgrades.md) for upgrade guidance.
 
 Koed is licensed under the GNU Affero General Public License version 3 only
 (`AGPL-3.0-only`). See [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md),
-and [docs/license.md](docs/license.md).
+and [docs/license.md](docs/license.md). See
+[Commercial Feature Boundary](docs/commercial-feature-boundary.md) for the
+launch recommendation on public distribution, Team Self-Hosted, hosted-only
+services, and managed add-ons.
 
 ## Learn More
 
 - [Running Koed](docs/running-koed.md)
 - [Configuration](docs/configuration.md)
+- [Server deployment boundary](docs/server-deployment-boundary.md)
+- [Hosted database roles](docs/hosted-database-roles.md)
 - [Security](docs/security.md)
 - [Backup and restore](docs/backup-restore.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
 - [License](docs/license.md)
+- [Commercial feature boundary](docs/commercial-feature-boundary.md)

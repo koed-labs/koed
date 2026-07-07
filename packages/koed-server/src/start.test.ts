@@ -48,6 +48,14 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   captureHook: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
+  upstreamBackends: {
+    state: "healthy",
+    registered: 0,
+    validated: 0,
+    stale: 0,
+    failed: 0,
+    notChecked: 0
+  },
   explorer: { state: "healthy", url: "http://localhost:5174" },
   lastVerification: { state: "healthy", checkedAt: "2026-01-01T00:00:00.000Z" }
 });
@@ -165,10 +173,15 @@ describe("start supervisor", () => {
         "EXPLORER_WEB_HOST_PORT=5174",
         "DATABASE_URL=postgres://repo/db",
         "REDIS_URL=redis://repo:6379",
-        "EMBEDDING_SERVICE_URL=http://repo:3800"
+        "EMBEDDING_SERVICE_URL=http://repo:3800",
+        "EMBEDDING_SERVICE_TOKEN=repo-token"
       ].join("\n")
     );
-    const spawned: Array<{ command: string; args: string[] }> = [];
+    const spawned: Array<{
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
 
     await startKoedServer({
       environment: {
@@ -177,15 +190,17 @@ describe("start supervisor", () => {
         KOED_DEPENDENCY_MODE: "external",
         API_HOST_PORT: "4545",
         EXPLORER_WEB_HOST_PORT: "5574",
+        EXPLORER_WEB_HOST: "0.0.0.0",
         DATABASE_URL: "postgres://operator/db",
         REDIS_URL: "redis://operator:6379",
-        EMBEDDING_SERVICE_URL: "http://operator:3800"
+        EMBEDDING_SERVICE_URL: "http://operator:3800",
+        EMBEDDING_SERVICE_TOKEN: "operator-token"
       },
       timeoutMs: 1,
       pollIntervalMs: 1,
       spawnSync: () => spawnResult(),
-      spawn: (command, args) => {
-        spawned.push({ command, args });
+      spawn: (command, args, options) => {
+        spawned.push({ command, args, env: options?.env });
         const child = new EventEmitter() as EventEmitter & {
           pid: number;
           kill: () => boolean;
@@ -206,6 +221,14 @@ describe("start supervisor", () => {
     expect(
       spawned.find((entry) => entry.args.includes("preview"))?.args
     ).toContain("5574");
+    expect(
+      spawned.find((entry) => entry.args.includes("preview"))?.args
+    ).toContain("0.0.0.0");
+    expect(
+      spawned
+        .filter((entry) => entry.args.includes("start"))
+        .map((entry) => entry.env?.EMBEDDING_SERVICE_TOKEN)
+    ).toEqual(["operator-token", "operator-token"]);
   });
 
   it("starts bundled-local native Postgres and Embedding Service without Docker", async () => {
@@ -284,9 +307,10 @@ describe("start supervisor", () => {
     expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
       resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
     );
-    expect(buildEnv?.DATABASE_URL).toBe(
-      "postgres://koed:koed-local-postgres@127.0.0.1:25432/koed"
+    expect(buildEnv?.DATABASE_URL).toMatch(
+      /^postgres:\/\/koed:[A-Za-z0-9_-]+@127\.0\.0\.1:25432\/koed$/
     );
+    expect(buildEnv?.DATABASE_URL).not.toContain("wrong");
     expect(spawned[0]?.command).toBe(process.execPath);
     expect(spawned[0]?.args).toEqual([resources.serviceEntry]);
     expect(spawned[0]?.env?.LLAMA_SERVER_BINARY).toBe(resources.llamaServer);

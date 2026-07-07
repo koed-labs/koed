@@ -1,10 +1,12 @@
 import type { Visibility } from "@koed/core";
 import type { MemorySourceRepository } from "@koed/db";
+import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import type { AuthHelpers } from "../auth/session.js";
 import type { CacheProvider } from "../infra/cache.js";
 import type { RateLimitHandler, RateLimitName } from "../infra/rate-limit.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
 import type { ApiServerConfig } from "./config.js";
+import type { WorkosAuthKitClient } from "../auth/workos.js";
 
 export type CapturePolicy = Awaited<
   ReturnType<MemorySourceRepository["getEffectiveCapturePolicy"]>
@@ -25,6 +27,9 @@ export interface ApiRouteContext {
     cacheProvider: CacheProvider;
     graphCacheTtlSeconds: number;
     hashCacheKey(value: string): string;
+  };
+  encryption: {
+    envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   };
   capture: {
     scheduleMemoryEventProcessing(
@@ -50,5 +55,12 @@ export interface ApiRouteContext {
       input: { workspaceId?: string; sessionId?: string; threadId?: string }
     ): Promise<CapturePolicy>;
     rejectUnsupportedCapturePolicy(policy: { visibility: Visibility }): void;
+  };
+  localEdge: {
+    upstreamBackendsPath: string;
+    fetch: typeof fetch;
+  };
+  workos: {
+    client: WorkosAuthKitClient;
   };
 }

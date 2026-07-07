@@ -1,0 +1,137 @@
+services:
+  koed-server:
+    build:
+      context: ../..
+      dockerfile: packages/koed-server/Dockerfile
+    environment:
+      KOED_HOME: /data/koed
+      KOED_REPO_ROOT: /app
+      KOED_DEPLOYMENT_PROFILE: ${KOED_DEPLOYMENT_PROFILE:-team_self_hosted}
+      KOED_RUNTIME_MODE: external
+      KOED_DEPENDENCY_MODE: external
+      API_NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_HOST_PORT: 3300
+      EXPLORER_WEB_HOST: 0.0.0.0
+      EXPLORER_WEB_HOST_PORT: 5174
+      MEMORY_API_URL: ${MEMORY_API_URL:-http://localhost:3300}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      EMBEDDING_SERVICE_URL: http://embedding-service:8000
+      WORK_QUEUE_BACKEND: ${WORK_QUEUE_BACKEND:-bullmq}
+      API_DATA_ENCRYPTION_KEY: ${API_DATA_ENCRYPTION_KEY}
+      API_TOKEN_PEPPER: ${API_TOKEN_PEPPER}
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
+      API_COOKIE_SECURE: ${API_COOKIE_SECURE:-false}
+      EMBEDDING_SERVICE_TOKEN: ${EMBEDDING_SERVICE_TOKEN}
+      WORKOS_AUTHKIT_ENABLED: ${WORKOS_AUTHKIT_ENABLED:-false}
+      WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID:-}
+      WORKOS_API_KEY: ${WORKOS_API_KEY:-}
+      WORKOS_REDIRECT_URI: ${WORKOS_REDIRECT_URI:-http://localhost:3300/auth/workos/callback}
+      WORKOS_PROVIDER_ENVIRONMENT: ${WORKOS_PROVIDER_ENVIRONMENT:-default}
+      KOED_MANAGED_CLOUD_RELEASE_STAGE: ${KOED_MANAGED_CLOUD_RELEASE_STAGE:-alpha}
+      API_ENVELOPE_ENCRYPTION_PROVIDER: ${API_ENVELOPE_ENCRYPTION_PROVIDER:-local_test_key}
+      MANAGED_KMS_KEY_ID: ${MANAGED_KMS_KEY_ID:-}
+      MANAGED_KMS_KEY_VERSION: ${MANAGED_KMS_KEY_VERSION:-}
+      MANAGED_KMS_ENDPOINT_URL: ${MANAGED_KMS_ENDPOINT_URL:-}
+      MANAGED_KMS_AUTH_TOKEN: ${MANAGED_KMS_AUTH_TOKEN:-}
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-3300}:3300"
+      - "127.0.0.1:${EXPLORER_WEB_HOST_PORT:-5174}:5174"
+    volumes:
+      - koed-server-data:/data/koed
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      embedding-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:3300/ready'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"'
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  embedding-service:
+    build:
+      context: ../..
+      dockerfile: apps/embedding-service/Dockerfile
+    environment:
+      MODEL_KEY: ${EMBEDDING_MODEL_KEY}
+      MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/models/Qwen3-Embedding-0.6B-Q8_0.gguf}
+      EMBEDDING_BATCH_LIMIT: ${EMBEDDING_BATCH_LIMIT}
+      EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS}
+      EMBEDDING_MAX_TEXT_CHARS: ${EMBEDDING_MAX_TEXT_CHARS}
+      EMBEDDING_MAX_REQUEST_CHARS: ${EMBEDDING_MAX_REQUEST_CHARS}
+      EMBEDDING_SERVICE_TOKEN: ${EMBEDDING_SERVICE_TOKEN}
+      LOG_LEVEL: ${EMBEDDING_LOG_LEVEL}
+      RERANKER_KEY: ${EMBEDDING_RERANKER_KEY}
+      RERANKER_BATCH_LIMIT: ${EMBEDDING_RERANKER_BATCH_LIMIT}
+      LLAMA_N_CTX: ${EMBEDDING_LLAMA_N_CTX}
+      LLAMA_N_THREADS: ${EMBEDDING_LLAMA_N_THREADS}
+      LLAMA_N_BATCH: ${EMBEDDING_LLAMA_N_BATCH}
+      LLAMA_BATCH_TOKEN_HEADROOM: ${EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM:-8}
+      LLAMA_N_UBATCH: ${EMBEDDING_LLAMA_N_UBATCH}
+      LLAMA_PARALLEL: ${EMBEDDING_LLAMA_PARALLEL}
+      LLAMA_SERVER_BINARY: ${EMBEDDING_LLAMA_SERVER_BINARY:-/opt/llama.cpp/llama-server}
+      LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS: ${EMBEDDING_LLAMA_SERVER_STARTUP_TIMEOUT_SECONDS}
+      LLAMA_EMBEDDING_SERVER_PORT: ${EMBEDDING_LLAMA_EMBEDDING_SERVER_PORT}
+      RERANKER_MODEL_PATH: ${EMBEDDING_RERANKER_MODEL_PATH}
+      LLAMA_RERANKER_SERVER_PORT: ${EMBEDDING_LLAMA_RERANKER_SERVER_PORT}
+      RERANKER_CONTEXT_PER_SLOT: ${EMBEDDING_RERANKER_CONTEXT_PER_SLOT:-8192}
+      RERANKER_LLAMA_N_CTX: ${EMBEDDING_RERANKER_LLAMA_N_CTX:-}
+      RERANKER_LLAMA_N_THREADS: ${EMBEDDING_RERANKER_LLAMA_N_THREADS:-}
+      RERANKER_LLAMA_N_BATCH: ${EMBEDDING_RERANKER_LLAMA_N_BATCH:-8192}
+      RERANKER_LLAMA_N_UBATCH: ${EMBEDDING_RERANKER_LLAMA_N_UBATCH:-8192}
+      RERANKER_PARALLEL: ${EMBEDDING_RERANKER_PARALLEL:-4}
+      RERANKER_PROMPT_CACHE_ENABLED: ${EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED:-true}
+    volumes:
+      - embedding-model-cache:/root/.cache/huggingface
+      - ${KOED_MODELS_DIR:-${HOME}/.koed/models}:/models:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "fetch(''http://127.0.0.1:8000/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"'
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  koed-server-data:
+  postgres-data:
+  redis-data:
+  embedding-model-cache:

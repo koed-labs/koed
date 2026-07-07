@@ -6,7 +6,9 @@ This checklist records the minimum tenant-isolation and customer-memory
 security posture required before Koed hosted Team is launched. It should be
 read with [0004 Team Memory Uses User-Owned Share Grants And Workspaces](adr/0004-team-memory-workspaces.md),
 [Security](security.md), and
-[Database Row-Boundary Safeguards](database-row-boundary-safeguards.md).
+[Database Row-Boundary Safeguards](database-row-boundary-safeguards.md). Hosted
+support/admin access is defined in
+[Hosted Support And Admin Access Policy](hosted-support-admin-policy.md).
 
 ## Isolation Model
 
@@ -61,21 +63,21 @@ originating User. Team visibility is grant-based.
 
 ## Implementation Checklist
 
-| Area                                    | Required boundary                                                                                                                          | Current coverage                                                                                                                                                                                         | Launch status                                                                                                                                                    |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Team Workspace authorization            | Requester must have enabled Team Membership and enabled Workspace Access for the requested Workspace.                                      | `packages/core/src/team-workspace-authorization.ts`; `packages/db/src/team-access-repository.ts`; `packages/core/src/team-workspace-authorization.test.ts`; `packages/db/tests/repository.test.ts`.      | Covered with automated tests.                                                                                                                                    |
-| API-token Team access                   | API Tokens must not unlock Team Workspace recall or graph reads.                                                                           | `apps/api/src/memory/recall-routes.ts`; `apps/api/src/memory/graph-routes.ts`; `apps/api/src/server.test.ts`.                                                                                            | Covered with automated tests.                                                                                                                                    |
-| Share Grant read boundary               | Team reads must use active Share Grants for the same Team and Workspace. Revoked grants and other Workspaces must be excluded.             | `packages/db/src/repository.ts`; `packages/db/src/schema.ts`; `packages/db/tests/repository.test.ts`.                                                                                                    | Covered for repository read paths with automated tests.                                                                                                          |
-| Share Grant lifecycle                   | Share creation, listing, revocation, retained-share recall, and audit must be implemented through constrained API/repository workflows.    | KOE-222 for create/revoke/list share operations; KOE-65 for Team memory audit requirements.                                                                                                              | Tracked launch work before Team sharing ships.                                                                                                                   |
-| Derived memory boundary                 | Team-visible Memory Nodes and source expansion must not mix private sources with shared sources.                                           | `packages/core/src/team-source-boundary.ts`; `packages/core/src/team-source-boundary.test.ts`; repository graph/search tests.                                                                            | Covered with automated tests.                                                                                                                                    |
-| Team lifecycle and audit                | Team, invite, membership, Workspace, access, and token lifecycle changes must be auditable without raw memory or secrets in metadata.      | `packages/db/src/team-access-repository.ts`; `packages/db/src/audit-repository.ts`; `apps/api/src/server.test.ts`; `packages/db/tests/repository.test.ts`.                                               | Covered with automated tests.                                                                                                                                    |
-| Personal deletion and member exit       | Removing personal or membership access must not destroy retained Team-shared memory.                                                       | `packages/db/tests/repository.test.ts`; KOE-223.                                                                                                                                                         | Covered with automated tests.                                                                                                                                    |
-| Workspace archive and access suspension | Archived or suspended resources must leave normal active flows while retaining data for restore, retention, and explicit authorized modes. | Domain model in ADR 0004; database lifecycle fields from Team foundation work; KOE-191 for billing gates.                                                                                                | Tracked; billing-specific behavior must be finished before paid hosted launch.                                                                                   |
-| Support/admin access                    | Support tooling must not expose raw memory or secrets by default; privileged access must be constrained and audited.                       | Security policy in this checklist; KOE-199.                                                                                                                                                              | Launch blocker before support/admin tooling ships.                                                                                                               |
-| Runtime database privileges             | Runtime services should not use schema-owner privileges in hosted production.                                                              | `docs/database-row-boundary-safeguards.md`.                                                                                                                                                              | Tracked hardening; not a V1.0 blocker if hosted production uses private networking, encrypted storage, restricted operators, and reviewed repository boundaries. |
-| Row Level Security                      | Database-level row isolation can reduce blast radius of accidental broad SQL.                                                              | `docs/database-row-boundary-safeguards.md`.                                                                                                                                                              | Post-V1.0 hardening spike unless customer or compliance requirements make it mandatory earlier.                                                                  |
-| Logging and diagnostics                 | Logs and diagnostics must redact secrets and raw memory.                                                                                   | `apps/api/src/server/logging.test.ts` covers API request serialization; `apps/worker/src/logging.test.ts` and `packages/mcp-server/tests/logger.test.ts` cover logger configuration; `docs/security.md`. | Partially covered; hosted worker, MCP, diagnostic, and observability redaction tests remain tracked by KOE-194 and this launch checklist.                        |
-| Backups and exports                     | Database exports and backups must be treated as sensitive memory material.                                                                 | `docs/security.md`; this checklist.                                                                                                                                                                      | Deployment requirement before hosted launch.                                                                                                                     |
+| Area                                    | Required boundary                                                                                                                          | Current coverage                                                                                                                                                                                    | Launch status                                                                                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Team Workspace authorization            | Requester must have enabled Team Membership and enabled Workspace Access for the requested Workspace.                                      | `packages/core/src/team-workspace-authorization.ts`; `packages/db/src/team-access-repository.ts`; `packages/core/src/team-workspace-authorization.test.ts`; `packages/db/tests/repository.test.ts`. | Covered with automated tests.                                                                                                                          |
+| API-token Team access                   | API Tokens must not unlock Team Workspace recall or graph reads.                                                                           | `apps/api/src/memory/recall-routes.ts`; `apps/api/src/memory/graph-routes.ts`; `apps/api/src/server.test.ts`.                                                                                       | Covered with automated tests.                                                                                                                          |
+| Share Grant read boundary               | Team reads must use active Share Grants for the same Team and Workspace. Revoked grants and other Workspaces must be excluded.             | `packages/db/src/repository.ts`; `packages/db/src/schema.ts`; `packages/db/tests/repository.test.ts`.                                                                                               | Covered for repository read paths with automated tests.                                                                                                |
+| Share Grant lifecycle                   | Share creation, listing, revocation, retained-share recall, and audit must be implemented through constrained API/repository workflows.    | `packages/db/src/team-access-repository.ts`; Team Workspace API routes; `apps/api/src/server.test.ts`; `packages/db/tests/repository.test.ts`; Team audit events.                                   | Covered with automated tests for the V1 Captured Session source boundary.                                                                              |
+| Derived memory boundary                 | Team-visible Memory Nodes and source expansion must not mix private sources with shared sources.                                           | `packages/core/src/team-source-boundary.ts`; `packages/core/src/team-source-boundary.test.ts`; repository graph/search tests.                                                                       | Covered with automated tests.                                                                                                                          |
+| Team lifecycle and audit                | Team, invite, membership, Workspace, access, and token lifecycle changes must be auditable without raw memory or secrets in metadata.      | `packages/db/src/team-access-repository.ts`; `packages/db/src/audit-repository.ts`; `apps/api/src/server.test.ts`; `packages/db/tests/repository.test.ts`.                                          | Covered with automated tests.                                                                                                                          |
+| Personal deletion and member exit       | Removing personal or membership access must not destroy retained Team-shared memory.                                                       | `packages/db/tests/repository.test.ts`; KOE-223.                                                                                                                                                    | Covered with automated tests.                                                                                                                          |
+| Workspace archive and access suspension | Archived or suspended resources must leave normal active flows while retaining data for restore, retention, and explicit authorized modes. | Domain model in ADR 0004; database lifecycle fields from Team foundation work; entitlement and billing-seat gates in core/repository/API tests.                                                     | Access suspension and billing-seat gates are covered. Archive/cold-storage product semantics remain explicit policy work when those modes are exposed. |
+| Support/admin access                    | Support tooling must not expose raw memory or secrets by default; privileged access must be constrained and audited.                       | [Hosted Support And Admin Access Policy](hosted-support-admin-policy.md); redacted Team support overview route; `apps/api/src/server.test.ts`; `packages/db/tests/repository.test.ts`.              | V1 redacted overview is covered. Raw-content break-glass remains unavailable until a separate privileged workflow exists.                              |
+| Runtime database privileges             | Runtime services should not use schema-owner privileges in hosted production.                                                              | `docs/database-row-boundary-safeguards.md`; `docs/hosted-database-roles.md`; `scripts/hosted-db-roles.mjs`; role-plan tests.                                                                        | Role-plan tooling is covered. The actual hosted database must apply and smoke-test runtime/worker/maintenance roles before launch.                     |
+| Row Level Security                      | Database-level row isolation can reduce blast radius of accidental broad SQL.                                                              | `docs/database-row-boundary-safeguards.md`.                                                                                                                                                         | Post-V1.0 hardening spike unless customer or compliance requirements make it mandatory earlier.                                                        |
+| Logging and diagnostics                 | Logs and diagnostics must redact secrets and raw memory.                                                                                   | `apps/api/src/server/logging.test.ts`; `apps/worker/src/logging.test.ts`; `packages/mcp-server/tests/logger.test.ts`; `/ops/status` redaction tests; `docs/observability.md`; `docs/security.md`.   | Covered for in-repo logging and ops-status surfaces. Deployment log pipeline proof remains part of launch validation.                                  |
+| Backups, exports, and key rotation      | Database exports, backups, and encrypted-field key rotation must be treated as sensitive memory material.                                  | `docs/security.md`; `docs/hosted-backups.md`; `scripts/hosted-backup.mjs`; `scripts/hosted-encryption-rewrap.mjs`; encrypted export/package helpers; backup/status tests.                           | Tooling is covered. A clean-environment restore smoke and KMS rewrap smoke on the intended hosted target remain required before launch.                |
 
 ## High-Risk Access Paths
 
@@ -100,15 +102,19 @@ hosted V1.0 goes live:
 Current automated coverage exists for Team Workspace recall/search/answer,
 graph node/event/thread, expansion, deprecated browser-route Team-scope
 rejection, repository Share Grant read predicates, derived memory source
-boundaries, and Team membership / Workspace Access audit boundaries. Share
-Grant lifecycle work is tracked by KOE-222 and KOE-65. Billing gates are
-tracked by KOE-191. Support/admin operations are tracked by KOE-199. Hosted
-observability and full hosted log-redaction coverage are tracked by KOE-194.
-Hosted versus self-hosted runtime boundary work is tracked by KOE-201.
+boundaries, Share Grant lifecycle, Team membership / Workspace Access audit
+boundaries, billing-seat access suspension, redacted support overview,
+ops-status redaction, encrypted backup/package helpers, and hosted activation
+analytics privacy boundaries. Deployment proof is still required for the
+actual hosted target: WorkOS/AuthKit, billing provider behavior, backup
+schedule/restore smoke, private networking, operational alert routing, and log
+pipeline redaction.
 
 ## Support And Admin Access Policy
 
-Hosted V1.0 should ship with a conservative support posture:
+Hosted V1.0 should ship with the conservative support posture defined in
+[Hosted Support And Admin Access Policy](hosted-support-admin-policy.md).
+Summary:
 
 - Default support views show operational state, identifiers, counts, timestamps,
   sync states, job states, plan states, and redacted error summaries.
@@ -141,10 +147,12 @@ Before hosted V1.0 goes live, confirm:
       and Workspace.
 - [ ] Team lifecycle, Share Grant, and access-management actions write redacted
       audit events.
-- [ ] Billing and seat lifecycle behavior is implemented or the paid hosted
-      launch excludes billing-gated behavior until KOE-191 is complete.
-- [ ] Support/admin tooling is not exposed, or KOE-199 has delivered constrained
-      and audited support access.
+- [ ] Billing and seat lifecycle behavior is implemented and the chosen billing
+      provider/stub has been validated against paid, grace, over-limit, and
+      blocked states.
+- [ ] Support/admin tooling is limited to the redacted overview, or any richer
+      support workflow has explicit scope, approval, expiry, encryption, and
+      audit controls.
 - [ ] Hosted Postgres, Redis, embedding service, worker, diagnostics, and
       observability endpoints are private to the hosted network.
 - [ ] Database storage, backups, and restore paths are encrypted and operator
@@ -157,7 +165,8 @@ Before hosted V1.0 goes live, confirm:
 The repository has a solid application-level tenant boundary for the Team
 Workspace foundation: Team-scoped API routes use session identity, repository
 queries filter on active grants, and core helpers fail closed for missing or
-mismatched access. The remaining hosted-launch risk is mostly operational:
-billing gates, support/admin tooling, hosted observability, and production
-database hardening must be kept as explicit launch work rather than implicit
-assumptions.
+mismatched access. The remaining hosted-launch risk is mostly deployment proof:
+WorkOS/AuthKit configuration, billing-provider behavior, backup/restore
+execution, operational alerting, private networking, and production database
+hardening must be validated against the actual hosted target rather than
+assumed from local tests.

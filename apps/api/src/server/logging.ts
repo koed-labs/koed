@@ -5,7 +5,11 @@ import { z } from "zod";
 export const apiLogSchemaVersion = "api_log_v1";
 export const apiServiceName = "koed-api";
 
-export type AuthLogKind = "anonymous" | "api_token" | "session";
+export type AuthLogKind =
+  | "anonymous"
+  | "api_token"
+  | "session"
+  | "device_credential";
 
 export interface RequestLogContext {
   auth?: {

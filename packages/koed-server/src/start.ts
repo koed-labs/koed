@@ -950,6 +950,10 @@ export const startKoedServer = async ({
         return "5174";
       }
     })();
+    const explorerHost =
+      environment.EXPLORER_WEB_HOST ??
+      refreshedRepoEnv.EXPLORER_WEB_HOST ??
+      "127.0.0.1";
 
     const children = {
       ...(nativeEmbeddingProcess
@@ -1003,7 +1007,7 @@ export const startKoedServer = async ({
                 resolve(currentDir, "explorer-static-server.js"),
                 appRuntime.explorerDist,
                 "--host",
-                "127.0.0.1",
+                explorerHost,
                 "--port",
                 explorerPort
               ],
@@ -1022,7 +1026,7 @@ export const startKoedServer = async ({
                 "vite",
                 "preview",
                 "--host",
-                "127.0.0.1",
+                explorerHost,
                 "--port",
                 explorerPort
               ],

@@ -1,3 +1,59 @@
+export {
+  API_DATA_ENCRYPTION_KEY_ENV,
+  createByokEnvelopeEncryptionProvider,
+  createCmekEnvelopeEncryptionProvider,
+  createEnvelopeEncryptionProviderFromEnvironment,
+  createHttpManagedKmsKeyring,
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  createManagedKmsEnvelopeEncryptionProvider,
+  createUnsupportedEnvelopeEncryptionProvider,
+  DATA_ENCRYPTION_KEY_ENV_ALIAS,
+  decryptEnvelopeToUtf8,
+  ENCRYPTED_PAYLOAD_ALGORITHM,
+  ENCRYPTED_PAYLOAD_ENVELOPE_VERSION,
+  ENCRYPTED_PAYLOAD_KEY_WRAP_ALGORITHM,
+  ENCRYPTED_PAYLOAD_KMS_KEY_WRAP_ALGORITHM,
+  ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM,
+  envelopeEncryptionProviderModes,
+  EnvelopeEncryptionError,
+  InvalidEncryptedPayloadEnvelopeError,
+  ManagedKmsProviderError,
+  redactEnvelopeEncryptionProviderStatus,
+  requireApiDataEncryptionKey,
+  resolveApiDataEncryptionKeyFromEnv,
+  UnsupportedEnvelopeEncryptionProviderError,
+  validateEnvelopeEncryptionProviderEnvironment
+} from "./envelope-encryption.js";
+export {
+  createEncryptedJsonPackage,
+  decryptEncryptedJsonPackage,
+  ENCRYPTED_PACKAGE_MANIFEST_VERSION,
+  encryptedPackageObjectClasses
+} from "./encrypted-package.js";
+export type {
+  EncryptedPayloadEnvelope,
+  EncryptedPayloadProvenance,
+  EncryptedPayloadScope,
+  EnvelopeEncryptionProviderStatus,
+  EnvelopeEncryptionProvider,
+  EnvelopeEncryptionProviderMode,
+  EncryptPayloadInput,
+  EnvelopeEncryptionProviderEnvironmentOptions,
+  EnvelopeEncryptionEnvironmentValidationOptions,
+  HttpManagedKmsKeyringConfig,
+  ManagedKmsKeyring,
+  ManagedKmsUnwrapDekInput,
+  ManagedKmsWrapDekInput,
+  ManagedKmsWrappedDek,
+  WrappedDataEncryptionKey
+} from "./envelope-encryption.js";
+export type {
+  CreateEncryptedJsonPackageInput,
+  EncryptedJsonPackage,
+  EncryptedPackageManifest,
+  EncryptedPackageObjectClass
+} from "./encrypted-package.js";
+
 export type HealthStatus = "ok" | "degraded" | "error";
 
 export const memoryEmbedQueueName = "memory-embed";

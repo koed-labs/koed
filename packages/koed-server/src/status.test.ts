@@ -155,6 +155,97 @@ describe("status and doctor JSON contracts", () => {
     expect(status.workerQueues.state).toBe("starting");
   });
 
+  it("reports registered upstreams that still need capability validation", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config", "upstream-backends.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        backends: [
+          {
+            id: "team-vps",
+            displayName: "Team VPS",
+            baseUrl: "https://team.example.test",
+            profile: "private_vps",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            routePolicy: {
+              personalMemoryRead: "disabled",
+              teamWorkspaceRead: "disabled",
+              shareGrantManagement: "disabled",
+              captureWrites: "disabled",
+              sync: "disabled",
+              admin: "disabled"
+            },
+            credential: { status: "not_configured" },
+            capabilities: {
+              state: "not_checked",
+              checkedAt: null,
+              expiresAt: null,
+              schemaVersion: null,
+              profile: null,
+              releaseVersion: null
+            }
+          }
+        ]
+      })
+    );
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(true, 200, { checks: [] }),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.upstreamBackends).toMatchObject({
+      state: "needs_attention",
+      registered: 1,
+      notChecked: 1,
+      failed: 0,
+      stale: 0
+    });
+    expect(JSON.stringify(status.upstreamBackends)).not.toContain("token");
+  });
+
+  it("reports malformed upstream registry config as needing attention", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(resolve(root, "config", "upstream-backends.json"), "{nope");
+
+    const status = await collectKoedServerStatus(
+      {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        HOME: root,
+        WORK_QUEUE_BACKEND: "local"
+      },
+      {
+        fetch: async () => response(true, 200, { checks: [] }),
+        spawnSync: () => spawnResult("", 0),
+        now: () => new Date("2026-01-01T00:00:00.000Z")
+      }
+    );
+
+    expect(status.upstreamBackends).toMatchObject({
+      state: "needs_attention",
+      registered: 0,
+      message: "Upstream backend registry is malformed."
+    });
+    expect(status.upstreamBackends.details).toMatchObject({
+      error: "Upstream backend registry is malformed."
+    });
+  });
+
   it("treats bundled-local mode from .env as Redis-free by default", async () => {
     const root = tempDir();
     writeFileSync(

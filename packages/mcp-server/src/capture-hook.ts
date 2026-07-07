@@ -181,6 +181,21 @@ const requestTimeoutMsForMode = (
       transcriptCatchupApiRequestTimeoutMs())
     : (fileConfig?.requestTimeoutMs ?? hookApiRequestTimeoutMs());
 
+const detachedCredentialEnvPattern =
+  /(?:^|_)(UPSTREAM|DEVICE|WORKOS|AUTHKIT|OIDC|OAUTH)(?:_|$)|(?:UPSTREAM|DEVICE).*?(?:TOKEN|SECRET|CREDENTIAL|PASSWORD|COOKIE)|(?:TOKEN|SECRET|CREDENTIAL|PASSWORD|COOKIE).*?(?:UPSTREAM|DEVICE)/i;
+
+export const detachedHookChildEnv = (
+  source: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    Object.entries(source).filter(([name]) => {
+      if (name === "MEMORY_API_TOKEN" || name === "MEMORY_API_URL") {
+        return true;
+      }
+      return !detachedCredentialEnvPattern.test(name);
+    })
+  ) as NodeJS.ProcessEnv;
+
 export const loadConfig = (
   configPath?: string,
   mode: CaptureConfigMode = "foreground"
@@ -2342,7 +2357,7 @@ const triggerDetachedLocalMemoryProcessing = (configPath?: string): void => {
   ];
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
-    env: process.env,
+    env: detachedHookChildEnv(),
     detached: true,
     stdio: "ignore",
     windowsHide: true
@@ -2378,7 +2393,7 @@ const triggerDetachedTranscriptCatchup = (
   ];
   const child = spawn(process.execPath, args, {
     cwd: process.cwd(),
-    env: process.env,
+    env: detachedHookChildEnv(),
     detached: true,
     stdio: "ignore",
     windowsHide: true

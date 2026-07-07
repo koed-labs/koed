@@ -1609,7 +1609,7 @@ describe("local memory answer bridge", () => {
       json: async () => ({
         ok: true,
         service: "koed-memory-answer-bridge",
-        apiUrl: "http://localhost:3000"
+        apiUrl: "http://localhost:3300"
       })
     })) as unknown as typeof fetch;
     const { startStandaloneAnswerBridge } =
@@ -1639,7 +1639,7 @@ describe("local memory answer bridge", () => {
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({
         healthUrl: "http://127.0.0.1:3210/health",
-        apiUrl: "http://localhost:3000"
+        apiUrl: "http://localhost:3300"
       }),
       "memory answer bridge already running; using existing service"
     );

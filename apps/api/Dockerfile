@@ -17,5 +17,5 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build --chown=node:node /deploy/api ./
 USER node
-EXPOSE 3000
+EXPOSE 3300
 CMD ["node", "dist/index.js"]

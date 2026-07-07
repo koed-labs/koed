@@ -36,6 +36,13 @@ export const teamMembershipStatusSchema = z.enum([
 
 export const teamWorkspaceAccessSchema = z.enum(["disabled", "read", "write"]);
 
+export const teamEntitlementStatusSchema = z.enum([
+  "active",
+  "grace",
+  "suspended",
+  "revoked"
+]);
+
 export const upsertTeamMemberSchema = z
   .object({
     userId: z.string().uuid(),
@@ -55,6 +62,43 @@ export const setTeamWorkspaceAccessSchema = z
   .object({
     userId: z.string().uuid(),
     access: teamWorkspaceAccessSchema
+  })
+  .strict();
+
+export const createTeamSessionShareGrantSchema = z
+  .object({
+    sessionId: z.string().uuid()
+  })
+  .strict();
+
+export const teamSessionShareGrantIdParamsSchema = z.object({
+  teamWorkspaceId: z.string().uuid(),
+  shareGrantId: z.string().uuid()
+});
+
+export const listTeamSessionShareGrantsQuerySchema = z
+  .object({
+    includeRevoked: z.coerce.boolean().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional()
+  })
+  .strict();
+
+export const revokeTeamSessionShareGrantSchema = z
+  .object({
+    reason: z.string().trim().min(1).max(240).nullable().optional()
+  })
+  .strict();
+
+export const setTeamEntitlementStateSchema = z
+  .object({
+    status: teamEntitlementStatusSchema,
+    reason: z.string().trim().min(1).max(240).nullable().optional()
+  })
+  .strict();
+
+export const setTeamBillingSeatPolicySchema = z
+  .object({
+    seatLimit: z.coerce.number().int().min(0).nullable()
   })
   .strict();
 

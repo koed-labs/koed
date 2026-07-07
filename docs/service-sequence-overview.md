@@ -20,7 +20,8 @@ MCP-side workers.
 - **Embedding Service**: Operator-managed service in external dependency mode, or native Koed-owned runtime in bundled-local mode, that turns memory text into retrieval vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
   rows, Memory Events, Memory Nodes, embeddings, questions, token usage,
-  Team Workspace access records, and Team audit events.
+  Team Workspace access records, Team audit events, and commercial encrypted
+  field envelopes for human-readable Memory and evidence fields.
 - **Koed Server Control Plane**: the local `koed-server` supervisor surface
   that owns `KOED_HOME`, starts Koed app processes, connects to configured
   dependency endpoints, and reports setup/readiness status for headless and
@@ -121,6 +122,27 @@ MCP-side workers.
     manages only its local personal `koed-server`; remote, Team Self-Hosted,
     and cloud targets are connect-only.
 
+## Server Deployment Boundary
+
+Server, private VPS, Team Self-Hosted, and Koed-managed cloud deployments are
+described as `koed-server` plus dependencies. API, Worker, Explorer, queue
+processors, and diagnostics are implementation surfaces inside that server
+boundary. Postgres/pgvector, the selected queue backend, the Embedding Service,
+reverse proxy/TLS, and backup/restore jobs are dependencies of the deployment.
+This remote/server boundary is not the normal MCP or Capture Hook target when a
+User has a local Koed install: Codex MCP Server and Supported Capture Hook
+configuration should point at the local `koed-server`, and that local edge
+server routes explicitly approved Team Workspace, Share Grant, sync/offload, or
+remote capture-bearing operations to the registered upstream.
+
+Local Desktop native setup is distinct: Desktop starts and monitors its managed
+local personal `koed-server`, and bundled-local mode may run native Postgres and
+Embedding Service resources under `KOED_HOME` without Docker. Source-checkout
+Docker Compose remains a dependency starter and example, not the long-term
+product boundary. See
+[server-deployment-boundary.md](server-deployment-boundary.md) for migration
+notes and Linear planning references.
+
 ## Capability Discovery
 
 The API exposes `GET /v1/capabilities` as the stable discovery boundary for
@@ -130,12 +152,321 @@ does not inspect Memory, emit diagnostics, disclose local paths, or expose
 deployment secrets.
 
 Clients should use the capability contract before enabling backend-specific
-surfaces. The self-hosted response is a positive, module-registered capability
-map: it advertises available local capabilities such as Personal Memory capture,
-MCP recall, graph inspection, and local LCM summaries. Clients should treat a
-missing capability as unavailable for the current backend. Cloud-only or private
-SaaS services register their own capabilities in the cloud backend instead of
-being enumerated as unsupported by this public self-hosted build.
+surfaces. Capability schema version 3 reports the deployment profile, runtime
+shape, authentication providers, memory surfaces, commercial gates, entitlement
+status shape, and security posture for the current `koed-server` instance.
+Supported deployment profiles
+are `developer`, `local_personal`, `private_vps`, `team_self_hosted`, and
+`koed_managed_cloud`. The profile tells clients which positive surfaces are
+available, partial, or unavailable; clients must not infer behavior from
+hostnames, ports, package names, or route probing. The public capability
+contract is safe for unauthenticated discovery and must not disclose local
+paths, secrets, tenant internals, provider configuration, diagnostics, or
+Memory content.
+
+Authenticated clients may call `GET /v1/capabilities/authenticated` for the
+same versioned contract under session authentication. That authenticated
+surface is the extension point for future identity-bound capabilities, device
+enrollment, upstream routing, entitlements, and support/admin scopes. WorkOS or
+other browser identity providers identify the User, but Koed remains the source
+of truth for Memory authorization, Share Grants, Team Workspace access, Access
+Suspension, and commercial entitlements.
+
+Authenticated clients may include `teamId` when they need Team-scoped
+entitlement and billing state. The response reports only coarse gate data:
+entitlement status, whether Team access is allowed, denied operation families,
+billing status, over-limit state, and the billing-seat sync state. It also
+publishes `commercial.featureGates`, which maps concrete client features such
+as Team Workspaces, Share Grants, Memory Inbox, Cross-Identity Sync, hosted
+operations, support/admin, and Team limits to capability keys, availability,
+entitlement state, billing state, and server-side enforcement status. The stable
+entitlement/billing state vocabulary lets Desktop render inactive, trial,
+expired, canceled, over-limit, unsupported, and unavailable states without
+probing routes. It must not include billing-provider ids, invoices, subscription
+internals, raw Memory, provider credentials, or operator-entered private billing
+notes. If the User cannot view that Team entitlement gate, the request fails
+closed.
+
+WorkOS/AuthKit is advertised only when the backend deployment profile supports
+it and the Operator has explicitly enabled AuthKit configuration. `GET
+/auth/workos/login` creates a short-lived state cookie and redirects the
+browser to AuthKit. `GET /auth/workos/callback` validates that state, exchanges
+the returned code with WorkOS, maps the provider user id to a Koed User, and
+creates a Koed browser session. Provider access tokens, refresh tokens, API
+keys, and OAuth credentials are not stored in Koed identity snapshots. Email is
+an identity attribute, not the linking key: an external identity that matches an
+existing Koed email but has no provider mapping must fail closed instead of
+silently attaching to that account.
+
+The public capability contract includes `auth.enrollment.setupPath` so Desktop
+can choose a setup screen without probing routes. Local personal backends report
+`local_simple_api_token` for local-only Personal Memory setup, while still
+advertising device enrollment as available for registered remote/private/cloud
+upstream pairing. Remote/private/cloud backends report
+`remote_device_enrollment` when browser-mediated device enrollment is available.
+The same block repeats the device-enrollment availability, the personal-only API
+Token fallback scope, and the invariant that MCP Server and Supported Capture
+Hook configuration should normally target local `koed-server`.
+
+## Route Identity Contract
+
+API routes declare their identity boundary in
+`apps/api/src/server/route-identity.ts`, and the same contract is exported
+through `GET /openapi.json`. The contract is the source of truth for clients,
+tests, and future route review. It distinguishes:
+
+- `public`: unauthenticated discovery or health surfaces.
+- `optional_session`: redacted public behavior with additional details for a
+  browser-authenticated User.
+- `session`: browser/User operations, including Team management, Team
+  Workspace management, API Token management, authenticated diagnostics, and
+  authenticated capability discovery.
+- `api_token`: AI-client compatibility operations for personal Memory capture,
+  personal recall, local work queues, and diagnostic smoke tests.
+- `session_or_api_token`: personal/local surfaces that are safe through either
+  browser session or API Token.
+- `session_or_device_credential`: Team-scoped remote-control surfaces that
+  accept either a browser session or a scoped enrolled device credential.
+  Browser session is the preferred identity for interactive Team recall and
+  graph. Team admin and Share Grant management remain session-only unless a
+  later design explicitly promotes a device-mediated management path.
+- `conditional_team_session_or_device`: personal recall/graph routes that
+  accept an API Token only for personal scope and require a browser session or
+  scoped enrolled device credential when a Team Workspace scope is requested.
+- `device_credential`: enrolled local-edge status and remote-operation
+  credential checks. Device credentials identify a User, upstream backend, and
+  local device; they do not carry Team authority.
+- `upstream_credential` and `internal_service_token`: explicit future
+  boundaries that must remain `not_implemented` until the corresponding relay
+  or internal-service design exists.
+
+API Tokens remain personal-memory credentials for AI Client compatibility. They
+must not carry Team authority, create Share Grants, manage Workspaces, unlock
+Team Workspace recall, or act as a hosted-service credential. Team authority is
+resolved at request time from Koed-owned Membership, Team Workspace Access,
+Share Grant, lifecycle, profile, and entitlement state. Retrieval and graph
+routes must filter authorized candidates before semantic ranking or expansion;
+post-filtering is only defense in depth.
+
+The route contract also exports `x-koed-deployment-modes` for each implemented
+OpenAPI operation. This metadata describes where an endpoint is product-applicable
+across `developer`, `local_personal`, `private_vps`, `team_self_hosted`, and
+`koed_managed_cloud`; it is not an authorization grant and does not replace
+`/v1/capabilities`. Clients should use capability discovery for runtime
+availability, deployment-mode metadata for documentation and generated-client
+applicability, and request-time authorization for actual access decisions.
+Team, Team Workspace, entitlement, and invite routes are applicable only to
+Team-capable deployment profiles. WorkOS/AuthKit and device-enrollment setup
+routes are applicable only to remote Team/cloud profiles. Local-edge relay and
+device-credential validation routes are applicable to local edge profiles.
+
+## Operations Status
+
+`GET /ready` remains the machine-readable readiness gate for process
+supervision and load balancers. It reports whether core dependencies are ready
+enough to serve traffic.
+
+`GET /ops/status` is the authenticated redacted operations snapshot for
+Operators. It reports API runtime state, Postgres readiness, migration status,
+pgvector, Redis when required, work queue counts, Embedding Service/model
+compatibility, request latency/error-rate status from
+`KOED_OPS_REQUEST_METRICS_STATUS_PATH` when configured, API process resource
+pressure, disk pressure for `KOED_HOME`, and backup freshness when
+`KOED_BACKUP_STATUS_PATH` is configured. The endpoint produces alert-shaped
+items with optional runbook links from `KOED_RUNBOOK_BASE_URL`; it must not
+emit raw Memory, prompts, transcripts, request bodies, provider secrets, API
+Tokens, database URLs, or backup object credentials. A missing backup or
+request-metrics status file is an operations degradation signal, not a readiness
+failure. In hosted-capable profiles (`private_vps`, `team_self_hosted`, and
+`koed_managed_cloud`), `/ops/status` and `POST /ops/test-alert` additionally
+require the browser-session email to be listed in `KOED_OPS_OPERATOR_EMAILS`
+for hosted operations routes, including
+`GET /ops/support/teams/{teamId}/overview`. `POST /ops/test-alert` is a
+browser-session-only synthetic alert payload for validating alert routing and
+runbook links without inducing a real outage. When
+`KOED_OPS_ALERT_WEBHOOK_URL` is configured, the test-alert route posts the
+redacted alert payload to that webhook using the optional
+`KOED_OPS_ALERT_WEBHOOK_TOKEN`; status responses disclose only that the webhook
+sink and token are configured, never the URL or token value.
+
+Koed-managed cloud support/admin surfaces use the separate
+[Hosted Support And Admin Access Policy](hosted-support-admin-policy.md).
+Default support views are redacted operational views. The hosted-operator view
+is `GET /ops/support/teams/{teamId}/overview`, requires an allowed ops operator
+browser session, records `hosted_operator_redacted` audit metadata, and returns
+Team-level identifiers, status, counts, setup/integration health aggregates,
+and timestamps only. `POST /ops/support/teams/{teamId}/bundle` packages that
+redacted hosted support overview through the shared encrypted package envelope,
+requires an envelope provider, expires the package, and writes
+`team.hosted_support_bundle.created` audit metadata. The customer-visible
+Team-manager view remains
+`GET /v1/teams/{teamId}/support/overview`; it requires a browser-session Team
+owner/admin and records `team_manager_redacted` audit metadata. Both views link
+to support-safe related surfaces such as `/ops/status`, authenticated
+capabilities, entitlement, billing-seat, and audit-event routes; global
+runtime, queue, backup, and readiness state stays in `/ops/status`. Any
+raw-content break-glass flow must be separately scoped, approved, expiring,
+audited, and customer-visible; support/admin tooling must not use normal recall
+routes as an impersonation path.
+
+Hosted backup and restore checks are operator-run workflows. `pnpm
+hosted:backup -- create` writes a `pg_dump` custom archive encrypted through
+the configured envelope provider (`local_test_key`, `managed_kms`, `byok`, or
+`cmek`), a manifest, and a redacted status file. The archive ciphertext lives in
+the `.dump.enc` file; the manifest keeps only non-secret envelope metadata. For
+encrypted backups, the temporary plaintext dump is removed in failure paths as
+well as success paths. `pnpm hosted:backup -- verify` decrypts the archive to a
+temporary local file, checks archive readability with `pg_restore --list`, and
+deletes the temporary file. `pnpm hosted:backup -- restore-smoke` decrypts the
+archive to a temporary local file, restores into an explicit clean disposable
+database URL after the Operator repeats the target database name with
+`--confirm-restore-smoke-target`, and deletes the temporary file. These commands
+feed `/ops/status` through
+`KOED_BACKUP_STATUS_PATH`; failed runs write a redacted `status: "error"` status
+payload when a status path is configured, so operations alerts do not have to
+wait for freshness expiry. Backup commands do not run inside request handling.
+
+Hosted capacity checks are also operator-run workflows. `pnpm hosted:capacity
+-- plan` prints the current launch assumptions, and `pnpm hosted:capacity -- run`
+exercises public readiness/capability routes, personal capture, personal recall,
+Team Workspace answer routes through browser sessions and scoped device
+credentials, local-edge Team proxying, graph overview, and `/ops/status`
+depending on the selected scenario and available credentials. When
+`DATABASE_URL` is available, the harness records before/after database and local
+queue snapshots; when a browser session cookie is available, it records redacted
+`/ops/status` snapshots. The report includes a launch-gate assessment with
+latency and error-rate headroom, failed bottleneck checks, and queue/storage
+observations so launch reviewers can attach the result directly to the relevant
+validation issue. The harness must not log API Tokens, cookies, device
+credentials, database passwords, raw Memory, transcripts, prompts, or provider
+secrets.
+
+Hosted activation analytics use `POST /v1/analytics/activation-events`. The
+route requires a browser session, accepts only enumerated activation events and
+surfaces, checks supplied Team or Workspace IDs against request-time Koed
+authorization, and records durable `analytics.activation.*` audit events with
+flat scalar metadata only. Metadata uses an explicit low-cardinality allowlist;
+string values must be short token-like values rather than free-form text. API
+Tokens, device credentials, Capture Hooks, and MCP Server credentials must not
+record hosted product analytics. `GET
+/v1/analytics/activation-funnel` returns redacted event-count summaries grouped
+by event, surface, and deployment profile. Personal summaries are scoped to the
+authenticated User's own activation events; Team or Workspace summaries require
+an enabled Team owner/admin and never expose event metadata attributes or raw
+Memory.
+
+## Local Edge Upstream Registry
+
+Local edge `koed-server` can register upstream backends for later remote,
+private VPS, Team Self-Hosted, or Koed-managed cloud routing. The registry lives
+under `KOED_HOME/config/upstream-backends.json` and stores only non-secret
+metadata: stable upstream id, display name, base URL, deployment profile,
+credential existence/status, route-policy metadata, and a sanitized cache of the
+upstream public capability contract.
+
+Registering an upstream is not sufficient to route memory traffic. Route policy
+defaults are fail-closed for capture-bearing writes, Team Workspace recall,
+Share Grant management, sync/offload, and admin operations. `koed-server
+upstream refresh --id <id> --json` validates the upstream `/v1/capabilities`
+contract and records checked, expiry, schema, profile, release, and failure
+metadata. `koed-server upstream policy --id <id> --... enabled --json`
+explicitly enables the operation families the Operator has approved. Stale,
+failed, and unchecked upstreams show as attention items in `koed-server status
+--json` and `doctor --json`, so future routing can refuse remote-dependent
+operations without guessing from hostnames, ports, or route availability.
+
+The API local-edge layer resolves remote routing through explicit route
+decisions. `POST /v1/local-edge/route-decisions` uses the upstream registry,
+cached capability state, route policy, the User's active device credential
+metadata, and the effective Capture Policy where capture-bearing writes are
+requested. Personal Memory read/capture stays local unless an upstream id is
+explicitly supplied. Remote Team Workspace read, sync, or capture-bearing
+actions fail closed when the upstream is missing, route policy is disabled,
+capabilities are stale/failed/unchecked, the User has no matching device
+credential, or the device credential does not allow the requested operation
+family. Share Grant management and Team admin stay behind browser-session
+authorization in the current API.
+
+`POST /v1/local-edge/upstream-operations` is the live proxy path for operations
+that resolve to `live_upstream_proxy`. It accepts a `Koed-Device` credential and
+relays only non-local-edge `/v1/*` API paths to the selected upstream, preserving
+any configured upstream base-path prefix. The accepted `Koed-Device` credential
+is upstream-scoped for the selected backend; local edge relays that credential
+only to that backend after route-policy, capability, Capture Policy, and
+operation-family checks pass. It does not forward arbitrary browser headers,
+does not store reusable upstream credentials in the upstream registry, and does
+not expose upstream credentials to MCP Server or Supported Capture Hook
+processes. Queued sync/offload currently resolves as an explicit
+`queued_sync_handoff` decision only; the durable Cross-Identity Sync/offload
+state model records logical memory identity, source and target replicas, sync
+relationships, resumable upload sessions, chunks, and inbox/outbox entries for
+the later hosted intake and worker implementation.
+
+## Explorer-First Auth And Device Enrollment
+
+Koed Desktop and Explorer are the primary setup and inspection surface for
+local, private VPS, Team Self-Hosted, and Koed-managed cloud targets. The
+accepted design is recorded in
+[ADR 0008](adr/0008-explorer-first-auth-and-device-enrollment.md).
+
+Local personal setup may keep app-provisioned API Tokens for AI-client
+compatibility. Cloud and Team setup must guide the User through browser session
+auth and, where supported, browser-mediated device enrollment. Browser sessions,
+API Tokens, device credentials, upstream credentials, and WorkOS/AuthKit server
+secrets are distinct credential classes. API Tokens stay personal-memory
+credentials and do not carry Team authority. Device credentials identify an
+enrolled local edge and upstream, but all Team Membership, Workspace Access,
+Share Grant, lifecycle, and entitlement decisions remain request-time Koed
+authorization checks.
+
+Browser-mediated device enrollment uses local-edge routes, not API Tokens. A
+browser-authenticated User creates a short-lived enrollment challenge with
+`POST /v1/local-edge/device-enrollments/challenges`, then redeems that challenge
+with `POST /v1/local-edge/device-enrollments/credentials` to bind a device
+credential to the User, upstream backend, device instance, operation families,
+and verifier material. Server-side persistence stores only verifier hashes or
+public-key material, never reusable device secrets. `GET
+/v1/local-edge/device-credentials/status` accepts the `Koed-Device` credential
+scheme for credential validation, while listing and revocation remain
+browser-session routes. Revoking a device credential stops future
+device-credential authentication without rotating local personal API Tokens.
+
+Device credential metadata records created, updated, last-used, last-validated,
+expiry, and revocation state. Audit events record credential creation and
+revocation without verifier hashes, challenge hashes, public keys, reusable
+secrets, or Team authority. Diagnostics may show credential existence, status,
+and timestamps only. Detached Capture Hook child processes inherit local
+capture configuration but scrub upstream/cloud/device credential environment
+variables so MCP Server and Supported Capture Hook execution never receive
+remote credential material directly.
+
+## Team Entitlement And Access Suspension Gates
+
+Team entitlement state is a request-time lifecycle gate on Team and Team
+Workspace behavior. The current coarse states are `active`, `grace`,
+`suspended`, and `revoked`. `active` and `grace` allow normal Team Workspace
+recall, sharing, ingestion, sync handoff, and Team admin flows. `suspended` and
+`revoked` deny those Team operation families without deleting Users, Teams,
+Workspaces, Share Grants, or retained Memory rows.
+
+The gate is enforced alongside existing Team Membership, Workspace Access,
+Workspace archive, and Share Grant checks; it does not replace them. Repository
+authorization returns coarse gate status for later capability discovery and
+billing integration, while public capability responses remain owned by the
+capability-discovery work. Entitlement changes emit Team audit events with
+previous/current status, reason, and denied operation families only; they must
+not include Memory content, API Tokens, provider credentials, or billing
+secrets.
+
+Team billing seat state is stored separately from provider-specific billing
+integration. Membership enablement, invite acceptance, and member disablement
+reconcile billable seat counts transactionally and emit redacted Team audit
+events. Generic member-management routes reject self-directed role/status
+changes and must not remove the last enabled owner from the Team. Seat overage
+records an explicit `over_limit` state and may move the Team into `grace` with
+`seat_limit_exceeded`; reducing seats back within the configured limit restores
+only that seat-caused grace state. External billing provider synchronization
+remains a later integration on top of this durable seat lifecycle state.
 
 ## Ingestion
 
@@ -174,7 +505,19 @@ being enumerated as unsupported by this public self-hosted build.
 8. Projection derives Koed semantic rows: Captured Sessions, turns, messages,
    tool events, Memory Events, source links, and token usage where available.
    Agent work is bundled into semantic `agent_turn` Memory Events only when a
-   seal condition is reached.
+   seal condition is reached. When a commercial envelope provider is configured,
+   raw `conversation_items`, projected message/tool payloads, projected
+   Memory Event payloads, Memory Node text/source fields, embedding source
+   text, and Memory Question query/answer/evidence/worker payloads receive
+   encrypted field companions with owner, visibility, source table, source
+   column, provider, and key metadata. In paid Koed-managed cloud, new raw
+   conversation-item rows store redacted operational source fields; Projection
+   hydrates the raw source companions inside the repository boundary before
+   deriving semantic rows. New message, tool-event, Memory Event, Memory Node,
+   embedding, and Memory Question rows also store redacted operational payloads,
+   and repository read paths hydrate authorized graph, embedding, retrieval,
+   LCM source content, and Memory Question payloads from encrypted companions
+   after access checks.
 9. The API schedules processing for newly projected Memory Events through the
    configured work queue backend. The Worker also runs a catch-up loop over
    pending or failed raw rows.
@@ -183,8 +526,28 @@ being enumerated as unsupported by this public self-hosted build.
     source embeddings.
 11. The Worker schedules compaction, creating or updating LCM Placeholder Memory
     Nodes from Memory Events and child nodes, then queues Memory Node embedding.
+    In paid Koed-managed cloud, placeholder summaries, body text, source item
+    JSON, completed LCM summaries, and structured LCM summary JSON are stored as
+    redacted Memory Node fields with encrypted companions.
 12. Pending LCM placeholders remain available as degraded evidence until local
     LCM summaries are submitted.
+
+Commercial/private VPS/Team deployments can run encrypted-field backfill over
+existing human-readable Memory and evidence columns. Backfill is whitelist-based
+per source table/column, skips already-encrypted fields, records resumable
+cursors and counts, and fails closed when the configured envelope provider or
+key cannot encrypt the next field. The provider boundary supports
+`local_test_key` for local/operator-managed use and KMS-backed modes
+(`managed_kms`, `byok`, or `cmek`) for paid Koed-managed cloud. Paid cloud must
+delegate DEK wrap/unwrap to KMS and may rewrap DEKs to the current key version
+without rewriting payload bytes by running `pnpm hosted:encryption-rewrap` in
+bounded batches. `operator_kms` is reserved until a real
+operator KMS adapter exists. BYOK and CMEK use the same KMS provider path with
+customer-controlled key references; if that key access is revoked, suspended,
+unreachable, or denied, decrypt-dependent recall, evidence, export, support,
+sync, backup, and restore paths fail closed for affected payloads.
+Decrypted values must not be written to queue payloads, audit metadata, status
+responses, logs, or diagnostics.
 
 ```mermaid
 sequenceDiagram
@@ -287,7 +650,9 @@ sequenceDiagram
 3. The LCM Summary Service asks the API for pending session titles and pending
    LCM summaries.
 4. The API returns LCM nodes plus ordered source items and marks the work as
-   local-only; the backend does not call an LLM for LCM summaries.
+   local-only; the backend does not call an LLM for LCM summaries. If the node
+   is encrypted at rest, the repository hydrates source items and child
+   summaries only after the caller has passed the visibility boundary.
 5. The local LCM worker builds token-bounded prompts from exact source items or
    child summaries. The prompt requires secret-like literal redaction and, when
    ordered source items or child summaries conflict, prefers later items while
@@ -302,7 +667,9 @@ sequenceDiagram
 8. The LCM worker submits the completed LCM Summary to
    `POST /v1/memory/lcm/summaries/{nodeId}`.
 9. The API updates the Memory Node summary fields and enqueues Memory Node
-   embedding.
+   embedding. In paid Koed-managed cloud, the stored summary/body/structured
+   JSON fields remain redacted and the submitted LCM Summary is written to
+   encrypted companions.
 10. The Worker embeds the updated Memory Node so retrieval can use the
     completed summary.
 
@@ -338,9 +705,12 @@ cwd is used only to resolve or display a Workspace.
 
 1. The User selects a user-owned memory source, Team, Workspace, and expansion
    level. In the first implementation the source is a Captured Session.
-2. The API authenticates the API Token as the owning User.
+2. The API authenticates the browser session as the owning User.
 3. The API verifies Team Membership and Workspace Access for the User.
 4. The API creates or revokes the Share Grant and writes an audit event.
+   Captured Session grants are managed through browser-session Team Workspace
+   routes; API Tokens remain personal-memory credentials and cannot create,
+   list, or revoke Team Share Grants.
 5. Recall uses active Share Grants at request time, plus independent lifecycle
    gates for Access Suspension, Workspace archive state, membership state,
    and Workspace Access.
@@ -364,6 +734,14 @@ cwd is used only to resolve or display a Workspace.
     authorized Team and Workspace boundary. Private personal summaries, graph
     edges, embeddings, or rollups cannot become Team-visible by label change
     when they include unrelated private source material.
+11. Creating a Captured Session Share Grant is idempotent for an active
+    session / Workspace pair, so repeated client submissions return the
+    existing active grant instead of creating duplicate Team visibility.
+12. Listing grants requires current Workspace recall access. Creating grants
+    requires current Workspace share access and ownership of the Captured
+    Session. Revocation is allowed by a current Workspace sharer or by the
+    original source owner, preserving a User-controlled privacy exit even if
+    their Workspace grant later changes.
 
 ## Cross-Identity Sync And Offload
 
@@ -387,6 +765,18 @@ Fork/Import operation is introduced.
    new, independently evolving memory lifespan.
 6. Offload moves storage or processing to a hosted Koed service; it does not by
    itself grant Team visibility or create a fork.
+7. Durable sync/offload state is stored separately from Share Grants. The
+   schema distinguishes the logical memory lifespan from physical deployment
+   replicas, records Captured Session as the first supported V1 source
+   boundary, stores policy/consent/cursor manifests, and uses idempotency keys
+   on relationships, upload sessions, chunks, and inbox/outbox entries.
+8. Retrying sync package creation, chunk upload, or queue insertion must resume
+   the same records rather than creating another logical memory or fork.
+9. Sync/offload upload sessions must store a redacted encrypted package
+   manifest. Payload bytes live only in the encrypted package envelope or in
+   encrypted object storage; package manifests, queue metadata, logs, and
+   status surfaces must not contain raw Memory, source payloads, credentials,
+   raw DEKs, wrapped DEK ciphertext, or plaintext-equivalent vectors.
 
 ## Future Memory Inbox
 
@@ -407,6 +797,9 @@ grant-based visibility model.
 5. Recall treats Memory Inbox outputs like any other source class: candidates
    must pass authorization, lifecycle, and provenance checks before ranking,
    expansion, summarization, graph traversal, or export.
+6. Future Content Object payloads, support bundles, and export packages must
+   use the shared encrypted package helper so manifests remain redacted and
+   payload decrypts fail closed when the deployment key provider is unavailable.
 
 ## Retrieval
 
@@ -435,6 +828,21 @@ grant-based visibility model.
    source rows are all inside the authorized personal or Team Workspace
    boundary, so unauthorized rows never reach semantic ranking, lexical
    selection, expansion, or reranking inputs.
+   In commercial encrypted-field mode, any decrypt needed for source text,
+   Evidence Bundle expansion, graph/source expansion, LCM Summary source items,
+   Memory Node summary text, embedding source text, Memory Question result
+   persistence, or reranking inputs must happen only after this authorization
+   boundary admits the row.
+   Koed-managed cloud treats queryable vectors as sensitive in-boundary search
+   data and disables plaintext `lexical_search` unless
+   `MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED=true` is deliberately configured
+   under a documented leakage posture. `memory_embeddings` records the launch
+   strategy as `trusted_backend_pgvector_v1` with the
+   `owner_user_dynamic_grants` search boundary and
+   `canonical_embedding_state='not_stored'`; the pgvector dimension tables are
+   the operational queryable representation, not a plaintext canonical
+   embedding archive. See
+   [ADR 0010](adr/0010-managed-saas-queryable-vectors.md).
 6. The API returns hits, citations, and retrieval metadata. When a promising
    Memory Node needs more detail, the local memory-answer worker can call
    `expand` to fetch underlying source items.
@@ -442,7 +850,10 @@ grant-based visibility model.
    Evidence Bundle and returns structured answer JSON.
 8. The MCP Server compacts the response according to `response_detail`.
 9. The MCP Server persists the Memory Question result and records token usage
-   for the local app-server answer work.
+   for the local app-server answer work. In paid Koed-managed cloud, stored
+   Memory Question query, answer, evidence, citation, retrieval, local
+   memory-worker, response, and error payloads are redacted in operational
+   columns and stored in encrypted field companions.
 10. The AI Client receives the final Memory Answer and can cite returned
     evidence when requested.
 

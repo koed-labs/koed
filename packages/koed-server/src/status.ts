@@ -19,6 +19,7 @@ import {
   type KoedServerPaths
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
+import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
 import type {
   KoedServerComponentState,
   KoedServerComponentStatus,
@@ -647,6 +648,83 @@ const inspectLastVerification = (
   };
 };
 
+const inspectUpstreamBackends = (
+  paths: KoedServerPaths,
+  deps: Required<KoedServerStatusDependencies>
+): KoedServerStatus["upstreamBackends"] => {
+  const registry = collectUpstreamRegistryStatus(paths, {
+    existsSync: deps.existsSync,
+    readFileSync: deps.readFileSync,
+    now: deps.now
+  });
+  const details = {
+    backends: registry.backends.map((backend) => ({
+      id: backend.id,
+      displayName: backend.displayName,
+      baseUrl: backend.baseUrl,
+      profile: backend.profile,
+      routePolicy: backend.routePolicy,
+      credential: backend.credential,
+      capabilities: backend.capabilities
+    }))
+  };
+  if (registry.parseError) {
+    return {
+      ...needsAttention(
+        "Upstream backend registry is malformed.",
+        "Fix or remove KOED_HOME/config/upstream-backends.json, then re-register upstream backends.",
+        { ...details, error: registry.parseError }
+      ),
+      registered: registry.registered,
+      validated: registry.validated,
+      stale: registry.stale,
+      failed: registry.failed,
+      notChecked: registry.notChecked
+    };
+  }
+  if (registry.failed > 0) {
+    return {
+      ...needsAttention(
+        "One or more upstream backend capability refreshes failed.",
+        "Run koed-server upstream refresh --id <id> --json.",
+        details
+      ),
+      registered: registry.registered,
+      validated: registry.validated,
+      stale: registry.stale,
+      failed: registry.failed,
+      notChecked: registry.notChecked
+    };
+  }
+  if (registry.stale > 0 || registry.notChecked > 0) {
+    return {
+      ...needsAttention(
+        "One or more upstream backends need capability validation.",
+        "Run koed-server upstream refresh --id <id> --json.",
+        details
+      ),
+      registered: registry.registered,
+      validated: registry.validated,
+      stale: registry.stale,
+      failed: registry.failed,
+      notChecked: registry.notChecked
+    };
+  }
+  return {
+    ...healthy(
+      registry.registered
+        ? "Registered upstream backend capabilities are validated."
+        : "No upstream backends are registered.",
+      details
+    ),
+    registered: registry.registered,
+    validated: registry.validated,
+    stale: registry.stale,
+    failed: registry.failed,
+    notChecked: registry.notChecked
+  };
+};
+
 export const aggregateState = (
   components: KoedServerComponentStatus[]
 ): KoedServerComponentState => {
@@ -808,6 +886,7 @@ export const collectKoedServerStatus = async (
             "Fix MCP Server health first."
           );
   const lastVerification = inspectLastVerification(paths, deps);
+  const upstreamBackends = inspectUpstreamBackends(paths, deps);
   const explorerCredential = loadExplorerCredential(paths);
   const explorer = await inspectExplorer(
     explorerUrl,
@@ -833,6 +912,7 @@ export const collectKoedServerStatus = async (
     captureHook,
     codex,
     lcmSummaryService,
+    upstreamBackends,
     explorer: { ...explorer, url: explorerUrl },
     lastVerification
   } satisfies KoedServerStatus;
@@ -847,7 +927,8 @@ export const collectKoedServerStatus = async (
     statusWithoutState.mcpServer,
     statusWithoutState.captureHook,
     statusWithoutState.codex,
-    statusWithoutState.lcmSummaryService
+    statusWithoutState.lcmSummaryService,
+    statusWithoutState.upstreamBackends
   ];
   const state = aggregateState(blockingComponents);
   return { ...statusWithoutState, state, ok: state === "healthy" };
@@ -869,6 +950,7 @@ export const collectKoedServerDoctor = async (
     ["captureHook", "Supported Capture Hook", status.captureHook],
     ["codex", "Codex configuration", status.codex],
     ["lcmSummaryService", "LCM Summary Service", status.lcmSummaryService],
+    ["upstreamBackends", "Upstream Backends", status.upstreamBackends],
     ["lastVerification", "Last verification", status.lastVerification]
   ].map(([id, label, component]) => ({
     id: id as string,

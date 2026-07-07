@@ -1,0 +1,21 @@
+[Unit]
+Description=Koed hosted Postgres backup and restore verification
+Documentation=https://github.com/koed-labs/koed/blob/main/docs/hosted-backups.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/koed
+EnvironmentFile=/etc/koed/koed-server.env
+Environment=KOED_BACKUP_DIR=/var/backups/koed/postgres
+Environment=KOED_BACKUP_STATUS_PATH=/var/lib/koed/backup-status.json
+Environment=KOED_BACKUP_RESTORE_DATABASE_URL=postgres://koed_restore:replace-me@127.0.0.1:5432/koed_restore
+Environment=KOED_BACKUP_RESTORE_DATABASE_NAME=koed_restore
+ExecStart=/usr/bin/env bash -lc 'set -euo pipefail; backup_json="$(pnpm --silent hosted:backup -- create --output-dir "$KOED_BACKUP_DIR" --status-path "$KOED_BACKUP_STATUS_PATH")"; backup_file="$(node -e '\''const fs=require("fs"); const input=fs.readFileSync(0,"utf8"); const parsed=JSON.parse(input); process.stdout.write(parsed.backupFile);'\'' <<< "$backup_json")"; pnpm --silent hosted:backup -- verify --backup-file "$backup_file" --status-path "$KOED_BACKUP_STATUS_PATH"; pnpm --silent hosted:backup -- restore-smoke --backup-file "$backup_file" --target-database-url "$KOED_BACKUP_RESTORE_DATABASE_URL" --confirm-restore-smoke-target "$KOED_BACKUP_RESTORE_DATABASE_NAME" --status-path "$KOED_BACKUP_STATUS_PATH"'
+User=koed
+Group=koed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/koed /var/lib/koed /tmp

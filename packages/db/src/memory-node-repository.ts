@@ -1,11 +1,16 @@
 import pg from "pg";
 import { recordAuditEventWithClient } from "./audit-repository.js";
 import {
+  createEncryptedPayloadRepository,
+  upsertEncryptedFieldPayloadWithClient
+} from "./encrypted-payload-repository.js";
+import {
   clusterIdForLabel,
   isGenericDevelopmentActivity,
   presentMemoryText
 } from "./presentation.js";
 import { truncateDisplayText } from "./value-helpers.js";
+import type { EnvelopeEncryptionProvider } from "@koed/shared";
 import type {
   ActorContext,
   CreateMemoryNodeInput,
@@ -14,6 +19,10 @@ import type {
   MemoryNodeRecord,
   Visibility
 } from "./types.js";
+
+export interface MemoryNodeRepositoryOptions {
+  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+}
 
 export interface MemoryNodeRepository {
   createMemoryNode(
@@ -81,6 +90,7 @@ type MemoryNodeRow = {
 
 type MemoryBrowserItemRow = {
   id: string;
+  owner_user_id: string | null;
   title: string | null;
   summary_text: string;
   visibility: Visibility;
@@ -92,6 +102,47 @@ type MemoryBrowserItemRow = {
   project_path: string | null;
   thread_id: string | null;
   thread_name: string | null;
+};
+
+const ENCRYPTED_MEMORY_NODE_TEXT = "[koed encrypted memory node]";
+
+const managedCloudPlaintextMemoryPayloadsDisabled = (): boolean => {
+  const profile =
+    process.env.KOED_DEPLOYMENT_PROFILE?.trim().toLowerCase() ?? "";
+  const releaseStage =
+    process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE?.trim().toLowerCase() ?? "";
+  return (
+    ["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(profile) &&
+    ["paid", "production"].includes(releaseStage)
+  );
+};
+
+const persistEncryptedMemoryNodeTextField = async (
+  client: pg.Pool | pg.PoolClient,
+  provider: EnvelopeEncryptionProvider,
+  input: {
+    actor: ActorContext;
+    visibility: Visibility;
+    nodeId: string;
+    sourceColumn: "title" | "summary_text" | "body_text";
+    plaintext: string;
+  }
+): Promise<void> => {
+  await upsertEncryptedFieldPayloadWithClient(client, input.actor, provider, {
+    sourceTable: "memory_nodes",
+    sourceId: input.nodeId,
+    sourceColumn: input.sourceColumn,
+    plaintext: input.plaintext,
+    visibility: input.visibility,
+    rowFamily: "memory_node",
+    scope: {
+      tenantId: input.actor.userId,
+      objectClass: "memory_node"
+    },
+    aad: {
+      nodeId: input.nodeId
+    }
+  });
 };
 
 const mapMemoryNode = (row: MemoryNodeRow): MemoryNodeRecord => ({
@@ -137,8 +188,69 @@ const mapMemoryBrowserItem = (row: MemoryBrowserItemRow): MemoryBrowserItem => {
 };
 
 export const createMemoryNodeRepository = (
-  pool: pg.Pool
+  pool: pg.Pool,
+  options: MemoryNodeRepositoryOptions = {}
 ): MemoryNodeRepository => {
+  const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
+
+  const hydrateMemoryNodeRow = async <T extends MemoryNodeRow>(
+    actor: ActorContext,
+    row: T
+  ): Promise<T> => {
+    if (
+      row.title !== ENCRYPTED_MEMORY_NODE_TEXT &&
+      row.summary_text !== ENCRYPTED_MEMORY_NODE_TEXT
+    ) {
+      return row;
+    }
+    if (!options.envelopeEncryptionProvider) {
+      throw new Error(
+        "Envelope encryption provider is required to expand encrypted Memory Nodes"
+      );
+    }
+    const title =
+      row.title === ENCRYPTED_MEMORY_NODE_TEXT
+        ? await encryptedPayloadRepository.decryptAuthorizedEncryptedField(
+            actor,
+            options.envelopeEncryptionProvider,
+            {
+              sourceTable: "memory_nodes",
+              sourceId: row.id,
+              sourceColumn: "title"
+            }
+          )
+        : null;
+    const summary =
+      row.summary_text === ENCRYPTED_MEMORY_NODE_TEXT
+        ? await encryptedPayloadRepository.decryptAuthorizedEncryptedField(
+            actor,
+            options.envelopeEncryptionProvider,
+            {
+              sourceTable: "memory_nodes",
+              sourceId: row.id,
+              sourceColumn: "summary_text"
+            }
+          )
+        : null;
+    if (row.title === ENCRYPTED_MEMORY_NODE_TEXT && !title) {
+      throw new Error("Encrypted Memory Node title is missing");
+    }
+    if (row.summary_text === ENCRYPTED_MEMORY_NODE_TEXT && !summary) {
+      throw new Error("Encrypted Memory Node summary_text is missing");
+    }
+    return {
+      ...row,
+      title:
+        title && typeof title.plaintext === "string"
+          ? title.plaintext
+          : row.title,
+      summary_text:
+        summary && typeof summary.plaintext === "string"
+          ? summary.plaintext
+          : row.summary_text
+    };
+  };
+
   const getVisibleMemoryNode = async (
     actor: ActorContext,
     nodeId: string
@@ -156,7 +268,9 @@ export const createMemoryNodeRepository = (
       [actor.userId, nodeId]
     );
 
-    return result.rows[0] ? mapMemoryNode(result.rows[0]) : null;
+    return result.rows[0]
+      ? mapMemoryNode(await hydrateMemoryNodeRow(actor, result.rows[0]))
+      : null;
   };
 
   const listMemoryBrowserItems = async (
@@ -169,6 +283,7 @@ export const createMemoryNodeRepository = (
       `
         select
           mn.id,
+          mn.owner_user_id,
           mn.title,
           mn.summary_text,
           mn.visibility,
@@ -224,7 +339,10 @@ export const createMemoryNodeRepository = (
         candidateLimit
       ]
     );
-    return result.rows
+    const hydratedRows = await Promise.all(
+      result.rows.map((row) => hydrateMemoryNodeRow(actor, row))
+    );
+    return hydratedRows
       .map(mapMemoryBrowserItem)
       .filter(
         (item) =>
@@ -237,51 +355,119 @@ export const createMemoryNodeRepository = (
   return {
     async createMemoryNode(actor, input) {
       const ownerUserId = actor.userId;
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Node storage is disabled"
+        );
+      }
+      const titleForStorage =
+        suppressPlaintextPayload && input.title !== undefined
+          ? ENCRYPTED_MEMORY_NODE_TEXT
+          : input.title;
+      const summaryTextForStorage = suppressPlaintextPayload
+        ? ENCRYPTED_MEMORY_NODE_TEXT
+        : input.summaryText;
+      const bodyTextForStorage =
+        suppressPlaintextPayload && input.bodyText !== undefined
+          ? ENCRYPTED_MEMORY_NODE_TEXT
+          : input.bodyText;
 
-      const result = await pool.query<MemoryNodeRow>(
-        `
-          insert into memory_nodes (
-            owner_user_id,
-            created_by_user_id,
-            visibility,
-            kind,
-            depth,
-            title,
-            summary_text,
-            body_text,
-            source_runtime,
-            capture_method,
-            codex_transcript_path,
-            idempotency_key,
-            source_hash,
-            summary_model,
-            summary_prompt_version,
-            lcm_algorithm_version
-          )
-          values (
-            $1, $2, $3, 'leaf', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
-          )
-          returning id, owner_user_id, visibility, title, summary_text
-        `,
-        [
-          ownerUserId,
-          actor.userId,
-          input.visibility,
-          input.title ?? null,
-          input.summaryText,
-          input.bodyText ?? null,
-          input.sourceRuntime ?? null,
-          input.captureMethod ?? "mcp",
-          input.codexTranscriptPath ?? null,
-          input.idempotencyKey ?? null,
-          input.sourceHash ?? null,
-          input.summaryModel ?? null,
-          input.summaryPromptVersion ?? null,
-          input.lcmAlgorithmVersion ?? null
-        ]
-      );
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const result = await client.query<MemoryNodeRow>(
+          `
+            insert into memory_nodes (
+              owner_user_id,
+              created_by_user_id,
+              visibility,
+              kind,
+              depth,
+              title,
+              summary_text,
+              body_text,
+              source_runtime,
+              capture_method,
+              codex_transcript_path,
+              idempotency_key,
+              source_hash,
+              summary_model,
+              summary_prompt_version,
+              lcm_algorithm_version
+            )
+            values (
+              $1, $2, $3, 'leaf', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+            )
+            returning id, owner_user_id, visibility, title, summary_text
+          `,
+          [
+            ownerUserId,
+            actor.userId,
+            input.visibility,
+            titleForStorage ?? null,
+            summaryTextForStorage,
+            bodyTextForStorage ?? null,
+            input.sourceRuntime ?? null,
+            input.captureMethod ?? "mcp",
+            input.codexTranscriptPath ?? null,
+            input.idempotencyKey ?? null,
+            input.sourceHash ?? null,
+            input.summaryModel ?? null,
+            input.summaryPromptVersion ?? null,
+            input.lcmAlgorithmVersion ?? null
+          ]
+        );
+        const node = result.rows[0]!;
+        if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
+          if (input.title !== undefined && input.title !== null) {
+            await persistEncryptedMemoryNodeTextField(
+              client,
+              options.envelopeEncryptionProvider,
+              {
+                actor,
+                visibility: input.visibility,
+                nodeId: node.id,
+                sourceColumn: "title",
+                plaintext: input.title
+              }
+            );
+          }
+          await persistEncryptedMemoryNodeTextField(
+            client,
+            options.envelopeEncryptionProvider,
+            {
+              actor,
+              visibility: input.visibility,
+              nodeId: node.id,
+              sourceColumn: "summary_text",
+              plaintext: input.summaryText
+            }
+          );
+          if (input.bodyText !== undefined && input.bodyText !== null) {
+            await persistEncryptedMemoryNodeTextField(
+              client,
+              options.envelopeEncryptionProvider,
+              {
+                actor,
+                visibility: input.visibility,
+                nodeId: node.id,
+                sourceColumn: "body_text",
+                plaintext: input.bodyText
+              }
+            );
+          }
+        }
+        await client.query("commit");
 
-      return mapMemoryNode(result.rows[0]!);
+        return mapMemoryNode(await hydrateMemoryNodeRow(actor, node));
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     getVisibleMemoryNode,
@@ -300,7 +486,10 @@ export const createMemoryNodeRepository = (
         [actor.userId, visibility ?? null]
       );
 
-      return result.rows.map(mapMemoryNode);
+      const hydratedRows = await Promise.all(
+        result.rows.map((row) => hydrateMemoryNodeRow(actor, row))
+      );
+      return hydratedRows.map(mapMemoryNode);
     },
 
     listMemoryBrowserItems,
@@ -354,6 +543,21 @@ export const createMemoryNodeRepository = (
       if (!existing) {
         return null;
       }
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (
+        suppressPlaintextPayload &&
+        input.summaryText !== undefined &&
+        !options.envelopeEncryptionProvider
+      ) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext Memory Node storage is disabled"
+        );
+      }
+      const summaryTextForStorage =
+        suppressPlaintextPayload && input.summaryText !== undefined
+          ? ENCRYPTED_MEMORY_NODE_TEXT
+          : input.summaryText;
       const client = await pool.connect();
       try {
         await client.query("begin");
@@ -377,6 +581,7 @@ export const createMemoryNodeRepository = (
               and mn.invalidated_at is null
             returning
               mn.id,
+              mn.owner_user_id,
               mn.title,
               mn.summary_text,
               mn.visibility,
@@ -392,13 +597,35 @@ export const createMemoryNodeRepository = (
           [
             actor.userId,
             nodeId,
-            input.summaryText ?? null,
+            summaryTextForStorage ?? null,
             input.pinned ?? null,
             input.visibility ?? null
           ]
         );
+        if (
+          suppressPlaintextPayload &&
+          input.summaryText !== undefined &&
+          options.envelopeEncryptionProvider
+        ) {
+          const rawUpdated = result.rows[0];
+          if (rawUpdated) {
+            await persistEncryptedMemoryNodeTextField(
+              client,
+              options.envelopeEncryptionProvider,
+              {
+                actor,
+                visibility: rawUpdated.visibility,
+                nodeId,
+                sourceColumn: "summary_text",
+                plaintext: input.summaryText
+              }
+            );
+          }
+        }
         const updated = result.rows[0]
-          ? mapMemoryBrowserItem(result.rows[0])
+          ? mapMemoryBrowserItem(
+              await hydrateMemoryNodeRow(actor, result.rows[0])
+            )
           : null;
         if (updated) {
           const previousPinned = Boolean(existing.pinnedAt);
