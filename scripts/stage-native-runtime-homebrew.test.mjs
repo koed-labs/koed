@@ -92,19 +92,11 @@ test("stages Homebrew runtime assets into KOED_NATIVE_RUNTIME_SOURCE_DIR layout"
   const fake = makeFakeHomebrew();
   const out = tempDir("koed-native-runtime-out-");
   rmSync(out, { recursive: true, force: true });
-  const embeddingVenv = resolve(tempDir("koed-embedding-venv-"), ".venv");
-  mkdirSync(resolve(embeddingVenv, "bin"), { recursive: true });
-  writeExecutable(
-    resolve(embeddingVenv, "bin", "python"),
-    "#!/bin/sh\necho python\n"
-  );
-
   const result = spawnSync(process.execPath, [script, "--out", out, "--json"], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PATH: `${fake.bin}:${process.env.PATH ?? ""}`,
-      KOED_EMBEDDING_VENV_DIR: embeddingVenv
+      PATH: `${fake.bin}:${process.env.PATH ?? ""}`
     },
     encoding: "utf8"
   });
@@ -146,33 +138,11 @@ test("stages Homebrew runtime assets into KOED_NATIVE_RUNTIME_SOURCE_DIR layout"
     existsSync(resolve(out, "postgres", "lib", "postgresql", "vector.so"))
   );
   assert.ok(existsSync(resolve(out, "llama.cpp", "llama-server")));
-  assert.ok(
-    existsSync(resolve(out, "embedding-service", ".venv", "bin", "python"))
-  );
+  assert.equal(existsSync(resolve(out, "embedding-service", ".venv")), false);
   assert.match(
     readFileSync(resolve(out, "README.koed-native-runtime.txt"), "utf8"),
     /local packaged smoke testing/
   );
-});
-
-test("fails clearly when embedding-service venv is missing", () => {
-  const fake = makeFakeHomebrew();
-  const out = tempDir("koed-native-runtime-out-");
-  rmSync(out, { recursive: true, force: true });
-  const missingVenv = resolve(tempDir("koed-missing-embedding-venv-"), ".venv");
-
-  const result = spawnSync(process.execPath, [script, "--out", out], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PATH: `${fake.bin}:${process.env.PATH ?? ""}`,
-      KOED_EMBEDDING_VENV_DIR: missingVenv
-    },
-    encoding: "utf8"
-  });
-
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Missing Embedding Service Python runtime/);
 });
 
 test("refuses to replace a non-empty output directory without --force", () => {

@@ -19,7 +19,7 @@
     "runtime:install": "node packages/koed-server/dist/cli.js runtime install --provider homebrew --dependency-mode bundled-local --json",
     "runtime:status": "node packages/koed-server/dist/cli.js runtime status --provider homebrew --json",
     "models:install:embedding": "node packages/koed-server/dist/cli.js models install --kind embedding --json",
-    "local:setup": "pnpm env:setup && pnpm setup:python && pnpm build && pnpm runtime:install && pnpm models:install:embedding",
+    "local:setup": "pnpm env:setup && pnpm build && pnpm runtime:install && pnpm models:install:embedding",
     "desktop:build": "pnpm --filter @koed/desktop build",
     "desktop:dev": "pnpm --filter @koed/desktop dev",
     "desktop:package": "pnpm --filter @koed/desktop package",

@@ -13,8 +13,6 @@ import {
 } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
 
-const repoRoot = resolve(import.meta.dirname, "..");
-
 const usage =
   () => `Usage: pnpm native-runtime:stage:homebrew -- --out <dir> [--force] [--json]
 
@@ -203,22 +201,6 @@ const copyPgvectorFiles = ({ pgConfigBin, postgresPrefix, targetPostgres }) => {
   };
 };
 
-const copyEmbeddingVenv = ({ targetEmbedding }) => {
-  const sourceVenv = resolve(
-    process.env.KOED_EMBEDDING_VENV_DIR?.trim() ||
-      resolve(repoRoot, "apps", "embedding-service", ".venv")
-  );
-  const sourcePython = resolve(sourceVenv, "bin", "python");
-  if (!existsSync(sourcePython)) {
-    throw new Error(
-      `Missing Embedding Service Python runtime: ${sourcePython}. Create apps/embedding-service/.venv before staging native assets, or set KOED_EMBEDDING_VENV_DIR. This script does not install Python dependencies.`
-    );
-  }
-  copyTree(sourceVenv, resolve(targetEmbedding, ".venv"));
-  makeExecutable(resolve(targetEmbedding, ".venv", "bin", "python"));
-  return sourceVenv;
-};
-
 const validatePostgres = (initdb) => {
   const output = run(initdb, ["--version"]);
   if (
@@ -297,11 +279,9 @@ const stage = ({ out, force }) => {
   const llamaPrefix = brewPrefix("llama.cpp");
   const targetPostgres = resolve(outDir, "postgres");
   const targetLlama = resolve(outDir, "llama.cpp");
-  const targetEmbedding = resolve(outDir, "embedding-service");
 
   copyTree(postgresPrefix, targetPostgres);
   copyTree(llamaPrefix, targetLlama);
-  mkdirSync(targetEmbedding, { recursive: true });
 
   const pgConfigBin = resolve(postgresPrefix, "bin", "pg_config");
   const pgvector = copyPgvectorFiles({
@@ -309,8 +289,6 @@ const stage = ({ out, force }) => {
     postgresPrefix,
     targetPostgres
   });
-  const embeddingVenv = copyEmbeddingVenv({ targetEmbedding });
-
   const postgresExecutables = ["initdb", "pg_ctl", "psql", "pg_config"].map(
     (name) => resolve(targetPostgres, "bin", name)
   );
@@ -337,14 +315,13 @@ const stage = ({ out, force }) => {
       resolve(targetPostgres, "bin", "psql"),
       resolve(targetPostgres, "bin", "pg_config"),
       resolve(targetPostgres, "lib", "postgresql", "vector.so"),
-      packagedLlamaServer,
-      resolve(targetEmbedding, ".venv", "bin", "python")
+      packagedLlamaServer
     ])
   ];
 
   writeFileSync(
     resolve(outDir, "README.koed-native-runtime.txt"),
-    `Koed native runtime staged from Homebrew/Linuxbrew for local packaged smoke testing.\n\nThis directory is suitable for KOED_NATIVE_RUNTIME_SOURCE_DIR. It is not a release-quality redistributable runtime bundle.\n\nPostgres: ${postgresPrefix}\npgvector: ${pgvectorPrefix}\nllama.cpp: ${llamaPrefix}\nEmbedding venv: ${embeddingVenv}\n`
+    `Koed native runtime staged from Homebrew/Linuxbrew for local packaged smoke testing.\n\nThis directory is suitable for KOED_NATIVE_RUNTIME_SOURCE_DIR. It is not a release-quality redistributable runtime bundle.\n\nPostgres: ${postgresPrefix}\npgvector: ${pgvectorPrefix}\nllama.cpp: ${llamaPrefix}\n`
   );
 
   return {
@@ -356,8 +333,7 @@ const stage = ({ out, force }) => {
     sources: {
       postgresPrefix,
       pgvectorPrefix,
-      llamaPrefix,
-      embeddingVenv
+      llamaPrefix
     },
     validation: {
       postgresVersion,

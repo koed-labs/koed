@@ -43,6 +43,7 @@ const createPackagedRuntime = (root: string) => {
   for (const entry of [
     "koed-runtime/api/dist/index.js",
     "koed-runtime/worker/dist/index.js",
+    "koed-runtime/embedding-service/dist/index.js",
     "koed-runtime/explorer-dist/index.html",
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
@@ -57,6 +58,7 @@ const createKoedHomeRuntime = (root: string) => {
   for (const entry of [
     "runtime/koed-runtime/api/dist/index.js",
     "runtime/koed-runtime/worker/dist/index.js",
+    "runtime/koed-runtime/embedding-service/dist/index.js",
     "runtime/koed-runtime/explorer-dist/index.html",
     "runtime/koed-runtime/mcp-server/dist/cli.js",
     "runtime/koed-runtime/mcp-server/dist/capture-hook.js",
@@ -72,6 +74,7 @@ const createSourceCheckout = (root: string) => {
     "scripts/setup-env.mjs",
     "apps/api/package.json",
     "apps/worker/package.json",
+    "apps/embedding-service/package.json",
     "apps/explorer/package.json",
     "packages/db/package.json",
     "packages/mcp-server/package.json"
@@ -105,6 +108,31 @@ describe("Koed app runtime resolution", () => {
     );
     expect(runtime.mcpCli).toBe(
       resolve(root, "koed-runtime/mcp-server/dist/cli.js")
+    );
+    expect(runtime.embeddingServiceEntry).toBe(
+      resolve(root, "koed-runtime/embedding-service/dist/index.js")
+    );
+  });
+
+  it("requires packaged Embedding Service entry", () => {
+    const root = tempDir();
+    createPackagedRuntime(root);
+    rmSync(resolve(root, "koed-runtime", "embedding-service"), {
+      recursive: true,
+      force: true
+    });
+
+    const runtime = resolveKoedAppRuntime(paths(root), {
+      KOED_PACKAGED_DESKTOP: "1",
+      KOED_PACKAGED_RESOURCES_PATH: root
+    });
+
+    expect(runtime.kind).toBe("packaged");
+    expect(runtime.missing).toContain(
+      resolve(root, "koed-runtime/embedding-service/dist/index.js")
+    );
+    expect(() => assertKoedAppRuntimeAvailable(runtime, paths(root))).toThrow(
+      "Embedding Service"
     );
   });
 
@@ -147,6 +175,9 @@ describe("Koed app runtime resolution", () => {
     expect(runtime.missing).toEqual([]);
     expect(runtime.workerEntry).toBe(
       resolve(root, "apps/worker/dist/index.js")
+    );
+    expect(runtime.embeddingServiceEntry).toBe(
+      resolve(root, "apps/embedding-service/dist/index.js")
     );
   });
 

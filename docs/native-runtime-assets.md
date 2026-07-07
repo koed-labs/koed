@@ -4,11 +4,13 @@ Koed bundled-local mode owns native runtime state under `KOED_HOME`. External de
 
 ## Current provisioning strategy
 
-KOE-244D uses a staged hybrid:
+KOE-297 removed Python virtualenv procurement, staging, validation, and packaged native runtime expectations. Packaged native runtime assets now contain Postgres/pgvector and `llama-server`; the built TypeScript Embedding Service is deployed as JS service files under packaged `koed-runtime/embedding-service`.
+
+Koed uses:
 
 1. **Packaged runtime resources** when `runtime-asset-manifest.json` and matching platform/architecture assets ship under packaged `koed-runtime`.
 2. **Homebrew-backed runtime install** on macOS, Linux, and WSL where Homebrew is available.
-3. **Explicit overrides** for advanced Operators (`KOED_POSTGRES_BIN_DIR`, `KOED_POSTGRES_*_BIN`, `KOED_EMBEDDING_PYTHON_BIN`, `KOED_EMBEDDING_LLAMA_SERVER_BIN`).
+3. **Explicit overrides** for advanced Operators (`KOED_POSTGRES_BIN_DIR`, `KOED_POSTGRES_*_BIN`, `KOED_EMBEDDING_LLAMA_SERVER_BIN`).
 
 Packaged Desktop never silently falls back to source-checkout `vendor` paths. Developer source fallbacks require explicit opt-in with `KOED_ALLOW_PACKAGED_SOURCE_FALLBACK=1`.
 
@@ -30,14 +32,10 @@ koed-runtime/
     ... runtime libraries ...
   embedding-service/
     dist/index.js
-    app.py
-    requirements.txt
-    .venv/bin/python
+    package.json
 ```
 
-Bundled-local supervision starts the Embedding Service from
-`embedding-service/dist/index.js`. The Python files and virtualenv remain in the
-packaged native runtime until KOE-297 removes Python procurement and validation.
+Bundled-local supervision starts the Embedding Service from `embedding-service/dist/index.js`. Packaged native runtime assets no longer include Python standalone runtime files, Python wheels/native extensions, or `embedding-service/.venv/bin/python`. Python source files may still exist in the repository for development/parity workflows, but they are not packaged native runtime assets.
 
 Desktop packaging can stage prebuilt native assets by setting:
 
@@ -45,16 +43,16 @@ Desktop packaging can stage prebuilt native assets by setting:
 KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/native-runtime pnpm desktop:package
 ```
 
-For local packaged-native smoke testing, Operators with Homebrew/Linuxbrew and an existing Embedding Service virtualenv can create that staging directory from the installed local formulas:
+For local packaged-native smoke testing, Operators with Homebrew/Linuxbrew can create that staging directory from installed local formulas:
 
 ```bash
 pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force
 KOED_NATIVE_RUNTIME_SOURCE_DIR=/tmp/koed-native-runtime pnpm desktop:package:mac
 ```
 
-`native-runtime:stage:homebrew` is a development smoke helper. It copies Homebrew/Linuxbrew-provided PostgreSQL 17, pgvector extension files, llama-server, and the local `apps/embedding-service/.venv` into the expected staging layout. It does not install Python dependencies; create the Embedding Service `.venv` first, or set `KOED_EMBEDDING_VENV_DIR=/path/to/.venv`. The staged output may still depend on Homebrew dynamic libraries and is not a release-quality redistributable native runtime bundle.
+`native-runtime:stage:homebrew` is a development smoke helper. It copies Homebrew/Linuxbrew-provided PostgreSQL 17, pgvector extension files, and `llama-server` into the expected staging layout. It does not require or copy `apps/embedding-service/.venv`. The staged output may still depend on Homebrew dynamic libraries and is not a release-quality redistributable native runtime bundle.
 
-`prepare-koed-runtime.mjs` copies staged assets into packaged `koed-runtime`, deploys the built Embedding Service runtime, and writes a platform/architecture manifest with SHA-256 verification. If `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set but no recognized native assets are staged, packaging fails instead of silently producing a missing-native runtime package. If no native asset source is provided, Desktop still packages JS/service artifacts and Embedding Service app files, while `koed-server runtime status/install` reports missing native assets with Homebrew repair guidance.
+`prepare-koed-runtime.mjs` copies staged assets into packaged `koed-runtime`, deploys the built Embedding Service runtime, and writes a platform/architecture manifest with SHA-256 verification. If `KOED_NATIVE_RUNTIME_SOURCE_DIR` is set but no recognized native assets are staged, packaging fails instead of silently producing a missing-native runtime package. If no native asset source is provided, Desktop still packages JS/service artifacts, while `koed-server runtime status/install` reports missing native assets with Homebrew repair guidance.
 
 Native runtime artifacts can be assembled and validated locally with:
 
@@ -75,6 +73,8 @@ See `docs/native-runtime-artifact-pipeline.md`.
 - PostgreSQL 17 via `pg_config --version` or `initdb --version`;
 - `llama-server` responds to `--version` or `--help`;
 - loader output where tooling exists (`otool -L` on macOS, `ldd` on Linux) has no missing libraries.
+
+Bundled-local startup separately requires the built Embedding Service entry (`embedding-service/dist/index.js`), `llama-server`, and an installed embedding model path. It does not require `embedding-service/.venv/bin/python` or `KOED_EMBEDDING_PYTHON_BIN`.
 
 Bundled-local Postgres startup also runs `CREATE EXTENSION IF NOT EXISTS vector`, so pgvector compatibility is proven against actual Koed database initialization.
 

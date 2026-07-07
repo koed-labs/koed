@@ -20,8 +20,6 @@ import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
-const embeddingAppRoot = resolve(repoRoot, "apps", "embedding-service");
-
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repoRoot,
@@ -72,28 +70,6 @@ const download = ({ url, sha256, cacheDir }) => {
   }
   verifySha256(target, sha256);
   return target;
-};
-
-const copyEmbeddingServiceApp = (targetEmbedding) => {
-  mkdirSync(targetEmbedding, { recursive: true });
-  for (const entry of [
-    "app.py",
-    "auth.py",
-    "env_config.py",
-    "logging_config.py",
-    "priority_scheduler.py",
-    "runtime.py",
-    "schemas.py",
-    "settings.py",
-    "vectors.py",
-    "requirements.txt",
-    "pyproject.toml"
-  ]) {
-    copyFileSync(
-      resolve(embeddingAppRoot, entry),
-      resolve(targetEmbedding, entry)
-    );
-  }
 };
 
 const chmodIfExists = (path) => {
@@ -158,51 +134,6 @@ const firstChildDir = (dir) => {
   );
   if (entries.length === 1) return resolve(dir, entries[0].name);
   return dir;
-};
-
-const stagePython = ({ source, runtimeRoot, cacheDir, workDir }) => {
-  const archive = download({ ...source, cacheDir });
-  const extractDir = resolve(workDir, "python");
-  extractArchive(archive, extractDir);
-  const pythonRoot = firstChildDir(extractDir);
-  const pythonBin = findFile(
-    pythonRoot,
-    (file) => /\/python3?(\.\d+)?$/.test(file) && statSync(file).mode & 0o111
-  );
-  if (!pythonBin)
-    throw new Error(
-      "python-build-standalone archive did not contain a Python executable."
-    );
-  const targetEmbedding = resolve(runtimeRoot, "embedding-service");
-  copyEmbeddingServiceApp(targetEmbedding);
-  const venvDir = resolve(targetEmbedding, ".venv");
-  rmSync(venvDir, { recursive: true, force: true });
-  cpSync(pythonRoot, venvDir, {
-    recursive: true,
-    preserveTimestamps: true,
-    dereference: true
-  });
-  materializeAbsoluteSymlinks(venvDir);
-  const venvPython = resolve(venvDir, "bin", "python");
-  chmodIfExists(venvPython);
-  run(venvPython, ["-m", "pip", "install", "--upgrade", "pip"], {
-    stdio: "inherit"
-  });
-  run(
-    venvPython,
-    [
-      "-m",
-      "pip",
-      "install",
-      "-r",
-      resolve(targetEmbedding, "requirements.txt")
-    ],
-    { stdio: "inherit" }
-  );
-  run(venvPython, ["-c", "import fastapi, huggingface_hub, pydantic, uvicorn"]);
-  materializeAbsoluteSymlinks(venvDir);
-  chmodIfExists(venvPython);
-  return { archive, pythonBin, venvPython };
 };
 
 const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
@@ -414,7 +345,7 @@ const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
 };
 
 const validateRequiredSources = (sources) => {
-  for (const key of ["python", "llamaCpp", "postgres", "pgvector"]) {
+  for (const key of ["llamaCpp", "postgres", "pgvector"]) {
     if (!sources[key])
       throw new Error(`Native runtime sources file is missing ${key}.`);
   }
@@ -467,13 +398,6 @@ export const procureRuntime = ({
     cacheDir: resolvedCacheDir,
     workDir: resolvedWorkDir
   });
-  const python = stagePython({
-    source: sources.python,
-    runtimeRoot: resolvedRuntimeRoot,
-    cacheDir: resolvedCacheDir,
-    workDir: resolvedWorkDir
-  });
-
   const result = {
     ok: true,
     sourcesPath: resolvedSourcesPath,
@@ -482,7 +406,7 @@ export const procureRuntime = ({
     architecture: architecture ?? sources.architecture,
     cacheDir: resolvedCacheDir,
     workDir: resolvedWorkDir,
-    components: { postgres, pgvector, llamaCpp, python }
+    components: { postgres, pgvector, llamaCpp }
   };
   return result;
 };

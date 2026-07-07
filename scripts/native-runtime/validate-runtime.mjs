@@ -67,12 +67,6 @@ const executableChecks = (runtimeRoot) => [
     resolve(runtimeRoot, "llama.cpp", "llama-server"),
     ["--version"],
     /llama|version:|built with/i
-  ],
-  [
-    "python",
-    resolve(runtimeRoot, "embedding-service", ".venv", "bin", "python"),
-    ["--version"],
-    /Python\s+3\./i
   ]
 ];
 

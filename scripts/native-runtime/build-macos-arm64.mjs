@@ -11,7 +11,11 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
-import { writeRuntimeAssetManifest, sha256File } from "./manifest-lib.mjs";
+import {
+  prunePythonEmbeddingRuntimeFiles,
+  writeRuntimeAssetManifest,
+  sha256File
+} from "./manifest-lib.mjs";
 import { procureRuntime } from "./procure-runtime.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
@@ -171,6 +175,7 @@ const main = () => {
     sourcesPath: options.sourcesPath,
     workDir
   });
+  prunePythonEmbeddingRuntimeFiles(runtimeRoot);
   const nativeAssets = writeRuntimeAssetManifest({
     runtimeRoot,
     platform: "macos",

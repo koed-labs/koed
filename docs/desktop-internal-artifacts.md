@@ -86,7 +86,7 @@ WORK_QUEUE_BACKEND=local \
 "$EXE" "$RUNNER" node-script "$CLI" doctor --json
 ```
 
-Expected result: packaged runtime source resolves under `Contents/Resources/koed-runtime`, runtime install/status succeed, and doctor does not fall back to source-checkout paths.
+Expected result: packaged runtime source resolves under `Contents/Resources/koed-runtime`, runtime install/status succeed, doctor does not fall back to source-checkout paths, and packaged runtime contents do not require `embedding-service/.venv/bin/python`.
 
 ## Cleanup
 

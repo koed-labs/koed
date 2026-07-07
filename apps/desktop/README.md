@@ -39,18 +39,18 @@ skip this smoke.
 
 This local package bundles the Electron shell, packaged renderer assets, the
 `@koed/koed-server` control-plane CLI, JS/service artifacts for API, Worker,
-Explorer, MCP Server, Supported Capture Hook, DB migrations, Embedding Service
-app files, and runtime package dependencies under
-`Contents/Resources/koed-runtime`. It can also stage native Postgres/pgvector,
-llama-server, and Embedding Service Python runtime assets from
-`KOED_NATIVE_RUNTIME_SOURCE_DIR`; when present, packaging writes a
-platform/architecture `runtime-asset-manifest.json` so `koed-server runtime
-install --provider packaged --dependency-mode bundled-local --json` can verify
-and install them under `KOED_HOME/runtime`. For local packaged-native smoke,
-`pnpm native-runtime:stage:homebrew -- --out /tmp/koed-native-runtime --force`
-can create a staging directory from Homebrew/Linuxbrew formulas and an existing
-Embedding Service `.venv`; this helper is not a release-quality redistributable
-runtime bundle. If no native source is staged, missing native runtime assets
+Explorer, MCP Server, Supported Capture Hook, DB migrations, the built
+Embedding Service, and runtime package dependencies under
+`Contents/Resources/koed-runtime`. It can also stage native Postgres/pgvector
+and llama-server assets from `KOED_NATIVE_RUNTIME_SOURCE_DIR`; when present,
+packaging writes a platform/architecture `runtime-asset-manifest.json` so
+`koed-server runtime install --provider packaged --dependency-mode
+bundled-local --json` can verify and install them under `KOED_HOME/runtime`.
+For local packaged-native smoke, `pnpm native-runtime:stage:homebrew -- --out
+/tmp/koed-native-runtime --force` can create a staging directory from
+Homebrew/Linuxbrew formulas; this helper is not a release-quality
+redistributable runtime bundle. Python virtualenv files are no longer packaged
+native runtime assets. If no native source is staged, missing native runtime assets
 show as actionable `koed-server runtime status/install` diagnostics and
 Homebrew remains the macOS/Linux fallback.
 Point the packaged app back at a checkout for developer diagnostics by opting

@@ -3,7 +3,10 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { writeRuntimeAssetManifest } from "../../../scripts/native-runtime/manifest-lib.mjs";
+import {
+  prunePythonEmbeddingRuntimeFiles,
+  writeRuntimeAssetManifest
+} from "../../../scripts/native-runtime/manifest-lib.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");
@@ -33,27 +36,6 @@ const deploy = (filter, to) =>
     resolve(runtimeRoot, to)
   ]);
 
-const copyEmbeddingServiceApp = () => {
-  const source = resolve(repoRoot, "apps", "embedding-service");
-  const target = resolve(runtimeRoot, "embedding-service");
-  mkdirSync(target, { recursive: true });
-  for (const entry of [
-    "app.py",
-    "auth.py",
-    "env_config.py",
-    "logging_config.py",
-    "priority_scheduler.py",
-    "runtime.py",
-    "schemas.py",
-    "settings.py",
-    "vectors.py",
-    "requirements.txt",
-    "pyproject.toml"
-  ]) {
-    cpSync(resolve(source, entry), resolve(target, entry));
-  }
-};
-
 const writeNativeManifest = () => writeRuntimeAssetManifest({ runtimeRoot });
 
 rmSync(runtimeRoot, { recursive: true, force: true });
@@ -70,8 +52,6 @@ cpSync(
     recursive: true
   }
 );
-copyEmbeddingServiceApp();
-
 const nativeRuntimeSource = process.env.KOED_NATIVE_RUNTIME_SOURCE_DIR?.trim();
 if (nativeRuntimeSource) {
   if (!existsSync(nativeRuntimeSource)) {
@@ -84,6 +64,7 @@ if (nativeRuntimeSource) {
     preserveTimestamps: true
   });
 }
+prunePythonEmbeddingRuntimeFiles(runtimeRoot);
 const nativeAssets = writeNativeManifest();
 if (nativeRuntimeSource && nativeAssets.length === 0) {
   throw new Error(
@@ -99,9 +80,7 @@ const required = [
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
-  "explorer-dist/index.html",
-  "embedding-service/app.py",
-  "embedding-service/requirements.txt"
+  "explorer-dist/index.html"
 ];
 const missing = required.filter(
   (entry) => !existsSync(resolve(runtimeRoot, entry))

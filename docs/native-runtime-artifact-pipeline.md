@@ -4,21 +4,17 @@ Koed native runtime artifacts are Koed-owned tarballs consumed by packaged Deskt
 
 ## macOS arm64 local artifact build
 
-For local review, the builder can procure pinned upstream inputs directly from
-`scripts/native-runtime/sources.macos-arm64.json`:
+For local review, the builder can procure pinned upstream inputs directly from `scripts/native-runtime/sources.macos-arm64.json`:
 
 ```bash
 pnpm native-runtime:build:macos-arm64 -- --json
 ```
 
-The procured runtime uses `python-build-standalone` for the Embedding Service
-Python runtime, official `llama.cpp` release assets for `llama-server`, and a
-pinned PostgreSQL 17 source build with pgvector built against the selected
-`pg_config` until a suitable relocatable PostgreSQL binary is selected. All
-source archives are SHA-256 verified before use.
+The procured runtime uses official `llama.cpp` release assets for `llama-server` and a pinned PostgreSQL 17 source build with pgvector built against the selected `pg_config` until a suitable relocatable PostgreSQL binary is selected. All source archives are SHA-256 verified before use.
 
-For layout tests or externally staged candidates, override procurement with an
-existing `koed-runtime/` directory:
+KOE-297 removed Python from packaged native runtime artifacts. The builder no longer downloads `python-build-standalone`, creates `embedding-service/.venv`, installs Python dependencies, or validates a Python executable. The built TypeScript Embedding Service is deployed by Desktop packaging as `embedding-service/dist/index.js`.
+
+For layout tests or externally staged candidates, override procurement with an existing `koed-runtime/` directory:
 
 ```bash
 KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/koed-runtime \
@@ -44,8 +40,7 @@ pnpm native-runtime:validate -- \
   --json
 ```
 
-Linux x64 follows the same local shape, procures from
-`scripts/native-runtime/sources.linux-x64.json`, and enforces glibc 2.35+. Clean Ubuntu/WSL builds need PostgreSQL source-build prerequisites available first:
+Linux x64 follows the same local shape, procures from `scripts/native-runtime/sources.linux-x64.json`, and enforces glibc 2.35+. Clean Ubuntu/WSL builds need PostgreSQL source-build prerequisites available first:
 
 ```bash
 sudo apt-get update
@@ -62,25 +57,17 @@ pnpm native-runtime:validate -- \
   --json
 ```
 
-Use `KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime` only when
-validating a pre-staged runtime layout instead of CI procurement.
+Use `KOED_NATIVE_RUNTIME_SOURCE_DIR=/path/to/linux-x64/koed-runtime` only when validating a pre-staged runtime layout instead of CI procurement.
 
 ## Source inputs
 
-`scripts/native-runtime/sources.macos-arm64.json` and
-`scripts/native-runtime/sources.linux-x64.json` record pinned upstream inputs:
+`scripts/native-runtime/sources.macos-arm64.json` and `scripts/native-runtime/sources.linux-x64.json` record pinned upstream inputs:
 
-- `python-build-standalone` install-only archives for the Python runtime;
-- official `llama.cpp` release assets pinned to a macOS 14-compatible build for macOS arm64 CI runners;
-- PostgreSQL 17 official source tarballs while relocatable binary candidates are
-  still being evaluated, including the `pgcrypto` contrib extension required by Koed migrations;
+- official `llama.cpp` release assets pinned to a compatible build for each platform;
+- PostgreSQL 17 official source tarballs while relocatable binary candidates are still being evaluated, including the `pgcrypto` contrib extension required by Koed migrations;
 - pgvector source built against the selected `pg_config`.
 
-The builder verifies each archive by SHA-256, assembles the deterministic
-`koed-runtime/` layout, installs the Embedding Service Python dependencies into
-`embedding-service/.venv`, writes the packaged runtime manifest, and archives
-the runtime tarball. Validation starts temporary Postgres and verifies both
-`CREATE EXTENSION pgcrypto` and `CREATE EXTENSION vector`.
+The builder verifies each archive by SHA-256, assembles the deterministic `koed-runtime/` layout, writes the packaged runtime manifest, and archives the runtime tarball. Validation starts temporary Postgres and verifies both `CREATE EXTENSION pgcrypto` and `CREATE EXTENSION vector`. It also validates `llama-server`; it does not validate Python because Python is no longer packaged as a native runtime asset.
 
 ## CI
 

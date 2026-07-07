@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  rmSync,
   readFileSync,
   statSync,
   writeFileSync
@@ -74,6 +75,26 @@ export const addAsset = ({
   });
 };
 
+export const prunePythonEmbeddingRuntimeFiles = (runtimeRoot) => {
+  const target = resolve(runtimeRoot, "embedding-service");
+  rmSync(resolve(target, ".venv"), { recursive: true, force: true });
+  for (const entry of [
+    "app.py",
+    "auth.py",
+    "env_config.py",
+    "logging_config.py",
+    "priority_scheduler.py",
+    "runtime.py",
+    "schemas.py",
+    "settings.py",
+    "vectors.py",
+    "requirements.txt",
+    "pyproject.toml"
+  ]) {
+    rmSync(resolve(target, entry), { force: true });
+  }
+};
+
 export const writeRuntimeAssetManifest = ({
   runtimeRoot,
   platform = platformKey(),
@@ -104,21 +125,6 @@ export const writeRuntimeAssetManifest = ({
     platform,
     architecture
   });
-  if (
-    existsSync(
-      resolve(runtimeRoot, "embedding-service", ".venv", "bin", "python")
-    )
-  ) {
-    addAsset({
-      assets,
-      id: "embedding-service",
-      root: resolve(runtimeRoot, "embedding-service"),
-      version: versions.embeddingService ?? "embedding-service-python-packaged",
-      executablePaths: { python: ".venv/bin/python" },
-      platform,
-      architecture
-    });
-  }
   if (assets.length === 0) return [];
   mkdirSync(runtimeRoot, { recursive: true });
   writeFileSync(

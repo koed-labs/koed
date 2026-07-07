@@ -17,7 +17,7 @@ reliable on macOS.
 
 The KOE-243 feature-branch work has already shown that native bundled-local can
 work on a macOS machine when assets are supplied by Homebrew and manual links:
-`postgresql@17`, `pgvector`, `llama.cpp`, an Embedding Service Python runtime,
+`postgresql@17`, `pgvector`, `llama.cpp`, an Embedding Service runtime,
 and an embedding model. Homebrew can therefore serve as the first native asset
 source while Koed builds the durable runtime status/install boundary proposed in
 ADR-0005.
@@ -56,11 +56,10 @@ Homebrew is available.
   - `pgvector` for the Postgres `vector` extension used by Koed memory storage
     and retrieval.
   - `llama.cpp` for `llama-server`, used by the native Embedding Service.
-- The Embedding Service Python runtime and dependencies are provisioned
-  through the same `koed-server` runtime status/install contract. Whether the
-  first implementation uses a Koed package resource, a Koed-managed runtime
-  environment under `KOED_HOME`, or Homebrew-managed Python dependencies is an
-  implementation detail as long as status and repair guidance are consistent.
+- The Embedding Service runtime is provisioned through the same `koed-server`
+  runtime status/install contract. KOE-297 later removed Python virtualenv files
+  from packaged native runtime assets; the supported bundled-local Embedding
+  Service runtime is the TypeScript service plus `llama-server`.
 - This ADR does not require creating Homebrew formulas as part of KOE-217 or
   KOE-243. The immediate implementation may treat Homebrew as a detected or
   invoked asset source for native dependencies on machines where Homebrew is
@@ -103,8 +102,8 @@ Homebrew is available.
   ultimately through `CREATE EXTENSION IF NOT EXISTS vector` against the Koed
   database during startup or an equivalent preflight.
 - The installer should preserve advanced overrides such as
-  `KOED_POSTGRES_BIN_DIR`, `KOED_POSTGRES_*_BIN`,
-  `KOED_EMBEDDING_PYTHON_BIN`, and `KOED_EMBEDDING_LLAMA_SERVER_BIN`.
+  `KOED_POSTGRES_BIN_DIR`, `KOED_POSTGRES_*_BIN`, and
+  `KOED_EMBEDDING_LLAMA_SERVER_BIN`.
 - Model files should be stored under `$KOED_HOME/models`. They may be downloaded
   during bundled-local first-run setup, but they are not side effects of
   installing the minimal `koed-server` package and must not be downloaded in

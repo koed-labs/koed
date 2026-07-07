@@ -51,7 +51,7 @@ MCP-side workers.
 4. When configured with `dependencyMode: "bundled-local"`, `koed-server start`
    starts native Postgres/pgvector and native Embedding Service runtimes under
    `KOED_HOME`. It does not start Docker Compose. Missing native Postgres,
-   Python/llama-server, or model assets report setup guidance through
+   Embedding Service entry, llama-server, or model assets report setup guidance through
    `koed-server runtime status/install` and `koed-server models status/install`,
    not repo scripts. It defaults job processing to the Postgres-backed local
    queue. Packaged Desktop can ship platform/architecture native resources plus
@@ -60,8 +60,9 @@ MCP-side workers.
    dependencies before copying resources into `KOED_HOME/runtime`. For local
    packaged-native smoke, `pnpm native-runtime:stage:homebrew` can create a
    `KOED_NATIVE_RUNTIME_SOURCE_DIR` staging directory from local Homebrew/Linuxbrew
-   formulas and an existing Embedding Service virtualenv; this is a development
-   helper rather than a release-quality runtime distribution. Packaged Koed
+   formulas; this is a development helper rather than a release-quality runtime
+   distribution. Python virtualenv files are no longer packaged native runtime
+   assets. Packaged Koed
    Desktop also calls `koed-server models status --kind embedding --json` and
    `koed-server models install --kind embedding --json` during first-run local
    personal setup when the embedding model is missing or checksums do not match.

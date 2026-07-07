@@ -182,9 +182,9 @@ Verdict: defer. Too broad for pre-signing cleanup.
 
 ## Recommended implementation sequence
 
-Current stack status: KOE-295 implements step 1 by adding the TypeScript/Node Embedding Service HTTP contract beside the existing Python service. Bundled-local supervision, packaged runtime procurement, and native runtime validation still use Python until the follow-up runtime switch.
+Current stack status: KOE-295 implemented the TypeScript/Node Embedding Service HTTP contract, KOE-296 switched bundled-local supervision to the TypeScript service, and KOE-297 completed Python removal from packaged native runtime procurement, staging, validation, and docs. Python source may remain in the tree for development/parity workflows, but packaged native runtime assets no longer include `embedding-service/.venv/bin/python`.
 
-1. Implement a Node/TypeScript Embedding Service with the same HTTP contract. **Status: implemented in KOE-295, pending review/merge.**
+1. Implement a Node/TypeScript Embedding Service with the same HTTP contract. **Status: implemented in the KOE-295 stacked PR.**
    - Preserve `/health`, `/embed`, and `/rerank` response shapes.
    - Preserve `x-koed-embedding-token` auth.
    - Preserve model/reranker environment aliases.
@@ -193,17 +193,17 @@ Current stack status: KOE-295 implements step 1 by adding the TypeScript/Node Em
    - Preserve vector normalization and rerank score extraction.
    - Add parity tests based on current Python tests.
 
-2. Switch bundled-local runtime management to the Node service.
+2. Switch bundled-local runtime management to the Node service. **Status: completed in KOE-296.**
    - Update `local-embedding-runtime.ts` to spawn Node instead of Python.
    - Keep `EMBEDDING_SERVICE_URL` and `EMBEDDING_SERVICE_TOKEN` unchanged for API/Worker.
    - Keep local process name/status as Embedding Service.
    - Keep packaged Desktop smoke coverage.
 
-3. Remove Python from native runtime artifacts.
+3. Remove Python from native runtime artifacts. **Status: completed in KOE-297.**
    - Remove `python` source entries from native runtime source manifests.
    - Remove `.venv` staging/procurement.
    - Update `runtime-asset-manifest.json` expectations.
-   - Update native runtime validation to check Node service assets instead of `.venv/bin/python`.
+   - Update native runtime validation to use Node service assets instead of `.venv/bin/python`.
    - Update `docs/native-runtime-assets.md` and packaged Desktop docs.
 
 4. Remove or retire Python app path after parity lands.
@@ -215,8 +215,8 @@ Current stack status: KOE-295 implements step 1 by adding the TypeScript/Node Em
 Recommended implementation issues:
 
 1. Port the Embedding Service HTTP contract to TypeScript/Node. **Tracked by KOE-295.**
-2. Switch bundled-local runtime packaging and `koed-server` supervision to the Node Embedding Service.
-3. Remove Python venv procurement/staging/validation/docs from native runtime artifacts.
+2. Switch bundled-local runtime packaging and `koed-server` supervision to the Node Embedding Service. **Completed by KOE-296.**
+3. Remove Python venv procurement/staging/validation/docs from native runtime artifacts. **Completed by KOE-297.**
 
 ## KOE-292 and KOE-294 guidance
 

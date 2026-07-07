@@ -190,6 +190,38 @@ describe("local Embedding Service runtime", () => {
     expect(localEmbeddingRuntimeAvailable(paths(root), {})).toBe(true);
   });
 
+  it("starts packaged/native runtime without Python virtualenv", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "runtime", "embedding-service", "dist"), {
+      recursive: true
+    });
+    mkdirSync(resolve(root, "runtime", "llama.cpp"), { recursive: true });
+    writeFileSync(
+      resolve(root, "runtime", "embedding-service", "dist", "index.js"),
+      ""
+    );
+    const llama = resolve(root, "runtime", "llama.cpp", "llama-server");
+    writeFileSync(llama, "");
+    chmodSync(llama, 0o755);
+    const spawned: string[][] = [];
+
+    const result = startLocalEmbeddingRuntime(
+      paths(root),
+      {},
+      {
+        spawn: (_command, args) => {
+          spawned.push(args);
+          return { pid: 12, on: () => undefined } as never;
+        }
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(spawned[0]).toEqual([
+      resolve(root, "runtime", "embedding-service", "dist", "index.js")
+    ]);
+  });
+
   it("reports missing runtime files without tokens", async () => {
     const root = tempDir();
     const status = await collectLocalEmbeddingRuntimeStatus(paths(root), {

@@ -1,7 +1,7 @@
 {
   "platform": "linux",
   "architecture": "x64",
-  "notes": "Pinned upstream inputs for the Linux x64 Koed native runtime artifact. Linux targets glibc 2.35+ on Ubuntu 22.04. PostgreSQL is source-built on the baseline runner because no selected relocatable upstream Linux binary currently satisfies the packaged runtime contract; Python and llama.cpp use relocatable upstream release assets.",
+  "notes": "Pinned upstream inputs for the Linux x64 Koed native runtime artifact. Linux targets glibc 2.35+ on Ubuntu 22.04. PostgreSQL is source-built on the baseline runner because no selected relocatable upstream Linux binary currently satisfies the packaged runtime contract; llama.cpp uses relocatable upstream release assets.",
   "postgres": {
     "kind": "source",
     "version": "17.6",
@@ -13,12 +13,6 @@
     "version": "0.8.3",
     "url": "https://github.com/pgvector/pgvector/archive/refs/tags/v0.8.3.tar.gz",
     "sha256": "dc080c511a6354a1628eb19f9bc8e77ce880dde16c889744a6814c8c0006e36c"
-  },
-  "python": {
-    "kind": "python-build-standalone",
-    "version": "3.12.7+20241016",
-    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7%2B20241016-x86_64-unknown-linux-gnu-install_only.tar.gz",
-    "sha256": "43576f7db1033dd57b900307f09c2e86f371152ac8a2607133afa51cbfc36064"
   },
   "llamaCpp": {
     "kind": "official-release",

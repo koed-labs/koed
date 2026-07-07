@@ -10,7 +10,11 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
-import { writeRuntimeAssetManifest, sha256File } from "./manifest-lib.mjs";
+import {
+  prunePythonEmbeddingRuntimeFiles,
+  writeRuntimeAssetManifest,
+  sha256File
+} from "./manifest-lib.mjs";
 import { procureRuntime } from "./procure-runtime.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
@@ -119,6 +123,7 @@ const main = () => {
         architecture: "x64",
         workDir: process.env.KOED_NATIVE_RUNTIME_WORK_DIR
       });
+  prunePythonEmbeddingRuntimeFiles(runtimeRoot);
   const nativeAssets = writeRuntimeAssetManifest({
     runtimeRoot,
     platform: "linux",

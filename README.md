@@ -22,7 +22,6 @@ need them.
 
 - macOS, Linux, or WSL.
 - Node.js and pnpm.
-- Python 3.12, available as `python3.12` or via `KOED_PYTHON`.
 - Homebrew for the source-checkout bundled-local runtime install. Packaged
   Desktop can use packaged native runtime assets; external dependency mode does
   not require Homebrew.
@@ -42,9 +41,7 @@ pnpm local:setup
 KOED_DEPENDENCY_MODE=bundled-local KOED_AUTO_PORTS=1 pnpm desktop:start
 ```
 
-`pnpm local:setup` prepares `.env`, installs the Embedding Service Python
-virtualenv, builds the workspace, links the Homebrew-backed bundled-local
-runtime, and installs the default embedding model.
+`pnpm local:setup` prepares `.env`, builds the workspace, links the Homebrew-backed bundled-local runtime, and installs the default embedding model.
 
 Koed Desktop opens when setup is complete and configures Codex automatically.
 Packaged Desktop follows the same local-personal bundled-local flow, but it

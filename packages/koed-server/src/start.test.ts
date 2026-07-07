@@ -56,6 +56,7 @@ const createPackagedAppRuntime = (root: string) => {
   for (const entry of [
     "koed-runtime/api/dist/index.js",
     "koed-runtime/worker/dist/index.js",
+    "koed-runtime/embedding-service/dist/index.js",
     "koed-runtime/explorer-dist/index.html",
     "koed-runtime/mcp-server/dist/cli.js",
     "koed-runtime/mcp-server/dist/capture-hook.js",
