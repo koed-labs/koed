@@ -76,6 +76,13 @@ const executableChecks = (runtimeRoot) => [
   ]
 ];
 
+const pythonImportChecks = [
+  "fastapi",
+  "huggingface_hub",
+  "pydantic",
+  "uvicorn"
+];
+
 const validateExecutables = (runtimeRoot) =>
   executableChecks(runtimeRoot).flatMap(([name, command, args, pattern]) => {
     if (!existsSync(command))
@@ -93,6 +100,39 @@ const validateExecutables = (runtimeRoot) =>
       }
     ];
   });
+
+const validateEmbeddingPythonImports = (runtimeRoot) => {
+  const python = resolve(
+    runtimeRoot,
+    "embedding-service",
+    ".venv",
+    "bin",
+    "python"
+  );
+  if (!existsSync(python)) {
+    return [
+      {
+        name: "embedding-service-python-imports",
+        command: python,
+        ok: false,
+        output: "missing python"
+      }
+    ];
+  }
+  const result = run(python, [
+    "-c",
+    `import importlib.util, sys; missing = [name for name in ${JSON.stringify(pythonImportChecks)} if importlib.util.find_spec(name) is None]; print("missing=" + ",".join(missing)); sys.exit(1 if missing else 0)`
+  ]);
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  return [
+    {
+      name: "embedding-service-python-imports",
+      command: result.command,
+      ok: result.status === 0,
+      output
+    }
+  ];
+};
 
 const pgConfigValue = (runtimeRoot, flag) => {
   const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
@@ -316,6 +356,7 @@ const runValidation = (options) => {
   if (!existsSync(runtimeRoot))
     throw new Error(`runtime root missing: ${runtimeRoot}`);
   const executables = validateExecutables(runtimeRoot);
+  const pythonImports = validateEmbeddingPythonImports(runtimeRoot);
   const loaders =
     options.platform === "darwin"
       ? validateMacLoaders(runtimeRoot)
@@ -328,6 +369,9 @@ const runValidation = (options) => {
     ...executables
       .filter((entry) => !entry.ok)
       .map((entry) => `${entry.name} failed: ${entry.output ?? entry.message}`),
+    ...pythonImports
+      .filter((entry) => !entry.ok)
+      .map((entry) => `${entry.name} failed: ${entry.output}`),
     ...loaders
       .filter((entry) => !entry.ok)
       .map((entry) => `${entry.file} loader failed: ${entry.output}`),
@@ -343,6 +387,7 @@ const runValidation = (options) => {
     runtimeRoot,
     platform: options.platform,
     executables,
+    pythonImports,
     loaders,
     postgresExtensions,
     packagedProvider,

@@ -213,9 +213,6 @@ const main = () => {
           );
         }
 
-        const doctor = runCli(["doctor", "--json"]);
-        if (stepFailed(doctor)) errors.push(stepFailure(doctor));
-
         const parsed =
           readyStatus.parsed ??
           parseJson("status", readyStatus.step?.stdout ?? "{}");

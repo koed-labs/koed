@@ -182,7 +182,9 @@ const stagePython = ({ source, runtimeRoot, cacheDir, workDir }) => {
     preserveTimestamps: true,
     dereference: true
   });
+  materializeAbsoluteSymlinks(venvDir);
   const venvPython = resolve(venvDir, "bin", "python");
+  chmodIfExists(venvPython);
   run(venvPython, ["-m", "pip", "install", "--upgrade", "pip"], {
     stdio: "inherit"
   });
@@ -197,6 +199,7 @@ const stagePython = ({ source, runtimeRoot, cacheDir, workDir }) => {
     ],
     { stdio: "inherit" }
   );
+  run(venvPython, ["-c", "import fastapi, huggingface_hub, pydantic, uvicorn"]);
   materializeAbsoluteSymlinks(venvDir);
   chmodIfExists(venvPython);
   return { archive, pythonBin, venvPython };

@@ -564,16 +564,18 @@ const localServiceEnv = (
           repoEnv.EMBEDDING_SERVICE_URL ??
           embeddingServiceUrl),
     EMBEDDING_SERVICE_TOKEN:
-      repoEnv.EMBEDDING_SERVICE_TOKEN ?? environment.EMBEDDING_SERVICE_TOKEN,
+      environment.EMBEDDING_SERVICE_TOKEN ?? repoEnv.EMBEDDING_SERVICE_TOKEN,
     EMBEDDING_MODEL:
       repoEnv.EMBEDDING_MODEL_KEY ??
       environment.EMBEDDING_MODEL_KEY ??
-      environment.EMBEDDING_MODEL,
+      environment.EMBEDDING_MODEL ??
+      embeddingModel.key,
     MODEL_KEY:
       repoEnv.EMBEDDING_MODEL_KEY ??
       environment.EMBEDDING_MODEL_KEY ??
       environment.MODEL_KEY ??
-      environment.EMBEDDING_MODEL,
+      environment.EMBEDDING_MODEL ??
+      embeddingModel.key,
     EMBEDDING_MODEL_PATH:
       serverConfig.dependencyMode === "bundled-local"
         ? localEmbeddingModelPath

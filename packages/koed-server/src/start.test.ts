@@ -278,6 +278,8 @@ describe("start supervisor", () => {
     const buildEnv = commands.at(-1)?.env;
     expect(buildEnv?.WORK_QUEUE_BACKEND).toBe("local");
     expect(buildEnv?.KOED_MODELS_DIR).toBe(resolve(root, "models"));
+    expect(buildEnv?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
+    expect(buildEnv?.MODEL_KEY).toBe("qwen3-0.6b");
     expect(buildEnv?.EMBEDDING_MODEL_PATH).toBe(
       resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
     );
@@ -584,8 +586,12 @@ describe("start supervisor", () => {
     const root = tempDir();
     createPackagedAppRuntime(root);
     const commands: Array<{ command: string; args: string[] }> = [];
-    const spawned: Array<{ command: string; args: string[]; cwd?: string }> =
-      [];
+    const spawned: Array<{
+      command: string;
+      args: string[];
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+    }> = [];
 
     await startKoedServer({
       environment: {
@@ -604,7 +610,12 @@ describe("start supervisor", () => {
         return spawnResult();
       },
       spawn: (command, args, options) => {
-        spawned.push({ command, args, cwd: options?.cwd?.toString() });
+        spawned.push({
+          command,
+          args,
+          cwd: options?.cwd?.toString(),
+          env: options?.env
+        });
         return child(spawned.length);
       },
       collectStatus: async () => healthyStatus(root)
@@ -617,6 +628,9 @@ describe("start supervisor", () => {
     expect(spawned[1]?.args).toEqual([
       resolve(root, "koed-runtime/worker/dist/index.js")
     ]);
+    expect(spawned[1]?.env?.EMBEDDING_SERVICE_TOKEN).toBeDefined();
+    expect(spawned[1]?.env?.EMBEDDING_SERVICE_TOKEN).not.toBe("");
+    expect(spawned[1]?.env?.EMBEDDING_MODEL).toBe("qwen3-0.6b");
     expect(spawned[2]?.args[0]).toMatch(/explorer-static-server\.js$/);
     expect(spawned[2]?.args.slice(1)).toEqual([
       resolve(root, "koed-runtime/explorer-dist"),
