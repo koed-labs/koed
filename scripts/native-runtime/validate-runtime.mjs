@@ -184,8 +184,10 @@ const validateLinuxLoaders = (runtimeRoot) => {
   });
 };
 
-const validatePgvectorExtension = (runtimeRoot) => {
-  const tempRoot = mkdtempSync(resolve(tmpdir(), "koed-pgvector-validate-"));
+const validatePostgresExtensions = (runtimeRoot) => {
+  const tempRoot = mkdtempSync(
+    resolve(tmpdir(), "koed-postgres-extensions-validate-")
+  );
   const dataDir = resolve(tempRoot, "data");
   const socketDir = resolve(tempRoot, "socket");
   const logPath = resolve(tempRoot, "postgres.log");
@@ -217,7 +219,21 @@ const validatePgvectorExtension = (runtimeRoot) => {
     ]);
     steps.push(start);
     failOnBad(start);
-    const createExtension = run(psql, [
+    const createPgcrypto = run(psql, [
+      "-h",
+      socketDir,
+      "-p",
+      port,
+      "-U",
+      "koed",
+      "-d",
+      "postgres",
+      "-c",
+      "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+    ]);
+    steps.push(createPgcrypto);
+    failOnBad(createPgcrypto);
+    const createVector = run(psql, [
       "-h",
       socketDir,
       "-p",
@@ -229,8 +245,8 @@ const validatePgvectorExtension = (runtimeRoot) => {
       "-c",
       "CREATE EXTENSION IF NOT EXISTS vector;"
     ]);
-    steps.push(createExtension);
-    failOnBad(createExtension);
+    steps.push(createVector);
+    failOnBad(createVector);
     return { ok: true, steps };
   } catch (error) {
     return {
@@ -306,7 +322,7 @@ const runValidation = (options) => {
       : options.platform === "linux"
         ? validateLinuxLoaders(runtimeRoot)
         : [];
-  const pgvectorExtension = validatePgvectorExtension(runtimeRoot);
+  const postgresExtensions = validatePostgresExtensions(runtimeRoot);
   const packagedProvider = validatePackagedProvider(runtimeRoot);
   const errors = [
     ...executables
@@ -315,9 +331,9 @@ const runValidation = (options) => {
     ...loaders
       .filter((entry) => !entry.ok)
       .map((entry) => `${entry.file} loader failed: ${entry.output}`),
-    ...(pgvectorExtension.ok
+    ...(postgresExtensions.ok
       ? []
-      : [`pgvector extension validation failed: ${pgvectorExtension.error}`]),
+      : [`Postgres extension validation failed: ${postgresExtensions.error}`]),
     ...(packagedProvider.skipped || packagedProvider.ok
       ? []
       : ["packaged provider validation failed"])
@@ -328,7 +344,7 @@ const runValidation = (options) => {
     platform: options.platform,
     executables,
     loaders,
-    pgvectorExtension,
+    postgresExtensions,
     packagedProvider,
     errors
   };

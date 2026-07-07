@@ -45,7 +45,14 @@ pnpm native-runtime:validate -- \
 ```
 
 Linux x64 follows the same local shape, procures from
-`scripts/native-runtime/sources.linux-x64.json`, and enforces glibc 2.35+:
+`scripts/native-runtime/sources.linux-x64.json`, and enforces glibc 2.35+. Clean Ubuntu/WSL builds need PostgreSQL source-build prerequisites available first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential bison flex curl ca-certificates
+```
+
+Then build and validate:
 
 ```bash
 pnpm native-runtime:build:linux-x64 -- --json
@@ -66,13 +73,14 @@ validating a pre-staged runtime layout instead of CI procurement.
 - `python-build-standalone` install-only archives for the Python runtime;
 - official `llama.cpp` release assets pinned to a macOS 14-compatible build for macOS arm64 CI runners;
 - PostgreSQL 17 official source tarballs while relocatable binary candidates are
-  still being evaluated;
+  still being evaluated, including the `pgcrypto` contrib extension required by Koed migrations;
 - pgvector source built against the selected `pg_config`.
 
 The builder verifies each archive by SHA-256, assembles the deterministic
 `koed-runtime/` layout, installs the Embedding Service Python dependencies into
 `embedding-service/.venv`, writes the packaged runtime manifest, and archives
-the runtime tarball.
+the runtime tarball. Validation starts temporary Postgres and verifies both
+`CREATE EXTENSION pgcrypto` and `CREATE EXTENSION vector`.
 
 ## CI
 

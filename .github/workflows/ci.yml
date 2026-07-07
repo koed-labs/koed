@@ -198,7 +198,7 @@ jobs:
         run: pnpm --filter @koed/koed-server build
 
       - name: Install native runtime build dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential curl ca-certificates
+        run: sudo apt-get update && sudo apt-get install -y build-essential bison flex curl ca-certificates
 
       - name: Build native runtime artifact
         env:

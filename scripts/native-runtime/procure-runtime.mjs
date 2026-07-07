@@ -287,7 +287,36 @@ const stagePostgresArchive = ({ source, runtimeRoot, cacheDir, workDir }) => {
   return { archive, pgConfig: resolve(target, "bin", "pg_config") };
 };
 
+const requireCommand = (command, installHint) => {
+  const result = spawnSync(command, ["--version"], {
+    encoding: "utf8",
+    stdio: "pipe"
+  });
+  if (result.error?.code === "ENOENT") {
+    throw new Error(
+      `${command} is required to build the native runtime. ${installHint}`
+    );
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} --version failed with ${result.status ?? 1}: ${result.stderr || result.stdout}`
+    );
+  }
+};
+
+const requirePostgresBuildTools = () => {
+  requireCommand(
+    "bison",
+    "Install bison before running native-runtime:build (for example: sudo apt-get install bison flex on Ubuntu/WSL)."
+  );
+  requireCommand(
+    "flex",
+    "Install flex before running native-runtime:build (for example: sudo apt-get install bison flex on Ubuntu/WSL)."
+  );
+};
+
 const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
+  requirePostgresBuildTools();
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "postgres-source");
   extractArchive(archive, extractDir);
@@ -311,6 +340,10 @@ const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
     { cwd: sourceRoot, stdio: "inherit" }
   );
   run("make", ["install"], { cwd: sourceRoot, stdio: "inherit" });
+  run("make", ["-C", "contrib/pgcrypto", "install"], {
+    cwd: sourceRoot,
+    stdio: "inherit"
+  });
   for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
     chmodIfExists(resolve(target, "bin", name));
   relocateMacosPostgresLibraries(target);
