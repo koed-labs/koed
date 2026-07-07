@@ -6,6 +6,8 @@ Recommendation: **remove Python before signing/notarization**.
 
 The current packaged native runtime should keep using the Embedding Service HTTP contract, but the service implementation should move from the packaged Python virtualenv to a Node/TypeScript process before KOE-294 release hardening.
 
+This decision is about the default always-on packaged Desktop runtime, not a blanket rule that Koed will never use Python. Future features such as Memory Inbox document processing may still justify Python or specialist processors, but those should be isolated behind job/HTTP contracts rather than bundled into the core Desktop runtime by default.
+
 This is not a backend LLM synthesis change. The Embedding Service remains local vector/rerank infrastructure around `llama-server`.
 
 ## Current responsibilities
