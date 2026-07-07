@@ -26,6 +26,12 @@ Python runtime assets have been removed from the packaged native runtime and the
 Embedding Service development path. This decision assumes the supported local
 Embedding Service runtime is the TypeScript service plus `llama-server`.
 
+This ADR does not decide Explorer-first auth, device enrollment, local-edge
+upstream credential semantics, commercial encryption/key management, or managed
+SaaS queryable vector strategy. Those are separate Team SaaS foundation
+decisions; the standalone package design consumes them only as package/runtime
+requirements.
+
 ## Decision
 
 Koed should introduce a standalone `koed-server` app-runtime package and move

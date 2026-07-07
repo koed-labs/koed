@@ -449,3 +449,7 @@ KOE-292 is design-first. Recommended follow-up implementation issues:
 - Do not merge native runtime artifacts into the app-runtime package.
 - Do not make Desktop manage remote Team Self-Hosted or Koed-managed cloud
   service lifecycle.
+- Do not decide Explorer-first auth, device enrollment, local-edge upstream
+  credential semantics, commercial encryption/key management, or managed SaaS
+  queryable vector strategy. Those decisions belong to the Team SaaS foundation
+  ADRs and are consumed here only as package/runtime requirements.
