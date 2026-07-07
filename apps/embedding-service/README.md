@@ -3,46 +3,15 @@
 Local adapter for llama-server embeddings and optional reranking.
 
 The bundled-local supervisor launches the TypeScript implementation in `src/`.
-The Python app and venv procurement remain in place until KOE-297 removes Python
-from native runtime artifacts.
 
-The embedding service is intended to run as a private backend component. Set
+The Embedding Service is intended to run as a private backend component. Set
 `EMBEDDING_SERVICE_TOKEN` in shared deployments; `/embed` and `/rerank` then
 require API and worker callers to send it in `x-koed-embedding-token`. `/health`
 remains available for container health checks.
 
 ## Local Environment
 
-Use a local virtualenv for Python work. Do not commit `.venv/`.
-
-```bash
-cd apps/embedding-service
-python3.12 -m venv .venv
-. .venv/bin/activate
-pip install --no-cache-dir -r requirements-dev.txt
-```
-
-From the repository root, the same setup is available as:
-
-```bash
-pnpm setup:python
-```
-
-If `python3.12` is not on `PATH`, point the setup script at a Python 3.12 binary:
-
-```bash
-KOED_PYTHON=/path/to/python3.12 pnpm setup:python
-```
-
-Run the Python service locally after installing `llama-server` and setting
-`LLAMA_SERVER_BINARY` if it is not available at `/opt/llama.cpp/llama-server`:
-
-```bash
-pip install --no-cache-dir -r requirements.txt
-uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-Run the TypeScript service locally after building and setting local model paths:
+Run the service locally after building and setting local model paths:
 
 ```bash
 MODEL_PATH=/path/to/embedding.gguf \
@@ -83,10 +52,6 @@ Embedding chunking uses `LLAMA_BATCH_TOKEN_HEADROOM` to stay below the literal
 tokenizer edge cases where text targeting an 8192-token batch becomes 8193
 tokens after final model tokenization.
 
-Runtime dependencies are pinned in `requirements.txt`. Development-only tooling
-belongs in `requirements-dev.txt`; it intentionally does not install the native
-runtime model stack.
-
 ## Observability
 
 The service writes structured JSON operational logs with
@@ -100,5 +65,3 @@ The production path starts local `llama-server` subprocesses and calls
 Embedding Service boundary because it owns auth, queue priority, chunk response
 shape, normalization validation, health metadata, and stable API/worker
 contracts.
-
-If `pip install -r requirements.txt` reports a wheel checksum error such as `Bad CRC-32`, remove the local venv and rerun the runtime install with `--no-cache-dir` so pip downloads a fresh wheel instead of reusing a corrupt cached archive.

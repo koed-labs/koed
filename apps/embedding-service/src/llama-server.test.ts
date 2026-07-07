@@ -6,7 +6,7 @@ import {
 } from "./llama-server.js";
 
 describe("llama-server adapter helpers", () => {
-  it("decodes token pieces with Python parity", () => {
+  it("decodes token pieces from llama-server responses", () => {
     expect(tokenPieceText("hello")).toBe("hello");
     expect(tokenPieceText([99, 97, 102, 195, 169])).toBe("café");
     expect(tokenPieceText({ value: "x" })).toBe("[object Object]");

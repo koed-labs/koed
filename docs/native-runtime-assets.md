@@ -35,7 +35,7 @@ koed-runtime/
     package.json
 ```
 
-Bundled-local supervision starts the Embedding Service from `embedding-service/dist/index.js`. Packaged native runtime assets no longer include Python standalone runtime files, Python wheels/native extensions, or `embedding-service/.venv/bin/python`. Python source files may still exist in the repository for development/parity workflows, but they are not packaged native runtime assets.
+Bundled-local supervision starts the Embedding Service from `embedding-service/dist/index.js`. Packaged native runtime assets no longer include Python standalone runtime files, Python wheels/native extensions, or `embedding-service/.venv/bin/python`.
 
 Desktop packaging can stage prebuilt native assets by setting:
 

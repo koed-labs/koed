@@ -175,7 +175,7 @@ describe("Embedding Service env config", () => {
     ).toThrow("must differ");
   });
 
-  it("keeps Python default llama-server path for app-local direct runs", () => {
+  it("keeps the app-local default llama-server path for direct runs", () => {
     expect(resolveEnv({ LLAMA_SERVER_BINARY: "" }).llamaServerBinary).toBe(
       DEFAULT_LLAMA_SERVER_BINARY
     );

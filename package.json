@@ -61,18 +61,14 @@
     "native-runtime:validate": "node scripts/native-runtime/validate-runtime.mjs",
     "native-runtime:validate:wsl": "node scripts/native-runtime/validate-wsl.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 test",
-    "test:python": "node scripts/python-check.mjs",
-    "setup:python": "node scripts/python-setup.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -b && pnpm --filter @koed/explorer typecheck",
     "typecheck:test": "tsc -p tsconfig.test.json",
     "verify": "node scripts/verify.mjs",
-    "fmt": "pnpm fmt:prettier && pnpm fmt:python",
-    "fmt:check": "pnpm fmt:prettier:check && pnpm fmt:python:check",
+    "fmt": "pnpm fmt:prettier",
+    "fmt:check": "pnpm fmt:prettier:check",
     "fmt:prettier": "prettier --write .",
-    "fmt:prettier:check": "prettier --check .",
-    "fmt:python": "cd apps/embedding-service && .venv/bin/ruff format .",
-    "fmt:python:check": "cd apps/embedding-service && .venv/bin/ruff format --check ."
+    "fmt:prettier:check": "prettier --check ."
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

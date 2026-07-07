@@ -182,7 +182,7 @@ Verdict: defer. Too broad for pre-signing cleanup.
 
 ## Recommended implementation sequence
 
-Current stack status: KOE-295 implemented the TypeScript/Node Embedding Service HTTP contract, KOE-296 switched bundled-local supervision to the TypeScript service, and KOE-297 completed Python removal from packaged native runtime procurement, staging, validation, and docs. Python source may remain in the tree for development/parity workflows, but packaged native runtime assets no longer include `embedding-service/.venv/bin/python`.
+Current stack status: KOE-295 implemented the TypeScript/Node Embedding Service HTTP contract, KOE-296 switched bundled-local supervision to the TypeScript service, KOE-297 completed Python removal from packaged native runtime procurement, staging, validation, and docs, and the follow-up cleanup retired the legacy Python Embedding Service source/development path.
 
 1. Implement a Node/TypeScript Embedding Service with the same HTTP contract. **Status: implemented in the KOE-295 stacked PR.**
    - Preserve `/health`, `/embed`, and `/rerank` response shapes.
@@ -191,7 +191,7 @@ Current stack status: KOE-295 implemented the TypeScript/Node Embedding Service 
    - Preserve tokenization/detokenization chunking through `llama-server`.
    - Preserve interactive/background priority scheduling.
    - Preserve vector normalization and rerank score extraction.
-   - Add parity tests based on current Python tests.
+   - Add parity tests based on the retired Python behavior.
 
 2. Switch bundled-local runtime management to the Node service. **Status: completed in KOE-296.**
    - Update `local-embedding-runtime.ts` to spawn Node instead of Python.
@@ -206,9 +206,9 @@ Current stack status: KOE-295 implemented the TypeScript/Node Embedding Service 
    - Update native runtime validation to use Node service assets instead of `.venv/bin/python`.
    - Update `docs/native-runtime-assets.md` and packaged Desktop docs.
 
-4. Remove or retire Python app path after parity lands.
-   - Delete `apps/embedding-service` Python implementation only after Node implementation is validated.
-   - Keep any useful test vectors/fixtures by moving them into TypeScript tests.
+4. Remove or retire Python app path after parity lands. **Status: completed by the follow-up cleanup.**
+   - Delete `apps/embedding-service` Python implementation after Node implementation is validated.
+   - Keep useful test vectors/fixtures in TypeScript tests.
 
 ## Follow-up issues
 
@@ -217,6 +217,7 @@ Recommended implementation issues:
 1. Port the Embedding Service HTTP contract to TypeScript/Node. **Tracked by KOE-295.**
 2. Switch bundled-local runtime packaging and `koed-server` supervision to the Node Embedding Service. **Completed by KOE-296.**
 3. Remove Python venv procurement/staging/validation/docs from native runtime artifacts. **Completed by KOE-297.**
+4. Retire the legacy Python Embedding Service source and development tooling. **Completed by the follow-up cleanup.**
 
 ## KOE-292 and KOE-294 guidance
 
