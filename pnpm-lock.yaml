@@ -104,6 +104,8 @@ importers:
         specifier: ^26.15.3
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)
 
+  apps/embedding-service: {}
+
   apps/explorer:
     dependencies:
       '@base-ui/react':

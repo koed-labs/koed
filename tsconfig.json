@@ -3,6 +3,7 @@
   "references": [
     { "path": "./apps/api" },
     { "path": "./apps/desktop" },
+    { "path": "./apps/embedding-service" },
     { "path": "./apps/worker" },
     { "path": "./packages/core" },
     { "path": "./packages/db" },

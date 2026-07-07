@@ -1,6 +1,11 @@
 # Embedding Service
 
-Local FastAPI adapter for llama-server embeddings and optional reranking.
+Local adapter for llama-server embeddings and optional reranking.
+
+The current bundled-local supervisor still launches the Python FastAPI service.
+The TypeScript/Node implementation in `src/` preserves the same HTTP contract
+for KOE-295 and is intended to become the supervised path in KOE-296. Keep the
+Python app and venv procurement in place until that follow-up lands.
 
 The embedding service is intended to run as a private backend component. Set
 `EMBEDDING_SERVICE_TOKEN` in shared deployments; `/embed` and `/rerank` then
@@ -30,13 +35,26 @@ If `python3.12` is not on `PATH`, point the setup script at a Python 3.12 binary
 KOED_PYTHON=/path/to/python3.12 pnpm setup:python
 ```
 
-Run the service locally after installing `llama-server` and setting
+Run the Python service locally after installing `llama-server` and setting
 `LLAMA_SERVER_BINARY` if it is not available at `/opt/llama.cpp/llama-server`:
 
 ```bash
 pip install --no-cache-dir -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
+
+Run the TypeScript service locally after building and setting local model paths:
+
+```bash
+MODEL_PATH=/path/to/embedding.gguf \
+RERANKER_KEY= \
+pnpm --filter @koed/embedding-service dev
+```
+
+The TypeScript service launches `llama-server` directly and expects local
+`MODEL_PATH` and, when reranking is enabled, `RERANKER_MODEL_PATH`. Runtime
+procurement and bundled-local process supervision remain Python-owned until the
+follow-up switch.
 
 Select the embedding model with `MODEL_KEY`. Unknown keys fail service startup.
 Supported keys:
