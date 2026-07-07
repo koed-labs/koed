@@ -730,6 +730,26 @@ export const routeIdentityContracts = [
     remoteEnrollmentDeploymentModes
   ),
   route(
+    "GET",
+    "/v1/local-edge/device-enrollments/challenges/{challengeId}",
+    "session",
+    "future_remote",
+    "Read safe local edge device enrollment challenge approval context.",
+    "none",
+    "implemented",
+    remoteEnrollmentDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/local-edge/device-enrollments/challenges/{challengeId}/approval",
+    "session",
+    "future_remote",
+    "Approve or deny a local edge device enrollment challenge.",
+    "none",
+    "implemented",
+    remoteEnrollmentDeploymentModes
+  ),
+  route(
     "POST",
     "/v1/local-edge/device-enrollments/credentials",
     "session",

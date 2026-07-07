@@ -1,5 +1,6 @@
 import type {
   AppData,
+  DeviceEnrollmentChallenge,
   GraphEvent,
   GraphNode,
   GraphThreadIndexResponse,
@@ -130,6 +131,50 @@ export async function loadGraphData(apiToken: string): Promise<AppData> {
     projects: [...projectsById.values()],
     nodes: []
   };
+}
+
+export async function loadDeviceEnrollmentChallenge(
+  challengeId: string
+): Promise<DeviceEnrollmentChallenge> {
+  const response = await requestJson<{
+    challenge: DeviceEnrollmentChallenge;
+  }>(
+    `/v1/local-edge/device-enrollments/challenges/${encodeURIComponent(challengeId)}`,
+    ""
+  );
+  return response.challenge;
+}
+
+export async function approveDeviceEnrollmentChallenge(
+  challengeId: string
+): Promise<DeviceEnrollmentChallenge> {
+  const response = await requestJson<{
+    challenge: DeviceEnrollmentChallenge;
+  }>(
+    `/v1/local-edge/device-enrollments/challenges/${encodeURIComponent(challengeId)}/approval`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify({ decision: "approve" })
+    }
+  );
+  return response.challenge;
+}
+
+export async function denyDeviceEnrollmentChallenge(
+  challengeId: string
+): Promise<DeviceEnrollmentChallenge> {
+  const response = await requestJson<{
+    challenge: DeviceEnrollmentChallenge;
+  }>(
+    `/v1/local-edge/device-enrollments/challenges/${encodeURIComponent(challengeId)}/approval`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify({ decision: "deny" })
+    }
+  );
+  return response.challenge;
 }
 
 export async function loadMemoryQuestionShells(

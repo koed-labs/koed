@@ -423,14 +423,20 @@ authorization checks.
 
 Browser-mediated device enrollment uses local-edge routes, not API Tokens. A
 browser-authenticated User creates a short-lived enrollment challenge with
-`POST /v1/local-edge/device-enrollments/challenges`, then redeems that challenge
-with `POST /v1/local-edge/device-enrollments/credentials` to bind a device
-credential to the User, upstream backend, device instance, operation families,
-and verifier material. For shared-secret credentials, the client submits a
+`POST /v1/local-edge/device-enrollments/challenges`, opens Explorer against the
+challenge id, and reviews the safe approval context through
+`GET /v1/local-edge/device-enrollments/challenges/{challengeId}`. Explorer can
+approve or deny the challenge through
+`POST /v1/local-edge/device-enrollments/challenges/{challengeId}/approval`;
+approval binds a device credential to the User, upstream backend, device
+instance, operation families, and server-side verifier material, while denial
+consumes the challenge. For shared-secret credentials, the client submits a
 fresh device secret over the browser-authenticated enrollment channel and the
-server hashes it with server-side secret material before persistence. Server-side
-persistence stores only verifier hashes or public-key material, never reusable
-device secrets. `GET
+server hashes it with server-side secret material before persistence. The older
+direct redemption route `POST /v1/local-edge/device-enrollments/credentials`
+remains available for headless/browser-mediated exchanges that already have
+session auth. Server-side persistence stores only verifier hashes or public-key
+material, never reusable device secrets. `GET
 /v1/local-edge/device-credentials/status` accepts the `Koed-Device` credential
 scheme for credential validation, while listing and revocation remain
 browser-session routes. Revoking a device credential stops future

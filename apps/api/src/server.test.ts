@@ -1817,6 +1817,13 @@ const createFakeRepository = () => {
       deviceChallenges.set(input.challengeHash, record);
       return record;
     },
+    async getDeviceEnrollmentChallenge(challengeId: string) {
+      return (
+        [...deviceChallenges.values()].find(
+          (challenge) => challenge.id === challengeId
+        ) ?? null
+      );
+    },
     async redeemDeviceEnrollmentChallenge(actor, input) {
       const challenge = deviceChallenges.get(input.challengeHash);
       if (
@@ -1887,6 +1894,84 @@ const createFakeRepository = () => {
         createdAt: now
       });
       return credential;
+    },
+    async approveDeviceEnrollmentChallenge(actor, challengeId, input) {
+      const challenge = [...deviceChallenges.values()].find(
+        (candidate) => candidate.id === challengeId
+      );
+      if (
+        !challenge ||
+        challenge.redeemedAt ||
+        Date.parse(challenge.expiresAt) <= Date.now()
+      ) {
+        return null;
+      }
+      const operationFamilies = Array.from(
+        new Set(input.operationFamilies ?? challenge.requestedOperationFamilies)
+      );
+      const allowedFamilies = new Set(challenge.requestedOperationFamilies);
+      if (operationFamilies.some((family) => !allowedFamilies.has(family))) {
+        throw Object.assign(
+          new Error(
+            "Device credential operation families exceed enrollment challenge"
+          ),
+          { statusCode: 400 }
+        );
+      }
+      const now = new Date().toISOString();
+      challenge.boundByUserId = actor.userId;
+      challenge.boundAt = now;
+      challenge.redeemedAt = now;
+      const credential = {
+        id: randomUUID(),
+        ownerUserId: actor.userId,
+        enrollmentChallengeId: challenge.id,
+        credentialKeyId: input.credentialKeyId,
+        upstreamBackendId: challenge.upstreamBackendId,
+        deviceInstanceId:
+          challenge.deviceInstanceId ?? `device-${challenge.id}`,
+        deviceLabel: challenge.deviceLabel,
+        credentialVersion: 1,
+        verifierKind: input.verifierKind,
+        verifierHash: input.verifierHash ?? null,
+        publicKeyJwk: input.publicKeyJwk ?? null,
+        operationFamilies,
+        metadata: input.metadata ?? {},
+        createdAt: now,
+        updatedAt: now,
+        lastUsedAt: null,
+        lastValidatedAt: null,
+        expiresAt: input.expiresAt?.toISOString() ?? null,
+        revokedAt: null,
+        revokedByUserId: null,
+        revocationReason: null
+      } satisfies DeviceCredentialRecord & {
+        verifierHash?: string | null;
+        publicKeyJwk?: Record<string, unknown> | null;
+      };
+      deviceCredentials.set(credential.id, credential);
+      return credential;
+    },
+    async denyDeviceEnrollmentChallenge(actor, challengeId) {
+      const challenge = [...deviceChallenges.values()].find(
+        (candidate) => candidate.id === challengeId
+      );
+      if (
+        !challenge ||
+        challenge.redeemedAt ||
+        Date.parse(challenge.expiresAt) <= Date.now()
+      ) {
+        return null;
+      }
+      const now = new Date().toISOString();
+      challenge.boundByUserId = actor.userId;
+      challenge.boundAt = now;
+      challenge.redeemedAt = now;
+      challenge.metadata = {
+        ...challenge.metadata,
+        enrollmentDecision: "denied"
+      };
+      return challenge;
     },
     async listDeviceCredentials(actor, input) {
       return [...deviceCredentials.values()].filter(
@@ -5914,6 +5999,146 @@ describe("account and access flows", () => {
     expect(revoked.statusCode).toBe(200);
     expect(revokedDeviceStatus.statusCode).toBe(401);
     expect(apiTokenStillWorks.statusCode).toBe(200);
+  });
+
+  it("approves and denies browser-visible device enrollment challenges without exposing verifier material", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "approval-owner@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    const apiToken = jsonBody<TokenResponse>(createdToken).token;
+    const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const verifierHash = hashSecretForTest(`device-secret-${randomUUID()}`);
+    const credentialKeyId = `device-key-${randomUUID()}`;
+    const createdChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        upstream_backend_id: "team-vps",
+        device_instance_id: "desktop-approval-1",
+        device_label: "Work laptop",
+        requested_operation_families: ["team_workspace_read", "sync"],
+        pending_credential: {
+          credential_key_id: credentialKeyId,
+          verifier_kind: "secret_hash",
+          verifier_hash: verifierHash,
+          operation_families: ["team_workspace_read"]
+        },
+        metadata: {
+          backendDisplayName: "Team Backend",
+          backendProfile: "remote",
+          highLevelContext: "Team Workspace recall enrollment",
+          supportToken: "must-not-leak"
+        }
+      }
+    });
+    const challenge = jsonBody<{
+      challenge: {
+        id: string;
+        status: string;
+        metadata: Record<string, unknown>;
+      };
+    }>(createdChallenge).challenge;
+    const deniedTokenLookup = await app.inject({
+      method: "GET",
+      url: `/v1/local-edge/device-enrollments/challenges/${challenge.id}`,
+      headers: { authorization: `Bearer ${apiToken}` }
+    });
+    const lookup = await app.inject({
+      method: "GET",
+      url: `/v1/local-edge/device-enrollments/challenges/${challenge.id}`,
+      headers: { cookie }
+    });
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v1/local-edge/device-enrollments/challenges/${challenge.id}/approval`,
+      headers: { cookie },
+      payload: { decision: "approve" }
+    });
+    const approvedBody = jsonBody<{
+      challenge: { status: string };
+      credential: { credentialKeyId: string; verifierHash?: string };
+    }>(approved);
+    const deniedChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const createdDenied = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: deniedChallengeHash,
+        upstream_backend_id: "team-vps",
+        requested_operation_families: ["team_workspace_read"],
+        pending_credential: {
+          credential_key_id: `device-key-${randomUUID()}`,
+          verifier_kind: "secret_hash",
+          verifier_hash: hashSecretForTest(`device-secret-${randomUUID()}`)
+        }
+      }
+    });
+    const deniedChallenge = jsonBody<{
+      challenge: { id: string };
+    }>(createdDenied).challenge;
+    const denied = await app.inject({
+      method: "POST",
+      url: `/v1/local-edge/device-enrollments/challenges/${deniedChallenge.id}/approval`,
+      headers: { cookie },
+      payload: { decision: "deny" }
+    });
+    const deniedRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: deniedChallengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "secret_hash",
+        verifier_hash: hashSecretForTest(`device-secret-${randomUUID()}`)
+      }
+    });
+    await app.close();
+
+    expect(createdChallenge.statusCode).toBe(200);
+    expect(JSON.stringify(createdChallenge.json())).not.toContain(
+      challengeHash
+    );
+    expect(JSON.stringify(createdChallenge.json())).not.toContain(verifierHash);
+    expect(JSON.stringify(createdChallenge.json())).not.toContain(
+      credentialKeyId
+    );
+    expect(JSON.stringify(createdChallenge.json())).not.toContain(
+      "must-not-leak"
+    );
+    expect(challenge.status).toBe("pending");
+    expect(challenge.metadata).toMatchObject({
+      backendDisplayName: "Team Backend",
+      backendProfile: "remote",
+      highLevelContext: "Team Workspace recall enrollment",
+      supportToken: "[redacted]"
+    });
+    expect(deniedTokenLookup.statusCode).toBe(401);
+    expect(lookup.statusCode).toBe(200);
+    expect(JSON.stringify(lookup.json())).not.toContain(verifierHash);
+    expect(approved.statusCode).toBe(200);
+    expect(approvedBody.challenge.status).toBe("approved");
+    expect(approvedBody.credential.credentialKeyId).toBe(credentialKeyId);
+    expect(approvedBody.credential.verifierHash).toBeUndefined();
+    expect(JSON.stringify(approved.json())).not.toContain(verifierHash);
+    expect(denied.statusCode).toBe(200);
+    expect(
+      jsonBody<{ challenge: { status: string } }>(denied).challenge.status
+    ).toBe("denied");
+    expect(deniedRedeem.statusCode).toBe(404);
   });
 
   it("routes local-edge upstream operations only after policy, capability, and device checks", async () => {

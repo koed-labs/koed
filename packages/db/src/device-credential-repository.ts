@@ -147,6 +147,18 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
     return mapChallengeRecord(rows[0]!);
   },
 
+  async getDeviceEnrollmentChallenge(
+    challengeId: string
+  ): Promise<DeviceEnrollmentChallengeRecord | null> {
+    const rows = await db
+      .select()
+      .from(deviceEnrollmentChallenges)
+      .where(eq(deviceEnrollmentChallenges.id, challengeId))
+      .limit(1);
+
+    return rows[0] ? mapChallengeRecord(rows[0]) : null;
+  },
+
   async redeemDeviceEnrollmentChallenge(
     actor: ActorContext,
     input: {
@@ -227,6 +239,152 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
       );
 
       return credential;
+    });
+  },
+
+  async approveDeviceEnrollmentChallenge(
+    actor: ActorContext,
+    challengeId: string,
+    input: {
+      credentialKeyId: string;
+      verifierKind: "secret_hash" | "public_key_jwk";
+      verifierHash?: string | null;
+      publicKeyJwk?: Record<string, unknown> | null;
+      operationFamilies?: string[];
+      metadata?: Record<string, unknown>;
+      expiresAt?: Date | null;
+    }
+  ): Promise<DeviceCredentialRecord | null> {
+    return db.transaction(async (tx) => {
+      const challengeRows = await tx
+        .update(deviceEnrollmentChallenges)
+        .set({
+          boundByUserId: actor.userId,
+          boundAt: sql`now()`,
+          redeemedAt: sql`now()`
+        })
+        .where(
+          and(
+            eq(deviceEnrollmentChallenges.id, challengeId),
+            isNull(deviceEnrollmentChallenges.redeemedAt),
+            gt(deviceEnrollmentChallenges.expiresAt, sql`now()`)
+          )
+        )
+        .returning();
+
+      const challenge = challengeRows[0];
+      if (!challenge) {
+        return null;
+      }
+      const operationFamilies = resolveCredentialOperationFamilies(
+        challenge.requestedOperationFamilies,
+        input.operationFamilies
+      );
+
+      const credentialRows = await tx
+        .insert(deviceCredentials)
+        .values({
+          ownerUserId: actor.userId,
+          enrollmentChallengeId: challenge.id,
+          credentialKeyId: input.credentialKeyId,
+          upstreamBackendId: challenge.upstreamBackendId,
+          deviceInstanceId:
+            challenge.deviceInstanceId ?? `device-${challenge.id}`,
+          deviceLabel: challenge.deviceLabel,
+          verifierKind: input.verifierKind,
+          verifierHash:
+            input.verifierKind === "secret_hash"
+              ? (input.verifierHash ?? null)
+              : null,
+          publicKeyJwk:
+            input.verifierKind === "public_key_jwk"
+              ? (input.publicKeyJwk ?? null)
+              : null,
+          operationFamilies,
+          metadata: input.metadata ?? {},
+          expiresAt: input.expiresAt ?? null
+        })
+        .returning();
+
+      const credential = mapDeviceCredentialRecord(credentialRows[0]!);
+      await tx.insert(auditEvents).values(
+        auditEventValues({
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "device_credential.created",
+          targetTable: "device_credentials",
+          targetId: credential.id,
+          metadata: deviceCredentialAuditMetadata(credential, {
+            enrollmentChallengeId: credential.enrollmentChallengeId
+          })
+        })
+      );
+
+      return credential;
+    });
+  },
+
+  async denyDeviceEnrollmentChallenge(
+    actor: ActorContext,
+    challengeId: string
+  ): Promise<DeviceEnrollmentChallengeRecord | null> {
+    return db.transaction(async (tx) => {
+      const existingRows = await tx
+        .select()
+        .from(deviceEnrollmentChallenges)
+        .where(
+          and(
+            eq(deviceEnrollmentChallenges.id, challengeId),
+            isNull(deviceEnrollmentChallenges.redeemedAt),
+            gt(deviceEnrollmentChallenges.expiresAt, sql`now()`)
+          )
+        )
+        .limit(1);
+      const existing = existingRows[0];
+      if (!existing) {
+        return null;
+      }
+
+      const rows = await tx
+        .update(deviceEnrollmentChallenges)
+        .set({
+          boundByUserId: actor.userId,
+          boundAt: sql`now()`,
+          redeemedAt: sql`now()`,
+          metadata: {
+            ...existing.metadata,
+            enrollmentDecision: "denied"
+          }
+        })
+        .where(
+          and(
+            eq(deviceEnrollmentChallenges.id, challengeId),
+            isNull(deviceEnrollmentChallenges.redeemedAt)
+          )
+        )
+        .returning();
+      const challenge = rows[0];
+      if (!challenge) {
+        return null;
+      }
+      await tx.insert(auditEvents).values(
+        auditEventValues({
+          actorUserId: actor.userId,
+          ownerUserId: actor.userId,
+          visibility: "personal",
+          action: "device_enrollment.denied",
+          targetTable: "device_enrollment_challenges",
+          targetId: challenge.id,
+          metadata: {
+            upstreamBackendId: challenge.upstreamBackendId,
+            deviceInstanceId: challenge.deviceInstanceId,
+            deviceLabel: challenge.deviceLabel,
+            operationFamilies: challenge.requestedOperationFamilies
+          }
+        })
+      );
+      return mapChallengeRecord(challenge);
     });
   },
 
