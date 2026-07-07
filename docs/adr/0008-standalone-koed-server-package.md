@@ -49,6 +49,11 @@ on demand.
 - Desktop should initially keep a bundled fallback `koed-server` package or
   equivalent embedded runtime until the standalone install/update path is proven
   by CI and smoke tests.
+- The first standalone package install requires an explicit bootstrap entrypoint:
+  Desktop's bundled fallback, a previous compatible `koed-server` install, a
+  future signed/notarized minimal installer or package-manager entrypoint, or a
+  source-checkout launcher for development only. The package being installed must
+  not be treated as its own trusted installer.
 - External dependency mode remains Operator-owned. Installing a standalone
   `koed-server` package must not imply bundled-local native runtime ownership
   unless the selected runtime/dependency mode or setup profile says so.
@@ -63,7 +68,10 @@ installing Desktop.
 The split adds a new compatibility boundary. Koed must validate Desktop version,
 server package version, DB migration set, native runtime manifest schema,
 `KOED_HOME` state, and model metadata before declaring the local stack healthy.
-Downgrades must be blocked unless explicitly confirmed and DB-compatible.
+Downgrades must be blocked unless explicitly confirmed and DB-compatible. The
+bootstrap entrypoint must also be validated: hosted downloads can start with
+SHA-256 verification, but trusted default update channels need stronger
+signature or provenance checks before release hardening is complete.
 
 Package installation becomes a first-class `koed-server` capability rather than
 Desktop-only logic. Desktop may provide progress UI, but the underlying package

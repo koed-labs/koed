@@ -350,7 +350,26 @@ Desktop should show failure states as first-class UI states:
 
 ## Headless Operator install flow
 
-Headless install should not require Desktop. Recommended command shape:
+Headless install should not require Desktop, but the first standalone package
+install still needs a trusted bootstrap binary. The bootstrap path must be
+explicit rather than implied by the package being installed. Acceptable
+bootstrap sources are:
+
+- the bundled fallback `koed-server` launcher embedded in Desktop;
+- a previous compatible `koed-server` install already present under
+  `KOED_HOME`;
+- a minimal signed/notarized installer or package-manager entrypoint such as a
+  future Homebrew formula;
+- a local source-checkout launcher for development only.
+
+The bootstrap entrypoint may install, verify, activate, and hand off to a
+standalone package, but it must not silently select bundled-local dependency
+ownership unless the selected setup profile or dependency mode permits that.
+Hosted downloads should use SHA-256 verification in the first implementation and
+must gain stronger signature or provenance checks before becoming the default
+trusted update channel.
+
+Recommended command shape after a bootstrap entrypoint is available:
 
 ```bash
 koed-server package status --json
