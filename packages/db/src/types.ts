@@ -419,8 +419,8 @@ export interface ListTeamAuditEventsInput {
 export interface CreateMemoryNodeInput {
   visibility: Visibility;
   summaryText: string;
-  title?: string;
-  bodyText?: string;
+  title?: string | null;
+  bodyText?: string | null;
   captureMethod?: CaptureMethod;
   sourceRuntime?: SourceRuntime;
   codexTranscriptPath?: string;

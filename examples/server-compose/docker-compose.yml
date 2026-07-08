@@ -90,7 +90,7 @@ services:
       dockerfile: apps/embedding-service/Dockerfile
     environment:
       MODEL_KEY: ${EMBEDDING_MODEL_KEY}
-      MODEL_PATH: ${EMBEDDING_MODEL_PATH:-/models/Qwen3-Embedding-0.6B-Q8_0.gguf}
+      MODEL_PATH: ${EMBEDDING_MODEL_PATH:-}
       EMBEDDING_BATCH_LIMIT: ${EMBEDDING_BATCH_LIMIT}
       EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS}
       EMBEDDING_MAX_TEXT_CHARS: ${EMBEDDING_MAX_TEXT_CHARS}

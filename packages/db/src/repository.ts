@@ -92,6 +92,7 @@ import type {
 
 export interface MemorySourceRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  encryptedMemoryQuestionSearchBatchSize?: number;
 }
 
 interface LcmNodeForSummarizationRow {
@@ -3384,7 +3385,9 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createMemoryQuestionRepository(pool, {
-      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      encryptedMemoryQuestionSearchBatchSize:
+        options.encryptedMemoryQuestionSearchBatchSize
     }),
     ...createWorkflowTokenUsageRepository(pool),
 

@@ -25,6 +25,10 @@ export interface CapturedSessionRepository {
       metadata?: Record<string, unknown>;
     }
   ): Promise<CapturedSessionRecord>;
+  getCapturedSession(
+    actor: ActorContext,
+    sessionId: string
+  ): Promise<CapturedSessionRecord | null>;
   updateCapturedSessionTitle(
     actor: ActorContext,
     sessionId: string,
@@ -298,6 +302,21 @@ export const createCapturedSessionRepository = (
         returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
       `,
       [actor.userId, sessionId, title]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  async getCapturedSession(actor, sessionId) {
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        select id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+        from sessions
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+      `,
+      [actor.userId, sessionId]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },

@@ -222,4 +222,22 @@ describe("EmbeddingRuntime", () => {
       reranking: false
     });
   });
+
+  it("derives the default embedding model path from the supported model key", async () => {
+    const created: unknown[] = [];
+    const runtime = new EmbeddingRuntime(
+      testConfig({ modelPath: null }),
+      testLogger(),
+      (options) => {
+        created.push(options);
+        return new FakeLlamaServer();
+      }
+    );
+
+    await runtime.loadEmbeddingModel();
+
+    expect(created[0]).toMatchObject({
+      modelPath: "/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
+    });
+  });
 });

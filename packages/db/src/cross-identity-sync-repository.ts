@@ -68,7 +68,7 @@ const validateEncryptedSyncPackageManifest = (
 };
 
 export type DeploymentProfile =
-  | "developer_local"
+  | "developer"
   | "local_personal"
   | "private_vps"
   | "team_self_hosted"
@@ -292,7 +292,7 @@ export interface CrossIdentitySyncRepository {
       idempotencyKey: string;
       packageManifest: Record<string, unknown>;
       packageChecksum: string;
-      totalBytes?: number;
+      totalBytes: number;
       packageFormatVersion?: number;
     }
   ): Promise<SyncPackageUploadSessionRecord | null>;
@@ -1052,10 +1052,7 @@ export const createCrossIdentitySyncRepository = (
       return null;
     }
     validateEncryptedSyncPackageManifest(input.packageManifest);
-    const totalBytes = assertNonNegativeInteger(
-      input.totalBytes ?? 0,
-      "totalBytes"
-    );
+    const totalBytes = assertNonNegativeInteger(input.totalBytes, "totalBytes");
     const packageFormatVersion = assertPositiveInteger(
       input.packageFormatVersion ?? 1,
       "packageFormatVersion"

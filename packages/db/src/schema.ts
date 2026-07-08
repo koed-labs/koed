@@ -98,7 +98,7 @@ export const externalAuthLinkStatus = pgEnum("external_auth_link_status", [
   "disabled"
 ]);
 export const deploymentProfile = pgEnum("deployment_profile", [
-  "developer_local",
+  "developer",
   "local_personal",
   "private_vps",
   "team_self_hosted",
@@ -1748,7 +1748,7 @@ export const logicalMemories = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
     sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
-      onDelete: "set null"
+      onDelete: "cascade"
     }),
     logicalKey: text("logical_key").notNull(),
     lineage: jsonb("lineage")
@@ -1804,7 +1804,7 @@ export const memoryReplicas = pgTable(
     replicaRole: syncReplicaRole("replica_role").notNull(),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
     sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
-      onDelete: "set null"
+      onDelete: "cascade"
     }),
     externalReplicaId: text("external_replica_id"),
     freshnessStatus: text("freshness_status").notNull().default("unknown"),
@@ -1878,7 +1878,7 @@ export const crossIdentitySyncRelationships = pgTable(
     }),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
     sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
-      onDelete: "set null"
+      onDelete: "cascade"
     }),
     syncMode: syncMode("sync_mode").notNull().default("live"),
     state: syncRelationshipState("state").notNull().default("created"),

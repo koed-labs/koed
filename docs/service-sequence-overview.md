@@ -304,7 +304,7 @@ Team-manager view remains
 owner/admin and records `team_manager_redacted` audit metadata. Both views link
 to support-safe related surfaces such as `/ops/status`, authenticated
 capabilities, entitlement, billing-seat, and audit-event routes; global
-runtime, queue, backup, and readiness state stays in `/ops/status`. Any
+runtime, queue, backup, and readiness state stay in `/ops/status`. Any
 raw-content break-glass flow must be separately scoped, approved, expiring,
 audited, and customer-visible; support/admin tooling must not use normal recall
 routes as an impersonation path.

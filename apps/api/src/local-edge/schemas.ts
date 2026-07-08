@@ -22,26 +22,36 @@ export const localEdgeRouteModeSchema = z.enum([
   "queued_sync_handoff"
 ]);
 
-export const createDeviceEnrollmentChallengeSchema = z.object({
-  challenge_hash: z.string().min(32),
-  upstream_backend_id: z.string().trim().min(1).max(160),
-  device_instance_id: z.string().trim().min(1).max(160).optional(),
-  device_label: z.string().trim().min(1).max(160).optional(),
-  requested_operation_families: z
-    .array(operationFamilySchema)
-    .max(20)
-    .optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-  ttl_seconds: z.number().int().min(60).max(3600).default(600)
-});
+export const createDeviceEnrollmentChallengeSchema = z
+  .object({
+    challenge_hash: z.string().min(32),
+    upstream_backend_id: z.string().trim().min(1).max(160),
+    device_instance_id: z.string().trim().min(1).max(160).optional(),
+    device_label: z.string().trim().min(1).max(160).optional(),
+    requested_operation_families: z
+      .array(operationFamilySchema)
+      .max(20)
+      .optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+    ttl_seconds: z.number().int().min(60).max(3600).default(600)
+  })
+  .superRefine((input, context) => {
+    if (input.requested_operation_families?.includes("admin")) {
+      context.addIssue({
+        code: "custom",
+        path: ["requested_operation_families"],
+        message:
+          "admin operation family cannot be requested through browser-mediated device enrollment"
+      });
+    }
+  });
 
 export const redeemDeviceEnrollmentChallengeSchema = z
   .object({
     challenge_hash: z.string().min(32),
     credential_key_id: z.string().trim().min(16).max(160),
-    verifier_kind: z.enum(["secret_hash", "public_key_jwk"]),
+    verifier_kind: z.literal("secret_hash"),
     verifier_secret: z.string().min(32).optional(),
-    public_key_jwk: z.record(z.string(), z.unknown()).optional(),
     operation_families: z.array(operationFamilySchema).max(20).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     expires_at: z.coerce.date().optional()
@@ -54,11 +64,12 @@ export const redeemDeviceEnrollmentChallengeSchema = z
         message: "verifier_secret is required for secret_hash credentials"
       });
     }
-    if (input.verifier_kind === "public_key_jwk" && !input.public_key_jwk) {
+    if (input.operation_families?.includes("admin")) {
       context.addIssue({
         code: "custom",
-        path: ["public_key_jwk"],
-        message: "public_key_jwk is required for public_key_jwk credentials"
+        path: ["operation_families"],
+        message:
+          "admin operation family cannot be granted through browser-mediated device enrollment"
       });
     }
   });

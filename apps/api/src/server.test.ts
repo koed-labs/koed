@@ -2103,6 +2103,17 @@ const createFakeRepository = () => {
       capturedSessions.set(id, record);
       return record;
     },
+    async getCapturedSession(actor, sessionId) {
+      const session = capturedSessions.get(sessionId);
+      if (
+        !session ||
+        session.ownerUserId !== actor.userId ||
+        session.visibility !== "personal"
+      ) {
+        return null;
+      }
+      return session;
+    },
     async updateCapturedSessionTitle(actor, sessionId, input) {
       const session = capturedSessions.get(sessionId);
       const title = input.title.replace(/\s+/g, " ").trim();
@@ -5747,6 +5758,16 @@ describe("account and access flows", () => {
         }
       }
     });
+    const deniedAdminChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstream_backend_id: "team-vps",
+        requested_operation_families: ["team_workspace_read", "admin"]
+      }
+    });
     await app.inject({
       method: "POST",
       url: "/v1/local-edge/device-enrollments/challenges",
@@ -5768,6 +5789,17 @@ describe("account and access flows", () => {
         verifier_kind: "secret_hash",
         verifier_secret: deviceSecret,
         operation_families: ["team_workspace_read", "admin"]
+      }
+    });
+    const deniedPublicKeyRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: challengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "public_key_jwk",
+        public_key_jwk: { kty: "OKP", crv: "Ed25519", x: "unused" }
       }
     });
     const boundedOverScopedRedeem = await app.inject({
@@ -5847,7 +5879,9 @@ describe("account and access flows", () => {
 
     expect(deniedTokenChallenge.statusCode).toBe(401);
     expect(createdChallenge.statusCode).toBe(200);
+    expect(deniedAdminChallenge.statusCode).toBe(400);
     expect(deniedOverScopedRedeem.statusCode).toBe(400);
+    expect(deniedPublicKeyRedeem.statusCode).toBe(400);
     expect(boundedOverScopedRedeem.statusCode).toBe(200);
     expect(redeemed.statusCode).toBe(200);
     expect(JSON.stringify(redeemed.json())).not.toContain(deviceSecret);
@@ -6046,6 +6080,52 @@ describe("account and access flows", () => {
     expect(blockedLocalEdgeProxy.statusCode).toBe(400);
     expect(blockedMislabeledAdminProxy.statusCode).toBe(400);
     expect(upstreamCalls).toHaveLength(1);
+  });
+
+  it("does not expose local-edge runtime operations from non-local deployment profiles", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "non-local-edge-profile@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const status = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: {
+        authorization: `Koed-Device device-key-${randomUUID()}:secret-${randomUUID()}`
+      }
+    });
+    const decision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: { operation_family: "team_workspace_read" }
+    });
+    const proxied = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: {
+        authorization: `Koed-Device device-key-${randomUUID()}:secret-${randomUUID()}`
+      },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/memory/answer",
+        body: { query: "postgres" }
+      }
+    });
+    await app.close();
+
+    expect(status.statusCode).toBe(404);
+    expect(decision.statusCode).toBe(404);
+    expect(proxied.statusCode).toBe(404);
   });
 
   it("does not route local-edge operations with only expired device credentials", async () => {
@@ -6513,6 +6593,20 @@ describe("account and access flows", () => {
         teamId: team.id
       }
     });
+    const ownedSession = await repository.createCapturedSession(
+      { userId: jsonBody<{ user: { id: string } }>(registered).user.id },
+      { sourceRuntime: "codex", captureMethod: "mcp" }
+    );
+    const rejectedOtherSession = await app.inject({
+      method: "POST",
+      url: "/v1/analytics/activation-events",
+      headers: { cookie: cookieHeader(otherRegistered) },
+      payload: {
+        event: "first_capture_completed",
+        surface: "capture_hook",
+        sessionId: ownedSession.id
+      }
+    });
     const funnel = await app.inject({
       method: "GET",
       url: `/v1/analytics/activation-funnel?teamId=${team.id}`,
@@ -6554,6 +6648,7 @@ describe("account and access flows", () => {
     expect(rejectedWrongShape.statusCode).toBe(400);
     expect(rejectedApiToken.statusCode).toBe(401);
     expect(rejectedOtherTeam.statusCode).toBe(403);
+    expect(rejectedOtherSession.statusCode).toBe(403);
     expect(rejectedOtherTeamFunnel.statusCode).toBe(403);
     expect(funnel.statusCode).toBe(200);
     expect(

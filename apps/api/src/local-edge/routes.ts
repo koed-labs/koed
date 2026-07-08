@@ -2,6 +2,10 @@ import type { DeviceCredentialRecord } from "@koed/db";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
+  localEdgeDeploymentModes,
+  type RouteDeploymentMode
+} from "../server/route-identity.js";
+import {
   createDeviceEnrollmentChallengeSchema,
   deviceCredentialParamsSchema,
   localEdgeRouteDecisionSchema,
@@ -109,6 +113,18 @@ const redactOptionalMetadata = (
 ): Record<string, unknown> | undefined =>
   value === undefined ? undefined : redactMetadataSecrets(value);
 
+const assertLocalEdgeRuntimeProfile = (
+  profile: RouteDeploymentMode,
+  allowed: readonly RouteDeploymentMode[] = localEdgeDeploymentModes
+) => {
+  if (!allowed.includes(profile)) {
+    throw Object.assign(
+      new Error("Local edge route is unavailable for this deployment profile"),
+      { statusCode: 404 }
+    );
+  }
+};
+
 const redactMetadataValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     return value.map(redactMetadataValue);
@@ -178,7 +194,7 @@ export const registerLocalEdgeRoutes = (
           verifierHash: input.verifier_secret
             ? hashSecret(input.verifier_secret)
             : null,
-          publicKeyJwk: input.public_key_jwk,
+          publicKeyJwk: null,
           operationFamilies: input.operation_families,
           metadata: redactOptionalMetadata(input.metadata),
           expiresAt: input.expires_at
@@ -237,17 +253,18 @@ export const registerLocalEdgeRoutes = (
     "/v1/local-edge/device-credentials/status",
     { preHandler: memoryReadRateLimit },
     async (request) => {
-      const context = await authenticateDeviceCredential(request);
+      assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
+      const authContext = await authenticateDeviceCredential(request);
 
       return {
         ok: true,
         auth: "device_credential",
         user: {
-          id: context.user.id,
-          email: context.user.email,
-          displayName: context.user.displayName
+          id: authContext.user.id,
+          email: authContext.user.email,
+          displayName: authContext.user.displayName
         },
-        credential: publicDeviceCredential(context.credential)
+        credential: publicDeviceCredential(authContext.credential)
       };
     }
   );
@@ -256,6 +273,7 @@ export const registerLocalEdgeRoutes = (
     "/v1/local-edge/route-decisions",
     { preHandler: memoryReadRateLimit },
     async (request) => {
+      assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const repo = requireRepository();
       const user = await authenticateSession(request);
       const input = localEdgeRouteDecisionSchema.parse(request.body);
@@ -304,6 +322,7 @@ export const registerLocalEdgeRoutes = (
     "/v1/local-edge/upstream-operations",
     { preHandler: memoryWriteRateLimit },
     async (request, reply) => {
+      assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const repo = requireRepository();
       const authContext = await authenticateDeviceCredential(request);
       const input = localEdgeUpstreamOperationSchema.parse(request.body);

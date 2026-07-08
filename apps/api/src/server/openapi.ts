@@ -73,35 +73,34 @@ const responsesForContract = (contract: RouteIdentityContract) => {
 const securityForIdentity = (
   identity: RouteIdentity
 ): Array<OpenApiSecurityRequirement | Record<string, never>> => {
-  if (identity === "public") {
-    return [];
+  switch (identity) {
+    case "public":
+      return [];
+    case "optional_session":
+      return [{}, { sessionCookie: [] }];
+    case "session":
+      return [{ sessionCookie: [] }];
+    case "api_token":
+      return [{ bearerApiToken: [] }];
+    case "session_or_api_token":
+      return [{ sessionCookie: [] }, { bearerApiToken: [] }];
+    case "session_or_device_credential":
+      return [{ sessionCookie: [] }, { deviceCredential: [] }];
+    case "conditional_team_session_or_device":
+      return [
+        { sessionCookie: [] },
+        { bearerApiToken: [] },
+        { deviceCredential: [] }
+      ];
+    case "device_credential":
+      return [{ deviceCredential: [] }];
+    case "internal_service_token":
+      return [{ bearerApiToken: [] }];
+    case "upstream_credential":
+      return [{ deviceCredential: [] }];
   }
-  if (identity === "optional_session") {
-    return [{}, { sessionCookie: [] }];
-  }
-  if (identity === "session") {
-    return [{ sessionCookie: [] }];
-  }
-  if (identity === "api_token") {
-    return [{ bearerApiToken: [] }];
-  }
-  if (identity === "session_or_api_token") {
-    return [{ sessionCookie: [] }, { bearerApiToken: [] }];
-  }
-  if (identity === "session_or_device_credential") {
-    return [{ sessionCookie: [] }, { deviceCredential: [] }];
-  }
-  if (identity === "conditional_team_session_or_device") {
-    return [
-      { sessionCookie: [] },
-      { bearerApiToken: [] },
-      { deviceCredential: [] }
-    ];
-  }
-  if (identity === "device_credential") {
-    return [{ deviceCredential: [] }];
-  }
-  return [];
+  const exhaustive: never = identity;
+  throw new Error(`Unhandled route identity: ${exhaustive}`);
 };
 
 const pathItemFor = (contracts: readonly RouteIdentityContract[]) =>
@@ -134,9 +133,11 @@ export const openApiDocument = {
     securitySchemes: {
       bearerApiToken: { type: "http", scheme: "bearer" },
       deviceCredential: {
-        type: "http",
-        scheme: "bearer",
-        bearerFormat: "Koed-Device keyId:secret"
+        type: "apiKey",
+        in: "header",
+        name: "Authorization",
+        description:
+          "Use the custom device credential header value: Koed-Device <credentialKeyId>:<secret>."
       },
       sessionCookie: {
         type: "apiKey",

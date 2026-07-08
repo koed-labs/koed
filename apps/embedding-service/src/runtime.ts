@@ -503,9 +503,7 @@ export class EmbeddingRuntime {
     if (this.config.modelPath) {
       return this.config.modelPath;
     }
-    throw new Error(
-      "MODEL_PATH is required for the TypeScript Embedding Service"
-    );
+    return `/models/${this.config.modelFile}`;
   }
 
   private resolveRerankerModelPath(): string {

@@ -301,18 +301,13 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
     credentialKeyId: string;
     verifierHash: string;
   }): Promise<DeviceCredentialAuthContext | null> {
-    const rows = await db
-      .select({
-        credential: deviceCredentials,
-        user: {
-          id: users.id,
-          email: users.email,
-          displayName: users.displayName,
-          passwordHash: users.passwordHash
-        }
+    const updatedRows = await db
+      .update(deviceCredentials)
+      .set({
+        lastUsedAt: sql`now()`,
+        lastValidatedAt: sql`now()`,
+        updatedAt: sql`now()`
       })
-      .from(deviceCredentials)
-      .innerJoin(users, eq(users.id, deviceCredentials.ownerUserId))
       .where(
         and(
           eq(deviceCredentials.credentialKeyId, input.credentialKeyId),
@@ -323,30 +318,46 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
             isNull(deviceCredentials.expiresAt),
             gt(deviceCredentials.expiresAt, sql`now()`)
           ),
+          sql`exists (
+            select 1
+            from ${users}
+            where ${users.id} = ${deviceCredentials.ownerUserId}
+              and ${users.disabledAt} is null
+              and ${users.deletedAt} is null
+          )`
+        )
+      )
+      .returning();
+
+    const credential = updatedRows[0];
+    if (!credential) {
+      return null;
+    }
+
+    const userRows = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        displayName: users.displayName,
+        passwordHash: users.passwordHash
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.id, credential.ownerUserId),
           isNull(users.disabledAt),
           isNull(users.deletedAt)
         )
       )
       .limit(1);
-
-    const row = rows[0];
-    if (!row) {
+    const user = userRows[0];
+    if (!user) {
       return null;
     }
 
-    const updatedRows = await db
-      .update(deviceCredentials)
-      .set({
-        lastUsedAt: sql`now()`,
-        lastValidatedAt: sql`now()`,
-        updatedAt: sql`now()`
-      })
-      .where(eq(deviceCredentials.id, row.credential.id))
-      .returning();
-
     return {
-      user: mapUserRecord(row.user) as UserRecord,
-      credential: mapDeviceCredentialRecord(updatedRows[0] ?? row.credential)
+      user: mapUserRecord(user) as UserRecord,
+      credential: mapDeviceCredentialRecord(credential)
     };
   }
 });

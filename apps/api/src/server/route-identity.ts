@@ -23,18 +23,15 @@ const teamDeploymentModes = [
   "koed_managed_cloud"
 ] as const satisfies readonly RouteDeploymentMode[];
 
-const remoteEnrollmentDeploymentModes = [
-  "private_vps",
-  "team_self_hosted",
-  "koed_managed_cloud"
-] as const satisfies readonly RouteDeploymentMode[];
+const remoteEnrollmentDeploymentModes =
+  allDeploymentModes satisfies readonly RouteDeploymentMode[];
 
 const workosDeploymentModes = [
   "team_self_hosted",
   "koed_managed_cloud"
 ] as const satisfies readonly RouteDeploymentMode[];
 
-const localEdgeDeploymentModes = [
+export const localEdgeDeploymentModes = [
   "developer",
   "local_personal"
 ] as const satisfies readonly RouteDeploymentMode[];

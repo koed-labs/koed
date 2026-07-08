@@ -18,6 +18,7 @@ import type {
 
 export interface MemoryQuestionRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  encryptedMemoryQuestionSearchBatchSize?: number;
 }
 
 export interface MemoryQuestionRepository {
@@ -279,6 +280,10 @@ export const createMemoryQuestionRepository = (
   options: MemoryQuestionRepositoryOptions = {}
 ): MemoryQuestionRepository => {
   const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
+  const encryptedSearchBatchSize = Math.min(
+    Math.max(options.encryptedMemoryQuestionSearchBatchSize ?? 500, 1),
+    500
+  );
 
   const persistEncryptedQuestionField = async (
     client: pg.Pool | pg.PoolClient,
@@ -704,8 +709,88 @@ export const createMemoryQuestionRepository = (
       const suppressPlaintextPayload =
         managedCloudPlaintextMemoryPayloadsDisabled();
       const searchText = input.query?.trim() || null;
-      const rawLimit = suppressPlaintextPayload && searchText ? 500 : limit;
-      const rawOffset = suppressPlaintextPayload && searchText ? 0 : offset;
+      const targetMatchCount = offset + limit;
+      const selectQuestions = async (
+        queryText: string | null,
+        rawLimit: number,
+        rawOffset: number
+      ) =>
+        await pool.query<MemoryQuestionShellRow>(
+          `
+          select
+            id, owner_user_id, visibility, origin, retrieval_scope, search_domain,
+            workspace_id, project_name, project_path, session_id, thread_id,
+            thread_name, query, answer_markdown, left(answer_markdown, 280) as answer_preview,
+            error_message, status, created_at, updated_at, answered_at,
+            processing_started_at, processing_lease_until, attempt_count,
+            last_error_message, evidence,
+            jsonb_array_length(coalesce(evidence, '[]'::jsonb)) as evidence_count
+          from memory_questions
+          where owner_user_id = $1
+            and visibility = 'personal'
+            and ($2::memory_search_domain is null or search_domain = $2)
+            and ($3::text is null or workspace_id = $3)
+            and ($4::uuid is null or session_id = $4)
+            and ($8::memory_question_status is null or status = $8)
+            and (
+              $5::text is null
+              or query ilike '%' || $5 || '%'
+              or coalesce(answer_markdown, '') ilike '%' || $5 || '%'
+              or coalesce(error_message, '') ilike '%' || $5 || '%'
+              or coalesce(project_name, '') ilike '%' || $5 || '%'
+              or coalesce(thread_name, '') ilike '%' || $5 || '%'
+            )
+          order by created_at desc, id desc
+          limit $6 offset $7
+        `,
+          [
+            actor.userId,
+            input.searchDomain ?? null,
+            input.workspaceId ?? null,
+            input.sessionId ?? null,
+            queryText,
+            rawLimit,
+            rawOffset,
+            input.status ?? null
+          ]
+        );
+
+      if (suppressPlaintextPayload && searchText) {
+        const needle = searchText.toLowerCase();
+        const matchedRows: MemoryQuestionShellRow[] = [];
+        let rawOffset = 0;
+
+        while (matchedRows.length < targetMatchCount) {
+          const result = await selectQuestions(
+            null,
+            encryptedSearchBatchSize,
+            rawOffset
+          );
+          if (result.rows.length === 0) {
+            break;
+          }
+          const hydratedRows = await Promise.all(
+            result.rows.map((row) => hydrateQuestionRow(actor, row))
+          );
+          matchedRows.push(
+            ...hydratedRows.filter((row) =>
+              [
+                row.query,
+                row.answer_markdown ?? "",
+                row.error_message ?? "",
+                row.project_name ?? "",
+                row.thread_name ?? ""
+              ].some((value) => value.toLowerCase().includes(needle))
+            )
+          );
+          rawOffset += result.rows.length;
+        }
+
+        return matchedRows
+          .slice(offset, targetMatchCount)
+          .map(mapMemoryQuestionShell);
+      }
+
       const result = await pool.query<MemoryQuestionShellRow>(
         `
         select
@@ -739,9 +824,9 @@ export const createMemoryQuestionRepository = (
           input.searchDomain ?? null,
           input.workspaceId ?? null,
           input.sessionId ?? null,
-          suppressPlaintextPayload ? null : searchText,
-          rawLimit,
-          rawOffset,
+          searchText,
+          limit,
+          offset,
           input.status ?? null
         ]
       );
@@ -749,25 +834,7 @@ export const createMemoryQuestionRepository = (
       const hydratedRows = await Promise.all(
         result.rows.map((row) => hydrateQuestionRow(actor, row))
       );
-      const filteredRows =
-        suppressPlaintextPayload && searchText
-          ? hydratedRows.filter((row) => {
-              const needle = searchText.toLowerCase();
-              return [
-                row.query,
-                row.answer_markdown ?? "",
-                row.error_message ?? "",
-                row.project_name ?? "",
-                row.thread_name ?? ""
-              ].some((value) => value.toLowerCase().includes(needle));
-            })
-          : hydratedRows;
-      return filteredRows
-        .slice(
-          suppressPlaintextPayload && searchText ? offset : 0,
-          suppressPlaintextPayload && searchText ? offset + limit : undefined
-        )
-        .map(mapMemoryQuestionShell);
+      return hydratedRows.map(mapMemoryQuestionShell);
     },
 
     async claimPendingMemoryQuestions(actor, input = {}) {

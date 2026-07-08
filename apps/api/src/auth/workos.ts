@@ -113,10 +113,18 @@ export const createWorkosAuthKitClient = (
         });
       }
 
-      const parsed = workosAuthenticateResponseSchema.parse(
+      const parsed = workosAuthenticateResponseSchema.safeParse(
         await response.json()
       );
-      const { user } = parsed;
+      if (!parsed.success) {
+        throw Object.assign(
+          new Error("Invalid WorkOS authentication response"),
+          {
+            statusCode: 502
+          }
+        );
+      }
+      const { user } = parsed.data;
       return {
         user: {
           id: user.id,
@@ -132,7 +140,7 @@ export const createWorkosAuthKitClient = (
             last_name: user.last_name ?? null
           }
         },
-        organizationId: parsed.organization_id ?? null
+        organizationId: parsed.data.organization_id ?? null
       };
     }
   };

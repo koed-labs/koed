@@ -376,14 +376,18 @@ export const createMemoryNodeRepository = (
         );
       }
       const titleForStorage =
-        suppressPlaintextPayload && input.title !== undefined
+        suppressPlaintextPayload &&
+        input.title !== undefined &&
+        input.title !== null
           ? ENCRYPTED_MEMORY_NODE_TEXT
           : input.title;
       const summaryTextForStorage = suppressPlaintextPayload
         ? ENCRYPTED_MEMORY_NODE_TEXT
         : input.summaryText;
       const bodyTextForStorage =
-        suppressPlaintextPayload && input.bodyText !== undefined
+        suppressPlaintextPayload &&
+        input.bodyText !== undefined &&
+        input.bodyText !== null
           ? ENCRYPTED_MEMORY_NODE_TEXT
           : input.bodyText;
 

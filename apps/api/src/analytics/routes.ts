@@ -93,6 +93,14 @@ export const registerAnalyticsRoutes = (
         if (!membership || membership.status !== "enabled") {
           throw forbidden("Team analytics event is not authorized");
         }
+      } else if (input.sessionId) {
+        const session = await repo.getCapturedSession(
+          { userId: user.id },
+          input.sessionId
+        );
+        if (!session) {
+          throw forbidden("Session analytics event is not authorized");
+        }
       }
 
       const target = targetFor(input, user.id);

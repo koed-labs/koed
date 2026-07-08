@@ -112,7 +112,8 @@ Local Operators can also run the same Drizzle migration path manually with:
 pnpm --filter @koed/db migrate:up
 ```
 
-See [docs/backup-restore.md](docs/backup-restore.md) and
+See [docs/backup-restore.md](docs/backup-restore.md),
+[docs/hosted-backups.md](docs/hosted-backups.md), and
 [docs/upgrades.md](docs/upgrades.md).
 
 ## Releases
@@ -143,6 +144,7 @@ services, and managed add-ons.
 - [Hosted database roles](docs/hosted-database-roles.md)
 - [Security](docs/security.md)
 - [Backup and restore](docs/backup-restore.md)
+- [Hosted backups](docs/hosted-backups.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
 - [License](docs/license.md)

@@ -1357,7 +1357,7 @@
           "tableTo": "sessions",
           "columnsFrom": ["source_session_id"],
           "columnsTo": ["id"],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
         "cross_identity_sync_relationships_revoked_by_user_id_users_id_fk": {
@@ -3234,7 +3234,7 @@
           "tableTo": "sessions",
           "columnsFrom": ["source_session_id"],
           "columnsTo": ["id"],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -5592,7 +5592,7 @@
           "tableTo": "sessions",
           "columnsFrom": ["source_session_id"],
           "columnsTo": ["id"],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -9437,7 +9437,7 @@
       "name": "deployment_profile",
       "schema": "public",
       "values": [
-        "developer_local",
+        "developer",
         "local_personal",
         "private_vps",
         "team_self_hosted",

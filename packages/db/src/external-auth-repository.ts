@@ -211,6 +211,18 @@ export const createExternalAuthRepository = (db: KoedDb) => ({
           .from(users)
           .where(and(eq(users.email, email), isNull(users.deletedAt)))
           .limit(1);
+        if (
+          sameEmailRows[0] &&
+          existingIdentity &&
+          sameEmailRows[0].id === existingIdentity.userId
+        ) {
+          throw Object.assign(
+            new Error(
+              "External identity is linked to an inactive Koed account"
+            ),
+            { statusCode: 403 }
+          );
+        }
         if (sameEmailRows[0] && !existingIdentity) {
           throw Object.assign(
             new Error(
@@ -258,6 +270,7 @@ export const createExternalAuthRepository = (db: KoedDb) => ({
             externalAuthIdentities.providerUserId
           ],
           set: {
+            userId: user.id,
             email,
             emailVerified: input.emailVerified ?? false,
             displayName: input.displayName?.trim() || null,

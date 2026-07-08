@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import type { DeviceCredentialRecord } from "@koed/db";
 import type { CapturePolicy } from "../server/context.js";
 
@@ -53,6 +53,12 @@ export interface LocalEdgeUpstreamRegistry {
   backends: LocalEdgeUpstreamBackend[];
 }
 
+interface RegistryCacheEntry {
+  mtimeMs: number;
+  refreshAfterMs: number;
+  registry: LocalEdgeUpstreamRegistry;
+}
+
 type RoutePolicyKey =
   | "personalMemoryRead"
   | "teamWorkspaceRead"
@@ -82,26 +88,53 @@ const defaultRouteMode: Record<LocalEdgeOperationFamily, LocalEdgeRouteMode> = {
   admin: "live_upstream_proxy"
 };
 
+const registryCache = new Map<string, RegistryCacheEntry>();
+const registryRefreshIntervalMs = 1000;
+
 export const readLocalEdgeUpstreamRegistry = (
   path: string,
   deps: {
     existsSync?: typeof existsSync;
     readFileSync?: typeof readFileSync;
+    statSync?: typeof statSync;
   } = {}
 ): LocalEdgeUpstreamRegistry => {
   const resolvedExistsSync = deps.existsSync ?? existsSync;
   const resolvedReadFileSync = deps.readFileSync ?? readFileSync;
+  const resolvedStatSync = deps.statSync ?? statSync;
+  const now = Date.now();
+  const cached = registryCache.get(path);
+  if (cached && cached.refreshAfterMs > now) {
+    return cached.registry;
+  }
   if (!resolvedExistsSync(path)) {
-    return { backends: [] };
+    const registry = { backends: [] };
+    registryCache.set(path, {
+      mtimeMs: -1,
+      refreshAfterMs: now + registryRefreshIntervalMs,
+      registry
+    });
+    return registry;
+  }
+  const mtimeMs = resolvedStatSync(path).mtimeMs;
+  if (cached?.mtimeMs === mtimeMs) {
+    cached.refreshAfterMs = now + registryRefreshIntervalMs;
+    return cached.registry;
   }
   const parsed = JSON.parse(
     resolvedReadFileSync(path, "utf8") as string
   ) as Partial<LocalEdgeUpstreamRegistry>;
-  return {
+  const registry = {
     backends: Array.isArray(parsed.backends)
       ? parsed.backends.filter(isUpstreamBackend)
       : []
   };
+  registryCache.set(path, {
+    mtimeMs,
+    refreshAfterMs: now + registryRefreshIntervalMs,
+    registry
+  });
+  return registry;
 };
 
 export const upstreamBackendById = (

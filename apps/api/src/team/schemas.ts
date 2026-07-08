@@ -78,7 +78,10 @@ export const teamSessionShareGrantIdParamsSchema = z.object({
 
 export const listTeamSessionShareGrantsQuerySchema = z
   .object({
-    includeRevoked: z.coerce.boolean().optional(),
+    includeRevoked: z
+      .enum(["true", "false"])
+      .transform((value) => value === "true")
+      .optional(),
     limit: z.coerce.number().int().min(1).max(200).optional()
   })
   .strict();

@@ -156,100 +156,129 @@ export const registerAuthRoutes = (
     }
   );
 
-  app.get("/auth/workos/login", async (request, reply) => {
-    if (!workosAuthKitAvailable()) {
-      return reply.status(404).send({ error: "WorkOS AuthKit is unavailable" });
+  app.get(
+    "/auth/workos/login",
+    { preHandler: authRateLimit },
+    async (request, reply) => {
+      if (!workosAuthKitAvailable()) {
+        return reply
+          .status(404)
+          .send({ error: "WorkOS AuthKit is unavailable" });
+      }
+      const state = createOpaqueSecret("wos");
+      const returnTo = safeReturnTo(
+        (request.query as { return_to?: string } | undefined)?.return_to
+      );
+      reply.setCookie(workosStateCookieName, state, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: config.cookieSecure,
+        path: "/auth/workos/callback",
+        maxAge: workosStateTtlSeconds
+      });
+      reply.setCookie(workosReturnToCookieName, returnTo, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: config.cookieSecure,
+        path: "/auth/workos/callback",
+        maxAge: workosStateTtlSeconds
+      });
+      return reply.redirect(
+        context.workos.client.getAuthorizationUrl({ state })
+      );
     }
-    const state = createOpaqueSecret("wos");
-    const returnTo = safeReturnTo(
-      (request.query as { return_to?: string } | undefined)?.return_to
-    );
-    reply.setCookie(workosStateCookieName, state, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      path: "/auth/workos/callback",
-      maxAge: workosStateTtlSeconds
-    });
-    reply.setCookie(workosReturnToCookieName, returnTo, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      path: "/auth/workos/callback",
-      maxAge: workosStateTtlSeconds
-    });
-    return reply.redirect(context.workos.client.getAuthorizationUrl({ state }));
-  });
+  );
 
-  app.get("/auth/workos/callback", async (request, reply) => {
-    if (!workosAuthKitAvailable()) {
-      return reply.status(404).send({ error: "WorkOS AuthKit is unavailable" });
-    }
-    const query = request.query as { code?: string; state?: string };
-    if (!query.code || !query.state) {
-      return reply
-        .status(400)
-        .send({ error: "Missing WorkOS callback code or state" });
-    }
-    if (request.cookies[workosStateCookieName] !== query.state) {
-      return reply.status(400).send({ error: "Invalid WorkOS callback state" });
-    }
+  app.get(
+    "/auth/workos/callback",
+    { preHandler: authRateLimit },
+    async (request, reply) => {
+      if (!workosAuthKitAvailable()) {
+        return reply
+          .status(404)
+          .send({ error: "WorkOS AuthKit is unavailable" });
+      }
+      const query = request.query as { code?: string; state?: string };
+      if (!query.code || !query.state) {
+        return reply
+          .status(400)
+          .send({ error: "Missing WorkOS callback code or state" });
+      }
+      if (request.cookies[workosStateCookieName] !== query.state) {
+        return reply
+          .status(400)
+          .send({ error: "Invalid WorkOS callback state" });
+      }
 
-    const repo = requireRepository();
-    const authentication = await context.workos.client.authenticateWithCode({
-      code: query.code,
-      ipAddress:
-        firstForwardedForAddress(request.headers["x-forwarded-for"]) ??
-        request.ip,
-      userAgent: request.headers["user-agent"]
-    });
-    if (!authentication.user.emailVerified) {
+      const repo = requireRepository();
+      let authentication;
+      try {
+        authentication = await context.workos.client.authenticateWithCode({
+          code: query.code,
+          ipAddress:
+            firstForwardedForAddress(request.headers["x-forwarded-for"]) ??
+            request.ip,
+          userAgent: request.headers["user-agent"]
+        });
+      } catch (error) {
+        const statusCode =
+          typeof error === "object" &&
+          error !== null &&
+          "statusCode" in error &&
+          typeof error.statusCode === "number"
+            ? error.statusCode
+            : 502;
+        return reply
+          .status(statusCode)
+          .send({ error: "WorkOS authentication failed" });
+      }
+      if (!authentication.user.emailVerified) {
+        reply.clearCookie(workosStateCookieName, {
+          path: "/auth/workos/callback"
+        });
+        reply.clearCookie(workosReturnToCookieName, {
+          path: "/auth/workos/callback"
+        });
+        return reply
+          .status(403)
+          .send({ error: "Verified WorkOS email required" });
+      }
+      const displayName = workosDisplayName(authentication.user);
+      const result = await repo.upsertExternalAuthSession({
+        provider: "workos_authkit",
+        providerEnvironment: config.workos.providerEnvironment,
+        providerUserId: authentication.user.id,
+        email: authentication.user.email,
+        emailVerified: authentication.user.emailVerified,
+        displayName,
+        profile: authentication.user.profile,
+        organization: authentication.organizationId
+          ? {
+              providerOrganizationId: authentication.organizationId,
+              name: authentication.organizationId,
+              metadata: { source: "workos_authkit" }
+            }
+          : null
+      });
+
+      const sessionSecret = createOpaqueSecret("cms");
+      await repo.createSession(
+        result.user.id,
+        hashSecret(sessionSecret),
+        new Date(Date.now() + sessionTtlMs)
+      );
+      setSessionCookie(reply, sessionSecret);
       reply.clearCookie(workosStateCookieName, {
         path: "/auth/workos/callback"
       });
       reply.clearCookie(workosReturnToCookieName, {
         path: "/auth/workos/callback"
       });
-      return reply
-        .status(403)
-        .send({ error: "Verified WorkOS email required" });
+      return reply.redirect(
+        safeReturnTo(request.cookies[workosReturnToCookieName])
+      );
     }
-    const displayName = workosDisplayName(authentication.user);
-    const result = await repo.upsertExternalAuthSession({
-      provider: "workos_authkit",
-      providerEnvironment: config.workos.providerEnvironment,
-      providerUserId: authentication.user.id,
-      email: authentication.user.email,
-      emailVerified: authentication.user.emailVerified,
-      displayName,
-      profile: authentication.user.profile,
-      organization: authentication.organizationId
-        ? {
-            providerOrganizationId: authentication.organizationId,
-            name: authentication.organizationId,
-            metadata: { source: "workos_authkit" }
-          }
-        : null
-    });
-
-    const sessionSecret = createOpaqueSecret("cms");
-    await repo.createSession(
-      result.user.id,
-      hashSecret(sessionSecret),
-      new Date(Date.now() + sessionTtlMs)
-    );
-    setSessionCookie(reply, sessionSecret);
-    reply.clearCookie(workosStateCookieName, {
-      path: "/auth/workos/callback"
-    });
-    reply.clearCookie(workosReturnToCookieName, {
-      path: "/auth/workos/callback"
-    });
-
-    return reply.redirect(
-      safeReturnTo(request.cookies[workosReturnToCookieName])
-    );
-  });
+  );
 
   app.post("/auth/logout", async (request, reply) => {
     const repo = requireRepository();

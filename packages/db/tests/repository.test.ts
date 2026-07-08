@@ -1592,6 +1592,58 @@ describeDb("memory repository visibility", () => {
     });
   });
 
+  it("keeps null paid managed-cloud Memory Node title and body fields null", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 44).toString("base64")
+      );
+      const encryptedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider
+      });
+      const owner = await encryptedRepo.createUser({
+        email: `managed-cloud-null-node-fields-${randomUUID()}@example.com`
+      });
+      const node = await encryptedRepo.createMemoryNode(
+        { userId: owner.id },
+        {
+          visibility: "personal",
+          title: null,
+          summaryText: "Managed cloud null node fields summary sentinel",
+          bodyText: null
+        }
+      );
+
+      const stored = await pool.query<{
+        title: string | null;
+        body_text: string | null;
+        encrypted_optional_fields: number;
+      }>(
+        `
+          select
+            mn.title,
+            mn.body_text,
+            count(efp.id) filter (
+              where efp.source_column in ('title', 'body_text')
+            )::int as encrypted_optional_fields
+          from memory_nodes mn
+          left join encrypted_field_payloads efp
+            on efp.source_table = 'memory_nodes'
+           and efp.source_id = mn.id
+          where mn.id = $1
+          group by mn.id
+        `,
+        [node.id]
+      );
+
+      expect(stored.rows[0]).toMatchObject({
+        title: null,
+        body_text: null,
+        encrypted_optional_fields: 0
+      });
+      expect(node.title).toBeNull();
+    });
+  });
+
   it("stores paid managed-cloud embedding source text only in encrypted companions and hydrates retrieval rows", async () => {
     await withPaidManagedCloudProfile(async () => {
       const provider = createLocalTestKeyEnvelopeEncryptionProvider(
@@ -5986,6 +6038,63 @@ describeDb("memory repository visibility", () => {
     expect(JSON.stringify(identity?.profile)).not.toContain("refresh_token");
   });
 
+  it("relinks external AuthKit identity when its previous Koed user is inactive", async () => {
+    const providerUserId = `workos-${randomUUID()}`;
+    const created = await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: `external-auth-relink-${randomUUID()}@example.com`,
+      emailVerified: true,
+      displayName: "Original External User"
+    });
+    await pool.query("update users set disabled_at = now() where id = $1", [
+      created.user.id
+    ]);
+
+    await expect(
+      repo.upsertExternalAuthSession({
+        provider: "workos_authkit",
+        providerEnvironment: "test",
+        providerUserId,
+        email: created.user.email,
+        emailVerified: true,
+        displayName: "Inactive Same Email"
+      })
+    ).rejects.toMatchObject({
+      message: "External identity is linked to an inactive Koed account",
+      statusCode: 403
+    });
+
+    const relinked = await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: `external-auth-relink-new-${randomUUID()}@example.com`,
+      emailVerified: true,
+      displayName: "Relinked External User"
+    });
+    const seenAgain = await repo.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId,
+      email: relinked.user.email,
+      emailVerified: true,
+      displayName: "Relinked External User Again"
+    });
+    const identity = await repo.getExternalAuthIdentity({
+      provider: "workos_authkit",
+      providerEnvironment: "test",
+      providerUserId
+    });
+
+    expect(relinked.createdUser).toBe(true);
+    expect(relinked.user.id).not.toBe(created.user.id);
+    expect(seenAgain.createdUser).toBe(false);
+    expect(seenAgain.user.id).toBe(relinked.user.id);
+    expect(identity?.userId).toBe(relinked.user.id);
+  });
+
   it("records WorkOS organization mapping without granting Team membership", async () => {
     const providerUserId = `workos-${randomUUID()}`;
     const providerOrganizationId = `org-${randomUUID()}`;
@@ -8672,6 +8781,57 @@ describeDb("memory repository visibility", () => {
         answerPreview:
           "The obsidian retrieval plan landed in the Team launch doc.",
         evidenceCount: 2
+      });
+    });
+  });
+
+  it("searches encrypted Memory Questions past the first raw batch", async () => {
+    await withPaidManagedCloudProfile(async () => {
+      const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+        Buffer.alloc(32, 38).toString("base64")
+      );
+      const encryptedQuestionRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider: provider,
+        encryptedMemoryQuestionSearchBatchSize: 5
+      });
+      const alice = await repo.createUser({
+        email: `alice-question-deep-search-${randomUUID()}@example.com`
+      });
+      const target = await encryptedQuestionRepo.createMemoryQuestion(
+        { userId: alice.id },
+        {
+          origin: "mcp_memory_answer",
+          query: "Where is the deep encrypted launch retrieval marker?",
+          searchDomain: "global"
+        }
+      );
+
+      await Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          encryptedQuestionRepo.createMemoryQuestion(
+            { userId: alice.id },
+            {
+              origin: "mcp_memory_answer",
+              query: `Encrypted filler memory question ${index}`,
+              searchDomain: "global"
+            }
+          )
+        )
+      );
+      await pool.query(
+        "update memory_questions set created_at = now() - interval '2 days' where id = $1",
+        [target.id]
+      );
+
+      const shells = await encryptedQuestionRepo.listMemoryQuestions(
+        { userId: alice.id },
+        { query: "deep encrypted launch", limit: 10 }
+      );
+
+      expect(shells).toHaveLength(1);
+      expect(shells[0]).toMatchObject({
+        id: target.id,
+        query: "Where is the deep encrypted launch retrieval marker?"
       });
     });
   });

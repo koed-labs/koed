@@ -18,6 +18,8 @@ const openApiPaths = openApiDocument.paths as Record<
     }
   >
 >;
+const openApiSecuritySchemes = openApiDocument.components
+  .securitySchemes as Record<string, Record<string, unknown>>;
 
 describe("route identity contract", () => {
   it("has one implemented contract per method/path and exports all implemented routes through OpenAPI", () => {
@@ -45,6 +47,12 @@ describe("route identity contract", () => {
     ).toMatchObject({
       security: [{ deviceCredential: [] }],
       "x-koed-identity": "device_credential"
+    });
+    expect(openApiSecuritySchemes.deviceCredential).toMatchObject({
+      type: "apiKey",
+      in: "header",
+      name: "Authorization",
+      description: expect.stringContaining("Koed-Device")
     });
     expect(
       openApiPaths["/v1/local-edge/upstream-operations"]?.post

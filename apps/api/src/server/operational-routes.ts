@@ -217,9 +217,12 @@ const deliverOpsAlert = async (
     };
   }
 
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), 5000);
   try {
     const response = await alertFetch(webhookUrl, {
       method: "POST",
+      signal: abortController.signal,
       headers: {
         "content-type": "application/json",
         ...(webhookToken ? { authorization: `Bearer ${webhookToken}` } : {})
@@ -247,6 +250,8 @@ const deliverOpsAlert = async (
       redacted: true,
       reason: "alert_webhook_unavailable"
     };
+  } finally {
+    clearTimeout(timeout);
   }
 };
 
@@ -327,12 +332,18 @@ const collectEnvelopeEncryptionStatus = async (
       }
     };
   } catch {
+    const status = redactEnvelopeEncryptionProviderStatus({
+      mode: provider.mode,
+      keyId: provider.keyId,
+      keyVersion: provider.keyVersion,
+      status: "unavailable"
+    });
     return {
       status: "error",
       details: {
-        mode: provider.mode,
-        keyId: provider.keyId,
-        keyVersion: provider.keyVersion
+        mode: status.mode,
+        keyId: status.keyId,
+        keyVersion: status.keyVersion
       }
     };
   }
