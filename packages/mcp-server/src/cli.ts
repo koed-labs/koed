@@ -413,6 +413,23 @@ server.registerTool(
             ?.teamWorkspaceId
         : undefined;
     const team_workspace_id = input.team_workspace_id ?? mappedTeamWorkspaceId;
+    if (team_workspace_id) {
+      return jsonResponse({
+        markdown:
+          "Team Workspace recall requires scoped browser-session or device-credential authorization. This MCP Server is configured with a Personal Memory API Token, so Team recall is fail-closed until the upstream enrollment bridge in KOE-311 provides local device authorization.",
+        evidenceBundle: {
+          query: answerInput.query,
+          instructions:
+            "Team Workspace recall was requested but device/session authorization is not available to the MCP Server.",
+          evidence: [],
+          retrieval: {
+            mode: "team_workspace_auth_unavailable",
+            teamWorkspaceId: team_workspace_id,
+            followUpIssue: "KOE-311"
+          }
+        }
+      });
+    }
     const evidence = {
       markdown: "",
       evidenceBundle: {
