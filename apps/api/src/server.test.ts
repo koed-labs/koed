@@ -6020,7 +6020,8 @@ describe("account and access flows", () => {
     });
     const apiToken = jsonBody<TokenResponse>(createdToken).token;
     const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
-    const verifierHash = hashSecretForTest(`device-secret-${randomUUID()}`);
+    const verifierSecret = `device-secret-${randomUUID()}-${randomUUID()}`;
+    const verifierHash = hashSecretForTest(verifierSecret);
     const credentialKeyId = `device-key-${randomUUID()}`;
     const createdChallenge = await app.inject({
       method: "POST",
@@ -6035,14 +6036,15 @@ describe("account and access flows", () => {
         pending_credential: {
           credential_key_id: credentialKeyId,
           verifier_kind: "secret_hash",
-          verifier_hash: verifierHash,
+          verifier_secret: verifierSecret,
           operation_families: ["team_workspace_read"]
         },
         metadata: {
           backendDisplayName: "Team Backend",
           backendProfile: "remote",
           highLevelContext: "Team Workspace recall enrollment",
-          supportToken: "must-not-leak"
+          supportToken: "must-not-leak",
+          enrollmentDecision: "denied"
         }
       }
     });
@@ -6085,7 +6087,7 @@ describe("account and access flows", () => {
         pending_credential: {
           credential_key_id: `device-key-${randomUUID()}`,
           verifier_kind: "secret_hash",
-          verifier_hash: hashSecretForTest(`device-secret-${randomUUID()}`)
+          verifier_secret: `device-secret-${randomUUID()}-${randomUUID()}`
         }
       }
     });
@@ -6106,7 +6108,7 @@ describe("account and access flows", () => {
         challenge_hash: deniedChallengeHash,
         credential_key_id: `device-key-${randomUUID()}`,
         verifier_kind: "secret_hash",
-        verifier_hash: hashSecretForTest(`device-secret-${randomUUID()}`)
+        verifier_secret: `device-secret-${randomUUID()}-${randomUUID()}`
       }
     });
     const publicKeyCredentialChallenge = await app.inject({
@@ -6121,6 +6123,22 @@ describe("account and access flows", () => {
           credential_key_id: `device-key-${randomUUID()}`,
           verifier_kind: "public_key_jwk",
           public_key_jwk: { kty: "OKP", crv: "Ed25519", x: "test" }
+        }
+      }
+    });
+    const impossiblePendingScope = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstream_backend_id: "team-vps",
+        requested_operation_families: ["team_workspace_read"],
+        pending_credential: {
+          credential_key_id: `device-key-${randomUUID()}`,
+          verifier_kind: "secret_hash",
+          verifier_secret: `device-secret-${randomUUID()}-${randomUUID()}`,
+          operation_families: ["sync"]
         }
       }
     });
@@ -6144,6 +6162,7 @@ describe("account and access flows", () => {
       highLevelContext: "Team Workspace recall enrollment",
       supportToken: "[redacted]"
     });
+    expect(challenge.metadata).not.toHaveProperty("enrollmentDecision");
     expect(deniedTokenLookup.statusCode).toBe(401);
     expect(lookup.statusCode).toBe(200);
     expect(JSON.stringify(lookup.json())).not.toContain(verifierHash);
@@ -6156,8 +6175,9 @@ describe("account and access flows", () => {
     expect(
       jsonBody<{ challenge: { status: string } }>(denied).challenge.status
     ).toBe("denied");
-    expect(deniedRedeem.statusCode).toBe(400);
+    expect(deniedRedeem.statusCode).toBe(404);
     expect(publicKeyCredentialChallenge.statusCode).toBe(400);
+    expect(impossiblePendingScope.statusCode).toBe(400);
   });
 
   it("routes local-edge upstream operations only after policy, capability, and device checks", async () => {

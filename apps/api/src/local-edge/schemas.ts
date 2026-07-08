@@ -36,7 +36,7 @@ export const createDeviceEnrollmentChallengeSchema = z
       .object({
         credential_key_id: z.string().trim().min(16).max(160),
         verifier_kind: z.literal("secret_hash"),
-        verifier_hash: z.string().min(32),
+        verifier_secret: z.string().min(32),
         operation_families: z.array(operationFamilySchema).max(20).optional(),
         expires_at: z.coerce.date().optional()
       })

@@ -164,8 +164,12 @@ const redactMetadataSecrets = (value: unknown): Record<string, unknown> => {
 
 const redactOptionalMetadata = (
   value: Record<string, unknown> | undefined
-): Record<string, unknown> | undefined =>
-  value === undefined ? undefined : redactMetadataSecrets(value);
+): Record<string, unknown> | undefined => {
+  if (value === undefined) return undefined;
+  const metadata = redactMetadataSecrets(value);
+  delete metadata.enrollmentDecision;
+  return metadata;
+};
 
 const assertLocalEdgeRuntimeProfile = (
   profile: RouteDeploymentMode,
@@ -192,7 +196,8 @@ const redactMetadataValue = (value: unknown): unknown => {
 const pendingDeviceCredentialFromInput = (
   value: NonNullable<
     ReturnType<typeof createDeviceEnrollmentChallengeSchema.parse>
-  >["pending_credential"]
+  >["pending_credential"],
+  hashSecret: (secret: string) => string
 ): PendingDeviceCredential | null => {
   if (!value) {
     return null;
@@ -200,7 +205,7 @@ const pendingDeviceCredentialFromInput = (
   return {
     credentialKeyId: value.credential_key_id,
     verifierKind: value.verifier_kind,
-    verifierHash: value.verifier_hash,
+    verifierHash: hashSecret(value.verifier_secret),
     operationFamilies: value.operation_families,
     expiresAt: value.expires_at
   };
@@ -280,8 +285,25 @@ export const registerLocalEdgeRoutes = (
       await authenticateSession(request);
       const input = createDeviceEnrollmentChallengeSchema.parse(request.body);
       const pendingCredential = pendingDeviceCredentialFromInput(
-        input.pending_credential
+        input.pending_credential,
+        hashSecret
       );
+      const requestedOperationFamilies =
+        input.requested_operation_families ??
+        pendingCredential?.operationFamilies;
+      const requestedFamilySet = new Set(requestedOperationFamilies ?? []);
+      if (
+        pendingCredential?.operationFamilies?.some(
+          (family) => !requestedFamilySet.has(family)
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            "Pending credential operation families exceed enrollment challenge"
+          ),
+          { statusCode: 400 }
+        );
+      }
       const metadata = redactOptionalMetadata(input.metadata) ?? {};
       if (pendingCredential) {
         metadata[pendingDeviceCredentialMetadataKey] = pendingCredential;
@@ -291,7 +313,7 @@ export const registerLocalEdgeRoutes = (
         upstreamBackendId: input.upstream_backend_id,
         deviceInstanceId: input.device_instance_id,
         deviceLabel: input.device_label,
-        requestedOperationFamilies: input.requested_operation_families,
+        requestedOperationFamilies: requestedOperationFamilies,
         metadata,
         expiresAt: new Date(Date.now() + input.ttl_seconds * 1000)
       });
