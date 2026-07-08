@@ -8,6 +8,7 @@ import {
   capturePolicySchema,
   createMcpSessionSchema,
   effectivePolicyQuerySchema,
+  latestCapturedSessionQuerySchema,
   mcpSessionEventSchema,
   sessionIdParamsSchema
 } from "./capture-schemas.js";
@@ -115,6 +116,27 @@ export const registerCaptureRoutes = (
       );
 
       return { session, policy };
+    }
+  );
+
+  app.get(
+    "/v1/sessions/latest",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const query = latestCapturedSessionQuerySchema.parse(request.query);
+      const session = await repo.getLatestCapturedSessionForProject(
+        { userId: user.id },
+        { workspaceId: query.workspace_id }
+      );
+      if (!session) {
+        throw Object.assign(
+          new Error("No Personal Captured Session found for Project"),
+          { statusCode: 404 }
+        );
+      }
+      return { session };
     }
   );
 

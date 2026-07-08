@@ -29,6 +29,13 @@ import {
   type UpstreamRoutePolicyUpdate
 } from "./upstream-registry.js";
 import {
+  getProjectTeamWorkspaceLink,
+  linkProjectTeamWorkspace,
+  listProjectTeamWorkspaceLinks,
+  removeProjectTeamWorkspaceLink
+} from "./project-team-workspace-links.js";
+import { shareProjectCapturedSession } from "./team-dogfood.js";
+import {
   cancelUpstreamEnrollment,
   disconnectUpstreamBackendEnrollment,
   getUpstreamEnrollmentStatus,
@@ -59,6 +66,11 @@ Commands:
   upstream enroll status --json Print local upstream enrollment state
   upstream enroll cancel --json Cancel local upstream enrollment orchestration
   upstream disconnect --json Disable local upstream routes and enrollment state
+  team workspace link --json Link a local Project root to a Team Workspace id
+  team workspace list --json List local Project to Team Workspace links
+  team workspace show --json Show the Team Workspace link for a Project root
+  team workspace remove --json Remove the Team Workspace link for a Project root
+  team capture share-latest --json Share latest/selected Captured Session into linked Team Workspace
 
 Runtime providers:
   --provider homebrew       Use Homebrew-backed runtime assets (default)
@@ -97,6 +109,11 @@ export interface KoedServerCliDependencies {
   getUpstreamEnrollStatus?: typeof getUpstreamEnrollmentStatus;
   cancelUpstreamEnroll?: typeof cancelUpstreamEnrollment;
   disconnectUpstream?: typeof disconnectUpstreamBackendEnrollment;
+  linkProjectTeamWorkspace?: typeof linkProjectTeamWorkspace;
+  listProjectTeamWorkspaceLinks?: typeof listProjectTeamWorkspaceLinks;
+  getProjectTeamWorkspaceLink?: typeof getProjectTeamWorkspaceLink;
+  removeProjectTeamWorkspaceLink?: typeof removeProjectTeamWorkspaceLink;
+  shareProjectCapturedSession?: typeof shareProjectCapturedSession;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -302,6 +319,15 @@ export const runKoedServerCli = async (
     getUpstreamEnrollStatus = getUpstreamEnrollmentStatus,
     cancelUpstreamEnroll = cancelUpstreamEnrollment,
     disconnectUpstream = disconnectUpstreamBackendEnrollment,
+    linkProjectTeamWorkspace: linkProjectWorkspace = linkProjectTeamWorkspace,
+    listProjectTeamWorkspaceLinks:
+      listProjectWorkspaceLinks = listProjectTeamWorkspaceLinks,
+    getProjectTeamWorkspaceLink:
+      getProjectWorkspaceLink = getProjectTeamWorkspaceLink,
+    removeProjectTeamWorkspaceLink:
+      removeProjectWorkspaceLink = removeProjectTeamWorkspaceLink,
+    shareProjectCapturedSession:
+      shareProjectSession = shareProjectCapturedSession,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -574,6 +600,66 @@ export const runKoedServerCli = async (
     if (command === "upstream" && subcommand === "disconnect") {
       const paths = resolvePaths();
       const result = disconnectUpstream(paths, requireFlagValue(args, "--id"));
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (command === "team" && subcommand === "workspace") {
+      const teamWorkspaceCommand = args[2];
+      const paths = resolvePaths();
+      const result =
+        teamWorkspaceCommand === "link"
+          ? linkProjectWorkspace(paths, {
+              projectRoot: requireFlagValue(args, "--project-root"),
+              teamWorkspaceId: requireFlagValue(args, "--team-workspace-id"),
+              backendId: flagValue(args, "--backend-id")
+            })
+          : teamWorkspaceCommand === "list"
+            ? listProjectWorkspaceLinks(paths)
+            : teamWorkspaceCommand === "show"
+              ? getProjectWorkspaceLink(
+                  paths,
+                  requireFlagValue(args, "--project-root")
+                )
+              : teamWorkspaceCommand === "remove"
+                ? removeProjectWorkspaceLink(
+                    paths,
+                    requireFlagValue(args, "--project-root")
+                  )
+                : null;
+      if (!result) {
+        throw new Error(
+          "team workspace command must be link, list, show, or remove."
+        );
+      }
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
+    if (
+      command === "team" &&
+      subcommand === "capture" &&
+      args[2] === "share-latest"
+    ) {
+      const paths = resolvePaths();
+      const repoEnv = loadEnvironment(paths.repoRoot);
+      const result = await shareProjectSession(
+        paths,
+        {
+          projectRoot: flagValue(args, "--project-root") ?? process.cwd(),
+          sessionId: flagValue(args, "--session-id")
+        },
+        process.env,
+        repoEnv
+      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {
