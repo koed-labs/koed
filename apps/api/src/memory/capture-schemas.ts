@@ -25,6 +25,18 @@ export const createMcpSessionSchema = z.object({
   metadata: metadataSchema
 });
 
+export const latestCapturedSessionQuerySchema = z
+  .object({
+    workspace_id: z.string().trim().min(1)
+  })
+  .strict();
+
+export const capturedSessionQuerySchema = z
+  .object({
+    workspace_id: z.string().trim().min(1).optional()
+  })
+  .strict();
+
 export const mcpSessionEventSchema = z.object({
   workspaceId: z.string().min(1).default("default"),
   turnId: z.string().uuid().optional(),

@@ -6,7 +6,9 @@ import {
   type RouteDeploymentMode
 } from "../server/route-identity.js";
 import {
+  approveDeviceEnrollmentChallengeSchema,
   createDeviceEnrollmentChallengeSchema,
+  deviceEnrollmentChallengeParamsSchema,
   deviceCredentialParamsSchema,
   localEdgeRouteDecisionSchema,
   localEdgeUpstreamOperationSchema,
@@ -45,6 +47,56 @@ const publicDeviceCredential = (credential: DeviceCredentialRecord) => ({
   revokedByUserId: credential.revokedByUserId,
   revocationReason: credential.revocationReason
 });
+
+const pendingDeviceCredentialMetadataKey = "__koedPendingDeviceCredential";
+
+type PendingDeviceCredential = {
+  credentialKeyId: string;
+  verifierKind: "secret_hash";
+  verifierHash: string;
+  operationFamilies?: string[];
+  expiresAt?: Date | null;
+};
+
+const publicDeviceEnrollmentChallenge = (challenge: {
+  id: string;
+  upstreamBackendId: string;
+  deviceInstanceId: string | null;
+  deviceLabel: string | null;
+  requestedOperationFamilies: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  expiresAt: string;
+  boundAt: string | null;
+  redeemedAt: string | null;
+}) => {
+  const metadata = redactMetadataSecrets(challenge.metadata);
+  delete metadata[pendingDeviceCredentialMetadataKey];
+  const now = Date.now();
+  const denied = metadata.enrollmentDecision === "denied";
+  const expired = Date.parse(challenge.expiresAt) <= now;
+  const status = denied
+    ? "denied"
+    : challenge.redeemedAt
+      ? "approved"
+      : expired
+        ? "expired"
+        : "pending";
+
+  return {
+    id: challenge.id,
+    status,
+    upstreamBackendId: challenge.upstreamBackendId,
+    deviceInstanceId: challenge.deviceInstanceId,
+    deviceLabel: challenge.deviceLabel,
+    requestedOperationFamilies: challenge.requestedOperationFamilies,
+    metadata,
+    createdAt: challenge.createdAt,
+    expiresAt: challenge.expiresAt,
+    approvedAt: denied ? null : challenge.boundAt,
+    deniedAt: denied ? challenge.boundAt : null
+  };
+};
 
 const deviceCredentialIsActive = (
   credential: DeviceCredentialRecord,
@@ -86,7 +138,9 @@ const secretMetadataKeyParts = [
   "authorization",
   "apikey",
   "privatekey",
+  "publickey",
   "clientsecret",
+  "credential",
   "verifierhash",
   "challengehash"
 ];
@@ -110,8 +164,12 @@ const redactMetadataSecrets = (value: unknown): Record<string, unknown> => {
 
 const redactOptionalMetadata = (
   value: Record<string, unknown> | undefined
-): Record<string, unknown> | undefined =>
-  value === undefined ? undefined : redactMetadataSecrets(value);
+): Record<string, unknown> | undefined => {
+  if (value === undefined) return undefined;
+  const metadata = redactMetadataSecrets(value);
+  delete metadata.enrollmentDecision;
+  return metadata;
+};
 
 const assertLocalEdgeRuntimeProfile = (
   profile: RouteDeploymentMode,
@@ -133,6 +191,68 @@ const redactMetadataValue = (value: unknown): unknown => {
     return value;
   }
   return redactMetadataSecrets(value);
+};
+
+const pendingDeviceCredentialFromInput = (
+  value: NonNullable<
+    ReturnType<typeof createDeviceEnrollmentChallengeSchema.parse>
+  >["pending_credential"],
+  hashSecret: (secret: string) => string
+): PendingDeviceCredential | null => {
+  if (!value) {
+    return null;
+  }
+  return {
+    credentialKeyId: value.credential_key_id,
+    verifierKind: value.verifier_kind,
+    verifierHash: hashSecret(value.verifier_secret),
+    operationFamilies: value.operation_families,
+    expiresAt: value.expires_at
+  };
+};
+
+const pendingDeviceCredentialFromMetadata = (
+  metadata: Record<string, unknown>
+): PendingDeviceCredential | null => {
+  const value = metadata[pendingDeviceCredentialMetadataKey];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const verifierKind = candidate.verifierKind;
+  const credentialKeyId = candidate.credentialKeyId;
+  if (typeof credentialKeyId !== "string" || verifierKind !== "secret_hash") {
+    return null;
+  }
+  const verifierHash =
+    typeof candidate.verifierHash === "string"
+      ? candidate.verifierHash
+      : undefined;
+  if (!verifierHash) {
+    return null;
+  }
+  return {
+    credentialKeyId,
+    verifierKind,
+    verifierHash,
+    operationFamilies: Array.isArray(candidate.operationFamilies)
+      ? candidate.operationFamilies.filter(
+          (family): family is string => typeof family === "string"
+        )
+      : undefined,
+    expiresAt:
+      typeof candidate.expiresAt === "string"
+        ? new Date(candidate.expiresAt)
+        : null
+  };
+};
+
+const stripInternalChallengeMetadata = (
+  metadata: Record<string, unknown>
+): Record<string, unknown> => {
+  const safe = { ...metadata };
+  delete safe[pendingDeviceCredentialMetadataKey];
+  return redactMetadataSecrets(safe);
 };
 
 export const registerLocalEdgeRoutes = (
@@ -164,17 +284,153 @@ export const registerLocalEdgeRoutes = (
       const repo = requireRepository();
       await authenticateSession(request);
       const input = createDeviceEnrollmentChallengeSchema.parse(request.body);
+      const pendingCredential = pendingDeviceCredentialFromInput(
+        input.pending_credential,
+        hashSecret
+      );
+      const requestedOperationFamilies =
+        input.requested_operation_families ??
+        pendingCredential?.operationFamilies;
+      const requestedFamilySet = new Set(requestedOperationFamilies ?? []);
+      if (
+        pendingCredential?.operationFamilies?.some(
+          (family) => !requestedFamilySet.has(family)
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            "Pending credential operation families exceed enrollment challenge"
+          ),
+          { statusCode: 400 }
+        );
+      }
+      const metadata = redactOptionalMetadata(input.metadata) ?? {};
+      if (pendingCredential) {
+        metadata[pendingDeviceCredentialMetadataKey] = pendingCredential;
+      }
       const challenge = await repo.createDeviceEnrollmentChallenge({
         challengeHash: input.challenge_hash,
         upstreamBackendId: input.upstream_backend_id,
         deviceInstanceId: input.device_instance_id,
         deviceLabel: input.device_label,
-        requestedOperationFamilies: input.requested_operation_families,
-        metadata: redactOptionalMetadata(input.metadata),
+        requestedOperationFamilies: requestedOperationFamilies,
+        metadata,
         expiresAt: new Date(Date.now() + input.ttl_seconds * 1000)
       });
 
-      return { challenge };
+      return { challenge: publicDeviceEnrollmentChallenge(challenge) };
+    }
+  );
+
+  app.get(
+    "/v1/local-edge/device-enrollments/challenges/:challengeId",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      await authenticateSession(request);
+      const params = deviceEnrollmentChallengeParamsSchema.parse(
+        request.params
+      );
+      const challenge = await repo.getDeviceEnrollmentChallenge(
+        params.challengeId
+      );
+      if (!challenge) {
+        throw Object.assign(
+          new Error("Device enrollment challenge not found"),
+          {
+            statusCode: 404
+          }
+        );
+      }
+
+      return { challenge: publicDeviceEnrollmentChallenge(challenge) };
+    }
+  );
+
+  app.post(
+    "/v1/local-edge/device-enrollments/challenges/:challengeId/approval",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateSession(request);
+      const params = deviceEnrollmentChallengeParamsSchema.parse(
+        request.params
+      );
+      const input = approveDeviceEnrollmentChallengeSchema.parse(request.body);
+      const challenge = await repo.getDeviceEnrollmentChallenge(
+        params.challengeId
+      );
+      if (!challenge) {
+        throw Object.assign(
+          new Error("Device enrollment challenge not found"),
+          {
+            statusCode: 404
+          }
+        );
+      }
+
+      if (input.decision === "deny") {
+        const denied = await repo.denyDeviceEnrollmentChallenge(
+          { userId: user.id },
+          params.challengeId
+        );
+        if (!denied) {
+          const current = await repo.getDeviceEnrollmentChallenge(
+            params.challengeId
+          );
+          return {
+            challenge: current
+              ? publicDeviceEnrollmentChallenge(current)
+              : publicDeviceEnrollmentChallenge(challenge)
+          };
+        }
+        return { challenge: publicDeviceEnrollmentChallenge(denied) };
+      }
+
+      const pendingCredential = pendingDeviceCredentialFromMetadata(
+        challenge.metadata
+      );
+      if (!pendingCredential) {
+        throw Object.assign(
+          new Error("Device enrollment challenge cannot be approved"),
+          { statusCode: 400 }
+        );
+      }
+      const credential = await repo.approveDeviceEnrollmentChallenge(
+        { userId: user.id },
+        params.challengeId,
+        {
+          credentialKeyId: pendingCredential.credentialKeyId,
+          verifierKind: pendingCredential.verifierKind,
+          verifierHash: pendingCredential.verifierHash,
+          publicKeyJwk: null,
+          operationFamilies: pendingCredential.operationFamilies,
+          metadata: stripInternalChallengeMetadata(challenge.metadata),
+          expiresAt: pendingCredential.expiresAt
+        }
+      );
+      if (!credential) {
+        const current = await repo.getDeviceEnrollmentChallenge(
+          params.challengeId
+        );
+        return {
+          challenge: current
+            ? publicDeviceEnrollmentChallenge(current)
+            : publicDeviceEnrollmentChallenge(challenge)
+        };
+      }
+
+      return {
+        challenge: {
+          ...publicDeviceEnrollmentChallenge({
+            ...challenge,
+            boundAt: credential.createdAt,
+            redeemedAt: credential.createdAt
+          }),
+          status: "approved"
+        },
+        credential: publicDeviceCredential(credential)
+      };
     }
   );
 

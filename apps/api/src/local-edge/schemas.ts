@@ -32,6 +32,15 @@ export const createDeviceEnrollmentChallengeSchema = z
       .array(operationFamilySchema)
       .max(20)
       .optional(),
+    pending_credential: z
+      .object({
+        credential_key_id: z.string().trim().min(16).max(160),
+        verifier_kind: z.literal("secret_hash"),
+        verifier_secret: z.string().min(32),
+        operation_families: z.array(operationFamilySchema).max(20).optional(),
+        expires_at: z.coerce.date().optional()
+      })
+      .optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     ttl_seconds: z.number().int().min(60).max(3600).default(600)
   })
@@ -44,7 +53,23 @@ export const createDeviceEnrollmentChallengeSchema = z
           "admin operation family cannot be requested through browser-mediated device enrollment"
       });
     }
+    if (input.pending_credential?.operation_families?.includes("admin")) {
+      context.addIssue({
+        code: "custom",
+        path: ["pending_credential", "operation_families"],
+        message:
+          "admin operation family cannot be granted through browser-mediated device enrollment"
+      });
+    }
   });
+
+export const deviceEnrollmentChallengeParamsSchema = z.object({
+  challengeId: z.uuid()
+});
+
+export const approveDeviceEnrollmentChallengeSchema = z.object({
+  decision: z.enum(["approve", "deny"])
+});
 
 export const redeemDeviceEnrollmentChallengeSchema = z
   .object({

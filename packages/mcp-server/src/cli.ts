@@ -44,6 +44,10 @@ import {
   toolAnswerResponse
 } from "./memory-question-answer-persistence.js";
 import { logger } from "./logger.js";
+import {
+  resolveProjectTeamWorkspaceLink,
+  teamMemoryDogfoodEnabled
+} from "./project-team-workspace-links.js";
 
 const parseArgs = (
   args: string[]
@@ -327,6 +331,11 @@ server.registerTool(
       session_id: uuidSchema
         .optional()
         .describe("Backend session UUID for session search."),
+      team_workspace_id: uuidSchema
+        .optional()
+        .describe(
+          "Dogfood Team Workspace UUID for Team-shared Memory recall. Requires backend session or scoped device authorization; API Token-only MCP setups fail closed."
+        ),
       recent_days: z
         .number()
         .int()
@@ -367,6 +376,7 @@ server.registerTool(
         searchDomain: input.search_domain,
         responseDetail: requestedResponseDetail,
         hasWorkspaceId: Boolean(input.workspace_id),
+        hasTeamWorkspaceId: Boolean(input.team_workspace_id),
         hasSessionId: Boolean(input.session_id),
         hasRecentDays: input.recent_days !== undefined,
         hasSourceAfter: input.source_after !== undefined,
@@ -394,6 +404,32 @@ server.registerTool(
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
+    const mappedTeamWorkspaceId =
+      !input.team_workspace_id &&
+      input.search_domain === "project" &&
+      workspace_id &&
+      teamMemoryDogfoodEnabled(process.env)
+        ? resolveProjectTeamWorkspaceLink(workspace_id, process.env)
+            ?.teamWorkspaceId
+        : undefined;
+    const team_workspace_id = input.team_workspace_id ?? mappedTeamWorkspaceId;
+    if (team_workspace_id) {
+      return jsonResponse({
+        markdown:
+          "Team Workspace recall requires scoped browser-session or device-credential authorization. This MCP Server is configured with a Personal Memory API Token, so Team recall is fail-closed until the upstream enrollment bridge in KOE-311 provides local device authorization.",
+        evidenceBundle: {
+          query: answerInput.query,
+          instructions:
+            "Team Workspace recall was requested but device/session authorization is not available to the MCP Server.",
+          evidence: [],
+          retrieval: {
+            mode: "team_workspace_auth_unavailable",
+            teamWorkspaceId: team_workspace_id,
+            followUpIssue: "KOE-311"
+          }
+        }
+      });
+    }
     const evidence = {
       markdown: "",
       evidenceBundle: {
@@ -410,6 +446,7 @@ server.registerTool(
       retrievalScope: retrieval_scope,
       searchDomain: input.search_domain,
       workspaceId: workspace_id,
+      teamWorkspaceId: team_workspace_id,
       sessionId: input.session_id,
       recentDays: input.recent_days,
       sourceAfter: input.source_after,
@@ -428,6 +465,7 @@ server.registerTool(
                 retrieval_scope,
                 search_domain: input.search_domain,
                 workspace_id,
+                team_workspace_id,
                 session_id: input.session_id,
                 status: "error",
                 error_message: errorMessageFromAnswer(answer),
@@ -444,6 +482,7 @@ server.registerTool(
                 retrieval_scope,
                 search_domain: input.search_domain,
                 workspace_id,
+                team_workspace_id,
                 session_id: input.session_id,
                 status: "answered",
                 answer_markdown: answerMarkdownFromAnswer(answer),

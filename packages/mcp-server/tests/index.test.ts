@@ -35,6 +35,10 @@ import {
   summarizePendingLcmNodes,
   type LcmSummaryNode
 } from "../src/lcm-summary-worker.js";
+import {
+  resolveProjectTeamWorkspaceLink,
+  teamMemoryDogfoodEnabled
+} from "../src/project-team-workspace-links.js";
 
 const servers: http.Server[] = [];
 
@@ -238,6 +242,44 @@ describe("MCP memory_answer schema wording", () => {
       "do not repeat after a clear not-found answer"
     );
     expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);
+  });
+});
+
+describe("Project Team Workspace dogfood mapping", () => {
+  it("resolves Team Workspace mapping only from non-secret local config", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-mcp-ptw-"));
+    const configPath = path.join(directory, "project-team-workspaces.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        links: [
+          {
+            projectRoot: "/repo/koed",
+            teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+            backendId: "dev_backend"
+          }
+        ]
+      })
+    );
+
+    expect(
+      teamMemoryDogfoodEnabled({
+        KOED_TEAM_MEMORY_DOGFOOD: "1"
+      } as NodeJS.ProcessEnv)
+    ).toBe(true);
+    expect(
+      resolveProjectTeamWorkspaceLink("/repo/koed", {
+        KOED_PROJECT_TEAM_WORKSPACE_LINKS_PATH: configPath
+      } as NodeJS.ProcessEnv)
+    ).toMatchObject({
+      projectRoot: "/repo/koed",
+      teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+      backendId: "dev_backend"
+    });
+    expect(fs.readFileSync(configPath, "utf8")).not.toMatch(
+      /token|secret|password|cookie|credential/i
+    );
   });
 });
 
@@ -709,6 +751,104 @@ describe("LCM summary background service", () => {
       summaryModel: "codex:test",
       summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
     });
+  });
+
+  it("shapes memory_answer Team Workspace search requests without changing retrieval scope", async () => {
+    const nodeId = randomUUID();
+    const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
+    const searchBodies: Record<string, unknown>[] = [];
+    const apiUrl = await createApi((request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/memory/search") {
+        let body = "";
+        request.on("data", (chunk) => {
+          body += String(chunk);
+        });
+        request.on("end", () => {
+          const parsed = JSON.parse(body) as Record<string, unknown>;
+          searchBodies.push(parsed);
+          if (parsed.retrieval_stage === "score_scan") {
+            response.end(
+              JSON.stringify({
+                retrieval: {
+                  stages: [
+                    {
+                      name: "leaf_search",
+                      countAboveThreshold: 1,
+                      maxAllowed: 1
+                    }
+                  ]
+                }
+              })
+            );
+            return;
+          }
+          response.end(
+            JSON.stringify({
+              hits: [
+                {
+                  nodeId,
+                  sourceId: nodeId,
+                  visibility: "personal",
+                  summaryText: "Team Workspace memory is available.",
+                  citation: { nodeId, visibility: "personal" }
+                }
+              ],
+              retrieval: { stage: parsed.retrieval_stage }
+            })
+          );
+        });
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not found" }));
+    });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-index-"));
+    try {
+      const answered = await answerWithMemoryWorker(
+        {
+          markdown: "",
+          evidenceBundle: {
+            query: "What did the Team decide?",
+            evidence: [],
+            retrieval: { mode: "app_server_dynamic_tools" }
+          }
+        },
+        {
+          client: new MemoryApiClient({ apiUrl, apiToken: "cmt_test" }),
+          retrievalScope: "personal",
+          searchDomain: "project",
+          workspaceId: "/repo/koed",
+          teamWorkspaceId,
+          limit: 10,
+          config: {
+            ...resolveMemoryAnswerWorkerConfig({
+              MEMORY_ANSWER_PROVIDER: "codex",
+              MEMORY_ANSWER_TIMEOUT_MS: "1000",
+              MEMORY_ANSWER_MAX_ATTEMPTS: "1",
+              MEMORY_ANSWER_MAX_SEARCHES: "2",
+              MEMORY_ANSWER_MAX_EXPANSIONS: "0",
+              MEMORY_ANSWER_CODEX_BINARY:
+                writeFakeMemoryAnswerAppServer(directory)
+            }),
+            cwd: "/tmp"
+          }
+        }
+      );
+      expect(answered.localMemoryWorker.usedFallback).toBe(false);
+      expect(searchBodies).toHaveLength(2);
+      expect(searchBodies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            retrieval_scope: "personal",
+            team_workspace_id: teamWorkspaceId,
+            workspace_id: "/repo/koed"
+          })
+        ])
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("covers capture hook to local LCM summary to one-tool recall", async () => {

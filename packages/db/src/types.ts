@@ -1107,6 +1107,9 @@ export interface MemorySourceRepository
     metadata?: Record<string, unknown>;
     expiresAt: Date;
   }): Promise<DeviceEnrollmentChallengeRecord>;
+  getDeviceEnrollmentChallenge(
+    challengeId: string
+  ): Promise<DeviceEnrollmentChallengeRecord | null>;
   redeemDeviceEnrollmentChallenge(
     actor: ActorContext,
     input: {
@@ -1120,6 +1123,23 @@ export interface MemorySourceRepository
       expiresAt?: Date | null;
     }
   ): Promise<DeviceCredentialRecord | null>;
+  approveDeviceEnrollmentChallenge(
+    actor: ActorContext,
+    challengeId: string,
+    input: {
+      credentialKeyId: string;
+      verifierKind: DeviceCredentialVerifierKind;
+      verifierHash?: string | null;
+      publicKeyJwk?: Record<string, unknown> | null;
+      operationFamilies?: string[];
+      metadata?: Record<string, unknown>;
+      expiresAt?: Date | null;
+    }
+  ): Promise<DeviceCredentialRecord | null>;
+  denyDeviceEnrollmentChallenge(
+    actor: ActorContext,
+    challengeId: string
+  ): Promise<DeviceEnrollmentChallengeRecord | null>;
   listDeviceCredentials(
     actor: ActorContext,
     input?: { upstreamBackendId?: string }

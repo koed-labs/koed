@@ -29,6 +29,10 @@ const paths = (root: string): KoedServerPaths => ({
   localPortsPath: resolve(root, "config/local-ports.json"),
   explorerTokenPath: resolve(root, "config/explorer-token.json"),
   upstreamBackendsPath: resolve(root, "config/upstream-backends.json"),
+  projectTeamWorkspaceLinksPath: resolve(
+    root,
+    "config/project-team-workspaces.json"
+  ),
   upstreamEnrollmentsPath: resolve(root, "run/upstream-enrollments.json"),
   repoRoot: root
 });

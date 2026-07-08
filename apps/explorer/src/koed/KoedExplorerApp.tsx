@@ -56,6 +56,7 @@ import {
   firstLine,
   formatDate
 } from "./components";
+import { DeviceEnrollmentApproval } from "./DeviceEnrollmentApproval";
 import { koedDebug } from "./debug";
 import { nodeMap, threadSelectionKey, uniqueNodeIds } from "./graph";
 import {
@@ -143,6 +144,29 @@ function readManualWorkerConfig(): ManualMemoryQuestionWorkerConfig | null {
 }
 
 export function KoedExplorerApp() {
+  const params = new URLSearchParams(window.location.search);
+  const pathEnrollmentChallengeId = window.location.pathname.match(
+    /(?:^|\/)device-enrollment\/([^/?#]+)/
+  )?.[1];
+  const enrollmentChallengeId =
+    params.get("device_enrollment_challenge") ??
+    params.get("enrollment_challenge_id") ??
+    params.get("challenge_id") ??
+    (pathEnrollmentChallengeId
+      ? decodeURIComponent(pathEnrollmentChallengeId)
+      : null);
+  const isEnrollmentApprovalRoute =
+    window.location.pathname.includes("device-enrollment") ||
+    Boolean(enrollmentChallengeId);
+
+  if (isEnrollmentApprovalRoute) {
+    return <DeviceEnrollmentApproval challengeId={enrollmentChallengeId} />;
+  }
+
+  return <KoedExplorerMain />;
+}
+
+function KoedExplorerMain() {
   const { theme, setTheme } = useTheme();
   const [apiToken, setApiToken] = useState(readConfiguredToken);
   const [answerBridgeUrl] = useState(readConfiguredAnswerBridgeUrl);

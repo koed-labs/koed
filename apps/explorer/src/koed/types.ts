@@ -193,6 +193,26 @@ export interface ToastState {
   message: string;
 }
 
+export type DeviceEnrollmentChallengeStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "expired";
+
+export interface DeviceEnrollmentChallenge {
+  id: string;
+  status: DeviceEnrollmentChallengeStatus;
+  upstreamBackendId: string;
+  deviceInstanceId: string | null;
+  deviceLabel: string | null;
+  requestedOperationFamilies: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  expiresAt: string;
+  approvedAt: string | null;
+  deniedAt: string | null;
+}
+
 export interface MemoryEvidenceItem {
   nodeId?: string;
   sourceId?: string;
