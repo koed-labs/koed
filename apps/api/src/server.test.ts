@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -53,6 +53,9 @@ import {
   shouldIgnoreGraphStreamPayload
 } from "./server/index.js";
 import type { WorkosAuthKitClient } from "./auth/workos.js";
+
+const hashSecretForTest = (secret: string) =>
+  createHash("sha256").update(secret).digest("hex");
 
 afterEach(() => {
   for (const name of [
