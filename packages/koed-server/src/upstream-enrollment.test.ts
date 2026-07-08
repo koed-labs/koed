@@ -32,6 +32,17 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
     text: async () => JSON.stringify(body)
   }) as Response;
 
+const updateRegistry = (
+  paths: ReturnType<typeof tempPaths>,
+  update: (registry: UpstreamBackendRegistry) => void
+) => {
+  const registry = JSON.parse(
+    readFileSync(paths.upstreamBackendsPath, "utf8")
+  ) as UpstreamBackendRegistry;
+  update(registry);
+  writeFileSync(paths.upstreamBackendsPath, `${JSON.stringify(registry)}\n`);
+};
+
 const registerValidatedBackend = async () => {
   const paths = tempPaths();
   registerUpstreamBackend(paths, {
@@ -130,14 +141,12 @@ describe("upstream enrollment orchestration", () => {
       now: () => new Date("2026-01-01T00:00:00.000Z"),
       randomId: () => "enroll-exchange"
     });
-    const registry = JSON.parse(
-      readFileSync(paths.upstreamBackendsPath, "utf8")
-    ) as UpstreamBackendRegistry;
-    registry.backends[0]!.credential = {
-      status: "configured",
-      reference: "keychain://team-vps"
-    };
-    writeFileSync(paths.upstreamBackendsPath, JSON.stringify(registry));
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: "keychain://team-vps"
+      };
+    });
 
     const status = getUpstreamEnrollmentStatus(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:01:00.000Z")
@@ -149,6 +158,141 @@ describe("upstream enrollment orchestration", () => {
       enrollment: {
         credential: { status: "configured", reference: "keychain://team-vps" }
       }
+    });
+  });
+
+  it("materializes configured credentials before restarting expired enrollment", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-approved-before-poll"
+    });
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: "keychain://team-vps"
+      };
+    });
+
+    const restarted = startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:11:00.000Z"),
+      randomId: () => "new-enrollment"
+    });
+
+    expect(restarted).toMatchObject({
+      ok: true,
+      state: "exchanged",
+      enrollment: {
+        requestId: "enroll-approved-before-poll",
+        state: "exchanged"
+      }
+    });
+  });
+
+  it("fails exchanged enrollment if backend credential is reset", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-reset"
+    });
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: "keychain://team-vps"
+      };
+    });
+    getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z")
+    });
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = { status: "not_configured" };
+    });
+
+    const status = getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z")
+    });
+
+    expect(status).toMatchObject({
+      ok: true,
+      state: "failed",
+      enrollment: {
+        requestId: "enroll-reset",
+        state: "failed",
+        failureReason: "credential_reset",
+        credential: { status: "not_configured" }
+      }
+    });
+  });
+
+  it("rejects admin-only browser-mediated enrollment", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      admin: "enabled"
+    });
+
+    const started = startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+
+    expect(started).toMatchObject({
+      ok: false,
+      state: "failed",
+      message:
+        "Upstream backend team-vps only enables admin routing, which cannot be enrolled through browser-mediated device enrollment."
+    });
+  });
+
+  it("omits admin from mixed browser-mediated enrollment requests", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      admin: "enabled",
+      teamWorkspaceRead: "enabled"
+    });
+
+    const started = startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-no-admin"
+    });
+
+    expect(started).toMatchObject({
+      ok: true,
+      state: "pending",
+      enrollment: {
+        requestedOperationFamilies: ["team_workspace_read"]
+      }
+    });
+  });
+
+  it("does not cancel terminal enrollment state", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-terminal"
+    });
+    updateRegistry(paths, (registry) => {
+      registry.backends[0]!.credential = {
+        status: "configured",
+        reference: "keychain://team-vps"
+      };
+    });
+
+    const canceled = cancelUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z")
+    });
+
+    expect(canceled).toMatchObject({
+      ok: true,
+      state: "exchanged",
+      enrollment: { requestId: "enroll-terminal", state: "exchanged" }
     });
   });
 
@@ -204,7 +348,8 @@ describe("upstream enrollment orchestration", () => {
           captureWrites: "disabled",
           sync: "disabled",
           admin: "disabled"
-        }
+        },
+        credential: { status: "revoked" }
       },
       enrollment: {
         requestId: "enroll-disconnect",

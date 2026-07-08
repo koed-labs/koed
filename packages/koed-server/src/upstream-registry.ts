@@ -486,6 +486,59 @@ export const removeUpstreamBackend = (
   };
 };
 
+const updateUpstreamBackend = (
+  paths: KoedServerPaths,
+  id: string,
+  update: (
+    backend: UpstreamBackendRecord,
+    now: string
+  ) => UpstreamBackendRecord,
+  deps: UpstreamRegistryDeps = {}
+): UpstreamRegistryResult => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const registry = readRegistry(paths, resolvedDeps);
+  const backendId = validateBackendId(id);
+  const index = registry.backends.findIndex(
+    (backend) => backend.id === backendId
+  );
+  if (index < 0) {
+    return {
+      ok: false,
+      state: "missing",
+      message: `Upstream backend ${backendId} is not registered.`
+    };
+  }
+
+  const now = resolvedDeps.now().toISOString();
+  const next = update(registry.backends[index]!, now);
+  registry.backends[index] = next;
+  registry.updatedAt = now;
+  writeRegistry(paths, registry, resolvedDeps);
+  return {
+    ok: true,
+    state: "updated",
+    backend: summarize(next),
+    message: `Updated upstream backend ${backendId}.`
+  };
+};
+
+export const updateUpstreamBackendCredential = (
+  paths: KoedServerPaths,
+  id: string,
+  credential: UpstreamCredentialStatus,
+  deps: UpstreamRegistryDeps = {}
+): UpstreamRegistryResult =>
+  updateUpstreamBackend(
+    paths,
+    id,
+    (backend, now) => ({
+      ...backend,
+      updatedAt: now,
+      credential: sanitizeCredential(credential)
+    }),
+    deps
+  );
+
 export const updateUpstreamBackendRoutePolicy = (
   paths: KoedServerPaths,
   id: string,

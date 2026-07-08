@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
 import {
   collectUpstreamRegistryStatus,
+  updateUpstreamBackendCredential,
   updateUpstreamBackendRoutePolicy,
   type UpstreamBackendSummary,
   type UpstreamCredentialStatus,
@@ -271,6 +272,13 @@ const routePolicyOperationFamilies = (
     .map(([, family]) => family);
 };
 
+const browserEnrollmentOperationFamilies = (
+  routePolicy: UpstreamRoutePolicy
+): string[] =>
+  routePolicyOperationFamilies(routePolicy).filter(
+    (family) => family !== "admin"
+  );
+
 const expiresAtFor = (now: Date): string =>
   new Date(now.getTime() + 10 * 60 * 1000).toISOString();
 
@@ -303,14 +311,6 @@ const materializeState = (
   now: Date,
   backend?: UpstreamBackendSummary
 ): UpstreamEnrollmentRecord => {
-  if (
-    record.state === "denied" ||
-    record.state === "canceled" ||
-    record.state === "revoked" ||
-    record.state === "failed"
-  ) {
-    return record;
-  }
   if (backend?.credential.status === "configured") {
     return {
       ...record,
@@ -324,6 +324,28 @@ const materializeState = (
       state: "revoked",
       credential: backend.credential
     };
+  }
+  if (
+    record.state === "exchanged" &&
+    backend?.credential.status === "not_configured"
+  ) {
+    return {
+      ...record,
+      state: "failed",
+      updatedAt: now.toISOString(),
+      failureReason: "credential_reset",
+      failureMessage:
+        "Upstream backend credential is no longer configured; restart enrollment.",
+      credential: backend.credential
+    };
+  }
+  if (
+    record.state === "denied" ||
+    record.state === "canceled" ||
+    record.state === "expired" ||
+    record.state === "failed"
+  ) {
+    return record;
   }
   if (
     (record.state === "pending" || record.state === "approved") &&
@@ -371,8 +393,13 @@ export const startUpstreamEnrollment = (
       message: `Upstream backend ${backendId} capabilities are not validated. Run koed-server upstream refresh --id ${backendId} --json.`
     };
   }
-  const operationFamilies = routePolicyOperationFamilies(backend.routePolicy);
-  if (operationFamilies.length === 0) {
+  const configuredOperationFamilies = routePolicyOperationFamilies(
+    backend.routePolicy
+  );
+  const operationFamilies = browserEnrollmentOperationFamilies(
+    backend.routePolicy
+  );
+  if (configuredOperationFamilies.length === 0) {
     return {
       ok: false,
       state: "failed",
@@ -380,22 +407,44 @@ export const startUpstreamEnrollment = (
       message: `Upstream backend ${backendId} has no enabled route-policy families.`
     };
   }
+  if (operationFamilies.length === 0) {
+    return {
+      ok: false,
+      state: "failed",
+      backend,
+      message: `Upstream backend ${backendId} only enables admin routing, which cannot be enrolled through browser-mediated device enrollment.`
+    };
+  }
 
   const store = readStore(paths, resolvedDeps);
   const existing = latestEnrollment(store, backendId);
-  if (
-    existing &&
-    (existing.state === "pending" || existing.state === "approved") &&
-    !(existing.expiresAt && Date.parse(existing.expiresAt) <= now.getTime())
-  ) {
+  if (existing) {
     const materialized = materializeState(existing, now, backend);
-    return {
-      ok: true,
-      state: materialized.state,
-      backend,
-      enrollment: summarizeEnrollment(materialized, backend),
-      message: `Upstream enrollment for ${backendId} is already ${materialized.state}.`
-    };
+    if (materialized.state !== existing.state) {
+      store.enrollments = store.enrollments.map((entry) =>
+        entry.backendId === existing.backendId &&
+        entry.requestId === existing.requestId
+          ? materialized
+          : entry
+      );
+      store.updatedAt = nowIso;
+      writeStore(paths, store, resolvedDeps);
+    }
+    if (
+      materialized.state === "pending" ||
+      materialized.state === "approved" ||
+      materialized.state === "exchanged" ||
+      materialized.state === "revoked" ||
+      materialized.state === "failed"
+    ) {
+      return {
+        ok: true,
+        state: materialized.state,
+        backend,
+        enrollment: summarizeEnrollment(materialized, backend),
+        message: `Upstream enrollment for ${backendId} is already ${materialized.state}.`
+      };
+    }
   }
 
   const record: UpstreamEnrollmentRecord = {
@@ -467,7 +516,8 @@ export const cancelUpstreamEnrollment = (
 ): UpstreamEnrollmentResult => {
   const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
-  const now = resolvedDeps.now().toISOString();
+  const nowDate = resolvedDeps.now();
+  const now = nowDate.toISOString();
   const { backend } = backendById(paths, backendId, resolvedDeps);
   const store = readStore(paths, resolvedDeps);
   const record = latestEnrollment(store, backendId);
@@ -479,8 +529,24 @@ export const cancelUpstreamEnrollment = (
       message: `No upstream enrollment has been started for ${backendId}.`
     };
   }
+  const materialized = materializeState(record, nowDate, backend);
+  if (
+    materialized.state === "exchanged" ||
+    materialized.state === "revoked" ||
+    materialized.state === "expired" ||
+    materialized.state === "failed" ||
+    materialized.state === "denied"
+  ) {
+    return {
+      ok: true,
+      state: materialized.state,
+      backend,
+      enrollment: summarizeEnrollment(materialized, backend),
+      message: `Upstream enrollment for ${backendId} is already ${materialized.state}.`
+    };
+  }
   const canceled: UpstreamEnrollmentRecord = {
-    ...record,
+    ...materialized,
     state: "canceled",
     updatedAt: now
   };
@@ -527,6 +593,18 @@ export const disconnectUpstreamBackendEnrollment = (
       sync: "disabled",
       admin: "disabled"
     },
+    {
+      existsSync: resolvedDeps.existsSync,
+      readFileSync: resolvedDeps.readFileSync,
+      writeFileSync: resolvedDeps.writeFileSync,
+      renameSync: resolvedDeps.renameSync,
+      now: resolvedDeps.now
+    }
+  );
+  updateUpstreamBackendCredential(
+    paths,
+    backendId,
+    { status: "revoked", reference: backend.credential.reference },
     {
       existsSync: resolvedDeps.existsSync,
       readFileSync: resolvedDeps.readFileSync,
