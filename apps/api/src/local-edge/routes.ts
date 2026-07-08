@@ -52,9 +52,8 @@ const pendingDeviceCredentialMetadataKey = "__koedPendingDeviceCredential";
 
 type PendingDeviceCredential = {
   credentialKeyId: string;
-  verifierKind: "secret_hash" | "public_key_jwk";
-  verifierHash?: string | null;
-  publicKeyJwk?: Record<string, unknown> | null;
+  verifierKind: "secret_hash";
+  verifierHash: string;
   operationFamilies?: string[];
   expiresAt?: Date | null;
 };
@@ -202,7 +201,6 @@ const pendingDeviceCredentialFromInput = (
     credentialKeyId: value.credential_key_id,
     verifierKind: value.verifier_kind,
     verifierHash: value.verifier_hash,
-    publicKeyJwk: value.public_key_jwk,
     operationFamilies: value.operation_families,
     expiresAt: value.expires_at
   };
@@ -218,33 +216,20 @@ const pendingDeviceCredentialFromMetadata = (
   const candidate = value as Record<string, unknown>;
   const verifierKind = candidate.verifierKind;
   const credentialKeyId = candidate.credentialKeyId;
-  if (
-    typeof credentialKeyId !== "string" ||
-    (verifierKind !== "secret_hash" && verifierKind !== "public_key_jwk")
-  ) {
+  if (typeof credentialKeyId !== "string" || verifierKind !== "secret_hash") {
     return null;
   }
   const verifierHash =
     typeof candidate.verifierHash === "string"
       ? candidate.verifierHash
       : undefined;
-  const publicKeyJwk =
-    candidate.publicKeyJwk &&
-    typeof candidate.publicKeyJwk === "object" &&
-    !Array.isArray(candidate.publicKeyJwk)
-      ? (candidate.publicKeyJwk as Record<string, unknown>)
-      : undefined;
-  if (verifierKind === "secret_hash" && !verifierHash) {
-    return null;
-  }
-  if (verifierKind === "public_key_jwk" && !publicKeyJwk) {
+  if (!verifierHash) {
     return null;
   }
   return {
     credentialKeyId,
     verifierKind,
     verifierHash,
-    publicKeyJwk,
     operationFamilies: Array.isArray(candidate.operationFamilies)
       ? candidate.operationFamilies.filter(
           (family): family is string => typeof family === "string"
@@ -396,7 +381,7 @@ export const registerLocalEdgeRoutes = (
           credentialKeyId: pendingCredential.credentialKeyId,
           verifierKind: pendingCredential.verifierKind,
           verifierHash: pendingCredential.verifierHash,
-          publicKeyJwk: pendingCredential.publicKeyJwk,
+          publicKeyJwk: null,
           operationFamilies: pendingCredential.operationFamilies,
           metadata: stripInternalChallengeMetadata(challenge.metadata),
           expiresAt: pendingCredential.expiresAt

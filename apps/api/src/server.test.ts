@@ -6109,6 +6109,21 @@ describe("account and access flows", () => {
         verifier_hash: hashSecretForTest(`device-secret-${randomUUID()}`)
       }
     });
+    const publicKeyCredentialChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: `challenge-${randomUUID()}-${randomUUID()}`,
+        upstream_backend_id: "team-vps",
+        requested_operation_families: ["team_workspace_read"],
+        pending_credential: {
+          credential_key_id: `device-key-${randomUUID()}`,
+          verifier_kind: "public_key_jwk",
+          public_key_jwk: { kty: "OKP", crv: "Ed25519", x: "test" }
+        }
+      }
+    });
     await app.close();
 
     expect(createdChallenge.statusCode).toBe(200);
@@ -6142,6 +6157,7 @@ describe("account and access flows", () => {
       jsonBody<{ challenge: { status: string } }>(denied).challenge.status
     ).toBe("denied");
     expect(deniedRedeem.statusCode).toBe(400);
+    expect(publicKeyCredentialChallenge.statusCode).toBe(400);
   });
 
   it("routes local-edge upstream operations only after policy, capability, and device checks", async () => {

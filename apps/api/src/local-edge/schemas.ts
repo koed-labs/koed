@@ -35,27 +35,10 @@ export const createDeviceEnrollmentChallengeSchema = z
     pending_credential: z
       .object({
         credential_key_id: z.string().trim().min(16).max(160),
-        verifier_kind: z.enum(["secret_hash", "public_key_jwk"]),
-        verifier_hash: z.string().min(32).optional(),
-        public_key_jwk: z.record(z.string(), z.unknown()).optional(),
+        verifier_kind: z.literal("secret_hash"),
+        verifier_hash: z.string().min(32),
         operation_families: z.array(operationFamilySchema).max(20).optional(),
         expires_at: z.coerce.date().optional()
-      })
-      .superRefine((input, context) => {
-        if (input.verifier_kind === "secret_hash" && !input.verifier_hash) {
-          context.addIssue({
-            code: "custom",
-            path: ["verifier_hash"],
-            message: "verifier_hash is required for secret_hash credentials"
-          });
-        }
-        if (input.verifier_kind === "public_key_jwk" && !input.public_key_jwk) {
-          context.addIssue({
-            code: "custom",
-            path: ["public_key_jwk"],
-            message: "public_key_jwk is required for public_key_jwk credentials"
-          });
-        }
       })
       .optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
