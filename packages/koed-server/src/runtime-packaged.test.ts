@@ -48,6 +48,12 @@ const paths = (root: string): KoedServerPaths => ({
     "config",
     "upstream-backends.json"
   ),
+  upstreamEnrollmentsPath: resolve(
+    root,
+    "home",
+    "run",
+    "upstream-enrollments.json"
+  ),
   repoRoot: root
 });
 
