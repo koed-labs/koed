@@ -750,8 +750,7 @@ describe("JSON command output", () => {
               backendId: "team-vps",
               requestId: "enroll-1",
               state: "pending",
-              activationUrl:
-                "https://team.example.test/v1/local-edge/device-enrollments/challenges?upstream_backend_id=team-vps",
+              activationUrl: null,
               requestedOperationFamilies: ["team_workspace_read"],
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
@@ -769,8 +768,7 @@ describe("JSON command output", () => {
       ok: true,
       state: "pending",
       enrollment: {
-        activationUrl:
-          "https://team.example.test/v1/local-edge/device-enrollments/challenges?upstream_backend_id=team-vps"
+        activationUrl: null
       }
     });
   });

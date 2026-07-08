@@ -58,11 +58,12 @@ node packages/koed-server/dist/cli.js upstream disconnect --id team-vps --json
 
 `upstream enroll start` requires a registered upstream backend with fresh
 validated capabilities and at least one explicitly enabled route-policy family.
-It returns an activation URL and records non-secret local state under
-`KOED_HOME/run`; it does not create API Tokens or persist reusable device
-secrets. `upstream disconnect` disables local upstream route families and marks
-the local enrollment state revoked. Browser approval and upstream-side device
-credential revocation remain browser/session-mediated local-edge flows.
+It records non-secret local state under `KOED_HOME/run` and reports the next
+browser action; it does not create API Tokens, create browser-session enrollment
+challenges, or persist reusable device secrets. `upstream disconnect` disables
+local upstream route families and marks the local enrollment state revoked.
+Browser approval and upstream-side device credential revocation remain
+browser/session-mediated local-edge flows.
 
 ## KOED_HOME layout
 

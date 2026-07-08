@@ -271,24 +271,6 @@ const routePolicyOperationFamilies = (
     .map(([, family]) => family);
 };
 
-const activationUrlForBackend = (
-  backend: UpstreamBackendSummary,
-  operationFamilies: string[]
-): string => {
-  const url = new URL(
-    "/v1/local-edge/device-enrollments/challenges",
-    `${backend.baseUrl}/`
-  );
-  url.searchParams.set("upstream_backend_id", backend.id);
-  if (operationFamilies.length > 0) {
-    url.searchParams.set(
-      "requested_operation_families",
-      operationFamilies.join(",")
-    );
-  }
-  return url.toString();
-};
-
 const expiresAtFor = (now: Date): string =>
   new Date(now.getTime() + 10 * 60 * 1000).toISOString();
 
@@ -420,7 +402,7 @@ export const startUpstreamEnrollment = (
     backendId,
     requestId: resolvedDeps.randomId(),
     state: "pending",
-    activationUrl: activationUrlForBackend(backend, operationFamilies),
+    activationUrl: null,
     requestedOperationFamilies: operationFamilies,
     createdAt: nowIso,
     updatedAt: nowIso,
@@ -435,7 +417,7 @@ export const startUpstreamEnrollment = (
     state: "pending",
     backend,
     enrollment: summarizeEnrollment(record, backend),
-    message: `Started upstream enrollment for ${backendId}.`
+    message: `Started upstream enrollment for ${backendId}. Open Explorer and create a browser-mediated device enrollment challenge to approve this device.`
   };
 };
 

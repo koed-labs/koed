@@ -88,8 +88,7 @@ describe("upstream enrollment orchestration", () => {
         backendId: "team-vps",
         requestId: "enroll-1",
         requestedOperationFamilies: ["team_workspace_read", "sync"],
-        activationUrl:
-          "https://team.example.test/v1/local-edge/device-enrollments/challenges?upstream_backend_id=team-vps&requested_operation_families=team_workspace_read%2Csync",
+        activationUrl: null,
         credential: { status: "not_configured" }
       }
     });

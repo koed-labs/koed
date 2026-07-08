@@ -133,9 +133,11 @@ remote-dependent surfaces.
 Enrollment orchestration state is separate from the upstream backend registry.
 `upstream enroll start/status/cancel` and `upstream disconnect` record only
 non-secret local state under `KOED_HOME/run/upstream-enrollments.json`, including
-state, activation URL, requested operation families, timestamps, and credential
-status/reference metadata. API Tokens remain personal AI-client compatibility
-credentials and are not used for upstream enrollment or Team Workspace recall.
+state, requested operation families, timestamps, and credential status/reference
+metadata. The CLI does not mint browser-session enrollment challenges or return
+an API collection route as an activation URL. API Tokens remain personal
+AI-client compatibility credentials and are not used for upstream enrollment or
+Team Workspace recall.
 
 ## KOED_HOME Layout
 
