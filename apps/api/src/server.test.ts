@@ -6141,7 +6141,7 @@ describe("account and access flows", () => {
     expect(
       jsonBody<{ challenge: { status: string } }>(denied).challenge.status
     ).toBe("denied");
-    expect(deniedRedeem.statusCode).toBe(404);
+    expect(deniedRedeem.statusCode).toBe(400);
   });
 
   it("routes local-edge upstream operations only after policy, capability, and device checks", async () => {
