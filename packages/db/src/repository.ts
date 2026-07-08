@@ -1717,6 +1717,19 @@ const managedCloudPlaintextMemoryPayloadsDisabled = (): boolean => {
   const profile = deploymentProfile();
   const releaseStage =
     process.env.KOED_MANAGED_CLOUD_RELEASE_STAGE?.trim().toLowerCase() ?? "";
+  if (
+    [
+      "koed_managed_cloud",
+      "koed-managed-cloud",
+      "cloud",
+      "team_self_hosted",
+      "team-self-hosted",
+      "private_vps",
+      "private-vps"
+    ].includes(profile)
+  ) {
+    return true;
+  }
   return (
     ["koed_managed_cloud", "koed-managed-cloud", "cloud"].includes(profile) &&
     ["paid", "production"].includes(releaseStage)

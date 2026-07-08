@@ -14,7 +14,7 @@ Options:
   --owner-user-id <uuid>    Limit to one owner user.
   --source-table <table>    Limit to one encrypted source table.
   --source-column <column>  Limit to one encrypted source column.
-  --batch-size <n>          Rows to process this run. Default 100, max 500.
+  --batch-size <n>          Rows to process per database batch. Default 100, max 500.
   --force                   Rewrap matching rows even when key_version is current.
   --json                    Print machine-readable JSON.
   --help                    Show this help.
@@ -134,18 +134,37 @@ try {
   }
   pool = createDbPool();
   const repository = createEncryptedPayloadRepository(pool);
-  const result = await repository.rewrapEncryptedFieldBatch(provider, {
-    ownerUserId: args.ownerUserId,
-    sourceTable: args.sourceTable,
-    sourceColumn: args.sourceColumn,
-    batchSize: args.batchSize,
-    force: args.force
-  });
+  const aggregate = {
+    processedRows: 0,
+    rewrappedRows: 0,
+    failedRows: 0,
+    batches: 0,
+    done: false,
+    nextCursorId: null
+  };
+  let afterId;
+  do {
+    const result = await repository.rewrapEncryptedFieldBatch(provider, {
+      ownerUserId: args.ownerUserId,
+      sourceTable: args.sourceTable,
+      sourceColumn: args.sourceColumn,
+      batchSize: args.batchSize,
+      force: args.force,
+      afterId
+    });
+    aggregate.processedRows += result.processedRows;
+    aggregate.rewrappedRows += result.rewrappedRows;
+    aggregate.failedRows += result.failedRows;
+    aggregate.batches += 1;
+    aggregate.done = result.done;
+    aggregate.nextCursorId = result.nextCursorId;
+    afterId = result.nextCursorId ?? undefined;
+  } while (!aggregate.done && afterId);
   const report = {
     providerMode: provider.mode,
     keyId: provider.keyId,
     keyVersion: provider.keyVersion,
-    ...result
+    ...aggregate
   };
   if (args.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -157,11 +176,12 @@ try {
         `Processed: ${report.processedRows}`,
         `Rewrapped: ${report.rewrappedRows}`,
         `Failed: ${report.failedRows}`,
+        `Batches: ${report.batches}`,
         `Done: ${report.done ? "yes" : "no"}`
       ].join("\n") + "\n"
     );
   }
-  process.exitCode = result.failedRows > 0 ? 1 : 0;
+  process.exitCode = aggregate.failedRows > 0 ? 1 : 0;
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

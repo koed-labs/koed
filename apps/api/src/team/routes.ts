@@ -273,6 +273,14 @@ export const registerTeamRoutes = (
           throw badRequest("Invite email does not match");
         }
         const existingUser = await repo.findUserByEmail(pendingInvite.email);
+        if (existingUser && !existingUser.passwordHash) {
+          throw Object.assign(
+            new Error(
+              "Existing external-auth users must sign in before accepting this invite"
+            ),
+            { statusCode: 401 }
+          );
+        }
         if (
           existingUser?.passwordHash &&
           !(await argon2.verify(existingUser.passwordHash, input.password))

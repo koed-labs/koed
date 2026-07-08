@@ -131,6 +131,25 @@ describe("local edge upstream routing", () => {
     });
   });
 
+  it("applies Capture Policy before local capture decisions", () => {
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "capture_writes",
+        capturePolicy: {
+          captureState: "disabled",
+          visibility: "personal",
+          paused: false,
+          pauseUntil: null,
+          source: "default",
+          policy: null
+        }
+      })
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "capture_disabled"
+    });
+  });
+
   it("blocks capture writes when Capture Policy is paused/ask or not personal", () => {
     const basePolicy = {
       paused: false,
@@ -202,6 +221,37 @@ describe("local edge upstream routing", () => {
       action: "deny_fail_closed",
       reason: "operation_not_allowed",
       credentialState: "operation_not_allowed"
+    });
+  });
+
+  it("requires a distinct upstream relay credential for live proxy decisions", () => {
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "team_workspace_read",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend(),
+        deviceCredential: credential(["team_workspace_read"])
+      })
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "upstream_credential_missing",
+      credentialState: "configured",
+      relayCredentialState: "missing"
+    });
+
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "team_workspace_read",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend(),
+        deviceCredential: credential(["team_workspace_read"]),
+        upstreamCredentialAvailable: true
+      })
+    ).toMatchObject({
+      action: "live_upstream_proxy",
+      reason: "live_upstream_proxy",
+      credentialState: "configured",
+      relayCredentialState: "configured"
     });
   });
 

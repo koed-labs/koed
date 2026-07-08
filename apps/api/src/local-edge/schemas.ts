@@ -40,18 +40,18 @@ export const redeemDeviceEnrollmentChallengeSchema = z
     challenge_hash: z.string().min(32),
     credential_key_id: z.string().trim().min(16).max(160),
     verifier_kind: z.enum(["secret_hash", "public_key_jwk"]),
-    verifier_hash: z.string().min(32).optional(),
+    verifier_secret: z.string().min(32).optional(),
     public_key_jwk: z.record(z.string(), z.unknown()).optional(),
     operation_families: z.array(operationFamilySchema).max(20).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
     expires_at: z.coerce.date().optional()
   })
   .superRefine((input, context) => {
-    if (input.verifier_kind === "secret_hash" && !input.verifier_hash) {
+    if (input.verifier_kind === "secret_hash" && !input.verifier_secret) {
       context.addIssue({
         code: "custom",
-        path: ["verifier_hash"],
-        message: "verifier_hash is required for secret_hash credentials"
+        path: ["verifier_secret"],
+        message: "verifier_secret is required for secret_hash credentials"
       });
     }
     if (input.verifier_kind === "public_key_jwk" && !input.public_key_jwk) {

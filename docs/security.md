@@ -59,6 +59,11 @@ boundary. See
 [ADR 0009](adr/0009-commercial-saas-encryption-key-management.md) and
 [ADR 0010](adr/0010-managed-saas-queryable-vectors.md).
 
+Local personal developer deployments may keep operational Memory rows readable
+for debugging. Team Self-Hosted, private VPS, and Koed-managed cloud profiles
+store new human-readable Memory payloads in encrypted field companions and keep
+the operational source columns redacted.
+
 Envelope encryption is provider-shaped. `local_test_key` wraps Data Encryption
 Keys with `API_DATA_ENCRYPTION_KEY` for local/private operator-managed use. Paid
 Koed-managed cloud must use `managed_kms`, which delegates DEK wrap/unwrap to a

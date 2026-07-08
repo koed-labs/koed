@@ -1051,12 +1051,13 @@ describeDb("memory repository visibility", () => {
         batchSize: 10
       }
     );
-    expect(rewrap).toEqual({
+    expect(rewrap).toMatchObject({
       processedRows: 1,
       rewrappedRows: 1,
       failedRows: 0,
       done: true
     });
+    expect(typeof rewrap.nextCursorId).toBe("string");
 
     const rotated = await encryptedRepo.getAuthorizedEncryptedField(
       { userId: owner.id },
@@ -1098,6 +1099,79 @@ describeDb("memory repository visibility", () => {
       }
     );
     expect(afterFailure?.envelope.keyVersion).toBe(2);
+  });
+
+  it("advances forced encrypted field rewraps across batches", async () => {
+    const encryptedRepo = createEncryptedPayloadRepository(pool);
+    const owner = await repo.createUser({
+      email: `encrypted-force-rewrap-${randomUUID()}@example.com`
+    });
+    const key = randomBytes(32);
+    const provider = createManagedKmsEnvelopeEncryptionProvider(
+      createManagedTestKeyring({
+        currentVersion: 1,
+        keys: { 1: key }
+      })
+    );
+
+    for (const suffix of ["a", "b", "c"]) {
+      await encryptedRepo.upsertEncryptedField({ userId: owner.id }, provider, {
+        sourceTable: "memory_events",
+        sourceId: randomUUID(),
+        sourceColumn: "payload",
+        plaintext: {
+          content: `forced rewrap ${suffix}`,
+          workspaceId: "encrypted-force-rewrap"
+        },
+        scope: {
+          tenantId: owner.id,
+          objectClass: "memory_event"
+        }
+      });
+    }
+
+    const first = await encryptedRepo.rewrapEncryptedFieldBatch(provider, {
+      ownerUserId: owner.id,
+      sourceTable: "memory_events",
+      sourceColumn: "payload",
+      batchSize: 1,
+      force: true
+    });
+    const second = await encryptedRepo.rewrapEncryptedFieldBatch(provider, {
+      ownerUserId: owner.id,
+      sourceTable: "memory_events",
+      sourceColumn: "payload",
+      batchSize: 1,
+      force: true,
+      afterId: first.nextCursorId!
+    });
+    const third = await encryptedRepo.rewrapEncryptedFieldBatch(provider, {
+      ownerUserId: owner.id,
+      sourceTable: "memory_events",
+      sourceColumn: "payload",
+      batchSize: 1,
+      force: true,
+      afterId: second.nextCursorId!
+    });
+
+    expect(first).toMatchObject({
+      processedRows: 1,
+      rewrappedRows: 1,
+      done: false
+    });
+    expect(second).toMatchObject({
+      processedRows: 1,
+      rewrappedRows: 1,
+      done: false
+    });
+    expect(third).toMatchObject({
+      processedRows: 1,
+      rewrappedRows: 1
+    });
+    expect(
+      new Set([first.nextCursorId, second.nextCursorId, third.nextCursorId])
+        .size
+    ).toBe(3);
   });
 
   it("writes encrypted Memory Event payload companions when the repository has an envelope provider", async () => {

@@ -35,6 +35,7 @@ export interface LocalEdgeRouteDecision {
     | "wrong_upstream"
     | "operation_not_allowed"
     | "not_required";
+  relayCredentialState: "configured" | "missing" | "not_required";
 }
 
 export interface LocalEdgeUpstreamBackend {
@@ -115,11 +116,29 @@ export const resolveLocalEdgeRouteDecision = (input: {
   upstreamBackend?: LocalEdgeUpstreamBackend | null;
   upstreamBackendId?: string | null;
   deviceCredential?: DeviceCredentialRecord | null;
+  upstreamCredentialAvailable?: boolean;
   capturePolicy?: CapturePolicy | null;
   now?: Date;
 }): LocalEdgeRouteDecision => {
   const mode = input.requestedMode ?? defaultRouteMode[input.operationFamily];
   const upstreamBackendId = input.upstreamBackendId ?? null;
+  const captureDenied =
+    input.operationFamily === "capture_writes"
+      ? capturePolicyDenial(input.capturePolicy)
+      : null;
+
+  if (captureDenied) {
+    return decision({
+      action: "deny_fail_closed",
+      operationFamily: input.operationFamily,
+      upstreamBackendId,
+      reason: captureDenied,
+      routePolicy: "not_applicable",
+      capabilityState: "missing",
+      credentialState: "not_required",
+      relayCredentialState: "not_required"
+    });
+  }
 
   if (!upstreamBackendId) {
     if (
@@ -133,7 +152,8 @@ export const resolveLocalEdgeRouteDecision = (input: {
         reason: "local_personal_default",
         routePolicy: "not_applicable",
         capabilityState: "missing",
-        credentialState: "not_required"
+        credentialState: "not_required",
+        relayCredentialState: "not_required"
       });
     }
     return decision({
@@ -143,20 +163,8 @@ export const resolveLocalEdgeRouteDecision = (input: {
       reason: "upstream_required",
       routePolicy: "not_applicable",
       capabilityState: "missing",
-      credentialState: "missing"
-    });
-  }
-
-  const captureDenied = capturePolicyDenial(input.capturePolicy);
-  if (input.operationFamily === "capture_writes" && captureDenied) {
-    return decision({
-      action: "deny_fail_closed",
-      operationFamily: input.operationFamily,
-      upstreamBackendId,
-      reason: captureDenied,
-      routePolicy: "not_applicable",
-      capabilityState: "missing",
-      credentialState: "not_required"
+      credentialState: "missing",
+      relayCredentialState: "missing"
     });
   }
 
@@ -169,7 +177,8 @@ export const resolveLocalEdgeRouteDecision = (input: {
       reason: "upstream_not_registered",
       routePolicy: "not_applicable",
       capabilityState: "missing",
-      credentialState: "missing"
+      credentialState: "missing",
+      relayCredentialState: "missing"
     });
   }
 
@@ -183,7 +192,8 @@ export const resolveLocalEdgeRouteDecision = (input: {
       reason: "route_policy_disabled",
       routePolicy,
       capabilityState: capabilityState(upstreamBackend, input.now),
-      credentialState: credentialState(input)
+      credentialState: credentialState(input),
+      relayCredentialState: relayCredentialState(input, mode)
     });
   }
 
@@ -197,6 +207,7 @@ export const resolveLocalEdgeRouteDecision = (input: {
       routePolicy,
       capabilityState: capabilities,
       credentialState: credentialState(input),
+      relayCredentialState: relayCredentialState(input, mode),
       retryAfterCapabilityRefresh: true
     });
   }
@@ -210,7 +221,22 @@ export const resolveLocalEdgeRouteDecision = (input: {
       reason: credentials,
       routePolicy,
       capabilityState: capabilities,
-      credentialState: credentials
+      credentialState: credentials,
+      relayCredentialState: relayCredentialState(input, mode)
+    });
+  }
+
+  const relayCredentials = relayCredentialState(input, mode);
+  if (relayCredentials === "missing") {
+    return decision({
+      action: "deny_fail_closed",
+      operationFamily: input.operationFamily,
+      upstreamBackendId,
+      reason: "upstream_credential_missing",
+      routePolicy,
+      capabilityState: capabilities,
+      credentialState: credentials,
+      relayCredentialState: relayCredentials
     });
   }
 
@@ -226,7 +252,8 @@ export const resolveLocalEdgeRouteDecision = (input: {
     reason: mode,
     routePolicy,
     capabilityState: capabilities,
-    credentialState: credentials
+    credentialState: credentials,
+    relayCredentialState: relayCredentials
   });
 };
 
@@ -374,6 +401,16 @@ const credentialState = (input: {
     credential.operationFamilies.includes("*")
     ? "configured"
     : "operation_not_allowed";
+};
+
+const relayCredentialState = (
+  input: { upstreamCredentialAvailable?: boolean },
+  mode: LocalEdgeRouteMode
+): LocalEdgeRouteDecision["relayCredentialState"] => {
+  if (mode !== "live_upstream_proxy") {
+    return "not_required";
+  }
+  return input.upstreamCredentialAvailable ? "configured" : "missing";
 };
 
 const capturePolicyDenial = (policy: CapturePolicy | null | undefined) => {

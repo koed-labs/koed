@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -86,6 +86,7 @@ afterEach(() => {
     "WORKOS_PROVIDER_ENVIRONMENT",
     "API_DATA_ENCRYPTION_KEY",
     "API_ENVELOPE_ENCRYPTION_PROVIDER",
+    "KOED_MANAGED_CLOUD_RELEASE_STAGE",
     "MANAGED_KMS_KEY_ID",
     "MANAGED_KMS_KEY_VERSION",
     "MANAGED_KMS_ENDPOINT_URL",
@@ -133,11 +134,6 @@ const isStringArray = (value: unknown): value is string[] =>
 const jsonBody = <T>(response: { body: string }): T =>
   JSON.parse(response.body) as T;
 
-const hashSecretForTest = (secret: string): string =>
-  createHash("sha256")
-    .update(`${process.env.API_TOKEN_PEPPER ?? ""}${secret}`)
-    .digest("hex");
-
 const enrollDeviceCredentialForTest = async (
   app: Awaited<ReturnType<typeof buildServer>>,
   cookie: string,
@@ -170,7 +166,7 @@ const enrollDeviceCredentialForTest = async (
       challenge_hash: challengeHash,
       credential_key_id: credentialKeyId,
       verifier_kind: "secret_hash",
-      verifier_hash: hashSecretForTest(deviceSecret)
+      verifier_secret: deviceSecret
     }
   });
   expect(redeemed.statusCode).toBe(200);
@@ -250,6 +246,14 @@ type AccessResponse = {
   auth?: string;
   providerConfigSupported?: boolean;
 };
+
+type LocalEdgeDecisionResponse = {
+  action: string;
+  reason: string;
+  credentialState: string;
+  relayCredentialState?: string;
+};
+
 type CapabilitiesResponse = {
   product: string;
   apiVersion: string;
@@ -5762,7 +5766,7 @@ describe("account and access flows", () => {
         challenge_hash: overScopedChallengeHash,
         credential_key_id: `device-key-${randomUUID()}`,
         verifier_kind: "secret_hash",
-        verifier_hash: hashSecretForTest(deviceSecret),
+        verifier_secret: deviceSecret,
         operation_families: ["team_workspace_read", "admin"]
       }
     });
@@ -5774,7 +5778,7 @@ describe("account and access flows", () => {
         challenge_hash: overScopedChallengeHash,
         credential_key_id: `device-key-${randomUUID()}`,
         verifier_kind: "secret_hash",
-        verifier_hash: hashSecretForTest(deviceSecret),
+        verifier_secret: deviceSecret,
         operation_families: ["team_workspace_read"]
       }
     });
@@ -5786,7 +5790,7 @@ describe("account and access flows", () => {
         challenge_hash: challengeHash,
         credential_key_id: credentialKeyId,
         verifier_kind: "secret_hash",
-        verifier_hash: hashSecretForTest(deviceSecret)
+        verifier_secret: deviceSecret
       }
     });
     const credential = jsonBody<{
@@ -5891,6 +5895,10 @@ describe("account and access flows", () => {
     const app = await buildServer({
       repository,
       upstreamBackendsPath,
+      resolveUpstreamAuthorization: (backend) =>
+        backend.id === "team-vps"
+          ? "Koed-Device upstream-key:upstream-secret"
+          : null,
       fetch: async (url, init) => {
         upstreamCalls.push({ url: String(url), init: init ?? {} });
         return new Response(JSON.stringify({ markdown: "proxied" }), {
@@ -5927,7 +5935,7 @@ describe("account and access flows", () => {
         challenge_hash: challengeHash,
         credential_key_id: credentialKeyId,
         verifier_kind: "secret_hash",
-        verifier_hash: hashSecretForTest(deviceSecret)
+        verifier_secret: deviceSecret
       }
     });
 
@@ -6034,7 +6042,7 @@ describe("account and access flows", () => {
     });
     expect(
       (upstreamCalls[0]?.init.headers as Record<string, string>).authorization
-    ).toBeUndefined();
+    ).toBe("Koed-Device upstream-key:upstream-secret");
     expect(blockedLocalEdgeProxy.statusCode).toBe(400);
     expect(blockedMislabeledAdminProxy.statusCode).toBe(400);
     expect(upstreamCalls).toHaveLength(1);
@@ -6079,7 +6087,7 @@ describe("account and access flows", () => {
         challenge_hash: challengeHash,
         credential_key_id: `device-key-${randomUUID()}`,
         verifier_kind: "secret_hash",
-        verifier_hash: hashSecretForTest(`expired-device-${randomUUID()}`),
+        verifier_secret: `expired-device-${randomUUID()}`,
         expires_at: new Date(Date.now() - 60_000).toISOString()
       }
     });
@@ -6103,6 +6111,168 @@ describe("account and access flows", () => {
       action: "deny_fail_closed",
       reason: "missing"
     });
+  });
+
+  it("selects an active device credential that allows the requested operation", async () => {
+    const upstreamPath = writeUpstreamRegistryFixture({
+      baseUrl: "https://team.example.test",
+      routePolicy: {
+        teamWorkspaceRead: "enabled",
+        sync: "enabled"
+      }
+    });
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      upstreamBackendsPath: upstreamPath,
+      resolveUpstreamAuthorization: () => "Koed-Device upstream-key:secret"
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "operation-device-owner@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    await enrollDeviceCredentialForTest(app, cookie, ["sync"]);
+    await enrollDeviceCredentialForTest(app, cookie, ["team_workspace_read"]);
+
+    const teamDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    const syncDecision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "sync",
+        upstream_backend_id: "team-vps"
+      }
+    });
+    await app.close();
+
+    expect(
+      jsonBody<{ decision: LocalEdgeDecisionResponse }>(teamDecision).decision
+    ).toMatchObject({
+      action: "live_upstream_proxy",
+      credentialState: "configured"
+    });
+    expect(
+      jsonBody<{ decision: LocalEdgeDecisionResponse }>(syncDecision).decision
+    ).toMatchObject({
+      action: "queued_sync_handoff",
+      credentialState: "configured"
+    });
+  });
+
+  it("applies Capture Policy to local route decisions without an upstream id", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "local-capture-policy@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Client Integration" }
+    });
+    await app.inject({
+      method: "PUT",
+      url: "/v1/capture-policies",
+      headers: {
+        authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+      },
+      payload: {
+        targetType: "project",
+        projectId: "disabled-local-capture",
+        captureState: "disabled"
+      }
+    });
+    const decision = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/route-decisions",
+      headers: { cookie },
+      payload: {
+        operation_family: "capture_writes",
+        capture_context: { workspace_id: "disabled-local-capture" }
+      }
+    });
+    await app.close();
+
+    expect(
+      jsonBody<{ decision: LocalEdgeDecisionResponse }>(decision).decision
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "capture_disabled"
+    });
+  });
+
+  it("requires external-auth users to sign in before accepting matching invites", async () => {
+    const repository = createFakeRepository();
+    await repository.upsertExternalAuthSession({
+      provider: "workos_authkit",
+      providerUserId: `workos-${randomUUID()}`,
+      email: "workos-invitee@example.com",
+      emailVerified: true,
+      displayName: "WorkOS Invitee"
+    });
+    const app = await buildServer({ repository });
+    const ownerRegistered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "workos-invite-owner@example.com",
+        password: "password123"
+      }
+    });
+    const ownerCookie = cookieHeader(ownerRegistered);
+    const teamResponse = await app.inject({
+      method: "POST",
+      url: "/v1/teams",
+      headers: { cookie: ownerCookie },
+      payload: { name: "WorkOS Invite Test" }
+    });
+    const team = jsonBody<TeamResponse>(teamResponse).team;
+    const inviteResponse = await app.inject({
+      method: "POST",
+      url: `/v1/teams/${team.id}/invites`,
+      headers: { cookie: ownerCookie },
+      payload: {
+        email: "workos-invitee@example.com",
+        role: "member",
+        ttlHours: 24
+      }
+    });
+    const invite = jsonBody<TeamInviteResponse>(inviteResponse);
+    const acceptedWithoutExternalAuth = await app.inject({
+      method: "POST",
+      url: "/v1/team-invites/accept",
+      payload: {
+        inviteToken: invite.inviteToken,
+        email: "workos-invitee@example.com",
+        password: "password123"
+      }
+    });
+    await app.close();
+
+    expect(acceptedWithoutExternalAuth.statusCode).toBe(401);
+    expect(jsonBody<{ error: string }>(acceptedWithoutExternalAuth).error).toBe(
+      "Existing external-auth users must sign in before accepting this invite"
+    );
+    expect(cookieHeader(acceptedWithoutExternalAuth)).toBe("");
   });
 
   it("verifies the invited email before issuing an invite session", async () => {
@@ -7316,6 +7486,7 @@ describe("account and access flows", () => {
     "writes encrypted Memory Event companions through the real API repository wiring",
     async () => {
       process.env.KOED_ALLOW_PUBLIC_REGISTRATION = "true";
+      process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
       process.env.API_DATA_ENCRYPTION_KEY = randomBytes(32).toString("base64");
       process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "local_test_key";
       const app = await buildServer({ runMemoryJobsInlineForTests: true });
@@ -7379,6 +7550,20 @@ describe("account and access flows", () => {
         });
         expect(encrypted.rows[0]?.provenance.sourceId).toBe(event.id);
         expect(JSON.stringify(encrypted.rows[0])).not.toContain(content);
+
+        const storedEvent = await queryPool.query<{ payload_text: string }>(
+          `
+            select payload::text as payload_text
+            from memory_events
+            where id = $1
+          `,
+          [event.id]
+        );
+        expect(storedEvent.rows[0]?.payload_text).toContain(
+          '"contentEncrypted": true'
+        );
+        expect(storedEvent.rows[0]?.payload_text).not.toContain('"content":');
+        expect(storedEvent.rows[0]?.payload_text).not.toContain(content);
       } finally {
         await queryPool.end();
         await app.close();

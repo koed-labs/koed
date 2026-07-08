@@ -59,6 +59,10 @@ export interface ApiRouteContext {
   localEdge: {
     upstreamBackendsPath: string;
     fetch: typeof fetch;
+    resolveUpstreamAuthorization(backend: {
+      id: string;
+      credential?: { status?: string; reference?: string };
+    }): string | null;
   };
   workos: {
     client: WorkosAuthKitClient;

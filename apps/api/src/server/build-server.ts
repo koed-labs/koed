@@ -68,6 +68,7 @@ import {
   setRequestLogContext
 } from "./logging.js";
 import { registerOperationalRoutes } from "./operational-routes.js";
+import type { ApiRouteContext } from "./context.js";
 
 export {
   canReceiveGraphStreamPayload,
@@ -82,6 +83,7 @@ interface BuildServerOptions {
   cacheProvider?: CacheProvider;
   upstreamBackendsPath?: string;
   fetch?: typeof fetch;
+  resolveUpstreamAuthorization?: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"];
   workosClient?: WorkosAuthKitClient;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
 }
@@ -113,6 +115,35 @@ const requestPathname = (request: FastifyRequest): string => {
     return request.url.split("?")[0] ?? request.url;
   }
 };
+
+const upstreamCredentialEnvironmentName = (backendId: string): string =>
+  `KOED_UPSTREAM_CREDENTIAL_${backendId.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`;
+
+const normalizeUpstreamAuthorization = (
+  value: string | undefined
+): string | null => {
+  const trimmed = value?.trim();
+  if (!trimmed || /[\r\n]/.test(trimmed)) {
+    return null;
+  }
+  if (/^(?:Bearer|Koed-Device)\s+\S+/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `Koed-Device ${trimmed}`;
+};
+
+const defaultResolveUpstreamAuthorization: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"] =
+  (backend) => {
+    if (backend.credential?.status !== "configured") {
+      return null;
+    }
+    const reference = backend.credential.reference?.trim();
+    return normalizeUpstreamAuthorization(
+      reference
+        ? process.env[reference]
+        : process.env[upstreamCredentialEnvironmentName(backend.id)]
+    );
+  };
 
 export const buildServer = async (options: BuildServerOptions = {}) => {
   const config = resolveApiServerConfig();
@@ -349,7 +380,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     localEdge: {
       upstreamBackendsPath:
         options.upstreamBackendsPath ?? config.upstreamBackendsPath,
-      fetch: options.fetch ?? globalThis.fetch.bind(globalThis)
+      fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
+      resolveUpstreamAuthorization:
+        options.resolveUpstreamAuthorization ??
+        defaultResolveUpstreamAuthorization
     },
     workos: {
       client:

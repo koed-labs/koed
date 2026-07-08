@@ -16,6 +16,7 @@ import {
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
   upstreamBackendById,
+  type LocalEdgeOperationFamily,
   type LocalEdgeRouteDecision
 } from "./upstream-routing.js";
 
@@ -49,15 +50,29 @@ const deviceCredentialIsActive = (
   (!credential.expiresAt || Date.parse(credential.expiresAt) > now.getTime());
 
 const activeDeviceCredentialForDecision = (
-  credentials: DeviceCredentialRecord[]
+  credentials: DeviceCredentialRecord[],
+  input: {
+    upstreamBackendId?: string | null;
+    operationFamily: LocalEdgeOperationFamily;
+  }
 ): DeviceCredentialRecord | null => {
   const now = new Date();
   return (
-    credentials.find((credential) =>
-      deviceCredentialIsActive(credential, now)
+    credentials.find(
+      (credential) =>
+        deviceCredentialIsActive(credential, now) &&
+        credential.upstreamBackendId === input.upstreamBackendId &&
+        credentialAllowsOperation(credential, input.operationFamily)
     ) ?? null
   );
 };
+
+const credentialAllowsOperation = (
+  credential: DeviceCredentialRecord,
+  operationFamily: LocalEdgeOperationFamily
+): boolean =>
+  credential.operationFamilies.includes(operationFamily) ||
+  credential.operationFamilies.includes("*");
 
 const secretMetadataKeyParts = [
   "token",
@@ -110,13 +125,17 @@ export const registerLocalEdgeRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticateSession, authenticateDeviceCredential },
+    auth: { authenticateSession, authenticateDeviceCredential, hashSecret },
     rateLimit: {
       memoryRead: memoryReadRateLimit,
       memoryWrite: memoryWriteRateLimit
     },
     capture: { resolveCapturePolicyForRequest },
-    localEdge: { upstreamBackendsPath, fetch: upstreamFetch }
+    localEdge: {
+      upstreamBackendsPath,
+      fetch: upstreamFetch,
+      resolveUpstreamAuthorization
+    }
   } = context;
 
   const upstreamRegistry = () =>
@@ -156,7 +175,9 @@ export const registerLocalEdgeRoutes = (
           challengeHash: input.challenge_hash,
           credentialKeyId: input.credential_key_id,
           verifierKind: input.verifier_kind,
-          verifierHash: input.verifier_hash,
+          verifierHash: input.verifier_secret
+            ? hashSecret(input.verifier_secret)
+            : null,
           publicKeyJwk: input.public_key_jwk,
           operationFamilies: input.operation_families,
           metadata: redactOptionalMetadata(input.metadata),
@@ -265,7 +286,13 @@ export const registerLocalEdgeRoutes = (
         requestedMode: input.requested_mode,
         upstreamBackend,
         upstreamBackendId: input.upstream_backend_id,
-        deviceCredential: activeDeviceCredentialForDecision(credentials),
+        deviceCredential: activeDeviceCredentialForDecision(credentials, {
+          upstreamBackendId: input.upstream_backend_id,
+          operationFamily: input.operation_family
+        }),
+        upstreamCredentialAvailable: upstreamBackend
+          ? Boolean(resolveUpstreamAuthorization(upstreamBackend))
+          : false,
         capturePolicy
       });
 
@@ -303,6 +330,9 @@ export const registerLocalEdgeRoutes = (
         upstreamBackend,
         upstreamBackendId: input.upstream_backend_id,
         deviceCredential: authContext.credential,
+        upstreamCredentialAvailable: upstreamBackend
+          ? Boolean(resolveUpstreamAuthorization(upstreamBackend))
+          : false,
         capturePolicy
       });
       assertLiveProxyDecision(decision);
@@ -317,11 +347,19 @@ export const registerLocalEdgeRoutes = (
         });
       }
       const url = safeUpstreamProxyUrl(upstreamBackend, input.path);
+      const upstreamAuthorization =
+        resolveUpstreamAuthorization(upstreamBackend);
+      if (!upstreamAuthorization) {
+        throw Object.assign(new Error("upstream_credential_missing"), {
+          statusCode: 424
+        });
+      }
       const upstreamResponse = await upstreamFetch(url, {
         method: input.method,
         headers: {
           "content-type": "application/json",
-          accept: "application/json"
+          accept: "application/json",
+          authorization: upstreamAuthorization
         },
         body:
           input.method === "GET" ? undefined : JSON.stringify(input.body ?? {})

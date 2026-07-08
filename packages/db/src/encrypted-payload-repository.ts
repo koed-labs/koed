@@ -138,12 +138,14 @@ export interface EncryptedPayloadRepository {
       sourceColumn?: string;
       batchSize?: number;
       force?: boolean;
+      afterId?: string;
     }
   ): Promise<{
     processedRows: number;
     rewrappedRows: number;
     failedRows: number;
     done: boolean;
+    nextCursorId: string | null;
   }>;
 }
 
@@ -1082,8 +1084,9 @@ export const createEncryptedPayloadRepository = (
           and ($4::text is null or source_table = $4)
           and ($5::text is null or source_column = $5)
           and ($6::boolean or key_version <> $7)
+          and ($8::text is null or id::text > $8)
         order by id::text asc
-        limit $8
+        limit $9
       `,
       [
         provider.mode,
@@ -1093,6 +1096,7 @@ export const createEncryptedPayloadRepository = (
         input.sourceColumn ?? null,
         input.force ?? false,
         provider.keyVersion,
+        input.afterId ?? null,
         batchSize
       ]
     );
@@ -1140,7 +1144,8 @@ export const createEncryptedPayloadRepository = (
       processedRows: result.rows.length,
       rewrappedRows,
       failedRows: 0,
-      done: result.rows.length < batchSize
+      done: result.rows.length < batchSize,
+      nextCursorId: result.rows.at(-1)?.id ?? null
     };
   }
 });

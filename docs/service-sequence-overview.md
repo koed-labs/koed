@@ -391,12 +391,14 @@ authorization in the current API.
 that resolve to `live_upstream_proxy`. It accepts a `Koed-Device` credential and
 relays only non-local-edge `/v1/*` API paths to the selected upstream, preserving
 any configured upstream base-path prefix. The accepted `Koed-Device` credential
-is upstream-scoped for the selected backend; local edge relays that credential
-only to that backend after route-policy, capability, Capture Policy, and
-operation-family checks pass. It does not forward arbitrary browser headers,
-does not store reusable upstream credentials in the upstream registry, and does
-not expose upstream credentials to MCP Server or Supported Capture Hook
-processes. Queued sync/offload currently resolves as an explicit
+authorizes the local-edge operation only. Local edge then resolves separate
+upstream relay authorization from secret storage using the selected backend's
+safe credential reference or backend id; if that relay credential is missing,
+the route fails closed. It does not forward arbitrary browser headers or the
+local device credential upstream, does not store reusable upstream credentials
+in the upstream registry, and does not expose upstream credentials to MCP Server
+or Supported Capture Hook processes. Queued sync/offload currently resolves as
+an explicit
 `queued_sync_handoff` decision only; the durable Cross-Identity Sync/offload
 state model records logical memory identity, source and target replicas, sync
 relationships, resumable upload sessions, chunks, and inbox/outbox entries for
@@ -424,8 +426,11 @@ browser-authenticated User creates a short-lived enrollment challenge with
 `POST /v1/local-edge/device-enrollments/challenges`, then redeems that challenge
 with `POST /v1/local-edge/device-enrollments/credentials` to bind a device
 credential to the User, upstream backend, device instance, operation families,
-and verifier material. Server-side persistence stores only verifier hashes or
-public-key material, never reusable device secrets. `GET
+and verifier material. For shared-secret credentials, the client submits a
+fresh device secret over the browser-authenticated enrollment channel and the
+server hashes it with server-side secret material before persistence. Server-side
+persistence stores only verifier hashes or public-key material, never reusable
+device secrets. `GET
 /v1/local-edge/device-credentials/status` accepts the `Koed-Device` credential
 scheme for credential validation, while listing and revocation remain
 browser-session routes. Revoking a device credential stops future

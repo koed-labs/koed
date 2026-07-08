@@ -96,6 +96,15 @@ fragments are rejected. Device/upstream credential material is handled by the
 separate credential model; this registry only records non-secret existence and
 status metadata.
 
+Live local-edge upstream proxying needs separate upstream relay authorization.
+The registry may record a sanitized credential `reference`, but the reusable
+secret must live in deployment secret storage. At runtime the API resolves that
+reference from the environment; when no reference is configured it falls back to
+`KOED_UPSTREAM_CREDENTIAL_<BACKEND_ID>`, where the backend id is uppercased and
+non-alphanumeric characters become `_`. The value may be a full `Bearer ...` or
+`Koed-Device ...` authorization header, or a `key:secret` value which is sent as
+`Koed-Device key:secret`. Local device credentials are never forwarded upstream.
+
 Supported commands:
 
 ```bash
@@ -167,9 +176,12 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
   key-reference onboarding flow before use. `operator_kms` is reserved for
   Team Self-Hosted/private VPS KMS integration and is not implemented in this
   build.
-- `KOED_MANAGED_CLOUD_RELEASE_STAGE`: `alpha` or `paid`. When set to `paid`
-  with `KOED_DEPLOYMENT_PROFILE=koed_managed_cloud`, the API and Worker refuse
-  to start unless `API_ENVELOPE_ENCRYPTION_PROVIDER` is KMS-backed.
+- `KOED_MANAGED_CLOUD_RELEASE_STAGE`: `alpha` or `paid`. Team Self-Hosted,
+  private VPS, and Koed-managed cloud profiles store new human-readable Memory
+  payloads through encrypted field companions and keep operational source
+  columns redacted. When this is set to `paid` with
+  `KOED_DEPLOYMENT_PROFILE=koed_managed_cloud`, the API and Worker refuse to
+  start unless `API_ENVELOPE_ENCRYPTION_PROVIDER` is KMS-backed.
 - `MANAGED_KMS_KEY_ID` and `MANAGED_KMS_KEY_VERSION`: safe managed KMS key
   reference metadata required when the API or Worker is configured for
   `managed_kms`, `byok`, or `cmek`.
@@ -414,16 +426,15 @@ Postgres is the source of truth for Users, API Tokens, Capture Policies, raw
 `conversation_items`, messages, tool events, Memory Events, Memory Nodes,
 embeddings, LCM placeholders, LCM summaries, Memory Questions, and related
 evidence. The application hashes API Tokens with `API_TOKEN_PEPPER`. Local
-personal, private VPS, and Team Self-Hosted deployments still store operational
-Memory rows as normal database rows unless application-layer encryption is
-explicitly configured. Paid Koed-managed cloud must use a KMS-backed envelope
-provider; new raw conversation-item source fields, projected message/tool
-payloads, Memory Event payloads, Memory Node text/source/structured-summary
-fields, embedding source text, and Memory Question query/answer/evidence/worker
-payloads in that mode store redacted operational payloads and keep full
-human-readable content in encrypted field companions. Projection hydrates raw
-conversation-item companions inside the trusted repository boundary before
-deriving semantic rows. Authorized graph, embedding, retrieval, LCM, and Memory
-Question paths hydrate encrypted companions after access checks.
+personal developer deployments store operational Memory rows as normal database
+rows. Team Self-Hosted, private VPS, and Koed-managed cloud profiles store new
+raw conversation-item source fields, projected message/tool payloads, Memory
+Event payloads, Memory Node text/source/structured-summary fields, embedding
+source text, and Memory Question query/answer/evidence/worker payloads through
+encrypted field companions and keep the operational source columns redacted.
+Paid Koed-managed cloud must use a KMS-backed envelope provider. Projection
+hydrates raw conversation-item companions inside the trusted repository boundary
+before deriving semantic rows. Authorized graph, embedding, retrieval, LCM, and
+Memory Question paths hydrate encrypted companions after access checks.
 
 Operators should treat the Postgres database and backups as sensitive memory data. Keep Postgres on a private network, restrict database credentials to Koed services and trusted administrators, use encrypted disks or managed-database storage encryption, encrypt backups, and rotate secrets if a backup or database role is exposed.
