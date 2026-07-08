@@ -80,6 +80,11 @@ describe("Team dogfood sharing", () => {
           if (String(url).includes("/v1/sessions/latest")) {
             return Response.json({ session: { id: sessionId } });
           }
+          if (String(url).includes(`/v1/sessions/${sessionId}`)) {
+            return Response.json({
+              session: { id: sessionId, workspaceId: "/repo/koed" }
+            });
+          }
           return Response.json({ shareGrant: { id: "grant-1", sessionId } });
         }
       }
@@ -96,9 +101,55 @@ describe("Team dogfood sharing", () => {
       cookie: undefined
     });
     expect(calls[1]).toMatchObject({
+      authorization: "Bearer cmt_lookup",
+      cookie: undefined
+    });
+    expect(calls[2]).toMatchObject({
       authorization: undefined,
       cookie: "cm_session=cms_share",
       body: JSON.stringify({ sessionId })
     });
+  });
+
+  it("verifies selected sessions before creating Share Grants", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-share-"));
+    const paths = pathsFor(directory);
+    const teamWorkspaceId = "11111111-1111-4111-8111-111111111111";
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    linkProjectTeamWorkspace(paths, {
+      projectRoot: "/repo/koed",
+      teamWorkspaceId
+    });
+
+    const result = await shareProjectCapturedSession(
+      paths,
+      { projectRoot: "/repo/koed", sessionId },
+      {
+        MEMORY_API_URL: "http://koed.test",
+        MEMORY_API_TOKEN: "cmt_lookup",
+        KOED_TEAM_SESSION_COOKIE: "cms_share"
+      } as NodeJS.ProcessEnv,
+      {},
+      {
+        fetch: async (url) => {
+          if (String(url).includes(`/v1/sessions/${sessionId}`)) {
+            return Response.json(
+              { error: "Captured Session does not belong to Project" },
+              { status: 404 }
+            );
+          }
+          throw new Error(`unexpected request ${String(url)}`);
+        }
+      }
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "needs_attention",
+      teamWorkspaceId
+    });
+    expect(result.message).toContain(
+      "Captured Session does not belong to Project"
+    );
   });
 });

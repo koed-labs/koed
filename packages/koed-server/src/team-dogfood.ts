@@ -65,6 +65,21 @@ const requestError = (
     ? payload.error
     : `${fallback} (${response.status})`;
 
+const sessionIdFromPayload = (
+  payload: Record<string, unknown>,
+  fallback: string
+): string => {
+  const session = payload.session;
+  const sessionId =
+    session && typeof session === "object"
+      ? (session as { id?: unknown }).id
+      : undefined;
+  if (typeof sessionId !== "string") {
+    throw new Error(fallback);
+  }
+  return sessionId;
+};
+
 const latestSessionIdForProject = async (input: {
   apiUrl: string;
   apiToken: string;
@@ -91,17 +106,43 @@ const latestSessionIdForProject = async (input: {
       )
     );
   }
-  const session = payload.session;
-  const sessionId =
-    session && typeof session === "object"
-      ? (session as { id?: unknown }).id
-      : undefined;
-  if (typeof sessionId !== "string") {
+  return sessionIdFromPayload(
+    payload,
+    "Latest Captured Session response did not include a session id."
+  );
+};
+
+const verifySessionBelongsToProject = async (input: {
+  apiUrl: string;
+  apiToken: string;
+  projectRoot: string;
+  sessionId: string;
+  fetch: typeof fetch;
+}): Promise<void> => {
+  const params = new URLSearchParams({ workspace_id: input.projectRoot });
+  const response = await input.fetch(
+    `${input.apiUrl}/v1/sessions/${encodeURIComponent(input.sessionId)}?${params.toString()}`,
+    {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.apiToken}`
+      }
+    }
+  );
+  const payload = await parseJsonResponse(response);
+  if (!response.ok) {
     throw new Error(
-      "Latest Captured Session response did not include a session id."
+      requestError(
+        "Selected Captured Session does not belong to mapped Project",
+        payload,
+        response
+      )
     );
   }
-  return sessionId;
+  sessionIdFromPayload(
+    payload,
+    "Selected Captured Session response did not include a session id."
+  );
 };
 
 export const shareProjectCapturedSession = async (
@@ -143,9 +184,10 @@ export const shareProjectCapturedSession = async (
       error: message
     };
   }
-  if (!input.sessionId && !token) {
-    const message =
-      "MEMORY_API_TOKEN is required to locate the latest Personal Captured Session. Pass --session-id to share a selected Captured Session without using API Token lookup.";
+  if (!token) {
+    const message = input.sessionId
+      ? "MEMORY_API_TOKEN is required to verify the selected Captured Session belongs to the mapped Project."
+      : "MEMORY_API_TOKEN is required to locate the latest Personal Captured Session.";
     return {
       ok: false,
       state: "needs_attention",
@@ -162,10 +204,17 @@ export const shareProjectCapturedSession = async (
       input.sessionId ??
       (await latestSessionIdForProject({
         apiUrl,
-        apiToken: token!.token,
+        apiToken: token.token,
         projectRoot,
         fetch: fetchImpl
       }));
+    await verifySessionBelongsToProject({
+      apiUrl,
+      apiToken: token.token,
+      projectRoot,
+      sessionId,
+      fetch: fetchImpl
+    });
     const response = await fetchImpl(
       `${apiUrl}/v1/team-workspaces/${encodeURIComponent(
         linkResult.link.teamWorkspaceId

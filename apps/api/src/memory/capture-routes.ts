@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { publicUser } from "../auth/session.js";
 import type { ApiRouteContext } from "../server/context.js";
 import {
+  capturedSessionQuerySchema,
   capturePersonalEventSchema,
   capturePoliciesQuerySchema,
   capturePolicySchema,
@@ -133,6 +134,33 @@ export const registerCaptureRoutes = (
       if (!session) {
         throw Object.assign(
           new Error("No Personal Captured Session found for Project"),
+          { statusCode: 404 }
+        );
+      }
+      return { session };
+    }
+  );
+
+  app.get(
+    "/v1/sessions/:sessionId",
+    { preHandler: memoryReadRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const params = sessionIdParamsSchema.parse(request.params);
+      const query = capturedSessionQuerySchema.parse(request.query);
+      const session = await repo.getCapturedSession(
+        { userId: user.id },
+        params.sessionId
+      );
+      if (!session) {
+        throw Object.assign(new Error("Captured Session not found"), {
+          statusCode: 404
+        });
+      }
+      if (query.workspace_id && session.workspaceId !== query.workspace_id) {
+        throw Object.assign(
+          new Error("Captured Session does not belong to Project"),
           { statusCode: 404 }
         );
       }
