@@ -391,6 +391,7 @@ export class MemoryApiClient {
       searchDomain?: string;
       sessionId?: string;
       workspaceId?: string;
+      teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -405,6 +406,9 @@ export class MemoryApiClient {
     }
     if (input.workspaceId) {
       params.set("workspace_id", input.workspaceId);
+    }
+    if (input.teamWorkspaceId) {
+      params.set("team_workspace_id", input.teamWorkspaceId);
     }
     if (input.recentDays !== undefined) {
       params.set("recent_days", String(input.recentDays));

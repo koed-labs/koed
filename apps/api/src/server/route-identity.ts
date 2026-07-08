@@ -254,6 +254,20 @@ export const routeIdentityContracts = [
     "Create captured session from AI-client integration."
   ),
   route(
+    "GET",
+    "/v1/sessions/latest",
+    "api_token",
+    "capture",
+    "Find latest Personal Captured Session for a Project."
+  ),
+  route(
+    "GET",
+    "/v1/sessions/{sessionId}",
+    "api_token",
+    "capture",
+    "Read Personal Captured Session metadata for Project verification."
+  ),
+  route(
     "POST",
     "/v1/sessions/{sessionId}/events",
     "session_or_api_token",

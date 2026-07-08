@@ -48,6 +48,12 @@ const paths = (root: string): KoedServerPaths => ({
     "config",
     "upstream-backends.json"
   ),
+  projectTeamWorkspaceLinksPath: resolve(
+    root,
+    "home",
+    "config",
+    "project-team-workspaces.json"
+  ),
   upstreamEnrollmentsPath: resolve(
     root,
     "home",

@@ -526,6 +526,7 @@ const createFakeRepository = () => {
     updatedAt: string;
   }> = [];
   const capturedSessions = new Map<string, CapturedSessionRecord>();
+  let capturedSessionCounter = 0;
   const teams = new Map<string, TeamRecord>();
   const teamInvites = new Map<
     string,
@@ -2186,7 +2187,7 @@ const createFakeRepository = () => {
         model: input.model ?? null,
         cwd: input.cwd ?? null,
         metadata: input.metadata ?? {},
-        createdAt: new Date().toISOString()
+        createdAt: new Date(Date.now() + capturedSessionCounter++).toISOString()
       };
       capturedSessions.set(id, record);
       return record;
@@ -2298,6 +2299,23 @@ const createFakeRepository = () => {
             capturedAt: event.createdAt
           }))
       }));
+    },
+    async getLatestCapturedSessionForProject(actor, input) {
+      return (
+        [...capturedSessions.values()]
+          .filter(
+            (session) =>
+              session.ownerUserId === actor.userId &&
+              session.visibility === "personal" &&
+              (session.workspaceId === input.workspaceId ||
+                session.cwd === input.workspaceId ||
+                session.metadata.workspaceId === input.workspaceId ||
+                session.metadata.projectPath === input.workspaceId)
+          )
+          .sort((left, right) =>
+            right.createdAt.localeCompare(left.createdAt)
+          )[0] ?? null
+      );
     },
     async updateCapturedSessionGeneratedTitle(actor, sessionId, input) {
       const session = capturedSessions.get(sessionId);
@@ -10223,6 +10241,59 @@ describe("account and access flows", () => {
     expect(rejected.json()).toMatchObject({
       error: "Invalid request payload"
     });
+  });
+
+  it("finds the latest Personal Captured Session for a Project via API Token", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "latest-session@example.com",
+        password: "password123"
+      }
+    });
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Client Integration" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(createdToken).token}`
+    };
+    const older = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers,
+      payload: {
+        externalSessionId: "latest-session-a",
+        cwd: "/tmp/latest-project"
+      }
+    });
+    const newer = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers,
+      payload: {
+        externalSessionId: "latest-session-b",
+        cwd: "/tmp/latest-project"
+      }
+    });
+    const latest = await app.inject({
+      method: "GET",
+      url: "/v1/sessions/latest?workspace_id=%2Ftmp%2Flatest-project",
+      headers
+    });
+    await app.close();
+
+    expect(latest.statusCode).toBe(200);
+    expect(jsonBody<SessionResponse>(latest).session.id).toBe(
+      jsonBody<SessionResponse>(newer).session.id
+    );
+    expect(jsonBody<SessionResponse>(latest).session.id).not.toBe(
+      jsonBody<SessionResponse>(older).session.id
+    );
   });
 
   it("creates MCP sessions, captures session events, exposes nodes, and serves OpenAPI JSON", async () => {

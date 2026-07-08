@@ -38,6 +38,10 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     input?: { limit?: number; minUserEvents?: number }
   ): Promise<CapturedSessionTitleCandidate[]>;
+  getLatestCapturedSessionForProject(
+    actor: ActorContext,
+    input: { workspaceId: string }
+  ): Promise<CapturedSessionRecord | null>;
   updateCapturedSessionGeneratedTitle(
     actor: ActorContext,
     sessionId: string,
@@ -388,6 +392,32 @@ export const createCapturedSessionRepository = (
       [actor.userId, minUserEvents, limit]
     );
     return result.rows.map(mapCapturedSessionTitleCandidate);
+  },
+
+  async getLatestCapturedSessionForProject(actor, input) {
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        select
+          id, owner_user_id, visibility, external_session_id, workspace_id,
+          source_runtime, capture_method, model, cwd, metadata, created_at
+        from sessions
+        where owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+          and personal_deleted_at is null
+          and (
+            workspace_id::text = $2
+            or cwd = $2
+            or metadata ->> 'workspaceId' = $2
+            or metadata ->> 'projectPath' = $2
+          )
+        order by created_at desc, id desc
+        limit 1
+      `,
+      [actor.userId, input.workspaceId]
+    );
+    const row = result.rows[0];
+    return row ? mapCapturedSession(row) : null;
   },
 
   async updateCapturedSessionGeneratedTitle(actor, sessionId, input) {

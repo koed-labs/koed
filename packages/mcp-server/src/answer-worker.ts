@@ -237,6 +237,7 @@ export interface MemoryAnswerRetrievalClient {
       searchDomain?: string;
       sessionId?: string;
       workspaceId?: string;
+      teamWorkspaceId?: string;
       recentDays?: number;
       sourceAfter?: string;
       sourceBefore?: string;
@@ -374,6 +375,7 @@ interface ToolSearchRecord {
   retrievalStage?: string;
   sessionId?: string;
   workspaceId?: string;
+  teamWorkspaceId?: string;
   recentDays?: number;
   sourceAfter?: string;
   sourceBefore?: string;
@@ -387,6 +389,7 @@ interface MemoryAnswerToolState {
   searchDomain: string;
   sessionId?: string;
   workspaceId?: string;
+  teamWorkspaceId?: string;
   recentDays?: number;
   sourceAfter?: string;
   sourceBefore?: string;
@@ -945,6 +948,7 @@ const createMemoryAnswerDynamicToolHandler = (
     searchDomain: string;
     sessionId?: string;
     workspaceId?: string;
+    teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -981,6 +985,7 @@ const createMemoryAnswerDynamicToolHandler = (
           search_domain: searchDomain,
           session_id: sessionId,
           workspace_id: workspaceId,
+          team_workspace_id: options.teamWorkspaceId,
           recent_days: options.recentDays,
           source_after: options.sourceAfter,
           source_before: options.sourceBefore,
@@ -995,6 +1000,7 @@ const createMemoryAnswerDynamicToolHandler = (
           retrievalStage: "score_scan",
           sessionId,
           workspaceId,
+          teamWorkspaceId: options.teamWorkspaceId,
           recentDays: options.recentDays,
           sourceAfter: options.sourceAfter,
           sourceBefore: options.sourceBefore,
@@ -1050,6 +1056,7 @@ const createMemoryAnswerDynamicToolHandler = (
           search_domain: searchDomain,
           session_id: sessionId,
           workspace_id: workspaceId,
+          team_workspace_id: options.teamWorkspaceId,
           recent_days: options.recentDays,
           source_after: options.sourceAfter,
           source_before: options.sourceBefore,
@@ -1072,6 +1079,7 @@ const createMemoryAnswerDynamicToolHandler = (
           retrievalStage: stage,
           sessionId,
           workspaceId,
+          teamWorkspaceId: options.teamWorkspaceId,
           recentDays: options.recentDays,
           sourceAfter: options.sourceAfter,
           sourceBefore: options.sourceBefore,
@@ -1114,6 +1122,7 @@ const createMemoryAnswerDynamicToolHandler = (
           searchDomain,
           sessionId,
           workspaceId,
+          teamWorkspaceId: options.teamWorkspaceId,
           recentDays: options.recentDays,
           sourceAfter: options.sourceAfter,
           sourceBefore: options.sourceBefore
@@ -1387,6 +1396,7 @@ const runDynamicToolMemoryAnswer = async (
     searchDomain: string;
     sessionId?: string;
     workspaceId?: string;
+    teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -1417,6 +1427,7 @@ const runDynamicToolMemoryAnswer = async (
     searchDomain: options.searchDomain,
     sessionId: options.sessionId,
     workspaceId: options.workspaceId,
+    teamWorkspaceId: options.teamWorkspaceId,
     recentDays: options.recentDays,
     sourceAfter: options.sourceAfter,
     sourceBefore: options.sourceBefore,
@@ -1560,6 +1571,7 @@ export const answerWithMemoryWorker = async (
     searchDomain?: string;
     sessionId?: string;
     workspaceId?: string;
+    teamWorkspaceId?: string;
     recentDays?: number;
     sourceAfter?: string;
     sourceBefore?: string;
@@ -1621,6 +1633,7 @@ export const answerWithMemoryWorker = async (
       searchDomain: options.searchDomain ?? "project",
       sessionId: options.sessionId,
       workspaceId: options.workspaceId,
+      teamWorkspaceId: options.teamWorkspaceId,
       recentDays: options.recentDays,
       sourceAfter: options.sourceAfter,
       sourceBefore: options.sourceBefore,
