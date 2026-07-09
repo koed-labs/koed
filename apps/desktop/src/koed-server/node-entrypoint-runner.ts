@@ -1,4 +1,6 @@
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export async function main(): Promise<void> {
   const [argvMode, entryPath, ...args] = process.argv.slice(2);
@@ -15,7 +17,28 @@ export async function main(): Promise<void> {
   await import(pathToFileURL(entryPath).href);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export const isCurrentEntrypoint = (
+  metaUrl: string,
+  argvPath: string | undefined
+): boolean => {
+  if (!argvPath) {
+    return false;
+  }
+  const normalize = (path: string) => {
+    const resolved = resolve(path);
+    try {
+      return realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  };
+  return normalize(fileURLToPath(metaUrl)) === normalize(argvPath);
+};
+
+if (
+  process.argv[2] === "node-script" ||
+  isCurrentEntrypoint(import.meta.url, process.argv[1])
+) {
   void main().catch((error) => {
     const message =
       error instanceof Error ? (error.stack ?? error.message) : String(error);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { runKoedServerCli } from "./cli.js";
+import { pathToFileURL } from "node:url";
+import { isKoedServerCliEntrypoint, runKoedServerCli } from "./cli.js";
 import type { KoedServerDoctorResult, KoedServerStatus } from "./types.js";
 
 const writer = () => {
@@ -70,6 +71,17 @@ const runtimeBinaries = () => ({
     path: "/opt/homebrew/opt/llama.cpp/bin/llama-server",
     exists: true
   }
+});
+
+describe("koed-server CLI entrypoint detection", () => {
+  it("recognizes argv paths containing spaces", () => {
+    const cliPath =
+      "/Volumes/Koed 0.1.1-arm64/Koed.app/Contents/Resources/app.asar/node_modules/@koed/koed-server/dist/cli.js";
+
+    expect(
+      isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
+    ).toBe(true);
+  });
 });
 
 describe("JSON command output", () => {

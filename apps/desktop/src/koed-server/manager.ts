@@ -200,7 +200,7 @@ const runtimeInstallProvider = (
 ): "packaged" | "homebrew" => {
   const manifestPath = packagedRuntimeManifestPath(environment);
   if (manifestPath && existsSync(manifestPath)) return "packaged";
-  return environment.KOED_PACKAGED_DESKTOP === "1" ? "packaged" : "homebrew";
+  return "homebrew";
 };
 
 const readDesktopPorts = (

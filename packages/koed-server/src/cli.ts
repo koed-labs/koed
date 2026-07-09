@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadRepoEnv } from "./env-file.js";
 import { repairCodexIntegration, setupCodex } from "./setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
@@ -684,7 +687,25 @@ export const runKoedServerCli = async (
   }
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export const isKoedServerCliEntrypoint = (
+  metaUrl: string,
+  argvPath: string | undefined
+): boolean => {
+  if (!argvPath) {
+    return false;
+  }
+  const normalize = (path: string) => {
+    const resolved = resolve(path);
+    try {
+      return realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  };
+  return normalize(fileURLToPath(metaUrl)) === normalize(argvPath);
+};
+
+if (isKoedServerCliEntrypoint(import.meta.url, process.argv[1])) {
   void runKoedServerCli(process.argv.slice(2)).then((exitCode) => {
     process.exitCode = exitCode;
   });

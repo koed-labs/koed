@@ -152,6 +152,28 @@ describe("packaged runtime provisioning", () => {
     expect(status.message).toContain("manifest");
   });
 
+  it("does not fall back to stale cached manifests for packaged resources", () => {
+    const root = tempDir();
+    const staleRoot = tempDir();
+    createPackagedPostgres(staleRoot);
+    const staleManifest = writeManifest(staleRoot);
+    const koedPaths = paths(root);
+    mkdirSync(koedPaths.cacheDir, { recursive: true });
+    writeFileSync(
+      resolve(koedPaths.cacheDir, "runtime-asset-manifest.json"),
+      `${JSON.stringify(staleManifest, null, 2)}\n`
+    );
+
+    const status = collectPackagedRuntimeStatus(koedPaths, env(root), host);
+
+    expect(status.ok).toBe(false);
+    expect(status.state).toBe("missing");
+    expect(status.assets).toEqual([]);
+    expect(status.manifestPath).toBe(
+      resolve(root, "koed-runtime", "runtime-asset-manifest.json")
+    );
+  });
+
   it("reports incompatible manifests for other platform or architecture", () => {
     const root = tempDir();
     createPackagedPostgres(root);
