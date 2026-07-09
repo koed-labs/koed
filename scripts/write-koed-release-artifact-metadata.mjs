@@ -173,7 +173,7 @@ export const buildReleaseArtifactMetadata = (options) => {
         kind: "native-runtime",
         packageName: "koed-native-runtime",
         description:
-          "Separate Postgres, pgvector, and llama-server runtime artifacts. They are not embedded in koed-server app-runtime packages."
+          "Postgres, pgvector, and llama-server runtime assets are separate from koed-server app-runtime packages and are currently bundled/provisioned through Desktop/native-runtime install flows. Standalone native runtime release assets are not published by this metadata yet."
       },
       models: {
         kind: "models",

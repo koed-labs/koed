@@ -85,6 +85,10 @@ test("builds release metadata for standalone koed-server package targets", () =>
   );
   assert.equal(metadata.artifacts.koedServerAppRuntime.kind, "app-runtime");
   assert.equal(metadata.artifacts.nativeRuntime.kind, "native-runtime");
+  assert.match(
+    metadata.artifacts.nativeRuntime.description,
+    /not published by this metadata yet/
+  );
   assert.equal(metadata.artifacts.models.kind, "models");
   assert.match(
     metadata.artifacts.koedServerAppRuntime.description,

@@ -109,7 +109,7 @@ jobs:
 
           - Desktop package: Koed Desktop control-plane assets.
           - koed-server app-runtime package: standalone JS/service runtime archives named `koed-server-<version>-<platform>-<arch>.tar.gz` with SHA-256 sidecars.
-          - Native runtime artifacts: separate Postgres, pgvector, and llama-server runtime artifacts; not embedded in the koed-server app-runtime package.
+          - Native runtime assets: separate from the koed-server app-runtime package and currently bundled/provisioned through Desktop/native-runtime install flows.
           - Model artifacts: separate embedding and reranker assets installed under `KOED_HOME/models`; not embedded in the koed-server app-runtime package.
           EOF
 

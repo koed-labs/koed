@@ -6,6 +6,14 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPackagePath = path.join(root, "package.json");
 const releasePackagePath = path.join(root, "packages", "koed", "package.json");
+const syncedPackagePaths = [
+  ["root package", rootPackagePath],
+  [
+    "koed-server package",
+    path.join(root, "packages", "koed-server", "package.json")
+  ],
+  ["Desktop package", path.join(root, "apps", "desktop", "package.json")]
+];
 const releaseChangelogPath = path.join(
   root,
   "packages",
@@ -30,13 +38,15 @@ const writeIfChanged = (filePath, value) => {
   return true;
 };
 
-const rootPackage = readJson(rootPackagePath);
 const releasePackage = readJson(releasePackagePath);
 
-if (rootPackage.version !== releasePackage.version) {
-  rootPackage.version = releasePackage.version;
-  writeJson(rootPackagePath, rootPackage);
-  console.log(`Synced root package version to ${releasePackage.version}`);
+for (const [label, packagePath] of syncedPackagePaths) {
+  const packageJson = readJson(packagePath);
+  if (packageJson.version !== releasePackage.version) {
+    packageJson.version = releasePackage.version;
+    writeJson(packagePath, packageJson);
+    console.log(`Synced ${label} version to ${releasePackage.version}`);
+  }
 }
 
 if (fs.existsSync(releaseChangelogPath)) {
