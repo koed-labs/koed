@@ -13,6 +13,7 @@ import {
   resolveLcmSummaryWorkerConfig,
   type LcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
+import { loadPrompt, renderPrompt } from "./prompt-loader.js";
 
 export const SESSION_TITLE_PROMPT_VERSION = "session-title-codex-json-v1";
 const MAX_SESSION_TITLE_EXCERPT_CHARS = 1_200;
@@ -105,28 +106,16 @@ const sourceItemsForPrompt = (session: SessionTitleCandidate): string =>
 export const buildSessionTitlePrompt = (
   session: SessionTitleCandidate
 ): string =>
-  [
-    "Generate a short navigation title for one captured chat session.",
-    "",
-    "Rules:",
-    "- Return only one JSON object.",
-    '- JSON shape: {"title":"Short specific title"}',
-    "- Title must be 3-7 words where possible.",
-    "- Prefer the user's intent, concrete subject, repo area, bug, feature, or decision.",
-    "- Do not include a UUID, session id, timestamp, generic 'chat/session/conversation', or quotation marks.",
-    "- If the evidence is thin, still choose the most specific title supported by the messages.",
-    "",
-    "Session metadata:",
-    `- session_id: ${session.id}`,
-    `- external_session_id: ${session.externalSessionId ?? "none"}`,
-    `- current_title: ${session.currentTitle ? titlePromptText(session.currentTitle) || "none" : "none"}`,
-    `- project: ${session.projectName ?? session.projectPath ?? "unknown"}`,
-    `- title_event_count: ${session.eventCount}`,
-    "",
-    "Conversation excerpts:",
-    sourceItemsForPrompt(session),
-    ""
-  ].join("\n");
+  renderPrompt("session-title", {
+    session_id: session.id,
+    external_session_id: session.externalSessionId ?? "none",
+    current_title: session.currentTitle
+      ? titlePromptText(session.currentTitle) || "none"
+      : "none",
+    project: session.projectName ?? session.projectPath ?? "unknown",
+    title_event_count: session.eventCount,
+    conversation_excerpts: sourceItemsForPrompt(session)
+  });
 
 export const runCodexAppServerSessionTitle: CodexSessionTitleRunner = async (
   prompt,
@@ -142,8 +131,7 @@ export const runCodexAppServerSessionTitle: CodexSessionTitleRunner = async (
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-session-title-worker",
-      baseInstructions:
-        "You are a private local Koed session title worker running in Codex app-server mode. Return only the requested JSON object.",
+      baseInstructions: loadPrompt("app-server-session-title-base").body,
       developerInstructions: koedAppServerWorkerDeveloperInstructions
     },
     timeoutMs

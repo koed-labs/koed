@@ -374,6 +374,15 @@ policy, or full URLs containing customer content.
 
 These values are copied into the AI Client configuration and are not consumed automatically by Docker Compose:
 
+- `KOED_PROMPT_DIR`: optional directory containing Markdown prompt overrides
+  for local/self-hosted Koed prompt surfaces. Override files must mirror the
+  bundled root `prompts/` layout and keep matching frontmatter ids. Missing
+  override files fall back to bundled defaults; malformed prompt files, wrong
+  ids, empty files, or unresolved template placeholders fail loudly. Prompt
+  overrides can adjust wording, but code still owns JSON schemas, parser
+  validation, source serialization, authorization, redaction, and retrieval
+  boundaries.
+
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
 - `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.

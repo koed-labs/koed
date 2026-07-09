@@ -1,0 +1,5 @@
+---
+id: memory-answer-tool-description
+version: memory-answer-tool-description-v1
+---
+Answer from Koed memory: captured Codex conversations, saved sessions, project history, prior decisions, remembered user preferences, user-provided facts, setup/debugging work, and past discussions. Call for recall requests like 'what did we decide', 'remind me', 'previously', 'ever discussed', 'do I usually', 'in that session', or 'look back'. Do not call for public facts, current visible context, generic programming knowledge, or direct file-editing tasks. Use one concise query per topic and do not repeat after a clear not-found answer. Default to search_domain=project for current workspace/project history; use search_domain=session for a known saved conversation/thread, and search_domain=global only for broad cross-project recall. Use recent_days or source date bounds only when the user implies a time window; leave blank for full history. Defaults to response_detail=answer_only; use with_citations for sources and with_evidence only for debugging/UI inspection.

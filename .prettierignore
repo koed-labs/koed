@@ -17,3 +17,4 @@ target
 
 pnpm-*
 benchmarks/**/artifacts/
+prompts/**/*.md
