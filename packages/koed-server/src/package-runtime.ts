@@ -753,6 +753,27 @@ const assertUpgradeCompatible = ({
   }
 };
 
+const copyAdjacentProvenanceSidecars = (
+  sourcePath: string,
+  targetPath: string
+): void => {
+  const provenancePath = adjacentProvenancePath(sourcePath);
+  if (!provenancePath) return;
+  const targetProvenancePath = resolve(
+    dirname(targetPath),
+    basename(provenancePath)
+  );
+  if (provenancePath !== targetProvenancePath) {
+    cpSync(provenancePath, targetProvenancePath);
+  }
+  const signaturePath = `${provenancePath}.sig`;
+  if (!existsSync(signaturePath)) return;
+  const targetSignaturePath = `${targetProvenancePath}.sig`;
+  if (signaturePath !== targetSignaturePath) {
+    cpSync(signaturePath, targetSignaturePath);
+  }
+};
+
 const copyOrDownloadArchive = async (
   source: string,
   cacheDir: string
@@ -772,6 +793,7 @@ const copyOrDownloadArchive = async (
   if (sourcePath !== target) {
     cpSync(sourcePath, target);
   }
+  copyAdjacentProvenanceSidecars(sourcePath, target);
   return target;
 };
 

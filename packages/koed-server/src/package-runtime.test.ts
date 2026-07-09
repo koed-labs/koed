@@ -416,6 +416,50 @@ describe("standalone koed-server package runtime", () => {
     });
   });
 
+  it("keeps adjacent provenance usable after caching a local archive", async () => {
+    const home = tempDir();
+    const sourceParent = tempDir();
+    const outDir = tempDir();
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const packageRoot = createPackageRoot(sourceParent, "0.2.0");
+    const archive = writeArchive(packageRoot, outDir);
+    const provenanceFile = writeProvenance({
+      archive,
+      packageRoot,
+      outDir,
+      privateKey
+    });
+    const adjacentProvenanceFile = archive.replace(
+      /\.tar\.gz$/,
+      ".provenance.json"
+    );
+    writeFileSync(adjacentProvenanceFile, readFileSync(provenanceFile));
+    writeFileSync(
+      `${adjacentProvenanceFile}.sig`,
+      readFileSync(`${provenanceFile}.sig`)
+    );
+
+    const result = await installServerPackage(paths, {
+      source: archive,
+      sha256: sha256File(archive),
+      trustPolicy: "require-provenance"
+    });
+
+    expect(result.provenance).toMatchObject({
+      policy: "require-provenance",
+      source: resolve(
+        home,
+        "cache",
+        "koed-server-packages",
+        "pkg-0.2.0.provenance.json"
+      )
+    });
+  });
+
   it("rejects missing provenance when policy requires it", async () => {
     const home = tempDir();
     const sourceParent = tempDir();
