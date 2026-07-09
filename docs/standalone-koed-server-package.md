@@ -130,6 +130,8 @@ GitHub Release assets:
 koed-server-<version>-<platform>-<arch>.tar.gz
 koed-server-<version>-<platform>-<arch>.tar.gz.sha256
 koed-server-app-runtime-<version>-<platform>-<arch>.manifest.json
+koed-server-app-runtime-<version>-<platform>-<arch>.provenance.json
+koed-server-app-runtime-<version>-<platform>-<arch>.provenance.json.sig
 koed-release-artifacts-<version>.json
 ```
 
@@ -267,6 +269,13 @@ Each standalone package should include a manifest:
     "embedding": "qwen3-0.6b",
     "reranker": "qwen3-reranker-0.6b"
   },
+  "provenance": {
+    "sourceRepository": "owner/repo",
+    "sourceCommit": "<git-sha>",
+    "sourceRef": "refs/tags/v0.4.0",
+    "buildWorkflow": "release",
+    "buildRunId": "123"
+  },
   "sha256": "<tree-or-archive-sha256>",
   "files": [{ "path": "koed-runtime/api/dist/index.js", "sha256": "..." }]
 }
@@ -299,13 +308,24 @@ Desktop and headless install flows should verify before activation:
 9. run `koed-server status --json` or a package validation command before
    startup continues.
 
-Signature/notarization rules:
+Signature/provenance rules:
 
 - Signed/notarized Desktop remains required for macOS end-user distribution.
-- Standalone `koed-server` archives should be SHA-256 verified in the first
-  implementation.
-- A later release-hardening follow-up should add signatures or Sigstore-style
-  provenance for archives if hosted downloads are used.
+- Standalone `koed-server` archives must continue to be SHA-256 verified.
+- Release builds also emit a provenance sidecar that records the source
+  repository, source commit/ref, build workflow/run id, package target, package
+  manifest hash, package file-tree hash, and produced archive hash.
+- If `KOED_SERVER_PACKAGE_SIGNING_PRIVATE_KEY_PEM` or
+  `KOED_SERVER_PACKAGE_SIGNING_PRIVATE_KEY_FILE` is present during artifact
+  build, the provenance statement is signed with Ed25519 and a detached `.sig`
+  sidecar is written. If no signing key is present, the provenance is explicitly
+  marked `unsigned-placeholder`.
+- Package install can require `--trust-policy require-provenance` or
+  `--trust-policy require-signature`. Signature validation uses an Ed25519 PEM
+  public key from `--trusted-public-key`, `--trusted-public-key-file`, or
+  `KOED_SERVER_PACKAGE_TRUSTED_PUBLIC_KEY_PEM`.
+- Local and bundled fallback installs keep the SHA-256 path unless an Operator
+  or Desktop configuration opts into stricter policy.
 - Native runtime archives keep their own manifest/SHA-256 verification.
 
 Downgrade and rollback rules:
@@ -394,9 +414,9 @@ bootstrap sources are:
 The bootstrap entrypoint may install, verify, activate, and hand off to a
 standalone package, but it must not silently select bundled-local dependency
 ownership unless the selected setup profile or dependency mode permits that.
-Hosted downloads should use SHA-256 verification in the first implementation and
-must gain stronger signature or provenance checks before becoming the default
-trusted update channel.
+Hosted downloads should use `require-signature` once Koed has selected and
+published the release trust root. Until then, release workflows may publish
+unsigned-placeholder provenance only for non-default/test channels.
 
 Recommended command shape after a bootstrap entrypoint is available:
 
@@ -405,6 +425,10 @@ koed-server package status --json
 koed-server package install \
   --source https://downloads.koed.local/koed-server-<version>-linux-x64.tar.gz \
   --sha256 <sha256> \
+  --provenance-file /path/to/koed-server-app-runtime-<version>-linux-x64.provenance.json \
+  --signature-file /path/to/koed-server-app-runtime-<version>-linux-x64.provenance.json.sig \
+  --trusted-public-key-file /path/to/koed-server-package.pub.pem \
+  --trust-policy require-signature \
   --json
 koed-server runtime install --provider packaged --dependency-mode bundled-local --json
 koed-server models install --kind embedding --json

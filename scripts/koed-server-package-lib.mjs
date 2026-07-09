@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -12,6 +12,7 @@ import { relative, resolve } from "node:path";
 export const standalonePackageSchemaVersion = 1;
 export const standalonePackageId = "koed-server";
 export const standalonePackageKind = "app-runtime";
+export const packageProvenanceSchemaVersion = 1;
 
 export const requiredRuntimeFiles = [
   "api/dist/index.js",
@@ -80,6 +81,19 @@ export const sha256File = (path) => {
   }
   hash.update(readFileSync(path));
   return hash.digest("hex");
+};
+
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 };
 
 export const sha256Files = (root, files) => {
@@ -189,6 +203,29 @@ export const buildPackageManifest = ({
       embedding: "qwen3-0.6b",
       reranker: "qwen3-reranker-0.6b"
     },
+    provenance: {
+      sourceRepository:
+        process.env.GITHUB_REPOSITORY ??
+        process.env.KOED_SERVER_PACKAGE_SOURCE_REPOSITORY ??
+        null,
+      sourceCommit:
+        process.env.GITHUB_SHA ??
+        process.env.KOED_SERVER_PACKAGE_SOURCE_COMMIT ??
+        null,
+      sourceRef:
+        process.env.GITHUB_REF_NAME ??
+        process.env.GITHUB_REF ??
+        process.env.KOED_SERVER_PACKAGE_SOURCE_REF ??
+        null,
+      buildWorkflow:
+        process.env.GITHUB_WORKFLOW ??
+        process.env.KOED_SERVER_PACKAGE_BUILD_WORKFLOW ??
+        null,
+      buildRunId:
+        process.env.GITHUB_RUN_ID ??
+        process.env.KOED_SERVER_PACKAGE_BUILD_RUN_ID ??
+        null
+    },
     sha256: sha256Files(packageRoot, packageFiles),
     files: fileEntries(packageRoot, packageFiles),
     koedRuntimeFiles: fileEntries(
@@ -196,6 +233,78 @@ export const buildPackageManifest = ({
       runtimeFiles.filter((file) => existsSync(resolve(runtimeRoot, file)))
     )
   };
+};
+
+const signingPrivateKey = () => {
+  const pem = process.env.KOED_SERVER_PACKAGE_SIGNING_PRIVATE_KEY_PEM;
+  const path = process.env.KOED_SERVER_PACKAGE_SIGNING_PRIVATE_KEY_FILE;
+  if (!pem && !path) return null;
+  return createPrivateKey(pem ?? readFileSync(path, "utf8"));
+};
+
+export const buildPackageProvenance = ({
+  archivePath,
+  manifestPath,
+  manifest,
+  createdAt = new Date(0).toISOString()
+}) => {
+  const statement = {
+    schemaVersion: packageProvenanceSchemaVersion,
+    subject: {
+      packageKind: manifest.packageKind,
+      id: manifest.id,
+      version: manifest.version,
+      platform: manifest.platform,
+      architecture: manifest.architecture,
+      archiveName: archivePath.split("/").at(-1),
+      archiveSha256: sha256File(archivePath),
+      manifestName: manifestPath.split("/").at(-1),
+      manifestSha256: sha256File(manifestPath),
+      packageSha256: manifest.sha256
+    },
+    source: {
+      repository: manifest.provenance?.sourceRepository ?? null,
+      commit: manifest.provenance?.sourceCommit ?? null,
+      ref: manifest.provenance?.sourceRef ?? null
+    },
+    build: {
+      workflow: manifest.provenance?.buildWorkflow ?? null,
+      runId: manifest.provenance?.buildRunId ?? null,
+      createdAt
+    },
+    integrity: {
+      archiveAlgorithm: "sha256",
+      manifestAlgorithm: "sha256",
+      signatureAlgorithm: "ed25519"
+    }
+  };
+  const key = signingPrivateKey();
+  const payload = Buffer.from(canonicalJson(statement), "utf8");
+  const signature = key ? sign(null, payload, key).toString("base64") : null;
+  return {
+    statement,
+    signature: signature
+      ? {
+          status: "signed",
+          algorithm: "ed25519",
+          value: signature
+        }
+      : {
+          status: "unsigned-placeholder",
+          algorithm: "ed25519",
+          value: null,
+          reason:
+            "KOED_SERVER_PACKAGE_SIGNING_PRIVATE_KEY_PEM or KOED_SERVER_PACKAGE_SIGNING_PRIVATE_KEY_FILE was not set."
+        }
+  };
+};
+
+export const writePackageProvenance = (path, provenance) => {
+  writeFileSync(path, `${JSON.stringify(provenance, null, 2)}\n`);
+  const value = provenance.signature?.value;
+  if (provenance.signature?.status === "signed" && value) {
+    writeFileSync(`${path}.sig`, `${value}\n`);
+  }
 };
 
 export const writePackageManifest = (packageRoot, manifest) => {
@@ -235,6 +344,12 @@ export const validatePackageManifestShape = (manifest) => {
   }
   if (!/^[a-f0-9]{64}$/.test(manifest.sha256 ?? "")) {
     errors.push("Package manifest sha256 must be 64 hex characters.");
+  }
+  if (!manifest.database || typeof manifest.database !== "object") {
+    errors.push("Package manifest database must be an object.");
+  }
+  if (!manifest.provenance || typeof manifest.provenance !== "object") {
+    errors.push("Package manifest provenance must be an object.");
   }
   return errors;
 };

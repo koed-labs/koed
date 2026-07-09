@@ -16,12 +16,14 @@ import { basename, resolve } from "node:path";
 import { prunePythonEmbeddingRuntimeFiles } from "./native-runtime/manifest-lib.mjs";
 import {
   buildPackageManifest,
+  buildPackageProvenance,
   isPnpmWorkspaceSelfSymlink,
   platformKey,
   readPackageVersion,
   sha256File,
   validatePackageRoot,
-  writePackageManifest
+  writePackageManifest,
+  writePackageProvenance
 } from "./koed-server-package-lib.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
@@ -376,6 +378,17 @@ const main = () => {
     }
 
     const artifact = createArchive({ outDir, packageDirName });
+    const provenancePath = resolve(
+      outDir,
+      `koed-server-app-runtime-${options.version}-${options.platform}-${options.architecture}.provenance.json`
+    );
+    const provenance = buildPackageProvenance({
+      archivePath: artifact.tarPath,
+      manifestPath: resolve(packageRoot, "koed-server-package-manifest.json"),
+      manifest,
+      createdAt: manifest.createdAt
+    });
+    writePackageProvenance(provenancePath, provenance);
 
     result = {
       ok: true,
@@ -383,7 +396,15 @@ const main = () => {
       runtimeRoot,
       manifestPath: resolve(packageRoot, "koed-server-package-manifest.json"),
       requiredFiles: validation.requiredFiles,
-      artifact
+      artifact,
+      provenance: {
+        path: provenancePath,
+        signaturePath:
+          provenance.signature.status === "signed"
+            ? `${provenancePath}.sig`
+            : null,
+        signatureStatus: provenance.signature.status
+      }
     };
   } finally {
     if (options.restoreInstall) {

@@ -91,6 +91,14 @@ const collectServerPackageTargets = ({ artifactRoot, repository, tag }) => {
     }
     const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
     const canonicalManifestFile = findManifest(files, archive, manifest);
+    const provenanceFile = files.find(
+      (file) =>
+        dirname(file) === dirname(archive) &&
+        basename(file).endsWith(".provenance.json")
+    );
+    const signatureFile = provenanceFile
+      ? files.find((file) => file === `${provenanceFile}.sig`)
+      : undefined;
     return {
       packageKind: manifest.packageKind,
       id: manifest.id,
@@ -111,7 +119,31 @@ const collectServerPackageTargets = ({ artifactRoot, repository, tag }) => {
         name: basename(canonicalManifestFile),
         url: releaseUrl({ repository, tag, file: canonicalManifestFile }),
         schemaVersion: manifest.schemaVersion
-      }
+      },
+      ...(provenanceFile
+        ? {
+            provenance: {
+              name: basename(provenanceFile),
+              url: releaseUrl({ repository, tag, file: provenanceFile }),
+              schemaVersion: 1,
+              signature:
+                signatureFile !== undefined
+                  ? {
+                      name: basename(signatureFile),
+                      url: releaseUrl({
+                        repository,
+                        tag,
+                        file: signatureFile
+                      }),
+                      algorithm: "ed25519"
+                    }
+                  : {
+                      status: "unsigned-placeholder",
+                      algorithm: "ed25519"
+                    }
+            }
+          }
+        : {})
     };
   });
 };

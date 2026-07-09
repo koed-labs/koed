@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  readFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -12,6 +13,8 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import {
   buildPackageManifest,
+  buildPackageProvenance,
+  sha256File,
   validatePackageRoot,
   writePackageManifest
 } from "./koed-server-package-lib.mjs";
@@ -94,6 +97,30 @@ test("validates a standalone koed-server package root", () => {
     manifest.database.migrationSet.latestMigrationTimestamp,
     20260708000000
   );
+});
+
+test("builds provenance for package archive and manifest hashes", () => {
+  const root = createPackageRoot();
+  const manifest = writeManifest(root);
+  const archive = resolve(tempDir(), "koed-server-0.2.0-linux-x64.tar.gz");
+  writeFile(archive, "archive\n");
+  const manifestPath = resolve(root, "koed-server-package-manifest.json");
+
+  const provenance = buildPackageProvenance({
+    archivePath: archive,
+    manifestPath,
+    manifest,
+    createdAt: "2026-01-01T00:00:00.000Z"
+  });
+
+  assert.equal(provenance.statement.schemaVersion, 1);
+  assert.equal(provenance.statement.subject.archiveSha256, sha256File(archive));
+  assert.equal(
+    provenance.statement.subject.manifestSha256,
+    sha256File(manifestPath)
+  );
+  assert.equal(provenance.signature.status, "unsigned-placeholder");
+  assert.match(readFileSync(manifestPath, "utf8"), /"provenance"/);
 });
 
 test("omits pnpm workspace self-symlinks from manifest validation", () => {

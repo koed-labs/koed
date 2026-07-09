@@ -93,6 +93,8 @@ Options:
 Environment:
   KOED_HOME              Directory for local Koed config, logs, and runtime state
   KOED_REPO_ROOT         Koed checkout path used by this development build
+  KOED_SERVER_PACKAGE_TRUSTED_PUBLIC_KEY_PEM
+                         Ed25519 public key PEM used to verify package provenance signatures
 `;
 
 export interface KoedServerCliDependencies {
@@ -165,6 +167,22 @@ const requireFlagValue = (args: string[], name: string): string => {
     throw new Error(`${name} is required.`);
   }
   return value;
+};
+
+const packageTrustPolicy = (
+  value: string | undefined
+): "sha256-only" | "require-provenance" | "require-signature" | undefined => {
+  if (value === undefined) return undefined;
+  if (
+    value === "sha256-only" ||
+    value === "require-provenance" ||
+    value === "require-signature"
+  ) {
+    return value;
+  }
+  throw new Error(
+    "--trust-policy must be sha256-only, require-provenance, or require-signature."
+  );
 };
 
 type SpawnLike = typeof nodeSpawn;
@@ -540,7 +558,13 @@ export const runKoedServerCli = async (
         source: requireFlagValue(args, "--source"),
         sha256: flagValue(args, "--sha256"),
         sha256File: flagValue(args, "--sha256-file"),
-        activate: args.includes("--activate")
+        activate: args.includes("--activate"),
+        provenanceFile: flagValue(args, "--provenance-file"),
+        signatureFile: flagValue(args, "--signature-file"),
+        trustedPublicKey: flagValue(args, "--trusted-public-key"),
+        trustedPublicKeyFile: flagValue(args, "--trusted-public-key-file"),
+        trustPolicy: packageTrustPolicy(flagValue(args, "--trust-policy")),
+        allowDowngrade: args.includes("--allow-downgrade")
       });
       if (wantsJson) {
         printJson(stdout, result);
@@ -554,7 +578,8 @@ export const runKoedServerCli = async (
       const paths = resolvePaths();
       const result = activatePackage(
         paths,
-        requireFlagValue(args, "--version")
+        requireFlagValue(args, "--version"),
+        { allowDowngrade: args.includes("--allow-downgrade") }
       );
       if (wantsJson) {
         printJson(stdout, result);

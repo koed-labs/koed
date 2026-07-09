@@ -74,6 +74,10 @@ type ServerPackageInstallPlan =
       sourceKind: "configured" | "bundled";
       sha256?: string;
       sha256File?: string;
+      provenanceFile?: string;
+      signatureFile?: string;
+      trustedPublicKeyFile?: string;
+      trustPolicy?: string;
       requiresNetworkConsent: boolean;
     }
   | {
@@ -275,6 +279,21 @@ const firstFileWithSuffix = (root: string, suffix: string): string | null => {
   return null;
 };
 
+const bundledProvenanceForArchive = (archive: string): string | null => {
+  const archiveName = archive.split("/").at(-1) ?? "";
+  const releaseName = archiveName
+    .replace(/^koed-server-/, "koed-server-app-runtime-")
+    .replace(/\.tar\.gz$/, ".provenance.json");
+  for (const candidate of [
+    `${archive}.provenance.json`,
+    archive.replace(/\.tar\.gz$/, ".provenance.json"),
+    resolve(archive, "..", releaseName)
+  ]) {
+    if (nodeExistsSync(candidate)) return candidate;
+  }
+  return null;
+};
+
 const bundledServerPackageRoot = (
   environment: NodeJS.ProcessEnv
 ): string | null => {
@@ -289,6 +308,14 @@ const resolveServerPackageInstallPlan = (
   const explicitSha256 = environment.KOED_SERVER_PACKAGE_SHA256?.trim();
   const explicitSha256File =
     environment.KOED_SERVER_PACKAGE_SHA256_FILE?.trim();
+  const explicitProvenanceFile =
+    environment.KOED_SERVER_PACKAGE_PROVENANCE_FILE?.trim();
+  const explicitSignatureFile =
+    environment.KOED_SERVER_PACKAGE_SIGNATURE_FILE?.trim();
+  const explicitTrustedPublicKeyFile =
+    environment.KOED_SERVER_PACKAGE_TRUSTED_PUBLIC_KEY_FILE?.trim();
+  const explicitTrustPolicy =
+    environment.KOED_SERVER_PACKAGE_TRUST_POLICY?.trim();
   if (explicitSource) {
     if (!explicitSha256 && !explicitSha256File) {
       return {
@@ -306,6 +333,16 @@ const resolveServerPackageInstallPlan = (
       sourceKind: "configured",
       ...(explicitSha256 ? { sha256: explicitSha256 } : {}),
       ...(explicitSha256File ? { sha256File: explicitSha256File } : {}),
+      ...(explicitProvenanceFile
+        ? { provenanceFile: explicitProvenanceFile }
+        : {}),
+      ...(explicitSignatureFile
+        ? { signatureFile: explicitSignatureFile }
+        : {}),
+      ...(explicitTrustedPublicKeyFile
+        ? { trustedPublicKeyFile: explicitTrustedPublicKeyFile }
+        : {}),
+      ...(explicitTrustPolicy ? { trustPolicy: explicitTrustPolicy } : {}),
       requiresNetworkConsent: /^https?:\/\//i.test(explicitSource)
     };
   }
@@ -316,6 +353,8 @@ const resolveServerPackageInstallPlan = (
     : null;
   if (bundledArchive) {
     const bundledSha256File = `${bundledArchive}.sha256`;
+    const bundledProvenanceFile =
+      bundledProvenanceForArchive(bundledArchive) ?? undefined;
     if (!nodeExistsSync(bundledSha256File)) {
       return {
         available: false,
@@ -331,6 +370,9 @@ const resolveServerPackageInstallPlan = (
       source: bundledArchive,
       sourceKind: "bundled",
       sha256File: bundledSha256File,
+      ...(bundledProvenanceFile
+        ? { provenanceFile: bundledProvenanceFile }
+        : {}),
       requiresNetworkConsent: false
     };
   }
@@ -604,6 +646,14 @@ export const createKoedServerManager = ({
         plan.source,
         ...(plan.sha256 ? ["--sha256", plan.sha256] : []),
         ...(plan.sha256File ? ["--sha256-file", plan.sha256File] : []),
+        ...(plan.provenanceFile
+          ? ["--provenance-file", plan.provenanceFile]
+          : []),
+        ...(plan.signatureFile ? ["--signature-file", plan.signatureFile] : []),
+        ...(plan.trustedPublicKeyFile
+          ? ["--trusted-public-key-file", plan.trustedPublicKeyFile]
+          : []),
+        ...(plan.trustPolicy ? ["--trust-policy", plan.trustPolicy] : []),
         "--activate"
       ],
       600_000

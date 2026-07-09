@@ -1,4 +1,9 @@
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+  type KeyObject
+} from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
   chmodSync,
@@ -56,7 +61,25 @@ const sha256Files = (root: string, files: string[]): string => {
   return hash.digest("hex");
 };
 
-const writeManifest = (root: string, version: string): void => {
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const writeManifest = (
+  root: string,
+  version: string,
+  migrationTimestamp = 20260101000000
+): void => {
   const files = listFiles(root).filter(
     (file) => file !== "koed-server-package-manifest.json"
   );
@@ -76,6 +99,20 @@ const writeManifest = (root: string, version: string): void => {
           path: "koed-runtime",
           requiredFiles: requiredPackageRuntimeFiles
         },
+        database: {
+          migrationSet: {
+            latestMigrationTimestamp: migrationTimestamp,
+            journalSha256: "b".repeat(64)
+          },
+          allowsRollback: false
+        },
+        provenance: {
+          sourceRepository: "koed/koed",
+          sourceCommit: "c".repeat(40),
+          sourceRef: "refs/heads/test",
+          buildWorkflow: "test",
+          buildRunId: "1"
+        },
         sha256: sha256Files(root, files),
         files: files.map((path) => ({
           path,
@@ -88,7 +125,11 @@ const writeManifest = (root: string, version: string): void => {
   );
 };
 
-const createPackageRoot = (parent: string, version: string): string => {
+const createPackageRoot = (
+  parent: string,
+  version: string,
+  migrationTimestamp?: number
+): string => {
   const root = resolve(parent, `pkg-${version}`);
   for (const file of requiredPackageRuntimeFiles) {
     writeFile(resolve(root, "koed-runtime", file), `${file}\n`);
@@ -97,7 +138,7 @@ const createPackageRoot = (parent: string, version: string): string => {
   writeFile(resolve(root, "bin", "koed-server"), "#!/usr/bin/env sh\n");
   chmodSync(resolve(root, "bin", "koed-server"), 0o755);
   writeFile(resolve(root, "koed-server", "dist", "cli.js"));
-  writeManifest(root, version);
+  writeManifest(root, version, migrationTimestamp);
   return root;
 };
 
@@ -175,6 +216,84 @@ const writeArchive = (packageRoot: string, outDir: string): string => {
   const archive = resolve(outDir, `${packageName}.tar.gz`);
   writeFileSync(archive, gzipSync(Buffer.concat(blocks)));
   return archive;
+};
+
+const writeProvenance = ({
+  archive,
+  packageRoot,
+  outDir,
+  privateKey
+}: {
+  archive: string;
+  packageRoot: string;
+  outDir: string;
+  privateKey: KeyObject;
+}): string => {
+  const manifestPath = resolve(
+    packageRoot,
+    "koed-server-package-manifest.json"
+  );
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    id: string;
+    version: string;
+    platform: string;
+    architecture: string;
+    packageKind: string;
+    sha256: string;
+  };
+  const statement = {
+    schemaVersion: 1,
+    subject: {
+      packageKind: manifest.packageKind,
+      id: manifest.id,
+      version: manifest.version,
+      platform: manifest.platform,
+      architecture: manifest.architecture,
+      archiveName: archive.split("/").at(-1),
+      archiveSha256: sha256File(archive),
+      manifestName: "koed-server-package-manifest.json",
+      manifestSha256: sha256File(manifestPath),
+      packageSha256: manifest.sha256
+    },
+    source: {
+      repository: "koed/koed",
+      commit: "c".repeat(40),
+      ref: "refs/heads/test"
+    },
+    build: {
+      workflow: "test",
+      runId: "1",
+      createdAt: "2026-01-01T00:00:00.000Z"
+    },
+    integrity: {
+      archiveAlgorithm: "sha256",
+      manifestAlgorithm: "sha256",
+      signatureAlgorithm: "ed25519"
+    }
+  };
+  const signature = sign(
+    null,
+    Buffer.from(canonicalJson(statement), "utf8"),
+    privateKey
+  ).toString("base64");
+  const provenancePath = resolve(outDir, "package.provenance.json");
+  writeFileSync(
+    provenancePath,
+    `${JSON.stringify(
+      {
+        statement,
+        signature: {
+          status: "signed",
+          algorithm: "ed25519",
+          value: signature
+        }
+      },
+      null,
+      2
+    )}\n`
+  );
+  writeFileSync(`${provenancePath}.sig`, `${signature}\n`);
+  return provenancePath;
 };
 
 const writeSymlinkArchive = (outDir: string, outsideDir: string): string => {
@@ -260,6 +379,61 @@ describe("standalone koed-server package runtime", () => {
       state: "installed",
       currentVersion: "0.2.0"
     });
+  });
+
+  it("verifies signed provenance when a trusted public key is configured", async () => {
+    const home = tempDir();
+    const sourceParent = tempDir();
+    const outDir = tempDir();
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const packageRoot = createPackageRoot(sourceParent, "0.2.0");
+    const archive = writeArchive(packageRoot, outDir);
+    const provenanceFile = writeProvenance({
+      archive,
+      packageRoot,
+      outDir,
+      privateKey
+    });
+
+    const result = await installServerPackage(paths, {
+      source: archive,
+      sha256: sha256File(archive),
+      provenanceFile,
+      trustedPublicKey: publicKey.export({
+        type: "spki",
+        format: "pem"
+      }) as string,
+      trustPolicy: "require-signature"
+    });
+
+    expect(result.provenance).toMatchObject({
+      status: "verified",
+      policy: "require-signature"
+    });
+  });
+
+  it("rejects missing provenance when policy requires it", async () => {
+    const home = tempDir();
+    const sourceParent = tempDir();
+    const outDir = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const packageRoot = createPackageRoot(sourceParent, "0.2.0");
+    const archive = writeArchive(packageRoot, outDir);
+
+    await expect(
+      installServerPackage(paths, {
+        source: archive,
+        sha256: sha256File(archive),
+        trustPolicy: "require-provenance"
+      })
+    ).rejects.toThrow("Package provenance metadata is required");
   });
 
   it("rejects archive checksum mismatches before extraction", async () => {
@@ -354,5 +528,51 @@ describe("standalone koed-server package runtime", () => {
     expect(
       collectServerPackageStatus(paths).installed.map((entry) => entry.version)
     ).toEqual(["0.2.0", "0.3.0"]);
+  });
+
+  it("blocks downgrades unless explicitly allowed", async () => {
+    const home = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    for (const version of ["0.2.0", "0.3.0"]) {
+      const packageRoot = createPackageRoot(tempDir(), version);
+      const archive = writeArchive(packageRoot, tempDir());
+      await installServerPackage(paths, {
+        source: archive,
+        sha256: sha256File(archive),
+        activate: version === "0.3.0"
+      });
+    }
+
+    expect(() => activateServerPackage(paths, "0.2.0")).toThrow(
+      /requires --allow-downgrade/
+    );
+  });
+
+  it("blocks rollback to an older migration set even with downgrade confirmation", async () => {
+    const home = tempDir();
+    const paths = resolveKoedServerPaths({
+      KOED_HOME: home,
+      KOED_REPO_ROOT: home
+    });
+    const oldPackage = createPackageRoot(tempDir(), "0.2.0", 20260101000000);
+    const newPackage = createPackageRoot(tempDir(), "0.3.0", 20260201000000);
+    for (const [packageRoot, activate] of [
+      [oldPackage, false],
+      [newPackage, true]
+    ] as const) {
+      const archive = writeArchive(packageRoot, tempDir());
+      await installServerPackage(paths, {
+        source: archive,
+        sha256: sha256File(archive),
+        activate
+      });
+    }
+
+    expect(() =>
+      activateServerPackage(paths, "0.2.0", { allowDowngrade: true })
+    ).toThrow(/migration set/);
   });
 });

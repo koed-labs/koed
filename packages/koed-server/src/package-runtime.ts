@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import {
   chmodSync,
@@ -20,6 +20,7 @@ import type { KoedServerPaths } from "./paths.js";
 export const standalonePackageSchemaVersion = 1;
 export const standalonePackageId = "koed-server";
 export const standalonePackageKind = "app-runtime";
+export const packageProvenanceSchemaVersion = 1;
 
 export const requiredPackageRuntimeFiles = [
   "api/dist/index.js",
@@ -83,8 +84,61 @@ export interface KoedServerPackageManifest {
     path?: string;
     requiredFiles?: string[];
   };
+  database?: {
+    migrationSet?: {
+      latestMigrationTimestamp?: number;
+      journalSha256?: string;
+    };
+    allowsRollback?: boolean;
+  };
+  provenance?: {
+    sourceRepository?: string | null;
+    sourceCommit?: string | null;
+    sourceRef?: string | null;
+    buildWorkflow?: string | null;
+    buildRunId?: string | null;
+  };
   sha256?: string;
   files?: Array<{ path: string; sha256: string }>;
+}
+
+export interface KoedServerPackageProvenance {
+  statement?: {
+    schemaVersion?: number;
+    subject?: {
+      packageKind?: string;
+      id?: string;
+      version?: string;
+      platform?: string;
+      architecture?: string;
+      archiveName?: string;
+      archiveSha256?: string;
+      manifestName?: string;
+      manifestSha256?: string;
+      packageSha256?: string;
+    };
+    source?: {
+      repository?: string | null;
+      commit?: string | null;
+      ref?: string | null;
+    };
+    build?: {
+      workflow?: string | null;
+      runId?: string | null;
+      createdAt?: string;
+    };
+    integrity?: {
+      archiveAlgorithm?: string;
+      manifestAlgorithm?: string;
+      signatureAlgorithm?: string;
+    };
+  };
+  signature?: {
+    status?: "signed" | "unsigned-placeholder";
+    algorithm?: "ed25519";
+    value?: string | null;
+    reason?: string;
+  };
 }
 
 export interface PackageRootValidation {
@@ -126,12 +180,23 @@ export interface ServerPackageInstallOptions {
   sha256?: string;
   sha256File?: string;
   activate?: boolean;
+  provenanceFile?: string;
+  signatureFile?: string;
+  trustedPublicKey?: string;
+  trustedPublicKeyFile?: string;
+  trustPolicy?: "sha256-only" | "require-provenance" | "require-signature";
+  allowDowngrade?: boolean;
 }
 
 export interface ServerPackageInstallResult extends ServerPackageStatus {
   archivePath?: string;
   archiveSha256?: string;
   installedPath?: string;
+  provenance?: {
+    status: "not_checked" | "verified" | "unsigned-placeholder";
+    policy: NonNullable<ServerPackageInstallOptions["trustPolicy"]>;
+    source?: string;
+  };
 }
 
 export interface ServerPackageActivateResult extends ServerPackageStatus {
@@ -155,6 +220,20 @@ const normalizeSha256 = (value: string): string => {
     throw new Error("Package SHA-256 must be 64 hex characters.");
   }
   return normalized;
+};
+
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 };
 
 const validatePackageVersion = (version: string): string => {
@@ -249,6 +328,19 @@ const sha256Files = (root: string, files: string[]): string => {
 const readJson = <T>(path: string): T =>
   JSON.parse(readFileSync(path, "utf8")) as T;
 
+const compareVersions = (a: string, b: string): number => {
+  const numberPart = (part: string): number =>
+    /^\d+$/.test(part) ? Number.parseInt(part, 10) : 0;
+  const left = a.split(/[.-]/).map(numberPart);
+  const right = b.split(/[.-]/).map(numberPart);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const leftPart = left[index] ?? 0;
+    const rightPart = right[index] ?? 0;
+    if (leftPart !== rightPart) return leftPart - rightPart;
+  }
+  return a.localeCompare(b);
+};
+
 const validateManifestShape = (
   manifest: KoedServerPackageManifest | null
 ): string[] => {
@@ -291,6 +383,12 @@ const validateManifestShape = (
   }
   if (!/^[a-f0-9]{64}$/.test(manifest.sha256 ?? "")) {
     errors.push("Package manifest sha256 must be 64 hex characters.");
+  }
+  if (!manifest.database || typeof manifest.database !== "object") {
+    errors.push("Package manifest database must be an object.");
+  }
+  if (!manifest.provenance || typeof manifest.provenance !== "object") {
+    errors.push("Package manifest provenance must be an object.");
   }
   return errors;
 };
@@ -491,6 +589,170 @@ const readExpectedSha256 = (options: ServerPackageInstallOptions): string => {
   throw new Error("--sha256 or --sha256-file is required.");
 };
 
+const adjacentProvenancePath = (archivePath: string): string | undefined => {
+  const archiveName = basename(archivePath);
+  const releaseName = archiveName
+    .replace(/^koed-server-/, "koed-server-app-runtime-")
+    .replace(/\.tar\.gz$/, ".provenance.json");
+  const candidates = [
+    `${archivePath}.provenance.json`,
+    archivePath.replace(/\.tar\.gz$/, ".provenance.json"),
+    resolve(dirname(archivePath), releaseName)
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+};
+
+const readTrustedPublicKey = (
+  options: ServerPackageInstallOptions
+): string | undefined => {
+  if (options.trustedPublicKey) return options.trustedPublicKey;
+  if (options.trustedPublicKeyFile) {
+    return readFileSync(options.trustedPublicKeyFile, "utf8");
+  }
+  return process.env.KOED_SERVER_PACKAGE_TRUSTED_PUBLIC_KEY_PEM;
+};
+
+const verifyProvenanceSignature = ({
+  provenance,
+  signature,
+  publicKey
+}: {
+  provenance: KoedServerPackageProvenance;
+  signature: string;
+  publicKey: string;
+}): void => {
+  if (provenance.signature?.algorithm !== "ed25519") {
+    throw new Error("Package provenance signature algorithm must be ed25519.");
+  }
+  const key = createPublicKey(publicKey);
+  const payload = Buffer.from(canonicalJson(provenance.statement), "utf8");
+  const ok = verify(null, payload, key, Buffer.from(signature, "base64"));
+  if (!ok) {
+    throw new Error("Package provenance signature verification failed.");
+  }
+};
+
+const validatePackageProvenance = ({
+  options,
+  archivePath,
+  archiveSha256,
+  manifest
+}: {
+  options: ServerPackageInstallOptions;
+  archivePath: string;
+  archiveSha256: string;
+  manifest: KoedServerPackageManifest;
+}): ServerPackageInstallResult["provenance"] => {
+  const policy = options.trustPolicy ?? "sha256-only";
+  const provenancePath =
+    options.provenanceFile ?? adjacentProvenancePath(archivePath);
+  const publicKey = readTrustedPublicKey(options);
+  if (!provenancePath) {
+    if (policy === "sha256-only" && !publicKey) {
+      return { status: "not_checked", policy };
+    }
+    throw new Error("Package provenance metadata is required.");
+  }
+  const provenance = readJson<KoedServerPackageProvenance>(provenancePath);
+  const statement = provenance.statement;
+  if (statement?.schemaVersion !== packageProvenanceSchemaVersion) {
+    throw new Error("Package provenance schemaVersion must be 1.");
+  }
+  const subject = statement.subject;
+  if (
+    subject?.id !== manifest.id ||
+    subject.packageKind !== manifest.packageKind
+  ) {
+    throw new Error("Package provenance subject does not match manifest.");
+  }
+  if (
+    subject.version !== manifest.version ||
+    subject.platform !== manifest.platform ||
+    subject.architecture !== manifest.architecture
+  ) {
+    throw new Error(
+      "Package provenance version target does not match manifest."
+    );
+  }
+  if (subject.archiveSha256 !== archiveSha256) {
+    throw new Error("Package provenance archive SHA-256 does not match.");
+  }
+  if (subject.packageSha256 !== manifest.sha256) {
+    throw new Error("Package provenance package SHA-256 does not match.");
+  }
+  const inlineSignature = provenance.signature?.value ?? undefined;
+  const signaturePath =
+    options.signatureFile ??
+    (existsSync(`${provenancePath}.sig`) ? `${provenancePath}.sig` : undefined);
+  const signature = signaturePath
+    ? readFileSync(signaturePath, "utf8").trim()
+    : inlineSignature;
+  if (publicKey) {
+    if (!signature) {
+      throw new Error("Package provenance signature is required.");
+    }
+    verifyProvenanceSignature({ provenance, signature, publicKey });
+    return { status: "verified", policy, source: provenancePath };
+  }
+  if (policy === "require-signature") {
+    throw new Error("Package signature trust root is required.");
+  }
+  if (provenance.signature?.status === "unsigned-placeholder") {
+    return { status: "unsigned-placeholder", policy, source: provenancePath };
+  }
+  return { status: "not_checked", policy, source: provenancePath };
+};
+
+const activePackageManifest = (
+  paths: KoedServerPaths
+): KoedServerPackageManifest | null => {
+  const target = readCurrentTarget(paths);
+  if (!target) return null;
+  const validation = validateServerPackageRoot(target);
+  return validation.ok ? validation.manifest : null;
+};
+
+const migrationTimestamp = (
+  manifest: KoedServerPackageManifest | null
+): number | undefined => {
+  const value = manifest?.database?.migrationSet?.latestMigrationTimestamp;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+};
+
+const assertUpgradeCompatible = ({
+  paths,
+  nextManifest,
+  allowDowngrade = false
+}: {
+  paths: KoedServerPaths;
+  nextManifest: KoedServerPackageManifest;
+  allowDowngrade?: boolean;
+}): void => {
+  const currentManifest = activePackageManifest(paths);
+  if (!currentManifest?.version) return;
+  if (compareVersions(nextManifest.version, currentManifest.version) < 0) {
+    if (!allowDowngrade) {
+      throw new Error(
+        `Installing koed-server ${nextManifest.version} over active ${currentManifest.version} is a downgrade and requires --allow-downgrade.`
+      );
+    }
+    const currentMigration = migrationTimestamp(currentManifest);
+    const nextMigration = migrationTimestamp(nextManifest);
+    if (
+      currentMigration !== undefined &&
+      nextMigration !== undefined &&
+      nextMigration < currentMigration &&
+      nextManifest.database?.allowsRollback !== true
+    ) {
+      throw new Error(
+        "Downgrade would roll back the package migration set, and the target package does not allow rollback."
+      );
+    }
+  }
+};
+
 const copyOrDownloadArchive = async (
   source: string,
   cacheDir: string
@@ -582,7 +844,8 @@ const findExtractedPackageRoot = (extractDir: string): string => {
 
 const activateVersion = (
   paths: KoedServerPaths,
-  version: string
+  version: string,
+  options: { allowDowngrade?: boolean } = {}
 ): ServerPackageActivateResult => {
   const versionsDir = packageVersionsDir(paths);
   const safeVersion = validatePackageVersion(version);
@@ -591,6 +854,14 @@ const activateVersion = (
   if (!validation.ok) {
     throw new Error(validation.errors.join(" "));
   }
+  if (!validation.manifest) {
+    throw new Error("Package manifest is required.");
+  }
+  assertUpgradeCompatible({
+    paths,
+    nextManifest: validation.manifest,
+    allowDowngrade: options.allowDowngrade
+  });
   const current = packageCurrentPath(paths);
   mkdirSync(dirname(current), { recursive: true, mode: 0o700 });
   const tempLink = resolve(
@@ -633,6 +904,20 @@ export const installServerPackage = async (
     if (!validation.ok || !validation.version) {
       throw new Error(validation.errors.join(" "));
     }
+    if (!validation.manifest) {
+      throw new Error("Package manifest is required.");
+    }
+    assertUpgradeCompatible({
+      paths,
+      nextManifest: validation.manifest,
+      allowDowngrade: options.allowDowngrade
+    });
+    const provenanceValidation = validatePackageProvenance({
+      options,
+      archivePath,
+      archiveSha256: actualSha256,
+      manifest: validation.manifest
+    });
     const safeVersion = validatePackageVersion(validation.version);
     const target = safeResolve(versionsDir, safeVersion);
     const tempTarget = resolve(
@@ -645,7 +930,9 @@ export const installServerPackage = async (
     renameSync(tempTarget, target);
     rmSync(extractDir, { recursive: true, force: true });
     const status = options.activate
-      ? activateVersion(paths, validation.version)
+      ? activateVersion(paths, validation.version, {
+          allowDowngrade: options.allowDowngrade
+        })
       : collectServerPackageStatus(paths);
     return {
       ...status,
@@ -654,6 +941,7 @@ export const installServerPackage = async (
       archivePath,
       archiveSha256: actualSha256,
       installedPath: target,
+      provenance: provenanceValidation,
       message: options.activate
         ? `koed-server package ${safeVersion} installed and activated.`
         : `koed-server package ${safeVersion} installed.`
@@ -666,8 +954,9 @@ export const installServerPackage = async (
 
 export const activateServerPackage = (
   paths: KoedServerPaths,
-  version: string
-): ServerPackageActivateResult => activateVersion(paths, version);
+  version: string,
+  options: { allowDowngrade?: boolean } = {}
+): ServerPackageActivateResult => activateVersion(paths, version, options);
 
 const compareVersionsDesc = (a: string, b: string): number => {
   const left = a.split(".").map((part) => Number.parseInt(part, 10));
