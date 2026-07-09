@@ -26,7 +26,8 @@ import {
   installServerPackage,
   requiredPackageRuntimeFiles,
   sha256File,
-  validateServerPackageRoot
+  validateServerPackageRoot,
+  type KoedServerPackageManifest
 } from "./package-runtime.js";
 
 const temps: string[] = [];
@@ -343,7 +344,9 @@ describe("standalone koed-server package runtime", () => {
     });
 
     const manifestPath = resolve(root, "koed-server-package-manifest.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifest = JSON.parse(
+      readFileSync(manifestPath, "utf8")
+    ) as KoedServerPackageManifest;
     manifest.platform = "not-this-platform";
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -512,7 +515,9 @@ describe("standalone koed-server package runtime", () => {
       packageRoot,
       "koed-server-package-manifest.json"
     );
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifest = JSON.parse(
+      readFileSync(manifestPath, "utf8")
+    ) as KoedServerPackageManifest;
     manifest.version = "../../victim";
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     const victimFile = resolve(home, "runtime", "victim", "keep.txt");

@@ -357,11 +357,14 @@ const validateManifestShape = (
   if (manifest.packageKind !== standalonePackageKind) {
     errors.push("Package manifest packageKind must be app-runtime.");
   }
-  for (const key of ["version", "platform", "architecture", "createdAt"]) {
-    if (
-      typeof manifest[key as keyof KoedServerPackageManifest] !== "string" ||
-      String(manifest[key as keyof KoedServerPackageManifest]).length === 0
-    ) {
+  for (const key of [
+    "version",
+    "platform",
+    "architecture",
+    "createdAt"
+  ] as const) {
+    const value = manifest[key];
+    if (typeof value !== "string" || value.length === 0) {
       errors.push(`Package manifest ${key} must be a non-empty string.`);
     }
   }
