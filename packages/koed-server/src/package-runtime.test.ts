@@ -377,11 +377,15 @@ describe("standalone koed-server package runtime", () => {
       state: "activated",
       currentVersion: "0.2.0"
     });
-    expect(collectServerPackageStatus(paths)).toMatchObject({
+    const status = collectServerPackageStatus(paths);
+    expect(status).toMatchObject({
       ok: true,
       state: "installed",
       currentVersion: "0.2.0"
     });
+    expect(status.installed[0]?.manifest?.version).toBe("0.2.0");
+    expect(status.installed[0]?.manifest?.fileCount).toBeGreaterThan(0);
+    expect(JSON.stringify(status)).not.toContain('"files"');
   });
 
   it("verifies signed provenance when a trusted public key is configured", async () => {

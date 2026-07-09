@@ -150,12 +150,30 @@ export interface PackageRootValidation {
   errors: string[];
 }
 
+export interface KoedServerPackageManifestSummary {
+  schemaVersion?: number;
+  id?: string;
+  version?: string;
+  platform?: string;
+  architecture?: string;
+  packageKind?: string;
+  createdAt?: string;
+  minimumDesktopVersion?: string;
+  maximumDesktopMajor?: number;
+  nodeRuntime?: KoedServerPackageManifest["nodeRuntime"];
+  koedRuntime?: KoedServerPackageManifest["koedRuntime"];
+  database?: KoedServerPackageManifest["database"];
+  provenance?: KoedServerPackageManifest["provenance"];
+  sha256?: string;
+  fileCount: number;
+}
+
 export interface InstalledServerPackage {
   version: string;
   path: string;
   ok: boolean;
   active: boolean;
-  manifest: KoedServerPackageManifest | null;
+  manifest: KoedServerPackageManifestSummary | null;
   errors: string[];
 }
 
@@ -509,6 +527,33 @@ export const validateServerPackageRoot = (
   };
 };
 
+const summarizeManifest = (
+  manifest: KoedServerPackageManifest | null
+): KoedServerPackageManifestSummary | null => {
+  if (!manifest) return null;
+  return {
+    schemaVersion: manifest.schemaVersion,
+    id: manifest.id,
+    version: manifest.version,
+    platform: manifest.platform,
+    architecture: manifest.architecture,
+    packageKind: manifest.packageKind,
+    createdAt: manifest.createdAt,
+    ...(manifest.minimumDesktopVersion
+      ? { minimumDesktopVersion: manifest.minimumDesktopVersion }
+      : {}),
+    ...(manifest.maximumDesktopMajor !== undefined
+      ? { maximumDesktopMajor: manifest.maximumDesktopMajor }
+      : {}),
+    ...(manifest.nodeRuntime ? { nodeRuntime: manifest.nodeRuntime } : {}),
+    ...(manifest.koedRuntime ? { koedRuntime: manifest.koedRuntime } : {}),
+    ...(manifest.database ? { database: manifest.database } : {}),
+    ...(manifest.provenance ? { provenance: manifest.provenance } : {}),
+    ...(manifest.sha256 ? { sha256: manifest.sha256 } : {}),
+    fileCount: manifest.files?.length ?? 0
+  };
+};
+
 const readCurrentTarget = (paths: KoedServerPaths): string | undefined => {
   const current = packageCurrentPath(paths);
   if (!existsSync(current)) return undefined;
@@ -540,7 +585,7 @@ export const collectServerPackageStatus = (
       path,
       ok: validation.ok,
       active: currentTarget === path,
-      manifest: validation.manifest,
+      manifest: summarizeManifest(validation.manifest),
       errors: validation.errors
     };
   });
