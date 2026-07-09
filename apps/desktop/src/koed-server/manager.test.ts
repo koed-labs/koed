@@ -191,7 +191,7 @@ describe("Koed server desktop manager", () => {
     expect(calls[0]).toContain("packaged");
   });
 
-  it("keeps packaged runtime status actionable when packaged manifest is missing", async () => {
+  it("uses Homebrew runtime status when packaged manifest is missing", async () => {
     const calls: string[][] = [];
     const manager = createKoedServerManager({
       repoRoot: "/repo",
@@ -215,7 +215,7 @@ describe("Koed server desktop manager", () => {
     });
 
     await manager.handlers.runtime_status!();
-    expect(calls[0]).toContain("packaged");
+    expect(calls[0]).toContain("homebrew");
   });
 
   it("runs model status and install through koed-server", async () => {

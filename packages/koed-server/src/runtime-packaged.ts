@@ -361,10 +361,11 @@ const readManifest = (
   path: string;
   error?: string;
 } => {
-  const candidates = [
-    packagedRuntimeRoot ? manifestPath(paths, packagedRuntimeRoot) : undefined,
-    manifestPath(paths)
-  ].filter((value): value is string => Boolean(value));
+  const candidates = (
+    packagedRuntimeRoot
+      ? [manifestPath(paths, packagedRuntimeRoot)]
+      : [manifestPath(paths)]
+  ).filter((value): value is string => Boolean(value));
   const path = candidates[0] ?? manifestPath(paths);
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
