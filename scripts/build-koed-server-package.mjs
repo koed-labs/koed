@@ -8,7 +8,9 @@ import {
   readFileSync,
   readlinkSync,
   readdirSync,
+  renameSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -138,6 +140,47 @@ const writeReadme = (packageRoot) => {
       ""
     ].join("\n")
   );
+};
+
+const dereferencePackageSymlinks = (root, dir = root) => {
+  for (const name of readdirSync(dir)) {
+    const path = resolve(dir, name);
+    const relativePath = path.slice(root.length + 1).replaceAll("\\", "/");
+    if (isPnpmWorkspaceSelfSymlink(relativePath)) continue;
+    const stat = lstatSync(path);
+    if (stat.isDirectory()) {
+      dereferencePackageSymlinks(root, path);
+      continue;
+    }
+    if (!stat.isSymbolicLink()) continue;
+
+    const targetStat = statSync(path);
+    const tempPath = `${path}.dereferenced-${process.pid}`;
+    rmSync(tempPath, { recursive: true, force: true });
+    cpSync(path, tempPath, {
+      recursive: targetStat.isDirectory(),
+      dereference: true
+    });
+    rmSync(path, { recursive: true, force: true });
+    renameSync(tempPath, path);
+    if (targetStat.isDirectory()) {
+      dereferencePackageSymlinks(root, path);
+    }
+  }
+};
+
+const assertArchiveHasNoSymlinks = (sourceDir) => {
+  const symlinks = archiveEntries(sourceDir).filter(
+    (entry) => entry.type === "symlink"
+  );
+  if (symlinks.length > 0) {
+    throw new Error(
+      `Standalone koed-server package archive still contains symlinks:\n${symlinks
+        .map((entry) => entry.relativePath)
+        .slice(0, 20)
+        .join("\n")}`
+    );
+  }
 };
 
 const tarString = (buffer, offset, length, value) => {
@@ -356,6 +399,7 @@ const main = () => {
     );
 
     prunePythonEmbeddingRuntimeFiles(runtimeRoot);
+    dereferencePackageSymlinks(packageRoot);
     writeLauncher(packageRoot);
     writeReadme(packageRoot);
     const manifest = buildPackageManifest({
@@ -377,6 +421,7 @@ const main = () => {
       );
     }
 
+    assertArchiveHasNoSymlinks(packageRoot);
     const artifact = createArchive({ outDir, packageDirName });
     const provenancePath = resolve(
       outDir,

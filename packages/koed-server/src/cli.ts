@@ -185,6 +185,11 @@ const packageTrustPolicy = (
   );
 };
 
+const compactOptions = <T extends Record<string, unknown>>(options: T): T =>
+  Object.fromEntries(
+    Object.entries(options).filter(([, value]) => value !== undefined)
+  ) as T;
+
 type SpawnLike = typeof nodeSpawn;
 
 export interface KoedServerStartDaemonResult {
@@ -554,18 +559,21 @@ export const runKoedServerCli = async (
 
     if (command === "package" && subcommand === "install") {
       const paths = resolvePaths();
-      const result = await installPackage(paths, {
-        source: requireFlagValue(args, "--source"),
-        sha256: flagValue(args, "--sha256"),
-        sha256File: flagValue(args, "--sha256-file"),
-        activate: args.includes("--activate"),
-        provenanceFile: flagValue(args, "--provenance-file"),
-        signatureFile: flagValue(args, "--signature-file"),
-        trustedPublicKey: flagValue(args, "--trusted-public-key"),
-        trustedPublicKeyFile: flagValue(args, "--trusted-public-key-file"),
-        trustPolicy: packageTrustPolicy(flagValue(args, "--trust-policy")),
-        allowDowngrade: args.includes("--allow-downgrade")
-      });
+      const result = await installPackage(
+        paths,
+        compactOptions({
+          source: requireFlagValue(args, "--source"),
+          sha256: flagValue(args, "--sha256"),
+          sha256File: flagValue(args, "--sha256-file"),
+          activate: args.includes("--activate"),
+          provenanceFile: flagValue(args, "--provenance-file"),
+          signatureFile: flagValue(args, "--signature-file"),
+          trustedPublicKey: flagValue(args, "--trusted-public-key"),
+          trustedPublicKeyFile: flagValue(args, "--trusted-public-key-file"),
+          trustPolicy: packageTrustPolicy(flagValue(args, "--trust-policy")),
+          allowDowngrade: args.includes("--allow-downgrade") ? true : undefined
+        })
+      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {

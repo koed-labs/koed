@@ -42,6 +42,20 @@ test("builds release metadata for standalone koed-server package targets", () =>
       packageKind: "app-runtime"
     })}\n`
   );
+  writeFileSync(
+    resolve(linux, "koed-server-app-runtime-0.4.0-linux-x64.provenance.json"),
+    `${JSON.stringify({
+      statement: { schemaVersion: 1 },
+      signature: { status: "signed", algorithm: "ed25519", value: "sig" }
+    })}\n`
+  );
+  writeFileSync(
+    resolve(
+      linux,
+      "koed-server-app-runtime-0.4.0-linux-x64.provenance.json.sig"
+    ),
+    "sig\n"
+  );
 
   const metadata = buildReleaseArtifactMetadata({
     version: "0.4.0",
@@ -60,6 +74,15 @@ test("builds release metadata for standalone koed-server package targets", () =>
     "a".repeat(64)
   );
   assert.equal(metadata.artifacts.desktop.kind, "desktop");
+  assert.equal(
+    metadata.artifacts.koedServerAppRuntime.targets[0].provenance.name,
+    "koed-server-app-runtime-0.4.0-linux-x64.provenance.json"
+  );
+  assert.equal(
+    metadata.artifacts.koedServerAppRuntime.targets[0].provenance.signature
+      .algorithm,
+    "ed25519"
+  );
   assert.equal(metadata.artifacts.koedServerAppRuntime.kind, "app-runtime");
   assert.equal(metadata.artifacts.nativeRuntime.kind, "native-runtime");
   assert.equal(metadata.artifacts.models.kind, "models");

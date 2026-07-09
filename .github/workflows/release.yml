@@ -186,6 +186,10 @@ jobs:
           mkdir -p "${release_dir}"
           cp "${package_dir}"/koed-server-*.tar.gz "${release_dir}/"
           cp "${package_dir}"/koed-server-*.tar.gz.sha256 "${release_dir}/"
+          cp "${package_dir}"/koed-server-app-runtime-*.provenance.json "${release_dir}/"
+          if compgen -G "${package_dir}/koed-server-app-runtime-*.provenance.json.sig" > /dev/null; then
+            cp "${package_dir}"/koed-server-app-runtime-*.provenance.json.sig "${release_dir}/"
+          fi
           manifest="$(find "${package_dir}" -path '*/koed-server-package-manifest.json' -print -quit)"
           test -n "${manifest}"
           cp "${manifest}" "${release_dir}/koed-server-app-runtime-${{ needs.release.outputs.version }}-${target}.manifest.json"
