@@ -32,6 +32,7 @@ test("codex configure writes hook timeout config and command timeouts", async ()
         MEMORY_API_TOKEN: "cmt_test",
         MEMORY_API_URL: "http://127.0.0.1:3300",
         MEMORY_NODE_COMMAND: "node",
+        KOED_PROMPT_DIR: path.join(dir, "custom-prompts"),
         MEMORY_HOOK_CONFIG: hookConfigPath,
         CODEX_CONFIG_PATH: codexConfigPath
       }
@@ -44,6 +45,11 @@ test("codex configure writes hook timeout config and command timeouts", async ()
       requestTimeoutMs: 1500
     });
     const codexConfig = readFileSync(codexConfigPath, "utf8");
+    assert.ok(
+      codexConfig.includes(
+        `KOED_PROMPT_DIR = ${JSON.stringify(path.join(dir, "custom-prompts"))}`
+      )
+    );
     for (const eventName of [
       "SessionStart",
       "UserPromptSubmit",

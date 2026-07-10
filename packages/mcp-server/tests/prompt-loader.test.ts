@@ -113,6 +113,14 @@ describe("prompt loader", () => {
     );
   });
 
+  it("preserves Mustache-like syntax supplied as prompt data", () => {
+    expect(
+      renderPromptTemplate("Conversation:\n{{ conversation }}", {
+        conversation: "The template uses {{ name }} as a literal example."
+      })
+    ).toBe("Conversation:\nThe template uses {{ name }} as a literal example.");
+  });
+
   it("renders dynamic prompts without leaving template placeholders behind", () => {
     const prompt = renderPrompt("session-title", {
       session_id: "session-1",

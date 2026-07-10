@@ -19,6 +19,7 @@ const apiUrl =
   "http://localhost:3300";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const appServerBinary = process.env.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
+const promptOverrideDirectory = process.env.KOED_PROMPT_DIR?.trim();
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
@@ -84,6 +85,9 @@ command = "${hookCommand}"
 timeout = ${timeout}`
   )
   .join("\n\n");
+const promptOverrideLine = promptOverrideDirectory
+  ? `\nKOED_PROMPT_DIR = ${JSON.stringify(promptOverrideDirectory)}`
+  : "";
 const koedBlock = `${markerStart}
 [mcp_servers.${mcpName}]
 command = "${nodeCommand}"
@@ -93,7 +97,7 @@ enabled = true
 [mcp_servers.${mcpName}.env]
 MEMORY_API_URL = "${apiUrl}"
 MEMORY_API_TOKEN = "${token}"
-MEMORY_CODEX_APP_SERVER_BINARY = "${appServerBinary}"
+MEMORY_CODEX_APP_SERVER_BINARY = "${appServerBinary}"${promptOverrideLine}
 
 ${hookBlocks}
 ${markerEnd}
@@ -113,6 +117,9 @@ console.log("Codex integration configured.");
 console.log(`Detected API URL: ${apiUrl}`);
 console.log(`Detected Node command: ${nodeCommand}`);
 console.log(`Detected Codex app-server binary: ${appServerBinary}`);
+if (promptOverrideDirectory) {
+  console.log(`Detected prompt override directory: ${promptOverrideDirectory}`);
+}
 console.log(`Wrote Codex MCP config: ${codexConfigPath}`);
 console.log(`Wrote Capture Hook config: ${hookConfigPath}`);
 console.log(

@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   buildLcmSummaryPrompt,
@@ -14,6 +14,7 @@ import { CodexAppServerTurnError } from "../src/codex-app-server-runner.js";
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     tempDirs.splice(0).map((directory) => rm(directory, { recursive: true }))
   );
@@ -41,6 +42,83 @@ const summaryJson = (summary_text: string) =>
     unresolved_questions: [],
     provenance_hints: []
   });
+
+it("persists the loaded LCM prompt version for operator overrides", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-prompts-"));
+  tempDirs.push(directory);
+  await writeFile(
+    path.join(directory, "lcm-summary-leaf.md"),
+    [
+      "---",
+      "id: lcm-summary-leaf",
+      "version: operator-leaf-v9",
+      "---",
+      "Summarize this leaf using the required JSON schema."
+    ].join("\n")
+  );
+  vi.stubEnv("KOED_PROMPT_DIR", directory);
+
+  const node: LcmSummaryNode = {
+    id: "00000000-0000-4000-8000-000000000051",
+    visibility: "personal",
+    kind: "leaf",
+    depth: 0,
+    summaryText: "placeholder",
+    sourceTokenEstimate: 20,
+    sourceItems: [
+      {
+        kind: "memory_event",
+        sourceId: "00000000-0000-4000-8000-000000000052",
+        text: "The User prefers operator-controlled prompt files."
+      }
+    ]
+  };
+  const submissions: Record<string, unknown>[] = [];
+  let listed = false;
+  const client = {
+    async listPendingLcmSummaries() {
+      if (listed) {
+        return { nodes: [] };
+      }
+      listed = true;
+      return { nodes: [node] };
+    },
+    async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+      submissions.push(input);
+      return {};
+    }
+  } as unknown as Parameters<typeof summarizePendingLcmNodes>[0];
+
+  const result = await summarizePendingLcmNodes(client, {
+    limit: 1,
+    config: resolveLcmSummaryWorkerConfig(
+      {
+        MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+      },
+      {
+        maxAttempts: 1,
+        retryDelayMs: 0,
+        timeoutMs: 1_000
+      }
+    ),
+    runner: async (prompt) => {
+      expect(prompt).toContain(
+        "Summarize this leaf using the required JSON schema."
+      );
+      return {
+        text: summaryJson("The User prefers operator-controlled prompts."),
+        model: "codex:test"
+      };
+    }
+  });
+
+  expect(result.submittedCount).toBe(1);
+  expect(submissions).toEqual([
+    expect.objectContaining({
+      summaryPromptVersion: "operator-leaf-v9"
+    })
+  ]);
+});
 
 describe("LCM summary worker", () => {
   it("uses the structured summary contract for leaf, rollup, partial, and reduce prompts", () => {

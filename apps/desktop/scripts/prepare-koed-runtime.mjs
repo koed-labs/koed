@@ -80,6 +80,7 @@ const required = [
   "embedding-service/dist/index.js",
   "mcp-server/dist/cli.js",
   "mcp-server/dist/capture-hook.js",
+  "mcp-server/dist/prompts/mcp-server-instructions.md",
   "explorer-dist/index.html"
 ];
 const missing = required.filter(

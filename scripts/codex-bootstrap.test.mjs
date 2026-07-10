@@ -25,6 +25,7 @@ test("codex bootstrap runs the setup flow in order", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_NODE_COMMAND: "node",
     MEMORY_CODEX_APP_SERVER_BINARY: "codex",
+    KOED_PROMPT_DIR: "/opt/koed/prompts",
     CODEX_CONFIG_PATH: "/tmp/koed-config.toml",
     MEMORY_HOOK_CONFIG: "/tmp/koed-hook.json"
   };
@@ -114,7 +115,8 @@ test("codex bootstrap runs the setup flow in order", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_test_token",
     MEMORY_NODE_COMMAND: "node",
-    MEMORY_CODEX_APP_SERVER_BINARY: "codex"
+    MEMORY_CODEX_APP_SERVER_BINARY: "codex",
+    KOED_PROMPT_DIR: "/opt/koed/prompts"
   });
 
   const verifyCall = calls.find(([label]) => label === "Verify capture");
@@ -131,7 +133,8 @@ test("codex bootstrap runs the setup flow in order", async () => {
   assert.deepEqual(doctorCall[3], {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_test_token",
-    MEMORY_CODEX_APP_SERVER_BINARY: "codex"
+    MEMORY_CODEX_APP_SERVER_BINARY: "codex",
+    KOED_PROMPT_DIR: "/opt/koed/prompts"
   });
 });
 
@@ -157,6 +160,7 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
       env.MEMORY_API_URL = "http://127.0.0.1:3300";
       env.MEMORY_NODE_COMMAND = "/opt/node";
       env.MEMORY_CODEX_APP_SERVER_BINARY = "/opt/codex";
+      env.KOED_PROMPT_DIR = "/opt/koed/custom-prompts";
     },
     createTokenBootstrap: async () => tokenResult,
     runCommandFn: async ({ label, env = {} }) => {
@@ -176,6 +180,7 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
     MEMORY_API_URL: "http://127.0.0.1:3300",
     MEMORY_API_TOKEN: "cmt_env_token",
     MEMORY_NODE_COMMAND: "/opt/node",
-    MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex"
+    MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex",
+    KOED_PROMPT_DIR: "/opt/koed/custom-prompts"
   });
 });

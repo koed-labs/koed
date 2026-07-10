@@ -42,6 +42,7 @@ Environment:
   CODEX_MEMORY_BASE_URL          Used when MEMORY_API_URL is not set.
   MEMORY_NODE_COMMAND            Used when --node-command is not set.
   MEMORY_CODEX_APP_SERVER_BINARY  Overrides the Codex app-server binary written by configure-codex.
+  KOED_PROMPT_DIR                 Optional prompt override directory written into the MCP environment.
 `;
 
 export const parseBootstrapArgs = (argv, environment = process.env) => {
@@ -248,6 +249,10 @@ export const runCodexBootstrap = async ({
     const resolvedPaths = resolveBootstrapPaths(environment);
     const appServerBinary =
       environment.MEMORY_CODEX_APP_SERVER_BINARY ?? defaultAppServerBinary;
+    const promptOverrideDirectory = environment.KOED_PROMPT_DIR?.trim();
+    const promptOverrideEnv = promptOverrideDirectory
+      ? { KOED_PROMPT_DIR: promptOverrideDirectory }
+      : {};
 
     await runCommandFn({
       label: "Build @koed/db",
@@ -288,7 +293,8 @@ export const runCodexBootstrap = async ({
         MEMORY_API_URL: args.apiUrl,
         MEMORY_API_TOKEN: tokenResult.token,
         MEMORY_NODE_COMMAND: args.nodeCommand,
-        MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary
+        MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+        ...promptOverrideEnv
       }
     });
 
@@ -314,7 +320,8 @@ export const runCodexBootstrap = async ({
         env: {
           MEMORY_API_URL: args.apiUrl,
           MEMORY_API_TOKEN: tokenResult.token,
-          MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary
+          MEMORY_CODEX_APP_SERVER_BINARY: appServerBinary,
+          ...promptOverrideEnv
         },
         captureOutput: true
       });

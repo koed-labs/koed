@@ -105,6 +105,14 @@ const packageNameAt = (directory: string): string | undefined => {
 };
 
 const findBundledPromptDirectory = (): string => {
+  const packagedDirectory = path.join(moduleDirectory, "prompts");
+  if (
+    fs.existsSync(packagedDirectory) &&
+    fs.statSync(packagedDirectory).isDirectory()
+  ) {
+    return packagedDirectory;
+  }
+
   const roots = new Set<string>([
     ...ancestorsFrom(process.cwd()),
     ...ancestorsFrom(moduleDirectory)
@@ -184,27 +192,23 @@ export const renderPromptTemplate = (
   template: string,
   values: Record<string, string | number | boolean | null | undefined>
 ): string => {
-  const rendered = template.replace(
-    placeholderPattern,
-    (match, name: string) => {
-      const value = values[name];
-      if (value === undefined || value === null) {
-        return match;
-      }
-      return String(value);
-    }
-  );
-
-  const missing = [...rendered.matchAll(placeholderPattern)].map(
-    (match) => match[1]
-  );
+  const placeholders = [...template.matchAll(placeholderPattern)];
+  const missing = placeholders
+    .map((match) => match[1])
+    .filter(
+      (name): name is string =>
+        typeof name === "string" &&
+        (values[name] === undefined || values[name] === null)
+    );
   if (missing.length > 0) {
     throw new Error(
       `Prompt template has unresolved placeholders: ${[...new Set(missing)].join(", ")}`
     );
   }
 
-  return rendered;
+  return template.replace(placeholderPattern, (_match, name: string) =>
+    String(values[name])
+  );
 };
 
 export const renderPrompt = (
