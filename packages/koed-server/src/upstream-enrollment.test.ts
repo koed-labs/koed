@@ -45,6 +45,7 @@ const enrollmentFetch =
     input: Parameters<typeof fetch>[0],
     init?: Parameters<typeof fetch>[1]
   ): Promise<Response> => {
+    expect(init?.redirect).toBe("error");
     const url =
       typeof input === "string" || input instanceof URL ? input : input.url;
     const parsed = new URL(String(url));

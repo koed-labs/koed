@@ -274,6 +274,30 @@ describe("upstream backend registry", () => {
     expect(() =>
       registerUpstreamBackend(paths, { url: "file:///tmp/koed", id: "bad" })
     ).toThrow("must use http or https");
+    expect(() =>
+      registerUpstreamBackend(paths, {
+        url: "http://team.example.test",
+        id: "remote-http"
+      })
+    ).toThrow("must use HTTPS unless it targets localhost");
+  });
+
+  it.each([
+    "http://localhost:3300",
+    "http://127.0.0.1:3300",
+    "http://[::1]:3300"
+  ])("allows exact loopback HTTP upstream %s", (url) => {
+    const paths = tempPaths();
+    const result = registerUpstreamBackend(paths, {
+      url,
+      id: "local-dev"
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "registered",
+      backend: { id: "local-dev" }
+    });
   });
 
   it("refreshes and stores a sanitized capability cache", async () => {
@@ -286,10 +310,11 @@ describe("upstream backend registry", () => {
 
     const result = await refreshUpstreamBackendCapabilities(paths, "cloud", {
       now: () => new Date("2026-01-01T00:00:00.000Z"),
-      fetch: async (url) => {
+      fetch: async (url, init) => {
         expect(String(url)).toBe(
           "https://cloud.example.test/koed/v1/capabilities"
         );
+        expect(init?.redirect).toBe("error");
         return response(true, 200, {
           product: "koed",
           apiVersion: "v1",

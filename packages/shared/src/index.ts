@@ -31,6 +31,10 @@ export {
   encryptedPackageObjectClasses
 } from "./encrypted-package.js";
 export {
+  assertSecureHttpTransport,
+  isLoopbackHostname
+} from "./http-transport-security.js";
+export {
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
   localEdgeClientCredentialReferenceFor,

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import type { DeviceCredentialRecord } from "@koed/db";
+import { assertSecureHttpTransport } from "@koed/shared";
 import type { CapturePolicy } from "../server/context.js";
 
 export type LocalEdgeOperationFamily =
@@ -303,6 +304,7 @@ export const safeUpstreamProxyUrl = (
     });
   }
   const parsedBaseUrl = new URL(upstreamBackend.baseUrl);
+  assertSecureHttpTransport(parsedBaseUrl, "Upstream URL");
   const basePath = parsedBaseUrl.pathname.replace(/\/+$/, "");
   const parsed = new URL(`${basePath}${path}`, parsedBaseUrl.origin);
   if (parsed.origin !== parsedBaseUrl.origin) {
@@ -400,12 +402,29 @@ export const assertUpstreamOperationPathAllowed = (
   deny();
 };
 
-const isUpstreamBackend = (value: unknown): value is LocalEdgeUpstreamBackend =>
-  Boolean(value) &&
-  typeof value === "object" &&
-  !Array.isArray(value) &&
-  typeof (value as { id?: unknown }).id === "string" &&
-  typeof (value as { baseUrl?: unknown }).baseUrl === "string";
+const hasSecureUpstreamBaseUrl = (value: string): boolean => {
+  try {
+    assertSecureHttpTransport(new URL(value), "Upstream URL");
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isUpstreamBackend = (
+  value: unknown
+): value is LocalEdgeUpstreamBackend => {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    typeof (value as { id?: unknown }).id !== "string" ||
+    typeof (value as { baseUrl?: unknown }).baseUrl !== "string"
+  ) {
+    return false;
+  }
+  return hasSecureUpstreamBaseUrl((value as { baseUrl: string }).baseUrl);
+};
 
 const capabilityState = (
   backend: LocalEdgeUpstreamBackend,

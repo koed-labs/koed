@@ -92,9 +92,12 @@ route-policy metadata.
 The registry must not contain reusable upstream credentials, WorkOS secrets,
 API Tokens, device secrets, bearer tokens, token prefixes, or database
 credentials. Upstream URLs with username/password material, query strings, or
-fragments are rejected. Device/upstream credential material is handled by the
-separate credential model; this registry only records non-secret existence and
-status metadata.
+fragments are rejected. Remote upstreams must use HTTPS; HTTP is accepted only
+for exact loopback targets (`localhost`, `127.0.0.1`, or `::1`) used by local
+development. Upstream requests reject redirects so an accepted endpoint cannot
+downgrade credential or Memory traffic. Device/upstream credential material is
+handled by the separate credential model; this registry only records non-secret
+existence and status metadata.
 
 Live local-edge upstream proxying needs separate upstream relay authorization.
 The registry may record a sanitized credential `reference`, but the reusable

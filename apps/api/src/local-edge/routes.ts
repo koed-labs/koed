@@ -689,6 +689,7 @@ export const registerLocalEdgeRoutes = (
       }
       const upstreamResponse = await upstreamFetch(url, {
         method: input.method,
+        redirect: "error",
         headers: {
           "content-type": "application/json",
           accept: "application/json",

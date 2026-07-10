@@ -3,6 +3,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
+  assertSecureHttpTransport,
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
   readUpstreamCredentialAuthorization,
@@ -212,6 +213,7 @@ const sanitizeActivationUrl = (value: string): string | null => {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return null;
     }
+    assertSecureHttpTransport(parsed, "Activation URL");
     parsed.username = "";
     parsed.password = "";
     for (const key of [...parsed.searchParams.keys()]) {
@@ -358,6 +360,7 @@ const jsonFetch = async (
 }> => {
   const response = await deps.fetch(url, {
     ...init,
+    redirect: "error",
     headers: {
       accept: "application/json",
       ...(init.body === undefined

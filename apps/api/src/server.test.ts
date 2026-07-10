@@ -6376,7 +6376,8 @@ describe("account and access flows", () => {
     expect(jsonBody<{ markdown: string }>(proxied).markdown).toBeDefined();
     expect(upstreamCalls).toHaveLength(1);
     expect(upstreamCalls[0]).toMatchObject({
-      url: "https://team.example.test/v1/memory/answer"
+      url: "https://team.example.test/v1/memory/answer",
+      init: { redirect: "error" }
     });
     expect(
       (upstreamCalls[0]?.init.headers as Record<string, string>).authorization

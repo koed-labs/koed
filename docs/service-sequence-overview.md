@@ -364,6 +364,10 @@ metadata: stable upstream id, display name, base URL, deployment profile,
 credential existence/status, route-policy metadata, and a sanitized cache of the
 upstream public capability contract.
 
+Remote upstream base URLs must use HTTPS. Exact loopback HTTP targets remain
+available for local development, and capability, enrollment, and Memory proxy
+requests reject redirects rather than allowing a transport downgrade.
+
 Registering an upstream is not sufficient to route memory traffic. Route policy
 defaults are fail-closed for capture-bearing writes, Team Workspace recall,
 Share Grant management, sync/offload, and admin operations. `koed-server
