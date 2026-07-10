@@ -142,6 +142,7 @@ try {
       environmentOverrides: {
         API_TOKEN_PEPPER: randomBytes(32).toString("base64url"),
         DATABASE_URL: automatedTestDatabase.databaseUrl,
+        NODE_ENV: "test",
         SESSION_SECRET: randomBytes(32).toString("base64url")
       },
       spawn: spawnSync,

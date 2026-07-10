@@ -207,6 +207,7 @@ const automatedLaunchTestEnvironmentKeys = [
   "MANAGED_KMS_KEY_ID",
   "MANAGED_KMS_KEY_VERSION",
   "MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED",
+  "NODE_ENV",
   "POSTGRES_PASSWORD",
   "RATE_LIMIT_REDIS_URL",
   "RATE_LIMIT_STORE",
@@ -329,7 +330,11 @@ const databaseIdentity = (value, label) => {
   if (!databaseName || databaseName.includes("/")) {
     throw new Error(`${label} must name exactly one PostgreSQL database.`);
   }
-  return { databaseName };
+  return {
+    host: parsed.hostname.toLowerCase(),
+    port: parsed.port || "5432",
+    databaseName
+  };
 };
 
 export const assertSeparateLaunchTestDatabase = (
@@ -341,12 +346,58 @@ export const assertSeparateLaunchTestDatabase = (
     testDatabaseUrl,
     "KOED_LAUNCH_TEST_DATABASE_URL"
   );
-  if (fixture.databaseName === test.databaseName) {
+  if (
+    fixture.host === test.host &&
+    fixture.port === test.port &&
+    fixture.databaseName === test.databaseName
+  ) {
     throw new Error(
       "KOED_LAUNCH_TEST_DATABASE_URL must not target the fixture database. Automated repository tests are destructive and require a separate disposable database."
     );
   }
 };
+
+const readDatabaseRuntimeIdentity = async (
+  databaseUrl,
+  label,
+  createClient
+) => {
+  const client = createClient(databaseUrl);
+  try {
+    await client.connect();
+    const result = await client.query(
+      "select current_database() as database_name, inet_server_addr()::text as server_address, inet_server_port() as server_port"
+    );
+    const row = result.rows?.[0];
+    if (
+      !row ||
+      typeof row.database_name !== "string" ||
+      (row.server_address !== null && typeof row.server_address !== "string") ||
+      (typeof row.server_port !== "number" &&
+        typeof row.server_port !== "string")
+    ) {
+      throw new Error("PostgreSQL returned an invalid database identity.");
+    }
+    const urlIdentity = databaseIdentity(databaseUrl, label);
+    return {
+      databaseName: row.database_name,
+      serverAddress: row.server_address ?? urlIdentity.host,
+      serverPort: String(row.server_port)
+    };
+  } catch (error) {
+    throw new Error(
+      `${label} could not be verified as a separate PostgreSQL database target.`,
+      { cause: error }
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+};
+
+const runtimeDatabaseIdentityMatches = (fixture, test) =>
+  fixture.databaseName === test.databaseName &&
+  fixture.serverAddress === test.serverAddress &&
+  fixture.serverPort === test.serverPort;
 
 const testDatabaseUrlFrom = (sourceDatabaseUrl, databaseName) => {
   const parsed = new URL(sourceDatabaseUrl);
@@ -361,12 +412,30 @@ export const provisionAutomatedLaunchTestDatabase = async ({
   uniqueId = randomUUID()
 }) => {
   if (explicitTestDatabaseUrl?.trim()) {
+    const normalizedTestDatabaseUrl = explicitTestDatabaseUrl.trim();
     assertSeparateLaunchTestDatabase(
       fixtureDatabaseUrl,
-      explicitTestDatabaseUrl
+      normalizedTestDatabaseUrl
     );
+    const [fixtureIdentity, testIdentity] = await Promise.all([
+      readDatabaseRuntimeIdentity(
+        fixtureDatabaseUrl,
+        "DATABASE_URL",
+        createClient
+      ),
+      readDatabaseRuntimeIdentity(
+        normalizedTestDatabaseUrl,
+        "KOED_LAUNCH_TEST_DATABASE_URL",
+        createClient
+      )
+    ]);
+    if (runtimeDatabaseIdentityMatches(fixtureIdentity, testIdentity)) {
+      throw new Error(
+        "KOED_LAUNCH_TEST_DATABASE_URL resolves to the fixture database. Automated repository tests are destructive and require a separate disposable database."
+      );
+    }
     return {
-      databaseUrl: explicitTestDatabaseUrl,
+      databaseUrl: normalizedTestDatabaseUrl,
       managed: false,
       cleanup: async () => {}
     };

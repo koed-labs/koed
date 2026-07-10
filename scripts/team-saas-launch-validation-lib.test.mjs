@@ -75,6 +75,7 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
     KOED_LAUNCH_DEVICE_CREDENTIAL: "production-device-credential",
     KOED_DEPLOYMENT_PROFILE: "team_self_hosted",
     KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
+    NODE_ENV: "production",
     API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
     API_DATA_ENCRYPTION_KEY: "do-not-inherit",
     MANAGED_KMS_AUTH_TOKEN: "do-not-inherit",
@@ -83,6 +84,7 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
   const child = buildAutomatedLaunchTestEnvironment(parent, {
     API_TOKEN_PEPPER: "synthetic-pepper",
     DATABASE_URL: "postgres://scratch",
+    NODE_ENV: "test",
     SESSION_SECRET: "synthetic-session-secret"
   });
 
@@ -90,6 +92,7 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
   assert.equal(child.API_TOKEN_PEPPER, "synthetic-pepper");
   assert.equal(child.SESSION_SECRET, "synthetic-session-secret");
   assert.equal(child.DATABASE_URL, "postgres://scratch");
+  assert.equal(child.NODE_ENV, "test");
   assert.equal(child.KOED_DEPLOYMENT_PROFILE, undefined);
   assert.equal(child.KOED_MANAGED_CLOUD_RELEASE_STAGE, undefined);
   assert.equal(child.API_ENVELOPE_ENCRYPTION_PROVIDER, undefined);
@@ -99,6 +102,7 @@ test("automated launch tests remove inherited deployment secrets and profiles", 
   assert.equal(child.KOED_LAUNCH_SESSION_COOKIE, undefined);
   assert.equal(child.KOED_LAUNCH_DEVICE_CREDENTIAL, undefined);
   assert.equal(parent.API_TOKEN_PEPPER, "production-pepper");
+  assert.equal(parent.NODE_ENV, "production");
   assert.equal(parent.KOED_DEPLOYMENT_PROFILE, "team_self_hosted");
 });
 
@@ -138,13 +142,11 @@ test("launch validation refuses to use the fixture database for destructive test
       ),
     /must not target the fixture database/
   );
-  assert.throws(
-    () =>
-      assertSeparateLaunchTestDatabase(
-        "postgres://koed:secret@postgres:5432/koed",
-        "postgres://koed:secret@database-alias:5432/koed"
-      ),
-    /must not target the fixture database/
+  assert.doesNotThrow(() =>
+    assertSeparateLaunchTestDatabase(
+      "postgres://koed:secret@postgres:5432/koed",
+      "postgres://koed:secret@separate-cluster:5432/koed"
+    )
   );
   assert.doesNotThrow(() =>
     assertSeparateLaunchTestDatabase(
@@ -152,6 +154,74 @@ test("launch validation refuses to use the fixture database for destructive test
       "postgres://koed:secret@postgres:5432/koed_launch_test"
     )
   );
+});
+
+const databaseIdentityClientFactory =
+  (identityForUrl, clients) => (connectionString) => {
+    const client = {
+      connectionString,
+      ends: 0,
+      async connect() {},
+      async query() {
+        return { rows: [identityForUrl(connectionString)] };
+      },
+      async end() {
+        this.ends += 1;
+      }
+    };
+    clients.push(client);
+    return client;
+  };
+
+test("launch validation rejects database aliases resolving to the fixture", async () => {
+  const clients = [];
+  const createClient = databaseIdentityClientFactory(
+    () => ({
+      database_name: "koed",
+      server_address: "10.0.0.12",
+      server_port: 5432
+    }),
+    clients
+  );
+
+  await assert.rejects(
+    () =>
+      provisionAutomatedLaunchTestDatabase({
+        fixtureDatabaseUrl: "postgres://koed:secret@postgres:5432/koed",
+        explicitTestDatabaseUrl:
+          "postgres://koed:secret@database-alias:5432/koed",
+        createClient
+      }),
+    /resolves to the fixture database/
+  );
+  assert.equal(clients.length, 2);
+  assert.ok(clients.every((client) => client.ends === 1));
+});
+
+test("launch validation allows the same database name on a separate server", async () => {
+  const clients = [];
+  const createClient = databaseIdentityClientFactory(
+    (connectionString) => ({
+      database_name: "koed",
+      server_address: connectionString.includes("separate-cluster")
+        ? "10.0.1.20"
+        : "10.0.0.12",
+      server_port: 5432
+    }),
+    clients
+  );
+  const explicitTestDatabaseUrl =
+    "postgres://koed:secret@separate-cluster:5432/koed";
+
+  const provisioned = await provisionAutomatedLaunchTestDatabase({
+    fixtureDatabaseUrl: "postgres://koed:secret@postgres:5432/koed",
+    explicitTestDatabaseUrl,
+    createClient
+  });
+  assert.equal(provisioned.databaseUrl, explicitTestDatabaseUrl);
+  assert.equal(provisioned.managed, false);
+  assert.equal(clients.length, 2);
+  assert.ok(clients.every((client) => client.ends === 1));
 });
 
 test("launch validation provisions and cleans up a disposable test database", async () => {
