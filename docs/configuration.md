@@ -376,15 +376,17 @@ These values are copied into the AI Client configuration and are not consumed au
 
 - `KOED_PROMPT_DIR`: optional directory containing Markdown prompt overrides
   for local/self-hosted Koed prompt surfaces. Override files must mirror the
-  bundled root `prompts/` layout and keep matching frontmatter ids. Missing
-  override files fall back to bundled defaults; malformed prompt files, wrong
-  ids, empty files, or unresolved template placeholders fail loudly. Prompt
-  overrides can adjust wording, but code still owns JSON schemas, parser
-  validation, source serialization, authorization, redaction, and retrieval
-  boundaries. MCP builds carry the bundled defaults inside the deployed
-  runtime, and `pnpm codex:bootstrap` writes a configured override directory
-  into the MCP environment. LCM summaries persist the frontmatter version of
-  the prompt that produced the final summary.
+  bundled root `prompts/` layout and keep matching frontmatter ids. A configured
+  override directory must exist and be readable; individual files omitted from
+  a valid directory fall back to bundled defaults. Malformed prompt files,
+  wrong ids, empty files, missing required runtime placeholders, or unresolved
+  template placeholders fail loudly. Prompt overrides can adjust wording and
+  add optional content, but code still owns required placeholders, JSON schemas,
+  parser validation, source serialization, authorization, redaction, and
+  retrieval boundaries. MCP builds carry the bundled defaults inside the
+  deployed runtime, and `pnpm codex:bootstrap` writes a configured override
+  directory into the MCP environment. LCM summaries persist the frontmatter
+  version of the prompt that produced the final summary.
 
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
 - `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.

@@ -1,7 +1,8 @@
+import fs from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PROMPT_OVERRIDE_DIR_ENV,
   loadPrompt,
@@ -13,6 +14,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     tempDirs.splice(0).map((directory) => rm(directory, { recursive: true }))
   );
@@ -83,6 +85,42 @@ describe("prompt loader", () => {
     expect(prompt.body).toContain("Answer from Koed memory");
   });
 
+  it("fails when KOED_PROMPT_DIR does not exist", async () => {
+    const directory = await tempPromptDir();
+    const missingDirectory = path.join(directory, "missing");
+
+    expect(() =>
+      loadPrompt("memory-answer-tool-description", {
+        env: { [PROMPT_OVERRIDE_DIR_ENV]: missingDirectory }
+      })
+    ).toThrow(/KOED_PROMPT_DIR directory does not exist/);
+  });
+
+  it("fails when KOED_PROMPT_DIR is not a directory", async () => {
+    const directory = await tempPromptDir();
+    const filePath = path.join(directory, "prompt-root.txt");
+    await writeFile(filePath, "not a directory");
+
+    expect(() =>
+      loadPrompt("memory-answer-tool-description", {
+        env: { [PROMPT_OVERRIDE_DIR_ENV]: filePath }
+      })
+    ).toThrow(/KOED_PROMPT_DIR path is not a directory/);
+  });
+
+  it("fails when KOED_PROMPT_DIR is not readable", async () => {
+    const directory = await tempPromptDir();
+    vi.spyOn(fs, "readdirSync").mockImplementationOnce(() => {
+      throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+    });
+
+    expect(() =>
+      loadPrompt("memory-answer-tool-description", {
+        env: { [PROMPT_OVERRIDE_DIR_ENV]: directory }
+      })
+    ).toThrow(/KOED_PROMPT_DIR directory is not readable/);
+  });
+
   it("fails if an override declares the wrong prompt id", async () => {
     const directory = await tempPromptDir();
     await writeFile(
@@ -101,6 +139,28 @@ describe("prompt loader", () => {
         env: { [PROMPT_OVERRIDE_DIR_ENV]: directory }
       })
     ).toThrow(/declares id memory-answer-worker/);
+  });
+
+  it("fails if an override removes code-owned structural placeholders", async () => {
+    const directory = await tempPromptDir();
+    await writeFile(
+      path.join(directory, "session-title.md"),
+      [
+        "---",
+        "id: session-title",
+        "version: incomplete-override",
+        "---",
+        "Generate a title for {{session_id}}."
+      ].join("\n")
+    );
+
+    expect(() =>
+      loadPrompt("session-title", {
+        env: { [PROMPT_OVERRIDE_DIR_ENV]: directory }
+      })
+    ).toThrow(
+      /missing required placeholders for session-title: .*conversation_excerpts/
+    );
   });
 
   it("renders explicit placeholders and fails on missing values", () => {

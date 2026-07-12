@@ -12,7 +12,9 @@ local AI Client:
 
 Self-hosted Operators may override these files by setting `KOED_PROMPT_DIR` to
 a directory that mirrors this layout. Missing override files fall back to these
-bundled defaults.
+bundled defaults. When `KOED_PROMPT_DIR` is configured, the directory itself
+must exist and be readable; an invalid configured directory fails startup
+instead of silently disabling all overrides.
 
 Prompt files use simple Markdown plus frontmatter:
 
@@ -28,3 +30,8 @@ Prompt body with {{placeholder_name}} values.
 The frontmatter `id` must match the requested prompt. Dynamic JSON schemas,
 parser validation, retrieval boundaries, source serialization, redaction rules,
 authorization, and persistence behavior remain owned by code.
+
+Each prompt id also has a code-owned set of required runtime placeholders.
+Overrides may change wording and add optional content, but they must retain all
+required placeholders so they cannot remove the query, evidence, or output
+contract supplied by Koed.

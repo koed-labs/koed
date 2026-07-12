@@ -24,6 +24,46 @@ export const promptFileNames = {
 
 export type PromptId = keyof typeof promptFileNames;
 
+export const requiredPromptPlaceholders = {
+  "mcp-server-instructions": [],
+  "memory-answer-tool-description": [],
+  "memory-answer-worker": [
+    "search_domain",
+    "required_json_schema",
+    "question",
+    "retrieval_scope",
+    "default_search_domain",
+    "optional_defaults",
+    "limit",
+    "max_searches",
+    "max_expansions",
+    "initial_evidence_section"
+  ],
+  "session-title": [
+    "session_id",
+    "external_session_id",
+    "current_title",
+    "project",
+    "title_event_count",
+    "conversation_excerpts"
+  ],
+  "lcm-summary-leaf": [],
+  "lcm-summary-rollup": [],
+  "lcm-summary-partial": [],
+  "lcm-summary-reduce": [],
+  "app-server-memory-answer-base": [],
+  "app-server-memory-answer-developer": [],
+  "app-server-worker-developer": [],
+  "app-server-lcm-summary-base": [],
+  "app-server-session-title-base": [],
+  "app-server-eval-base": [],
+  "eval-lcm-summary-semantic-judge": [
+    "threshold",
+    "required_json_shape",
+    "benchmark_input_json"
+  ]
+} as const satisfies Record<PromptId, readonly string[]>;
+
 export interface LoadedPrompt {
   id: PromptId;
   version: string;
@@ -134,15 +174,81 @@ const findBundledPromptDirectory = (): string => {
   );
 };
 
+const filesystemErrorCode = (error: unknown): string | undefined =>
+  typeof error === "object" && error !== null && "code" in error
+    ? String(error.code)
+    : undefined;
+
+const resolveOverrideDirectory = (configuredDirectory: string): string => {
+  const overrideDirectory = path.resolve(configuredDirectory);
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(overrideDirectory);
+  } catch (error) {
+    if (filesystemErrorCode(error) === "ENOENT") {
+      throw new Error(
+        `Configured ${PROMPT_OVERRIDE_DIR_ENV} directory does not exist: ${overrideDirectory}`,
+        { cause: error }
+      );
+    }
+    throw new Error(
+      `Configured ${PROMPT_OVERRIDE_DIR_ENV} directory cannot be accessed: ${overrideDirectory}`,
+      { cause: error }
+    );
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(
+      `Configured ${PROMPT_OVERRIDE_DIR_ENV} path is not a directory: ${overrideDirectory}`
+    );
+  }
+  try {
+    fs.accessSync(overrideDirectory, fs.constants.R_OK);
+    fs.readdirSync(overrideDirectory);
+  } catch (error) {
+    throw new Error(
+      `Configured ${PROMPT_OVERRIDE_DIR_ENV} directory is not readable: ${overrideDirectory}`,
+      { cause: error }
+    );
+  }
+  return overrideDirectory;
+};
+
 const resolvePromptPath = (
   id: PromptId,
   env: NodeJS.ProcessEnv
 ): { filePath: string; overridden: boolean } => {
   const relativePath = promptFileNames[id];
-  const overrideDirectory = env[PROMPT_OVERRIDE_DIR_ENV]?.trim();
-  if (overrideDirectory) {
+  const configuredOverrideDirectory = env[PROMPT_OVERRIDE_DIR_ENV]?.trim();
+  if (configuredOverrideDirectory) {
+    const overrideDirectory = resolveOverrideDirectory(
+      configuredOverrideDirectory
+    );
     const overridePath = path.resolve(overrideDirectory, relativePath);
-    if (fs.existsSync(overridePath)) {
+    let stats: fs.Stats | undefined;
+    try {
+      stats = fs.statSync(overridePath);
+    } catch (error) {
+      if (filesystemErrorCode(error) !== "ENOENT") {
+        throw new Error(
+          `Override prompt file cannot be accessed: ${overridePath}`,
+          { cause: error }
+        );
+      }
+    }
+    if (stats) {
+      if (!stats.isFile()) {
+        throw new Error(`Override prompt path is not a file: ${overridePath}`);
+      }
+      try {
+        fs.accessSync(overridePath, fs.constants.R_OK);
+      } catch (error) {
+        throw new Error(
+          `Override prompt file is not readable: ${overridePath}`,
+          {
+            cause: error
+          }
+        );
+      }
       return { filePath: overridePath, overridden: true };
     }
   }
@@ -177,6 +283,19 @@ export const loadPrompt = (
   }
   if (!body.trim()) {
     throw new Error(`Prompt file ${filePath} is empty`);
+  }
+  const presentPlaceholders = new Set(
+    [...body.matchAll(placeholderPattern)]
+      .map((match) => match[1])
+      .filter((name): name is string => typeof name === "string")
+  );
+  const missingRequiredPlaceholders = requiredPromptPlaceholders[id].filter(
+    (name) => !presentPlaceholders.has(name)
+  );
+  if (missingRequiredPlaceholders.length > 0) {
+    throw new Error(
+      `Prompt file ${filePath} is missing required placeholders for ${id}: ${missingRequiredPlaceholders.join(", ")}`
+    );
   }
 
   return {
