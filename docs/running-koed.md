@@ -65,7 +65,10 @@ challenge, stores the pending local device secret in the encrypted
 `KOED_HOME/secrets` credential store, and records only a `keychain://...`
 reference in config. `upstream enroll status` validates the approved credential
 against the upstream backend before marking the local backend credential
-configured. `upstream disconnect` disables local upstream route families and
+configured. Koed Desktop performs this reconciliation automatically while an
+enrollment is pending and shows the activation URL as a manual fallback when
+Linux/WSL host-browser integration is delayed or unavailable. `upstream
+disconnect` disables local upstream route families and
 marks the local enrollment state revoked. Browser approval and upstream-side
 device credential revocation remain browser/session-mediated local-edge flows.
 

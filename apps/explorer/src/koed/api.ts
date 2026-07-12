@@ -15,11 +15,7 @@ import type {
 } from "./types";
 import { koedDebug, koedDebugTimed } from "./debug";
 import { selectedThreadEventPageSize } from "./threadDetailCache";
-
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-
-const isLoopbackHostname = (hostname: string): boolean =>
-  LOOPBACK_HOSTS.has(hostname) || hostname.startsWith("127.");
+import { isLoopbackHostname, resolveBrowserApiBaseUrl } from "./api-base-url";
 
 const apiBaseUrlFromDesktopQuery = (): string | null => {
   if (typeof window === "undefined") return null;
@@ -39,12 +35,13 @@ const apiBaseUrlFromDesktopQuery = (): string | null => {
   }
 };
 
-export const apiBaseUrl = (
+export const apiBaseUrl = resolveBrowserApiBaseUrl(
   apiBaseUrlFromDesktopQuery() ??
-  import.meta.env.VITE_KOED_API_BASE_URL ??
-  import.meta.env.VITE_API_BASE_URL ??
-  "http://localhost:3300"
-).replace(/\/$/, "");
+    import.meta.env.VITE_KOED_API_BASE_URL ??
+    import.meta.env.VITE_API_BASE_URL ??
+    "http://localhost:3300",
+  window.location.href
+);
 
 const includeInvalidated = false;
 const threadShellPageSize = 500;

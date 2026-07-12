@@ -2892,7 +2892,27 @@ const runTeamBackendConnect = async (): Promise<void> => {
     if (error) {
       appendStatusCardLog(cardId, `failed: ${error}`);
     } else {
-      appendStatusCardLog(cardId, "enrollment started; browser opened");
+      const activationUrl =
+        result &&
+        typeof result === "object" &&
+        typeof (result as { activationUrl?: unknown }).activationUrl ===
+          "string"
+          ? (result as { activationUrl: string }).activationUrl
+          : null;
+      const browserOpenRequested =
+        result &&
+        typeof result === "object" &&
+        (result as { browserOpenRequested?: unknown }).browserOpenRequested ===
+          true;
+      appendStatusCardLog(
+        cardId,
+        browserOpenRequested
+          ? "enrollment started; browser open requested"
+          : "enrollment started; open the approval URL manually"
+      );
+      if (activationUrl) {
+        appendStatusCardLog(cardId, `approval URL: ${activationUrl}`);
+      }
     }
     await refreshStatus();
   } catch (error) {
