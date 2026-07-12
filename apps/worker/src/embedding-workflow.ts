@@ -170,23 +170,21 @@ export const createEmbeddingWorkflow = (
     if (chunks.length === 0) {
       throw new Error("embedding service returned no chunks for source");
     }
-    const stored = await Promise.all(
-      chunks.map((chunk) =>
-        config.repository().upsertSourceEmbedding({
-          source,
-          model: embedded.model,
-          dimensions: embedded.dimensions,
-          version: config.env.embeddingVersion,
-          vector: chunk.vector,
-          chunkIndex: chunk.chunkIndex,
-          chunkCount: chunk.chunkCount,
-          sourceText: chunk.text
-        })
-      )
-    );
+    const stored = await config.repository().replaceSourceEmbeddings({
+      source,
+      model: embedded.model,
+      dimensions: embedded.dimensions,
+      version: config.env.embeddingVersion,
+      chunks: chunks.map((chunk) => ({
+        vector: chunk.vector,
+        chunkIndex: chunk.chunkIndex,
+        chunkCount: chunk.chunkCount,
+        sourceText: chunk.text
+      }))
+    });
     return {
-      inserted: stored.some((result) => result.inserted),
-      chunks: stored.length
+      inserted: stored.inserted,
+      chunks: stored.ids.length
     };
   };
 

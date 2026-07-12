@@ -4,6 +4,9 @@ import type { KoedJobQueue } from "@koed/shared";
 import {
   createWorkerJobWorkflow,
   embeddingJobData,
+  enqueueLcmCompaction,
+  enqueueSourceEmbedding,
+  type CompactionQueueJobData,
   type EmbeddingQueueJobData
 } from "./job-workflows.js";
 
@@ -34,6 +37,7 @@ describe("worker job workflows", () => {
       .fn()
       .mockResolvedValue({ dimensions: 1024, inserted: true, chunks: 1 });
     const workflow = createWorkerJobWorkflow({
+      embeddingDispatchKey: "test-model-1024",
       embeddingWorkflow: { embedSource },
       lcmEmbedQueue: {} as KoedJobQueue<EmbeddingQueueJobData>,
       repository: () => ({}) as MemorySourceRepository
@@ -46,5 +50,66 @@ describe("worker job workflows", () => {
       })
     ).resolves.toEqual({ dimensions: 1024, inserted: true, chunks: 1 });
     expect(embedSource).toHaveBeenCalledWith("message", "message-1");
+  });
+
+  it("enqueues projection jobs with durable retry options", async () => {
+    const embeddingAdd = vi.fn().mockResolvedValue({ id: "embedding-job" });
+    const compactionAdd = vi.fn().mockResolvedValue({ id: "compaction-job" });
+    const embeddingQueue = {
+      add: embeddingAdd
+    } as unknown as KoedJobQueue<EmbeddingQueueJobData>;
+    const compactionQueue = {
+      add: compactionAdd
+    } as unknown as KoedJobQueue<CompactionQueueJobData>;
+    const retryOptions = {
+      attempts: 5,
+      backoff: { type: "exponential", delay: 10_000 },
+      removeOnComplete: 1000,
+      removeOnFail: true
+    };
+
+    await enqueueSourceEmbedding(
+      embeddingQueue,
+      "memory_event",
+      "event-1",
+      "embedding-v1"
+    );
+    await enqueueSourceEmbedding(
+      embeddingQueue,
+      "memory_node",
+      "node-1",
+      "embedding-v1"
+    );
+    await enqueueLcmCompaction(
+      compactionQueue,
+      { userId: "user-1" },
+      "personal",
+      "pending-events-v1"
+    );
+
+    expect(embeddingAdd).toHaveBeenCalledWith(
+      "embed-source",
+      { sourceType: "memory_event", sourceId: "event-1" },
+      {
+        ...retryOptions,
+        jobId: "embed-embedding-v1-memory_event-event-1"
+      }
+    );
+    expect(embeddingAdd).toHaveBeenCalledWith(
+      "embed-source",
+      { sourceType: "memory_node", sourceId: "node-1" },
+      {
+        ...retryOptions,
+        jobId: "embed-embedding-v1-memory_node-node-1"
+      }
+    );
+    expect(compactionAdd).toHaveBeenCalledWith(
+      "compact-scope",
+      { userId: "user-1", visibility: "personal" },
+      {
+        ...retryOptions,
+        jobId: "compact-user-1-personal-pending-events-v1"
+      }
+    );
   });
 });

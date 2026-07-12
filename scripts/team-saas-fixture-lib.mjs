@@ -559,6 +559,7 @@ export const seedFixture = async (client) => {
             raw_text,
             source_hash,
             idempotency_key,
+            canonical_item_key,
             projection_status,
             projection_version,
             projected_at,
@@ -570,7 +571,7 @@ export const seedFixture = async (client) => {
           values (
             $1, $2, 'personal', $3, 'codex', 'fixture-v1', 'synthetic',
             $4, $5, 'message', 'user_prompt', $6, $7, $8, $9,
-            'projected', 'fixture-v1', now(), $10,
+            $9, 'projected', 'fixture-v1', now(), $10,
             ${deletedColumns ? "now()" : "null"},
             $11,
             $12

@@ -11,6 +11,7 @@ const openApiPaths = openApiDocument.paths as Record<
   Record<
     string,
     {
+      requestBody?: unknown;
       responses?: unknown;
       security?: unknown;
       "x-koed-identity"?: string;
@@ -33,6 +34,78 @@ describe("route identity contract", () => {
         openApiPaths[contract.path]?.[contract.method.toLowerCase()]
       ).toBeDefined();
     }
+  });
+
+  it("inventories raw-conversation mutation identities and request schemas", () => {
+    expect(
+      implementedRouteIdentityContracts
+        .filter((contract) =>
+          contract.path.startsWith("/v1/memory/conversation-items")
+        )
+        .map(({ method, path, identity }) => ({ method, path, identity }))
+    ).toEqual([
+      {
+        method: "POST",
+        path: "/v1/memory/conversation-items",
+        identity: "api_token"
+      },
+      {
+        method: "POST",
+        path: "/v1/memory/conversation-items/release",
+        identity: "api_token"
+      },
+      {
+        method: "POST",
+        path: "/v1/memory/conversation-items/rebuild",
+        identity: "session"
+      },
+      {
+        method: "POST",
+        path: "/v1/memory/conversation-items/project",
+        identity: "api_token"
+      }
+    ]);
+    expect(
+      openApiPaths["/v1/memory/conversation-items/release"]?.post
+    ).toMatchObject({
+      security: [{ bearerApiToken: [] }],
+      "x-koed-identity": "api_token",
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["sessionId", "externalTurnId"],
+              properties: {
+                sessionId: { type: "string", format: "uuid" },
+                externalTurnId: { type: "string", maxLength: 512 }
+              }
+            }
+          }
+        }
+      }
+    });
+    expect(
+      openApiPaths["/v1/memory/conversation-items/rebuild"]?.post
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }],
+      "x-koed-identity": "session",
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["sessionId"],
+              properties: {
+                sessionId: { type: "string", format: "uuid" }
+              }
+            }
+          }
+        }
+      }
+    });
   });
 
   it("keeps local-edge route identities explicit and future-only credential classes unimplemented", () => {

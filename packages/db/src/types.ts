@@ -707,6 +707,7 @@ export interface CapturedSessionTitleCandidate {
 }
 
 export interface ConversationItemInput {
+  observationOnly?: boolean;
   visibility?: Visibility;
   sessionId?: string;
   turnId?: string;
@@ -724,6 +725,7 @@ export interface ConversationItemInput {
   sourceLineNumber?: number;
   sourceSequence?: number;
   eventTime?: string;
+  observedAt?: string;
   rawJson: unknown;
   rawText?: string;
   logicalSourceId?: string;
@@ -733,7 +735,17 @@ export interface ConversationItemInput {
   transportChunkEncoding?: string;
   sourceHash: string;
   idempotencyKey: string;
-  projectionStatus?: "pending" | "projected" | "error" | string;
+  canonicalItemKey?: string;
+  canonicalStableItemId?: string;
+  canonicalSourcePriority?: number;
+  observationKind?:
+    | "snapshot"
+    | "lifecycle_started"
+    | "lifecycle_completed"
+    | "control"
+    | "reconciliation";
+  observationComponent?: string;
+  projectionStatus?: "pending" | "held" | "projected" | "error" | "raw_only";
   projectionVersion?: string;
   projectionError?: string;
   metadata?: Record<string, unknown>;
@@ -741,6 +753,7 @@ export interface ConversationItemInput {
 
 export interface ConversationItemRecord {
   id: string;
+  canonicalItemKey: string;
   sessionId: string | null;
   turnId: string | null;
   sourceKind: string;
@@ -750,6 +763,7 @@ export interface ConversationItemRecord {
   externalThreadId: string | null;
   externalTurnId: string | null;
   externalItemId: string | null;
+  canonicalStableItemId: string | null;
   sourceRecordType: string;
   sourceEventType: string | null;
   sourceSequence: number | null;
@@ -875,7 +889,16 @@ export interface ConversationProjectionResult {
   memoryEventScopes: Array<{
     eventId: string;
     visibility: Visibility;
+    includeInEmbedding: boolean;
+    includeInLcm: boolean;
   }>;
+}
+
+export interface LcmDispatchReconciliationScope {
+  ownerUserId: string;
+  visibility: "personal";
+  pendingMemoryEventIds: string[];
+  dispatchKey: string;
 }
 
 interface ConversationProjectionInput {
@@ -898,6 +921,8 @@ export interface SemanticMemoryRebuildResult {
   memoryEventScopes: Array<{
     eventId: string;
     visibility: Visibility;
+    includeInEmbedding: boolean;
+    includeInLcm: boolean;
   }>;
 }
 
@@ -1181,9 +1206,21 @@ export interface MemorySourceRepository
     actor: ActorContext,
     input?: ConversationProjectionInput
   ): Promise<ConversationProjectionResult>;
+  resetConversationProjection(
+    actor: ActorContext,
+    input: { sessionId: string }
+  ): Promise<{
+    conversationItemIds: string[];
+    invalidatedMemoryEventIds: string[];
+    projectionPolicyRevision: number;
+  }>;
   listConversationProjectionActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
+  listPendingLcmDispatchScopes(input?: {
+    limit?: number;
+    ownerUserId?: string;
+  }): Promise<LcmDispatchReconciliationScope[]>;
   listSemanticMemoryRebuildActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
@@ -1335,4 +1372,16 @@ export interface MemorySourceRepository
     chunkCount?: number;
     sourceText?: string;
   }): Promise<{ id: string; inserted: boolean }>;
+  replaceSourceEmbeddings(input: {
+    source: EmbeddableSourceRecord;
+    model: string;
+    dimensions: number;
+    version: string;
+    chunks: Array<{
+      vector: number[];
+      chunkIndex: number;
+      chunkCount: number;
+      sourceText: string;
+    }>;
+  }): Promise<{ ids: string[]; inserted: boolean }>;
 }

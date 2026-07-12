@@ -16,10 +16,16 @@ implementation boundary for that transformation.
 - Connector: an integration boundary for a coding tool family, such as Codex.
   Future connectors can be added for other tools without changing Koed's
   semantic memory model.
-- Source adapter: connector-specific code that converts raw tool output into
-  canonical `conversation_items` rows. The adapter must set
-  `source_kind`, `source_adapter_version`, source identifiers, source record
-  type, raw JSON, and an idempotency key.
+- Source adapter: connector-specific code that maps provider output to a stable
+  logical identity and an immutable source observation.
+- Canonical conversation item: one `conversation_items` row for one logical
+  provider item. Downstream code consumes this row and never branches on the
+  source transport.
+- Source observation: one `conversation_item_observations` row containing the
+  exact app-server lifecycle event, transcript record, or control record that
+  established or augmented a canonical item. Observations retain independent
+  adapter, transport, payload, hash, source time, observation time, sequence,
+  lifecycle kind, and ingestion status.
 - Ingestion service: Koed API and repository code that accepts canonical raw
   records, validates ownership, and persists them idempotently.
 - Projection pipeline: the implementation path exposed through
@@ -27,14 +33,25 @@ implementation boundary for that transformation.
   `messages`, `tool_events`, `memory_events`, token usage rows, LCM nodes, and
   embeddings from raw source records.
 
-Raw adapters submit records with `projection_status=pending` when the raw
-record needs semantic projection. Koed marks raw rows as `projected` after the
+Attached observations are not downstream semantic units. Projection reads them
+only when all chunks are required to reconstruct one oversized canonical item;
+the reconstructed item still has one canonical identity and one downstream
+source link.
+
+Source adapters submit canonical candidates and immutable observations; the
+server owns `projection_status` and ignores client attempts to set canonical
+priority or Projection state. Canonical identity is based on
+provider thread, turn, item, and component identifiers; content hashes validate
+observations but never establish identity. Koed writes the canonical row and its
+observation in one transaction under an advisory identity lock. A replay of the
+same observation is idempotent, while reuse of an observation identity with
+different bytes fails visibly. Koed marks canonical rows as `projected` after the
 projection pipeline has handled that raw record, including cases where the
 correct projection is to preserve only the raw audit row and skip telemetry or
-lifecycle noise. Adapters may submit background workflow telemetry as
-`projection_status=raw_only` when another first-class table is already the
-projection target. Pending and errored raw rows can be run through the
-projection endpoint again for deterministic catch-up.
+lifecycle noise. Pending and errored raw rows can be run through the Projection
+endpoint again for deterministic catch-up. Managed-thread rows remain `held`
+until terminal verification and JSONL reconciliation complete; the worker never
+scans held rows.
 
 Projection uses the DB-backed `projection_policy_rules` table as the explicit
 positive allowlist for Codex transcript item types. The seeded defaults preserve
@@ -44,25 +61,84 @@ developer, context, lifecycle, token-usage, error, raw reasoning, and unknown
 items remain raw provenance only. Canonical transcript `function_call` and
 `function_call_output` rows are the tool items used for rendering and semantic
 memory; lower-level MCP and patch lifecycle event rows are retained only as raw
-provenance. The seeded defaults keep UI projection and embedding selection
-matched for current product behavior, but the policy fields are deliberately
+provenance. The server refines generic provider `message` records from their
+raw role before policy lookup, so developer/system records cannot inherit the
+generic message rule. A role-user response item without stable provider
+identity stays a raw-only source record; external JSONL uses the explicit
+`event_msg:user_message` as the projectable prompt. The seeded defaults keep UI
+projection and embedding selection matched for current product behavior, but
+the policy fields are deliberately
 independent so future rules can represent display-only or recall-only transcript
 rows without a schema change. The same policy row also controls whether a
 projected Memory Event may become an LCM source through `include_in_lcm`.
 Unlisted transcript item types default to raw provenance only until a policy row
-deliberately opts them in.
+deliberately opts them in. After a policy change, the authenticated session
+rebuild operation invalidates prior display, Memory Event, embedding, and LCM
+derivations and reprojects retained canonical items under the new policy.
 
 ## Current Codex Adapters
 
 Codex transcript hooks use `sourceAdapterVersion=codex-transcript-v1` and
-`sourceTransport=hook`. Each transcript line becomes one raw
-`conversation_items` row before selected records are projected into
-`memory_events`. Hooks do not write semantic `memory_events` directly; the raw
-projection endpoint is the only hook-backed path that derives chat memory. Hook
+`sourceTransport=hook` or `transcript`. Each exact transcript observation
+creates or augments its canonical item before selected records are projected
+into `memory_events`. Hooks do not write semantic `memory_events` directly; the
+raw Projection endpoint is the only hook-backed path that derives chat memory. Hook
 payloads are capture signals, not semantic content sources; transcript JSONL
 timestamps define source chronology. If an otherwise readable transcript row is
 missing a timestamp, catch-up holds it at the current checkpoint until a later
 timestamped row allows deterministic interpolation.
+
+The experimental Koed-managed conversation adapter uses
+`sourceAdapterVersion=codex-app-server-conversation-v1` and
+`sourceTransport=app_server`. A long-running, Koed-owned stdio app-server
+connection writes stable `item/started`, `item/completed`, and turn lifecycle
+observations promptly. `item/completed` is the preferred canonical payload;
+provider lifecycle timestamps remain distinct from Koed observation time.
+Incremental text and command-output deltas are deliberately transient and are
+not stored as semantic items or source observations because completed item
+payloads retain the durable result.
+
+Koed-managed prompts use the shared app-server `clientUserMessageId` / JSONL
+`client_id` as their exact item identity. Codex may also persist injected setup
+context as role-user response items without that id. Those records are captured
+as raw-only source records without semantic provider identity and cannot be
+mistaken for the User's prompt. The same rule applies to externally managed transcripts;
+their explicit `event_msg:user_message` remains the authoritative prompt row.
+Event-message duplicates that cannot be proven identical likewise remain
+observations rather than second canonical rows. Unique JSONL-only records retain
+canonical raw rows so Projection Policy can select them later. JSON-encoded tool
+arguments and standard Codex command results are normalized into structured
+tool metadata for Projection, while their exact strings remain in encrypted raw
+provenance.
+
+The persisted rollout remains the reconciliation and recovery source. Managed
+JSONL passes use `sourceTransport=transcript` and attach to the same canonical
+keys, add persisted chronology and transcript-only context, and recover a
+missed `turn/completed` from `task_complete`. A normal app-server completion and
+its JSONL completion share one canonical control identity. Reconciliation runs
+before the server atomically releases every held row in the terminal turn, so
+display, turn sealing, embedding, and LCM cannot race ahead of durable
+transcript catch-up. Projection also processes the completion control last
+within its turn, independent of timestamp precision or transport-specific
+sequence values. Resuming a managed session verifies the provider thread id
+and rollout path, revalidates the original Captured Session, and reuses the
+durable Codex home and atomic transcript checkpoint under `KOED_HOME`. A replay
+after a checkpoint-write failure is safe because canonical rows and source
+observations are idempotent.
+
+Oversized raw items are bounded to 64 transport chunks of 256 KiB each and a
+16 MiB logical-item ceiling. The server derives and verifies one chunk-group id
+from the logical source, source-item hash, transport, chunk count, and encoding.
+Projection reconstructs only a complete exact group and fails closed on missing,
+duplicate, oversized, or cross-group chunks.
+
+The installed Codex binary must generate a compatible app-server JSON Schema,
+including the experimental declarations consumed by the adapter, before a
+managed connection starts. Koed checks the request methods,
+notification methods, lifecycle timestamp fields, and ThreadItem variants used
+by the adapter. Missing protocol capabilities fail before app-server ingestion
+begins. The app-server remains local stdio; it is not exposed to Electron,
+browsers, or Team clients.
 
 Codex app-server workers use `sourceAdapterVersion=codex-app-server-v1` and
 `sourceTransport=app_server`. Koed records app-server thread/turn calls and
@@ -75,9 +151,14 @@ Question-answer and LCM app-server events are background workflow telemetry, not
 user chat threads. Their raw events and token usage are retained, but their
 incremental deltas and completed answers must not be projected into the Chats
 graph as standalone conversation memory events. The Questions table and LCM
-node tables are the projected stores for those workflows, so their app-server
-telemetry is terminal `raw_only` data rather than raw rows that should remain in
-the projection backlog.
+node tables are the projected stores for those workflows. Explicit
+`workflow:*` Projection Policy rows keep their telemetry outside conversation
+memory without relying on client-supplied Projection state.
+
+Capture Policy is enforced again at canonical raw persistence, including an
+active Capture Pause after a Captured Session was created. This is the common
+defence for hook, managed, and internal-workflow transports; API metadata cannot
+bypass it.
 
 ## Derived Memory Events
 
@@ -110,21 +191,24 @@ shape: `summary` / `summary_text` / `AgentReasoning` records are displayable
 summaries, while `content` / `raw_content` / `AgentReasoningRawContent` /
 reasoning text deltas are raw reasoning and stay raw-only.
 
-Each projected memory event that came from raw source records should link back
-through `memory_event_sources`. A turn-bundled semantic event therefore links to
-every raw `conversation_items` row that contributed text to that bundle. The raw
-source rows remain the audit trail for exact Codex payloads and future
-re-projection.
+Each projected memory event that came from canonical source records should link
+back through `memory_event_sources`. A turn-bundled semantic event therefore
+links to every canonical `conversation_items` row that contributed text to that
+bundle. Exact provider payloads and additive provenance remain on the attached
+observation rows. Apart from reconstructing one canonical transport-chunked
+item, observations never feed Projection and are never independent embedding,
+LCM, recall, graph-export, or sync sources.
 
 Agent-turn `memory_events` are sealed only on a semantic flush condition:
-turn-complete hook control, next user prompt/interruption,
-session/turn/thread/workspace boundary change, a token-limit rollover, or the
-stale catch-up timeout. Detached transcript catch-up may continue creating
-idempotent `messages` and `tool_events` while leaving an incomplete agent bundle
-pending until one of those seal conditions arrives. The stale catch-up timeout is
-based on the newest source item in the pending bundle, so an active long turn
-does not seal merely because its first item is old. If adding the next complete
-source item would cross
+turn-complete hook or transcript-verified managed control, next user
+prompt/interruption, a token-limit rollover, or the stale catch-up timeout.
+Session, thread, Project, and batch boundaries isolate pending queues but do not
+themselves seal an incomplete turn. Detached transcript catch-up may continue
+creating idempotent `messages` and `tool_events` while leaving an incomplete
+agent bundle pending until one of those seal conditions arrives. The stale
+catch-up timeout is based on the newest source item in the pending bundle, so an
+active long turn does not seal merely because its first item is old. If adding
+the next complete source item would cross
 `MEMORY_EVENT_MAX_TOKENS`, projection seals the current bundle and rolls the
 overflowing item into the next `agent_turn` bundle. `MEMORY_EVENT_MAX_TOKENS` is
 a soft bundle target: it is not a reason to split a single source item. If one
@@ -140,6 +224,16 @@ pressure. `MEMORY_RAW_PROJECTION_INTERVAL_MS`,
 bound that background work. Local app-server answer and LCM workers also ask
 the API to project the exact raw rows they just persisted before they write the
 derived answer or summary.
+
+The same worker pass reconciles downstream queue admission from PostgreSQL. It
+lists every eligible source still missing an embedding and every personal LCM
+scope with eligible Memory Events not yet covered by a leaf, then submits
+deterministic jobs. PostgreSQL remains the retry source after Redis/BullMQ or the
+local queue rejects admission, exhausts retries, or restarts. A complete
+embedding response replaces all chunks for that source atomically; a partial or
+failed response cannot hide the source from reconciliation. LCM dispatch is
+bounded by `MEMORY_LCM_COMPACTION_MAX_EVENTS` (default `1000`, maximum `10000`),
+and invalidating an old leaf creates a new dispatch generation.
 
 When a display item is deleted, Koed excludes the underlying raw source item
 from semantic memory immediately and invalidates affected Memory Events and
@@ -168,9 +262,11 @@ boundaries intact at the 2048-token bundle target. It only splits inside a singl
 raw source item when that item alone exceeds the embedding hard cap, then links
 every forced fragment to the same raw source item or items with split metadata.
 
-LCM leaves are packed from the same canonical semantic `memory_events` text
-used for embeddings. LCM token thresholds count only `memory_event.content`,
-not raw transcript JSON or provenance payloads. The packer must not overlap or
+Embeddings and LCM both derive from eligible canonical `memory_events`, but
+their representations are intentionally independent. Embeddings may use
+`metadata.embeddingContent`; LCM token thresholds and summaries use
+`memory_event.content`. Neither path consumes raw transcript JSON or provenance
+payloads. The packer must not overlap or
 re-split semantic events: it may group several small semantic events together,
 but it flushes before adding another event that would cross the leaf token
 threshold. If one semantic event is slightly over the threshold because of

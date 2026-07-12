@@ -1,13 +1,22 @@
-import { scheduleCompaction, type Visibility } from "@koed/core";
-import type { MemorySourceRepository } from "@koed/db";
+import type { Visibility } from "@koed/core";
+import type { EmbeddableSourceType, MemorySourceRepository } from "@koed/db";
+import { lcmCompactQueueName, memoryEmbedQueueName } from "@koed/shared";
 import type { Logger } from "pino";
-import type { EmbeddingWorkflow } from "./embedding-workflow.js";
 
 export interface RawProjectionServiceConfig {
   actorLimit: number;
   batchLimit: number;
-  embeddingWorkflow: EmbeddingWorkflow;
-  enqueueLcmNodeEmbeddings(nodeIds: string[]): Promise<unknown[]>;
+  enqueueLcmCompaction(
+    requesterContext: { userId: string },
+    visibility: Visibility,
+    dispatchKey: string
+  ): Promise<unknown>;
+  embeddingDispatchKey: string;
+  enqueueSourceEmbedding(
+    sourceType: EmbeddableSourceType,
+    sourceId: string,
+    dispatchKey: string
+  ): Promise<unknown>;
   intervalMs: number;
   logger: Logger;
   repository: MemorySourceRepository;
@@ -24,6 +33,82 @@ export const createRawProjectionService = (
 ): RawProjectionService => {
   let running = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+
+  const reconcileLcmCompactionJobs = async () => {
+    const scopes = await config.repository.listPendingLcmDispatchScopes({
+      limit: config.actorLimit
+    });
+    const results = await Promise.allSettled(
+      scopes.map((scope) =>
+        config.enqueueLcmCompaction(
+          { userId: scope.ownerUserId },
+          scope.visibility,
+          scope.dispatchKey
+        )
+      )
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        continue;
+      }
+      const scope = scopes[index];
+      config.logger.warn(
+        {
+          event: {
+            name: "worker.lcm_reconciliation.job_enqueue.failed",
+            category: "queue"
+          },
+          queue: { name: lcmCompactQueueName },
+          job: { name: "compact-scope" },
+          actor: { user_id: scope?.ownerUserId },
+          resource: {
+            type: "compaction_scope",
+            visibility: scope?.visibility,
+            pendingMemoryEventIds: scope?.pendingMemoryEventIds
+          },
+          err: result.reason
+        },
+        "could not enqueue pending LCM compaction scope"
+      );
+    }
+  };
+
+  const reconcileEmbeddingJobs = async () => {
+    const sources = await config.repository.listSourcesNeedingEmbeddings(
+      config.batchLimit
+    );
+    const results = await Promise.allSettled(
+      sources.map((source) =>
+        config.enqueueSourceEmbedding(
+          source.sourceType,
+          source.sourceId,
+          config.embeddingDispatchKey
+        )
+      )
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        continue;
+      }
+      const source = sources[index];
+      config.logger.warn(
+        {
+          event: {
+            name: "worker.embedding_reconciliation.job_enqueue.failed",
+            category: "queue"
+          },
+          queue: { name: memoryEmbedQueueName },
+          job: { name: "embed-source" },
+          resource: {
+            type: source?.sourceType,
+            id: source?.sourceId
+          },
+          err: result.reason
+        },
+        "could not enqueue pending embedding source"
+      );
+    }
+  };
 
   const run = async () => {
     if (running) {
@@ -45,27 +130,6 @@ export const createRawProjectionService = (
             limit: config.batchLimit
           }
         );
-        await Promise.all(
-          result.memoryEventIds.map((eventId) =>
-            config.embeddingWorkflow.embedSource("memory_event", eventId)
-          )
-        );
-        const scopes = new Map<string, { visibility: Visibility }>();
-        for (const scope of result.memoryEventScopes) {
-          scopes.set(scope.visibility, { visibility: scope.visibility });
-        }
-        for (const scope of scopes.values()) {
-          const compaction = await scheduleCompaction({
-            repository: config.repository,
-            requesterContext: actor,
-            visibility: scope.visibility
-          });
-          const nodeIds = [
-            ...compaction.leafNodeIds,
-            ...(compaction.rollupNodeId ? [compaction.rollupNodeId] : [])
-          ];
-          await config.enqueueLcmNodeEmbeddings(nodeIds);
-        }
         scanned += result.rawItemsScanned;
         projected += result.rawItemsProjected;
         waitingForAgentSeal += result.rawItemsWaitingForAgentSeal;
@@ -86,30 +150,11 @@ export const createRawProjectionService = (
             limit: config.batchLimit
           }
         );
-        await Promise.all(
-          result.memoryEventIds.map((eventId) =>
-            config.embeddingWorkflow.embedSource("memory_event", eventId)
-          )
-        );
-        const scopes = new Map<string, { visibility: Visibility }>();
-        for (const scope of result.memoryEventScopes) {
-          scopes.set(scope.visibility, { visibility: scope.visibility });
-        }
-        for (const scope of scopes.values()) {
-          const compaction = await scheduleCompaction({
-            repository: config.repository,
-            requesterContext: actor,
-            visibility: scope.visibility
-          });
-          const nodeIds = [
-            ...compaction.leafNodeIds,
-            ...(compaction.rollupNodeId ? [compaction.rollupNodeId] : [])
-          ];
-          await config.enqueueLcmNodeEmbeddings(nodeIds);
-        }
         rebuildJobs += result.jobsCompleted;
         rebuiltEvents += result.memoryEventsCreated;
       }
+      await reconcileEmbeddingJobs();
+      await reconcileLcmCompactionJobs();
       if (scanned > 0) {
         config.logger.info(
           {

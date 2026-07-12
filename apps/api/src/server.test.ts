@@ -17,6 +17,7 @@ import type {
   ApiTokenRecord,
   AcceptedTeamInviteRecord,
   CapturedSessionRecord,
+  ConversationItemInput,
   CreateMemoryNodeInput,
   CreateUserInput,
   DeviceCredentialRecord,
@@ -41,8 +42,11 @@ import type {
 } from "@koed/db";
 import { createDbPool } from "@koed/db";
 import {
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   createLocalTestKeyEnvelopeEncryptionProvider,
   decryptEncryptedJsonPackage,
+  rawConversationTransportChunkGroupId,
   storeLocalEdgeClientCredential,
   type EnvelopeEncryptionProvider,
   type EncryptedJsonPackage
@@ -58,6 +62,25 @@ import type { WorkosAuthKitClient } from "./auth/workos.js";
 const hashSecretForTest = (secret: string) =>
   createHash("sha256").update(secret).digest("hex");
 
+const codexCanonicalConversationItemKeyForTest = (input: {
+  externalThreadId: string;
+  externalTurnId?: string;
+  stableItemId: string;
+  component: string;
+}) =>
+  `conversation-item:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 3,
+        provider: "codex",
+        externalThreadId: input.externalThreadId,
+        externalTurnId: input.externalTurnId ?? null,
+        stableItemId: input.stableItemId,
+        component: input.component
+      })
+    )
+    .digest("hex")}`;
+
 afterEach(() => {
   for (const name of [
     "KOED_ALLOW_PUBLIC_REGISTRATION",
@@ -69,6 +92,8 @@ afterEach(() => {
     "MEMORY_WRITE_RATE_LIMIT_MAX",
     "MEMORY_RECALL_RATE_LIMIT_WINDOW_MS",
     "MEMORY_RECALL_RATE_LIMIT_MAX",
+    "MEMORY_PROJECTION_REBUILD_RATE_LIMIT_WINDOW_MS",
+    "MEMORY_PROJECTION_REBUILD_RATE_LIMIT_MAX",
     "RATE_LIMIT_STORE",
     "RATE_LIMIT_REDIS_URL",
     "REDIS_URL",
@@ -244,6 +269,69 @@ type TokenResponse = {
     scopes: string[];
   };
 };
+
+const registerApiClientForTest = async (
+  app: Awaited<ReturnType<typeof buildServer>>,
+  email: string
+): Promise<{ authorization: string; cookie: string; token: string }> => {
+  const registered = await app.inject({
+    method: "POST",
+    url: "/auth/register",
+    payload: { email, password: "password123" }
+  });
+  expect(registered.statusCode).toBe(200);
+  const cookie = cookieHeader(registered);
+  const createdToken = await app.inject({
+    method: "POST",
+    url: "/api-tokens",
+    headers: { cookie },
+    payload: { name: "Raw Conversation Test Client" }
+  });
+  expect(createdToken.statusCode).toBe(200);
+  const token = jsonBody<TokenResponse>(createdToken).token;
+  return { authorization: `Bearer ${token}`, cookie, token };
+};
+
+const createCapturedSessionForTest = async (
+  app: Awaited<ReturnType<typeof buildServer>>,
+  authorization: string,
+  input: {
+    externalSessionId?: string;
+    captureMethod?: "hook" | "mcp" | "web" | "api";
+    metadata?: Record<string, unknown>;
+  } = {}
+): Promise<CapturedSessionRecord> => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/sessions",
+    headers: { authorization },
+    payload: {
+      externalSessionId: input.externalSessionId ?? `thread-${randomUUID()}`,
+      sourceRuntime: "codex",
+      captureMethod: input.captureMethod ?? "api",
+      metadata: input.metadata ?? {}
+    }
+  });
+  expect(response.statusCode).toBe(200);
+  return jsonBody<{ session: CapturedSessionRecord }>(response).session;
+};
+
+const rawConversationItemPayload = (
+  sessionId: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> => ({
+  sessionId,
+  sourceKind: "codex",
+  sourceAdapterVersion: "codex-app-server-v1",
+  sourceTransport: "app_server",
+  sourceRecordType: "app_server_notification",
+  sourceEventType: "thread/started",
+  rawJson: { method: "thread/started" },
+  sourceHash: `raw-source-${randomUUID()}`,
+  idempotencyKey: `raw-idempotency-${randomUUID()}`,
+  metadata: {},
+  ...overrides
+});
 
 type AccessResponse = {
   ok?: boolean;
@@ -2468,23 +2556,41 @@ const createFakeRepository = () => {
       return nextSession;
     },
     async createConversationItems(_actor, input) {
-      return input.items.map((item, index) => ({
-        id: randomUUID(),
-        sessionId: item.sessionId ?? null,
-        turnId: item.turnId ?? null,
-        sourceKind: item.sourceKind,
-        sourceAdapterVersion: item.sourceAdapterVersion,
-        sourceTransport: item.sourceTransport,
-        externalSessionId: item.externalSessionId ?? null,
-        externalThreadId: item.externalThreadId ?? null,
-        externalTurnId: item.externalTurnId ?? null,
-        externalItemId: item.externalItemId ?? null,
-        sourceRecordType: item.sourceRecordType,
-        sourceEventType: item.sourceEventType ?? null,
-        sourceSequence: item.sourceSequence ?? index,
-        idempotencyKey: item.idempotencyKey,
-        createdAt: new Date().toISOString()
-      }));
+      return input.items.flatMap((item, index) =>
+        item.observationOnly
+          ? []
+          : [
+              {
+                id: randomUUID(),
+                canonicalItemKey: item.canonicalItemKey ?? item.idempotencyKey,
+                sessionId: item.sessionId ?? null,
+                turnId: item.turnId ?? null,
+                sourceKind: item.sourceKind,
+                sourceAdapterVersion: item.sourceAdapterVersion,
+                sourceTransport: item.sourceTransport,
+                externalSessionId: item.externalSessionId ?? null,
+                externalThreadId: item.externalThreadId ?? null,
+                externalTurnId: item.externalTurnId ?? null,
+                externalItemId: item.externalItemId ?? null,
+                canonicalStableItemId: item.canonicalStableItemId ?? null,
+                sourceRecordType: item.sourceRecordType,
+                sourceEventType: item.sourceEventType ?? null,
+                sourceSequence: item.sourceSequence ?? index,
+                idempotencyKey: item.idempotencyKey,
+                createdAt: new Date().toISOString()
+              }
+            ]
+      );
+    },
+    async releaseConversationProjectionHold() {
+      return { conversationItemIds: [] };
+    },
+    async resetConversationProjection() {
+      return {
+        conversationItemIds: [],
+        invalidatedMemoryEventIds: [],
+        projectionPolicyRevision: 1
+      };
     },
     async recordWorkflowTokenUsage(_actor, input) {
       return {
@@ -8226,6 +8332,11 @@ describe("account and access flows", () => {
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
     const headers = { authorization: `Bearer ${token}` };
+    const capturedSession = await createCapturedSessionForTest(
+      app,
+      headers.authorization,
+      { externalSessionId: "thread-api-test" }
+    );
 
     const personal = await app.inject({
       method: "POST",
@@ -8256,6 +8367,7 @@ describe("account and access flows", () => {
       payload: {
         items: [
           {
+            sessionId: capturedSession.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-app-server-v1",
             sourceTransport: "app_server",
@@ -8295,6 +8407,15 @@ describe("account and access flows", () => {
         outputTokens: 2,
         totalTokens: 6,
         usageScope: "last"
+      }
+    });
+    const release = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/release",
+      headers,
+      payload: {
+        sessionId: capturedSession.id,
+        externalTurnId: "turn-api-test"
       }
     });
     const tokenUsageRollups = await app.inject({
@@ -8341,6 +8462,7 @@ describe("account and access flows", () => {
       jsonBody<{ items: unknown[] }>(rawConversationItems).items
     ).toHaveLength(1);
     expect(tokenUsage.statusCode).toBe(200);
+    expect(release.statusCode).toBe(200);
     expect(tokenUsageRollups.statusCode).toBe(200);
     expect(
       jsonBody<{ rollups: Array<{ totalTokens: number }> }>(tokenUsageRollups)
@@ -8384,6 +8506,11 @@ describe("account and access flows", () => {
       payload: { name: "Client Integration" }
     });
     const token = jsonBody<TokenResponse>(createdToken).token;
+    const capturedSession = await createCapturedSessionForTest(
+      app,
+      `Bearer ${token}`,
+      { externalSessionId: "nul-api-thread" }
+    );
 
     const response = await app.inject({
       method: "POST",
@@ -8392,6 +8519,7 @@ describe("account and access flows", () => {
       payload: {
         items: [
           {
+            sessionId: capturedSession.id,
             sourceKind: "codex",
             sourceAdapterVersion: "codex-app-server-v1",
             sourceTransport: "app_server",
@@ -8408,9 +8536,11 @@ describe("account and access flows", () => {
               }
             },
             rawText: `Raw text 你好 🚀\nline a${"\u0000"}b`,
-            transportChunkText: `Transport text a${"\uDC00"}b`,
             sourceHash: "nul-api-source-hash",
             idempotencyKey: "nul-api-idempotency-key",
+            canonicalSourcePriority: 999999,
+            projectionStatus: "projected",
+            projectionVersion: "forged-client-version",
             metadata: { label: `metadata a${"\u0000"}b`, valid: "Cafe\u0301" }
           }
         ]
@@ -8423,14 +8553,12 @@ describe("account and access flows", () => {
       forwardedInputs[0]?.items as Array<{
         rawJson: { params: { item: { text: string } } };
         rawText: string;
-        transportChunkText: string;
         sourcePath: string;
         metadata: Record<string, unknown>;
       }>
     )?.[0];
     expect(forwardedItem?.rawJson.params.item.text).toBe("Raw API text a�b�c");
     expect(forwardedItem?.rawText).toBe("Raw text 你好 🚀\nline a�b");
-    expect(forwardedItem?.transportChunkText).toBe("Transport text a�b");
     expect(forwardedItem?.sourcePath).toBe("/tmp/a�b.jsonl");
     expect(forwardedItem?.metadata).toMatchObject({
       valid: "Cafe\u0301",
@@ -8441,11 +8569,907 @@ describe("account and access flows", () => {
         },
         malformedUtf16: {
           replacement: "U+FFFD",
-          replacementCount: 2
+          replacementCount: 1
         }
       }
     });
     expect(JSON.stringify(forwardedItem)).not.toContain("\\u0000");
+    expect(forwardedItem).not.toHaveProperty("canonicalSourcePriority");
+    expect(forwardedItem).not.toHaveProperty("projectionStatus");
+    expect(forwardedItem).not.toHaveProperty("projectionVersion");
+  });
+
+  it("rejects raw JSON and metadata that exceed byte, depth, or entry limits", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    let repositoryWriteCalls = 0;
+    repository.createConversationItems = async (actor, input) => {
+      repositoryWriteCalls += 1;
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "raw-shape-limits@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const nestedValue = (levels: number): unknown => {
+      let value: unknown = "leaf";
+      for (let index = 0; index < levels; index += 1) {
+        value = { child: value };
+      }
+      return value;
+    };
+    const oversizedMetadata = Object.fromEntries(
+      Array.from({ length: 4_097 }, (_, index) => [`field-${index}`, null])
+    );
+    const missingRawJson = rawConversationItemPayload(session.id) as Record<
+      string,
+      unknown
+    >;
+    delete missingRawJson.rawJson;
+    const invalidItems = [
+      missingRawJson,
+      rawConversationItemPayload(session.id, {
+        rawJson: { value: "é".repeat(1_000_001) }
+      }),
+      rawConversationItemPayload(session.id, {
+        metadata: { value: "é".repeat(131_073) }
+      }),
+      rawConversationItemPayload(session.id, { rawJson: nestedValue(64) }),
+      rawConversationItemPayload(session.id, { metadata: nestedValue(32) }),
+      rawConversationItemPayload(session.id, {
+        rawJson: Array.from({ length: 50_001 }, () => null)
+      }),
+      rawConversationItemPayload(session.id, { metadata: oversizedMetadata })
+    ];
+    const responses = [];
+    for (const item of invalidItems) {
+      responses.push(
+        await app.inject({
+          method: "POST",
+          url: "/v1/memory/conversation-items",
+          headers: { authorization: client.authorization },
+          payload: { items: [item] }
+        })
+      );
+    }
+    await app.close();
+
+    for (const response of responses) {
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+      expect(response.statusCode).toBeLessThan(500);
+    }
+    expect(repositoryWriteCalls).toBe(0);
+  });
+
+  it("accepts exact batch and transport chunk maxima and rejects overflow", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    let repositoryWriteCalls = 0;
+    repository.createConversationItems = async (actor, input) => {
+      repositoryWriteCalls += 1;
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "raw-batch-limits@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const batch = Array.from({ length: 1_000 }, (_, index) =>
+      rawConversationItemPayload(session.id, {
+        sourceSequence: index,
+        rawJson: null,
+        sourceHash: `batch-source-${index}`,
+        idempotencyKey: `batch-idempotency-${index}`
+      })
+    );
+    const acceptedBatch = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: { items: batch }
+    });
+    const chunkLogicalSourceId = "codex://chunk/max";
+    const chunkSourceItemHash = "chunk-max-source-item";
+    const chunkEncoding = "conversation-item-json-v2";
+    const chunkGroupId = rawConversationTransportChunkGroupId({
+      sourceKind: "codex",
+      sourceAdapterVersion: "codex-app-server-v1",
+      sourceTransport: "app_server",
+      logicalSourceId: chunkLogicalSourceId,
+      sourceItemHash: chunkSourceItemHash,
+      transportChunkCount: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
+      transportChunkEncoding: chunkEncoding
+    });
+    const acceptedChunk = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            logicalSourceId: chunkLogicalSourceId,
+            transportChunkIndex: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT - 1,
+            transportChunkCount: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
+            transportChunkText: "x".repeat(
+              RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES
+            ),
+            transportChunkEncoding: chunkEncoding,
+            rawJson: {
+              transportChunk: true,
+              sourceItemHash: chunkSourceItemHash,
+              transportChunkGroupId: chunkGroupId
+            },
+            metadata: {
+              sourceItemHash: chunkSourceItemHash,
+              transportChunkGroupId: chunkGroupId,
+              sourceChunkIndex: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT - 1,
+              sourceChunkCount: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT
+            }
+          })
+        ]
+      }
+    });
+    const rejectedBatch = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          ...batch,
+          rawConversationItemPayload(session.id, {
+            sourceSequence: 1_000,
+            sourceHash: "batch-source-1000",
+            idempotencyKey: "batch-idempotency-1000"
+          })
+        ]
+      }
+    });
+    const rejectedChunkIndex = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            transportChunkIndex: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
+            transportChunkCount: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT
+          })
+        ]
+      }
+    });
+    const rejectedChunkCount = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            transportChunkIndex: 0,
+            transportChunkCount: RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT + 1
+          })
+        ]
+      }
+    });
+    const rejectedChunkText = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            transportChunkText: "x".repeat(
+              RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES + 1
+            )
+          })
+        ]
+      }
+    });
+    await app.close();
+
+    expect(acceptedBatch.statusCode).toBe(200);
+    expect(
+      jsonBody<{ acceptedCount: number }>(acceptedBatch).acceptedCount
+    ).toBe(1_000);
+    expect(acceptedChunk.statusCode).toBe(200);
+    expect(
+      [
+        rejectedBatch,
+        rejectedChunkIndex,
+        rejectedChunkCount,
+        rejectedChunkText
+      ].map((response) => response.statusCode)
+    ).toEqual([400, 400, 400, 400]);
+    expect(repositoryWriteCalls).toBe(2);
+  });
+
+  it("rejects incomplete and inconsistent raw transport chunk tuples", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    let repositoryWriteCalls = 0;
+    repository.createConversationItems = async (actor, input) => {
+      repositoryWriteCalls += 1;
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "raw-chunk-tuples@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const invalidChunks = [
+      { transportChunkIndex: 0 },
+      {
+        transportChunkIndex: 0,
+        transportChunkCount: 1,
+        transportChunkText: "chunk without encoding"
+      },
+      { transportChunkEncoding: "conversation-item-json-v2" },
+      {
+        transportChunkIndex: 1,
+        transportChunkCount: 1,
+        transportChunkText: "out of range",
+        transportChunkEncoding: "conversation-item-json-v2"
+      },
+      {
+        transportChunkIndex: 2,
+        transportChunkCount: 2,
+        transportChunkText: "also out of range",
+        transportChunkEncoding: "conversation-item-json-v2"
+      }
+    ];
+    const responses = [];
+    for (const chunk of invalidChunks) {
+      responses.push(
+        await app.inject({
+          method: "POST",
+          url: "/v1/memory/conversation-items",
+          headers: { authorization: client.authorization },
+          payload: {
+            items: [rawConversationItemPayload(session.id, chunk)]
+          }
+        })
+      );
+    }
+    await app.close();
+
+    expect(responses.map((response) => response.statusCode)).toEqual(
+      responses.map(() => 400)
+    );
+    expect(repositoryWriteCalls).toBe(0);
+  });
+
+  it("rejects content-like provider identifiers while accepting Codex IDs", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    const forwardedItems: ConversationItemInput[] = [];
+    repository.createConversationItems = async (actor, input) => {
+      forwardedItems.push(...input.items);
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "raw-provider-identifiers@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const threadId = "019cda8a-7b0d-7d70-b634-5c93dd43286a";
+    const validIdentifiers = {
+      externalSessionId: threadId,
+      externalThreadId: threadId,
+      externalTurnId: "turn_019cda8a-7b0d-7d70-b634-5c93dd43286b",
+      externalItemId: "item_019cda8a-7b0d-7d70-b634-5c93dd43286c",
+      parentExternalItemId: "call_4J6mVQp/A@9:result",
+      logicalSourceId: `codex://thread/${threadId}/turn/1`,
+      canonicalStableItemId:
+        "koed-user-message:019cda8a-7b0d-7d70-b634-5c93dd43286d"
+    };
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [rawConversationItemPayload(session.id, validIdentifiers)]
+      }
+    });
+    const invalidIdentifiers = [
+      ["externalSessionId", " thread-id"],
+      ["externalThreadId", "thread id"],
+      ["externalTurnId", `turn${"\u0000"}id`],
+      ["externalItemId", "assistant response content"],
+      ["parentExternalItemId", '{"role":"assistant"}'],
+      ["logicalSourceId", "<tool_call>memory</tool_call>"],
+      ["canonicalStableItemId", "message\tcontent"]
+    ] as const;
+    const rejected = [];
+    for (const [field, value] of invalidIdentifiers) {
+      rejected.push(
+        await app.inject({
+          method: "POST",
+          url: "/v1/memory/conversation-items",
+          headers: { authorization: client.authorization },
+          payload: {
+            items: [rawConversationItemPayload(session.id, { [field]: value })]
+          }
+        })
+      );
+    }
+    await app.close();
+
+    expect(accepted.statusCode).toBe(200);
+    expect(rejected.map((response) => response.statusCode)).toEqual(
+      rejected.map(() => 400)
+    );
+    expect(forwardedItems).toEqual([expect.objectContaining(validIdentifiers)]);
+  });
+
+  it("closes managed-profile plaintext classification side channels", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "koed_managed_cloud";
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    const forwardedItems: ConversationItemInput[] = [];
+    repository.createConversationItems = async (actor, input) => {
+      forwardedItems.push(...input.items);
+      return createConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "managed-raw-classification@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: client.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            sourceRecordType: "app_server_notification",
+            sourceEventType: "item/completed",
+            sourceHash: "sha256:0123456789abcdef",
+            idempotencyKey: "codex-observation:0123456789abcdef",
+            metadata: {
+              workspaceId: "/home/user/My Koed Project",
+              transcriptType: "agent_message",
+              threadKind: "conversation",
+              appServerItemType: "agentMessage",
+              sourceEventTimeAccuracy: "observation_only",
+              canonicalIdentityBasis: "provider_ids",
+              managedConversation: true,
+              semanticControl: "turn_completed",
+              projectionPolicyKey: "managed_context_user",
+              projectionActor: "system"
+            }
+          })
+        ]
+      }
+    });
+    const unsafeOverrides = [
+      { sourceRecordType: "app server notification includes a prompt" },
+      { sourceEventType: "item/completed\nraw assistant content" },
+      { sourceHash: "hash containing plaintext content" },
+      { idempotencyKey: "observation key containing plaintext content" },
+      { metadata: { transcriptType: "agent message with raw content" } },
+      {
+        metadata: {
+          toolCall: {
+            kind: "call",
+            type: "function_call",
+            name: { plaintext: "client-controlled content" },
+            id: "call_123"
+          }
+        }
+      }
+    ];
+    const rejected = [];
+    for (const overrides of unsafeOverrides) {
+      rejected.push(
+        await app.inject({
+          method: "POST",
+          url: "/v1/memory/conversation-items",
+          headers: { authorization: client.authorization },
+          payload: {
+            items: [rawConversationItemPayload(session.id, overrides)]
+          }
+        })
+      );
+    }
+    await app.close();
+
+    expect(accepted.statusCode).toBe(200);
+    expect(rejected.map((response) => response.statusCode)).toEqual(
+      rejected.map(() => 400)
+    );
+    expect(forwardedItems).toHaveLength(1);
+    expect(forwardedItems[0]?.metadata).toMatchObject({
+      workspaceId: "/home/user/My Koed Project",
+      transcriptType: "agent_message",
+      threadKind: "conversation",
+      appServerItemType: "agentMessage",
+      sourceEventTimeAccuracy: "observation_only",
+      canonicalIdentityBasis: "provider_ids"
+    });
+    for (const key of [
+      "managedConversation",
+      "semanticControl",
+      "projectionPolicyKey",
+      "projectionActor"
+    ]) {
+      expect(forwardedItems[0]?.metadata).not.toHaveProperty(key);
+    }
+  });
+
+  it("maps missing, wrong-owner, and mismatched Captured Sessions to 4xx without raw writes", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    let repositoryValidationCalls = 0;
+    let createdConversationItems = 0;
+    repository.createConversationItems = async (actor, input) => {
+      repositoryValidationCalls += 1;
+      for (const item of input.items) {
+        const session = item.sessionId
+          ? await repository.getCapturedSession(actor, item.sessionId)
+          : null;
+        if (!session) {
+          throw Object.assign(new Error("Session not found or not visible"), {
+            statusCode: 404,
+            code: "conversation_session_not_found"
+          });
+        }
+        const suppliedThreadIds = [
+          item.externalSessionId,
+          item.externalThreadId
+        ].filter((value): value is string => Boolean(value));
+        if (
+          session.externalSessionId &&
+          suppliedThreadIds.some(
+            (threadId) => threadId !== session.externalSessionId
+          )
+        ) {
+          throw Object.assign(
+            new Error(
+              "Conversation source thread does not match its Captured Session"
+            ),
+            {
+              statusCode: 409,
+              code: "conversation_session_thread_mismatch"
+            }
+          );
+        }
+      }
+      const created = await createConversationItems(actor, input);
+      createdConversationItems += created.length;
+      return created;
+    };
+    const app = await buildServer({ repository });
+    const owner = await registerApiClientForTest(
+      app,
+      "raw-session-owner@example.com"
+    );
+    const otherUser = await registerApiClientForTest(
+      app,
+      "raw-session-other@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      owner.authorization,
+      { externalSessionId: "owner-thread-1" }
+    );
+    const missingSession = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: owner.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            sessionId: undefined,
+            externalSessionId: "owner-thread-1",
+            externalThreadId: "owner-thread-1"
+          })
+        ]
+      }
+    });
+    const wrongOwner = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: otherUser.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            externalSessionId: "owner-thread-1",
+            externalThreadId: "owner-thread-1"
+          })
+        ]
+      }
+    });
+    const mismatchedThread = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items",
+      headers: { authorization: owner.authorization },
+      payload: {
+        items: [
+          rawConversationItemPayload(session.id, {
+            externalSessionId: "different-thread",
+            externalThreadId: "different-thread"
+          })
+        ]
+      }
+    });
+    await app.close();
+
+    expect(
+      [missingSession, wrongOwner, mismatchedThread].map(
+        (response) => response.statusCode
+      )
+    ).toEqual([400, 404, 409]);
+    expect(repositoryValidationCalls).toBe(2);
+    expect(createdConversationItems).toBe(0);
+  });
+
+  it("requires a browser session and rate-limits Projection rebuilds", async () => {
+    process.env.MEMORY_PROJECTION_REBUILD_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.MEMORY_PROJECTION_REBUILD_RATE_LIMIT_MAX = "1";
+    const repository = createFakeRepository();
+    let resetCalls = 0;
+    repository.resetConversationProjection = async () => {
+      resetCalls += 1;
+      return {
+        conversationItemIds: [],
+        invalidatedMemoryEventIds: [],
+        projectionPolicyRevision: 1
+      };
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "projection-rebuild-auth@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const rejectedApiToken = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/rebuild",
+      headers: { authorization: client.authorization },
+      payload: { sessionId: session.id }
+    });
+    const acceptedSession = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/rebuild",
+      headers: { cookie: client.cookie },
+      payload: { sessionId: session.id }
+    });
+    const rateLimitedSession = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/rebuild",
+      headers: { cookie: client.cookie },
+      payload: { sessionId: session.id }
+    });
+    await app.close();
+
+    expect(rejectedApiToken.statusCode).toBe(401);
+    expect(jsonBody<{ error: string }>(rejectedApiToken).error).toBe(
+      "Session cookie required"
+    );
+    expect(acceptedSession.statusCode).toBe(200);
+    expect(acceptedSession.headers["x-ratelimit-limit"]).toBe("1");
+    expect(rateLimitedSession.statusCode).toBe(429);
+    expect(rateLimitedSession.headers["retry-after"]).toBeDefined();
+    expect(resetCalls).toBe(1);
+  });
+
+  it("authenticates Projection rebuilds before user-keyed rate limiting", async () => {
+    process.env.MEMORY_PROJECTION_REBUILD_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.MEMORY_PROJECTION_REBUILD_RATE_LIMIT_MAX = "1";
+    const repository = createFakeRepository();
+    let resetCalls = 0;
+    repository.resetConversationProjection = async () => {
+      resetCalls += 1;
+      return {
+        conversationItemIds: [],
+        invalidatedMemoryEventIds: [],
+        projectionPolicyRevision: 1
+      };
+    };
+    const app = await buildServer({ repository });
+    const firstClient = await registerApiClientForTest(
+      app,
+      "projection-rebuild-key-a@example.com"
+    );
+    const secondClient = await registerApiClientForTest(
+      app,
+      "projection-rebuild-key-b@example.com"
+    );
+    const firstSession = await createCapturedSessionForTest(
+      app,
+      firstClient.authorization
+    );
+    const secondSession = await createCapturedSessionForTest(
+      app,
+      secondClient.authorization
+    );
+    const rebuild = (
+      cookie: string,
+      authorization: string,
+      sessionId: string
+    ) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/conversation-items/rebuild",
+        headers: { cookie, authorization },
+        payload: { sessionId }
+      });
+
+    const unauthenticated = await rebuild(
+      "cm_session=invalid",
+      "Bearer attacker-rotation-1",
+      firstSession.id
+    );
+    const firstAccepted = await rebuild(
+      firstClient.cookie,
+      "Bearer attacker-rotation-1",
+      firstSession.id
+    );
+    const firstLimited = await rebuild(
+      firstClient.cookie,
+      "Bearer attacker-rotation-2",
+      firstSession.id
+    );
+    const secondAccepted = await rebuild(
+      secondClient.cookie,
+      "Bearer attacker-rotation-3",
+      secondSession.id
+    );
+    await app.close();
+
+    expect(
+      [unauthenticated, firstAccepted, firstLimited, secondAccepted].map(
+        (response) => response.statusCode
+      )
+    ).toEqual([401, 200, 429, 200]);
+    expect(resetCalls).toBe(2);
+  });
+
+  it("fails an oversized Projection rebuild before projecting any raw items", async () => {
+    const repository = createFakeRepository();
+    let resetCalls = 0;
+    let projectionCalls = 0;
+    const projectPendingConversationItems =
+      repository.projectPendingConversationItems.bind(repository);
+    repository.resetConversationProjection = async () => {
+      resetCalls += 1;
+      throw Object.assign(
+        new Error(
+          "Conversation projection rebuild exceeds the 10000-item safety limit"
+        ),
+        { statusCode: 413, code: "projection_rebuild_too_large" }
+      );
+    };
+    repository.projectPendingConversationItems = async (actor, input) => {
+      projectionCalls += 1;
+      return projectPendingConversationItems(actor, input);
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "projection-rebuild-size@example.com"
+    );
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/memory/conversation-items/rebuild",
+      headers: { cookie: client.cookie },
+      payload: { sessionId: session.id }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(413);
+    expect(jsonBody<{ error: string }>(response).error).toContain(
+      "10000-item safety limit"
+    );
+    expect(resetCalls).toBe(1);
+    expect(projectionCalls).toBe(0);
+  });
+
+  it("releases a managed Projection hold only after terminal JSONL reconciliation", async () => {
+    const repository = createFakeRepository();
+    const createConversationItems =
+      repository.createConversationItems.bind(repository);
+    const terminalReconciliations = new Set<string>();
+    repository.createConversationItems = async (actor, input) => {
+      const created = await createConversationItems(actor, input);
+      for (const item of input.items) {
+        if (
+          item.sessionId &&
+          item.externalTurnId &&
+          item.sourceAdapterVersion === "codex-transcript-v1" &&
+          item.sourceTransport === "transcript" &&
+          item.observationKind === "reconciliation" &&
+          ["task_complete", "turn_aborted"].includes(item.sourceEventType ?? "")
+        ) {
+          terminalReconciliations.add(
+            `${actor.userId}:${item.sessionId}:${item.externalTurnId}`
+          );
+        }
+      }
+      return created;
+    };
+    repository.releaseConversationProjectionHold = async (actor, input) => {
+      const session = await repository.getCapturedSession(
+        actor,
+        input.sessionId
+      );
+      if (
+        !session ||
+        session.captureMethod !== "api" ||
+        session.metadata.managedConversation !== true
+      ) {
+        throw Object.assign(
+          new Error("Managed conversation session not found or not visible"),
+          { statusCode: 404, code: "managed_session_not_found" }
+        );
+      }
+      if (
+        !terminalReconciliations.has(
+          `${actor.userId}:${input.sessionId}:${input.externalTurnId}`
+        )
+      ) {
+        throw Object.assign(
+          new Error(
+            "Managed turn cannot be projected before terminal reconciliation"
+          ),
+          { statusCode: 409, code: "managed_turn_not_terminal" }
+        );
+      }
+      return { conversationItemIds: ["managed-held-item"] };
+    };
+    const app = await buildServer({ repository });
+    const client = await registerApiClientForTest(
+      app,
+      "managed-release@example.com"
+    );
+    const threadId = "managed-thread-1";
+    const externalTurnId = "managed-turn-1";
+    const session = await createCapturedSessionForTest(
+      app,
+      client.authorization,
+      {
+        externalSessionId: threadId,
+        captureMethod: "api",
+        metadata: { managedConversation: true }
+      }
+    );
+    const ingest = (overrides: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/conversation-items",
+        headers: { authorization: client.authorization },
+        payload: {
+          items: [
+            rawConversationItemPayload(session.id, {
+              externalSessionId: threadId,
+              externalThreadId: threadId,
+              externalTurnId,
+              ...overrides
+            })
+          ]
+        }
+      });
+    const release = () =>
+      app.inject({
+        method: "POST",
+        url: "/v1/memory/conversation-items/release",
+        headers: { authorization: client.authorization },
+        payload: { sessionId: session.id, externalTurnId }
+      });
+    const terminalStableItemId = `turn:${externalTurnId}:completed`;
+    const terminalCanonicalItemKey = codexCanonicalConversationItemKeyForTest({
+      externalThreadId: threadId,
+      externalTurnId,
+      stableItemId: terminalStableItemId,
+      component: "control"
+    });
+    const forgedCanonicalTerminal = await ingest({
+      sourceAdapterVersion: "codex-app-server-conversation-v1",
+      sourceTransport: "app_server",
+      sourceEventType: "turn/completed",
+      observationKind: "control",
+      observationComponent: "control",
+      canonicalItemKey: `conversation-item:${"0".repeat(64)}`,
+      canonicalStableItemId: terminalStableItemId,
+      rawJson: {
+        method: "turn/completed",
+        params: { turn: { id: externalTurnId, status: "completed" } }
+      }
+    });
+    const appServerTerminal = await ingest({
+      sourceAdapterVersion: "codex-app-server-conversation-v1",
+      sourceTransport: "app_server",
+      sourceEventType: "turn/completed",
+      observationKind: "control",
+      observationComponent: "control",
+      canonicalItemKey: terminalCanonicalItemKey,
+      canonicalStableItemId: terminalStableItemId,
+      rawJson: {
+        method: "turn/completed",
+        params: { turn: { id: externalTurnId, status: "completed" } }
+      }
+    });
+    const rejectedAfterAppServer = await release();
+    const nonReconciledJsonlTerminal = await ingest({
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "transcript",
+      sourceRecordType: "event_msg",
+      sourceEventType: "task_complete",
+      sourcePath: "/tmp/managed-release.jsonl",
+      sourceLineNumber: 1,
+      observationKind: "snapshot",
+      observationComponent: "control",
+      canonicalItemKey: terminalCanonicalItemKey,
+      canonicalStableItemId: terminalStableItemId,
+      rawJson: {
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: externalTurnId }
+      }
+    });
+    const rejectedWithoutReconciliation = await release();
+    const reconciledJsonlTerminal = await ingest({
+      sourceAdapterVersion: "codex-transcript-v1",
+      sourceTransport: "transcript",
+      sourceRecordType: "event_msg",
+      sourceEventType: "task_complete",
+      sourcePath: "/tmp/managed-release.jsonl",
+      sourceLineNumber: 2,
+      observationKind: "reconciliation",
+      observationComponent: "control",
+      canonicalItemKey: terminalCanonicalItemKey,
+      canonicalStableItemId: terminalStableItemId,
+      rawJson: {
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: externalTurnId }
+      }
+    });
+    const released = await release();
+    await app.close();
+
+    expect(appServerTerminal.statusCode).toBe(200);
+    expect(forgedCanonicalTerminal.statusCode).toBe(400);
+    expect(nonReconciledJsonlTerminal.statusCode).toBe(200);
+    expect(reconciledJsonlTerminal.statusCode).toBe(200);
+    expect(rejectedAfterAppServer.statusCode).toBe(409);
+    expect(rejectedWithoutReconciliation.statusCode).toBe(409);
+    expect(released.statusCode).toBe(200);
+    expect(
+      jsonBody<{ conversationItemIds: string[] }>(released).conversationItemIds
+    ).toEqual(["managed-held-item"]);
   });
 
   it("keeps Team Workspace recall behind session authentication", async () => {

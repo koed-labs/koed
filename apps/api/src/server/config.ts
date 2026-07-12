@@ -227,6 +227,18 @@ export const resolveApiServerConfig = (
             "MEMORY_RECALL_RATE_LIMIT_MAX",
             memoryRateLimitMax
           )
+        },
+        projectionRebuild: {
+          windowMs: positiveIntEnv(
+            environment,
+            "MEMORY_PROJECTION_REBUILD_RATE_LIMIT_WINDOW_MS",
+            60_000
+          ),
+          max: positiveIntEnv(
+            environment,
+            "MEMORY_PROJECTION_REBUILD_RATE_LIMIT_MAX",
+            2
+          )
         }
       }
     },

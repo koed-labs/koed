@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export {
   API_DATA_ENCRYPTION_KEY_ENV,
   createByokEnvelopeEncryptionProvider,
@@ -96,6 +98,49 @@ export const memoryEmbedQueueName = "memory-embed";
 export const lcmCompactQueueName = "lcm-compact";
 export const lcmEmbedQueueName = "lcm-embed";
 
+export const RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES = 256 * 1024;
+export const RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT = 64;
+export const RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES =
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES *
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT;
+
+export const rawConversationTransportChunkGroupId = (input: {
+  sourceKind: string;
+  sourceAdapterVersion: string;
+  sourceTransport: string;
+  logicalSourceId: string;
+  sourceItemHash: string;
+  transportChunkCount: number;
+  transportChunkEncoding: string;
+}): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 1,
+        ...input
+      })
+    )
+    .digest("hex");
+
+export const codexCanonicalConversationItemKey = (input: {
+  externalThreadId: string;
+  externalTurnId?: string;
+  stableItemId: string;
+  component: string;
+}): string =>
+  `conversation-item:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 3,
+        provider: "codex",
+        externalThreadId: input.externalThreadId,
+        externalTurnId: input.externalTurnId ?? null,
+        stableItemId: input.stableItemId,
+        component: input.component
+      })
+    )
+    .digest("hex")}`;
+
 export const workerQueueNames = [
   memoryEmbedQueueName,
   lcmCompactQueueName,
@@ -142,6 +187,28 @@ export interface KoedJobQueue<TJobData = unknown> {
   getJobCounts(...statuses: string[]): Promise<Record<string, number>>;
   close(): Promise<void>;
 }
+
+const queueJobIdPart = (value: string): string =>
+  value.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 180);
+
+export const embeddingDispatchKey = (
+  modelKey: string,
+  dimensions: number
+): string => `${modelKey}-${dimensions}`;
+
+export const embeddingQueueJobId = (
+  dispatchKey: string,
+  sourceType: string,
+  sourceId: string
+): string =>
+  `embed-${queueJobIdPart(dispatchKey)}-${queueJobIdPart(sourceType)}-${queueJobIdPart(sourceId)}`;
+
+export const lcmCompactionQueueJobId = (
+  userId: string,
+  visibility: string,
+  dispatchKey: string
+): string =>
+  `compact-${queueJobIdPart(userId)}-${queueJobIdPart(visibility)}-${queueJobIdPart(dispatchKey)}`;
 
 export interface ServiceHealth {
   service: string;

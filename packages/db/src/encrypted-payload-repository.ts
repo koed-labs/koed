@@ -9,6 +9,7 @@ import type { ActorContext, Visibility } from "./types.js";
 
 export type EncryptedFieldSourceTable =
   | "conversation_items"
+  | "conversation_item_observations"
   | "memory_embeddings"
   | "memory_events"
   | "memory_nodes"
@@ -219,9 +220,27 @@ const textValue = (sourceColumn: string): string => sourceColumn;
 const backfillSources: Record<EncryptedFieldSourceTable, BackfillSourceConfig> =
   {
     conversation_items: {
-      columns: new Set(["raw_json", "raw_text", "transport_chunk_text"]),
+      columns: new Set([
+        "raw_json",
+        "raw_text",
+        "transport_chunk_text",
+        "source_path",
+        "metadata"
+      ]),
       valueSql: jsonbValue,
       activePredicate: "personal_deleted_at is null"
+    },
+    conversation_item_observations: {
+      columns: new Set([
+        "raw_json",
+        "raw_text",
+        "transport_chunk_text",
+        "source_path",
+        "metadata"
+      ]),
+      valueSql: jsonbValue,
+      activePredicate:
+        "(exists (select 1 from conversation_items ci where ci.id = conversation_item_id and ci.personal_deleted_at is null) or exists (select 1 from sessions s where s.id = session_id and s.personal_deleted_at is null))"
     },
     memory_embeddings: {
       columns: new Set(["source_text"]),
@@ -314,8 +333,11 @@ const redactionForBackfillSource = (
   sourceTable: EncryptedFieldSourceTable,
   sourceColumn: string
 ): BackfillRedaction => {
-  if (sourceTable === "conversation_items") {
-    return sourceColumn === "raw_json"
+  if (
+    sourceTable === "conversation_items" ||
+    sourceTable === "conversation_item_observations"
+  ) {
+    return sourceColumn === "raw_json" || sourceColumn === "metadata"
       ? { cast: "jsonb", value: encryptedJsonMarker(sourceTable, sourceColumn) }
       : { cast: "text", value: ENCRYPTED_CONVERSATION_ITEM_TEXT };
   }
@@ -391,6 +413,16 @@ const redactBackfilledSourceColumn = async (
     reference.sourceTable,
     reference.sourceColumn
   );
+  if (reference.sourceTable === "conversation_item_observations") {
+    await client.query(
+      `
+        select
+          set_config('koed.observation_redaction_source_id', $1, true),
+          set_config('koed.observation_redaction_source_column', $2, true)
+      `,
+      [reference.sourceId, reference.sourceColumn]
+    );
+  }
   const result = await client.query(
     `
       update ${reference.sourceTable}
@@ -734,6 +766,46 @@ export const upsertEncryptedFieldPayloadWithClient = async (
   return mapEncryptedFieldRow(result.rows[0]!);
 };
 
+export const decryptAuthorizedEncryptedFieldPayloadWithClient = async (
+  client: pg.Pool | pg.PoolClient,
+  actor: ActorContext,
+  provider: EnvelopeEncryptionProvider,
+  reference: EncryptedFieldReference
+): Promise<{
+  record: StoredEncryptedFieldRecord;
+  plaintext: unknown;
+} | null> => {
+  const result = await client.query<EncryptedFieldRow>(
+    `
+      ${selectEncryptedFieldSql}
+      where owner_user_id = $1
+        and visibility = 'personal'
+        and encryption_scope = 'personal'
+        and source_table = $2
+        and source_id = $3
+        and source_column = $4
+        and invalidated_at is null
+      limit 1
+    `,
+    [
+      actor.userId,
+      reference.sourceTable,
+      reference.sourceId,
+      reference.sourceColumn
+    ]
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+  const record = mapEncryptedFieldRow(row);
+  const plaintextUtf8 = await decryptEnvelopeToUtf8(provider, record.envelope);
+  return {
+    record,
+    plaintext: parsePlaintext(plaintextUtf8, record.plaintextContentType)
+  };
+};
+
 export const createEncryptedPayloadRepository = (
   pool: pg.Pool
 ): EncryptedPayloadRepository => ({
@@ -765,18 +837,12 @@ export const createEncryptedPayloadRepository = (
   },
 
   async decryptAuthorizedEncryptedField(actor, provider, reference) {
-    const record = await this.getAuthorizedEncryptedField(actor, reference);
-    if (!record) {
-      return null;
-    }
-    const plaintextUtf8 = await decryptEnvelopeToUtf8(
+    return decryptAuthorizedEncryptedFieldPayloadWithClient(
+      pool,
+      actor,
       provider,
-      record.envelope
+      reference
     );
-    return {
-      record,
-      plaintext: parsePlaintext(plaintextUtf8, record.plaintextContentType)
-    };
   },
 
   async invalidateEncryptedField(actor, reference) {

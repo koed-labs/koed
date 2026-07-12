@@ -305,6 +305,20 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/memory/conversation-items/release",
+    "api_token",
+    "capture",
+    "Release a reconciled managed-conversation Projection hold."
+  ),
+  route(
+    "POST",
+    "/v1/memory/conversation-items/rebuild",
+    "session",
+    "capture",
+    "Reset and rebuild a browser-authenticated Personal Conversation Projection."
+  ),
+  route(
+    "POST",
     "/v1/memory/conversation-items/project",
     "api_token",
     "capture",

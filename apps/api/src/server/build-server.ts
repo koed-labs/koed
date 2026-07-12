@@ -50,10 +50,12 @@ import {
 } from "../memory/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  embeddingDispatchKey,
   readUpstreamCredentialAuthorization,
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
-  memoryEmbedQueueName
+  memoryEmbedQueueName,
+  resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
 import { registerTeamRoutes } from "../team/index.js";
 import { resolveApiServerConfig } from "./config.js";
@@ -254,7 +256,11 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   const rateLimitHandlers = createRateLimitHandlers(
     rateLimitStore,
     hashSecret,
-    config.rateLimit.policies
+    config.rateLimit.policies,
+    {
+      authenticatedUserId: (request) =>
+        getRequestLogContext(request).actor?.user_id
+    }
   );
 
   app.addHook("onClose", async () => {
@@ -330,6 +336,9 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
         authenticatedRequestLogContext(authContext.kind, authContext.userId)
       )
   });
+  const embeddingModelConfig = resolveSupportedEmbeddingModelConfig(
+    config.embeddingModel
+  );
   const {
     runCompactionInline,
     enqueueEmbedding,
@@ -338,6 +347,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   } = createMemoryJobScheduler({
     embeddingQueue,
     compactionQueue,
+    embeddingDispatchKey: embeddingDispatchKey(
+      embeddingModelConfig.key,
+      embeddingModelConfig.dimensions
+    ),
     runMemoryJobsInlineForTests: options.runMemoryJobsInlineForTests,
     log: app.log
   });

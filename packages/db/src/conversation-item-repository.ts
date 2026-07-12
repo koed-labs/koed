@@ -1,9 +1,17 @@
 import pg from "pg";
 import { createHash } from "node:crypto";
-import { upsertEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
+import {
+  createEncryptedPayloadRepository,
+  decryptAuthorizedEncryptedFieldPayloadWithClient,
+  upsertEncryptedFieldPayloadWithClient
+} from "./encrypted-payload-repository.js";
 import {
   combineStorageSanitizationCounts,
+  codexCanonicalConversationItemKey,
   metadataWithStorageSanitization,
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
+  rawConversationTransportChunkGroupId,
   sanitizeForPostgresStorage,
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
@@ -12,6 +20,7 @@ import type {
   CaptureMethod,
   ConversationItemInput,
   ConversationItemRecord,
+  EffectiveCapturePolicy,
   Visibility
 } from "./types.js";
 
@@ -20,11 +29,29 @@ export interface ConversationItemRepository {
     actor: ActorContext,
     input: { items: ConversationItemInput[] }
   ): Promise<ConversationItemRecord[]>;
+  releaseConversationProjectionHold(
+    actor: ActorContext,
+    input: { sessionId: string; externalTurnId: string }
+  ): Promise<{ conversationItemIds: string[] }>;
 }
 
 export interface ConversationItemRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  resolveCapturePolicy?: (
+    actor: ActorContext,
+    input: { projectId?: string; threadId?: string; sessionId?: string }
+  ) => Promise<EffectiveCapturePolicy>;
 }
+
+type ConversationItemSessionRow = {
+  id: string;
+  workspace_id: string | null;
+  external_session_id: string | null;
+  external_thread_id: string | null;
+  codex_transcript_path: string | null;
+  capture_method: string;
+  metadata: Record<string, unknown> | null;
+};
 
 type ConversationItemRow = {
   id: string;
@@ -38,11 +65,45 @@ type ConversationItemRow = {
   external_thread_id: string | null;
   external_turn_id: string | null;
   external_item_id: string | null;
+  canonical_stable_item_id: string | null;
   source_record_type: string;
   source_event_type: string | null;
   source_sequence: number | null;
+  source_hash: string;
   idempotency_key: string;
+  canonical_item_key: string;
+  canonical_source_priority: number;
   created_at: Date;
+};
+
+type LegacyConversationItemReplayRow = ConversationItemRow & {
+  source_path: string | null;
+  source_line_number: number | null;
+  event_time: Date | null;
+  observed_at: Date;
+  raw_json: unknown;
+  raw_text: string | null;
+  logical_source_id: string | null;
+  transport_chunk_index: number;
+  transport_chunk_count: number;
+  transport_chunk_text: string | null;
+  transport_chunk_encoding: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+type ConversationItemObservationRow = {
+  id: string;
+  inserted: boolean;
+};
+
+type ExistingConversationItemObservationRow = {
+  id: string;
+  conversation_item_id: string | null;
+  canonical_item_key: string | null;
+  observation_key: string;
+  payload_hash: string;
+  source_hash: string;
+  metadata: Record<string, unknown> | null;
 };
 
 const ENCRYPTED_CONVERSATION_ITEM_JSON = {
@@ -51,6 +112,211 @@ const ENCRYPTED_CONVERSATION_ITEM_JSON = {
 } as const;
 
 const ENCRYPTED_CONVERSATION_ITEM_TEXT = "[koed encrypted conversation item]";
+
+const ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_JSON = {
+  contentEncrypted: true,
+  encryptedSourceTable: "conversation_item_observations"
+} as const;
+
+const ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT =
+  "[koed encrypted conversation item observation]";
+
+const SAFE_CONVERSATION_METADATA_KEYS = new Set([
+  "transcriptType",
+  "transcriptParentType",
+  "transcriptIndex",
+  "transcriptId",
+  "transcriptByteOffset",
+  "transcriptSourceLineNumber",
+  "transcriptAssignedTurnId",
+  "toolEventKind",
+  "toolName",
+  "callId",
+  "toolCallId",
+  "status",
+  "hookEventName",
+  "threadKind",
+  "parentThreadId",
+  "parentSessionId",
+  "parentExternalSessionId",
+  "managedConversationReconciliation",
+  "managedConversationSourceRole",
+  "appServerItemType",
+  "clientUserMessageId",
+  "phase",
+  "sourceEventTimeAccuracy",
+  "canonicalIdentityBasis",
+  "questionId",
+  "nodeId",
+  "includeInLcm",
+  "storageSanitization",
+  "transportChunkGroupId",
+  "sourceItemHash",
+  "sourceChunkIndex",
+  "sourceChunkCount"
+]);
+
+const safeConversationMetadata = (
+  metadata: Record<string, unknown>,
+  markerKey: string,
+  encryptedColumns: string[]
+): Record<string, unknown> => {
+  const safe: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!SAFE_CONVERSATION_METADATA_KEYS.has(key)) {
+      continue;
+    }
+    if (
+      value === null ||
+      typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value)) ||
+      (typeof value === "string" && value.length <= 512)
+    ) {
+      safe[key] = value;
+      continue;
+    }
+    if (key === "storageSanitization" && isRecord(value)) {
+      safe[key] = Object.fromEntries(
+        Object.entries(value).filter(
+          ([, entry]) => typeof entry === "number" && Number.isFinite(entry)
+        )
+      );
+    }
+  }
+  const toolCall = isRecord(metadata.toolCall)
+    ? Object.fromEntries(
+        Object.entries(metadata.toolCall).filter(
+          ([key, value]) =>
+            ["kind", "type", "name", "id", "status"].includes(key) &&
+            typeof value === "string" &&
+            value.length <= 256
+        )
+      )
+    : null;
+  return {
+    ...safe,
+    ...(toolCall && Object.keys(toolCall).length > 0 ? { toolCall } : {}),
+    [markerKey]: encryptedColumns
+  };
+};
+
+const ENCRYPTED_CONVERSATION_ITEM_SOURCE_COLUMNS = [
+  "raw_json",
+  "raw_text",
+  "transport_chunk_text",
+  "source_path",
+  "metadata"
+] as const;
+
+const synchronizeEncryptedConversationItemColumns = async (input: {
+  client: pg.PoolClient;
+  sourceTable: "conversation_items" | "conversation_item_observations";
+  sourceId: string;
+}): Promise<void> => {
+  const markerKey =
+    input.sourceTable === "conversation_items"
+      ? "encryptedConversationItemColumns"
+      : "encryptedConversationItemObservationColumns";
+  const table = input.sourceTable;
+  await input.client.query(
+    `
+      update ${table} as source
+      set metadata = jsonb_set(
+        coalesce(source.metadata, '{}'::jsonb),
+        $2::text[],
+        coalesce(
+          (
+            select jsonb_agg(payload.source_column order by array_position($3::text[], payload.source_column))
+            from encrypted_field_payloads as payload
+            where payload.source_table = $4
+              and payload.source_id = source.id
+              and payload.source_column = any($3::text[])
+              and payload.invalidated_at is null
+          ),
+          '[]'::jsonb
+        ),
+        true
+      )
+      where source.id = $1
+    `,
+    [
+      input.sourceId,
+      [markerKey],
+      [...ENCRYPTED_CONVERSATION_ITEM_SOURCE_COLUMNS],
+      input.sourceTable
+    ]
+  );
+};
+
+const mergeCanonicalConversationMetadata = (input: {
+  existing: Record<string, unknown>;
+  incoming: Record<string, unknown>;
+  incomingWins: boolean;
+}): Record<string, unknown> => {
+  const lowerPriority = input.incomingWins ? input.existing : input.incoming;
+  const higherPriority = input.incomingWins ? input.incoming : input.existing;
+  const lowerToolCall = isRecord(lowerPriority.toolCall)
+    ? lowerPriority.toolCall
+    : {};
+  const higherToolCall = isRecord(higherPriority.toolCall)
+    ? higherPriority.toolCall
+    : {};
+  const mergeToolPayload = (key: "input" | "output"): unknown => {
+    const lower = lowerToolCall[key];
+    const higher = higherToolCall[key];
+    if (isRecord(lower) && isRecord(higher)) {
+      return { ...lower, ...higher };
+    }
+    return higher !== undefined ? higher : lower;
+  };
+  const toolInput = mergeToolPayload("input");
+  const toolOutput = mergeToolPayload("output");
+  const toolCall = {
+    ...lowerToolCall,
+    ...higherToolCall,
+    ...(toolInput !== undefined ? { input: toolInput } : {}),
+    ...(toolOutput !== undefined ? { output: toolOutput } : {})
+  };
+  return {
+    ...lowerPriority,
+    ...higherPriority,
+    ...(Object.keys(toolCall).length > 0 ? { toolCall } : {})
+  };
+};
+
+const loadCanonicalConversationMetadata = async (input: {
+  client: pg.PoolClient;
+  actor: ActorContext;
+  provider: EnvelopeEncryptionProvider;
+  sourceId: string;
+  storedMetadata: Record<string, unknown> | null;
+}): Promise<Record<string, unknown>> => {
+  const decrypted = await decryptAuthorizedEncryptedFieldPayloadWithClient(
+    input.client,
+    input.actor,
+    input.provider,
+    {
+      sourceTable: "conversation_items",
+      sourceId: input.sourceId,
+      sourceColumn: "metadata"
+    }
+  );
+  if (decrypted) {
+    if (!isRecord(decrypted.plaintext)) {
+      throw new Error("Encrypted canonical conversation metadata is invalid");
+    }
+    return decrypted.plaintext;
+  }
+  const encryptedColumns =
+    input.storedMetadata?.encryptedConversationItemColumns;
+  if (
+    Array.isArray(encryptedColumns) &&
+    encryptedColumns.includes("metadata")
+  ) {
+    throw new Error("Encrypted canonical conversation metadata is missing");
+  }
+  return input.storedMetadata ?? {};
+};
 
 const deploymentProfile = (): string =>
   process.env.KOED_DEPLOYMENT_PROFILE?.trim().toLowerCase() ?? "";
@@ -78,11 +344,8 @@ const managedCloudPlaintextConversationItemsDisabled = (): boolean => {
   );
 };
 
-const isPresent = (value: unknown): boolean =>
-  value !== null && value !== undefined;
-
-const rawJsonConflictPriority = (sourceRecordType: string): number =>
-  sourceRecordType === "hook_payload" ? 0 : 1;
+const hasEncryptableText = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
 
 const sanitizeConversationItemForStorage = (
   item: ConversationItemInput
@@ -114,6 +377,14 @@ const sanitizeConversationItemForStorage = (
   );
   const sourceHash = sanitizeForPostgresStorage(item.sourceHash);
   const idempotencyKey = sanitizeForPostgresStorage(item.idempotencyKey);
+  const canonicalItemKey = sanitizeForPostgresStorage(item.canonicalItemKey);
+  const canonicalStableItemId = sanitizeForPostgresStorage(
+    item.canonicalStableItemId
+  );
+  const observationKind = sanitizeForPostgresStorage(item.observationKind);
+  const observationComponent = sanitizeForPostgresStorage(
+    item.observationComponent
+  );
   const projectionStatus = sanitizeForPostgresStorage(item.projectionStatus);
   const projectionVersion = sanitizeForPostgresStorage(item.projectionVersion);
   const projectionError = sanitizeForPostgresStorage(item.projectionError);
@@ -137,10 +408,41 @@ const sanitizeConversationItemForStorage = (
     transportChunkEncoding,
     sourceHash,
     idempotencyKey,
+    canonicalItemKey,
+    canonicalStableItemId,
+    observationKind,
+    observationComponent,
     projectionStatus,
     projectionVersion,
     projectionError
   );
+
+  const sanitizedMetadata = metadataWithStorageSanitization(
+    metadata.value as Record<string, unknown>,
+    sanitizationCounts
+  );
+  for (const key of [
+    "projectionPolicyKey",
+    "projectionActor",
+    "semanticControl",
+    "canonicalConversationItemKey",
+    "canonicalConversationItemActor",
+    "canonicalConversationItemKind",
+    "canonicalConversationItemContentHash",
+    "canonicalStableItemId",
+    "managedConversation"
+  ]) {
+    delete sanitizedMetadata[key];
+  }
+  if (
+    item.sessionId ||
+    item.sourceAdapterVersion !== "codex-app-server-v1" ||
+    !["memory_question", "lcm_summary"].includes(
+      stringField(sanitizedMetadata, "workflow") ?? ""
+    )
+  ) {
+    delete sanitizedMetadata.workflow;
+  }
 
   return {
     ...item,
@@ -162,16 +464,19 @@ const sanitizeConversationItemForStorage = (
     transportChunkEncoding: transportChunkEncoding.value as string | undefined,
     sourceHash: sourceHash.value as string,
     idempotencyKey: idempotencyKey.value as string,
+    canonicalItemKey: canonicalItemKey.value as string | undefined,
+    canonicalStableItemId: canonicalStableItemId.value as string | undefined,
+    observationKind: observationKind.value as
+      | ConversationItemInput["observationKind"]
+      | undefined,
+    observationComponent: observationComponent.value as string | undefined,
     projectionStatus: projectionStatus.value as
       | ConversationItemInput["projectionStatus"]
       | undefined,
     projectionVersion: projectionVersion.value as string | undefined,
     projectionError: projectionError.value as string | undefined,
     eventTime: item.eventTime ?? transcriptEventTime(rawJson.value),
-    metadata: metadataWithStorageSanitization(
-      metadata.value as Record<string, unknown>,
-      sanitizationCounts
-    )
+    metadata: sanitizedMetadata
   };
 };
 
@@ -198,6 +503,38 @@ const transcriptEventTime = (rawJson: unknown): string | undefined => {
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+const canonicalJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(canonicalJsonValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonicalJsonValue(value[key])])
+  );
+};
+
+const observationPayloadHashFor = (item: ConversationItemInput): string =>
+  sha256(
+    canonicalJsonValue({
+      sourceKind: item.sourceKind,
+      sourceAdapterVersion: item.sourceAdapterVersion,
+      sourceTransport: item.sourceTransport,
+      sourceRecordType: item.sourceRecordType,
+      sourceEventType: item.sourceEventType ?? null,
+      rawJson: item.rawJson,
+      rawText: item.rawText ?? null,
+      transportChunkIndex: item.transportChunkIndex ?? null,
+      transportChunkCount: item.transportChunkCount ?? null,
+      transportChunkText: item.transportChunkText ?? null,
+      transportChunkEncoding: item.transportChunkEncoding ?? null,
+      sourceHash: item.sourceHash
+    })
+  );
+
 const normalizedContentHash = (content: string): string =>
   sha256(content.replace(/\s+/g, " ").trim());
 
@@ -208,15 +545,19 @@ const itemPayload = (
   if (!raw) {
     return null;
   }
-  return isRecord(raw.payload) ? raw.payload : raw;
+  const container = isRecord(raw.payload)
+    ? raw.payload
+    : isRecord(raw.params)
+      ? raw.params
+      : raw;
+  return isRecord(container.item) ? container.item : container;
 };
 
 const canonicalConversationActor = (
   item: ConversationItemInput
 ): "user" | "agent" | "subagent" | "tool" | "system" | null => {
   const metadata = item.metadata ?? {};
-  const payload = itemPayload(item);
-  const nestedItem = payload && isRecord(payload.item) ? payload.item : payload;
+  const nestedItem = itemPayload(item);
   const role =
     stringField(nestedItem, "role") ??
     (nestedItem && isRecord(nestedItem.message)
@@ -228,8 +569,14 @@ const canonicalConversationActor = (
     item.sourceRecordType;
   const threadKind = stringField(metadata, "threadKind");
 
-  if (/developer|system/i.test(role ?? "")) {
+  if (/^(developer|system)$/i.test(role ?? "")) {
     return "system";
+  }
+  if (/^user$/i.test(role ?? "")) {
+    return threadKind === "subagent" ? "agent" : "user";
+  }
+  if (/^assistant$/i.test(role ?? "")) {
+    return threadKind === "subagent" ? "subagent" : "agent";
   }
   if (/user/i.test(transcriptType)) {
     return threadKind === "subagent" ? "agent" : "user";
@@ -282,118 +629,323 @@ const canonicalConversationKind = (
   return "message";
 };
 
-const canonicalConversationItemIdentity = (
-  item: ConversationItemInput
-): {
-  key: string;
-  actor: string;
-  kind: string;
-  contentHash: string;
-} | null => {
-  if (
-    item.sourceRecordType === "hook_payload" ||
-    item.sourceAdapterVersion !== "codex-transcript-v1"
-  ) {
-    return null;
-  }
-  if (
-    item.logicalSourceId ||
-    (item.transportChunkCount ?? 1) > 1 ||
-    item.transportChunkText
-  ) {
-    return null;
-  }
-  const content = item.rawText?.replace(/\s+/g, " ").trim();
-  if (!content) {
-    return null;
-  }
-  const actor = canonicalConversationActor(item);
-  if (!actor) {
-    return null;
-  }
-  const turnIdentity =
-    item.externalTurnId ??
-    stringField(item.metadata ?? {}, "externalTurnId") ??
-    (isRecord(item.rawJson) ? stringField(item.rawJson, "turn_id") : null);
-  if (!turnIdentity) {
-    return null;
-  }
-  const threadIdentity =
-    item.externalThreadId ??
-    item.externalSessionId ??
-    stringField(item.metadata ?? {}, "externalSessionId") ??
-    item.sessionId;
-  if (!threadIdentity) {
-    return null;
-  }
-  const kind = canonicalConversationKind(item, actor);
-  if (
-    kind !== "message" &&
-    kind !== "reasoning_summary" &&
-    kind !== "tool_call" &&
-    kind !== "tool_result"
-  ) {
-    return null;
-  }
-  const contentHash = normalizedContentHash(content);
-  if (item.sourcePath && typeof item.sourceSequence === "number") {
-    const key = `conversation-item:${sha256({
-      version: 2,
-      sourceKind: item.sourceKind,
-      sourcePath: item.sourcePath,
-      sourceSequence: item.sourceSequence,
-      actor,
-      kind,
-      contentHash
-    })}`;
-    return {
-      key,
-      actor,
-      kind,
-      contentHash
-    };
-  }
-  const key = `conversation-item:${sha256({
-    version: 1,
-    sourceKind: item.sourceKind,
-    threadIdentity,
-    turnIdentity,
-    actor,
-    kind,
-    contentHash
-  })}`;
-  return {
-    key,
-    actor,
-    kind,
-    contentHash
-  };
-};
-
 const withCanonicalConversationIdentity = (
   item: ConversationItemInput
 ): ConversationItemInput => {
-  const identity = canonicalConversationItemIdentity(item);
-  if (!identity) {
+  if (item.observationOnly) {
+    if (item.canonicalItemKey) {
+      throw Object.assign(
+        new Error(
+          "Observation-only source records cannot claim canonical identity"
+        ),
+        { statusCode: 400, code: "observation_only_canonical_identity" }
+      );
+    }
     return item;
+  }
+  if (item.canonicalItemKey) {
+    const actor = canonicalConversationActor(item);
+    const kind = actor ? canonicalConversationKind(item, actor) : null;
+    const component = item.observationComponent;
+    const threadIdentity = item.externalThreadId ?? item.externalSessionId;
+    const turnIdentity = item.externalTurnId;
+    const stableItemId = item.canonicalStableItemId;
+    if (!threadIdentity || !turnIdentity || !stableItemId || !component) {
+      throw Object.assign(
+        new Error(
+          "Canonical conversation identity requires exact thread, turn, item, and component identity"
+        ),
+        { statusCode: 400, code: "canonical_identity_incomplete" }
+      );
+    }
+    if (
+      kind &&
+      ["message", "reasoning_summary", "tool_call", "tool_result"].includes(
+        kind
+      ) &&
+      component !== kind
+    ) {
+      throw Object.assign(
+        new Error(
+          `Canonical conversation component '${component}' does not match '${kind}'`
+        ),
+        { statusCode: 400, code: "canonical_component_mismatch" }
+      );
+    }
+    const provider =
+      item.sourceKind === "codex-cli" ? "codex" : item.sourceKind;
+    const expectedKey =
+      provider === "codex"
+        ? codexCanonicalConversationItemKey({
+            externalThreadId: threadIdentity,
+            externalTurnId: turnIdentity,
+            stableItemId,
+            component
+          })
+        : `conversation-item:${sha256({
+            version: 3,
+            provider,
+            externalThreadId: threadIdentity,
+            externalTurnId: turnIdentity,
+            stableItemId,
+            component
+          })}`;
+    if (item.canonicalItemKey !== expectedKey) {
+      throw Object.assign(
+        new Error(
+          "Canonical conversation key does not match the supplied provider identity"
+        ),
+        { statusCode: 400, code: "canonical_identity_mismatch" }
+      );
+    }
+    const content = item.rawText?.replace(/\s+/g, " ").trim();
+    return {
+      ...item,
+      metadata: {
+        ...(item.metadata ?? {}),
+        canonicalConversationItemKey: item.canonicalItemKey,
+        ...(actor ? { canonicalConversationItemActor: actor } : {}),
+        ...(kind ? { canonicalConversationItemKind: kind } : {}),
+        canonicalStableItemId: stableItemId,
+        ...(content
+          ? {
+              canonicalConversationItemContentHash:
+                normalizedContentHash(content)
+            }
+          : {}),
+        ...(item.observationComponent === "control" &&
+        ((item.sourceAdapterVersion === "codex-app-server-conversation-v1" &&
+          item.sourceEventType === "turn/completed") ||
+          (item.sourceAdapterVersion === "codex-transcript-v1" &&
+            ["task_complete", "turn_aborted"].includes(
+              item.sourceEventType ?? ""
+            )))
+          ? { semanticControl: "turn_completed" }
+          : {})
+      }
+    };
+  }
+  return item;
+};
+
+const withValidatedTransportChunkIdentity = (
+  item: ConversationItemInput
+): ConversationItemInput => {
+  const chunkFields = [
+    item.transportChunkIndex,
+    item.transportChunkCount,
+    item.transportChunkText,
+    item.transportChunkEncoding
+  ];
+  const supplied = chunkFields.filter((value) => value !== undefined).length;
+  if (supplied === 0) {
+    return item;
+  }
+  if (
+    supplied !== chunkFields.length ||
+    !item.logicalSourceId ||
+    item.transportChunkIndex === undefined ||
+    item.transportChunkCount === undefined ||
+    item.transportChunkText === undefined ||
+    !item.transportChunkEncoding
+  ) {
+    throw Object.assign(new Error("Transport chunk identity is incomplete"), {
+      statusCode: 400,
+      code: "transport_chunk_identity_incomplete"
+    });
+  }
+  if (
+    item.transportChunkCount > RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT ||
+    item.transportChunkIndex < 0 ||
+    item.transportChunkIndex >= item.transportChunkCount ||
+    Buffer.byteLength(item.transportChunkText, "utf8") >
+      RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES
+  ) {
+    throw Object.assign(new Error("Transport chunk exceeds server limits"), {
+      statusCode: 413,
+      code: "transport_chunk_limit_exceeded"
+    });
+  }
+  const rawJson = isRecord(item.rawJson) ? item.rawJson : {};
+  const sourceItemHash = stringField(rawJson, "sourceItemHash");
+  if (!sourceItemHash) {
+    throw Object.assign(
+      new Error("Transport chunk source item identity is missing"),
+      { statusCode: 400, code: "transport_chunk_source_identity_missing" }
+    );
+  }
+  const expectedGroupId = rawConversationTransportChunkGroupId({
+    sourceKind: item.sourceKind,
+    sourceAdapterVersion: item.sourceAdapterVersion,
+    sourceTransport: item.sourceTransport,
+    logicalSourceId: item.logicalSourceId,
+    sourceItemHash,
+    transportChunkCount: item.transportChunkCount,
+    transportChunkEncoding: item.transportChunkEncoding
+  });
+  const claimedGroupIds = [
+    stringField(rawJson, "transportChunkGroupId"),
+    stringField(item.metadata ?? {}, "transportChunkGroupId")
+  ].filter((value): value is string => Boolean(value));
+  if (claimedGroupIds.some((value) => value !== expectedGroupId)) {
+    throw Object.assign(
+      new Error("Transport chunk group identity does not match its source"),
+      { statusCode: 400, code: "transport_chunk_group_mismatch" }
+    );
   }
   return {
     ...item,
-    idempotencyKey: identity.key,
+    rawJson: { ...rawJson, transportChunkGroupId: expectedGroupId },
     metadata: {
       ...(item.metadata ?? {}),
-      canonicalConversationItemKey: identity.key,
-      canonicalConversationItemActor: identity.actor,
-      canonicalConversationItemKind: identity.kind,
-      canonicalConversationItemContentHash: identity.contentHash
+      transportChunkGroupId: expectedGroupId,
+      sourceItemHash,
+      sourceChunkIndex: item.transportChunkIndex,
+      sourceChunkCount: item.transportChunkCount
     }
   };
 };
+
+const assertManagedCanonicalAdmission = (item: ConversationItemInput): void => {
+  if (
+    item.sourceAdapterVersion !== "codex-app-server-conversation-v1" ||
+    item.observationOnly ||
+    !(
+      /^item\/(started|completed)$/.test(item.sourceEventType ?? "") ||
+      item.sourceEventType === "turn/completed"
+    )
+  ) {
+    return;
+  }
+  if (
+    !item.canonicalItemKey ||
+    !item.canonicalStableItemId ||
+    !item.observationComponent ||
+    !item.externalThreadId ||
+    !item.externalTurnId
+  ) {
+    throw Object.assign(
+      new Error("Managed semantic lifecycle records require exact identity"),
+      { statusCode: 400, code: "managed_canonical_identity_required" }
+    );
+  }
+};
+
+const assertManagedTranscriptTerminal = (
+  item: ConversationItemInput,
+  session: ConversationItemSessionRow | null
+): void => {
+  if (
+    session?.capture_method !== "api" ||
+    session.metadata?.managedConversation !== true ||
+    item.sourceAdapterVersion !== "codex-transcript-v1" ||
+    !["task_complete", "turn_aborted"].includes(item.sourceEventType ?? "")
+  ) {
+    return;
+  }
+  const raw = isRecord(item.rawJson) ? item.rawJson : {};
+  const payload = isRecord(raw.payload) ? raw.payload : {};
+  const expectedStableId = item.externalTurnId
+    ? `turn:${item.externalTurnId}:completed`
+    : null;
+  const expectedCanonicalItemKey =
+    item.externalThreadId && item.externalTurnId && expectedStableId
+      ? codexCanonicalConversationItemKey({
+          externalThreadId: item.externalThreadId,
+          externalTurnId: item.externalTurnId,
+          stableItemId: expectedStableId,
+          component: "control"
+        })
+      : null;
+  if (
+    item.sourceTransport !== "transcript" ||
+    raw.type !== "event_msg" ||
+    payload.type !== item.sourceEventType ||
+    !item.sourcePath ||
+    item.sourceLineNumber === undefined ||
+    !item.externalThreadId ||
+    !item.externalTurnId ||
+    item.canonicalStableItemId !== expectedStableId ||
+    item.observationComponent !== "control" ||
+    item.canonicalItemKey !== expectedCanonicalItemKey
+  ) {
+    throw Object.assign(
+      new Error(
+        "Managed terminal reconciliation requires exact persisted transcript evidence"
+      ),
+      { statusCode: 400, code: "managed_terminal_evidence_invalid" }
+    );
+  }
+};
+
+const canonicalItemKeyFor = (item: ConversationItemInput): string =>
+  item.canonicalItemKey ??
+  stringField(item.metadata ?? {}, "canonicalConversationItemKey") ??
+  item.idempotencyKey;
+
+const canonicalSourcePriorityFor = (item: ConversationItemInput): number => {
+  if (item.sourceAdapterVersion === "codex-transcript-v1") {
+    return 200;
+  }
+  if (
+    item.sourceAdapterVersion === "codex-app-server-conversation-v1" &&
+    item.sourceTransport === "app_server"
+  ) {
+    return item.sourceEventType === "item/completed" ||
+      item.sourceEventType === "turn/completed"
+      ? 300
+      : 100;
+  }
+  if (item.sourceRecordType === "hook_payload") {
+    return 50;
+  }
+  return 100;
+};
+
+const observationKindFor = (
+  item: ConversationItemInput
+): NonNullable<ConversationItemInput["observationKind"]> => {
+  if (item.sourceAdapterVersion === "codex-transcript-v1") {
+    return item.sourceTransport === "transcript"
+      ? "reconciliation"
+      : "snapshot";
+  }
+  if (item.sourceAdapterVersion === "codex-app-server-conversation-v1") {
+    if (item.sourceEventType === "item/started") {
+      return "lifecycle_started";
+    }
+    if (item.sourceEventType === "item/completed") {
+      return "lifecycle_completed";
+    }
+    return "control";
+  }
+  return "snapshot";
+};
+
+const observationKeyFor = (
+  item: ConversationItemInput,
+  sourceIdempotencyKey: string
+): string =>
+  `conversation-item-observation:${sha256({
+    version: 1,
+    sourceKind: item.sourceKind,
+    sourceAdapterVersion: item.sourceAdapterVersion,
+    sourceTransport: item.sourceTransport,
+    sourceIdempotencyKey,
+    observationKind: item.observationKind ?? "snapshot",
+    observationComponent: item.observationComponent ?? null
+  })}`;
+
+const observationIngestionStatusFor = (
+  item: ConversationItemInput
+): "persisted" | "identity_unresolved" =>
+  item.observationOnly ? "identity_unresolved" : "persisted";
 
 const mapConversationItem = (
   row: ConversationItemRow
 ): ConversationItemRecord => ({
   id: row.id,
+  canonicalItemKey: row.canonical_item_key,
   sessionId: row.session_id,
   turnId: row.turn_id,
   sourceKind: row.source_kind,
@@ -403,6 +955,7 @@ const mapConversationItem = (
   externalThreadId: row.external_thread_id,
   externalTurnId: row.external_turn_id,
   externalItemId: row.external_item_id,
+  canonicalStableItemId: row.canonical_stable_item_id,
   sourceRecordType: row.source_record_type,
   sourceEventType: row.source_event_type,
   sourceSequence: row.source_sequence,
@@ -425,8 +978,167 @@ const captureMethodForConversationItem = (
   return "api";
 };
 
+const enforceConversationItemCapturePolicy = async (input: {
+  actor: ActorContext;
+  item: ConversationItemInput;
+  resolveCapturePolicy?: ConversationItemRepositoryOptions["resolveCapturePolicy"];
+}): Promise<void> => {
+  if (!input.resolveCapturePolicy) {
+    return;
+  }
+  const policy = await input.resolveCapturePolicy(input.actor, {
+    ...(input.item.sessionId ? { sessionId: input.item.sessionId } : {})
+  });
+  if (policy.visibility !== "personal") {
+    throw Object.assign(
+      new Error(
+        `Unsupported Capture Target '${policy.visibility}' for raw conversation ingestion`
+      ),
+      { statusCode: 400, code: "unsupported_capture_visibility" }
+    );
+  }
+  if (policy.captureState !== "enabled") {
+    throw Object.assign(
+      new Error("Capture Policy disabled raw conversation ingestion"),
+      {
+        statusCode: 409,
+        code: "capture_disabled",
+        policy: {
+          captureState: policy.captureState,
+          paused: policy.paused,
+          pauseUntil: policy.pauseUntil,
+          source: policy.source
+        }
+      }
+    );
+  }
+};
+
+const sessionlessWorkflowTelemetry = (item: ConversationItemInput): boolean =>
+  item.sourceAdapterVersion === "codex-app-server-v1" &&
+  item.sourceTransport === "app_server" &&
+  ["memory_question", "lcm_summary"].includes(
+    stringField(item.metadata ?? {}, "workflow") ?? ""
+  );
+
+const loadAndValidateConversationItemSession = async (input: {
+  client: pg.PoolClient;
+  actor: ActorContext;
+  item: ConversationItemInput;
+  visibility: Visibility;
+}): Promise<ConversationItemSessionRow | null> => {
+  if (!input.item.sessionId) {
+    if (
+      !input.item.observationOnly &&
+      sessionlessWorkflowTelemetry(input.item)
+    ) {
+      return null;
+    }
+    throw Object.assign(
+      new Error("Conversation ingestion requires a Captured Session"),
+      { statusCode: 400, code: "conversation_session_required" }
+    );
+  }
+
+  const result = await input.client.query<ConversationItemSessionRow>(
+    `
+      select
+        id, workspace_id, external_session_id, external_thread_id,
+        codex_transcript_path, capture_method, metadata
+      from sessions
+      where id = $2
+        and owner_user_id = $1
+        and visibility = $3::visibility_scope
+        and invalidated_at is null
+        and personal_deleted_at is null
+      limit 1
+      for update
+    `,
+    [input.actor.userId, input.item.sessionId, input.visibility]
+  );
+  const session = result.rows[0];
+  if (!session) {
+    throw Object.assign(new Error("Session not found or not visible"), {
+      statusCode: 404,
+      code: "conversation_session_not_found"
+    });
+  }
+
+  const expectedThreadIds = new Set(
+    [session.external_thread_id, session.external_session_id].filter(
+      (value): value is string => Boolean(value)
+    )
+  );
+  const suppliedThreadIds = [
+    input.item.externalThreadId,
+    input.item.externalSessionId
+  ];
+  for (const supplied of suppliedThreadIds) {
+    if (
+      supplied &&
+      expectedThreadIds.size > 0 &&
+      !expectedThreadIds.has(supplied)
+    ) {
+      throw Object.assign(
+        new Error(
+          "Conversation source thread does not match its Captured Session"
+        ),
+        { statusCode: 409, code: "conversation_session_thread_mismatch" }
+      );
+    }
+  }
+  if (
+    input.item.externalThreadId &&
+    input.item.externalSessionId &&
+    input.item.externalThreadId !== input.item.externalSessionId
+  ) {
+    throw Object.assign(new Error("Conversation source identities disagree"), {
+      statusCode: 409,
+      code: "conversation_source_identity_mismatch"
+    });
+  }
+  if (
+    session.codex_transcript_path &&
+    input.item.sourcePath &&
+    session.codex_transcript_path !== input.item.sourcePath
+  ) {
+    throw Object.assign(
+      new Error(
+        "Conversation transcript path does not match its Captured Session"
+      ),
+      { statusCode: 409, code: "conversation_session_transcript_mismatch" }
+    );
+  }
+  if (
+    session.metadata?.managedConversation === true &&
+    expectedThreadIds.size > 0 &&
+    !input.item.externalThreadId &&
+    !input.item.externalSessionId
+  ) {
+    throw Object.assign(
+      new Error(
+        "Managed conversation records require provider thread identity"
+      ),
+      { statusCode: 400, code: "managed_thread_identity_required" }
+    );
+  }
+  return session;
+};
+
+const withAuthoritativeSessionMetadata = (
+  item: ConversationItemInput,
+  session: ConversationItemSessionRow | null
+): ConversationItemInput => {
+  const metadata = { ...(item.metadata ?? {}) };
+  delete metadata.workspaceId;
+  if (session?.workspace_id) {
+    metadata.workspaceId = session.workspace_id;
+  }
+  return { ...item, metadata };
+};
+
 const ensureConversationItemTurn = async (
-  pool: pg.Pool,
+  pool: pg.Pool | pg.PoolClient,
   input: {
     ownerUserId: string | null;
     visibility: Visibility;
@@ -456,11 +1168,12 @@ const ensureConversationItemTurn = async (
     return null;
   }
 
-  let result: pg.QueryResult<{ id: string }> | null = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      result = await pool.query<{ id: string }>(
-        `
+  await pool.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `conversation-turn:${input.ownerUserId}:${item.sessionId}`
+  ]);
+
+  const result = await pool.query<{ id: string }>(
+    `
           insert into turns (
             session_id,
             owner_user_id,
@@ -501,48 +1214,380 @@ const ensureConversationItemTurn = async (
             source_metadata = turns.source_metadata || excluded.source_metadata
           returning id
         `,
-        [
-          item.sessionId,
-          input.ownerUserId,
-          input.visibility,
-          item.externalTurnId,
-          item.sourceKind === "codex-cli" ? "codex-cli" : "codex",
-          captureMethodForConversationItem(item),
-          item.sourcePath ?? null,
-          `turn:${item.sessionId}:${item.externalTurnId}`,
-          `turn:${item.sessionId}:${item.externalTurnId}`,
-          item.sourceKind,
-          item.sourceAdapterVersion,
-          item.externalThreadId ?? item.externalSessionId ?? null,
-          {
-            externalSessionId: item.externalSessionId,
-            externalThreadId: item.externalThreadId ?? item.externalSessionId,
-            sourceTransport: item.sourceTransport
-          }
-        ]
-      );
-      break;
-    } catch (error) {
-      const code =
-        typeof error === "object" && error !== null && "code" in error
-          ? String(error.code)
-          : "";
-      const constraint =
-        typeof error === "object" && error !== null && "constraint" in error
-          ? String(error.constraint)
-          : "";
-      if (
-        code === "23505" &&
-        constraint === "turns_session_turn_index_unique" &&
-        attempt < 4
-      ) {
-        continue;
+    [
+      item.sessionId,
+      input.ownerUserId,
+      input.visibility,
+      item.externalTurnId,
+      item.sourceKind === "codex-cli" ? "codex-cli" : "codex",
+      captureMethodForConversationItem(item),
+      item.sourcePath ?? null,
+      `turn:${item.sessionId}:${item.externalTurnId}`,
+      `turn:${item.sessionId}:${item.externalTurnId}`,
+      item.sourceKind,
+      item.sourceAdapterVersion,
+      item.externalThreadId ?? item.externalSessionId ?? null,
+      {
+        externalSessionId: item.externalSessionId,
+        externalThreadId: item.externalThreadId ?? item.externalSessionId,
+        sourceTransport: item.sourceTransport
       }
-      throw error;
-    }
-  }
+    ]
+  );
 
   return result?.rows[0]?.id ?? null;
+};
+
+const persistConversationItemObservation = async (input: {
+  client: pg.PoolClient;
+  actor: ActorContext;
+  item: ConversationItemInput;
+  conversationItemId: string | null;
+  canonicalItemKey: string | null;
+  sourceIdempotencyKey: string;
+  suppressPlaintextRaw: boolean;
+  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  payloadHash: string;
+}): Promise<void> => {
+  const observationKey = observationKeyFor(
+    input.item,
+    input.sourceIdempotencyKey
+  );
+  const rawJsonForStorage = input.suppressPlaintextRaw
+    ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_JSON
+    : input.item.rawJson;
+  const rawTextForStorage =
+    input.suppressPlaintextRaw && hasEncryptableText(input.item.rawText)
+      ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT
+      : (input.item.rawText ?? null);
+  const transportChunkTextForStorage =
+    input.suppressPlaintextRaw &&
+    hasEncryptableText(input.item.transportChunkText)
+      ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT
+      : (input.item.transportChunkText ?? null);
+  const sourcePathForStorage =
+    input.suppressPlaintextRaw && hasEncryptableText(input.item.sourcePath)
+      ? ENCRYPTED_CONVERSATION_ITEM_OBSERVATION_TEXT
+      : (input.item.sourcePath ?? null);
+  const metadata = input.suppressPlaintextRaw
+    ? safeConversationMetadata(
+        input.item.metadata ?? {},
+        "encryptedConversationItemObservationColumns",
+        [
+          "raw_json",
+          ...(hasEncryptableText(input.item.rawText) ? ["raw_text"] : []),
+          ...(hasEncryptableText(input.item.transportChunkText)
+            ? ["transport_chunk_text"]
+            : []),
+          ...(hasEncryptableText(input.item.sourcePath) ? ["source_path"] : []),
+          "metadata"
+        ]
+      )
+    : (input.item.metadata ?? {});
+  const result = await input.client.query<ConversationItemObservationRow>(
+    `
+      insert into conversation_item_observations (
+        conversation_item_id,
+        session_id,
+        owner_user_id,
+        visibility,
+        canonical_item_key,
+        canonical_stable_item_id,
+        observation_key,
+        observation_kind,
+        ingestion_status,
+        observation_component,
+        source_kind,
+        source_adapter_version,
+        source_transport,
+        external_session_id,
+        external_thread_id,
+        external_turn_id,
+        external_item_id,
+        source_record_type,
+        source_event_type,
+        source_path,
+        source_line_number,
+        source_sequence,
+        event_time,
+        observed_at,
+        raw_json,
+        raw_text,
+        transport_chunk_index,
+        transport_chunk_count,
+        transport_chunk_text,
+        transport_chunk_encoding,
+        source_hash,
+        payload_hash,
+        source_idempotency_key,
+        metadata
+      )
+      values (
+        $1, $2, $3, 'personal', $4, $5, $6, $7, $8, $9,
+        $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29,
+        $30, $31, $32, $33
+      )
+      on conflict (owner_user_id, observation_key)
+        where visibility = 'personal'
+      do nothing
+      returning id, true as inserted
+    `,
+    [
+      input.conversationItemId,
+      input.item.sessionId ?? null,
+      input.actor.userId,
+      input.canonicalItemKey,
+      input.item.canonicalStableItemId ?? null,
+      observationKey,
+      input.item.observationKind ?? "snapshot",
+      observationIngestionStatusFor(input.item),
+      input.item.observationComponent ?? null,
+      input.item.sourceKind,
+      input.item.sourceAdapterVersion,
+      input.item.sourceTransport,
+      input.item.externalSessionId ?? null,
+      input.item.externalThreadId ?? input.item.externalSessionId ?? null,
+      input.item.externalTurnId ?? null,
+      input.item.externalItemId ?? null,
+      input.item.sourceRecordType,
+      input.item.sourceEventType ?? null,
+      sourcePathForStorage,
+      input.item.sourceLineNumber ?? null,
+      input.item.sourceSequence ?? null,
+      input.item.eventTime ?? null,
+      input.item.observedAt ?? new Date().toISOString(),
+      JSON.stringify(rawJsonForStorage),
+      rawTextForStorage,
+      input.item.transportChunkIndex ?? null,
+      input.item.transportChunkCount ?? null,
+      transportChunkTextForStorage,
+      input.item.transportChunkEncoding ?? null,
+      input.item.sourceHash,
+      input.payloadHash,
+      input.sourceIdempotencyKey,
+      metadata
+    ]
+  );
+  let observation = result.rows[0];
+  if (!observation) {
+    const existing =
+      await input.client.query<ExistingConversationItemObservationRow>(
+        `
+        select
+          id,
+          conversation_item_id,
+          canonical_item_key,
+          observation_key,
+          payload_hash,
+          source_hash,
+          metadata
+        from conversation_item_observations
+        where owner_user_id = $1
+          and observation_key = $2
+          and visibility = 'personal'
+        limit 1
+      `,
+        [input.actor.userId, observationKey]
+      );
+    const replay = existing.rows[0];
+    if (
+      replay &&
+      replay.conversation_item_id === input.conversationItemId &&
+      replay.canonical_item_key === input.canonicalItemKey &&
+      replay.payload_hash === input.payloadHash
+    ) {
+      observation = { id: replay.id, inserted: false };
+    }
+  }
+  if (!observation) {
+    throw Object.assign(
+      new Error(
+        "Source observation identity conflicts with a different canonical conversation item"
+      ),
+      { statusCode: 409 }
+    );
+  }
+  if (
+    input.suppressPlaintextRaw &&
+    input.envelopeEncryptionProvider &&
+    observation.inserted
+  ) {
+    const encryptionInput = {
+      rowFamily: "conversation_item_observation",
+      scope: {
+        tenantId: input.actor.userId,
+        workspaceId: input.item.sessionId ?? null,
+        objectClass: "conversation_item_observation"
+      },
+      aad: {
+        conversationItemId: input.conversationItemId,
+        sourceTransport: input.item.sourceTransport,
+        sourceRecordType: input.item.sourceRecordType,
+        sourceEventType: input.item.sourceEventType ?? null
+      }
+    } as const;
+    await upsertEncryptedFieldPayloadWithClient(
+      input.client,
+      input.actor,
+      input.envelopeEncryptionProvider,
+      {
+        sourceTable: "conversation_item_observations",
+        sourceId: observation.id,
+        sourceColumn: "raw_json",
+        plaintext: input.item.rawJson,
+        ...encryptionInput
+      }
+    );
+    if (hasEncryptableText(input.item.rawText)) {
+      await upsertEncryptedFieldPayloadWithClient(
+        input.client,
+        input.actor,
+        input.envelopeEncryptionProvider,
+        {
+          sourceTable: "conversation_item_observations",
+          sourceId: observation.id,
+          sourceColumn: "raw_text",
+          plaintext: input.item.rawText,
+          ...encryptionInput
+        }
+      );
+    }
+    if (hasEncryptableText(input.item.transportChunkText)) {
+      await upsertEncryptedFieldPayloadWithClient(
+        input.client,
+        input.actor,
+        input.envelopeEncryptionProvider,
+        {
+          sourceTable: "conversation_item_observations",
+          sourceId: observation.id,
+          sourceColumn: "transport_chunk_text",
+          plaintext: input.item.transportChunkText,
+          ...encryptionInput
+        }
+      );
+    }
+    if (hasEncryptableText(input.item.sourcePath)) {
+      await upsertEncryptedFieldPayloadWithClient(
+        input.client,
+        input.actor,
+        input.envelopeEncryptionProvider,
+        {
+          sourceTable: "conversation_item_observations",
+          sourceId: observation.id,
+          sourceColumn: "source_path",
+          plaintext: input.item.sourcePath,
+          ...encryptionInput
+        }
+      );
+    }
+    await upsertEncryptedFieldPayloadWithClient(
+      input.client,
+      input.actor,
+      input.envelopeEncryptionProvider,
+      {
+        sourceTable: "conversation_item_observations",
+        sourceId: observation.id,
+        sourceColumn: "metadata",
+        plaintext: input.item.metadata ?? {},
+        ...encryptionInput
+      }
+    );
+    await synchronizeEncryptedConversationItemColumns({
+      client: input.client,
+      sourceTable: "conversation_item_observations",
+      sourceId: observation.id
+    });
+  }
+};
+
+const legacyConversationItemPayloadHash = async (input: {
+  pool: pg.Pool;
+  client: pg.PoolClient;
+  actor: ActorContext;
+  row: LegacyConversationItemReplayRow;
+  envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+}): Promise<string> => {
+  const encrypted = await input.client.query<{ source_column: string }>(
+    `
+      select source_column
+      from encrypted_field_payloads
+      where source_table = 'conversation_items'
+        and source_id = $1
+        and invalidated_at is null
+        and source_column = any($2::text[])
+    `,
+    [input.row.id, ["raw_json", "raw_text", "transport_chunk_text"]]
+  );
+  const encryptedColumns = new Set(
+    encrypted.rows.map((entry) => entry.source_column)
+  );
+  const decryptColumn = async (
+    sourceColumn: "raw_json" | "raw_text" | "transport_chunk_text",
+    storedValue: unknown
+  ): Promise<unknown> => {
+    if (!encryptedColumns.has(sourceColumn)) {
+      return storedValue;
+    }
+    if (!input.envelopeEncryptionProvider) {
+      throw Object.assign(
+        new Error(
+          "Envelope encryption provider is required to verify encrypted legacy conversation replay"
+        ),
+        { statusCode: 409, code: "legacy_replay_encryption_required" }
+      );
+    }
+    const decrypted = await createEncryptedPayloadRepository(
+      input.pool
+    ).decryptAuthorizedEncryptedField(
+      input.actor,
+      input.envelopeEncryptionProvider,
+      {
+        sourceTable: "conversation_items",
+        sourceId: input.row.id,
+        sourceColumn
+      }
+    );
+    if (!decrypted) {
+      throw Object.assign(
+        new Error(
+          `Encrypted legacy conversation replay is missing ${sourceColumn}`
+        ),
+        { statusCode: 409, code: "legacy_replay_encrypted_payload_missing" }
+      );
+    }
+    return decrypted.plaintext;
+  };
+  const rawJson = await decryptColumn("raw_json", input.row.raw_json);
+  const rawText = await decryptColumn("raw_text", input.row.raw_text);
+  const transportChunkText = await decryptColumn(
+    "transport_chunk_text",
+    input.row.transport_chunk_text
+  );
+  const hasTransportChunk =
+    input.row.transport_chunk_count > 1 ||
+    typeof transportChunkText === "string" ||
+    input.row.transport_chunk_encoding !== null;
+  return observationPayloadHashFor({
+    sourceKind: input.row.source_kind,
+    sourceAdapterVersion: input.row.source_adapter_version,
+    sourceTransport: input.row.source_transport,
+    sourceRecordType: input.row.source_record_type,
+    sourceEventType: input.row.source_event_type ?? undefined,
+    rawJson,
+    rawText: typeof rawText === "string" ? rawText : undefined,
+    transportChunkIndex: hasTransportChunk
+      ? input.row.transport_chunk_index
+      : undefined,
+    transportChunkCount: hasTransportChunk
+      ? input.row.transport_chunk_count
+      : undefined,
+    transportChunkText:
+      typeof transportChunkText === "string" ? transportChunkText : undefined,
+    transportChunkEncoding: input.row.transport_chunk_encoding ?? undefined,
+    sourceHash: input.row.source_hash,
+    idempotencyKey: input.row.idempotency_key
+  });
 };
 
 export const createConversationItemRepository = (
@@ -552,9 +1597,19 @@ export const createConversationItemRepository = (
   async createConversationItems(actor, input) {
     const records: ConversationItemRecord[] = [];
     for (const inputItem of input.items) {
-      const item = withCanonicalConversationIdentity(
+      const sanitizedItem = withValidatedTransportChunkIdentity(
         sanitizeConversationItemForStorage(inputItem)
       );
+      assertManagedCanonicalAdmission(sanitizedItem);
+      const sourceIdempotencyKey = sanitizedItem.idempotencyKey;
+      let item = withCanonicalConversationIdentity({
+        ...sanitizedItem,
+        observationKind: observationKindFor(sanitizedItem)
+      });
+      const canonicalItemKey = canonicalItemKeyFor(item);
+      const payloadHash = observationPayloadHashFor(item);
+      const observationKey = observationKeyFor(item, sourceIdempotencyKey);
+      const canonicalSourcePriority = canonicalSourcePriorityFor(item);
       const visibility = item.visibility ?? "personal";
       const ownerUserId = actor.userId;
       const suppressPlaintextRaw =
@@ -568,49 +1623,257 @@ export const createConversationItemRepository = (
         ? ENCRYPTED_CONVERSATION_ITEM_JSON
         : item.rawJson;
       const rawTextForStorage =
-        suppressPlaintextRaw && isPresent(item.rawText)
+        suppressPlaintextRaw && hasEncryptableText(item.rawText)
           ? ENCRYPTED_CONVERSATION_ITEM_TEXT
           : (item.rawText ?? null);
       const transportChunkTextForStorage =
-        suppressPlaintextRaw && isPresent(item.transportChunkText)
+        suppressPlaintextRaw && hasEncryptableText(item.transportChunkText)
           ? ENCRYPTED_CONVERSATION_ITEM_TEXT
           : (item.transportChunkText ?? null);
-      const metadataForStorage = suppressPlaintextRaw
-        ? {
-            ...(item.metadata ?? {}),
-            encryptedConversationItemColumns: [
-              "raw_json",
-              ...(isPresent(item.rawText) ? ["raw_text"] : []),
-              ...(isPresent(item.transportChunkText)
-                ? ["transport_chunk_text"]
-                : [])
-            ]
-          }
-        : (item.metadata ?? {});
-      if (item.sessionId) {
-        const visibleSession = await pool.query<{ id: string }>(
-          `
-            select s.id
-            from sessions s
-            where s.id = $2
-              and s.invalidated_at is null
-              and s.visibility = $3::visibility_scope
-              and s.owner_user_id = $1
+      const sourcePathForStorage =
+        suppressPlaintextRaw && hasEncryptableText(item.sourcePath)
+          ? ENCRYPTED_CONVERSATION_ITEM_TEXT
+          : (item.sourcePath ?? null);
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`capture-policy:${ownerUserId}`]
+        );
+        const verifiedSession = await loadAndValidateConversationItemSession({
+          client,
+          actor,
+          item,
+          visibility
+        });
+        assertManagedTranscriptTerminal(item, verifiedSession);
+        item = withAuthoritativeSessionMetadata(item, verifiedSession);
+        const metadataForStorage = suppressPlaintextRaw
+          ? safeConversationMetadata(
+              item.metadata ?? {},
+              "encryptedConversationItemColumns",
+              [
+                "raw_json",
+                ...(hasEncryptableText(item.rawText) ? ["raw_text"] : []),
+                ...(hasEncryptableText(item.transportChunkText)
+                  ? ["transport_chunk_text"]
+                  : []),
+                ...(hasEncryptableText(item.sourcePath) ? ["source_path"] : []),
+                "metadata"
+              ]
+            )
+          : (item.metadata ?? {});
+        await enforceConversationItemCapturePolicy({
+          actor,
+          item,
+          resolveCapturePolicy: options.resolveCapturePolicy
+        });
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `conversation-item:${ownerUserId ?? "anonymous"}:${visibility}:${canonicalItemKey}`
+          ]
+        );
+
+        const replayRows =
+          await client.query<ExistingConversationItemObservationRow>(
+            `
+            select
+              id,
+              conversation_item_id,
+              canonical_item_key,
+              observation_key,
+              payload_hash,
+              source_hash,
+              metadata
+            from conversation_item_observations
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and observation_key = $2
             limit 1
           `,
-          [actor.userId, item.sessionId, visibility]
-        );
-        if (visibleSession.rowCount === 0) {
-          throw new Error("Session not found or not visible");
+            [ownerUserId, observationKey]
+          );
+        const replay = replayRows.rows[0];
+        if (replay) {
+          const replayPayloadMatches = replay.payload_hash === payloadHash;
+          if (item.observationOnly) {
+            if (
+              replay.conversation_item_id !== null ||
+              replay.canonical_item_key !== null ||
+              !replayPayloadMatches
+            ) {
+              throw Object.assign(
+                new Error(
+                  "Source observation identity conflicts with different observation bytes"
+                ),
+                { statusCode: 409, code: "observation_integrity_conflict" }
+              );
+            }
+            await client.query("commit");
+            continue;
+          }
+          if (
+            replay.canonical_item_key !== canonicalItemKey ||
+            !replayPayloadMatches
+          ) {
+            throw Object.assign(
+              new Error(
+                "Source observation identity conflicts with different observation bytes"
+              ),
+              { statusCode: 409, code: "observation_integrity_conflict" }
+            );
+          }
+          const replayedItem = await client.query<ConversationItemRow>(
+            `
+              select
+                id, owner_user_id, session_id, turn_id, source_kind,
+                source_adapter_version, source_transport, external_session_id,
+                external_thread_id, external_turn_id, external_item_id,
+                canonical_stable_item_id, source_record_type,
+                source_event_type, source_sequence, idempotency_key,
+                canonical_item_key,
+                canonical_source_priority, created_at
+              from conversation_items
+              where id = $1
+                and owner_user_id = $2
+                and visibility = 'personal'
+              limit 1
+            `,
+            [replay.conversation_item_id, ownerUserId]
+          );
+          const replayedRow = replayedItem.rows[0];
+          if (!replayedRow) {
+            throw Object.assign(
+              new Error(
+                "Source observation points to a missing canonical conversation item"
+              ),
+              { statusCode: 409, code: "observation_parent_missing" }
+            );
+          }
+          await client.query("commit");
+          records.push(mapConversationItem(replayedRow));
+          continue;
         }
-      }
 
-      const turnId = await ensureConversationItemTurn(pool, {
-        ownerUserId,
-        visibility,
-        item
-      });
-      const upsertSql = `
+        const legacyCandidates =
+          await client.query<LegacyConversationItemReplayRow>(
+            `
+              select
+                ci.id, ci.owner_user_id, ci.session_id, ci.turn_id,
+                ci.source_kind, ci.source_adapter_version, ci.source_transport,
+                ci.external_session_id, ci.external_thread_id,
+                ci.external_turn_id, ci.external_item_id,
+                ci.canonical_stable_item_id, ci.source_record_type,
+                ci.source_event_type, ci.source_path, ci.source_line_number,
+                ci.source_sequence, ci.event_time, ci.observed_at, ci.raw_json,
+                ci.raw_text, ci.logical_source_id, ci.transport_chunk_index,
+                ci.transport_chunk_count, ci.transport_chunk_text,
+                ci.transport_chunk_encoding, ci.source_hash,
+                ci.idempotency_key, ci.canonical_item_key,
+                ci.canonical_source_priority, ci.metadata, ci.created_at
+              from conversation_items ci
+              where $14::boolean = false
+                and ci.owner_user_id = $1
+                and ci.visibility = $2::visibility_scope
+                and ci.session_id is not distinct from $3::uuid
+                and ci.source_kind = $4
+                and ci.source_adapter_version = $5
+                and ci.source_transport = $6
+                and ci.external_thread_id is not distinct from $7::text
+                and ci.external_turn_id is not distinct from $8::text
+                and ci.external_item_id is not distinct from $9::text
+                and ci.source_record_type = $10
+                and ci.source_event_type is not distinct from $11::text
+                and ci.source_line_number is not distinct from $12::integer
+                and ci.source_sequence is not distinct from $13::integer
+                and not exists (
+                  select 1
+                  from conversation_item_observations observation
+                  where observation.conversation_item_id = ci.id
+                )
+              order by ci.created_at asc, ci.id asc
+              limit 2
+              for update
+            `,
+            [
+              ownerUserId,
+              visibility,
+              item.sessionId ?? null,
+              item.sourceKind,
+              item.sourceAdapterVersion,
+              item.sourceTransport,
+              item.externalThreadId ?? item.externalSessionId ?? null,
+              item.externalTurnId ?? null,
+              item.externalItemId ?? null,
+              item.sourceRecordType,
+              item.sourceEventType ?? null,
+              item.sourceLineNumber ?? null,
+              item.sourceSequence ?? null,
+              item.observationOnly === true
+            ]
+          );
+        if (legacyCandidates.rows.length > 1) {
+          throw Object.assign(
+            new Error(
+              "Legacy conversation replay identity matches multiple canonical parents"
+            ),
+            { statusCode: 409, code: "legacy_replay_identity_ambiguous" }
+          );
+        }
+        const legacyParent = legacyCandidates.rows[0];
+        let legacyParentIdToRetire: string | null = null;
+        if (legacyParent) {
+          const legacyPayloadHash = await legacyConversationItemPayloadHash({
+            pool,
+            client,
+            actor: { userId: ownerUserId },
+            row: legacyParent,
+            envelopeEncryptionProvider: options.envelopeEncryptionProvider
+          });
+          if (
+            legacyParent.source_hash !== item.sourceHash ||
+            legacyPayloadHash !== payloadHash
+          ) {
+            throw Object.assign(
+              new Error(
+                "Legacy conversation replay identity conflicts with different observation bytes"
+              ),
+              { statusCode: 409, code: "legacy_replay_integrity_conflict" }
+            );
+          }
+          if (legacyParent.canonical_item_key !== canonicalItemKey) {
+            legacyParentIdToRetire = legacyParent.id;
+          }
+        }
+        const managedProjectionHold =
+          verifiedSession?.capture_method === "api" &&
+          verifiedSession.metadata?.managedConversation === true &&
+          Boolean(item.externalTurnId);
+
+        if (item.observationOnly) {
+          await persistConversationItemObservation({
+            client,
+            actor: { userId: ownerUserId },
+            item,
+            conversationItemId: null,
+            canonicalItemKey: null,
+            sourceIdempotencyKey,
+            suppressPlaintextRaw,
+            envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+            payloadHash
+          });
+          await client.query("commit");
+          continue;
+        }
+
+        const turnId = await ensureConversationItemTurn(client, {
+          ownerUserId,
+          visibility,
+          item
+        });
+        const upsertSql = `
         insert into conversation_items (
           owner_user_id,
           visibility,
@@ -623,6 +1886,7 @@ export const createConversationItemRepository = (
           external_thread_id,
           external_turn_id,
           external_item_id,
+          canonical_stable_item_id,
           parent_external_item_id,
           source_record_type,
           source_event_type,
@@ -630,6 +1894,7 @@ export const createConversationItemRepository = (
           source_line_number,
           source_sequence,
           event_time,
+          observed_at,
           raw_json,
           raw_text,
           logical_source_id,
@@ -639,6 +1904,8 @@ export const createConversationItemRepository = (
           transport_chunk_encoding,
           source_hash,
           idempotency_key,
+          canonical_item_key,
+          canonical_source_priority,
           projection_status,
           projection_version,
           projection_error,
@@ -648,342 +1915,613 @@ export const createConversationItemRepository = (
           $1, $2, $3, $4, $5, $6, $7, $8, $9,
           $10, $11, $12, $13, $14, $15, $16, $17, $18,
           $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-          $29, $30, $31
+          $29, $30, $31, $32, $33, $34, $35
         )
-        on conflict (owner_user_id, idempotency_key)
+        on conflict (owner_user_id, canonical_item_key)
           where visibility = 'personal'
         do update set
-          session_id = coalesce(excluded.session_id, conversation_items.session_id),
-          turn_id = coalesce(excluded.turn_id, conversation_items.turn_id),
+          session_id = coalesce(conversation_items.session_id, excluded.session_id),
+          turn_id = coalesce(conversation_items.turn_id, excluded.turn_id),
           source_kind = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.source_kind
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.source_kind
             else conversation_items.source_kind
           end,
           source_adapter_version = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.source_adapter_version
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.source_adapter_version
             else conversation_items.source_adapter_version
           end,
           source_transport = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.source_transport
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.source_transport
             else conversation_items.source_transport
           end,
           external_session_id = coalesce(
-            excluded.external_session_id,
-            conversation_items.external_session_id
+            conversation_items.external_session_id,
+            excluded.external_session_id
           ),
           external_thread_id = coalesce(
-            excluded.external_thread_id,
-            conversation_items.external_thread_id
+            conversation_items.external_thread_id,
+            excluded.external_thread_id
           ),
           external_turn_id = coalesce(
-            excluded.external_turn_id,
-            conversation_items.external_turn_id
+            conversation_items.external_turn_id,
+            excluded.external_turn_id
           ),
-          external_item_id = coalesce(
-            excluded.external_item_id,
-            conversation_items.external_item_id
+          external_item_id = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then coalesce(excluded.external_item_id, conversation_items.external_item_id)
+            else conversation_items.external_item_id
+          end,
+          canonical_stable_item_id = coalesce(
+            conversation_items.canonical_stable_item_id,
+            excluded.canonical_stable_item_id
           ),
           parent_external_item_id = coalesce(
-            excluded.parent_external_item_id,
-            conversation_items.parent_external_item_id
+            conversation_items.parent_external_item_id,
+            excluded.parent_external_item_id
           ),
           source_record_type = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.source_record_type
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.source_record_type
             else conversation_items.source_record_type
           end,
           source_event_type = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.source_event_type
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.source_event_type
             else conversation_items.source_event_type
           end,
           source_path = coalesce(
-            excluded.source_path,
-            conversation_items.source_path
+            conversation_items.source_path,
+            excluded.source_path
           ),
           source_line_number = coalesce(
-            excluded.source_line_number,
-            conversation_items.source_line_number
+            conversation_items.source_line_number,
+            excluded.source_line_number
           ),
-          source_sequence = coalesce(
-            excluded.source_sequence,
-            conversation_items.source_sequence
-          ),
-          event_time = coalesce(
-            excluded.event_time,
-            conversation_items.event_time
+          source_sequence = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then coalesce(excluded.source_sequence, conversation_items.source_sequence)
+            else conversation_items.source_sequence
+          end,
+          event_time = case
+            when excluded.event_time is null
+            then conversation_items.event_time
+            when conversation_items.event_time is null
+              or excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.event_time
+            else conversation_items.event_time
+          end,
+          observed_at = least(
+            conversation_items.observed_at,
+            excluded.observed_at
           ),
           raw_json = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.raw_json
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then excluded.raw_json
             else conversation_items.raw_json
           end,
-          raw_text = coalesce(excluded.raw_text, conversation_items.raw_text),
-          logical_source_id = coalesce(
-            excluded.logical_source_id,
-            conversation_items.logical_source_id
-          ),
+          raw_text = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then coalesce(excluded.raw_text, conversation_items.raw_text)
+            else conversation_items.raw_text
+          end,
+          logical_source_id = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then excluded.logical_source_id
+            else conversation_items.logical_source_id
+          end,
           transport_chunk_index = case
-            when excluded.transport_chunk_count > conversation_items.transport_chunk_count
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
             then excluded.transport_chunk_index
             else conversation_items.transport_chunk_index
           end,
-          transport_chunk_count = greatest(
-            conversation_items.transport_chunk_count,
-            excluded.transport_chunk_count
-          ),
-          transport_chunk_text = coalesce(
-            excluded.transport_chunk_text,
-            conversation_items.transport_chunk_text
-          ),
-          transport_chunk_encoding = coalesce(
-            excluded.transport_chunk_encoding,
-            conversation_items.transport_chunk_encoding
+          transport_chunk_count = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then excluded.transport_chunk_count
+            else conversation_items.transport_chunk_count
+          end,
+          transport_chunk_text = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then excluded.transport_chunk_text
+            else conversation_items.transport_chunk_text
+          end,
+          transport_chunk_encoding = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then excluded.transport_chunk_encoding
+            else conversation_items.transport_chunk_encoding
+          end,
+          source_hash = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then excluded.source_hash
+            else conversation_items.source_hash
+          end,
+          canonical_source_priority = greatest(
+            conversation_items.canonical_source_priority,
+            excluded.canonical_source_priority
           ),
           projection_status = case
-            when conversation_items.projection_status = 'projected'
-              and excluded.metadata ? 'canonicalConversationItemKey'
+            when excluded.projection_status = 'pending'
               and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+                excluded.canonical_source_priority > conversation_items.canonical_source_priority
+                or conversation_items.projection_status = 'raw_only'
+                or (
+                  excluded.event_time is not null
+                  and (
+                    conversation_items.event_time is null
+                    or excluded.canonical_source_priority > conversation_items.canonical_source_priority
+                  )
+                  and excluded.event_time is distinct from conversation_items.event_time
+                )
               )
-            then 'pending'
+            then excluded.projection_status
             else conversation_items.projection_status
           end,
           projection_version = case
-            when excluded.metadata ? 'canonicalConversationItemKey' and (
-              case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-            ) >= (
-              case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
-            ) then excluded.projection_version
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then excluded.projection_version
             else conversation_items.projection_version
+          end,
+          projection_policy_revision = case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+            then null
+            else conversation_items.projection_policy_revision
           end,
           projection_error = null,
           projected_at = case
             when conversation_items.projection_status = 'projected'
-              and excluded.metadata ? 'canonicalConversationItemKey'
               and (
-                case when excluded.source_record_type = 'hook_payload' then 0 else 1 end
-              ) >= (
-                case when conversation_items.source_record_type = 'hook_payload' then 0 else 1 end
+                excluded.canonical_source_priority > conversation_items.canonical_source_priority
+                or (
+                  excluded.event_time is not null
+                  and (
+                    conversation_items.event_time is null
+                    or excluded.canonical_source_priority > conversation_items.canonical_source_priority
+                  )
+                  and excluded.event_time is distinct from conversation_items.event_time
+                )
               )
             then null
             else conversation_items.projected_at
           end,
-          metadata = conversation_items.metadata || excluded.metadata
+          metadata = (case
+            when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+              or (
+                excluded.canonical_source_priority = conversation_items.canonical_source_priority
+                and excluded.transport_chunk_count > 1
+                and excluded.transport_chunk_index < conversation_items.transport_chunk_index
+              )
+            then conversation_items.metadata || excluded.metadata
+            else excluded.metadata || conversation_items.metadata
+          end) || case
+            when conversation_items.metadata ? 'toolCall'
+              or excluded.metadata ? 'toolCall'
+            then jsonb_build_object(
+              'toolCall',
+              case
+                when excluded.canonical_source_priority > conversation_items.canonical_source_priority
+                then coalesce(conversation_items.metadata -> 'toolCall', '{}'::jsonb)
+                  || coalesce(excluded.metadata -> 'toolCall', '{}'::jsonb)
+                else coalesce(excluded.metadata -> 'toolCall', '{}'::jsonb)
+                  || coalesce(conversation_items.metadata -> 'toolCall', '{}'::jsonb)
+              end
+            )
+            else '{}'::jsonb
+          end
         returning
           id, owner_user_id, session_id, turn_id, source_kind,
           source_adapter_version, source_transport, external_session_id,
           external_thread_id, external_turn_id, external_item_id,
+          canonical_stable_item_id,
           source_record_type, source_event_type, source_sequence,
-          idempotency_key, created_at
+          idempotency_key, canonical_item_key, canonical_source_priority,
+          created_at
       `;
-      const upsertParams = [
-        ownerUserId,
-        visibility,
-        item.sessionId ?? null,
-        turnId,
-        item.sourceKind,
-        item.sourceAdapterVersion,
-        item.sourceTransport,
-        item.externalSessionId ?? null,
-        item.externalThreadId ?? item.externalSessionId ?? null,
-        item.externalTurnId ?? null,
-        item.externalItemId ?? null,
-        item.parentExternalItemId ?? null,
-        item.sourceRecordType,
-        item.sourceEventType ?? null,
-        item.sourcePath ?? null,
-        item.sourceLineNumber ?? null,
-        item.sourceSequence ?? null,
-        item.eventTime ?? null,
-        JSON.stringify(rawJsonForStorage),
-        rawTextForStorage,
-        item.logicalSourceId ?? null,
-        item.transportChunkIndex ?? 0,
-        item.transportChunkCount ?? 1,
-        transportChunkTextForStorage,
-        item.transportChunkEncoding ?? null,
-        item.sourceHash,
-        item.idempotencyKey,
-        item.projectionStatus ?? "pending",
-        item.projectionVersion ?? null,
-        item.projectionError ?? null,
-        metadataForStorage
-      ];
-      const upsertedRow = suppressPlaintextRaw
-        ? await (async (): Promise<ConversationItemRow | undefined> => {
-            const client = await pool.connect();
-            try {
-              await client.query("begin");
-              await client.query(
-                "select pg_advisory_xact_lock(hashtextextended($1, 0))",
-                [
-                  `conversation_items:${ownerUserId ?? "anonymous"}:${visibility}:${item.idempotencyKey}`
-                ]
-              );
-              const existing = await client.query<{
-                source_record_type: string;
-              }>(
-                `
-	                  select source_record_type
-	                  from conversation_items
-	                  where owner_user_id = $1
-	                    and idempotency_key = $2
-	                    and visibility = $3::visibility_scope
-	                  for update
-	                `,
-                [ownerUserId, item.idempotencyKey, visibility]
-              );
-              const existingSourceRecordType =
-                existing.rows[0]?.source_record_type;
-              const incomingHasCanonicalIdentity =
-                Object.prototype.hasOwnProperty.call(
-                  metadataForStorage,
-                  "canonicalConversationItemKey"
-                );
-              const shouldWriteRawJson =
-                !existingSourceRecordType ||
-                (incomingHasCanonicalIdentity &&
-                  rawJsonConflictPriority(item.sourceRecordType) >=
-                    rawJsonConflictPriority(existingSourceRecordType));
-              const result = await client.query<ConversationItemRow>(
-                upsertSql,
-                upsertParams
-              );
-              const row = result.rows[0];
-              if (row && shouldWriteRawJson) {
-                await upsertEncryptedFieldPayloadWithClient(
+        const upsertParams = [
+          ownerUserId,
+          visibility,
+          item.sessionId ?? null,
+          turnId,
+          item.sourceKind,
+          item.sourceAdapterVersion,
+          item.sourceTransport,
+          item.externalSessionId ?? null,
+          item.externalThreadId ?? item.externalSessionId ?? null,
+          item.externalTurnId ?? null,
+          item.externalItemId ?? null,
+          item.canonicalStableItemId ?? null,
+          item.parentExternalItemId ?? null,
+          item.sourceRecordType,
+          item.sourceEventType ?? null,
+          sourcePathForStorage,
+          item.sourceLineNumber ?? null,
+          item.sourceSequence ?? null,
+          item.eventTime ?? null,
+          item.observedAt ?? new Date().toISOString(),
+          JSON.stringify(rawJsonForStorage),
+          rawTextForStorage,
+          item.logicalSourceId ?? null,
+          item.transportChunkIndex ?? 0,
+          item.transportChunkCount ?? 1,
+          transportChunkTextForStorage,
+          item.transportChunkEncoding ?? null,
+          item.sourceHash,
+          canonicalItemKey,
+          canonicalItemKey,
+          canonicalSourcePriority,
+          managedProjectionHold ? "held" : "pending",
+          item.projectionVersion ?? null,
+          item.projectionError ?? null,
+          metadataForStorage
+        ];
+        const existing = await client.query<{
+          id: string;
+          canonical_source_priority: number;
+          source_hash: string;
+          metadata: Record<string, unknown> | null;
+          session_id: string | null;
+          turn_id: string | null;
+          external_thread_id: string | null;
+          external_turn_id: string | null;
+          transport_chunk_index: number;
+        }>(
+          `
+            select
+              id, canonical_source_priority, source_hash, metadata, session_id, turn_id,
+              external_thread_id, external_turn_id, transport_chunk_index
+            from conversation_items
+            where owner_user_id = $1
+              and canonical_item_key = $2
+              and visibility = $3::visibility_scope
+            for update
+          `,
+          [ownerUserId, canonicalItemKey, visibility]
+        );
+        const previous = existing.rows[0];
+        if (
+          previous &&
+          (previous.session_id !== (item.sessionId ?? null) ||
+            previous.external_thread_id !==
+              (item.externalThreadId ?? item.externalSessionId ?? null) ||
+            previous.external_turn_id !== (item.externalTurnId ?? null))
+        ) {
+          throw Object.assign(
+            new Error(
+              "Canonical conversation identity is already bound to a different session or provider turn"
+            ),
+            { statusCode: 409, code: "canonical_conversation_binding_conflict" }
+          );
+        }
+        const shouldWriteCanonicalPayload =
+          !previous ||
+          canonicalSourcePriority > previous.canonical_source_priority ||
+          (canonicalSourcePriority === previous.canonical_source_priority &&
+            (item.transportChunkIndex ?? 0) < previous.transport_chunk_index);
+        const metadataForEncryption =
+          suppressPlaintextRaw && options.envelopeEncryptionProvider && previous
+            ? mergeCanonicalConversationMetadata({
+                existing: await loadCanonicalConversationMetadata({
                   client,
-                  { userId: ownerUserId },
-                  options.envelopeEncryptionProvider!,
-                  {
-                    sourceTable: "conversation_items",
-                    sourceId: row.id,
-                    sourceColumn: "raw_json",
-                    plaintext: item.rawJson,
-                    rowFamily: "conversation_item",
-                    scope: {
-                      tenantId: ownerUserId,
-                      workspaceId: item.sessionId ?? null,
-                      objectClass: "conversation_item"
-                    },
-                    aad: {
-                      sourceRecordType: item.sourceRecordType,
-                      sourceEventType: item.sourceEventType ?? null
-                    }
-                  }
-                );
-              }
-              if (row && isPresent(item.rawText)) {
-                await upsertEncryptedFieldPayloadWithClient(
-                  client,
-                  { userId: ownerUserId },
-                  options.envelopeEncryptionProvider!,
-                  {
-                    sourceTable: "conversation_items",
-                    sourceId: row.id,
-                    sourceColumn: "raw_text",
-                    plaintext: item.rawText,
-                    rowFamily: "conversation_item",
-                    scope: {
-                      tenantId: ownerUserId,
-                      workspaceId: item.sessionId ?? null,
-                      objectClass: "conversation_item"
-                    },
-                    aad: {
-                      sourceRecordType: item.sourceRecordType,
-                      sourceEventType: item.sourceEventType ?? null
-                    }
-                  }
-                );
-              }
-              if (row && isPresent(item.transportChunkText)) {
-                await upsertEncryptedFieldPayloadWithClient(
-                  client,
-                  { userId: ownerUserId },
-                  options.envelopeEncryptionProvider!,
-                  {
-                    sourceTable: "conversation_items",
-                    sourceId: row.id,
-                    sourceColumn: "transport_chunk_text",
-                    plaintext: item.transportChunkText,
-                    rowFamily: "conversation_item",
-                    scope: {
-                      tenantId: ownerUserId,
-                      workspaceId: item.sessionId ?? null,
-                      objectClass: "conversation_item"
-                    },
-                    aad: {
-                      sourceRecordType: item.sourceRecordType,
-                      sourceEventType: item.sourceEventType ?? null
-                    }
-                  }
-                );
-              }
-              await client.query("commit");
-              return row;
-            } catch (error) {
-              await client.query("rollback");
-              throw error;
-            } finally {
-              client.release();
-            }
-          })()
-        : (await pool.query<ConversationItemRow>(upsertSql, upsertParams))
-            .rows[0];
-      const row =
-        upsertedRow ??
-        (
-          await pool.query<ConversationItemRow>(
-            `
+                  actor: { userId: ownerUserId },
+                  provider: options.envelopeEncryptionProvider,
+                  sourceId: previous.id,
+                  storedMetadata: previous.metadata
+                }),
+                incoming: item.metadata ?? {},
+                incomingWins: shouldWriteCanonicalPayload
+              })
+            : (item.metadata ?? {});
+        const upsertedRow = (
+          await client.query<ConversationItemRow>(upsertSql, upsertParams)
+        ).rows[0];
+        const row =
+          upsertedRow ??
+          (
+            await client.query<ConversationItemRow>(
+              `
               select
                 id, owner_user_id, session_id, turn_id, source_kind,
                 source_adapter_version, source_transport, external_session_id,
                 external_thread_id, external_turn_id, external_item_id,
+                canonical_stable_item_id,
                 source_record_type, source_event_type, source_sequence,
-                idempotency_key, created_at
+                idempotency_key, canonical_item_key,
+                canonical_source_priority, created_at
               from conversation_items
-              where idempotency_key = $1
+              where canonical_item_key = $1
                 and visibility = $2::visibility_scope
                 and owner_user_id = $3
               limit 1
             `,
-            [item.idempotencyKey, visibility, ownerUserId]
-          )
-        ).rows[0];
-      if (!row) {
-        throw Object.assign(
-          new Error(
-            "Duplicate raw conversation item conflicts with data outside caller visibility"
-          ),
-          { statusCode: 409 }
-        );
+              [canonicalItemKey, visibility, ownerUserId]
+            )
+          ).rows[0];
+        if (!row) {
+          throw Object.assign(
+            new Error(
+              "Duplicate raw conversation item conflicts with data outside caller visibility"
+            ),
+            { statusCode: 409 }
+          );
+        }
+
+        if (suppressPlaintextRaw && options.envelopeEncryptionProvider) {
+          const encryptionInput = {
+            rowFamily: "conversation_item",
+            scope: {
+              tenantId: ownerUserId,
+              workspaceId: item.sessionId ?? null,
+              objectClass: "conversation_item"
+            },
+            aad: {
+              sourceRecordType: item.sourceRecordType,
+              sourceEventType: item.sourceEventType ?? null
+            }
+          } as const;
+          if (shouldWriteCanonicalPayload) {
+            await upsertEncryptedFieldPayloadWithClient(
+              client,
+              { userId: ownerUserId },
+              options.envelopeEncryptionProvider,
+              {
+                sourceTable: "conversation_items",
+                sourceId: row.id,
+                sourceColumn: "raw_json",
+                plaintext: item.rawJson,
+                ...encryptionInput
+              }
+            );
+            if (hasEncryptableText(item.rawText)) {
+              await upsertEncryptedFieldPayloadWithClient(
+                client,
+                { userId: ownerUserId },
+                options.envelopeEncryptionProvider,
+                {
+                  sourceTable: "conversation_items",
+                  sourceId: row.id,
+                  sourceColumn: "raw_text",
+                  plaintext: item.rawText,
+                  ...encryptionInput
+                }
+              );
+            }
+            if (hasEncryptableText(item.transportChunkText)) {
+              await upsertEncryptedFieldPayloadWithClient(
+                client,
+                { userId: ownerUserId },
+                options.envelopeEncryptionProvider,
+                {
+                  sourceTable: "conversation_items",
+                  sourceId: row.id,
+                  sourceColumn: "transport_chunk_text",
+                  plaintext: item.transportChunkText,
+                  ...encryptionInput
+                }
+              );
+            }
+          }
+          await upsertEncryptedFieldPayloadWithClient(
+            client,
+            { userId: ownerUserId },
+            options.envelopeEncryptionProvider,
+            {
+              sourceTable: "conversation_items",
+              sourceId: row.id,
+              sourceColumn: "metadata",
+              plaintext: metadataForEncryption,
+              ...encryptionInput
+            }
+          );
+          if (hasEncryptableText(item.sourcePath)) {
+            await upsertEncryptedFieldPayloadWithClient(
+              client,
+              { userId: ownerUserId },
+              options.envelopeEncryptionProvider,
+              {
+                sourceTable: "conversation_items",
+                sourceId: row.id,
+                sourceColumn: "source_path",
+                plaintext: item.sourcePath,
+                ...encryptionInput
+              }
+            );
+          }
+          await synchronizeEncryptedConversationItemColumns({
+            client,
+            sourceTable: "conversation_items",
+            sourceId: row.id
+          });
+        }
+
+        await persistConversationItemObservation({
+          client,
+          actor: { userId: ownerUserId },
+          item,
+          conversationItemId: row.id,
+          canonicalItemKey,
+          sourceIdempotencyKey,
+          suppressPlaintextRaw,
+          envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+          payloadHash
+        });
+        if (legacyParentIdToRetire) {
+          await client.query(
+            `
+              update conversation_items
+              set projection_status = 'raw_only',
+                  memory_excluded_at = coalesce(memory_excluded_at, now()),
+                  memory_exclusion_reason = coalesce(
+                    memory_exclusion_reason,
+                    'canonical_observation_migrated'
+                  )
+              where id = $1
+                and owner_user_id = $2
+                and visibility = 'personal'
+            `,
+            [legacyParentIdToRetire, ownerUserId]
+          );
+        }
+        await client.query("commit");
+        records.push(mapConversationItem(row));
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
       }
-      records.push(mapConversationItem(row));
     }
     return records;
+  },
+
+  async releaseConversationProjectionHold(actor, input) {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [
+          `managed-projection-release:${actor.userId}:${input.sessionId}:${input.externalTurnId}`
+        ]
+      );
+      const session = await client.query<{
+        id: string;
+        capture_method: string;
+        metadata: Record<string, unknown> | null;
+      }>(
+        `
+          select id, capture_method, metadata
+          from sessions
+          where id = $2
+            and owner_user_id = $1
+            and visibility = 'personal'
+            and invalidated_at is null
+            and personal_deleted_at is null
+          limit 1
+        `,
+        [actor.userId, input.sessionId]
+      );
+      const managedSession = session.rows[0];
+      if (
+        !managedSession ||
+        managedSession.capture_method !== "api" ||
+        managedSession.metadata?.managedConversation !== true
+      ) {
+        throw Object.assign(
+          new Error("Managed conversation session not found or not visible"),
+          { statusCode: 404, code: "managed_session_not_found" }
+        );
+      }
+
+      const terminal = await client.query<{ id: string }>(
+        `
+          select ci.id
+          from conversation_items ci
+          where ci.owner_user_id = $1
+            and ci.visibility = 'personal'
+            and ci.session_id = $2
+            and ci.external_turn_id = $3
+            and ci.personal_deleted_at is null
+            and exists (
+              select 1
+              from conversation_item_observations cio
+              where cio.conversation_item_id = ci.id
+                and cio.owner_user_id = ci.owner_user_id
+                and cio.visibility = ci.visibility
+                and cio.session_id = ci.session_id
+                and cio.source_adapter_version = 'codex-transcript-v1'
+                and cio.source_transport = 'transcript'
+                and cio.observation_kind = 'reconciliation'
+                and cio.ingestion_status = 'persisted'
+                and cio.source_event_type in ('task_complete', 'turn_aborted')
+                and cio.source_path is not null
+                and cio.source_line_number is not null
+                and cio.observation_component = 'control'
+                and cio.canonical_stable_item_id = 'turn:' || $3 || ':completed'
+                and ci.canonical_stable_item_id = cio.canonical_stable_item_id
+                and ci.canonical_item_key = cio.canonical_item_key
+            )
+          limit 1
+        `,
+        [actor.userId, input.sessionId, input.externalTurnId]
+      );
+      if (terminal.rowCount === 0) {
+        throw Object.assign(
+          new Error(
+            "Managed turn cannot be projected before terminal reconciliation"
+          ),
+          { statusCode: 409, code: "managed_turn_not_terminal" }
+        );
+      }
+
+      const released = await client.query<{ id: string }>(
+        `
+          update conversation_items
+          set projection_status = 'pending',
+              projection_error = null,
+              projected_at = null
+          where owner_user_id = $1
+            and visibility = 'personal'
+            and session_id = $2
+            and external_turn_id = $3
+            and projection_status = 'held'
+            and personal_deleted_at is null
+          returning id
+        `,
+        [actor.userId, input.sessionId, input.externalTurnId]
+      );
+      await client.query("commit");
+      return { conversationItemIds: released.rows.map((row) => row.id) };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 });

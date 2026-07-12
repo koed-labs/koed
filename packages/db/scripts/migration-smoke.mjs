@@ -1,12 +1,31 @@
 #!/usr/bin/env node
+import { createHash, randomUUID } from "node:crypto";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import {
+  createLocalTestKeyEnvelopeEncryptionProvider,
+  rawConversationTransportChunkGroupId
+} from "@koed/shared";
 import { loadRootEnv } from "../../../scripts/api-token-bootstrap-lib.mjs";
 import {
   getLatestMigrationTimestamp,
   runDbMigrations
 } from "../dist/migrate.js";
+import {
+  createEncryptedPayloadRepository,
+  createMemorySourceRepository
+} from "../dist/index.js";
 
 const { Client, Pool } = pg;
 
@@ -47,6 +66,720 @@ const withDatabase = (connectionString, database) => {
 
 const quoteIdentifier = (value) => `"${value.replaceAll('"', '""')}"`;
 
+const createPre0009MigrationFolder = async () => {
+  const sourceFolder = resolve(packageDir, "drizzle");
+  const targetFolder = await mkdtemp(
+    resolve(tmpdir(), "koed-pre-0009-migrations-")
+  );
+  const targetMetaFolder = resolve(targetFolder, "meta");
+  await mkdir(targetMetaFolder, { recursive: true });
+  const journal = JSON.parse(
+    await readFile(resolve(sourceFolder, "meta", "_journal.json"), "utf8")
+  );
+  const entries = journal.entries.filter(
+    (entry) => entry.tag !== "0009_app-server-source-ingestion"
+  );
+  for (const entry of entries) {
+    await copyFile(
+      resolve(sourceFolder, `${entry.tag}.sql`),
+      resolve(targetFolder, `${entry.tag}.sql`)
+    );
+  }
+  await writeFile(
+    resolve(targetMetaFolder, "_journal.json"),
+    `${JSON.stringify({ ...journal, entries }, null, 2)}\n`
+  );
+  return targetFolder;
+};
+
+const seedPopulatedPre0009Fixture = async (pool, provider) => {
+  const ownerUserId = randomUUID();
+  const sessionId = randomUUID();
+  const conversationItemId = randomUUID();
+  const messageId = randomUUID();
+  const memoryEventId = randomUUID();
+  const externalThreadId = `legacy-thread-${randomUUID()}`;
+  const externalTurnId = "legacy-turn";
+  const externalItemId = "legacy-message";
+  const sourcePath = "/private/legacy/operator/transcript.jsonl";
+  const sourceHash = `legacy-source-${randomUUID()}`;
+  const legacyCanonicalKey = `conversation-item:legacy-${randomUUID()}`;
+  const rawText = "Legacy encrypted replay sentinel.";
+  const rawJson = {
+    timestamp: "2026-07-01T01:02:03.000Z",
+    type: "response_item",
+    payload: {
+      id: externalItemId,
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: rawText }]
+    }
+  };
+  const metadata = {
+    canonicalConversationItemKey: legacyCanonicalKey,
+    canonicalConversationItemActor: "user",
+    canonicalConversationItemKind: "message",
+    transcriptType: "user_message",
+    sensitiveLegacyMetadata: "must remain encrypted"
+  };
+  const chunkConversationItemIds = [randomUUID(), randomUUID()];
+  const chunkExternalTurnId = "legacy-chunk-turn";
+  const chunkExternalItemId = "legacy-chunk-message";
+  const chunkCanonicalKey = `conversation-item:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 3,
+        provider: "codex",
+        externalThreadId,
+        externalTurnId: chunkExternalTurnId,
+        stableItemId: chunkExternalItemId,
+        component: "message"
+      })
+    )
+    .digest("hex")}`;
+  const chunkLogicalSourceId = chunkCanonicalKey;
+  const chunkSourceItemHash = `legacy-chunk-source-${randomUUID()}`;
+  const chunkText = "Legacy encrypted transport chunks reconstruct safely.";
+  const chunkEnvelope = JSON.stringify({
+    rawJson: {
+      type: "response_item",
+      payload: {
+        id: chunkExternalItemId,
+        client_id: chunkExternalItemId,
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: chunkText }]
+      }
+    },
+    rawText: chunkText,
+    metadata: { transcriptType: "user_message" }
+  });
+  const chunkMidpoint = Math.floor(chunkEnvelope.length / 2);
+  const chunkTexts = [
+    chunkEnvelope.slice(0, chunkMidpoint),
+    chunkEnvelope.slice(chunkMidpoint)
+  ];
+  const chunkTransportGroupId = rawConversationTransportChunkGroupId({
+    sourceKind: "codex",
+    sourceAdapterVersion: "codex-transcript-v1",
+    sourceTransport: "transcript",
+    logicalSourceId: chunkLogicalSourceId,
+    sourceItemHash: chunkSourceItemHash,
+    transportChunkCount: chunkTexts.length,
+    transportChunkEncoding: "conversation-item-json-v2"
+  });
+  const chunkSourceHashes = chunkTexts.map(
+    (_, index) => `legacy-chunk-observation-${index}-${randomUUID()}`
+  );
+
+  await pool.query("insert into users (id, email) values ($1, $2)", [
+    ownerUserId,
+    `migration-smoke-${ownerUserId}@example.com`
+  ]);
+  await pool.query(
+    `
+      insert into sessions (
+        id, owner_user_id, visibility, external_session_id, external_thread_id,
+        source_runtime, capture_method, codex_transcript_path,
+        idempotency_key, source_hash, metadata
+      )
+      values ($1, $2, 'personal', $3, $3, 'codex-cli', 'hook', $4, $5, $5, $6)
+    `,
+    [
+      sessionId,
+      ownerUserId,
+      externalThreadId,
+      sourcePath,
+      `legacy-session-${sessionId}`,
+      { managedConversation: false }
+    ]
+  );
+  await pool.query(
+    `
+      insert into conversation_items (
+        id, owner_user_id, visibility, session_id, source_kind,
+        source_adapter_version, source_transport, external_session_id,
+        external_thread_id, external_turn_id, external_item_id,
+        source_record_type, source_event_type, source_path, source_line_number,
+        source_sequence, event_time, observed_at, raw_json, raw_text,
+        source_hash, idempotency_key, projection_status, projection_version,
+        metadata, transport_chunk_index, transport_chunk_count,
+        transport_chunk_text, transport_chunk_encoding
+      )
+      values (
+        $1, $2, 'personal', $3, 'codex', 'codex-transcript-v1',
+        'transcript', $4, $4, $5, $6, 'response_item', 'message', $7,
+        7, 7, '2026-07-01T01:02:03.000Z', '2026-07-01T01:02:04.000Z',
+        $8, $9, $10, $11, 'projected', 'conversation-projection-v2',
+        $12, 0, 1, null, null
+      )
+    `,
+    [
+      conversationItemId,
+      ownerUserId,
+      sessionId,
+      externalThreadId,
+      externalTurnId,
+      externalItemId,
+      sourcePath,
+      rawJson,
+      rawText,
+      sourceHash,
+      legacyCanonicalKey,
+      metadata
+    ]
+  );
+  await pool.query(
+    `
+      insert into messages (
+        id, session_id, owner_user_id, visibility, role, content,
+        source_runtime, capture_method, codex_transcript_path,
+        transcript_item_id, idempotency_key, source_hash
+      )
+      values ($1, $2, $3, 'personal', 'user', $4, 'codex-cli', 'hook',
+        $5, '7', $6, $6)
+    `,
+    [
+      messageId,
+      sessionId,
+      ownerUserId,
+      rawText,
+      sourcePath,
+      `message:${legacyCanonicalKey}`
+    ]
+  );
+  await pool.query(
+    `
+      insert into memory_events (
+        id, actor_user_id, owner_user_id, visibility, event_type,
+        source_runtime, capture_method, codex_transcript_path, session_id,
+        idempotency_key, source_hash, payload
+      )
+      values ($1, $2, $2, 'personal', 'captured', 'codex-cli', 'hook',
+        $3, $4, $5, $5, $6)
+    `,
+    [
+      memoryEventId,
+      ownerUserId,
+      sourcePath,
+      sessionId,
+      `projection:user_turn:${legacyCanonicalKey}`,
+      {
+        actor: "user",
+        content: rawText,
+        metadata: { includeInEmbedding: true, includeInLcm: true }
+      }
+    ]
+  );
+  await pool.query(
+    `
+      insert into memory_event_sources (
+        memory_event_id, conversation_item_id, source_order, source_role
+      )
+      values ($1, $2, 0, 'derived')
+    `,
+    [memoryEventId, conversationItemId]
+  );
+
+  const encryptedRepository = createEncryptedPayloadRepository(pool);
+  for (const sourceColumn of [
+    "raw_json",
+    "raw_text",
+    "source_path",
+    "metadata"
+  ]) {
+    const run = await encryptedRepository.createEncryptedFieldBackfillRun(
+      { userId: ownerUserId },
+      {
+        sourceTable: "conversation_items",
+        sourceColumn,
+        providerMode: "local_test_key",
+        totalRows: 1
+      }
+    );
+    const result = await encryptedRepository.backfillEncryptedFieldBatch(
+      { userId: ownerUserId },
+      provider,
+      {
+        runId: run.id,
+        sourceTable: "conversation_items",
+        sourceColumn,
+        batchSize: 10
+      }
+    );
+    if (!result.done || result.encryptedRows !== 1 || result.failedRows !== 0) {
+      throw new Error(
+        `Pre-0009 encrypted fixture backfill failed for ${sourceColumn}`
+      );
+    }
+  }
+  for (const [index, chunk] of chunkTexts.entries()) {
+    await pool.query(
+      `
+        insert into conversation_items (
+          id, owner_user_id, visibility, session_id, source_kind,
+          source_adapter_version, source_transport, external_session_id,
+          external_thread_id, external_turn_id, external_item_id,
+          source_record_type, source_event_type, source_path,
+          source_line_number, source_sequence, event_time, observed_at,
+          raw_json, logical_source_id, transport_chunk_index,
+          transport_chunk_count, transport_chunk_text,
+          transport_chunk_encoding, source_hash, idempotency_key,
+          projection_status, projection_version, metadata
+        )
+        values (
+          $1, $2, 'personal', $3, 'codex', 'codex-transcript-v1',
+          'transcript', $4, $4, $5, $6, 'response_item', 'message', $7,
+          11, $8, '2026-07-01T01:03:00.000Z',
+          '2026-07-01T01:03:01.000Z', $9, $10, $11, $12, $13,
+          'conversation-item-json-v2', $14, $15, 'pending',
+          'conversation-projection-v2', $16
+        )
+      `,
+      [
+        chunkConversationItemIds[index],
+        ownerUserId,
+        sessionId,
+        externalThreadId,
+        chunkExternalTurnId,
+        chunkExternalItemId,
+        sourcePath,
+        11 + index,
+        {
+          transportChunk: true,
+          transportChunkGroupId: chunkTransportGroupId,
+          sourceItemHash: chunkSourceItemHash,
+          chunkIndex: index,
+          chunkCount: chunkTexts.length
+        },
+        chunkLogicalSourceId,
+        index,
+        chunkTexts.length,
+        chunk,
+        chunkSourceHashes[index],
+        `legacy-chunk-idempotency-${index}-${randomUUID()}`,
+        {
+          canonicalConversationItemKey: chunkCanonicalKey,
+          canonicalConversationItemActor: "user",
+          canonicalConversationItemKind: "message",
+          canonicalStableItemId: chunkExternalItemId,
+          sourceItemHash: chunkSourceItemHash,
+          transcriptType: "user_message"
+        }
+      ]
+    );
+  }
+  const chunkBackfillRun =
+    await encryptedRepository.createEncryptedFieldBackfillRun(
+      { userId: ownerUserId },
+      {
+        sourceTable: "conversation_items",
+        sourceColumn: "transport_chunk_text",
+        providerMode: "local_test_key",
+        totalRows: chunkTexts.length
+      }
+    );
+  const chunkBackfill = await encryptedRepository.backfillEncryptedFieldBatch(
+    { userId: ownerUserId },
+    provider,
+    {
+      runId: chunkBackfillRun.id,
+      sourceTable: "conversation_items",
+      sourceColumn: "transport_chunk_text",
+      batchSize: 10
+    }
+  );
+  if (
+    !chunkBackfill.done ||
+    chunkBackfill.encryptedRows !== chunkTexts.length ||
+    chunkBackfill.failedRows !== 0
+  ) {
+    throw new Error("Pre-0009 encrypted transport chunk backfill failed");
+  }
+
+  return {
+    ownerUserId,
+    sessionId,
+    conversationItemId,
+    messageId,
+    memoryEventId,
+    externalThreadId,
+    externalTurnId,
+    externalItemId,
+    sourcePath,
+    sourceHash,
+    rawText,
+    rawJson,
+    metadata,
+    chunkConversationItemIds,
+    chunkExternalTurnId,
+    chunkExternalItemId,
+    chunkCanonicalKey,
+    chunkLogicalSourceId,
+    chunkSourceItemHash,
+    chunkSourceHashes,
+    chunkText,
+    chunkTexts,
+    chunkTransportGroupId
+  };
+};
+
+const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
+  const encryptedRepository = createEncryptedPayloadRepository(pool);
+  const observationCount = await pool.query(
+    "select count(*)::int as count from conversation_item_observations"
+  );
+  const copiedCompanions = await pool.query(
+    `
+      select count(*)::int as count
+      from encrypted_field_payloads
+      where source_table = 'conversation_item_observations'
+    `
+  );
+  if (observationCount.rows[0]?.count !== 0) {
+    throw new Error("0009 synthesized historical conversation observations");
+  }
+  if (copiedCompanions.rows[0]?.count !== 0) {
+    throw new Error("0009 copied encrypted companions without rebinding");
+  }
+
+  for (const [sourceColumn, expected] of [
+    ["raw_json", fixture.rawJson],
+    ["raw_text", fixture.rawText],
+    ["source_path", fixture.sourcePath],
+    ["metadata", fixture.metadata]
+  ]) {
+    const decrypted = await encryptedRepository.decryptAuthorizedEncryptedField(
+      { userId: fixture.ownerUserId },
+      provider,
+      {
+        sourceTable: "conversation_items",
+        sourceId: fixture.conversationItemId,
+        sourceColumn
+      }
+    );
+    if (!isDeepStrictEqual(decrypted?.plaintext, expected)) {
+      throw new Error(
+        `Populated 0009 upgrade could not decrypt legacy ${sourceColumn}`
+      );
+    }
+  }
+
+  const canonicalItemKey = `conversation-item:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 3,
+        provider: "codex",
+        externalThreadId: fixture.externalThreadId,
+        externalTurnId: fixture.externalTurnId,
+        stableItemId: fixture.externalItemId,
+        component: "message"
+      })
+    )
+    .digest("hex")}`;
+  const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+  process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+  try {
+    const repository = createMemorySourceRepository(pool, {
+      envelopeEncryptionProvider: provider
+    });
+    const replayed = await repository.createConversationItems(
+      { userId: fixture.ownerUserId },
+      {
+        items: [
+          {
+            sessionId: fixture.sessionId,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            externalSessionId: fixture.externalThreadId,
+            externalThreadId: fixture.externalThreadId,
+            externalTurnId: fixture.externalTurnId,
+            externalItemId: fixture.externalItemId,
+            canonicalItemKey,
+            canonicalStableItemId: fixture.externalItemId,
+            observationComponent: "message",
+            sourceRecordType: "response_item",
+            sourceEventType: "message",
+            sourcePath: fixture.sourcePath,
+            sourceLineNumber: 7,
+            sourceSequence: 7,
+            eventTime: "2026-07-01T01:02:03.000Z",
+            rawJson: fixture.rawJson,
+            rawText: fixture.rawText,
+            sourceHash: fixture.sourceHash,
+            idempotencyKey: `post-0009-replay-${randomUUID()}`,
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+    if (!replayed[0]?.id) {
+      throw new Error("0009 legacy replay did not create a canonical parent");
+    }
+    const legacyReplayConvergence = await pool.query(
+      `
+        select
+          count(*) filter (
+            where canonical_item_key = $2
+              and memory_excluded_at is null
+          )::int as active_canonical_parents,
+          count(*) filter (
+            where id = $1
+              and memory_exclusion_reason = 'canonical_observation_migrated'
+          )::int as retired_legacy_parents
+        from conversation_items
+        where owner_user_id = $3
+      `,
+      [fixture.conversationItemId, canonicalItemKey, fixture.ownerUserId]
+    );
+    if (
+      JSON.stringify(legacyReplayConvergence.rows[0]) !==
+      JSON.stringify({
+        active_canonical_parents: 1,
+        retired_legacy_parents: 1
+      })
+    ) {
+      throw new Error(
+        `0009 legacy replay did not converge safely: ${JSON.stringify(legacyReplayConvergence.rows[0])}`
+      );
+    }
+
+    for (const [index, expected] of fixture.chunkTexts.entries()) {
+      const decrypted =
+        await encryptedRepository.decryptAuthorizedEncryptedField(
+          { userId: fixture.ownerUserId },
+          provider,
+          {
+            sourceTable: "conversation_items",
+            sourceId: fixture.chunkConversationItemIds[index],
+            sourceColumn: "transport_chunk_text"
+          }
+        );
+      if (decrypted?.plaintext !== expected) {
+        throw new Error(
+          `0009 could not decrypt legacy transport chunk ${index}`
+        );
+      }
+    }
+    const chunkProjection = await repository.projectPendingConversationItems(
+      { userId: fixture.ownerUserId },
+      { limit: 10 }
+    );
+    if (chunkProjection.memoryEventsCreated !== 1) {
+      throw new Error(
+        `0009 legacy chunk Projection created ${chunkProjection.memoryEventsCreated} Memory Events`
+      );
+    }
+    const replayedChunks = await repository.createConversationItems(
+      { userId: fixture.ownerUserId },
+      {
+        items: fixture.chunkTexts.map((chunk, index) => ({
+          sessionId: fixture.sessionId,
+          sourceKind: "codex",
+          sourceAdapterVersion: "codex-transcript-v1",
+          sourceTransport: "transcript",
+          externalSessionId: fixture.externalThreadId,
+          externalThreadId: fixture.externalThreadId,
+          externalTurnId: fixture.chunkExternalTurnId,
+          externalItemId: fixture.chunkExternalItemId,
+          canonicalItemKey: fixture.chunkCanonicalKey,
+          canonicalStableItemId: fixture.chunkExternalItemId,
+          observationKind: "reconciliation",
+          observationComponent: "message",
+          sourceRecordType: "response_item",
+          sourceEventType: "message",
+          sourcePath: fixture.sourcePath,
+          sourceLineNumber: 11,
+          sourceSequence: 11 + index,
+          eventTime: "2026-07-01T01:03:00.000Z",
+          rawJson: {
+            transportChunk: true,
+            transportChunkGroupId: fixture.chunkTransportGroupId,
+            sourceItemHash: fixture.chunkSourceItemHash,
+            chunkIndex: index,
+            chunkCount: fixture.chunkTexts.length
+          },
+          logicalSourceId: fixture.chunkLogicalSourceId,
+          transportChunkIndex: index,
+          transportChunkCount: fixture.chunkTexts.length,
+          transportChunkText: chunk,
+          transportChunkEncoding: "conversation-item-json-v2",
+          sourceHash: fixture.chunkSourceHashes[index],
+          idempotencyKey: `post-0009-chunk-replay-${index}-${randomUUID()}`,
+          metadata: {
+            canonicalConversationItemActor: "user",
+            canonicalConversationItemKind: "message",
+            transcriptType: "user_message"
+          }
+        }))
+      }
+    );
+    if (new Set(replayedChunks.map((item) => item.id)).size !== 1) {
+      throw new Error(
+        "0009 legacy chunk replay did not converge on one parent"
+      );
+    }
+    const convergence = await pool.query(
+      `
+        select
+          count(*)::int as parents,
+          count(*) filter (where memory_excluded_at is null)::int as active_parents,
+          count(*) filter (
+            where memory_exclusion_reason = 'canonical_observation_migrated'
+          )::int as retired_parents
+        from conversation_items
+        where logical_source_id = $1
+      `,
+      [fixture.chunkLogicalSourceId]
+    );
+    if (
+      JSON.stringify(convergence.rows[0]) !==
+      JSON.stringify({ parents: 2, active_parents: 1, retired_parents: 1 })
+    ) {
+      throw new Error(
+        `0009 legacy chunk convergence failed: ${JSON.stringify(convergence.rows[0])}`
+      );
+    }
+    const chunkMemoryEvents = await pool.query(
+      "select id from memory_events where session_id = $1 order by created_at asc",
+      [fixture.sessionId]
+    );
+    const embeddableTexts = (
+      await Promise.all(
+        chunkMemoryEvents.rows.map((event) =>
+          repository.getEmbeddableSource("memory_event", event.id)
+        )
+      )
+    ).map((source) => source?.text);
+    if (!embeddableTexts.includes(fixture.chunkText)) {
+      throw new Error("0009 encrypted legacy chunks projected the wrong text");
+    }
+  } finally {
+    if (previousProfile === undefined) {
+      delete process.env.KOED_DEPLOYMENT_PROFILE;
+    } else {
+      process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+    }
+  }
+
+  const counts = await pool.query(
+    `
+      select
+        (select count(*)::int from conversation_items) as parents,
+        (select count(*)::int from conversation_item_observations) as observations,
+        (select count(*)::int from messages) as messages,
+        (select count(*)::int from memory_events) as memory_events,
+        (
+          select count(*)::int
+          from encrypted_field_payloads
+          where source_table = 'conversation_item_observations'
+        ) as observation_companions
+    `
+  );
+  if (
+    JSON.stringify(counts.rows[0]) !==
+    JSON.stringify({
+      parents: 4,
+      observations: 3,
+      messages: 2,
+      memory_events: 2,
+      observation_companions: 12
+    })
+  ) {
+    throw new Error(
+      `0009 replay integrity counts were unexpected: ${JSON.stringify(counts.rows[0])}`
+    );
+  }
+
+  const observation = await pool.query(
+    `
+      select id, source_path, metadata
+      from conversation_item_observations
+      where canonical_item_key = $1
+      limit 1
+    `,
+    [canonicalItemKey]
+  );
+  const observationJson = JSON.stringify(observation.rows[0]);
+  if (
+    observationJson.includes(fixture.sourcePath) ||
+    observationJson.includes("must remain encrypted")
+  ) {
+    throw new Error("0009 replay persisted sensitive observation plaintext");
+  }
+  for (const [sourceColumn, expected] of [
+    ["raw_json", fixture.rawJson],
+    ["raw_text", fixture.rawText],
+    ["source_path", fixture.sourcePath]
+  ]) {
+    const decrypted = await encryptedRepository.decryptAuthorizedEncryptedField(
+      { userId: fixture.ownerUserId },
+      provider,
+      {
+        sourceTable: "conversation_item_observations",
+        sourceId: observation.rows[0].id,
+        sourceColumn
+      }
+    );
+    if (!isDeepStrictEqual(decrypted?.plaintext, expected)) {
+      throw new Error(
+        `0009 replay observation ${sourceColumn} did not decrypt`
+      );
+    }
+  }
+  const decryptedObservationMetadata =
+    await encryptedRepository.decryptAuthorizedEncryptedField(
+      { userId: fixture.ownerUserId },
+      provider,
+      {
+        sourceTable: "conversation_item_observations",
+        sourceId: observation.rows[0].id,
+        sourceColumn: "metadata"
+      }
+    );
+  const observationMetadata = decryptedObservationMetadata?.plaintext;
+  if (
+    typeof observationMetadata !== "object" ||
+    observationMetadata === null ||
+    observationMetadata.transcriptType !== "user_message" ||
+    observationMetadata.canonicalConversationItemKey !== canonicalItemKey ||
+    JSON.stringify(observationMetadata).includes("must remain encrypted")
+  ) {
+    throw new Error("0009 replay observation metadata did not decrypt safely");
+  }
+
+  const redactionClient = await pool.connect();
+  let arbitraryRedactionBlocked = false;
+  try {
+    await redactionClient.query("begin");
+    await redactionClient.query(
+      "select set_config('koed.observation_redaction_source_id', $1, true)",
+      [observation.rows[0].id]
+    );
+    await redactionClient.query(
+      "select set_config('koed.observation_redaction_source_column', 'raw_text', true)"
+    );
+    try {
+      await redactionClient.query(
+        "update conversation_item_observations set raw_text = 'attacker plaintext' where id = $1",
+        [observation.rows[0].id]
+      );
+    } catch (error) {
+      arbitraryRedactionBlocked =
+        typeof error === "object" && error !== null && error.code === "55000";
+    }
+  } finally {
+    await redactionClient.query("rollback");
+    redactionClient.release();
+  }
+  if (!arbitraryRedactionBlocked) {
+    throw new Error(
+      "Conversation observation immutability accepted an arbitrary redaction write"
+    );
+  }
+};
+
 const isPostgresAdminTermination = (error) =>
   typeof error === "object" &&
   error !== null &&
@@ -84,7 +817,20 @@ try {
   };
 
   try {
-    await runDbMigrations(pool);
+    const pre0009MigrationFolder = await createPre0009MigrationFolder();
+    const provider = createLocalTestKeyEnvelopeEncryptionProvider(
+      Buffer.alloc(32, 19).toString("base64")
+    );
+    try {
+      await runDbMigrations(pool, {
+        migrationsFolder: pre0009MigrationFolder
+      });
+      const fixture = await seedPopulatedPre0009Fixture(pool, provider);
+      await runDbMigrations(pool);
+      await verifyPopulated0009Upgrade(pool, provider, fixture);
+    } finally {
+      await rm(pre0009MigrationFolder, { recursive: true, force: true });
+    }
     throwUnexpectedPoolError();
 
     const expectedLatestMigrationTimestamp =

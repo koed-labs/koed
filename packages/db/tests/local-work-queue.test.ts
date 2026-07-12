@@ -35,6 +35,10 @@ describe("local work queue repository", () => {
         "500 milliseconds"
       ]
     );
+    const sql = String(pool.query.mock.calls[0]?.[0] ?? "");
+    expect(sql).toContain("where job_key is not null");
+    expect(sql).toContain("local_work_queue.status = 'failed'");
+    expect(sql).toContain("then 'pending'");
   });
 
   it("claims pending jobs with a lease token", async () => {

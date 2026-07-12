@@ -1,6 +1,8 @@
 import { scheduleCompaction, type Visibility } from "@koed/core";
 import type { MemorySourceRepository } from "@koed/db";
 import {
+  embeddingQueueJobId,
+  lcmCompactionQueueJobId,
   lcmCompactQueueName,
   memoryEmbedQueueName,
   type KoedJobQueue
@@ -33,6 +35,7 @@ interface CompactionQueueJobData {
 interface MemoryJobSchedulerOptions {
   embeddingQueue: KoedJobQueue<EmbeddingQueueJobData> | null;
   compactionQueue: KoedJobQueue<CompactionQueueJobData> | null;
+  embeddingDispatchKey: string;
   runMemoryJobsInlineForTests?: boolean;
   log: {
     warn(bindings: Record<string, unknown>, message: string): void;
@@ -42,6 +45,7 @@ interface MemoryJobSchedulerOptions {
 export const createMemoryJobScheduler = ({
   embeddingQueue,
   compactionQueue,
+  embeddingDispatchKey,
   runMemoryJobsInlineForTests,
   log
 }: MemoryJobSchedulerOptions) => {
@@ -87,7 +91,12 @@ export const createMemoryJobScheduler = ({
             attempts: 5,
             backoff: { type: "exponential", delay: 10_000 },
             removeOnComplete: 1000,
-            removeOnFail: 5000
+            removeOnFail: true,
+            jobId: embeddingQueueJobId(
+              embeddingDispatchKey,
+              sourceType,
+              sourceId
+            )
           }
         ),
         750,
@@ -144,6 +153,17 @@ export const createMemoryJobScheduler = ({
     }
 
     try {
+      const [dispatchScope] = await repo.listPendingLcmDispatchScopes({
+        limit: 1,
+        ownerUserId: requesterContext.userId
+      });
+      if (!dispatchScope || dispatchScope.visibility !== visibility) {
+        return {
+          queued: false,
+          inline: false,
+          reason: "no eligible LCM sources are pending"
+        };
+      }
       const job = await withTimeout(
         compactionQueue.add(
           "compact-scope",
@@ -152,7 +172,12 @@ export const createMemoryJobScheduler = ({
             attempts: 5,
             backoff: { type: "exponential", delay: 10_000 },
             removeOnComplete: 1000,
-            removeOnFail: 5000
+            removeOnFail: true,
+            jobId: lcmCompactionQueueJobId(
+              requesterContext.userId,
+              visibility,
+              dispatchScope.dispatchKey
+            )
           }
         ),
         750,
@@ -196,14 +221,20 @@ export const createMemoryJobScheduler = ({
     scopes: Array<{
       eventId: string;
       visibility: Visibility;
+      includeInEmbedding: boolean;
+      includeInLcm: boolean;
     }>
   ) => {
     const embeddings = await Promise.all(
-      scopes.map((scope) => enqueueEmbedding("memory_event", scope.eventId))
+      scopes
+        .filter((scope) => scope.includeInEmbedding)
+        .map((scope) => enqueueEmbedding("memory_event", scope.eventId))
     );
     const scopeMap = new Map<string, { visibility: Visibility }>();
     for (const scope of scopes) {
-      scopeMap.set(scope.visibility, { visibility: scope.visibility });
+      if (scope.includeInLcm) {
+        scopeMap.set(scope.visibility, { visibility: scope.visibility });
+      }
     }
     const compactions = await Promise.all(
       [...scopeMap.values()].map((scope) =>

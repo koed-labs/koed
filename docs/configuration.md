@@ -346,6 +346,7 @@ policy, or full URLs containing customer content.
 - `MEMORY_LCM_LEAF_EVENT_THRESHOLD`: event count threshold for creating LCM placeholders. Default `100`.
 - `MEMORY_LCM_LEAF_TOKEN_THRESHOLD`: semantic `memory_event.content` token threshold for creating LCM placeholders. Default `32768`; values above `32768` are clamped to the Qwen operational cap. Provenance payload JSON is not counted.
 - `MEMORY_LCM_FRESH_EVENT_TAIL`: recent event tail excluded from LCM placeholder creation. Default `10`.
+- `MEMORY_LCM_COMPACTION_MAX_EVENTS`: maximum eligible Memory Events admitted to one owner-scoped LCM compaction reconciliation batch. Default `1000`; maximum `10000`.
 - `MEMORY_LCM_DEPTH1_FANOUT`: leaf fanout for depth-1 LCM placeholder creation. Default `20`.
 - `EMBEDDING_MODEL_KEY`: supported embedding model key. The embedding service maps this key to an internal supported model definition and fails startup for unknown keys. Default and currently supported key: `qwen3-0.6b`.
 - `EMBEDDING_RERANKER_KEY`: supported reranker model key. Leave blank to disable reranking. Currently supported key: `qwen3-reranker-0.6b`. Docker Compose maps this root setting to each app's process-local `RERANKER_KEY`; direct app-local runs may set `RERANKER_KEY` explicitly, with the app-local value taking precedence.
@@ -393,7 +394,7 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
 - `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
-- `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`.
+- `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP Server API calls. Default `60_000`.
 - `MEMORY_HOOK_API_REQUEST_TIMEOUT_MS`: short timeout for legacy foreground Capture Hook API calls. Detached transcript catch-up uses `MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS`. Default `1500`.
 - `MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD`: consecutive retryable detached catch-up API failures before local latency protection opens. Default `3`.

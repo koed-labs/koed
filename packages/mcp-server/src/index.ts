@@ -7,11 +7,22 @@ import {
   type MemoryAnswerWorkerResponse
 } from "./answer-worker.js";
 import type { LcmSummaryServiceHandle } from "./lcm-summary-service.js";
-export { runCodexAppServerJsonTask } from "./codex-app-server-runner.js";
+export {
+  destroyManagedCodexHome,
+  runCodexAppServerJsonTask
+} from "./codex-app-server-runner.js";
 export type {
   CodexAppServerJsonTaskConfig,
   CodexAppServerRunResult
 } from "./codex-app-server-runner.js";
+export {
+  CodexManagedConversationIdentityError,
+  CodexManagedConversationSession
+} from "./codex-managed-conversation.js";
+export type {
+  CodexManagedConversationConfig,
+  CodexManagedConversationStartResult
+} from "./codex-managed-conversation.js";
 import { resolveLcmSummaryServiceConfig } from "./lcm-summary-service.js";
 import {
   lcmSummaryLockState,
@@ -318,6 +329,13 @@ export class MemoryApiClient {
     input: Record<string, unknown> = {}
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/memory/conversation-items/project", input);
+  }
+
+  async releaseConversationProjectionHold(input: {
+    sessionId: string;
+    externalTurnId: string;
+  }): Promise<{ conversationItemIds: string[] }> {
+    return this.request("POST", "/v1/memory/conversation-items/release", input);
   }
 
   async answer(

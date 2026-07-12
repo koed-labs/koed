@@ -33,6 +33,8 @@ export type ConversationSemanticProjectionRow = {
   transport_chunk_text: string | null;
   transport_chunk_encoding: string | null;
   source_hash: string;
+  canonical_item_key: string;
+  projection_policy_revision: number | null;
   idempotency_key: string;
   session_workspace_id: string | null;
   session_cwd: string | null;
@@ -46,7 +48,10 @@ export type ConversationSemanticProjectionItem = {
   sourceHash: string;
   actorType: MemoryActor;
   content: string;
+  includeInEmbedding: boolean;
   includeInLcm: boolean;
+  projectionPolicyKey: string | null;
+  projectionPolicyRevision: number;
   projectionMetadata: Record<string, unknown>;
 };
 
@@ -67,6 +72,8 @@ export type ConversationSemanticProjectionItemManifest = {
   itemSplitCount?: number;
   itemSplitReason?: "embedding_token_limit";
   originalItemTokenCount?: number;
+  includeInEmbedding: boolean;
+  includeInLcm: boolean;
 };
 
 export type ConversationSemanticProjectionChunk = {
@@ -87,6 +94,7 @@ export type SemanticBundleSealReason =
   | "next_user_turn"
   | "token_limit"
   | "stop_hook"
+  | "turn_completed"
   | "catch_up_stale";
 
 export type ConversationSemanticProjectionGroup = {
@@ -181,7 +189,9 @@ export const conversationSemanticItemKind = (
     return "subagent_message";
   }
   if (item.actorType === "agent" || item.actorType === "assistant") {
-    return /final/i.test(transcriptType ?? "")
+    return /final/i.test(
+      `${transcriptType ?? ""} ${stringField(metadata, "phase") ?? ""}`
+    )
       ? "final_message"
       : "agent_message";
   }
@@ -220,7 +230,9 @@ export const conversationSemanticItemManifest = (
     sourceSequence: item.row.source_sequence,
     sourceEventTime: item.row.event_time?.toISOString() ?? null,
     offsetStart,
-    offsetEnd
+    offsetEnd,
+    includeInEmbedding: item.includeInEmbedding,
+    includeInLcm: item.includeInLcm
   };
 };
 
@@ -390,6 +402,16 @@ export const conversationSemanticUnitChunks = (
   }));
 };
 
+export const conversationSemanticChunkPolicyContent = (
+  chunk: ConversationSemanticProjectionChunk,
+  policy: "includeInEmbedding" | "includeInLcm"
+): string =>
+  chunk.itemManifest
+    .filter((item) => item[policy])
+    .map((item) => chunk.content.slice(item.offsetStart, item.offsetEnd))
+    .filter((content) => content.trim().length > 0)
+    .join("\n\n");
+
 export const conversationSemanticUnitActor = (
   unitType: ConversationSemanticUnitType,
   sourceActors: string[]
@@ -443,6 +465,9 @@ export const conversationSemanticEventMetadata = (input: {
   unitType: ConversationSemanticUnitType;
   sealedReason: string;
   includeInLcm: boolean;
+  includeInEmbedding: boolean;
+  embeddingContent?: string;
+  lcmContent?: string;
   projectionVersion: string;
   model?: string | null;
   rebuild?: {
@@ -460,6 +485,11 @@ export const conversationSemanticEventMetadata = (input: {
   semanticSourceActors: input.sourceActors,
   semanticBundleSealedReason: input.sealedReason,
   includeInLcm: input.includeInLcm,
+  includeInEmbedding: input.includeInEmbedding,
+  ...(input.embeddingContent !== undefined
+    ? { embeddingContent: input.embeddingContent }
+    : {}),
+  ...(input.lcmContent !== undefined ? { lcmContent: input.lcmContent } : {}),
   ...(input.rebuild
     ? {
         semanticBundleRebuildReason: input.rebuild.reason,

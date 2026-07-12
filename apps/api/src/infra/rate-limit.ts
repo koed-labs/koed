@@ -5,7 +5,8 @@ export type RateLimitName =
   | "auth"
   | "memoryRead"
   | "memoryWrite"
-  | "memoryRecall";
+  | "memoryRecall"
+  | "projectionRebuild";
 
 export interface RateLimitStore {
   increment(
@@ -21,14 +22,45 @@ export interface RateLimitPolicy {
 }
 
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+const MAX_MEMORY_RATE_LIMIT_BUCKETS = 100_000;
+let memoryRateLimitOperations = 0;
 
 export const resetMemoryRateLimitStore = (): void => {
   rateLimitBuckets.clear();
+  memoryRateLimitOperations = 0;
 };
 
 export class MemoryRateLimitStore implements RateLimitStore {
+  constructor(
+    private readonly maxBuckets: number = MAX_MEMORY_RATE_LIMIT_BUCKETS
+  ) {
+    if (!Number.isInteger(maxBuckets) || maxBuckets < 1) {
+      throw new Error("Memory rate-limit bucket capacity must be positive");
+    }
+  }
+
   increment(key: string, windowMs: number) {
     const now = Date.now();
+    memoryRateLimitOperations += 1;
+    if (
+      memoryRateLimitOperations % 256 === 0 ||
+      rateLimitBuckets.size >= this.maxBuckets
+    ) {
+      for (const [bucketKey, value] of rateLimitBuckets) {
+        if (value.resetAt <= now) {
+          rateLimitBuckets.delete(bucketKey);
+        }
+      }
+    }
+    while (rateLimitBuckets.size >= this.maxBuckets) {
+      const oldestKey = rateLimitBuckets.keys().next().value as
+        | string
+        | undefined;
+      if (!oldestKey) {
+        break;
+      }
+      rateLimitBuckets.delete(oldestKey);
+    }
     const current = rateLimitBuckets.get(key);
     const bucket =
       !current || current.resetAt <= now
@@ -67,17 +99,30 @@ export type RateLimitHandler = (
   reply: FastifyReply
 ) => Promise<void>;
 
+export interface RateLimitIdentityOptions {
+  authenticatedUserId(request: FastifyRequest): string | undefined;
+}
+
 export const createRateLimitHandlers = (
   rateLimitStore: RateLimitStore,
   hashKey: (value: string) => string,
-  rateLimits: Record<RateLimitName, RateLimitPolicy>
+  rateLimits: Record<RateLimitName, RateLimitPolicy>,
+  identityOptions?: RateLimitIdentityOptions
 ): Record<RateLimitName, RateLimitHandler> => {
   const rateLimit =
     (name: RateLimitName): RateLimitHandler =>
     async (request, reply) => {
       const policy = rateLimits[name];
-      const authorization = request.headers.authorization;
-      const keyMaterial = authorization ? hashKey(authorization) : request.ip;
+      const authenticatedUserId = identityOptions?.authenticatedUserId(request);
+      if (name === "projectionRebuild" && !authenticatedUserId) {
+        throw Object.assign(
+          new Error("Authentication required before Projection rate limiting"),
+          { statusCode: 401 }
+        );
+      }
+      const keyMaterial = authenticatedUserId
+        ? `user:${hashKey(authenticatedUserId)}`
+        : `ip:${request.ip}`;
       const key = `${name}:${keyMaterial}`;
       const bucket = await rateLimitStore.increment(key, policy.windowMs);
       reply.header("x-ratelimit-limit", String(policy.max));
@@ -104,6 +149,7 @@ export const createRateLimitHandlers = (
     auth: rateLimit("auth"),
     memoryRead: rateLimit("memoryRead"),
     memoryWrite: rateLimit("memoryWrite"),
-    memoryRecall: rateLimit("memoryRecall")
+    memoryRecall: rateLimit("memoryRecall"),
+    projectionRebuild: rateLimit("projectionRebuild")
   };
 };

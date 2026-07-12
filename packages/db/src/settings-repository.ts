@@ -195,11 +195,11 @@ export const createSettingsRepository = (db: KoedDb) => ({
       : [];
 
     const session = sessionRows[0];
-    const threadIds = [
-      input.threadId,
-      input.sessionId,
-      session?.externalSessionId ?? undefined
-    ].filter((value): value is string => Boolean(value));
+    const threadIds = (
+      session
+        ? [input.sessionId, session.externalSessionId ?? undefined]
+        : [input.threadId]
+    ).filter((value): value is string => Boolean(value));
     const projectId =
       input.projectId ?? session?.cwd ?? session?.workspaceId ?? null;
 
@@ -242,10 +242,15 @@ export const createSettingsRepository = (db: KoedDb) => ({
     const policies = rows.map(mapCapturePolicyRecord);
     const global = policies.find((policy) => policy.targetType === "global");
     const effective = policies[0] ?? null;
-    const pauseUntil = effective?.pauseUntil ?? global?.pauseUntil ?? null;
-    const paused = pauseUntil
-      ? new Date(pauseUntil).getTime() > Date.now()
-      : false;
+    const activePauseTimes = policies
+      .map((policy) => policy.pauseUntil)
+      .filter((value): value is string => Boolean(value))
+      .filter((value) => new Date(value).getTime() > Date.now())
+      .sort(
+        (left, right) => new Date(right).getTime() - new Date(left).getTime()
+      );
+    const pauseUntil = activePauseTimes[0] ?? null;
+    const paused = pauseUntil !== null;
 
     return {
       captureState: paused
@@ -303,6 +308,9 @@ export const createSettingsRepository = (db: KoedDb) => ({
           : null;
 
     return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`capture-policy:${actor.userId}`}, 0))`
+      );
       const result = await tx.execute<{
         id: string;
         owner_user_id: string;
@@ -381,6 +389,9 @@ export const createSettingsRepository = (db: KoedDb) => ({
     policyId: string
   ): Promise<boolean> {
     return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`capture-policy:${actor.userId}`}, 0))`
+      );
       const rows = await tx
         .delete(capturePolicies)
         .where(

@@ -15,6 +15,7 @@ import {
   hookBreakerEntryIsOpen,
   isRetryableTranscriptCatchupError,
   loadConfig,
+  managedConversationCaptureGuardActive,
   parseForegroundTranscriptFileRecords,
   parseTranscriptFileRecords,
   parseTranscriptText,
@@ -31,6 +32,7 @@ import {
   transcriptCatchupApiRequestTimeoutMs,
   transcriptCatchupRetryDelayMs
 } from "../src/capture-hook.js";
+import { KOED_MANAGED_CONVERSATION_ENV } from "../src/conversation-source-types.js";
 
 const withHookStateFile = async (
   run: (input: { dir: string; statePath: string }) => Promise<void>
@@ -77,6 +79,52 @@ const readOnlyTranscriptCatchupStatus = (
 };
 
 describe("Codex capture hook transcript parsing", () => {
+  it("fails closed when invoked inside a managed conversation subprocess", async () => {
+    const environment = {
+      [KOED_MANAGED_CONVERSATION_ENV]: "1",
+      MEMORY_CAPTURE_ENABLED: "true"
+    };
+    const runPass = vi.fn();
+    const triggerCatchup = vi.fn();
+    const accessCheck = vi.fn();
+    const runCatchupPass = vi.fn();
+
+    expect(managedConversationCaptureGuardActive(environment)).toBe(true);
+    await expect(
+      runForegroundCapturePass({
+        payload: {
+          hook_event_name: "Stop",
+          transcript_path: "/tmp/managed-conversation.jsonl"
+        },
+        environment,
+        runPass,
+        triggerCatchup
+      })
+    ).resolves.toMatchObject({
+      rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    });
+    expect(runPass).not.toHaveBeenCalled();
+    expect(triggerCatchup).not.toHaveBeenCalled();
+
+    await runTranscriptCatchup(
+      undefined,
+      {
+        hook_event_name: "Stop",
+        transcript_path: "/tmp/managed-conversation.jsonl"
+      },
+      {
+        environment,
+        client: { accessCheck },
+        runCapturePass: runCatchupPass
+      }
+    );
+    expect(accessCheck).not.toHaveBeenCalled();
+    expect(runCatchupPass).not.toHaveBeenCalled();
+  });
+
   it("keeps upstream and device credentials out of detached hook children", () => {
     const env = detachedHookChildEnv({
       PATH: "/usr/bin",
@@ -473,6 +521,66 @@ describe("Codex capture hook transcript parsing", () => {
     });
   });
 
+  it("keeps the Stop transcript byte boundary fixed across catch-up pages", async () => {
+    await withHookStateFile(async ({ dir }) => {
+      const transcriptPath = path.join(dir, "stop-boundary.jsonl");
+      fs.writeFileSync(transcriptPath, "captured-at-stop", { mode: 0o600 });
+      const capturedSize = fs.statSync(transcriptPath).size;
+      const observedBoundaries: Array<number | undefined> = [];
+      let pass = 0;
+
+      await runTranscriptCatchup(
+        undefined,
+        {
+          hook_event_name: "Stop",
+          session_id: "stop-boundary-session",
+          transcript_path: transcriptPath,
+          cwd: "/repo"
+        },
+        {
+          client: {
+            accessCheck: async () => ({
+              ok: true,
+              auth: "bearer_api_token",
+              user: {
+                id: "stop-boundary-user",
+                email: "user@example.com",
+                displayName: null
+              },
+              canWritePersonal: true
+            })
+          },
+          acquireCatchupLock: () => ({
+            heartbeat() {},
+            release() {}
+          }),
+          sleepUntilCatchupStop: async () => true,
+          runCapturePass: async ({ payload }) => {
+            observedBoundaries.push(payload.transcript_bytes_at_hook);
+            pass += 1;
+            if (pass === 1) {
+              fs.appendFileSync(transcriptPath, "appended-after-stop");
+            }
+            return {
+              rawItemsStored: 1,
+              rawItemsProjected: 1,
+              transcriptPath,
+              transcriptCheckpointOffset:
+                pass === 1 ? capturedSize : fs.statSync(transcriptPath).size,
+              transcriptSize: fs.statSync(transcriptPath).size,
+              transcriptBacklogBytes: 0,
+              transcriptBacklogRemaining: pass === 1,
+              transcriptCheckpointAdvanced: true
+            };
+          },
+          maxRuntimeMs: 10_000
+        }
+      );
+
+      expect(observedBoundaries).toEqual([capturedSize, capturedSize]);
+    });
+  });
+
   it("records retryable detached catch-up failures and supersedes them on later success", async () => {
     await withHookStateFile(async ({ dir, statePath }) => {
       const transcriptPath = path.join(dir, "transcript.jsonl");
@@ -637,6 +745,90 @@ describe("Codex capture hook transcript parsing", () => {
       eventTime: "2026-05-01T10:00:00.000Z",
       sourceSequence: 0
     });
+  });
+
+  it("keeps ambiguous response user context raw-only while projecting the explicit user event", () => {
+    const payload = {
+      hook_event_name: "Stop" as const,
+      cwd: "/repo",
+      session_id: "external-thread"
+    };
+    const items = buildRawTranscriptConversationItems({
+      records: [
+        {
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "external-turn" }
+        },
+        {
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: "Injected client context"
+          }
+        },
+        {
+          type: "event_msg",
+          payload: { type: "user_message", message: "Real user prompt" }
+        },
+        {
+          type: "response_item",
+          payload: {
+            id: "assistant-message-1",
+            type: "message",
+            role: "assistant",
+            content: "Agent reply"
+          }
+        },
+        {
+          type: "event_msg",
+          payload: { type: "agent_message", message: "Agent reply" }
+        }
+      ],
+      transcriptPath: "/tmp/external-thread.jsonl",
+      effectiveContext: effectiveCaptureContext(payload),
+      payload
+    });
+
+    expect(
+      items.map((item) => ({
+        sourceEventType: item.sourceEventType,
+        rawText: item.rawText,
+        observationOnly: item.observationOnly,
+        canonicalStableItemId: item.canonicalStableItemId
+      }))
+    ).toEqual([
+      {
+        sourceEventType: "task_started",
+        rawText: "",
+        observationOnly: undefined,
+        canonicalStableItemId: undefined
+      },
+      {
+        sourceEventType: "message",
+        rawText: "Injected client context",
+        observationOnly: undefined,
+        canonicalStableItemId: undefined
+      },
+      {
+        sourceEventType: "user_message",
+        rawText: "Real user prompt",
+        observationOnly: undefined,
+        canonicalStableItemId: undefined
+      },
+      {
+        sourceEventType: "message",
+        rawText: "Agent reply",
+        observationOnly: undefined,
+        canonicalStableItemId: "assistant-message-1"
+      },
+      {
+        sourceEventType: "agent_message",
+        rawText: "Agent reply",
+        observationOnly: true,
+        canonicalStableItemId: undefined
+      }
+    ]);
   });
 
   it("assigns transcript rows to their real Codex turns instead of the hook payload turn", () => {
@@ -860,6 +1052,493 @@ describe("Codex capture hook transcript parsing", () => {
       expect(foregroundItems[0]!.sourceSequence).toBe(
         catchupItems[1]!.sourceSequence
       );
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("gives foreground tail rows the same turn and timestamp annotations as sequential catch-up", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (record: Record<string, unknown>) =>
+      `${JSON.stringify(record)}\n`;
+    const checkpointLine = line({
+      timestamp: "2026-05-01T10:00:00.000Z",
+      type: "session_meta",
+      payload: { id: "tail-parity-thread" }
+    });
+    const turnStartLine = line({
+      timestamp: "2026-05-01T10:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "tail-parity-turn" }
+    });
+    const assistantLine = line({
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        message: "Tail row without local anchors"
+      }
+    });
+    const turnCompleteLine = line({
+      timestamp: "2026-05-01T10:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "tail-parity-turn" }
+    });
+    fs.writeFileSync(
+      transcriptPath,
+      checkpointLine + turnStartLine + assistantLine + turnCompleteLine
+    );
+    const checkpointBytes = Buffer.byteLength(checkpointLine);
+    const state = {
+      seen: {},
+      rawSeen: {},
+      transcriptOffsets: {
+        [`scope:${transcriptPath}`]: {
+          offset: checkpointBytes,
+          lineCount: 1,
+          size: checkpointBytes,
+          lastEventTime: "2026-05-01T10:00:00.000Z"
+        }
+      }
+    };
+    const payload = {
+      hook_event_name: "PostToolUse" as const,
+      session_id: "tail-parity-thread"
+    };
+
+    try {
+      const foreground = parseForegroundTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        foregroundMaxBytes: Buffer.byteLength(assistantLine + turnCompleteLine)
+      });
+      const catchup = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const build = (records: unknown[], indexOffset: number) =>
+        buildRawTranscriptConversationItems({
+          records,
+          indexOffset,
+          transcriptPath,
+          effectiveContext: effectiveCaptureContext(payload),
+          payload
+        }).find((item) => item.rawText === "Tail row without local anchors");
+      const foregroundItem = build(foreground.records, foreground.indexOffset);
+      const catchupItem = build(catchup.records, catchup.indexOffset);
+
+      expect(foreground.backgroundCatchupNeeded).toBe(true);
+      expect(foregroundItem).toMatchObject({
+        externalTurnId: "tail-parity-turn",
+        eventTime: "2026-05-01T10:00:02.000Z",
+        metadata: {
+          sourceEventTimeAccuracy: "interpolated_between_sources",
+          transcriptAssignedTurnId: "tail-parity-turn"
+        }
+      });
+      expect(foregroundItem).toMatchObject({
+        externalTurnId: catchupItem?.externalTurnId,
+        eventTime: catchupItem?.eventTime,
+        idempotencyKey: catchupItem?.idempotencyKey,
+        sourceHash: catchupItem?.sourceHash
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps response_item assistant preference across transcript pages", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (record: Record<string, unknown>) =>
+      `${JSON.stringify(record)}\n`;
+    const responseLine = line({
+      timestamp: "2026-05-01T10:00:01.000Z",
+      type: "response_item",
+      payload: {
+        id: "paged-assistant-message",
+        type: "message",
+        role: "assistant",
+        turn_id: "paged-assistant-turn",
+        content: [{ type: "output_text", text: "One assistant answer" }]
+      }
+    });
+    const eventLine = line({
+      timestamp: "2026-05-01T10:00:02.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "One assistant answer" }
+    });
+    fs.writeFileSync(transcriptPath, responseLine + eventLine);
+    const payload = {
+      hook_event_name: "Stop" as const,
+      session_id: "paged-assistant-thread"
+    };
+
+    try {
+      const first = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        maxBytes: Buffer.byteLength(responseLine)
+      });
+      const state = {
+        seen: {},
+        rawSeen: {},
+        transcriptOffsets: {
+          [`scope:${transcriptPath}`]: first.checkpoint!
+        }
+      };
+      const second = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER
+      });
+      const build = (records: unknown[], indexOffset: number) =>
+        buildRawTranscriptConversationItems({
+          records,
+          indexOffset,
+          transcriptPath,
+          effectiveContext: effectiveCaptureContext(payload),
+          payload
+        });
+      const observations = [
+        ...build(first.records, first.indexOffset),
+        ...build(second.records, second.indexOffset)
+      ].filter((item) => item.rawText === "One assistant answer");
+
+      expect(observations).toHaveLength(2);
+      expect(
+        observations.filter((item) => item.observationOnly !== true)
+      ).toHaveLength(1);
+      expect(observations[0]).toMatchObject({
+        sourceRecordType: "response_item",
+        canonicalStableItemId: "paged-assistant-message"
+      });
+      expect(observations[1]).toMatchObject({
+        sourceRecordType: "event_msg",
+        observationOnly: true,
+        projectionStatus: "raw_only"
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("holds a page-ending assistant event until its response representation arrives", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (record: Record<string, unknown>) =>
+      `${JSON.stringify(record)}\n`;
+    const eventLine = line({
+      timestamp: "2026-05-01T10:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "One assistant answer" }
+    });
+    const responseLine = line({
+      timestamp: "2026-05-01T10:00:02.000Z",
+      type: "response_item",
+      payload: {
+        id: "event-first-assistant-message",
+        type: "message",
+        role: "assistant",
+        turn_id: "event-first-assistant-turn",
+        content: [{ type: "output_text", text: "One assistant answer" }]
+      }
+    });
+    fs.writeFileSync(transcriptPath, eventLine + responseLine);
+    const payload = {
+      hook_event_name: "Stop" as const,
+      session_id: "event-first-assistant-thread"
+    };
+
+    try {
+      const first = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        maxBytes: Buffer.byteLength(eventLine),
+        deferPageEndingAssistantEvent: true
+      });
+      expect(first.records).toEqual([]);
+      expect(first.checkpoint?.offset).toBe(0);
+
+      const second = parseTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: first.checkpoint!
+          }
+        },
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER,
+        deferPageEndingAssistantEvent: true
+      });
+      const observations = buildRawTranscriptConversationItems({
+        records: second.records,
+        indexOffset: second.indexOffset,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext(payload),
+        payload
+      }).filter((item) => item.rawText === "One assistant answer");
+
+      expect(observations).toHaveLength(2);
+      expect(
+        observations.filter((item) => item.observationOnly !== true)
+      ).toEqual([
+        expect.objectContaining({
+          sourceRecordType: "response_item",
+          canonicalStableItemId: "event-first-assistant-message"
+        })
+      ]);
+      expect(
+        observations.find((item) => item.sourceRecordType === "event_msg")
+      ).toMatchObject({
+        observationOnly: true,
+        projectionStatus: "raw_only"
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("holds an unresolved assistant event together with trailing telemetry", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (record: Record<string, unknown>) =>
+      `${JSON.stringify(record)}\n`;
+    const assistant = line({
+      timestamp: "2026-05-01T10:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "Deferred answer" }
+    });
+    const telemetry = line({
+      timestamp: "2026-05-01T10:00:01.500Z",
+      type: "event_msg",
+      payload: { type: "token_count", info: { total_token_usage: 12 } }
+    });
+    const response = line({
+      timestamp: "2026-05-01T10:00:02.000Z",
+      type: "response_item",
+      payload: {
+        id: "deferred-answer-id",
+        type: "message",
+        role: "assistant",
+        turn_id: "deferred-answer-turn",
+        content: [{ type: "output_text", text: "Deferred answer" }]
+      }
+    });
+    fs.writeFileSync(transcriptPath, assistant + telemetry + response);
+
+    try {
+      const first = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        maxBytes: Buffer.byteLength(assistant + telemetry),
+        deferPageEndingAssistantEvent: true
+      });
+      expect(first.records).toEqual([]);
+      expect(first.checkpoint?.offset).toBe(0);
+
+      const second = parseTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: first.checkpoint!
+          }
+        },
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER,
+        deferPageEndingAssistantEvent: true
+      });
+      const items = buildRawTranscriptConversationItems({
+        records: second.records,
+        indexOffset: second.indexOffset,
+        transcriptPath,
+        effectiveContext: effectiveCaptureContext({
+          session_id: "deferred-answer-thread",
+          hook_event_name: "Stop"
+        }),
+        payload: {
+          session_id: "deferred-answer-thread",
+          hook_event_name: "Stop"
+        }
+      });
+      expect(
+        items.filter((item) => item.rawText === "Deferred answer")
+      ).toEqual([
+        expect.objectContaining({
+          sourceRecordType: "event_msg",
+          observationOnly: true
+        }),
+        expect.objectContaining({
+          sourceRecordType: "response_item",
+          canonicalStableItemId: "deferred-answer-id"
+        })
+      ]);
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("retains a partial EOF record until a later append completes it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const firstLine = `${JSON.stringify({
+      timestamp: "2026-05-01T10:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "complete first row" }
+    })}\n`;
+    const trailingRecord = JSON.stringify({
+      timestamp: "2026-05-01T10:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "completed after append" }
+    });
+    const splitAt = Math.floor(trailingRecord.length / 2);
+    const partial = trailingRecord.slice(0, splitAt);
+    const firstLineBytes = Buffer.byteLength(firstLine);
+    fs.writeFileSync(transcriptPath, firstLine + partial);
+
+    try {
+      const initial = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope"
+      });
+      expect(initial.records).toHaveLength(1);
+      expect(JSON.stringify(initial.records[0])).toContain(
+        "complete first row"
+      );
+      expect(initial.checkpoint).toMatchObject({
+        offset: firstLineBytes,
+        lineCount: 1,
+        size: Buffer.byteLength(firstLine + partial)
+      });
+
+      const state = {
+        seen: {},
+        rawSeen: {},
+        transcriptOffsets: {
+          [`scope:${transcriptPath}`]: initial.checkpoint!
+        }
+      };
+      const stillPartial = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope"
+      });
+      expect(stillPartial.records).toEqual([]);
+      expect(stillPartial.checkpoint).toMatchObject({
+        offset: firstLineBytes,
+        lineCount: 1
+      });
+
+      fs.appendFileSync(transcriptPath, `${trailingRecord.slice(splitAt)}\n`);
+      const completed = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "scope"
+      });
+      expect(completed.records).toHaveLength(1);
+      expect(JSON.stringify(completed.records[0])).toContain(
+        "completed after append"
+      );
+      expect(completed.checkpoint).toMatchObject({
+        offset: fs.statSync(transcriptPath).size,
+        lineCount: 2,
+        size: fs.statSync(transcriptPath).size
+      });
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("extends a hook boundary only through the JSONL record it bisects", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const terminalLine = `${JSON.stringify({
+      timestamp: "2026-05-01T10:00:02.000Z",
+      type: "event_msg",
+      payload: { type: "task_complete", turn_id: "partial-stop-turn" }
+    })}\n`;
+    const nextLine = `${JSON.stringify({
+      timestamp: "2026-05-01T10:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "Do not cross boundary" }
+    })}\n`;
+    fs.writeFileSync(transcriptPath, terminalLine + nextLine);
+    const boundary = Math.floor(Buffer.byteLength(terminalLine) / 2);
+
+    try {
+      const parsed = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER,
+        readThroughOffset: boundary
+      });
+      expect(parsed.records).toHaveLength(1);
+      expect(JSON.stringify(parsed.records)).toContain("task_complete");
+      expect(JSON.stringify(parsed.records)).not.toContain(
+        "Do not cross boundary"
+      );
+      expect(parsed.checkpoint?.offset).toBe(Buffer.byteLength(terminalLine));
+      expect(parsed.checkpoint?.size).toBe(
+        Buffer.byteLength(terminalLine + nextLine)
+      );
+    } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("drops active turn context when a transcript checkpoint is invalidated", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        timestamp: "2026-05-01T10:00:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+          turn_id: "turn-before-rotation",
+          detail: "x".repeat(500)
+        }
+      })}\n`
+    );
+
+    try {
+      const initial = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {}, transcriptOffsets: {} },
+        stateScope: "scope"
+      });
+      expect(initial.checkpoint?.activeTurnId).toBe("turn-before-rotation");
+
+      fs.writeFileSync(
+        transcriptPath,
+        `${JSON.stringify({ type: "state" })}\n`
+      );
+      const replaced = parseTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: initial.checkpoint!
+          }
+        },
+        stateScope: "scope"
+      });
+      expect(replaced.checkpoint?.activeTurnId).toBeUndefined();
     } finally {
       fs.rmSync(dir, { force: true, recursive: true });
     }
@@ -1364,6 +2043,53 @@ describe("Codex capture hook transcript parsing", () => {
       );
       expect(background.checkpoint?.offset).toBeGreaterThan(firstLineBytes);
     } finally {
+      fs.rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("bounds foreground state reconstruction and advances the next exact page", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-transcript-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (message: string, timestamp: string) =>
+      `${JSON.stringify({
+        type: "event_msg",
+        timestamp,
+        payload: { type: "agent_message", message }
+      })}\n`;
+    const first = line("checkpoint", "2026-05-01T10:00:00.000Z");
+    const second = line("next exact page", "2026-05-01T10:00:01.000Z");
+    const third = line("middle backlog", "2026-05-01T10:00:02.000Z");
+    const fourth = line("latest tail", "2026-05-01T10:00:03.000Z");
+    fs.writeFileSync(transcriptPath, first + second + third + fourth);
+    process.env.MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES = String(
+      Buffer.byteLength(second + third)
+    );
+
+    try {
+      const result = parseForegroundTranscriptFileRecords({
+        transcriptPath,
+        state: {
+          seen: {},
+          rawSeen: {},
+          transcriptOffsets: {
+            [`scope:${transcriptPath}`]: {
+              offset: Buffer.byteLength(first),
+              lineCount: 1,
+              size: Buffer.byteLength(first),
+              lastEventTime: "2026-05-01T10:00:00.000Z"
+            }
+          }
+        },
+        stateScope: "scope",
+        foregroundMaxBytes: Buffer.byteLength(second)
+      });
+
+      expect(result.backgroundCatchupNeeded).toBe(true);
+      expect(result.checkpoint?.offset).toBe(Buffer.byteLength(first + second));
+      expect(JSON.stringify(result.records)).toContain("next exact page");
+      expect(JSON.stringify(result.records)).not.toContain("latest tail");
+    } finally {
+      delete process.env.MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES;
       fs.rmSync(dir, { force: true, recursive: true });
     }
   });
@@ -2139,6 +2865,67 @@ Do the thing.
     expect(items[1]?.content).toContain("Tests passed");
   });
 
+  it("normalizes JSON tool arguments and Codex command output metadata", () => {
+    const items = parseTranscriptText(
+      [
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            call_id: "call_structured",
+            name: "exec_command",
+            arguments: JSON.stringify({
+              cmd: "printf structured",
+              workdir: "/repo"
+            })
+          }
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            call_id: "call_structured",
+            output: [
+              "Chunk ID: chunk-1",
+              "Wall time: 0.125 seconds",
+              "Process exited with code 0",
+              "Original token count: 2",
+              "Output:",
+              "structured"
+            ].join("\n")
+          }
+        })
+      ].join("\n")
+    );
+
+    expect(items).toMatchObject([
+      {
+        metadata: {
+          toolCall: {
+            input: { cmd: "printf structured", workdir: "/repo" }
+          }
+        }
+      },
+      {
+        metadata: {
+          status: "completed",
+          durationMs: 125,
+          toolCall: {
+            status: "completed",
+            durationMs: 125,
+            output: {
+              output: "structured",
+              exitCode: 0,
+              chunkId: "chunk-1",
+              wallTimeSeconds: 0.125,
+              originalTokenCount: 2
+            }
+          }
+        }
+      }
+    ]);
+  });
+
   it("captures custom tool calls and outputs as structured tool events", () => {
     const items = parseTranscriptText(
       [
@@ -2190,7 +2977,7 @@ Do the thing.
           toolCall: {
             kind: "output",
             id: "call_patch",
-            output: '{"output":"Success. Updated files"}'
+            output: { output: "Success. Updated files" }
           }
         }
       }
@@ -2285,7 +3072,7 @@ Do the thing.
     expect(items).toHaveLength(1);
   });
 
-  it("stores Stop hook payloads only as stripped control records", () => {
+  it("stores verified Stop hook payloads only as stripped control records", () => {
     const payload = {
       session_id: "session-stop-control",
       turn_id: "turn-stop-control",
@@ -2298,7 +3085,9 @@ Do the thing.
       transcriptRecords: [],
       payload,
       effectiveContext,
-      mode: "foreground"
+      mode: "foreground",
+      transcriptCheckpointOffset: 0,
+      transcriptBytesAtHook: 0
     });
 
     expect(items).toHaveLength(1);
@@ -2323,6 +3112,126 @@ Do the thing.
     );
   });
 
+  it("defers a paged Stop control until the hook transcript boundary is processed", () => {
+    const payload = {
+      session_id: "session-paged-stop",
+      turn_id: "turn-paged-stop",
+      hook_event_name: "Stop" as const,
+      transcript_bytes_at_hook: 900
+    };
+    const effectiveContext = effectiveCaptureContext(payload);
+    const selectPage = (
+      checkpointOffset: number,
+      mode: "foreground" | "catchup" = "catchup"
+    ) =>
+      selectRawConversationItemsForHook({
+        transcriptRecords: [
+          {
+            timestamp: "2026-05-01T10:00:00.000Z",
+            type: "event_msg",
+            payload: {
+              type: "agent_message",
+              message: `Transcript page ending at ${checkpointOffset}`
+            }
+          }
+        ],
+        payload,
+        effectiveContext,
+        mode,
+        transcriptCheckpointOffset: checkpointOffset,
+        transcriptBytesAtHook: payload.transcript_bytes_at_hook
+      } as Parameters<typeof selectRawConversationItemsForHook>[0] & {
+        transcriptCheckpointOffset: number;
+        transcriptBytesAtHook: number;
+      });
+
+    const firstPage = selectPage(300);
+    const secondPage = selectPage(600);
+    const finalPage = selectPage(900);
+    const foregroundPage = selectPage(300, "foreground");
+
+    expect(
+      [...firstPage, ...secondPage].filter(
+        (item) => item.sourceEventType === "Stop"
+      )
+    ).toEqual([]);
+    expect(
+      foregroundPage.filter((item) => item.sourceEventType === "Stop")
+    ).toEqual([]);
+    expect(
+      finalPage.filter((item) => item.sourceEventType === "Stop")
+    ).toHaveLength(1);
+  });
+
+  it("does not ingest next-turn rows beyond a Stop hook byte boundary", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "koed-stop-boundary-"));
+    const transcriptPath = path.join(dir, "transcript.jsonl");
+    const line = (record: Record<string, unknown>) =>
+      `${JSON.stringify(record)}\n`;
+    const completedTurn = [
+      line({
+        timestamp: "2026-05-01T10:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-1" }
+      }),
+      line({
+        timestamp: "2026-05-01T10:00:01.000Z",
+        type: "event_msg",
+        payload: { type: "agent_message", message: "Turn one answer" }
+      }),
+      line({
+        timestamp: "2026-05-01T10:00:02.000Z",
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-1" }
+      })
+    ].join("");
+    const nextTurn = line({
+      timestamp: "2026-05-01T10:00:03.000Z",
+      type: "event_msg",
+      payload: { type: "user_message", message: "Next turn prompt" }
+    });
+    fs.writeFileSync(transcriptPath, completedTurn + nextTurn);
+    const boundary = Buffer.byteLength(completedTurn);
+    const payload = {
+      session_id: "stop-boundary-session",
+      turn_id: "turn-1",
+      hook_event_name: "Stop" as const,
+      transcript_bytes_at_hook: boundary
+    };
+
+    try {
+      const parsed = parseTranscriptFileRecords({
+        transcriptPath,
+        state: { seen: {}, rawSeen: {} },
+        stateScope: "scope",
+        maxBytes: Number.MAX_SAFE_INTEGER,
+        readThroughOffset: boundary
+      });
+      const items = selectRawConversationItemsForHook({
+        transcriptRecords: parsed.records,
+        indexOffset: parsed.indexOffset,
+        transcriptPath,
+        payload,
+        effectiveContext: effectiveCaptureContext(payload),
+        mode: "catchup",
+        transcriptCheckpointOffset: parsed.checkpoint?.offset,
+        transcriptBytesAtHook: boundary
+      });
+
+      expect(parsed.checkpoint).toMatchObject({
+        offset: boundary,
+        size: Buffer.byteLength(completedTurn + nextTurn)
+      });
+      expect(JSON.stringify(items)).toContain("Turn one answer");
+      expect(JSON.stringify(items)).not.toContain("Next turn prompt");
+      expect(
+        items.filter((item) => item.sourceEventType === "Stop")
+      ).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps transcript content and adds a stripped Stop control record in foreground capture", () => {
     const payload = {
       session_id: "session-stop-transcript",
@@ -2343,7 +3252,9 @@ Do the thing.
       ],
       payload,
       effectiveContext,
-      mode: "foreground"
+      mode: "foreground",
+      transcriptCheckpointOffset: 100,
+      transcriptBytesAtHook: 100
     });
 
     expect(items.map((item) => item.sourceRecordType)).toEqual([
@@ -2563,7 +3474,7 @@ Do the thing.
   });
 
   it("splits a single oversized raw conversation item without dropping the source sequence", () => {
-    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "1200";
+    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "4000";
     try {
       const chunks = rawItemRequestChunks({
         sourceKind: "codex",
@@ -2610,7 +3521,7 @@ Do the thing.
         chunks.every(
           (chunk) =>
             Buffer.byteLength(JSON.stringify({ items: [chunk] }), "utf8") <=
-            1200
+            4000
         )
       ).toBe(true);
     } finally {
@@ -2619,7 +3530,7 @@ Do the thing.
   });
 
   it("keeps escaped oversized raw chunks under the request budget", () => {
-    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "1400";
+    process.env.MEMORY_RAW_INGEST_BATCH_BYTES = "5000";
     try {
       const chunks = rawItemRequestChunks({
         sourceKind: "codex",
@@ -2644,7 +3555,7 @@ Do the thing.
         chunks.every(
           (chunk) =>
             Buffer.byteLength(JSON.stringify({ items: [chunk] }), "utf8") <=
-            1400
+            5000
         )
       ).toBe(true);
     } finally {

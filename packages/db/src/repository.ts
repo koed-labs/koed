@@ -8,6 +8,7 @@ import { createAuthSessionRepository } from "./auth-session-repository.js";
 import { createCapturedSessionRepository } from "./captured-session-repository.js";
 import { checkDatabase, createDb } from "./connection.js";
 import {
+  conversationSemanticChunkPolicyContent,
   conversationSemanticEventMetadata,
   conversationSemanticProjectionGroups,
   conversationSemanticUnitActor,
@@ -66,6 +67,8 @@ import {
   resolveRerankerKeyFromEnv,
   resolveSupportedEmbeddingModelConfig,
   resolveSupportedRerankerModelConfig,
+  RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES,
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
   sanitizeForPostgresStorage,
   decryptEnvelopeToUtf8,
   type EncryptedPayloadEnvelope,
@@ -118,6 +121,9 @@ interface RerankResult {
 }
 
 type ConversationProjectionRawRow = {
+  projection_source_table?:
+    | "conversation_items"
+    | "conversation_item_observations";
   id: string;
   owner_user_id: string | null;
   visibility: Visibility;
@@ -144,6 +150,9 @@ type ConversationProjectionRawRow = {
   transport_chunk_text: string | null;
   transport_chunk_encoding: string | null;
   source_hash: string;
+  canonical_item_key: string;
+  canonical_source_priority?: number;
+  projection_policy_revision: number | null;
   idempotency_key: string;
   metadata: Record<string, unknown> | null;
   session_workspace_id: string | null;
@@ -156,6 +165,7 @@ type LogicalConversationProjectionItem = {
   sourceIds: string[];
   sourceIdentity: string;
   sourceHash: string;
+  representativeSourceHash: string;
 };
 
 type ConversationProjectionBoundary = {
@@ -665,6 +675,7 @@ const transcriptTokenUsageFromRaw = (
   if (!type || !/token[_-]?count/i.test(type)) {
     return null;
   }
+  const info = isRecord(payload.info) ? payload.info : null;
   const usage = isRecord(payload.usage)
     ? payload.usage
     : isRecord(payload.token_count)
@@ -724,19 +735,42 @@ const transcriptTokenUsageFromRaw = (
       stringField(usage, "model") ??
       stringField(payload, "model") ??
       stringField(rawJson, "model"),
-    modelContextWindow: tokenNumberField(
-      usage,
-      "modelContextWindow",
-      "model_context_window",
-      "contextWindow",
-      "context_window"
-    ),
+    modelContextWindow:
+      tokenNumberField(
+        usage,
+        "modelContextWindow",
+        "model_context_window",
+        "contextWindow",
+        "context_window"
+      ) ??
+      tokenNumberField(
+        info ?? {},
+        "modelContextWindow",
+        "model_context_window",
+        "contextWindow",
+        "context_window"
+      ),
     inputTokens,
     cachedInputTokens,
     outputTokens,
     reasoningOutputTokens,
     totalTokens
   };
+};
+
+const providerTokenUsageIdempotencyKey = (input: {
+  sessionId: string | null;
+  turnId: string | null;
+  scope: "last" | "total";
+  occurrenceIdentity: string;
+}): string => {
+  if (!input.sessionId || !input.turnId) {
+    return `token:${input.occurrenceIdentity}:${input.scope}`;
+  }
+  const occurrenceFingerprint = createHash("sha256")
+    .update(input.occurrenceIdentity)
+    .digest("hex");
+  return `token:provider:${input.sessionId}:${input.turnId}:${input.scope}:${occurrenceFingerprint}`;
 };
 
 const conversationItemContent = (row: {
@@ -819,6 +853,29 @@ const conversationItemContent = (row: {
   return nestedText ? codexIdePromptUserText(nestedText) : null;
 };
 
+const providerConversationItemFromRaw = (
+  rawJson: unknown
+): Record<string, unknown> | null => {
+  const raw = isRecord(rawJson) ? rawJson : null;
+  if (!raw) {
+    return null;
+  }
+  const container = isRecord(raw.payload)
+    ? raw.payload
+    : isRecord(raw.params)
+      ? raw.params
+      : raw;
+  return isRecord(container.item) ? container.item : container;
+};
+
+const providerConversationRoleFromRaw = (rawJson: unknown): string | null => {
+  const item = providerConversationItemFromRaw(rawJson);
+  return (
+    stringField(item ?? {}, "role") ??
+    (item && isRecord(item.message) ? stringField(item.message, "role") : null)
+  );
+};
+
 const actorFromConversationItem = (row: {
   source_event_type: string | null;
   source_record_type: string;
@@ -827,11 +884,7 @@ const actorFromConversationItem = (row: {
 }): MemoryActor | null => {
   const metadata = row.metadata ?? {};
   const raw = isRecord(row.raw_json) ? row.raw_json : null;
-  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
-  const item = payload && isRecord(payload.item) ? payload.item : payload;
-  const role =
-    (item && stringField(item, "role")) ??
-    (item && isRecord(item.message) ? stringField(item.message, "role") : null);
+  const role = providerConversationRoleFromRaw(row.raw_json)?.toLowerCase();
   const transcriptType =
     stringField(metadata, "transcriptType") ??
     row.source_event_type ??
@@ -854,6 +907,19 @@ const actorFromConversationItem = (row: {
       return "tool";
     }
   }
+  if (role === "developer" || role === "system") {
+    return "system";
+  }
+  if (role === "user") {
+    return stringField(metadata, "threadKind") === "subagent"
+      ? "agent"
+      : "user";
+  }
+  if (role === "assistant") {
+    return stringField(metadata, "threadKind") === "subagent"
+      ? "subagent"
+      : "agent";
+  }
   if (
     /developer|instruction|rolling[_ -]?context|context[_ -]?summary/i.test(
       transcriptType
@@ -864,17 +930,33 @@ const actorFromConversationItem = (row: {
   if (/user/i.test(transcriptType)) {
     return "user";
   }
-  if (/developer|system/i.test(role ?? "")) {
-    return "system";
-  }
   if (/subagent/i.test(transcriptType)) {
     return "subagent";
   }
   if (/agent|assistant|reasoning|thought/i.test(transcriptType)) {
     return "agent";
   }
+  if (
+    /^(plan|filechange|websearch|imageview|imagegeneration|contextcompaction|subagentactivity)$/i.test(
+      transcriptType
+    )
+  ) {
+    return "agent";
+  }
   if (/tool|function_call|custom_tool/i.test(transcriptType)) {
     return "tool";
+  }
+  if (
+    /filechange|websearch|imageview|imagegeneration|plan/i.test(transcriptType)
+  ) {
+    return /plan/i.test(transcriptType) ? "agent" : "tool";
+  }
+  if (
+    /lifecycle|task_|turn[/_-]|token|context|compaction|unknown/i.test(
+      transcriptType
+    )
+  ) {
+    return "system";
   }
   if (/system/i.test(transcriptType)) {
     return "system";
@@ -894,11 +976,25 @@ const messageRoleForActor = (
   return null;
 };
 
+const projectionTranscriptItemIdFor = (row: {
+  source_sequence: number | null;
+  metadata: Record<string, unknown> | null;
+}): string | null => {
+  const metadata = row.metadata ?? {};
+  const stableItemId = stringField(metadata, "canonicalStableItemId");
+  if (stableItemId) {
+    return `${stableItemId}:${stringField(metadata, "canonicalConversationItemKind") ?? "item"}`;
+  }
+  return row.source_sequence === null ? null : String(row.source_sequence);
+};
+
 type ConversationProjectionPolicy = {
   createMessage: boolean;
-  createSemanticEvent: boolean;
   createToolEvent: boolean;
+  createMemoryEvent: boolean;
+  includeInEmbedding: boolean;
   includeInLcm: boolean;
+  policyKey: string | null;
   reason: string;
 };
 
@@ -915,6 +1011,11 @@ type ConversationProjectionPolicyRule = {
   enabled: boolean;
 };
 
+type ConversationProjectionPolicySnapshot = {
+  revision: number;
+  rules: Map<string, ConversationProjectionPolicyRule>;
+};
+
 type ConversationProjectionCandidate = {
   logicalItem: LogicalConversationProjectionItem;
   row: ConversationProjectionRawRow;
@@ -926,7 +1027,7 @@ type ConversationProjectionCandidate = {
   transcriptTokenUsage: ReturnType<typeof transcriptTokenUsageFromRaw>;
   projectionMetadata: Record<string, unknown>;
   projectionPolicy: ConversationProjectionPolicy;
-  turnCompleteSignal: boolean;
+  turnCompleteSealReason: SemanticBundleSealReason | null;
   boundary: ConversationProjectionBoundary;
   semanticUnitType: ConversationSemanticUnitType | null;
   semanticItem: ConversationSemanticProjectionItem | null;
@@ -968,29 +1069,85 @@ const projectionRuleKeyForConversationItem = (row: {
   metadata: Record<string, unknown> | null;
 }): string =>
   normalizeProjectionRuleKey(
-    stringField(row.metadata ?? {}, "transcriptType") ??
+    (stringField(row.metadata ?? {}, "workflow")
+      ? `workflow:${stringField(row.metadata ?? {}, "workflow")}`
+      : null) ??
+      stringField(row.metadata ?? {}, "transcriptType") ??
       row.source_event_type ??
       row.source_record_type
   );
+
+const roleDerivedProjectionRuleKeyForConversationItem = (row: {
+  source_event_type: string | null;
+  source_record_type: string;
+  metadata?: Record<string, unknown> | null;
+  raw_json?: unknown;
+}): string | null => {
+  const item = providerConversationItemFromRaw(row.raw_json);
+  const itemType = normalizeProjectionRuleKey(
+    (item && stringField(item, "type")) ?? row.source_event_type
+  );
+  const role = normalizeProjectionRuleKey(
+    (item && stringField(item, "role")) ??
+      (item && isRecord(item.message)
+        ? stringField(item.message, "role")
+        : null)
+  );
+  if (role === "developer") {
+    return "developer_message";
+  }
+  if (role === "system") {
+    return "system_message";
+  }
+  if (role === "assistant") {
+    return "assistant_message";
+  }
+  if (role === "user") {
+    if (
+      normalizeProjectionRuleKey(row.source_record_type) === "response_item" &&
+      !stringField(item ?? {}, "client_id") &&
+      !stringField(item ?? {}, "clientId")
+    ) {
+      return "managed_context_user";
+    }
+    return "user_message";
+  }
+  if (itemType !== "message") {
+    return null;
+  }
+  return null;
+};
 
 const projectionRuleLookupKeysForConversationItem = (row: {
   source_event_type: string | null;
   source_record_type: string;
   metadata: Record<string, unknown> | null;
-}): string[] =>
-  uniqueOrderedStrings(
+  raw_json?: unknown;
+}): string[] => {
+  const primaryKey = projectionRuleKeyForConversationItem(row);
+  const roleDerivedKey = roleDerivedProjectionRuleKeyForConversationItem(row);
+  return uniqueOrderedStrings(
     [
-      projectionRuleKeyForConversationItem(row),
+      roleDerivedKey,
+      primaryKey && primaryKey !== "message" ? primaryKey : null,
+      primaryKey,
+      stringField(row.metadata ?? {}, "workflow")
+        ? `workflow:${stringField(row.metadata ?? {}, "workflow")}`
+        : null,
       stringField(row.metadata ?? {}, "toolEventKind"),
       row.source_event_type,
       row.source_record_type
     ].map(normalizeProjectionRuleKey)
   ).filter(Boolean);
+};
 
 const loadConversationProjectionPolicyRules = async (
-  pool: pg.Pool
-): Promise<Map<string, ConversationProjectionPolicyRule>> => {
-  const rows = await pool.query<{
+  client: pg.Pool | pg.PoolClient
+): Promise<ConversationProjectionPolicySnapshot> => {
+  const state = await client.query<{ revision: string }>(
+    "select revision::text as revision from projection_policy_state where id = 1"
+  );
+  const rows = await client.query<{
     source_kind: string;
     source_adapter_version: string;
     transcript_type: string;
@@ -1019,67 +1176,26 @@ const loadConversationProjectionPolicyRules = async (
         and source_adapter_version = 'codex-transcript-v1'
     `
   );
-  return new Map(
-    rows.rows.map((row) => [
-      normalizeProjectionRuleKey(row.transcript_type),
-      {
-        sourceKind: row.source_kind,
-        sourceAdapterVersion: row.source_adapter_version,
-        transcriptType: row.transcript_type,
-        projectToUi: row.project_to_ui,
-        createMessage: row.create_message,
-        createToolEvent: row.create_tool_event,
-        createMemoryEvent: row.create_memory_event,
-        includeInEmbedding: row.include_in_embedding,
-        includeInLcm: row.include_in_lcm,
-        enabled: row.enabled
-      }
-    ])
-  );
-};
-
-const projectionWorkflowIsInternal = (
-  metadata: Record<string, unknown> | null
-): boolean => {
-  const workflow = stringField(metadata ?? {}, "workflow");
-  return workflow === "lcm_summary" || workflow === "memory_question";
-};
-
-const projectionIsInfrastructureEvent = (row: {
-  source_event_type: string | null;
-  source_record_type: string;
-  metadata: Record<string, unknown> | null;
-  raw_json: unknown;
-}): boolean => {
-  const label = projectionLabelForConversationItem(row);
-  const raw = isRecord(row.raw_json) ? row.raw_json : null;
-  return (
-    /tokenUsage|token[_-]?count|session_meta|lifecycle|initialized|turn\/completed|error|agentMessage\/delta/i.test(
-      label
-    ) ||
-    projectionIsRawReasoningLabel(label) ||
-    raw?.method === "thread/tokenUsage/updated"
-  );
-};
-
-const projectionIsSystemContext = (row: {
-  source_event_type: string | null;
-  source_record_type: string;
-  metadata: Record<string, unknown> | null;
-  raw_json: unknown;
-}): boolean => {
-  const label = projectionLabelForConversationItem(row);
-  const raw = isRecord(row.raw_json) ? row.raw_json : null;
-  const payload = raw && isRecord(raw.payload) ? raw.payload : raw;
-  const item = payload && isRecord(payload.item) ? payload.item : payload;
-  const role =
-    (item && stringField(item, "role")) ??
-    (item && isRecord(item.message) ? stringField(item.message, "role") : null);
-  return (
-    /(^|[_/ -])(system|developer|instruction|rolling[_ -]?context|context[_ -]?summary)([_/ -]|$)/i.test(
-      label
-    ) || /^(system|developer)$/i.test(role ?? "")
-  );
+  return {
+    revision: Number(state.rows[0]?.revision ?? 0),
+    rules: new Map(
+      rows.rows.map((row) => [
+        normalizeProjectionRuleKey(row.transcript_type),
+        {
+          sourceKind: row.source_kind,
+          sourceAdapterVersion: row.source_adapter_version,
+          transcriptType: row.transcript_type,
+          projectToUi: row.project_to_ui,
+          createMessage: row.create_message,
+          createToolEvent: row.create_tool_event,
+          createMemoryEvent: row.create_memory_event,
+          includeInEmbedding: row.include_in_embedding,
+          includeInLcm: row.include_in_lcm,
+          enabled: row.enabled
+        }
+      ])
+    )
+  };
 };
 
 const classifyConversationItemProjection = (
@@ -1088,6 +1204,8 @@ const classifyConversationItemProjection = (
     source_adapter_version: string;
     source_event_type: string | null;
     source_record_type: string;
+    external_turn_id: string | null;
+    session_metadata: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
     raw_json: unknown;
   },
@@ -1099,30 +1217,25 @@ const classifyConversationItemProjection = (
 ): ConversationProjectionPolicy => {
   const base = {
     createMessage: false,
-    createSemanticEvent: false,
     createToolEvent: false,
+    createMemoryEvent: false,
+    includeInEmbedding: false,
     includeInLcm: false,
+    policyKey: null,
     reason: "not-projectable"
   };
   if (projectionIsIdeClientContext(row)) {
     return { ...base, reason: "ide-client-supporting-context" };
   }
-  if (!input.content || !input.actorType) {
-    return { ...base, reason: "missing-content-or-actor" };
+  if (
+    row.session_metadata?.managedConversation === true &&
+    !row.external_turn_id
+  ) {
+    return { ...base, reason: "managed-thread-level-provenance" };
   }
   if (row.source_record_type === "hook_payload") {
     return { ...base, reason: "hook-control-record" };
   }
-  if (projectionWorkflowIsInternal(row.metadata)) {
-    return { ...base, reason: "internal-worker-workflow" };
-  }
-  if (projectionIsInfrastructureEvent(row)) {
-    return { ...base, reason: "infrastructure-event" };
-  }
-  if (projectionIsSystemContext(row)) {
-    return { ...base, reason: "system-or-context-record" };
-  }
-
   const matchedRule = projectionRuleLookupKeysForConversationItem(row)
     .map((key) => input.projectionRules.get(key))
     .find((rule): rule is ConversationProjectionPolicyRule => Boolean(rule));
@@ -1131,6 +1244,12 @@ const classifyConversationItemProjection = (
       return {
         ...base,
         reason: `projection-policy-disabled:${matchedRule.transcriptType}`
+      };
+    }
+    if (!input.content || !input.actorType) {
+      return {
+        ...base,
+        reason: `projection-policy-missing-content-or-actor:${matchedRule.transcriptType}`
       };
     }
     const createMessage = Boolean(
@@ -1143,15 +1262,15 @@ const classifyConversationItemProjection = (
       matchedRule.createToolEvent &&
       input.actorType === "tool"
     );
-    const createSemanticEvent = Boolean(
-      matchedRule.createMemoryEvent && matchedRule.includeInEmbedding
-    );
+    const createMemoryEvent = matchedRule.createMemoryEvent;
     return {
       createMessage,
-      createSemanticEvent,
       createToolEvent,
-      includeInLcm: matchedRule.includeInLcm,
-      reason: createSemanticEvent
+      createMemoryEvent,
+      includeInEmbedding: createMemoryEvent && matchedRule.includeInEmbedding,
+      includeInLcm: createMemoryEvent && matchedRule.includeInLcm,
+      policyKey: matchedRule.transcriptType,
+      reason: createMemoryEvent
         ? `projection-policy:${matchedRule.transcriptType}`
         : `projection-policy-raw-only:${matchedRule.transcriptType}`
     };
@@ -1163,28 +1282,39 @@ const classifyConversationItemProjection = (
   };
 };
 
-const conversationItemIsTurnCompleteSignal = (row: {
+const conversationItemTurnCompleteSealReason = (row: {
+  source_adapter_version?: string;
   source_event_type: string | null;
   source_record_type: string;
   raw_json: unknown;
   metadata?: Record<string, unknown> | null;
-}): boolean => {
+}): SemanticBundleSealReason | null => {
+  if (
+    (row.source_adapter_version === "codex-app-server-conversation-v1" &&
+      row.source_event_type === "turn/completed") ||
+    (row.source_adapter_version === "codex-transcript-v1" &&
+      ["task_complete", "turn_aborted"].includes(row.source_event_type ?? ""))
+  ) {
+    return "turn_completed";
+  }
   if (row.source_record_type !== "hook_payload") {
-    return false;
+    return null;
   }
   if (/^(Stop|SubagentStop)$/i.test(row.source_event_type ?? "")) {
-    return true;
+    return "stop_hook";
   }
   const raw = isRecord(row.raw_json) ? row.raw_json : null;
   const hookEventName = stringField(raw ?? {}, "hook_event_name");
   if (/^(Stop|SubagentStop)$/i.test(hookEventName ?? "")) {
-    return true;
+    return "stop_hook";
   }
   const metadataHookEventName = stringField(
     row.metadata ?? {},
     "hookEventName"
   );
-  return /^(Stop|SubagentStop)$/i.test(metadataHookEventName ?? "");
+  return /^(Stop|SubagentStop)$/i.test(metadataHookEventName ?? "")
+    ? "stop_hook"
+    : null;
 };
 
 const projectionMaxTokens = (): number =>
@@ -1198,22 +1328,31 @@ const projectionMaxTokens = (): number =>
   );
 
 const projectionHardMaxTokens = (): number =>
-  Math.max(
-    projectionMaxTokens(),
-    Math.min(
-      Math.max(
-        Number.parseInt(process.env.EMBEDDING_MAX_TOKENS ?? "", 10) ||
-          DEFAULT_EMBEDDING_MAX_TOKENS,
-        1
-      ),
-      QWEN_OPERATIONAL_MAX_TOKENS
-    )
+  Math.min(
+    Math.max(
+      Number.parseInt(process.env.EMBEDDING_MAX_TOKENS ?? "", 10) ||
+        DEFAULT_EMBEDDING_MAX_TOKENS,
+      1
+    ),
+    QWEN_OPERATIONAL_MAX_TOKENS
   );
 
 const projectionAgentTurnStaleMs = (): number =>
   nonNegativeIntEnv(
     "MEMORY_AGENT_TURN_STALE_MS",
     DEFAULT_MEMORY_AGENT_TURN_STALE_MS
+  );
+
+const projectionRebuildMaxItems = (): number =>
+  Math.min(
+    Math.max(
+      Number.parseInt(
+        process.env.MEMORY_PROJECTION_REBUILD_MAX_ITEMS ?? "",
+        10
+      ) || 10_000,
+      1
+    ),
+    100_000
   );
 
 const DEFAULT_SEMANTIC_MEMORY_REBUILD_DEBOUNCE_MS = 5 * 60 * 1000;
@@ -1235,35 +1374,86 @@ const isTransportChunkRow = (row: {
   row.transport_chunk_count > 1 ||
   row.transport_chunk_text !== null;
 
-const encryptedConversationItemColumns = (
-  row: Pick<ConversationProjectionRawRow, "metadata" | "raw_json">
-): Set<string> => {
-  const columns = row.metadata?.encryptedConversationItemColumns;
-  const values = Array.isArray(columns)
-    ? columns.filter((column): column is string => typeof column === "string")
+const encryptedConversationItemSource = (row: {
+  projection_source_table?:
+    | "conversation_items"
+    | "conversation_item_observations";
+  metadata: Record<string, unknown> | null;
+  raw_json: unknown;
+  raw_text?: string | null;
+  transport_chunk_text?: string | null;
+  source_path?: string | null;
+}): {
+  sourceTable: "conversation_items" | "conversation_item_observations";
+  columns: Set<string>;
+} => {
+  const observationColumns =
+    row.metadata?.encryptedConversationItemObservationColumns;
+  const itemColumns = row.metadata?.encryptedConversationItemColumns;
+  const sourceTable = row.projection_source_table ?? "conversation_items";
+  const rawColumns =
+    sourceTable === "conversation_item_observations"
+      ? observationColumns
+      : itemColumns;
+  const values = Array.isArray(rawColumns)
+    ? rawColumns.filter(
+        (column): column is string => typeof column === "string"
+      )
     : [];
   if (
     isRecord(row.raw_json) &&
     row.raw_json.contentEncrypted === true &&
-    row.raw_json.encryptedSourceTable === "conversation_items"
+    row.raw_json.encryptedSourceTable === sourceTable
   ) {
     values.push("raw_json");
   }
-  return new Set(values);
+  if (
+    row.metadata?.contentEncrypted === true &&
+    row.metadata.encryptedSourceTable === sourceTable &&
+    row.metadata.encryptedSourceColumn === "metadata"
+  ) {
+    values.push("metadata");
+  }
+  if (
+    row.raw_text === "[koed encrypted conversation item]" ||
+    row.raw_text === "[koed encrypted conversation item observation]"
+  ) {
+    values.push("raw_text");
+  }
+  if (
+    row.transport_chunk_text === "[koed encrypted conversation item]" ||
+    row.transport_chunk_text ===
+      "[koed encrypted conversation item observation]"
+  ) {
+    values.push("transport_chunk_text");
+  }
+  if (
+    row.source_path === "[koed encrypted conversation item]" ||
+    row.source_path === "[koed encrypted conversation item observation]"
+  ) {
+    values.push("source_path");
+  }
+  return { sourceTable, columns: new Set(values) };
 };
 
 const decryptConversationItemColumn = async (
   pool: pg.Pool,
   provider: EnvelopeEncryptionProvider | undefined,
   row: ConversationProjectionRawRow,
-  sourceColumn: "raw_json" | "raw_text" | "transport_chunk_text"
+  sourceTable: "conversation_items" | "conversation_item_observations",
+  sourceColumn:
+    | "raw_json"
+    | "raw_text"
+    | "transport_chunk_text"
+    | "source_path"
+    | "metadata"
 ): Promise<unknown> => {
   const plaintext = await decryptAuthorizedEncryptedFieldPayload(
     pool,
     provider,
     {
       ownerUserId: row.owner_user_id,
-      sourceTable: "conversation_items",
+      sourceTable,
       sourceId: row.id,
       sourceColumn
     }
@@ -1281,7 +1471,8 @@ const hydrateConversationProjectionRow = async (
   provider: EnvelopeEncryptionProvider | undefined,
   row: ConversationProjectionRawRow
 ): Promise<ConversationProjectionRawRow> => {
-  const encryptedColumns = encryptedConversationItemColumns(row);
+  const encryptedSource = encryptedConversationItemSource(row);
+  const encryptedColumns = encryptedSource.columns;
   if (encryptedColumns.size === 0) {
     return row;
   }
@@ -1291,24 +1482,57 @@ const hydrateConversationProjectionRow = async (
     );
   }
   const rawJson = encryptedColumns.has("raw_json")
-    ? await decryptConversationItemColumn(pool, provider, row, "raw_json")
+    ? await decryptConversationItemColumn(
+        pool,
+        provider,
+        row,
+        encryptedSource.sourceTable,
+        "raw_json"
+      )
     : row.raw_json;
   const rawText = encryptedColumns.has("raw_text")
-    ? await decryptConversationItemColumn(pool, provider, row, "raw_text")
+    ? await decryptConversationItemColumn(
+        pool,
+        provider,
+        row,
+        encryptedSource.sourceTable,
+        "raw_text"
+      )
     : row.raw_text;
   const transportChunkText = encryptedColumns.has("transport_chunk_text")
     ? await decryptConversationItemColumn(
         pool,
         provider,
         row,
+        encryptedSource.sourceTable,
         "transport_chunk_text"
       )
     : row.transport_chunk_text;
+  const sourcePath = encryptedColumns.has("source_path")
+    ? await decryptConversationItemColumn(
+        pool,
+        provider,
+        row,
+        encryptedSource.sourceTable,
+        "source_path"
+      )
+    : row.source_path;
+  const metadata = encryptedColumns.has("metadata")
+    ? await decryptConversationItemColumn(
+        pool,
+        provider,
+        row,
+        encryptedSource.sourceTable,
+        "metadata"
+      )
+    : row.metadata;
 
   return {
     ...row,
     raw_json: rawJson,
     raw_text: typeof rawText === "string" ? rawText : row.raw_text,
+    source_path: typeof sourcePath === "string" ? sourcePath : row.source_path,
+    metadata: isRecord(metadata) ? metadata : row.metadata,
     transport_chunk_text:
       typeof transportChunkText === "string"
         ? transportChunkText
@@ -1319,18 +1543,57 @@ const hydrateConversationProjectionRow = async (
 const decodeTransportChunkEnvelope = (
   text: string,
   encoding: string | null
-): { rawJson: unknown; rawText: string | null } => {
+): {
+  rawJson: unknown;
+  rawText: string | null;
+  metadata?: Record<string, unknown>;
+} => {
   const parsed = JSON.parse(text) as unknown;
-  if (encoding === "conversation-item-json-v1") {
+  if (
+    encoding === "conversation-item-json-v1" ||
+    encoding === "conversation-item-json-v2"
+  ) {
     if (!isRecord(parsed)) {
       throw new Error("Invalid conversation item transport chunk envelope");
     }
     return {
       rawJson: parsed.rawJson,
-      rawText: typeof parsed.rawText === "string" ? parsed.rawText : null
+      rawText: typeof parsed.rawText === "string" ? parsed.rawText : null,
+      ...(encoding === "conversation-item-json-v2" && isRecord(parsed.metadata)
+        ? { metadata: parsed.metadata }
+        : {})
     };
   }
   return { rawJson: parsed, rawText: null };
+};
+
+const decodedConversationMetadata = (
+  metadata: Record<string, unknown> | undefined
+): Record<string, unknown> => {
+  const serverAuthoritative = new Set([
+    "managedConversation",
+    "projectionPolicyKey",
+    "projectionActor",
+    "semanticControl",
+    "canonicalConversationItemKey",
+    "canonicalConversationItemActor",
+    "canonicalConversationItemKind",
+    "canonicalConversationItemContentHash",
+    "canonicalStableItemId",
+    "includeInLcm",
+    "workspaceId",
+    "storageSanitization",
+    "koedSanitization",
+    "transportChunkGroupId",
+    "sourceItemHash",
+    "sourceChunkIndex",
+    "sourceChunkCount"
+  ]);
+  return Object.fromEntries(
+    Object.entries(metadata ?? {}).filter(
+      ([key]) => !serverAuthoritative.has(key)
+    )
+  );
 };
 
 const loadLogicalConversationProjectionItem = async (
@@ -1342,18 +1605,87 @@ const loadLogicalConversationProjectionItem = async (
     return {
       row,
       sourceIds: [row.id],
-      sourceIdentity: row.id,
-      sourceHash: row.source_hash
+      sourceIdentity:
+        stringField(row.metadata ?? {}, "canonicalConversationItemKey") ??
+        row.canonical_item_key,
+      sourceHash: row.source_hash,
+      representativeSourceHash: row.source_hash
     };
   }
 
   if (!row.logical_source_id) {
     throw new Error("Transport chunk row is missing logical_source_id");
   }
+  const transportChunkGroupId = stringField(
+    row.metadata ?? {},
+    "transportChunkGroupId"
+  );
+  if (!transportChunkGroupId) {
+    throw new Error("Transport chunk row is missing its group identity");
+  }
+  if (
+    row.transport_chunk_count < 1 ||
+    row.transport_chunk_count > RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT
+  ) {
+    throw new Error("Transport chunk count exceeds the server limit");
+  }
 
-  const chunks = await pool.query<ConversationProjectionRawRow>(
+  const observationChunks = await pool.query<ConversationProjectionRawRow>(
     `
       select
+        'conversation_item_observations'::text as projection_source_table,
+        cio.id, cio.owner_user_id, cio.visibility, cio.session_id,
+        ci.turn_id, cio.source_kind, cio.source_adapter_version,
+        cio.source_transport, cio.external_session_id, cio.external_thread_id,
+        cio.external_turn_id, cio.external_item_id, cio.source_record_type,
+        cio.source_event_type, cio.source_path, cio.source_sequence,
+        cio.event_time, cio.raw_json, cio.raw_text, ci.logical_source_id,
+        cio.transport_chunk_index, cio.transport_chunk_count,
+        cio.transport_chunk_text, cio.transport_chunk_encoding,
+        cio.source_hash, ci.canonical_item_key, ci.canonical_source_priority,
+        ci.projection_policy_revision,
+        cio.source_idempotency_key as idempotency_key,
+        cio.metadata, cio.observed_at,
+        s.workspace_id as session_workspace_id,
+        s.cwd as session_cwd,
+        s.metadata as session_metadata
+      from conversation_item_observations cio
+      join conversation_items ci on ci.id = cio.conversation_item_id
+      left join sessions s on s.id = cio.session_id
+      where cio.conversation_item_id = $1
+        and cio.owner_user_id = $2
+        and cio.visibility = $3::visibility_scope
+        and cio.ingestion_status = 'persisted'
+        and cio.transport_chunk_count is not null
+        and cio.transport_chunk_count = $4
+        and cio.source_kind = $5
+        and cio.source_adapter_version = $6
+        and cio.source_transport = $7
+        and cio.metadata ->> 'transportChunkGroupId' = $8
+        and cio.transport_chunk_encoding = $9
+      order by cio.transport_chunk_index asc, cio.id asc
+    `,
+    [
+      row.id,
+      row.owner_user_id,
+      row.visibility,
+      row.transport_chunk_count,
+      row.source_kind,
+      row.source_adapter_version,
+      row.source_transport,
+      transportChunkGroupId,
+      row.transport_chunk_encoding
+    ]
+  );
+  const expectedCount = row.transport_chunk_count;
+  const usesObservationChunks =
+    expectedCount > 1 && observationChunks.rows.length === expectedCount;
+  const parentChunks = usesObservationChunks
+    ? null
+    : await pool.query<ConversationProjectionRawRow>(
+        `
+      select
+        'conversation_items'::text as projection_source_table,
         ci.id, ci.owner_user_id, ci.visibility, ci.session_id,
         ci.turn_id, ci.source_kind, ci.source_adapter_version,
         ci.source_transport, ci.external_session_id, ci.external_thread_id,
@@ -1362,7 +1694,9 @@ const loadLogicalConversationProjectionItem = async (
         ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
         ci.transport_chunk_index, ci.transport_chunk_count,
         ci.transport_chunk_text, ci.transport_chunk_encoding,
-        ci.source_hash, ci.idempotency_key, ci.metadata, ci.observed_at,
+        ci.source_hash, ci.canonical_item_key, ci.canonical_source_priority,
+        ci.projection_policy_revision, ci.idempotency_key,
+        ci.metadata, ci.observed_at,
         s.workspace_id as session_workspace_id,
         s.cwd as session_cwd,
         s.metadata as session_metadata
@@ -1371,22 +1705,41 @@ const loadLogicalConversationProjectionItem = async (
       where ci.logical_source_id = $1
         and ci.visibility = $2::visibility_scope
         and ci.owner_user_id = $3
+        and (
+          ($4::text is not null and ci.metadata ->> 'transportChunkGroupId' = $4)
+          or ($4::text is null and not (ci.metadata ? 'transportChunkGroupId'))
+        )
         and ci.memory_excluded_at is null
       order by ci.transport_chunk_index asc, ci.id asc
     `,
-    [row.logical_source_id, row.visibility, row.owner_user_id]
-  );
+        [
+          row.logical_source_id,
+          row.visibility,
+          row.owner_user_id,
+          stringField(row.metadata ?? {}, "transportChunkGroupId")
+        ]
+      );
+  const chunkRows = usesObservationChunks
+    ? observationChunks.rows
+    : (parentChunks?.rows ?? []);
 
   const hydratedChunks = await Promise.all(
-    chunks.rows.map((chunk) =>
+    chunkRows.map((chunk) =>
       hydrateConversationProjectionRow(pool, provider, chunk)
     )
   );
-  const expectedCount = row.transport_chunk_count;
   if (hydratedChunks.length !== expectedCount) {
     throw new Error(
       `Incomplete transport chunk group: expected ${expectedCount}, found ${hydratedChunks.length}`
     );
+  }
+  const logicalItemBytes = hydratedChunks.reduce(
+    (total, chunk) =>
+      total + Buffer.byteLength(chunk.transport_chunk_text ?? "", "utf8"),
+    0
+  );
+  if (logicalItemBytes > RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES) {
+    throw new Error("Transport chunk group exceeds the logical item limit");
   }
 
   const seen = new Set<number>();
@@ -1425,23 +1778,45 @@ const loadLogicalConversationProjectionItem = async (
   const decodedRawJson = sanitizeForPostgresStorage(decoded.rawJson);
   const decodedRawText = sanitizeForPostgresStorage(decoded.rawText);
   const decodedMetadata = metadataWithStorageSanitization(
-    row.metadata ?? {},
+    {
+      ...(row.metadata ?? {}),
+      ...decodedConversationMetadata(decoded.metadata)
+    },
     combineStorageSanitizationCounts(decodedRawJson, decodedRawText)
   );
   const representative =
     sorted.find((chunk) => chunk.transport_chunk_index === 0) ?? row;
+  const representativeSourceHash = representative.source_hash;
+  const sourceItemHash =
+    stringField(representative.metadata ?? {}, "sourceItemHash") ??
+    row.logical_source_id;
 
   return {
     row: {
       ...representative,
+      ...(usesObservationChunks
+        ? {
+            id: row.id,
+            canonical_item_key: row.canonical_item_key,
+            canonical_source_priority: row.canonical_source_priority,
+            idempotency_key: row.idempotency_key,
+            logical_source_id: row.logical_source_id,
+            turn_id: row.turn_id
+          }
+        : {}),
       raw_json: decodedRawJson.value,
       raw_text: decodedRawText.value as string | null,
       metadata: decodedMetadata,
-      source_hash: row.logical_source_id
+      source_hash: sourceItemHash
     },
-    sourceIds: sorted.map((chunk) => chunk.id),
-    sourceIdentity: row.logical_source_id,
-    sourceHash: row.logical_source_id
+    sourceIds: usesObservationChunks
+      ? [row.id]
+      : sorted.map((chunk) => chunk.id),
+    sourceIdentity: usesObservationChunks
+      ? row.canonical_item_key
+      : row.logical_source_id,
+    sourceHash: sourceItemHash,
+    representativeSourceHash
   };
 };
 
@@ -1816,12 +2191,73 @@ type MemoryEventPayload = MemoryEventRecord["metadata"] & {
 const redactMemoryEventPayloadForPlaintextStorage = (
   payload: MemoryEventPayload
 ): MemoryEventPayload => {
+  const metadata = payload.metadata ?? {};
   const redacted: MemoryEventPayload = {
-    ...payload,
-    contentEncrypted: true
+    actor: payload.actor,
+    rawEventType: payload.rawEventType,
+    contentEncrypted: true,
+    metadata: {
+      projectionVersion: metadata.projectionVersion,
+      semanticUnitType: metadata.semanticUnitType,
+      semanticSourceActors: metadata.semanticSourceActors,
+      semanticBundleSealedReason: metadata.semanticBundleSealedReason,
+      includeInEmbedding: metadata.includeInEmbedding,
+      includeInLcm: metadata.includeInLcm,
+      tokenCount: metadata.tokenCount,
+      tokenModel: metadata.tokenModel,
+      sourceAdapterVersion: metadata.sourceAdapterVersion,
+      sourceChunkIndex: metadata.sourceChunkIndex,
+      sourceChunkCount: metadata.sourceChunkCount,
+      sourceItemCount: metadata.sourceItemCount,
+      rawConversationItemId: metadata.rawConversationItemId,
+      rawConversationItemIds: metadata.rawConversationItemIds,
+      logicalSourceId: metadata.logicalSourceId,
+      logicalSourceIds: metadata.logicalSourceIds,
+      semanticItemManifest: metadata.semanticItemManifest,
+      externalSessionId: metadata.externalSessionId,
+      externalThreadId: metadata.externalThreadId,
+      externalTurnId: metadata.externalTurnId
+    }
   };
-  delete redacted.content;
   return redacted;
+};
+
+const memoryEventEmbeddingContent = (
+  payload: MemoryEventPayload | null | undefined
+): string | null => {
+  if (!payload) {
+    return null;
+  }
+  const metadata = payload.metadata ?? {};
+  if (metadata.includeInEmbedding === false) {
+    return null;
+  }
+  const embeddingContent = metadata.embeddingContent;
+  if (typeof embeddingContent === "string" && embeddingContent.trim()) {
+    return embeddingContent;
+  }
+  return typeof payload.content === "string" && payload.content.trim()
+    ? payload.content
+    : null;
+};
+
+const memoryEventLcmContent = (
+  payload: MemoryEventPayload | null | undefined
+): string | null => {
+  if (!payload) {
+    return null;
+  }
+  const metadata = payload.metadata ?? {};
+  if (metadata.includeInLcm === false) {
+    return null;
+  }
+  const lcmContent = metadata.lcmContent;
+  if (typeof lcmContent === "string" && lcmContent.trim()) {
+    return lcmContent;
+  }
+  return typeof payload.content === "string" && payload.content.trim()
+    ? payload.content
+    : null;
 };
 
 type EncryptedFieldPayloadLookupRow = {
@@ -2166,6 +2602,9 @@ const lcmLeafTokenThreshold = (): number =>
 
 const lcmFreshEventTail = (): number =>
   nonNegativeIntEnv("MEMORY_LCM_FRESH_EVENT_TAIL", 10);
+
+const lcmCompactionMaxEvents = (): number =>
+  positiveIntEnvCapped("MEMORY_LCM_COMPACTION_MAX_EVENTS", 1_000, 10_000);
 
 const lcmDepthOneFanout = (): number =>
   positiveIntEnv("MEMORY_LCM_DEPTH1_FANOUT", 20);
@@ -2591,8 +3030,9 @@ const linkMemoryEventSources = async (
 };
 
 const invalidateDerivedMemoryForMemoryEvents = async (
-  pool: pg.Pool,
-  memoryEventIds: string[]
+  pool: pg.Pool | pg.PoolClient,
+  memoryEventIds: string[],
+  reason = "source_event_deleted"
 ): Promise<void> => {
   const uniqueEventIds = uniqueOrderedStrings(memoryEventIds);
   if (uniqueEventIds.length === 0) {
@@ -2602,11 +3042,11 @@ const invalidateDerivedMemoryForMemoryEvents = async (
   await pool.query(
     `
       update memory_embeddings
-      set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+      set invalidated_at = now(), invalidation_reason = $2
       where memory_event_id = any($1::uuid[])
         and invalidated_at is null
     `,
-    [uniqueEventIds]
+    [uniqueEventIds, reason]
   );
 
   const affectedNodes = await pool.query<{ id: string }>(
@@ -2626,13 +3066,13 @@ const invalidateDerivedMemoryForMemoryEvents = async (
       update memory_nodes mn
       set
         invalidated_at = coalesce(mn.invalidated_at, now()),
-        invalidation_reason = coalesce(mn.invalidation_reason, 'source_event_deleted'),
+        invalidation_reason = coalesce(mn.invalidation_reason, $2),
         updated_at = now()
       where mn.id in (select id from affected_nodes)
         and mn.invalidated_at is null and mn.personal_deleted_at is null
       returning mn.id
     `,
-    [uniqueEventIds]
+    [uniqueEventIds, reason]
   );
 
   const nodeIds = affectedNodes.rows.map((row) => row.id);
@@ -2642,11 +3082,11 @@ const invalidateDerivedMemoryForMemoryEvents = async (
   await pool.query(
     `
       update memory_embeddings
-      set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+      set invalidated_at = now(), invalidation_reason = $2
       where memory_node_id = any($1::uuid[])
         and invalidated_at is null
     `,
-    [nodeIds]
+    [nodeIds, reason]
   );
 };
 
@@ -2748,7 +3188,14 @@ const rebuiltSemanticMemoryEventsFromSources = async (
       input: Parameters<MemoryEngineRepository["createMemoryEvent"]>[1]
     ): Promise<MemoryEventRecord>;
   }
-): Promise<Array<{ eventId: string; visibility: Visibility }>> => {
+): Promise<
+  Array<{
+    eventId: string;
+    visibility: Visibility;
+    includeInEmbedding: boolean;
+    includeInLcm: boolean;
+  }>
+> => {
   const sourceEvent = await pool.query<{
     id: string;
     owner_user_id: string | null;
@@ -2790,6 +3237,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
       with ordered_sources as (
         select
           mes.source_order,
+          'conversation_items'::text as projection_source_table,
           ci.id, ci.owner_user_id, ci.visibility, ci.session_id,
           ci.turn_id, ci.source_kind, ci.source_adapter_version,
           ci.source_transport, ci.external_session_id, ci.external_thread_id,
@@ -2798,7 +3246,9 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
           ci.transport_chunk_index, ci.transport_chunk_count,
           ci.transport_chunk_text, ci.transport_chunk_encoding,
-          ci.source_hash, ci.idempotency_key, ci.metadata, ci.observed_at,
+          ci.source_hash, ci.canonical_item_key, ci.canonical_source_priority,
+          ci.projection_policy_revision, ci.idempotency_key,
+          ci.metadata, ci.observed_at,
           s.workspace_id as session_workspace_id,
           s.cwd as session_cwd,
           s.metadata as session_metadata,
@@ -2813,13 +3263,16 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           and ci.memory_excluded_at is null
       )
       select
+        projection_source_table,
         id, owner_user_id, visibility, session_id, turn_id, source_kind,
         source_adapter_version, source_transport, external_session_id,
         external_thread_id, external_turn_id, external_item_id,
         source_record_type, source_event_type, source_path, source_sequence,
         event_time, raw_json, raw_text, logical_source_id,
         transport_chunk_index, transport_chunk_count, transport_chunk_text,
-        transport_chunk_encoding, source_hash, idempotency_key, metadata,
+        transport_chunk_encoding, source_hash, canonical_item_key,
+        canonical_source_priority, projection_policy_revision,
+        idempotency_key, metadata,
         observed_at, session_workspace_id, session_cwd, session_metadata
       from ordered_sources
       where source_rank = 1
@@ -2830,7 +3283,9 @@ const rebuiltSemanticMemoryEventsFromSources = async (
 
   const processedSourceIdentities = new Set<string>();
   const semanticItems: ConversationSemanticProjectionItem[] = [];
-  const projectionRules = await loadConversationProjectionPolicyRules(pool);
+  const projectionPolicySnapshot =
+    await loadConversationProjectionPolicyRules(pool);
+  const projectionRules = projectionPolicySnapshot.rules;
   for (const sourceRow of sourceRows.rows) {
     const hydratedSourceRow = await hydrateConversationProjectionRow(
       pool,
@@ -2854,7 +3309,7 @@ const rebuiltSemanticMemoryEventsFromSources = async (
       content,
       projectionRules
     });
-    if (!content || !actorType || !projectionPolicy.createSemanticEvent) {
+    if (!content || !actorType || !projectionPolicy.createMemoryEvent) {
       continue;
     }
     const itemUnitType = conversationSemanticUnitTypeForActor(actorType);
@@ -2868,7 +3323,10 @@ const rebuiltSemanticMemoryEventsFromSources = async (
       sourceHash: logicalItem.sourceHash,
       actorType,
       content,
+      includeInEmbedding: projectionPolicy.includeInEmbedding,
       includeInLcm: projectionPolicy.includeInLcm,
+      projectionPolicyKey: projectionPolicy.policyKey,
+      projectionPolicyRevision: projectionPolicySnapshot.revision,
       projectionMetadata: canonicalProjectMetadata({
         metadata: row.metadata,
         sessionMetadata: row.session_metadata,
@@ -2920,7 +3378,12 @@ const rebuiltSemanticMemoryEventsFromSources = async (
     [input.actorUserId, input.memoryEventId, SUPPORTING_CONTEXT_SOURCE_ROLE]
   );
   const supportingSourceIds = supportingSources.rows.map((row) => row.id);
-  const created: Array<{ eventId: string; visibility: Visibility }> = [];
+  const created: Array<{
+    eventId: string;
+    visibility: Visibility;
+    includeInEmbedding: boolean;
+    includeInLcm: boolean;
+  }> = [];
   const originalMetadata = oldEvent.payload.metadata ?? {};
   const originalSealReason =
     oldEvent.seal_reason ??
@@ -2928,6 +3391,15 @@ const rebuiltSemanticMemoryEventsFromSources = async (
     "source_event_rebuild";
 
   for (const chunk of chunks) {
+    const embeddingContent = conversationSemanticChunkPolicyContent(
+      chunk,
+      "includeInEmbedding"
+    );
+    const lcmContent = conversationSemanticChunkPolicyContent(
+      chunk,
+      "includeInLcm"
+    );
+    const includeInEmbedding = embeddingContent.trim().length > 0;
     const includeInLcm = chunk.sourceIdentities.some(
       (sourceIdentity) =>
         includeInLcmBySourceIdentity.get(sourceIdentity) === true
@@ -2951,6 +3423,10 @@ const rebuiltSemanticMemoryEventsFromSources = async (
           unitType,
           sourceHashes: chunk.sourceHashes,
           content: chunk.content,
+          embeddingContent,
+          lcmContent,
+          includeInEmbedding,
+          includeInLcm,
           chunkIndex: chunk.chunkIndex
         })
       )
@@ -2970,21 +3446,28 @@ const rebuiltSemanticMemoryEventsFromSources = async (
         eventType: "captured",
         rawEventType: unitType,
         content: chunk.content,
-        metadata: conversationSemanticEventMetadata({
-          first,
-          chunk,
-          allSourceIds,
-          sourceActors,
-          unitType,
-          sealedReason: originalSealReason,
-          includeInLcm,
-          projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-          model,
-          rebuild: {
-            reason: "source_event_deleted",
-            memoryEventId: input.memoryEventId
-          }
-        }),
+        metadata: {
+          ...conversationSemanticEventMetadata({
+            first,
+            chunk,
+            allSourceIds,
+            sourceActors,
+            unitType,
+            sealedReason: originalSealReason,
+            includeInEmbedding,
+            includeInLcm,
+            embeddingContent,
+            lcmContent,
+            projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+            model,
+            rebuild: {
+              reason: "source_event_deleted",
+              memoryEventId: input.memoryEventId
+            }
+          }),
+          projectionPolicyKey: first.projectionPolicyKey,
+          projectionPolicyRevision: first.projectionPolicyRevision
+        },
         visibility: first.row.visibility,
         sourceRuntime:
           first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
@@ -3001,7 +3484,12 @@ const rebuiltSemanticMemoryEventsFromSources = async (
         sealReason: originalSealReason
       }
     );
-    created.push({ eventId: event.id, visibility: first.row.visibility });
+    created.push({
+      eventId: event.id,
+      visibility: first.row.visibility,
+      includeInEmbedding,
+      includeInLcm
+    });
     if (supportingSourceIds.length > 0) {
       await linkMemoryEventSources(
         pool,
@@ -3376,21 +3864,24 @@ export const createMemorySourceRepository = (
   pool: pg.Pool,
   options: MemorySourceRepositoryOptions = {}
 ): MemorySourceRepository => {
+  const db = createDb(pool);
   const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
+  const settingsRepository = createSettingsRepository(db);
 
   return {
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
     // Dense graph, vector, retrieval, and LCM paths stay raw SQL in this module.
-    ...createUserApiTokenRepository(createDb(pool)),
-    ...createSettingsRepository(createDb(pool)),
-    ...createAuthSessionRepository(createDb(pool)),
-    ...createDeviceCredentialRepository(createDb(pool)),
-    ...createExternalAuthRepository(createDb(pool)),
-    ...createAuditRepository(createDb(pool)),
-    ...createTeamAccessRepository(createDb(pool)),
+    ...createUserApiTokenRepository(db),
+    ...settingsRepository,
+    ...createAuthSessionRepository(db),
+    ...createDeviceCredentialRepository(db),
+    ...createExternalAuthRepository(db),
+    ...createAuditRepository(db),
+    ...createTeamAccessRepository(db),
     ...createCapturedSessionRepository(pool),
     ...createConversationItemRepository(pool, {
-      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      resolveCapturePolicy: settingsRepository.getEffectiveCapturePolicy
     }),
     ...createCrossIdentitySyncRepository(pool),
     ...encryptedPayloadRepository,
@@ -3629,6 +4120,222 @@ export const createMemorySourceRepository = (
       return rows.rows.map(mapTeamSessionShareGrant);
     },
 
+    async resetConversationProjection(actor, input) {
+      const client = await pool.connect();
+      let invalidatedMemoryEventIds: string[];
+      let conversationItemIds: string[];
+      let projectionPolicyRevision: number;
+      try {
+        await client.query("begin");
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`conversation-projection-session:${actor.userId}:${input.sessionId}`]
+        );
+        await client.query(
+          "select pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+          ["conversation-projection-policy"]
+        );
+        projectionPolicyRevision = (
+          await loadConversationProjectionPolicyRules(client)
+        ).revision;
+        const session = await client.query<{ id: string }>(
+          `
+            select id
+            from sessions
+            where id = $2
+              and owner_user_id = $1
+              and visibility = 'personal'
+              and invalidated_at is null
+              and personal_deleted_at is null
+            limit 1
+          `,
+          [actor.userId, input.sessionId]
+        );
+        if (session.rowCount === 0) {
+          throw Object.assign(new Error("Session not found or not visible"), {
+            statusCode: 404,
+            code: "session_not_found"
+          });
+        }
+        const sourceCount = await client.query<{ count: number }>(
+          `
+            select count(*)::int as count
+            from conversation_items
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and session_id = $2
+              and memory_excluded_at is null
+              and personal_deleted_at is null
+          `,
+          [actor.userId, input.sessionId]
+        );
+        const maxItems = projectionRebuildMaxItems();
+        if ((sourceCount.rows[0]?.count ?? 0) > maxItems) {
+          throw Object.assign(
+            new Error(
+              `Conversation projection rebuild exceeds the ${maxItems}-item safety limit`
+            ),
+            { statusCode: 413, code: "projection_rebuild_too_large" }
+          );
+        }
+
+        const memoryEvents = await client.query<{ id: string }>(
+          `
+            update memory_events
+            set invalidated_at = coalesce(invalidated_at, now()),
+                invalidation_reason = 'projection_policy_rebuild',
+                updated_at = now()
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and session_id = $2
+              and personal_deleted_at is null
+              and exists (
+                select 1
+                from memory_event_sources mes
+                join conversation_items ci
+                  on ci.id = mes.conversation_item_id
+                where mes.memory_event_id = memory_events.id
+                  and ci.owner_user_id = $1
+                  and ci.visibility = 'personal'
+                  and ci.session_id = $2
+              )
+            returning id
+          `,
+          [actor.userId, input.sessionId]
+        );
+        invalidatedMemoryEventIds = memoryEvents.rows.map((row) => row.id);
+
+        await client.query(
+          `
+            update messages
+            set invalidated_at = coalesce(invalidated_at, now()),
+                invalidation_reason = 'projection_policy_rebuild'
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and session_id = $2
+              and idempotency_key in (
+                select distinct
+                  'message:' || coalesce(
+                    ci.metadata ->> 'canonicalConversationItemKey',
+                    ci.canonical_item_key,
+                    ci.logical_source_id,
+                    ci.id::text
+                  )
+                from conversation_items ci
+                where ci.owner_user_id = $1
+                  and ci.visibility = 'personal'
+                  and ci.session_id = $2
+              )
+          `,
+          [actor.userId, input.sessionId]
+        );
+        await client.query(
+          `
+            update tool_events
+            set invalidated_at = coalesce(invalidated_at, now()),
+                invalidation_reason = 'projection_policy_rebuild'
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and session_id = $2
+              and idempotency_key in (
+                select distinct
+                  'tool:' || case
+                    when coalesce(
+                      ci.metadata ->> 'toolCallId',
+                      ci.metadata ->> 'callId',
+                      ci.metadata #>> '{toolCall,id}'
+                    ) is not null
+                    then 'tool-call:' || ci.session_id::text || ':' || coalesce(
+                      ci.metadata ->> 'toolCallId',
+                      ci.metadata ->> 'callId',
+                      ci.metadata #>> '{toolCall,id}'
+                    )
+                    else coalesce(
+                      ci.metadata ->> 'canonicalConversationItemKey',
+                      ci.canonical_item_key,
+                      ci.logical_source_id,
+                      ci.id::text
+                    )
+                  end
+                from conversation_items ci
+                where ci.owner_user_id = $1
+                  and ci.visibility = 'personal'
+                  and ci.session_id = $2
+              )
+          `,
+          [actor.userId, input.sessionId]
+        );
+        const activeRebuildJobs = await client.query<{
+          id: string;
+          status: string;
+        }>(
+          `
+            select id, status
+            from semantic_memory_rebuild_jobs
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and memory_event_id = any($2::uuid[])
+              and status in ('pending', 'processing')
+            for update
+          `,
+          [actor.userId, invalidatedMemoryEventIds]
+        );
+        if (activeRebuildJobs.rows.some((job) => job.status === "processing")) {
+          throw Object.assign(
+            new Error(
+              "Conversation projection cannot rebuild while semantic memory repair is active"
+            ),
+            { statusCode: 409, code: "semantic_rebuild_in_progress" }
+          );
+        }
+        await client.query(
+          `
+            delete from semantic_memory_rebuild_jobs
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and memory_event_id = any($2::uuid[])
+              and status = 'pending'
+          `,
+          [actor.userId, invalidatedMemoryEventIds]
+        );
+        const rawItems = await client.query<{ id: string }>(
+          `
+            update conversation_items
+            set projection_status = 'pending',
+                projection_version = null,
+                projection_policy_revision = $3,
+                projection_error = null,
+                projected_at = null
+            where owner_user_id = $1
+              and visibility = 'personal'
+              and session_id = $2
+              and projection_status <> 'held'
+              and memory_excluded_at is null
+              and personal_deleted_at is null
+            returning id
+          `,
+          [actor.userId, input.sessionId, projectionPolicyRevision]
+        );
+        conversationItemIds = rawItems.rows.map((row) => row.id);
+        await invalidateDerivedMemoryForMemoryEvents(
+          client,
+          invalidatedMemoryEventIds,
+          "projection_policy_rebuild"
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+      return {
+        conversationItemIds,
+        invalidatedMemoryEventIds,
+        projectionPolicyRevision
+      };
+    },
+
     async projectPendingConversationItems(actor, input = {}) {
       const conversationItemIds = input.conversationItemIds ?? null;
       const visibility = input.visibility ?? null;
@@ -3674,6 +4381,7 @@ export const createMemorySourceRepository = (
         `
         with pending_items as (
           select
+            'conversation_items'::text as projection_source_table,
             ci.id, ci.owner_user_id, ci.visibility, ci.session_id,
             ci.turn_id, ci.source_kind, ci.source_adapter_version,
             ci.source_transport, ci.external_session_id, ci.external_thread_id,
@@ -3682,7 +4390,9 @@ export const createMemorySourceRepository = (
             ci.event_time, ci.raw_json, ci.raw_text, ci.logical_source_id,
             ci.transport_chunk_index, ci.transport_chunk_count,
             ci.transport_chunk_text, ci.transport_chunk_encoding,
-            ci.source_hash, ci.idempotency_key, ci.metadata,
+            ci.source_hash, ci.idempotency_key, ci.canonical_item_key,
+            ci.metadata,
+            ci.canonical_source_priority, ci.projection_policy_revision,
             ci.observed_at,
             s.workspace_id as session_workspace_id,
             s.cwd as session_cwd,
@@ -3700,16 +4410,45 @@ export const createMemorySourceRepository = (
             (
               ci.source_record_type = 'hook_payload'
               and lower(coalesce(ci.source_event_type, ci.metadata ->> 'hookEventName', '')) in ('stop', 'subagentstop')
-            ) as is_turn_complete_signal
+            ) as is_turn_complete_signal,
+            (
+              (ci.source_adapter_version = 'codex-app-server-conversation-v1'
+                and ci.source_event_type = 'turn/completed')
+              or
+              (ci.source_adapter_version = 'codex-transcript-v1'
+                and ci.source_event_type in ('task_complete', 'turn_aborted'))
+            ) as is_semantic_turn_complete_signal
           from conversation_items ci
           left join sessions s on s.id = ci.session_id
           where ci.projection_status in ('pending', 'error')
             and ci.memory_excluded_at is null
             and ci.personal_deleted_at is null
+            and (
+              ci.session_id is null
+              or (
+                s.id is not null
+                and s.invalidated_at is null
+                and s.personal_deleted_at is null
+              )
+            )
             and ($4::visibility_scope is null or ci.visibility = $4)
             and (
               ci.transport_chunk_count = 1
               or ci.transport_chunk_index = 0
+            )
+            and (
+              ci.logical_source_id is null
+              or not exists (
+                select 1
+                from conversation_items higher_priority_chunk
+                where higher_priority_chunk.owner_user_id = ci.owner_user_id
+                  and higher_priority_chunk.visibility = ci.visibility
+                  and higher_priority_chunk.logical_source_id = ci.logical_source_id
+                  and higher_priority_chunk.transport_chunk_index = 0
+                  and higher_priority_chunk.memory_excluded_at is null
+                  and higher_priority_chunk.personal_deleted_at is null
+                  and higher_priority_chunk.canonical_source_priority > ci.canonical_source_priority
+              )
             )
             and ci.owner_user_id = $1
         ),
@@ -3729,6 +4468,7 @@ export const createMemorySourceRepository = (
           limit $2
         )
         select
+          pi.projection_source_table,
           pi.id, pi.owner_user_id, pi.visibility, pi.session_id,
           pi.turn_id, pi.source_kind, pi.source_adapter_version,
           pi.source_transport, pi.external_session_id, pi.external_thread_id,
@@ -3737,7 +4477,9 @@ export const createMemorySourceRepository = (
           pi.event_time, pi.raw_json, pi.raw_text, pi.logical_source_id,
           pi.transport_chunk_index, pi.transport_chunk_count,
           pi.transport_chunk_text, pi.transport_chunk_encoding,
-          pi.source_hash, pi.idempotency_key, pi.metadata, pi.observed_at,
+          pi.source_hash, pi.idempotency_key, pi.canonical_item_key,
+          pi.metadata, pi.observed_at,
+          pi.canonical_source_priority, pi.projection_policy_revision,
           pi.session_workspace_id, pi.session_cwd, pi.session_metadata
 	      from pending_items pi
 	      join selected_boundaries sb
@@ -3756,501 +4498,729 @@ export const createMemorySourceRepository = (
         order by
           sb.oldest_at asc,
           sb.oldest_id asc,
+          pi.is_semantic_turn_complete_signal asc,
           pi.source_sequence asc nulls last,
           pi.boundary_order_at asc,
+          case pi.metadata ->> 'canonicalConversationItemKind'
+            when 'tool_call' then 0
+            when 'tool_result' then 1
+            else 0
+          end asc,
           pi.id asc
       `,
         [actor.userId, limit, conversationItemIds, visibility]
       );
 
-      const projectedStatusSourceIds = new Set<string>();
-      const markProjected = async (sourceIds: string[]) => {
-        const pendingIds = sourceIds.filter(
-          (sourceId) => !projectedStatusSourceIds.has(sourceId)
-        );
-        if (pendingIds.length === 0) {
-          return;
+      const projectionCoordinatorClient = await pool.connect();
+      const projectionResourceLockKeys = uniqueOrderedStrings(
+        rows.rows.map((row) =>
+          row.session_id
+            ? `conversation-projection-session:${row.owner_user_id ?? "anonymous"}:${row.session_id}`
+            : `conversation-item:${row.owner_user_id ?? "anonymous"}:${row.visibility}:${row.canonical_item_key}`
+        )
+      ).sort();
+      const acquiredProjectionResourceLocks: string[] = [];
+      const projectionPolicyLockKey = "conversation-projection-policy";
+      let projectionPolicyLockAcquired = false;
+      try {
+        for (const lockKey of projectionResourceLockKeys) {
+          await projectionCoordinatorClient.query(
+            "select pg_advisory_lock(hashtextextended($1, 0))",
+            [lockKey]
+          );
+          acquiredProjectionResourceLocks.push(lockKey);
         }
-        await pool.query(
-          `
+        await projectionCoordinatorClient.query(
+          "select pg_advisory_lock_shared(hashtextextended($1, 0))",
+          [projectionPolicyLockKey]
+        );
+        projectionPolicyLockAcquired = true;
+        const projectionPolicySnapshot =
+          await loadConversationProjectionPolicyRules(
+            projectionCoordinatorClient
+          );
+        const projectionRules = projectionPolicySnapshot.rules;
+        if (
+          rows.rows.some(
+            (row) =>
+              row.projection_policy_revision !== null &&
+              Number(row.projection_policy_revision) !==
+                projectionPolicySnapshot.revision
+          )
+        ) {
+          throw Object.assign(
+            new Error(
+              "Projection Policy changed after this conversation rebuild was prepared"
+            ),
+            { statusCode: 409, code: "projection_policy_changed" }
+          );
+        }
+
+        const projectedStatusSourceIds = new Set<string>();
+        const markProjected = async (sourceIds: string[]) => {
+          const pendingIds = sourceIds.filter(
+            (sourceId) => !projectedStatusSourceIds.has(sourceId)
+          );
+          if (pendingIds.length === 0) {
+            return;
+          }
+          await pool.query(
+            `
           update conversation_items
           set projection_status = 'projected',
               projection_version = $2,
+              projection_policy_revision = $3,
               projection_error = null,
               projected_at = now()
           where id = any($1::uuid[])
         `,
-          [pendingIds, CURRENT_CONVERSATION_PROJECTION_VERSION]
-        );
-        for (const sourceId of pendingIds) {
-          projectedStatusSourceIds.add(sourceId);
-        }
-        result.rawItemsProjected += pendingIds.length;
-      };
+            [
+              pendingIds,
+              CURRENT_CONVERSATION_PROJECTION_VERSION,
+              projectionPolicySnapshot.revision
+            ]
+          );
+          const superseded = await pool.query<{ id: string }>(
+            `
+            with projected_groups as (
+              select logical_source_id, max(canonical_source_priority) as priority
+              from conversation_items
+              where id = any($1::uuid[])
+                and logical_source_id is not null
+              group by logical_source_id
+            )
+            update conversation_items superseded
+            set projection_status = 'projected',
+                projection_version = $2,
+                projection_policy_revision = $4,
+                projection_error = null,
+                projected_at = now()
+            from projected_groups selected
+            where superseded.owner_user_id = $3
+              and superseded.visibility = 'personal'
+              and superseded.logical_source_id = selected.logical_source_id
+              and superseded.canonical_source_priority < selected.priority
+              and superseded.projection_status in ('pending', 'error')
+            returning superseded.id
+          `,
+            [
+              pendingIds,
+              CURRENT_CONVERSATION_PROJECTION_VERSION,
+              actor.userId,
+              projectionPolicySnapshot.revision
+            ]
+          );
+          for (const sourceId of pendingIds) {
+            projectedStatusSourceIds.add(sourceId);
+          }
+          result.rawItemsProjected +=
+            pendingIds.length + superseded.rows.length;
+        };
 
-      const markProjectionError = async (
-        sourceIds: string[],
-        error: unknown
-      ) => {
-        const pendingIds = sourceIds.filter(
-          (sourceId) => !projectedStatusSourceIds.has(sourceId)
-        );
-        if (pendingIds.length === 0) {
-          return;
-        }
-        await pool.query(
-          `
+        const markProjectionError = async (
+          sourceIds: string[],
+          error: unknown
+        ) => {
+          const pendingIds = sourceIds.filter(
+            (sourceId) => !projectedStatusSourceIds.has(sourceId)
+          );
+          if (pendingIds.length === 0) {
+            return;
+          }
+          await pool.query(
+            `
           update conversation_items
           set projection_status = 'error',
               projection_error = $2
           where id = any($1::uuid[])
         `,
-          [pendingIds, error instanceof Error ? error.message : String(error)]
-        );
-      };
-
-      const runDisplayRowUpsert = async <T extends { id: string }>(
-        sql: string,
-        params: unknown[],
-        persistEncryptedFields: (
-          client: pg.Pool | pg.PoolClient,
-          row: T
-        ) => Promise<void>
-      ): Promise<pg.QueryResult<T>> => {
-        if (!suppressPlaintextDisplayPayloads) {
-          return pool.query<T>(sql, params);
-        }
-        const client = await pool.connect();
-        try {
-          await client.query("begin");
-          const upserted = await client.query<T>(sql, params);
-          for (const row of upserted.rows) {
-            await persistEncryptedFields(client, row);
-          }
-          await client.query("commit");
-          return upserted;
-        } catch (error) {
-          await client.query("rollback");
-          throw error;
-        } finally {
-          client.release();
-        }
-      };
-
-      const processedSourceIdentities = new Set<string>();
-      const candidates: ConversationProjectionCandidate[] = [];
-      const projectionRules = await loadConversationProjectionPolicyRules(pool);
-      for (const sourceRow of rows.rows) {
-        result.rawItemsScanned += 1;
-        let sourceIds = [sourceRow.id];
-        try {
-          const hydratedSourceRow = await hydrateConversationProjectionRow(
-            pool,
-            options.envelopeEncryptionProvider,
-            sourceRow
+            [pendingIds, error instanceof Error ? error.message : String(error)]
           );
-          const logicalItem = await loadLogicalConversationProjectionItem(
-            pool,
-            options.envelopeEncryptionProvider,
-            hydratedSourceRow
-          );
-          if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
-            continue;
+        };
+
+        const runDisplayRowUpsert = async <T extends { id: string }>(
+          sql: string,
+          params: unknown[],
+          persistEncryptedFields: (
+            client: pg.Pool | pg.PoolClient,
+            row: T
+          ) => Promise<void>
+        ): Promise<pg.QueryResult<T>> => {
+          if (!suppressPlaintextDisplayPayloads) {
+            return pool.query<T>(sql, params);
           }
-          processedSourceIdentities.add(logicalItem.sourceIdentity);
-          const row = logicalItem.row;
-          sourceIds = logicalItem.sourceIds;
-          const content = conversationItemContent(row);
-          const actorType = actorFromConversationItem(row);
-          const messageRole = messageRoleForActor(actorType);
-          const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
-          const transcriptTokenUsage = tokenUsage
-            ? null
-            : transcriptTokenUsageFromRaw(row.raw_json);
-          const projectionMetadata = canonicalProjectMetadata({
-            metadata: row.metadata,
-            sessionMetadata: row.session_metadata,
-            sessionId: row.session_id,
-            sessionWorkspaceId: row.session_workspace_id,
-            sessionCwd: row.session_cwd
+          const client = await pool.connect();
+          try {
+            await client.query("begin");
+            const upserted = await client.query<T>(sql, params);
+            for (const row of upserted.rows) {
+              await persistEncryptedFields(client, row);
+            }
+            await client.query("commit");
+            return upserted;
+          } catch (error) {
+            await client.query("rollback");
+            throw error;
+          } finally {
+            client.release();
+          }
+        };
+
+        const processedSourceIdentities = new Set<string>();
+        const candidates: ConversationProjectionCandidate[] = [];
+        for (const sourceRow of rows.rows) {
+          result.rawItemsScanned += 1;
+          let sourceIds = [sourceRow.id];
+          try {
+            const hydratedSourceRow = await hydrateConversationProjectionRow(
+              pool,
+              options.envelopeEncryptionProvider,
+              sourceRow
+            );
+            const logicalItem = await loadLogicalConversationProjectionItem(
+              pool,
+              options.envelopeEncryptionProvider,
+              hydratedSourceRow
+            );
+            if (processedSourceIdentities.has(logicalItem.sourceIdentity)) {
+              continue;
+            }
+            processedSourceIdentities.add(logicalItem.sourceIdentity);
+            const row = logicalItem.row;
+            sourceIds = logicalItem.sourceIds;
+            const content = conversationItemContent(row);
+            const actorType = actorFromConversationItem(row);
+            const messageRole = messageRoleForActor(actorType);
+            const tokenUsage = appServerTokenUsageFromRaw(row.raw_json);
+            const transcriptTokenUsage = tokenUsage
+              ? null
+              : transcriptTokenUsageFromRaw(row.raw_json);
+            const projectionMetadata = canonicalProjectMetadata({
+              metadata: row.metadata,
+              sessionMetadata: row.session_metadata,
+              sessionId: row.session_id,
+              sessionWorkspaceId: row.session_workspace_id,
+              sessionCwd: row.session_cwd
+            });
+            const projectionPolicy = classifyConversationItemProjection(row, {
+              actorType,
+              content,
+              projectionRules
+            });
+            const semanticUnitType =
+              content && actorType && projectionPolicy.createMemoryEvent
+                ? conversationSemanticUnitTypeForActor(actorType)
+                : null;
+            const semanticItem: ConversationSemanticProjectionItem | null =
+              content && actorType && semanticUnitType
+                ? {
+                    row,
+                    sourceIds,
+                    sourceIdentity: logicalItem.sourceIdentity,
+                    sourceHash: logicalItem.sourceHash,
+                    actorType,
+                    content,
+                    includeInEmbedding: projectionPolicy.includeInEmbedding,
+                    includeInLcm: projectionPolicy.includeInLcm,
+                    projectionPolicyKey: projectionPolicy.policyKey,
+                    projectionPolicyRevision: projectionPolicySnapshot.revision,
+                    projectionMetadata
+                  }
+                : null;
+            const disposition: ConversationProjectionDisposition =
+              !semanticItem || !semanticUnitType
+                ? "raw_only"
+                : semanticUnitType === "agent_turn"
+                  ? "waiting_for_agent_seal"
+                  : "ready_for_semantic_projection";
+            candidates.push({
+              logicalItem,
+              row,
+              sourceIds,
+              content,
+              actorType,
+              messageRole,
+              tokenUsage,
+              transcriptTokenUsage,
+              projectionMetadata,
+              projectionPolicy,
+              turnCompleteSealReason:
+                conversationItemTurnCompleteSealReason(row),
+              boundary: conversationProjectionBoundary(row),
+              semanticUnitType,
+              semanticItem,
+              disposition
+            });
+          } catch (error) {
+            await markProjectionError(sourceIds, error);
+          }
+        }
+
+        const pendingAgentBundles = new Map<
+          string,
+          PendingAgentSemanticBundle
+        >();
+        const pendingSupportingContextsByBoundary = new Map<
+          string,
+          SupportingContextProjectionItem[]
+        >();
+
+        const createSemanticMemoryUnit = async (
+          unitType: ConversationSemanticUnitType,
+          items: ConversationSemanticProjectionItem[],
+          sealedReason: SemanticBundleSealReason
+        ) => {
+          if (items.length === 0) {
+            return;
+          }
+          const first = items[0]!;
+          const model = stringField(first.row.metadata ?? {}, "model");
+          const chunks = conversationSemanticUnitChunks(items, {
+            model,
+            maxTokens: projectionMaxTokens(),
+            hardMaxTokens: projectionHardMaxTokens()
           });
-          const projectionPolicy = classifyConversationItemProjection(row, {
-            actorType,
-            content,
-            projectionRules
+          const sourceCapturedAt =
+            items
+              .map((item) => item.row.event_time ?? item.row.observed_at)
+              .filter((value): value is Date => value instanceof Date)
+              .sort((left, right) => left.getTime() - right.getTime())[0] ??
+            undefined;
+          const sourceActors = uniqueOrderedStrings(
+            items.map((item) => item.actorType)
+          );
+          const unitActor = conversationSemanticUnitActor(
+            unitType,
+            sourceActors
+          );
+          const allSourceIds = uniqueOrderedStrings(
+            items.flatMap((item) => item.sourceIds)
+          );
+          const includeInLcmBySourceIdentity = new Map(
+            items.map((item) => [item.sourceIdentity, item.includeInLcm])
+          );
+          const boundaryKey = conversationSemanticBoundaryKey(first);
+          const supportingContexts =
+            unitType === "user_turn"
+              ? (pendingSupportingContextsByBoundary.get(boundaryKey) ?? [])
+              : [];
+          if (unitType === "user_turn") {
+            pendingSupportingContextsByBoundary.delete(boundaryKey);
+          }
+          const supportingSourceIds = uniqueOrderedStrings(
+            supportingContexts.flatMap((item) => item.sourceIds)
+          );
+          const createdEventIds: string[] = [];
+
+          for (const chunk of chunks) {
+            const embeddingContent = conversationSemanticChunkPolicyContent(
+              chunk,
+              "includeInEmbedding"
+            );
+            const lcmContent = conversationSemanticChunkPolicyContent(
+              chunk,
+              "includeInLcm"
+            );
+            const includeInEmbedding = embeddingContent.trim().length > 0;
+            const includeInLcm = chunk.sourceIdentities.some(
+              (sourceIdentity) =>
+                includeInLcmBySourceIdentity.get(sourceIdentity) === true
+            );
+            const unitHash = createHash("sha256")
+              .update(
+                JSON.stringify({
+                  projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                  unitType,
+                  sourceIdentities: chunk.sourceIdentities,
+                  chunkIndex: chunk.chunkIndex
+                })
+              )
+              .digest("hex");
+            const contentHash = createHash("sha256")
+              .update(
+                JSON.stringify({
+                  projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                  unitType,
+                  sourceHashes: chunk.sourceHashes,
+                  content: chunk.content,
+                  embeddingContent,
+                  lcmContent,
+                  includeInEmbedding,
+                  includeInLcm,
+                  chunkIndex: chunk.chunkIndex
+                })
+              )
+              .digest("hex");
+            const event = await this.createMemoryEvent(
+              { userId: actor.userId },
+              {
+                workspaceId: canonicalWorkspaceId({
+                  metadata: first.row.metadata,
+                  sessionId: first.row.session_id,
+                  sessionWorkspaceId: first.row.session_workspace_id,
+                  sessionCwd: first.row.session_cwd
+                }),
+                sessionId: first.row.session_id ?? undefined,
+                turnId: first.row.turn_id ?? undefined,
+                actor: unitActor,
+                eventType: "captured",
+                rawEventType: unitType,
+                content: chunk.content,
+                metadata: {
+                  ...conversationSemanticEventMetadata({
+                    first,
+                    chunk,
+                    allSourceIds,
+                    sourceActors,
+                    unitType,
+                    sealedReason,
+                    includeInEmbedding,
+                    includeInLcm,
+                    embeddingContent,
+                    lcmContent,
+                    projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
+                    model
+                  }),
+                  projectionPolicyKey: first.projectionPolicyKey,
+                  projectionPolicyRevision: first.projectionPolicyRevision
+                },
+                visibility: first.row.visibility,
+                sourceRuntime:
+                  first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                captureMethod: captureMethodForConversationItem({
+                  sourceTransport: first.row.source_transport
+                }),
+                codexTranscriptPath: first.row.source_path ?? undefined,
+                idempotencyKey: `projection:${unitType}:${unitHash}`,
+                sourceHash: `projection:${unitType}:${contentHash}`,
+                capturedAt: sourceCapturedAt?.toISOString(),
+                sourceEventTime: chunk.sourceEventTime?.toISOString(),
+                sourceSequence: chunk.sourceSequence ?? undefined,
+                tokenModel: model ?? undefined,
+                sealReason: sealedReason
+              }
+            );
+            if (event.id) {
+              createdEventIds.push(event.id);
+              if (supportingSourceIds.length > 0) {
+                await linkMemoryEventSources(
+                  pool,
+                  event.id,
+                  supportingSourceIds,
+                  SUPPORTING_CONTEXT_SOURCE_ROLE,
+                  chunk.sourceIds.length
+                );
+              }
+              result.memoryEventsCreated += 1;
+              result.memoryEventIds.push(event.id);
+              result.memoryEventScopes.push({
+                eventId: event.id,
+                visibility: first.row.visibility,
+                includeInEmbedding,
+                includeInLcm
+              });
+            }
+          }
+          if (createdEventIds.length > 0 && supportingSourceIds.length > 0) {
+            await markProjected(supportingSourceIds);
+          }
+        };
+
+        const flushAgentBundle = async (
+          boundaryKey: string,
+          sealedReason: SemanticBundleSealReason
+        ) => {
+          const bundle = pendingAgentBundles.get(boundaryKey);
+          if (!bundle || bundle.items.length === 0) {
+            pendingAgentBundles.delete(boundaryKey);
+            return;
+          }
+          pendingAgentBundles.delete(boundaryKey);
+          const items = bundle.items;
+          const sourceIds = uniqueOrderedStrings(
+            items.flatMap((item) => item.sourceIds)
+          );
+          try {
+            for (const group of conversationSemanticProjectionGroups(
+              "agent_turn",
+              items
+            )) {
+              await createSemanticMemoryUnit(
+                group.unitType,
+                group.items,
+                sealedReason
+              );
+            }
+            await markProjected(sourceIds);
+          } catch (error) {
+            await markProjectionError(sourceIds, error);
+            throw error;
+          }
+        };
+
+        const flushAgentBundlesForScope = async (
+          scopeKey: string,
+          sealedReason: SemanticBundleSealReason
+        ) => {
+          for (const [boundaryKey, bundle] of [...pendingAgentBundles]) {
+            const first = bundle.items[0];
+            if (
+              first &&
+              conversationProjectionScopeKey(first.row) === scopeKey
+            ) {
+              await flushAgentBundle(boundaryKey, sealedReason);
+            }
+          }
+        };
+
+        const pendingAgentLatestActivityTime = (
+          bundle: PendingAgentSemanticBundle
+        ): Date | null =>
+          bundle.items
+            .map((item) => item.row.event_time ?? item.row.observed_at)
+            .filter((value): value is Date => value instanceof Date)
+            .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
+
+        const pendingAgentBundleIsStale = (
+          bundle: PendingAgentSemanticBundle
+        ): boolean => {
+          if (bundle.items.length === 0) {
+            return false;
+          }
+          const staleMs = projectionAgentTurnStaleMs();
+          if (staleMs <= 0) {
+            return true;
+          }
+          const latestActivityTime = pendingAgentLatestActivityTime(bundle);
+          if (!latestActivityTime) {
+            return false;
+          }
+          return Date.now() - latestActivityTime.getTime() >= staleMs;
+        };
+
+        const flushStaleAgentBundles = async () => {
+          for (const [boundaryKey, bundle] of pendingAgentBundles) {
+            if (pendingAgentBundleIsStale(bundle)) {
+              await flushAgentBundle(boundaryKey, "catch_up_stale");
+            }
+          }
+        };
+
+        const queueAgentSemanticItem = async (
+          semanticItem: ConversationSemanticProjectionItem
+        ): Promise<AgentSemanticQueueResult> => {
+          const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
+          const model = stringField(semanticItem.row.metadata ?? {}, "model");
+          const itemTokens = estimateTokens(semanticItem.content, {
+            model: model ?? "gpt-5.4-mini"
           });
-          const semanticUnitType =
-            content && actorType && projectionPolicy.createSemanticEvent
-              ? conversationSemanticUnitTypeForActor(actorType)
-              : null;
-          const semanticItem: ConversationSemanticProjectionItem | null =
-            content && actorType && semanticUnitType
-              ? {
-                  row,
-                  sourceIds,
-                  sourceIdentity: logicalItem.sourceIdentity,
-                  sourceHash: logicalItem.sourceHash,
-                  actorType,
-                  content,
-                  includeInLcm: projectionPolicy.includeInLcm,
-                  projectionMetadata
-                }
-              : null;
-          const disposition: ConversationProjectionDisposition =
-            !semanticItem || !semanticUnitType
-              ? "raw_only"
-              : semanticUnitType === "agent_turn"
-                ? "waiting_for_agent_seal"
-                : "ready_for_semantic_projection";
-          candidates.push({
+          const maxTokens = projectionMaxTokens();
+          let bundle = pendingAgentBundles.get(boundaryKey);
+          if (!bundle) {
+            bundle = { items: [] };
+            pendingAgentBundles.set(boundaryKey, bundle);
+          }
+
+          const candidateTokens =
+            bundle.items.length > 0
+              ? joinedSemanticContentTokenCount(
+                  [
+                    ...bundle.items.map((item) => item.content),
+                    semanticItem.content
+                  ],
+                  model
+                )
+              : itemTokens;
+          if (bundle.items.length > 0 && candidateTokens > maxTokens) {
+            await flushAgentBundle(boundaryKey, "token_limit");
+            bundle = { items: [] };
+            pendingAgentBundles.set(boundaryKey, bundle);
+          }
+
+          if (itemTokens > maxTokens) {
+            pendingAgentBundles.set(boundaryKey, {
+              items: [semanticItem]
+            });
+            await flushAgentBundle(boundaryKey, "token_limit");
+            return "projected_by_token_limit";
+          }
+
+          bundle.items.push(semanticItem);
+          return "waiting_for_agent_seal";
+        };
+
+        const waitingForAgentSealSourceIds = new Set<string>();
+
+        for (const candidate of candidates) {
+          const {
             logicalItem,
             row,
             sourceIds,
             content,
-            actorType,
             messageRole,
             tokenUsage,
             transcriptTokenUsage,
-            projectionMetadata,
             projectionPolicy,
-            turnCompleteSignal: conversationItemIsTurnCompleteSignal(row),
-            boundary: conversationProjectionBoundary(row),
+            turnCompleteSealReason,
+            boundary,
             semanticUnitType,
             semanticItem,
             disposition
-          });
-        } catch (error) {
-          await markProjectionError(sourceIds, error);
-        }
-      }
-
-      const pendingAgentBundles = new Map<string, PendingAgentSemanticBundle>();
-      const pendingSupportingContextsByBoundary = new Map<
-        string,
-        SupportingContextProjectionItem[]
-      >();
-
-      const createSemanticMemoryUnit = async (
-        unitType: ConversationSemanticUnitType,
-        items: ConversationSemanticProjectionItem[],
-        sealedReason: SemanticBundleSealReason
-      ) => {
-        if (items.length === 0) {
-          return;
-        }
-        const first = items[0]!;
-        const model = stringField(first.row.metadata ?? {}, "model");
-        const chunks = conversationSemanticUnitChunks(items, {
-          model,
-          maxTokens: projectionMaxTokens(),
-          hardMaxTokens: projectionHardMaxTokens()
-        });
-        const sourceCapturedAt =
-          items
-            .map((item) => item.row.event_time ?? item.row.observed_at)
-            .filter((value): value is Date => value instanceof Date)
-            .sort((left, right) => left.getTime() - right.getTime())[0] ??
-          undefined;
-        const sourceActors = uniqueOrderedStrings(
-          items.map((item) => item.actorType)
-        );
-        const unitActor = conversationSemanticUnitActor(unitType, sourceActors);
-        const allSourceIds = uniqueOrderedStrings(
-          items.flatMap((item) => item.sourceIds)
-        );
-        const includeInLcmBySourceIdentity = new Map(
-          items.map((item) => [item.sourceIdentity, item.includeInLcm])
-        );
-        const boundaryKey = conversationSemanticBoundaryKey(first);
-        const supportingContexts =
-          unitType === "user_turn"
-            ? (pendingSupportingContextsByBoundary.get(boundaryKey) ?? [])
-            : [];
-        if (unitType === "user_turn") {
-          pendingSupportingContextsByBoundary.delete(boundaryKey);
-        }
-        const supportingSourceIds = uniqueOrderedStrings(
-          supportingContexts.flatMap((item) => item.sourceIds)
-        );
-        const createdEventIds: string[] = [];
-
-        for (const chunk of chunks) {
-          const includeInLcm = chunk.sourceIdentities.some(
-            (sourceIdentity) =>
-              includeInLcmBySourceIdentity.get(sourceIdentity) === true
-          );
-          const unitHash = createHash("sha256")
-            .update(
-              JSON.stringify({
-                projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-                unitType,
-                sourceIdentities: chunk.sourceIdentities,
-                chunkIndex: chunk.chunkIndex
-              })
-            )
-            .digest("hex");
-          const contentHash = createHash("sha256")
-            .update(
-              JSON.stringify({
-                projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-                unitType,
-                sourceHashes: chunk.sourceHashes,
-                content: chunk.content,
-                chunkIndex: chunk.chunkIndex
-              })
-            )
-            .digest("hex");
-          const event = await this.createMemoryEvent(
-            { userId: actor.userId },
-            {
-              workspaceId: canonicalWorkspaceId({
-                metadata: first.row.metadata,
-                sessionId: first.row.session_id,
-                sessionWorkspaceId: first.row.session_workspace_id,
-                sessionCwd: first.row.session_cwd
-              }),
-              sessionId: first.row.session_id ?? undefined,
-              turnId: first.row.turn_id ?? undefined,
-              actor: unitActor,
-              eventType: "captured",
-              rawEventType: unitType,
-              content: chunk.content,
-              metadata: conversationSemanticEventMetadata({
-                first,
-                chunk,
-                allSourceIds,
-                sourceActors,
-                unitType,
-                sealedReason,
-                includeInLcm,
-                projectionVersion: CURRENT_CONVERSATION_PROJECTION_VERSION,
-                model
-              }),
-              visibility: first.row.visibility,
-              sourceRuntime:
-                first.row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-              captureMethod: captureMethodForConversationItem({
-                sourceTransport: first.row.source_transport
-              }),
-              codexTranscriptPath: first.row.source_path ?? undefined,
-              idempotencyKey: `projection:${unitType}:${unitHash}`,
-              sourceHash: `projection:${unitType}:${contentHash}`,
-              capturedAt: sourceCapturedAt?.toISOString(),
-              sourceEventTime: chunk.sourceEventTime?.toISOString(),
-              sourceSequence: chunk.sourceSequence ?? undefined,
-              tokenModel: model ?? undefined,
-              sealReason: sealedReason
-            }
-          );
-          if (event.id) {
-            createdEventIds.push(event.id);
-            if (supportingSourceIds.length > 0) {
-              await linkMemoryEventSources(
-                pool,
-                event.id,
-                supportingSourceIds,
-                SUPPORTING_CONTEXT_SOURCE_ROLE,
-                chunk.sourceIds.length
+          } = candidate;
+          const projectionLockClient = projectionCoordinatorClient;
+          const projectionLockKey = `conversation-item:${row.owner_user_id ?? "anonymous"}:${row.visibility}:${row.canonical_item_key}`;
+          let projectionLockAcquired = false;
+          try {
+            await projectionLockClient.query(
+              "select pg_advisory_lock(hashtextextended($1, 0))",
+              [projectionLockKey]
+            );
+            projectionLockAcquired = true;
+            const freshness = await projectionLockClient.query<{
+              source_hash: string;
+              canonical_source_priority: number;
+              projection_status: string;
+              projection_policy_revision: string | null;
+            }>(
+              `
+              select
+                source_hash, canonical_source_priority, projection_status,
+                projection_policy_revision::text as projection_policy_revision
+              from conversation_items
+              where id = $1
+                and owner_user_id = $2
+                and visibility = $3::visibility_scope
+              limit 1
+            `,
+              [row.id, actor.userId, row.visibility]
+            );
+            const current = freshness.rows[0];
+            if (
+              current?.projection_policy_revision !== null &&
+              current?.projection_policy_revision !== undefined &&
+              Number(current.projection_policy_revision) !==
+                projectionPolicySnapshot.revision
+            ) {
+              throw Object.assign(
+                new Error(
+                  "Projection Policy changed after this conversation rebuild was prepared"
+                ),
+                { statusCode: 409, code: "projection_policy_changed" }
               );
             }
-            result.memoryEventsCreated += 1;
-            result.memoryEventIds.push(event.id);
-            result.memoryEventScopes.push({
-              eventId: event.id,
-              visibility: first.row.visibility
-            });
-          }
-        }
-        if (createdEventIds.length > 0 && supportingSourceIds.length > 0) {
-          await markProjected(supportingSourceIds);
-        }
-      };
-
-      const flushAgentBundle = async (
-        boundaryKey: string,
-        sealedReason: SemanticBundleSealReason
-      ) => {
-        const bundle = pendingAgentBundles.get(boundaryKey);
-        if (!bundle || bundle.items.length === 0) {
-          pendingAgentBundles.delete(boundaryKey);
-          return;
-        }
-        pendingAgentBundles.delete(boundaryKey);
-        const items = bundle.items;
-        const sourceIds = uniqueOrderedStrings(
-          items.flatMap((item) => item.sourceIds)
-        );
-        try {
-          for (const group of conversationSemanticProjectionGroups(
-            "agent_turn",
-            items
-          )) {
-            await createSemanticMemoryUnit(
-              group.unitType,
-              group.items,
-              sealedReason
-            );
-          }
-          await markProjected(sourceIds);
-        } catch (error) {
-          await markProjectionError(sourceIds, error);
-        }
-      };
-
-      const flushAgentBundlesForScope = async (
-        scopeKey: string,
-        sealedReason: SemanticBundleSealReason
-      ) => {
-        for (const [boundaryKey, bundle] of [...pendingAgentBundles]) {
-          const first = bundle.items[0];
-          if (first && conversationProjectionScopeKey(first.row) === scopeKey) {
-            await flushAgentBundle(boundaryKey, sealedReason);
-          }
-        }
-      };
-
-      const pendingAgentLatestActivityTime = (
-        bundle: PendingAgentSemanticBundle
-      ): Date | null =>
-        bundle.items
-          .map((item) => item.row.event_time ?? item.row.observed_at)
-          .filter((value): value is Date => value instanceof Date)
-          .sort((left, right) => right.getTime() - left.getTime())[0] ?? null;
-
-      const pendingAgentBundleIsStale = (
-        bundle: PendingAgentSemanticBundle
-      ): boolean => {
-        if (bundle.items.length === 0) {
-          return false;
-        }
-        const staleMs = projectionAgentTurnStaleMs();
-        if (staleMs <= 0) {
-          return true;
-        }
-        const latestActivityTime = pendingAgentLatestActivityTime(bundle);
-        if (!latestActivityTime) {
-          return false;
-        }
-        return Date.now() - latestActivityTime.getTime() >= staleMs;
-      };
-
-      const flushStaleAgentBundles = async () => {
-        for (const [boundaryKey, bundle] of pendingAgentBundles) {
-          if (pendingAgentBundleIsStale(bundle)) {
-            await flushAgentBundle(boundaryKey, "catch_up_stale");
-          }
-        }
-      };
-
-      const queueAgentSemanticItem = async (
-        semanticItem: ConversationSemanticProjectionItem
-      ): Promise<AgentSemanticQueueResult> => {
-        const boundaryKey = conversationSemanticBoundaryKey(semanticItem);
-        const model = stringField(semanticItem.row.metadata ?? {}, "model");
-        const itemTokens = estimateTokens(semanticItem.content, {
-          model: model ?? "gpt-5.4-mini"
-        });
-        const maxTokens = projectionMaxTokens();
-        let bundle = pendingAgentBundles.get(boundaryKey);
-        if (!bundle) {
-          bundle = { items: [] };
-          pendingAgentBundles.set(boundaryKey, bundle);
-        }
-
-        const candidateTokens =
-          bundle.items.length > 0
-            ? joinedSemanticContentTokenCount(
-                [
-                  ...bundle.items.map((item) => item.content),
-                  semanticItem.content
-                ],
-                model
-              )
-            : itemTokens;
-        if (bundle.items.length > 0 && candidateTokens > maxTokens) {
-          await flushAgentBundle(boundaryKey, "token_limit");
-          bundle = { items: [] };
-          pendingAgentBundles.set(boundaryKey, bundle);
-        }
-
-        if (itemTokens > maxTokens) {
-          pendingAgentBundles.set(boundaryKey, {
-            items: [semanticItem]
-          });
-          await flushAgentBundle(boundaryKey, "token_limit");
-          return "projected_by_token_limit";
-        }
-
-        bundle.items.push(semanticItem);
-        return "waiting_for_agent_seal";
-      };
-
-      const waitingForAgentSealSourceIds = new Set<string>();
-
-      for (const candidate of candidates) {
-        const {
-          logicalItem,
-          row,
-          sourceIds,
-          content,
-          messageRole,
-          tokenUsage,
-          transcriptTokenUsage,
-          projectionPolicy,
-          turnCompleteSignal,
-          boundary,
-          semanticUnitType,
-          semanticItem,
-          disposition
-        } = candidate;
-        try {
-          const ownerUserId = actor.userId;
-          const requiresTranscriptSourceTime =
-            row.source_transport === "hook" && row.source_kind === "codex";
-          if (
-            requiresTranscriptSourceTime &&
-            (projectionPolicy.createMessage ||
-              projectionPolicy.createToolEvent) &&
-            !row.event_time
-          ) {
-            throw new Error(
-              "Transcript display projection requires source event timestamp"
-            );
-          }
-          if (projectionPolicy.reason === "ide-client-supporting-context") {
-            if (content) {
-              const supportingContext: SupportingContextProjectionItem = {
-                row,
-                sourceIds,
-                content
-              };
-              pendingSupportingContextsByBoundary.set(boundary.key, [
-                ...(pendingSupportingContextsByBoundary.get(boundary.key) ??
-                  []),
-                supportingContext
-              ]);
-            } else {
-              await markProjected(sourceIds);
+            if (
+              !current ||
+              !["pending", "error"].includes(current.projection_status) ||
+              current.source_hash !== logicalItem.representativeSourceHash ||
+              current.canonical_source_priority !==
+                (row.canonical_source_priority ?? 0)
+            ) {
+              continue;
             }
-            continue;
-          }
-
-          if (tokenUsage) {
-            for (const scope of ["last", "total"] as const) {
-              const breakdown = tokenUsage[scope];
-              if (!breakdown) {
-                continue;
+            const ownerUserId = actor.userId;
+            const projectionTranscriptItemId =
+              projectionTranscriptItemIdFor(row);
+            const requiresTranscriptSourceTime =
+              row.source_transport === "hook" && row.source_kind === "codex";
+            if (
+              requiresTranscriptSourceTime &&
+              (projectionPolicy.createMessage ||
+                projectionPolicy.createToolEvent) &&
+              !row.event_time
+            ) {
+              throw new Error(
+                "Transcript display projection requires source event timestamp"
+              );
+            }
+            if (projectionPolicy.reason === "ide-client-supporting-context") {
+              if (content) {
+                const supportingContext: SupportingContextProjectionItem = {
+                  row,
+                  sourceIds,
+                  content
+                };
+                pendingSupportingContextsByBoundary.set(boundary.key, [
+                  ...(pendingSupportingContextsByBoundary.get(boundary.key) ??
+                    []),
+                  supportingContext
+                ]);
+              } else {
+                await markProjected(sourceIds);
               }
+              continue;
+            }
+
+            if (tokenUsage) {
+              for (const scope of ["last", "total"] as const) {
+                const breakdown = tokenUsage[scope];
+                if (!breakdown) {
+                  continue;
+                }
+                await this.recordWorkflowTokenUsage(
+                  { userId: actor.userId },
+                  {
+                    visibility: row.visibility,
+                    workflowType:
+                      stringField(row.metadata ?? {}, "workflow") ??
+                      "conversation_projection",
+                    workflowId:
+                      stringField(row.metadata ?? {}, "questionId") ??
+                      stringField(row.metadata ?? {}, "nodeId") ??
+                      logicalItem.sourceIdentity,
+                    sessionId: row.session_id ?? undefined,
+                    turnId: row.turn_id ?? undefined,
+                    conversationItemId: sourceIds[0],
+                    sourceRuntime:
+                      row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                    sourceKind: row.source_kind,
+                    sourceAdapterVersion: row.source_adapter_version,
+                    usageSource:
+                      row.source_transport === "hook"
+                        ? "transcript"
+                        : "app_server",
+                    usageAccuracy:
+                      scope === "last"
+                        ? "provider_reported"
+                        : "provider_replayed",
+                    usageKind:
+                      scope === "last" ? "turn_delta" : "cumulative_snapshot",
+                    connectorClient: row.source_kind,
+                    model:
+                      stringField(row.metadata ?? {}, "model") ?? undefined,
+                    modelContextWindow: tokenUsage.modelContextWindow,
+                    usageScope: scope,
+                    ...breakdown,
+                    metadata: {
+                      rawConversationItemId: sourceIds[0],
+                      rawConversationItemIds: sourceIds,
+                      logicalSourceId: logicalItem.sourceIdentity
+                    },
+                    idempotencyKey: providerTokenUsageIdempotencyKey({
+                      sessionId: row.session_id,
+                      turnId: row.turn_id,
+                      scope,
+                      occurrenceIdentity: logicalItem.sourceIdentity
+                    })
+                  }
+                );
+                result.tokenUsageRowsCreated += 1;
+              }
+            }
+            if (transcriptTokenUsage) {
+              const threadKind =
+                stringField(row.metadata ?? {}, "threadKind") ??
+                stringField(row.session_metadata ?? {}, "threadKind");
+              const workflowType =
+                threadKind === "subagent" ? "subagent_turn" : "main_agent_turn";
               await this.recordWorkflowTokenUsage(
                 { userId: actor.userId },
                 {
                   visibility: row.visibility,
-                  workflowType:
-                    stringField(row.metadata ?? {}, "workflow") ??
-                    "conversation_projection",
+                  workflowType,
                   workflowId:
-                    stringField(row.metadata ?? {}, "questionId") ??
-                    stringField(row.metadata ?? {}, "nodeId") ??
+                    stringField(row.metadata ?? {}, "transcriptId") ??
+                    row.turn_id ??
+                    row.session_id ??
                     logicalItem.sourceIdentity,
                   sessionId: row.session_id ?? undefined,
                   turnId: row.turn_id ?? undefined,
@@ -4259,109 +5229,68 @@ export const createMemorySourceRepository = (
                     row.source_kind === "codex-cli" ? "codex-cli" : "codex",
                   sourceKind: row.source_kind,
                   sourceAdapterVersion: row.source_adapter_version,
-                  usageSource:
-                    row.source_transport === "hook"
-                      ? "transcript"
-                      : "app_server",
-                  usageAccuracy:
-                    scope === "last"
-                      ? "provider_reported"
-                      : "provider_replayed",
-                  usageKind:
-                    scope === "last" ? "turn_delta" : "cumulative_snapshot",
+                  usageSource: "transcript",
+                  usageAccuracy: "provider_reported",
+                  usageKind: "turn_delta",
                   connectorClient: row.source_kind,
-                  model: stringField(row.metadata ?? {}, "model") ?? undefined,
-                  modelContextWindow: tokenUsage.modelContextWindow,
-                  usageScope: scope,
-                  ...breakdown,
+                  model:
+                    transcriptTokenUsage.model ??
+                    stringField(row.metadata ?? {}, "model") ??
+                    undefined,
+                  modelContextWindow: transcriptTokenUsage.modelContextWindow,
+                  inputTokens: transcriptTokenUsage.inputTokens,
+                  cachedInputTokens: transcriptTokenUsage.cachedInputTokens,
+                  outputTokens: transcriptTokenUsage.outputTokens,
+                  reasoningOutputTokens:
+                    transcriptTokenUsage.reasoningOutputTokens,
+                  totalTokens: transcriptTokenUsage.totalTokens,
+                  usageScope: "last",
                   metadata: {
                     rawConversationItemId: sourceIds[0],
                     rawConversationItemIds: sourceIds,
-                    logicalSourceId: logicalItem.sourceIdentity
+                    logicalSourceId: logicalItem.sourceIdentity,
+                    threadKind: threadKind ?? "conversation",
+                    parentThreadId:
+                      stringField(row.metadata ?? {}, "parentThreadId") ??
+                      stringField(row.session_metadata ?? {}, "parentThreadId"),
+                    parentSessionId:
+                      stringField(row.metadata ?? {}, "parentSessionId") ??
+                      stringField(
+                        row.session_metadata ?? {},
+                        "parentSessionId"
+                      ),
+                    transcriptPath: row.source_path,
+                    sourceLineNumber: row.source_sequence
                   },
-                  idempotencyKey: `token:${logicalItem.sourceIdentity}:${scope}`
+                  idempotencyKey: providerTokenUsageIdempotencyKey({
+                    sessionId: row.session_id,
+                    turnId: row.turn_id,
+                    scope: "last",
+                    occurrenceIdentity: logicalItem.sourceIdentity
+                  })
                 }
               );
               result.tokenUsageRowsCreated += 1;
             }
-          }
-          if (transcriptTokenUsage) {
-            const threadKind =
-              stringField(row.metadata ?? {}, "threadKind") ??
-              stringField(row.session_metadata ?? {}, "threadKind");
-            const workflowType =
-              threadKind === "subagent" ? "subagent_turn" : "main_agent_turn";
-            await this.recordWorkflowTokenUsage(
-              { userId: actor.userId },
-              {
-                visibility: row.visibility,
-                workflowType,
-                workflowId:
-                  stringField(row.metadata ?? {}, "transcriptId") ??
-                  row.turn_id ??
-                  row.session_id ??
-                  logicalItem.sourceIdentity,
-                sessionId: row.session_id ?? undefined,
-                turnId: row.turn_id ?? undefined,
-                conversationItemId: sourceIds[0],
-                sourceRuntime:
-                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-                sourceKind: row.source_kind,
-                sourceAdapterVersion: row.source_adapter_version,
-                usageSource: "transcript",
-                usageAccuracy: "provider_reported",
-                usageKind: "turn_delta",
-                connectorClient: row.source_kind,
-                model:
-                  transcriptTokenUsage.model ??
-                  stringField(row.metadata ?? {}, "model") ??
-                  undefined,
-                modelContextWindow: transcriptTokenUsage.modelContextWindow,
-                inputTokens: transcriptTokenUsage.inputTokens,
-                cachedInputTokens: transcriptTokenUsage.cachedInputTokens,
-                outputTokens: transcriptTokenUsage.outputTokens,
-                reasoningOutputTokens:
-                  transcriptTokenUsage.reasoningOutputTokens,
-                totalTokens: transcriptTokenUsage.totalTokens,
-                usageScope: "last",
-                metadata: {
-                  rawConversationItemId: sourceIds[0],
-                  rawConversationItemIds: sourceIds,
-                  logicalSourceId: logicalItem.sourceIdentity,
-                  threadKind: threadKind ?? "conversation",
-                  parentThreadId:
-                    stringField(row.metadata ?? {}, "parentThreadId") ??
-                    stringField(row.session_metadata ?? {}, "parentThreadId"),
-                  parentSessionId:
-                    stringField(row.metadata ?? {}, "parentSessionId") ??
-                    stringField(row.session_metadata ?? {}, "parentSessionId"),
-                  transcriptPath: row.source_path,
-                  sourceLineNumber: row.source_sequence
-                },
-                idempotencyKey: `token:${logicalItem.sourceIdentity}:transcript:last`
-              }
-            );
-            result.tokenUsageRowsCreated += 1;
-          }
 
-          if (
-            row.session_id &&
-            messageRole &&
-            content &&
-            projectionPolicy.createMessage
-          ) {
-            const messageContentForStorage = suppressPlaintextDisplayPayloads
-              ? ENCRYPTED_MESSAGE_CONTENT
-              : content;
-            const messageContentJsonForStorage =
-              suppressPlaintextDisplayPayloads
-                ? encryptedDisplayPayloadMarker("messages")
-                : row.raw_json;
-            const inserted = await runDisplayRowUpsert<{
-              id: string;
-              inserted: boolean;
-            }>(
-              `
+            if (
+              row.session_id &&
+              messageRole &&
+              content &&
+              projectionPolicy.createMessage
+            ) {
+              const messageContentForStorage = suppressPlaintextDisplayPayloads
+                ? ENCRYPTED_MESSAGE_CONTENT
+                : content;
+              const messageContentJsonForStorage =
+                suppressPlaintextDisplayPayloads
+                  ? encryptedDisplayPayloadMarker("messages")
+                  : row.raw_json;
+              const inserted = await runDisplayRowUpsert<{
+                id: string;
+                inserted: boolean;
+              }>(
+                `
 	              with existing as (
 	                update messages
                 set
@@ -4383,7 +5312,12 @@ export const createMemorySourceRepository = (
                   source_hash = coalesce($13, messages.source_hash),
                   token_count = $14,
                   source_event_time = $15,
-                  captured_at = least(messages.captured_at, $16)
+                  captured_at = least(messages.captured_at, $16),
+                  recall_eligible = $17,
+                  projection_policy_key = $18,
+                  projection_policy_revision = $19,
+                  invalidated_at = null,
+                  invalidation_reason = null
                 where id = (
                   select id
                   from messages
@@ -4402,7 +5336,8 @@ export const createMemorySourceRepository = (
                     case
                       when $12::text is not null and idempotency_key = $12 then 0
                       when $13::text is not null and source_hash = $13 then 1
-                      else 2
+                      when $11::text is not null and transcript_item_id = $11 then 2
+                      else 3
                     end,
                     created_at asc,
                     id asc
@@ -4415,11 +5350,14 @@ export const createMemorySourceRepository = (
                   session_id, turn_id, owner_user_id, visibility,
                   role, content, content_json, source_runtime, capture_method,
                   codex_transcript_path, transcript_item_id, idempotency_key,
-                  source_hash, token_count, source_event_time, captured_at
+                  source_hash, token_count, source_event_time, captured_at,
+                  recall_eligible, projection_policy_key,
+                  projection_policy_revision
                 )
                 select
                   $1, $2, $3, $4, $5, $6, $7,
-                  $8, $9, $10, $11, $12, $13, $14, $15, $16
+                  $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                  $17, $18, $19
                 where not exists (select 1 from existing)
                 on conflict do nothing
                 returning id, true as inserted
@@ -4444,7 +5382,8 @@ export const createMemorySourceRepository = (
                   case
                     when $12::text is not null and idempotency_key = $12 then 0
                     when $13::text is not null and source_hash = $13 then 1
-                    else 2
+                    when $11::text is not null and transcript_item_id = $11 then 2
+                    else 3
                   end,
                   created_at asc,
                   id asc
@@ -4457,127 +5396,123 @@ export const createMemorySourceRepository = (
               select * from fallback
               limit 1
             `,
-              [
-                row.session_id,
-                row.turn_id,
-                ownerUserId,
-                row.visibility,
-                messageRole,
-                messageContentForStorage,
-                messageContentJsonForStorage,
-                row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-                captureMethodForConversationItem({
-                  sourceTransport: row.source_transport
-                }),
-                row.source_path,
-                row.source_sequence === null
-                  ? null
-                  : String(row.source_sequence),
-                `message:${logicalItem.sourceIdentity}`,
-                `message:${logicalItem.sourceHash}`,
-                estimateTokens(content),
-                row.event_time,
-                row.observed_at
-              ],
-              async (client, message) => {
-                await upsertEncryptedFieldPayloadWithClient(
-                  client,
-                  { userId: ownerUserId },
-                  options.envelopeEncryptionProvider!,
-                  {
-                    sourceTable: "messages",
-                    sourceId: message.id,
-                    sourceColumn: "content",
-                    plaintext: content,
-                    rowFamily: "message",
-                    scope: {
-                      tenantId: ownerUserId,
-                      workspaceId: row.session_workspace_id,
-                      objectClass: "message"
-                    },
-                    aad: {
-                      sessionId: row.session_id,
-                      transcriptItemId:
-                        row.source_sequence === null
-                          ? null
-                          : String(row.source_sequence)
+                [
+                  row.session_id,
+                  row.turn_id,
+                  ownerUserId,
+                  row.visibility,
+                  messageRole,
+                  messageContentForStorage,
+                  messageContentJsonForStorage,
+                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                  captureMethodForConversationItem({
+                    sourceTransport: row.source_transport
+                  }),
+                  row.source_path,
+                  projectionTranscriptItemId,
+                  `message:${logicalItem.sourceIdentity}`,
+                  `message:${logicalItem.sourceHash}`,
+                  estimateTokens(content),
+                  row.event_time,
+                  row.observed_at,
+                  projectionPolicy.createMemoryEvent,
+                  projectionPolicy.policyKey,
+                  projectionPolicySnapshot.revision
+                ],
+                async (client, message) => {
+                  await upsertEncryptedFieldPayloadWithClient(
+                    client,
+                    { userId: ownerUserId },
+                    options.envelopeEncryptionProvider!,
+                    {
+                      sourceTable: "messages",
+                      sourceId: message.id,
+                      sourceColumn: "content",
+                      plaintext: content,
+                      rowFamily: "message",
+                      scope: {
+                        tenantId: ownerUserId,
+                        workspaceId: row.session_workspace_id,
+                        objectClass: "message"
+                      },
+                      aad: {
+                        sessionId: row.session_id,
+                        transcriptItemId: projectionTranscriptItemId
+                      }
                     }
-                  }
-                );
-                await upsertEncryptedFieldPayloadWithClient(
-                  client,
-                  { userId: ownerUserId },
-                  options.envelopeEncryptionProvider!,
-                  {
-                    sourceTable: "messages",
-                    sourceId: message.id,
-                    sourceColumn: "content_json",
-                    plaintext: row.raw_json,
-                    rowFamily: "message",
-                    scope: {
-                      tenantId: ownerUserId,
-                      workspaceId: row.session_workspace_id,
-                      objectClass: "message"
-                    },
-                    aad: {
-                      sessionId: row.session_id,
-                      transcriptItemId:
-                        row.source_sequence === null
-                          ? null
-                          : String(row.source_sequence)
+                  );
+                  await upsertEncryptedFieldPayloadWithClient(
+                    client,
+                    { userId: ownerUserId },
+                    options.envelopeEncryptionProvider!,
+                    {
+                      sourceTable: "messages",
+                      sourceId: message.id,
+                      sourceColumn: "content_json",
+                      plaintext: row.raw_json,
+                      rowFamily: "message",
+                      scope: {
+                        tenantId: ownerUserId,
+                        workspaceId: row.session_workspace_id,
+                        objectClass: "message"
+                      },
+                      aad: {
+                        sessionId: row.session_id,
+                        transcriptItemId: projectionTranscriptItemId
+                      }
                     }
-                  }
-                );
+                  );
+                }
+              );
+              if (inserted.rows.some((message) => message.inserted)) {
+                result.messagesCreated += 1;
               }
-            );
-            if (inserted.rows.some((message) => message.inserted)) {
-              result.messagesCreated += 1;
             }
-          }
 
-          if (row.session_id && projectionPolicy.createToolEvent) {
-            const raw = isRecord(row.raw_json) ? row.raw_json : {};
-            const metadata = row.metadata ?? {};
-            const toolCall = isRecord(metadata.toolCall)
-              ? metadata.toolCall
-              : {};
-            const callId = conversationItemToolCallId(metadata, toolCall);
-            const linkedToolName = await loadLinkedToolNameForCallId(
-              pool,
-              row,
-              callId
-            );
-            const toolEventIdentity = conversationItemToolEventIdentity(
-              row,
-              logicalItem,
-              callId
-            );
-            const toolInput = conversationItemToolInput(raw, toolCall);
-            const toolResponse = conversationItemToolResponse(
-              raw,
-              toolCall,
-              content,
-              {
-                allowContentFallback: row.source_record_type !== "hook_payload"
-              }
-            );
-            const toolInputForStorage =
-              suppressPlaintextDisplayPayloads &&
-              toolInput !== null &&
-              toolInput !== undefined
-                ? encryptedDisplayPayloadMarker("tool_events")
-                : toolInput;
-            const toolResponseForStorage =
-              suppressPlaintextDisplayPayloads &&
-              toolResponse !== null &&
-              toolResponse !== undefined
-                ? encryptedDisplayPayloadMarker("tool_events")
-                : toolResponse;
-            const inserted = await runDisplayRowUpsert<{
-              id: string;
-              inserted: boolean;
-            }>(
-              `
+            if (row.session_id && projectionPolicy.createToolEvent) {
+              const raw = isRecord(row.raw_json) ? row.raw_json : {};
+              const metadata = row.metadata ?? {};
+              const toolCall = isRecord(metadata.toolCall)
+                ? metadata.toolCall
+                : {};
+              const callId = conversationItemToolCallId(metadata, toolCall);
+              const linkedToolName = await loadLinkedToolNameForCallId(
+                pool,
+                row,
+                callId
+              );
+              const toolEventIdentity = conversationItemToolEventIdentity(
+                row,
+                logicalItem,
+                callId
+              );
+              const toolInput = conversationItemToolInput(raw, toolCall);
+              const toolResponse = conversationItemToolResponse(
+                raw,
+                toolCall,
+                content,
+                {
+                  allowContentFallback:
+                    row.source_record_type !== "hook_payload"
+                }
+              );
+              const toolInputForStorage =
+                suppressPlaintextDisplayPayloads &&
+                toolInput !== null &&
+                toolInput !== undefined
+                  ? encryptedDisplayPayloadMarker("tool_events")
+                  : toolInput;
+              const toolResponseForStorage =
+                suppressPlaintextDisplayPayloads &&
+                toolResponse !== null &&
+                toolResponse !== undefined
+                  ? encryptedDisplayPayloadMarker("tool_events")
+                  : toolResponse;
+              const inserted = await runDisplayRowUpsert<{
+                id: string;
+                inserted: boolean;
+              }>(
+                `
 	              with existing as (
 	                update tool_events
                 set
@@ -4620,7 +5555,9 @@ export const createMemorySourceRepository = (
                     when $7::jsonb is not null
                       then coalesce(tool_events.completed_at, $15)
                     else tool_events.completed_at
-                  end
+                  end,
+                  invalidated_at = null,
+                  invalidation_reason = null
                 where id = (
                   select id
                   from tool_events
@@ -4697,140 +5634,259 @@ export const createMemorySourceRepository = (
               select * from fallback
               limit 1
             `,
-              [
-                row.session_id,
-                row.turn_id,
-                ownerUserId,
-                row.visibility,
-                conversationItemToolName(
-                  raw,
-                  metadata,
-                  toolCall,
-                  linkedToolName
-                ),
-                jsonbParam(toolInputForStorage),
-                jsonbParam(toolResponseForStorage),
-                stringField(metadata, "status") ?? null,
-                row.source_kind === "codex-cli" ? "codex-cli" : "codex",
-                captureMethodForConversationItem({
-                  sourceTransport: row.source_transport
-                }),
-                row.source_path,
-                row.source_sequence === null
-                  ? null
-                  : String(row.source_sequence),
-                `tool:${toolEventIdentity}`,
-                `tool:${toolEventIdentity}`,
-                row.event_time,
-                row.observed_at
-              ],
-              async (client, toolEvent) => {
-                if (toolInput !== null && toolInput !== undefined) {
-                  await upsertEncryptedFieldPayloadWithClient(
-                    client,
-                    { userId: ownerUserId },
-                    options.envelopeEncryptionProvider!,
-                    {
-                      sourceTable: "tool_events",
-                      sourceId: toolEvent.id,
-                      sourceColumn: "tool_input",
-                      plaintext: toolInput,
-                      rowFamily: "tool_event",
-                      scope: {
-                        tenantId: ownerUserId,
-                        workspaceId: row.session_workspace_id,
-                        objectClass: "tool_event"
-                      },
-                      aad: {
-                        sessionId: row.session_id,
-                        transcriptItemId:
-                          row.source_sequence === null
-                            ? null
-                            : String(row.source_sequence)
+                [
+                  row.session_id,
+                  row.turn_id,
+                  ownerUserId,
+                  row.visibility,
+                  conversationItemToolName(
+                    raw,
+                    metadata,
+                    toolCall,
+                    linkedToolName
+                  ),
+                  jsonbParam(toolInputForStorage),
+                  jsonbParam(toolResponseForStorage),
+                  stringField(metadata, "status") ?? null,
+                  row.source_kind === "codex-cli" ? "codex-cli" : "codex",
+                  captureMethodForConversationItem({
+                    sourceTransport: row.source_transport
+                  }),
+                  row.source_path,
+                  projectionTranscriptItemId,
+                  `tool:${toolEventIdentity}`,
+                  `tool:${toolEventIdentity}`,
+                  row.event_time,
+                  row.observed_at
+                ],
+                async (client, toolEvent) => {
+                  if (toolInput !== null && toolInput !== undefined) {
+                    await upsertEncryptedFieldPayloadWithClient(
+                      client,
+                      { userId: ownerUserId },
+                      options.envelopeEncryptionProvider!,
+                      {
+                        sourceTable: "tool_events",
+                        sourceId: toolEvent.id,
+                        sourceColumn: "tool_input",
+                        plaintext: toolInput,
+                        rowFamily: "tool_event",
+                        scope: {
+                          tenantId: ownerUserId,
+                          workspaceId: row.session_workspace_id,
+                          objectClass: "tool_event"
+                        },
+                        aad: {
+                          sessionId: row.session_id,
+                          transcriptItemId: projectionTranscriptItemId
+                        }
                       }
-                    }
-                  );
-                }
-                if (toolResponse !== null && toolResponse !== undefined) {
-                  await upsertEncryptedFieldPayloadWithClient(
-                    client,
-                    { userId: ownerUserId },
-                    options.envelopeEncryptionProvider!,
-                    {
-                      sourceTable: "tool_events",
-                      sourceId: toolEvent.id,
-                      sourceColumn: "tool_response",
-                      plaintext: toolResponse,
-                      rowFamily: "tool_event",
-                      scope: {
-                        tenantId: ownerUserId,
-                        workspaceId: row.session_workspace_id,
-                        objectClass: "tool_event"
-                      },
-                      aad: {
-                        sessionId: row.session_id,
-                        transcriptItemId:
-                          row.source_sequence === null
-                            ? null
-                            : String(row.source_sequence)
+                    );
+                  }
+                  if (toolResponse !== null && toolResponse !== undefined) {
+                    await upsertEncryptedFieldPayloadWithClient(
+                      client,
+                      { userId: ownerUserId },
+                      options.envelopeEncryptionProvider!,
+                      {
+                        sourceTable: "tool_events",
+                        sourceId: toolEvent.id,
+                        sourceColumn: "tool_response",
+                        plaintext: toolResponse,
+                        rowFamily: "tool_event",
+                        scope: {
+                          tenantId: ownerUserId,
+                          workspaceId: row.session_workspace_id,
+                          objectClass: "tool_event"
+                        },
+                        aad: {
+                          sessionId: row.session_id,
+                          transcriptItemId: projectionTranscriptItemId
+                        }
                       }
-                    }
-                  );
+                    );
+                  }
                 }
+              );
+              if (inserted.rows.some((toolEvent) => toolEvent.inserted)) {
+                result.toolEventsCreated += 1;
               }
-            );
-            if (inserted.rows.some((toolEvent) => toolEvent.inserted)) {
-              result.toolEventsCreated += 1;
             }
-          }
 
-          switch (disposition) {
-            case "ready_for_semantic_projection": {
-              if (!semanticItem || semanticUnitType !== "user_turn") {
-                await markProjected(sourceIds);
-                break;
-              }
+            if (turnCompleteSealReason) {
               await flushAgentBundlesForScope(
                 boundary.scopeKey,
-                "next_user_turn"
-              );
-              await createSemanticMemoryUnit(
-                "user_turn",
-                [semanticItem],
-                "user_turn"
+                turnCompleteSealReason
               );
               await markProjected(sourceIds);
-              break;
+              continue;
             }
-            case "waiting_for_agent_seal": {
-              if (!semanticItem || semanticUnitType !== "agent_turn") {
+
+            switch (disposition) {
+              case "ready_for_semantic_projection": {
+                if (!semanticItem || semanticUnitType !== "user_turn") {
+                  await markProjected(sourceIds);
+                  break;
+                }
+                await flushAgentBundlesForScope(
+                  boundary.scopeKey,
+                  "next_user_turn"
+                );
+                await createSemanticMemoryUnit(
+                  "user_turn",
+                  [semanticItem],
+                  "user_turn"
+                );
                 await markProjected(sourceIds);
                 break;
               }
-              const queueResult = await queueAgentSemanticItem(semanticItem);
-              if (queueResult === "waiting_for_agent_seal") {
-                for (const sourceId of sourceIds) {
-                  waitingForAgentSealSourceIds.add(sourceId);
+              case "waiting_for_agent_seal": {
+                if (!semanticItem || semanticUnitType !== "agent_turn") {
+                  await markProjected(sourceIds);
+                  break;
                 }
+                const queueResult = await queueAgentSemanticItem(semanticItem);
+                if (queueResult === "waiting_for_agent_seal") {
+                  for (const sourceId of sourceIds) {
+                    waitingForAgentSealSourceIds.add(sourceId);
+                  }
+                }
+                break;
               }
-              break;
+              case "raw_only":
+              default:
+                await markProjected(sourceIds);
             }
-            case "raw_only":
-            default:
-              await markProjected(sourceIds);
+          } catch (error) {
+            if (
+              isRecord(error) &&
+              stringField(error, "code") === "projection_policy_changed"
+            ) {
+              throw error;
+            }
+            await markProjectionError(sourceIds, error);
+          } finally {
+            if (projectionLockAcquired) {
+              await projectionLockClient.query(
+                "select pg_advisory_unlock(hashtextextended($1, 0))",
+                [projectionLockKey]
+              );
+            }
           }
-          if (turnCompleteSignal) {
-            await flushAgentBundlesForScope(boundary.scopeKey, "stop_hook");
-          }
-        } catch (error) {
-          await markProjectionError(sourceIds, error);
         }
+        await flushStaleAgentBundles();
+        result.rawItemsWaitingForAgentSeal = [
+          ...waitingForAgentSealSourceIds
+        ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
+        const finalPolicyState = await projectionCoordinatorClient.query<{
+          revision: string;
+        }>(
+          "select revision::text as revision from projection_policy_state where id = 1"
+        );
+        if (
+          Number(finalPolicyState.rows[0]?.revision ?? 0) !==
+          projectionPolicySnapshot.revision
+        ) {
+          throw Object.assign(
+            new Error(
+              "Projection Policy changed during conversation projection"
+            ),
+            { statusCode: 409, code: "projection_policy_changed" }
+          );
+        }
+        return result;
+      } finally {
+        if (projectionPolicyLockAcquired) {
+          await projectionCoordinatorClient.query(
+            "select pg_advisory_unlock_shared(hashtextextended($1, 0))",
+            [projectionPolicyLockKey]
+          );
+        }
+        for (const lockKey of [...acquiredProjectionResourceLocks].reverse()) {
+          await projectionCoordinatorClient.query(
+            "select pg_advisory_unlock(hashtextextended($1, 0))",
+            [lockKey]
+          );
+        }
+        projectionCoordinatorClient.release();
       }
-      await flushStaleAgentBundles();
-      result.rawItemsWaitingForAgentSeal = [
-        ...waitingForAgentSealSourceIds
-      ].filter((sourceId) => !projectedStatusSourceIds.has(sourceId)).length;
-      return result;
+    },
+
+    async listPendingLcmDispatchScopes(input = {}) {
+      const limit = Math.min(Math.max(input.limit ?? 100, 1), 1000);
+      const pending = await pool.query<{
+        owner_user_id: string;
+        visibility: "personal";
+        pending_memory_event_ids: string[];
+        pending_memory_event_generations: string[];
+      }>(
+        `
+          with pending_events as (
+            select
+              me.owner_user_id,
+              me.visibility,
+              me.id,
+              coalesce((
+                select max(mn.invalidated_at)::text
+                from memory_node_sources mns
+                join memory_nodes mn on mn.id = mns.memory_node_id
+                where mns.memory_event_id = me.id
+                  and mn.kind = 'leaf'
+                  and mn.invalidated_at is not null
+              ), 'new') as dispatch_generation,
+              row_number() over (
+                partition by me.owner_user_id, me.visibility
+                order by me.captured_at asc, me.id asc
+              ) as pending_rank
+            from memory_events me
+            where me.visibility = 'personal'
+              and me.owner_user_id is not null
+              and ($2::uuid is null or me.owner_user_id = $2)
+              and me.invalidated_at is null
+              and me.personal_deleted_at is null
+              and me.include_in_lcm = true
+              and not exists (
+                select 1
+                from memory_node_sources mns
+                join memory_nodes mn on mn.id = mns.memory_node_id
+                where mns.memory_event_id = me.id
+                  and mn.kind = 'leaf'
+                  and mn.invalidated_at is null
+                  and mn.personal_deleted_at is null
+              )
+          )
+          select
+            owner_user_id,
+            visibility,
+            array_agg(id order by id) as pending_memory_event_ids,
+            array_agg(dispatch_generation order by id) as pending_memory_event_generations
+          from pending_events
+          where pending_rank <= $3
+          group by owner_user_id, visibility
+          order by min(pending_rank) asc, owner_user_id asc
+          limit $1
+        `,
+        [limit, input.ownerUserId ?? null, lcmCompactionMaxEvents()]
+      );
+      return pending.rows.map((row) => {
+        const pendingMemoryEventIds = [...row.pending_memory_event_ids].sort();
+        const fingerprint = createHash("sha256")
+          .update(
+            JSON.stringify(
+              pendingMemoryEventIds.map((id, index) => ({
+                id,
+                generation: row.pending_memory_event_generations[index]
+              }))
+            )
+          )
+          .digest("hex");
+        return {
+          ownerUserId: row.owner_user_id,
+          visibility: row.visibility,
+          pendingMemoryEventIds,
+          dispatchKey: `lcm-dispatch:${row.owner_user_id}:${row.visibility}:${fingerprint}`
+        };
+      });
     },
 
     async listConversationProjectionActors(input = {}) {
@@ -4841,8 +5897,18 @@ export const createMemorySourceRepository = (
         from (
           select ci.owner_user_id as user_id, min(ci.observed_at) as oldest_at
           from conversation_items ci
+          left join sessions s on s.id = ci.session_id
           where ci.projection_status in ('pending', 'error')
             and ci.memory_excluded_at is null
+            and ci.personal_deleted_at is null
+            and (
+              ci.session_id is null
+              or (
+                s.id is not null
+                and s.invalidated_at is null
+                and s.personal_deleted_at is null
+              )
+            )
             and ci.visibility = 'personal'
             and ci.owner_user_id is not null
           group by ci.owner_user_id
@@ -4928,7 +5994,12 @@ export const createMemorySourceRepository = (
       result.jobsClaimed = claimed.rows.length;
 
       for (const job of claimed.rows) {
+        const projectionPolicyClient = await pool.connect();
         try {
+          await projectionPolicyClient.query(
+            "select pg_advisory_lock_shared(hashtextextended($1, 0))",
+            ["conversation-projection-policy"]
+          );
           const created = await rebuiltSemanticMemoryEventsFromSources(
             pool,
             options.envelopeEncryptionProvider,
@@ -4959,7 +6030,9 @@ export const createMemorySourceRepository = (
           result.memoryEventScopes.push(
             ...created.map((event) => ({
               eventId: event.eventId,
-              visibility: event.visibility
+              visibility: event.visibility,
+              includeInEmbedding: event.includeInEmbedding,
+              includeInLcm: event.includeInLcm
             }))
           );
         } catch (error) {
@@ -4977,6 +6050,12 @@ export const createMemorySourceRepository = (
             [job.id, error instanceof Error ? error.message : String(error)]
           );
           result.jobsFailed += 1;
+        } finally {
+          await projectionPolicyClient.query(
+            "select pg_advisory_unlock_shared(hashtextextended($1, 0))",
+            ["conversation-projection-policy"]
+          );
+          projectionPolicyClient.release();
         }
       }
 
@@ -5609,7 +6688,11 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
-            and ($6::uuid is not null or me.session_id is null or me.capture_method = 'api')
+            and (
+              $6::uuid is not null
+              or $12::uuid is not null
+              or me.session_id is null
+            )
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
             and (
               $4::text is null
@@ -5737,7 +6820,6 @@ export const createMemorySourceRepository = (
           join sessions s on s.id = msg.session_id
           where ($2::boolean = true or msg.invalidated_at is null)
             and msg.role <> 'tool'
-            and msg.capture_method = 'hook'
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
             and (
               $4::text is null
@@ -5904,7 +6986,6 @@ export const createMemorySourceRepository = (
           cross join cursor_order co
           join sessions s on s.id = te.session_id
           where ($2::boolean = true or te.invalidated_at is null)
-            and te.capture_method = 'hook'
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
             and (
               $4::text is null
@@ -6671,6 +7752,7 @@ export const createMemorySourceRepository = (
         source_id: string;
         owner_user_id: string | null;
         visibility: Visibility;
+        source_hash: string | null;
         text: string | null;
       }>(
         `
@@ -6680,6 +7762,7 @@ export const createMemorySourceRepository = (
             mn.id as source_id,
             mn.owner_user_id,
             mn.visibility,
+            mn.source_hash,
             case
               when mn.body_text is null
                 or btrim(mn.body_text) = ''
@@ -6698,17 +7781,31 @@ export const createMemorySourceRepository = (
             me.id as source_id,
             me.owner_user_id,
             me.visibility,
-            coalesce(me.payload ->> 'content', '') as text,
+            me.source_hash,
+            case
+              when me.include_in_embedding = false
+                then ''
+              else coalesce(
+                me.payload #>> '{metadata,embeddingContent}',
+                me.payload ->> 'content',
+                ''
+              )
+            end as text,
             me.captured_at as created_at
           from memory_events me
           where me.invalidated_at is null and me.personal_deleted_at is null
         )
-        select source_type, source_id, owner_user_id, visibility, text
+        select source_type, source_id, owner_user_id, visibility, source_hash, text
         from sources s
         where (
             length(trim(coalesce(s.text, ''))) > 0
             or (
               s.source_type = 'memory_event'
+              and coalesce((
+                select source_event.include_in_embedding::text
+                from memory_events source_event
+                where source_event.id = s.source_id
+              ), 'true') <> 'false'
               and exists (
                 select 1
                 from encrypted_field_payloads encrypted
@@ -6739,10 +7836,26 @@ export const createMemorySourceRepository = (
               and me.embedding_model = $1
               and me.embedding_dimensions = $2
               and me.embedding_version = $3
+              and me.source_hash = coalesce(
+                s.source_hash,
+                encode(
+                  digest(
+                    s.source_type || ':' || s.source_id::text || ':' || s.text,
+                    'sha256'
+                  ),
+                  'hex'
+                )
+              )
               and (
                 (s.source_type = 'memory_node' and me.memory_node_id = s.source_id)
                 or (s.source_type = 'memory_event' and me.memory_event_id = s.source_id)
               )
+            group by me.source_hash
+            having count(*) = max(me.source_chunk_count)
+              and count(distinct me.source_chunk_index) = max(me.source_chunk_count)
+              and min(me.source_chunk_index) = 0
+              and max(me.source_chunk_index) = max(me.source_chunk_count) - 1
+              and min(me.source_chunk_count) = max(me.source_chunk_count)
           )
         order by s.created_at asc, s.source_id asc
         limit $4
@@ -6817,7 +7930,7 @@ export const createMemorySourceRepository = (
           );
           return {
             ...row,
-            text: payload?.content ?? row.text
+            text: memoryEventEmbeddingContent(payload) ?? row.text
           };
         })
       );
@@ -6830,7 +7943,9 @@ export const createMemorySourceRepository = (
           ownerUserId: row.owner_user_id,
           visibility: row.visibility,
           text: row.text!,
-          sourceHash: sourceHash(row.source_type, row.source_id, row.text!)
+          sourceHash:
+            row.source_hash ??
+            sourceHash(row.source_type, row.source_id, row.text!)
         }));
     },
 
@@ -6840,6 +7955,7 @@ export const createMemorySourceRepository = (
         source_id: string;
         owner_user_id: string | null;
         visibility: Visibility;
+        source_hash: string | null;
         text: string | null;
       }>(
         `
@@ -6849,6 +7965,7 @@ export const createMemorySourceRepository = (
             mn.id as source_id,
             mn.owner_user_id,
             mn.visibility,
+            mn.source_hash,
             case
               when mn.body_text is null
                 or btrim(mn.body_text) = ''
@@ -6866,11 +7983,20 @@ export const createMemorySourceRepository = (
             me.id as source_id,
             me.owner_user_id,
             me.visibility,
-            coalesce(me.payload ->> 'content', '') as text
+            me.source_hash,
+            case
+              when me.include_in_embedding = false
+                then ''
+              else coalesce(
+                me.payload #>> '{metadata,embeddingContent}',
+                me.payload ->> 'content',
+                ''
+              )
+            end as text
           from memory_events me
           where me.invalidated_at is null and me.personal_deleted_at is null
         )
-        select source_type, source_id, owner_user_id, visibility, text
+        select source_type, source_id, owner_user_id, visibility, source_hash, text
         from sources
         where source_type = $1
           and source_id = $2
@@ -6878,6 +8004,11 @@ export const createMemorySourceRepository = (
             length(trim(coalesce(text, ''))) > 0
             or (
               source_type = 'memory_event'
+              and coalesce((
+                select source_event.include_in_embedding::text
+                from memory_events source_event
+                where source_event.id = sources.source_id
+              ), 'true') <> 'false'
               and exists (
                 select 1
                 from encrypted_field_payloads encrypted
@@ -6954,17 +8085,17 @@ export const createMemorySourceRepository = (
               options.envelopeEncryptionProvider
             ? {
                 ...rawRow,
-                text:
-                  (
-                    await decryptAuthorizedMemoryEventPayload(
-                      pool,
-                      options.envelopeEncryptionProvider,
-                      {
-                        ownerUserId: rawRow.owner_user_id,
-                        memoryEventId: rawRow.source_id
-                      }
-                    )
-                  )?.content ?? rawRow.text
+                text: await (async () => {
+                  const payload = await decryptAuthorizedMemoryEventPayload(
+                    pool,
+                    options.envelopeEncryptionProvider,
+                    {
+                      ownerUserId: rawRow.owner_user_id,
+                      memoryEventId: rawRow.source_id
+                    }
+                  );
+                  return memoryEventEmbeddingContent(payload) ?? rawRow.text;
+                })()
               }
             : rawRow;
       return row && row.text && row.text.trim().length > 0
@@ -6974,7 +8105,9 @@ export const createMemorySourceRepository = (
             ownerUserId: row.owner_user_id,
             visibility: row.visibility,
             text: row.text,
-            sourceHash: sourceHash(row.source_type, row.source_id, row.text)
+            sourceHash:
+              row.source_hash ??
+              sourceHash(row.source_type, row.source_id, row.text)
           }
         : null;
     },
@@ -7429,6 +8562,193 @@ export const createMemorySourceRepository = (
       }
     },
 
+    async replaceSourceEmbeddings(input) {
+      const embeddingTable = embeddingTableForDimensions(input.dimensions);
+      const expectedCount = input.chunks[0]?.chunkCount ?? 0;
+      if (
+        expectedCount < 1 ||
+        input.chunks.length !== expectedCount ||
+        input.chunks.some(
+          (chunk, index) =>
+            chunk.chunkCount !== expectedCount ||
+            chunk.chunkIndex !== index ||
+            chunk.vector.length !== input.dimensions ||
+            chunk.vector.some((value) => !Number.isFinite(value))
+        )
+      ) {
+        throw new Error("Embedding chunks must form one complete ordered set");
+      }
+      const suppressPlaintextPayload =
+        managedCloudPlaintextMemoryPayloadsDisabled();
+      if (suppressPlaintextPayload && !options.envelopeEncryptionProvider) {
+        throw new Error(
+          "Envelope encryption provider is required when plaintext embedding source text storage is disabled"
+        );
+      }
+      if (suppressPlaintextPayload && !input.source.ownerUserId) {
+        throw new Error(
+          "Embedding source owner is required when plaintext embedding source text storage is disabled"
+        );
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query(
+          "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [
+            `embedding-set:${input.source.sourceType}:${input.source.sourceId}:${input.model}:${input.dimensions}:${input.version}`
+          ]
+        );
+        const existing = await client.query<{ id: string }>(
+          `
+            select id
+            from memory_embeddings
+            where invalidated_at is null
+              and embedding_model = $1
+              and embedding_dimensions = $2
+              and embedding_version = $3
+              and source_hash = $4
+              and source_chunk_count = $5
+              and (
+                ($6 = 'memory_node' and memory_node_id = $7::uuid)
+                or ($6 = 'memory_event' and memory_event_id = $7::uuid)
+                or ($6 = 'message' and message_id = $7::uuid)
+              )
+            order by source_chunk_index asc
+          `,
+          [
+            input.model,
+            input.dimensions,
+            input.version,
+            input.source.sourceHash,
+            expectedCount,
+            input.source.sourceType,
+            input.source.sourceId
+          ]
+        );
+        if (existing.rows.length === expectedCount) {
+          await client.query("commit");
+          return {
+            ids: existing.rows.map((row) => row.id),
+            inserted: false
+          };
+        }
+
+        await client.query(
+          `
+            update memory_embeddings
+            set invalidated_at = now(),
+                invalidation_reason = 'embedding_set_replaced'
+            where invalidated_at is null
+              and embedding_model = $1
+              and embedding_dimensions = $2
+              and embedding_version = $3
+              and (
+                ($4 = 'memory_node' and memory_node_id = $5::uuid)
+                or ($4 = 'memory_event' and memory_event_id = $5::uuid)
+                or ($4 = 'message' and message_id = $5::uuid)
+              )
+          `,
+          [
+            input.model,
+            input.dimensions,
+            input.version,
+            input.source.sourceType,
+            input.source.sourceId
+          ]
+        );
+
+        const ids: string[] = [];
+        for (const chunk of input.chunks) {
+          const sourceTextForStorage = suppressPlaintextPayload
+            ? ENCRYPTED_EMBEDDING_SOURCE_TEXT
+            : chunk.sourceText;
+          const embedding = await client.query<{ id: string }>(
+            `
+              insert into memory_embeddings (
+                memory_node_id,
+                memory_event_id,
+                message_id,
+                owner_user_id,
+                visibility,
+                embedding_model,
+                embedding_dimensions,
+                embedding_version,
+                source_hash,
+                source_chunk_index,
+                source_chunk_count,
+                source_text
+              )
+              values (
+                case when $1 = 'memory_node' then $2::uuid else null end,
+                case when $1 = 'memory_event' then $2::uuid else null end,
+                case when $1 = 'message' then $2::uuid else null end,
+                $3, $4, $5, $6, $7, $8, $9, $10, $11
+              )
+              returning id
+            `,
+            [
+              input.source.sourceType,
+              input.source.sourceId,
+              input.source.ownerUserId,
+              input.source.visibility,
+              input.model,
+              input.dimensions,
+              input.version,
+              input.source.sourceHash,
+              chunk.chunkIndex,
+              chunk.chunkCount,
+              sourceTextForStorage
+            ]
+          );
+          const id = embedding.rows[0]?.id;
+          if (!id) {
+            throw new Error("Could not create embedding chunk");
+          }
+          ids.push(id);
+          if (suppressPlaintextPayload && options.envelopeEncryptionProvider) {
+            await upsertEncryptedFieldPayloadWithClient(
+              client,
+              { userId: input.source.ownerUserId! },
+              options.envelopeEncryptionProvider,
+              {
+                sourceTable: "memory_embeddings",
+                sourceId: id,
+                sourceColumn: "source_text",
+                plaintext: chunk.sourceText,
+                visibility: input.source.visibility,
+                rowFamily: "memory_embedding",
+                scope: {
+                  tenantId: input.source.ownerUserId!,
+                  objectClass: "memory_embedding"
+                },
+                aad: {
+                  sourceType: input.source.sourceType,
+                  sourceId: input.source.sourceId,
+                  chunkIndex: chunk.chunkIndex
+                }
+              }
+            );
+          }
+          await client.query(
+            `
+              insert into ${embeddingTable} (memory_embedding_id, embedding)
+              values ($1, $2::vector)
+            `,
+            [id, vectorLiteral(chunk.vector)]
+          );
+        }
+        await client.query("commit");
+        return { ids, inserted: true };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     async createMemoryEvent(actor, input) {
       if (input.sessionId) {
         const visibleSession = await pool.query<{ id: string }>(
@@ -7437,6 +8757,7 @@ export const createMemorySourceRepository = (
           from sessions s
           where s.id = $2
             and s.invalidated_at is null
+            and s.personal_deleted_at is null
             and s.visibility = 'personal'
             and s.owner_user_id = $1
           limit 1
@@ -7482,6 +8803,29 @@ export const createMemorySourceRepository = (
       const tokenCount = estimateTokens(input.content, {
         model: input.tokenModel ?? "gpt-5.4-mini"
       });
+      const includeInEmbedding = input.metadata?.includeInEmbedding !== false;
+      const includeInLcm = input.metadata?.includeInLcm !== false;
+      const projectionPolicyKey =
+        stringField(input.metadata ?? {}, "projectionPolicyKey") ?? null;
+      const projectionPolicyRevision =
+        numberField(input.metadata ?? {}, "projectionPolicyRevision") ?? null;
+      const previousProjection =
+        input.idempotencyKey?.startsWith("projection:") === true
+          ? (
+              await pool.query<{ id: string; source_hash: string | null }>(
+                `
+                  select id, source_hash
+                  from memory_events
+                  where owner_user_id = $1
+                    and visibility = $2::visibility_scope
+                    and idempotency_key = $3
+                    and invalidated_at is null
+                  limit 1
+                `,
+                [ownerUserId, input.visibility, input.idempotencyKey]
+              )
+            ).rows[0]
+          : undefined;
 
       type MemoryEventRow = {
         id: string;
@@ -7542,16 +8886,22 @@ export const createMemorySourceRepository = (
           turn_id = coalesce($9, memory_events.turn_id),
           source_hash = $11,
           payload = $12,
+          include_in_embedding = $18,
+          include_in_lcm = $19,
+          projection_policy_key = $20,
+          projection_policy_revision = $21,
           token_count = $13,
           seal_reason = coalesce($14, memory_events.seal_reason),
           captured_at = coalesce($15::timestamptz, now()),
           source_event_time = coalesce($16, memory_events.source_event_time),
-          source_sequence = coalesce($17, memory_events.source_sequence)
+          source_sequence = coalesce($17, memory_events.source_sequence),
+          invalidated_at = null,
+          invalidation_reason = null,
+          updated_at = now()
         where $10::text like 'projection:%'
           and memory_events.idempotency_key = $10
           and memory_events.visibility = $3::visibility_scope
           and memory_events.owner_user_id = $2
-          and memory_events.invalidated_at is null
         returning
           id, owner_user_id, visibility, event_type, session_id, turn_id,
           token_count, seal_reason, payload, created_at
@@ -7570,6 +8920,10 @@ export const createMemorySourceRepository = (
           idempotency_key,
           source_hash,
           payload,
+          include_in_embedding,
+          include_in_lcm,
+          projection_policy_key,
+          projection_policy_revision,
           token_count,
           seal_reason,
           captured_at,
@@ -7577,7 +8931,8 @@ export const createMemorySourceRepository = (
           source_sequence
         )
         select
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+          $18, $19, $20, $21, $13, $14,
           coalesce($15::timestamptz, now()), $16, $17
         where not exists (select 1 from refreshed)
         on conflict do nothing
@@ -7606,7 +8961,11 @@ export const createMemorySourceRepository = (
         input.sealReason ?? null,
         capturedAt,
         sourceEventTime,
-        input.sourceSequence ?? null
+        input.sourceSequence ?? null,
+        includeInEmbedding,
+        includeInLcm,
+        projectionPolicyKey,
+        projectionPolicyRevision
       ];
 
       const upsertedRow = suppressPlaintextPayload
@@ -7645,6 +9004,13 @@ export const createMemorySourceRepository = (
 
       const insertedRow = upsertedRow;
       if (insertedRow) {
+        if (
+          previousProjection &&
+          previousProjection.id === insertedRow.id &&
+          previousProjection.source_hash !== (input.sourceHash ?? null)
+        ) {
+          await invalidateDerivedMemoryForMemoryEvents(pool, [insertedRow.id]);
+        }
         const hydratedRow = {
           ...insertedRow,
           payload
@@ -8075,7 +9441,7 @@ export const createMemorySourceRepository = (
                           select 1
                           from memory_node_sources parent_mns
                           left join memory_events parent_ev on parent_ev.id = parent_mns.memory_event_id and parent_ev.invalidated_at is null
-                          left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null
+                          left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null and parent_msg.recall_eligible = true
                           where parent_mns.memory_node_id = parent_node.id
                             and not exists (
                               select 1
@@ -8151,7 +9517,7 @@ export const createMemorySourceRepository = (
                   end as project_path
                 from memory_node_sources source_mns
                 left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
-                left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
+                left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
                 left join sessions source_session on source_session.id = coalesce(source_ev.session_id, source_msg.session_id)
                 where source_mns.memory_node_id = mn.id
                   and (
@@ -8203,7 +9569,7 @@ export const createMemorySourceRepository = (
                     select 1
                     from memory_node_sources auth_mns
                     left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
-                    left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
+                    left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null and auth_msg.recall_eligible = true
                     where auth_mns.memory_node_id = mn.id
                       and not exists (
                         select 1
@@ -8321,6 +9687,7 @@ export const createMemorySourceRepository = (
             from messages msg
             left join sessions msg_session on msg_session.id = msg.session_id
             where msg.invalidated_at is null
+              and msg.recall_eligible = true
               and msg.visibility = 'personal'
               and (
                 ($13::uuid is null and msg.owner_user_id = $1)
@@ -8644,7 +10011,7 @@ export const createMemorySourceRepository = (
                               select 1
                               from memory_node_sources parent_mns
                               left join memory_events parent_ev on parent_ev.id = parent_mns.memory_event_id and parent_ev.invalidated_at is null
-                              left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null
+                              left join messages parent_msg on parent_msg.id = parent_mns.message_id and parent_msg.invalidated_at is null and parent_msg.recall_eligible = true
                               where parent_mns.memory_node_id = parent_node.id
                                 and not exists (
                                   select 1
@@ -8671,7 +10038,7 @@ export const createMemorySourceRepository = (
                       select 1
                       from memory_node_sources boundary_mns
                       left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null and boundary_ev.personal_deleted_at is null
-                      left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null
+                      left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null and boundary_msg.recall_eligible = true
                       left join sessions boundary_session on boundary_session.id = coalesce(boundary_ev.session_id, boundary_msg.session_id)
                       where boundary_mns.memory_node_id = me.memory_node_id
                         and not (
@@ -8744,7 +10111,7 @@ export const createMemorySourceRepository = (
                           end as project_path
                         from memory_node_sources time_mns
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
-                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
+                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null and time_msg.recall_eligible = true
                         left join sessions time_session on time_session.id = coalesce(time_ev.session_id, time_msg.session_id)
                         where time_mns.memory_node_id = me.memory_node_id
                           and (
@@ -8806,7 +10173,7 @@ export const createMemorySourceRepository = (
                             select 1
                             from memory_node_sources rerank_mns
                             left join memory_events rerank_ev on rerank_ev.id = rerank_mns.memory_event_id and rerank_ev.invalidated_at is null
-                            left join messages rerank_msg on rerank_msg.id = rerank_mns.message_id and rerank_msg.invalidated_at is null
+                            left join messages rerank_msg on rerank_msg.id = rerank_mns.message_id and rerank_msg.invalidated_at is null and rerank_msg.recall_eligible = true
                             where rerank_mns.memory_node_id = linked_mn.id
                               and not exists (
                                 select 1
@@ -8835,7 +10202,7 @@ export const createMemorySourceRepository = (
                         select max(coalesce(source_ev.captured_at, source_msg.captured_at))
                         from memory_node_sources source_mns
                         left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null
-                        left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
+                        left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
                         where source_mns.memory_node_id = me.memory_node_id
                       )
                       else null
@@ -8851,8 +10218,8 @@ export const createMemorySourceRepository = (
                 from memory_embeddings me
                 join ${embeddingTable} v on v.memory_embedding_id = me.id
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
-                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null
-                left join messages msg on msg.id = me.message_id and msg.invalidated_at is null
+                left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null and ev.include_in_embedding = true
+                left join messages msg on msg.id = me.message_id and msg.invalidated_at is null and msg.recall_eligible = true
                 left join sessions ev_session on ev_session.id = ev.session_id
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
@@ -8904,7 +10271,7 @@ export const createMemorySourceRepository = (
                             select 1
                             from memory_node_sources auth_mns
                             left join memory_events auth_ev on auth_ev.id = auth_mns.memory_event_id and auth_ev.invalidated_at is null
-                            left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null
+                            left join messages auth_msg on auth_msg.id = auth_mns.message_id and auth_msg.invalidated_at is null and auth_msg.recall_eligible = true
                             where auth_mns.memory_node_id = me.memory_node_id
                               and not exists (
                                 select 1
@@ -8953,7 +10320,7 @@ export const createMemorySourceRepository = (
                           select 1
                           from memory_node_sources filter_mns
                           left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
-                          left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null
+                          left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null and filter_msg.recall_eligible = true
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (filter_ev.session_id = $9::uuid or filter_msg.session_id = $9::uuid)
                         )
@@ -8991,7 +10358,7 @@ export const createMemorySourceRepository = (
                           select 1
                           from memory_node_sources filter_mns
                           left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
-                          left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null
+                          left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null and filter_msg.recall_eligible = true
                           left join sessions filter_session on filter_session.id = coalesce(filter_ev.session_id, filter_msg.session_id)
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (
@@ -9021,7 +10388,7 @@ export const createMemorySourceRepository = (
                         select 1
                         from memory_node_sources time_mns
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
-                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
+                        left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null and time_msg.recall_eligible = true
                         where time_mns.memory_node_id = me.memory_node_id
                           and ($12::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) >= $12::timestamptz)
                           and ($13::timestamptz is null or coalesce(time_ev.captured_at, time_msg.captured_at) < $13::timestamptz)
@@ -9044,7 +10411,7 @@ export const createMemorySourceRepository = (
                       select 1
                       from memory_node_sources source_mns
                       left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
-                      left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
+                      left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null and source_msg.recall_eligible = true
                       left join sessions source_session on source_session.id = coalesce(source_ev.session_id, source_msg.session_id)
                       where source_mns.memory_node_id = me.memory_node_id
                         and (
@@ -9112,7 +10479,7 @@ export const createMemorySourceRepository = (
                                 select 1
                                 from memory_node_sources scoped_parent_mns
                                 left join memory_events scoped_parent_ev on scoped_parent_ev.id = scoped_parent_mns.memory_event_id and scoped_parent_ev.invalidated_at is null
-                                left join messages scoped_parent_msg on scoped_parent_msg.id = scoped_parent_mns.message_id and scoped_parent_msg.invalidated_at is null
+                                left join messages scoped_parent_msg on scoped_parent_msg.id = scoped_parent_mns.message_id and scoped_parent_msg.invalidated_at is null and scoped_parent_msg.recall_eligible = true
                                 where scoped_parent_mns.memory_node_id = scoped_parent_node.id
                                   and not exists (
                                     select 1
@@ -9645,13 +11012,7 @@ export const createMemorySourceRepository = (
           where me.invalidated_at is null and me.personal_deleted_at is null
             and me.visibility = $1
             and me.owner_user_id = $2
-            and case jsonb_typeof(me.payload #> '{metadata,includeInLcm}')
-              when 'boolean'
-                then (me.payload #>> '{metadata,includeInLcm}')::boolean
-              when 'string'
-                then lower(me.payload #>> '{metadata,includeInLcm}') <> 'false'
-              else true
-            end
+            and me.include_in_lcm = true
             and not exists (
               select 1
               from memory_node_sources mns
@@ -9661,8 +11022,9 @@ export const createMemorySourceRepository = (
                 and mn.invalidated_at is null and mn.personal_deleted_at is null
             )
           order by me.captured_at asc, me.id asc
+          limit $3
         `,
-          [input.visibility, ownerUserId]
+          [input.visibility, ownerUserId, lcmCompactionMaxEvents()]
         );
 
         const hydratedEventRows = await Promise.all(
@@ -9708,9 +11070,12 @@ export const createMemorySourceRepository = (
           let currentSpan: typeof events = [];
           let currentTokens = 0;
           for (const event of sessionEvents) {
-            const eventTokens = estimateTokens(event.payload.content ?? "", {
-              model: tokenModel
-            });
+            const eventTokens = estimateTokens(
+              memoryEventLcmContent(event.payload) ?? "",
+              {
+                model: tokenModel
+              }
+            );
             if (
               currentSpan.length > 0 &&
               currentTokens + eventTokens > tokenThreshold
@@ -9734,7 +11099,7 @@ export const createMemorySourceRepository = (
             const remainingTokens = currentSpan.reduce(
               (sum, event) =>
                 sum +
-                estimateTokens(event.payload.content ?? "", {
+                estimateTokens(memoryEventLcmContent(event.payload) ?? "", {
                   model: tokenModel
                 }),
               0
@@ -9760,7 +11125,7 @@ export const createMemorySourceRepository = (
             actor: event.actor ?? event.payload.actor,
             turnId: event.turn_id,
             createdAt: event.captured_at.toISOString(),
-            text: event.payload.content ?? "",
+            text: memoryEventLcmContent(event.payload) ?? "",
             payload: lcmSourcePayloadForEvent(event),
             position
           }));
@@ -9796,7 +11161,22 @@ export const createMemorySourceRepository = (
               source_hash
             )
             values ($1, $2, $3, 'leaf', 0, $4, $4, 'mcp', 'depth0-source-items-v1', $5::jsonb, $6, $7, $8, $9, $10, $11)
-            on conflict (source_hash) where source_hash is not null do nothing
+            on conflict (source_hash) where source_hash is not null
+            do update set
+              owner_user_id = excluded.owner_user_id,
+              created_by_user_id = excluded.created_by_user_id,
+              visibility = excluded.visibility,
+              summary_text = excluded.summary_text,
+              body_text = excluded.body_text,
+              source_items_json = excluded.source_items_json,
+              source_event_count = excluded.source_event_count,
+              source_token_estimate = excluded.source_token_estimate,
+              summary_token_estimate = excluded.summary_token_estimate,
+              source_span_start = excluded.source_span_start,
+              source_span_end = excluded.source_span_end,
+              invalidated_at = null,
+              invalidation_reason = null,
+              updated_at = now()
             returning id
           `,
             [
@@ -9824,7 +11204,7 @@ export const createMemorySourceRepository = (
                 `
                 select id
                 from memory_nodes
-                where source_hash = $1 and invalidated_at is null
+                where source_hash = $1
                 limit 1
               `,
                 [
@@ -9969,7 +11349,20 @@ export const createMemorySourceRepository = (
               source_hash
             )
             values ($1, $2, $3, 'rollup', 1, $4, $4, 'mcp', 'depth1-child-rollup-v1', $5::jsonb, $6, $7, $8, $9)
-            on conflict (source_hash) where source_hash is not null do nothing
+            on conflict (source_hash) where source_hash is not null
+            do update set
+              owner_user_id = excluded.owner_user_id,
+              created_by_user_id = excluded.created_by_user_id,
+              visibility = excluded.visibility,
+              summary_text = excluded.summary_text,
+              body_text = excluded.body_text,
+              source_items_json = excluded.source_items_json,
+              source_event_count = excluded.source_event_count,
+              source_token_estimate = excluded.source_token_estimate,
+              summary_token_estimate = excluded.summary_token_estimate,
+              invalidated_at = null,
+              invalidation_reason = null,
+              updated_at = now()
             returning id
           `,
             [
@@ -9995,7 +11388,7 @@ export const createMemorySourceRepository = (
                 `
                 select id
                 from memory_nodes
-                where source_hash = $1 and invalidated_at is null
+                where source_hash = $1
                 limit 1
               `,
                 [
@@ -10354,7 +11747,7 @@ export const createMemorySourceRepository = (
         SupportingContextItem[]
       >();
       for (const row of supportingRows.rows) {
-        const encryptedColumns = encryptedConversationItemColumns(row);
+        const encryptedColumns = encryptedConversationItemSource(row).columns;
         if (encryptedColumns.size > 0 && !options.envelopeEncryptionProvider) {
           throw new Error(
             "Envelope encryption provider is required to expand encrypted supporting context"
@@ -10425,7 +11818,9 @@ export const createMemorySourceRepository = (
           actor: source.payload.actor,
           turnId: source.turn_id,
           createdAt: source.captured_at.toISOString(),
-          text: codexIdePromptUserText(source.payload.content ?? ""),
+          text: codexIdePromptUserText(
+            memoryEventLcmContent(source.payload) ?? ""
+          ),
           payload: lcmSourcePayloadForEvent(source),
           ...(supportingContextByEventId.has(source.id)
             ? {

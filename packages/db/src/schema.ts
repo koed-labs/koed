@@ -504,10 +504,10 @@ export const sessions = pgTable(
   },
   (table) => [
     uniqueIndex("sessions_idempotency_key_unique")
-      .on(table.idempotencyKey)
+      .on(table.ownerUserId, table.visibility, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} is not null`),
     uniqueIndex("sessions_source_hash_unique")
-      .on(table.sourceHash)
+      .on(table.ownerUserId, table.visibility, table.sourceHash)
       .where(sql`${table.sourceHash} is not null`),
     check(
       "sessions_personal_owner_check",
@@ -603,6 +603,11 @@ export const messages = pgTable(
     idempotencyKey: text("idempotency_key"),
     sourceHash: text("source_hash"),
     tokenCount: integer("token_count"),
+    recallEligible: boolean("recall_eligible").notNull().default(true),
+    projectionPolicyKey: text("projection_policy_key"),
+    projectionPolicyRevision: bigint("projection_policy_revision", {
+      mode: "number"
+    }),
     sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
     capturedAt: timestamp("captured_at", { withTimezone: true })
       .notNull()
@@ -612,7 +617,7 @@ export const messages = pgTable(
     invalidationReason: text("invalidation_reason")
   },
   (table) => [
-    uniqueIndex("messages_transcript_item_unique")
+    uniqueIndex("messages_session_transcript_item_unique")
       .on(table.sessionId, table.transcriptItemId)
       .where(sql`${table.transcriptItemId} is not null`),
     uniqueIndex("messages_idempotency_key_unique")
@@ -713,6 +718,12 @@ export const memoryEvents = pgTable(
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
+    includeInEmbedding: boolean("include_in_embedding").notNull().default(true),
+    includeInLcm: boolean("include_in_lcm").notNull().default(true),
+    projectionPolicyKey: text("projection_policy_key"),
+    projectionPolicyRevision: bigint("projection_policy_revision", {
+      mode: "number"
+    }),
     tokenCount: integer("token_count"),
     sealReason: text("seal_reason"),
     sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
@@ -776,6 +787,11 @@ export const memoryEvents = pgTable(
         table.id.desc()
       )
       .where(sql`${table.visibility} = 'personal'`),
+    index("memory_events_personal_lcm_dispatch_idx")
+      .on(table.ownerUserId, table.id)
+      .where(
+        sql`${table.visibility} = 'personal' and ${table.includeInLcm} = true and ${table.invalidatedAt} is null and ${table.personalDeletedAt} is null`
+      ),
     check(
       "memory_events_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
@@ -1206,6 +1222,7 @@ export const encryptedFieldPayloads = pgTable(
       "encrypted_field_payloads_source_table_check",
       sql`${table.sourceTable} in (
         'conversation_items',
+        'conversation_item_observations',
         'memory_embeddings',
         'memory_events',
         'memory_nodes',
@@ -1271,6 +1288,7 @@ export const encryptedFieldBackfillRuns = pgTable(
       "encrypted_field_backfill_runs_source_table_check",
       sql`${table.sourceTable} in (
         'conversation_items',
+        'conversation_item_observations',
         'memory_embeddings',
         'memory_events',
         'memory_nodes',
@@ -1572,6 +1590,7 @@ export const conversationItems = pgTable(
     externalThreadId: text("external_thread_id"),
     externalTurnId: text("external_turn_id"),
     externalItemId: text("external_item_id"),
+    canonicalStableItemId: text("canonical_stable_item_id"),
     parentExternalItemId: text("parent_external_item_id"),
     sourceRecordType: text("source_record_type").notNull(),
     sourceEventType: text("source_event_type"),
@@ -1586,8 +1605,15 @@ export const conversationItems = pgTable(
     rawText: text("raw_text"),
     sourceHash: text("source_hash").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
+    canonicalItemKey: text("canonical_item_key").notNull(),
+    canonicalSourcePriority: integer("canonical_source_priority")
+      .notNull()
+      .default(0),
     projectionStatus: text("projection_status").notNull().default("pending"),
     projectionVersion: text("projection_version"),
+    projectionPolicyRevision: bigint("projection_policy_revision", {
+      mode: "number"
+    }),
     projectedAt: timestamp("projected_at", { withTimezone: true }),
     projectionError: text("projection_error"),
     memoryExcludedAt: timestamp("memory_excluded_at", { withTimezone: true }),
@@ -1616,8 +1642,16 @@ export const conversationItems = pgTable(
     createdAt: now()
   },
   (table) => [
+    unique("conversation_items_id_owner_visibility_unique").on(
+      table.id,
+      table.ownerUserId,
+      table.visibility
+    ),
     uniqueIndex("conversation_items_personal_idempotency_key_unique")
       .on(table.ownerUserId, table.idempotencyKey)
+      .where(sql`${table.visibility} = 'personal'`),
+    uniqueIndex("conversation_items_personal_canonical_item_key_unique")
+      .on(table.ownerUserId, table.canonicalItemKey)
       .where(sql`${table.visibility} = 'personal'`),
     index("conversation_items_session_observed_idx").on(
       table.sessionId,
@@ -1638,6 +1672,15 @@ export const conversationItems = pgTable(
     index("conversation_items_source_item_idx")
       .on(table.sourceKind, table.externalItemId)
       .where(sql`${table.externalItemId} is not null`),
+    index("conversation_items_canonical_provider_identity_idx")
+      .on(
+        table.ownerUserId,
+        table.sourceKind,
+        table.externalThreadId,
+        table.externalTurnId,
+        table.canonicalStableItemId
+      )
+      .where(sql`${table.canonicalStableItemId} is not null`),
     index("conversation_items_projection_idx").on(
       table.projectionStatus,
       table.projectedAt,
@@ -1671,6 +1714,180 @@ export const conversationItems = pgTable(
     check(
       "conversation_items_transport_chunk_count_check",
       sql`${table.transportChunkCount} >= 1 and ${table.transportChunkIndex} < ${table.transportChunkCount}`
+    ),
+    check(
+      "conversation_items_transport_chunk_limits_check",
+      sql`${table.transportChunkText} is null or (
+        ${table.transportChunkCount} <= 64
+        and octet_length(${table.transportChunkText}) <= 262144
+      )`
+    ),
+    check(
+      "conversation_items_transport_chunk_payload_check",
+      sql`${table.transportChunkText} is null or (
+        ${table.logicalSourceId} is not null
+        and ${table.metadata} ? 'transportChunkGroupId'
+      )`
+    ),
+    check(
+      "conversation_items_canonical_source_priority_check",
+      sql`${table.canonicalSourcePriority} >= 0`
+    ),
+    check(
+      "conversation_items_projection_status_check",
+      sql`${table.projectionStatus} in ('pending', 'held', 'projected', 'error', 'raw_only')`
+    )
+  ]
+);
+
+export const conversationItemObservations = pgTable(
+  "conversation_item_observations",
+  {
+    id: id(),
+    conversationItemId: uuid("conversation_item_id").references(
+      () => conversationItems.id,
+      { onDelete: "cascade" }
+    ),
+    sessionId: uuid("session_id").references(() => sessions.id, {
+      onDelete: "cascade"
+    }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    canonicalItemKey: text("canonical_item_key"),
+    observationKey: text("observation_key").notNull(),
+    observationKind: text("observation_kind").notNull().default("snapshot"),
+    ingestionStatus: text("ingestion_status").notNull().default("persisted"),
+    observationComponent: text("observation_component"),
+    sourceKind: text("source_kind").notNull(),
+    sourceAdapterVersion: text("source_adapter_version").notNull(),
+    sourceTransport: text("source_transport").notNull(),
+    externalSessionId: text("external_session_id"),
+    externalThreadId: text("external_thread_id"),
+    externalTurnId: text("external_turn_id"),
+    externalItemId: text("external_item_id"),
+    canonicalStableItemId: text("canonical_stable_item_id"),
+    sourceRecordType: text("source_record_type").notNull(),
+    sourceEventType: text("source_event_type"),
+    sourcePath: text("source_path"),
+    sourceLineNumber: integer("source_line_number"),
+    sourceSequence: integer("source_sequence"),
+    eventTime: timestamp("event_time", { withTimezone: true }),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    rawJson: jsonb("raw_json").$type<unknown>().notNull(),
+    rawText: text("raw_text"),
+    transportChunkIndex: integer("transport_chunk_index"),
+    transportChunkCount: integer("transport_chunk_count"),
+    transportChunkText: text("transport_chunk_text"),
+    transportChunkEncoding: text("transport_chunk_encoding"),
+    sourceHash: text("source_hash").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    sourceIdempotencyKey: text("source_idempotency_key").notNull(),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      name: "conversation_item_observations_parent_identity_fk",
+      columns: [table.conversationItemId, table.ownerUserId, table.visibility],
+      foreignColumns: [
+        conversationItems.id,
+        conversationItems.ownerUserId,
+        conversationItems.visibility
+      ]
+    }).onDelete("cascade"),
+    uniqueIndex("conversation_item_observations_personal_key_unique")
+      .on(table.ownerUserId, table.observationKey)
+      .where(sql`${table.visibility} = 'personal'`),
+    index("conversation_item_observations_item_idx").on(
+      table.conversationItemId,
+      table.observedAt,
+      table.id
+    ),
+    index("conversation_item_observations_session_idx").on(
+      table.sessionId,
+      table.observedAt,
+      table.id
+    ),
+    index("conversation_item_observations_source_idx").on(
+      table.ownerUserId,
+      table.sourceTransport,
+      table.externalThreadId,
+      table.externalTurnId,
+      table.externalItemId
+    ),
+    index("conversation_item_observations_canonical_identity_idx")
+      .on(
+        table.ownerUserId,
+        table.externalThreadId,
+        table.externalTurnId,
+        table.canonicalStableItemId
+      )
+      .where(sql`${table.canonicalStableItemId} is not null`),
+    check(
+      "conversation_item_observations_personal_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "conversation_item_observations_kind_check",
+      sql`${table.observationKind} in (
+        'snapshot',
+        'lifecycle_started',
+        'lifecycle_completed',
+        'control',
+        'reconciliation'
+      )`
+    ),
+    check(
+      "conversation_item_observations_ingestion_status_check",
+      sql`${table.ingestionStatus} in ('persisted', 'identity_unresolved')`
+    ),
+    check(
+      "conversation_item_observations_parent_link_check",
+      sql`(
+        ${table.conversationItemId} is not null
+        and ${table.canonicalItemKey} is not null
+        and ${table.ingestionStatus} = 'persisted'
+      ) or (
+        ${table.conversationItemId} is null
+        and ${table.canonicalItemKey} is null
+        and ${table.ingestionStatus} = 'identity_unresolved'
+        and ${table.sessionId} is not null
+      )`
+    ),
+    check(
+      "conversation_item_observations_source_line_number_check",
+      sql`${table.sourceLineNumber} is null or ${table.sourceLineNumber} >= 0`
+    ),
+    check(
+      "conversation_item_observations_source_sequence_check",
+      sql`${table.sourceSequence} is null or ${table.sourceSequence} >= 0`
+    ),
+    check(
+      "conversation_item_observations_transport_chunk_check",
+      sql`(
+        ${table.transportChunkIndex} is null
+        and ${table.transportChunkCount} is null
+        and ${table.transportChunkText} is null
+        and ${table.transportChunkEncoding} is null
+      ) or (
+        ${table.transportChunkIndex} is not null
+        and ${table.transportChunkCount} is not null
+        and ${table.transportChunkIndex} >= 0
+        and ${table.transportChunkCount} >= 1
+        and ${table.transportChunkCount} <= 64
+        and ${table.transportChunkIndex} < ${table.transportChunkCount}
+        and ${table.transportChunkText} is not null
+        and ${table.metadata} ? 'transportChunkGroupId'
+        and octet_length(${table.transportChunkText}) <= 262144
+      )`
     )
   ]
 );
@@ -2494,9 +2711,7 @@ export const localWorkQueue = pgTable(
   (table) => [
     uniqueIndex("local_work_queue_job_key_unique")
       .on(table.queueName, table.jobKey)
-      .where(
-        sql`${table.jobKey} is not null and ${table.status} in ('pending', 'active')`
-      ),
+      .where(sql`${table.jobKey} is not null`),
     index("local_work_queue_claim_idx")
       .on(table.queueName, table.availableAt, table.id)
       .where(sql`${table.status} = 'pending'`),
@@ -2614,5 +2829,18 @@ export const projectionPolicyRules = pgTable(
       "projection_policy_rules_lcm_memory_check",
       sql`${table.includeInLcm} = false or ${table.createMemoryEvent} = true`
     )
+  ]
+);
+
+export const projectionPolicyState = pgTable(
+  "projection_policy_state",
+  {
+    id: integer("id").primaryKey().default(1),
+    revision: bigint("revision", { mode: "number" }).notNull().default(1),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    check("projection_policy_state_singleton_check", sql`${table.id} = 1`),
+    check("projection_policy_state_revision_check", sql`${table.revision} >= 1`)
   ]
 );

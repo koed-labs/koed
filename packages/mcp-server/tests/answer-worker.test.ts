@@ -274,6 +274,7 @@ describe("memory answer worker", () => {
           usedFallback: false,
           appServerEvents: [
             {
+              sequence: 1,
               method: "item/tool/call",
               observedAt: "2026-06-01T12:00:00.000Z"
             }
@@ -287,6 +288,7 @@ describe("memory answer worker", () => {
               },
               rawEvents: [
                 {
+                  sequence: 2,
                   method: "item/tool/call/response",
                   observedAt: "2026-06-01T12:00:01.000Z"
                 }

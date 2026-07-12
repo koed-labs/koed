@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CodexAppServerClient,
   CodexAppServerThreadSession,
   CodexAppServerTurnError,
   koedAppServerMinimalContextConfig,
@@ -23,6 +24,7 @@ const writeFakeAppServer = (
     turnStatus?: "completed" | "failed" | "interrupted" | "running";
     turnStatuses?: Array<"completed" | "failed" | "interrupted" | "running">;
     transientErrorBeforeCompletion?: boolean;
+    childCompletedNotifications?: number;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "fake-codex-app-server.mjs");
@@ -80,6 +82,9 @@ const turnStatus = ${JSON.stringify(options.turnStatus ?? "completed")};
 const turnStatuses = ${JSON.stringify(options.turnStatuses ?? [])};
 const transientErrorBeforeCompletion = ${JSON.stringify(
       options.transientErrorBeforeCompletion ?? false
+    )};
+const childCompletedNotifications = ${JSON.stringify(
+      options.childCompletedNotifications ?? 0
     )};
 let threadId = "thread-test";
 let turnId = "turn-test";
@@ -142,6 +147,9 @@ lineReader.on("line", (line) => {
     const currentTurnStatus = turnStatuses[turnIndex] ?? turnStatus;
     turnIndex += 1;
     send({ id: message.id, result: { turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } });
+    for (let child = 0; child < childCompletedNotifications; child += 1) {
+      send({ method: "item/completed", params: { threadId: "child-thread", turnId: "child-turn", completedAtMs: child + 1, item: { id: "child-message-" + child, type: "agentMessage", text: "x".repeat(80) } } });
+    }
     if (transientErrorBeforeCompletion) {
       send({ method: "error", params: { threadId, turnId, error: { message: "Reconnecting... 2/5" } } });
     }
@@ -329,6 +337,90 @@ describe("Codex app-server runner", () => {
       );
       expect(result.rawEvents).toHaveLength(5);
     } finally {
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("retains child-thread events for managed durable ingestion", async () => {
+    const tempDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-app-server-child-filter-test-")
+    );
+    const realCodexHome = path.join(tempDirectory, "real-codex-home");
+    const isolatedCodexHome = path.join(tempDirectory, "isolated-codex-home");
+    fs.mkdirSync(realCodexHome, { mode: 0o700 });
+    fs.mkdirSync(isolatedCodexHome, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(isolatedCodexHome, "config.toml"),
+      [
+        "include_permissions_instructions = false",
+        "include_apps_instructions = false",
+        "include_collaboration_mode_instructions = false",
+        "include_environment_context = false",
+        "project_doc_max_bytes = 0",
+        'web_search = "disabled"',
+        "[tools.experimental_request_user_input]",
+        "enabled = false",
+        "[skills]",
+        "include_instructions = false"
+      ].join("\n"),
+      { mode: 0o600 }
+    );
+    const durableEvents: string[] = [];
+    const appServerBinary = writeFakeAppServer(tempDirectory, {
+      childCompletedNotifications: 4
+    });
+    const config = {
+      appServerBinary,
+      model: "gpt-5.4-mini",
+      reasoningEffort: "low",
+      cwd: tempDirectory,
+      env: {
+        ...process.env,
+        CODEX_HOME: isolatedCodexHome,
+        FAKE_REAL_CODEX_HOME: realCodexHome
+      },
+      clientName: "koed-child-filter-test",
+      baseInstructions: "Return the answer.",
+      developerInstructions: ""
+    };
+    const client = new CodexAppServerClient(
+      appServerBinary,
+      tempDirectory,
+      config.env,
+      (event) => {
+        const params = event.params as Record<string, unknown> | undefined;
+        durableEvents.push(String(params?.threadId ?? "none"));
+      },
+      {
+        maxTurnBytes: 128,
+        maxTurnStates: 2,
+        maxPendingRawEvents: 16,
+        maxPendingRawEventBytes: 4_096
+      }
+    );
+
+    try {
+      await client.initialize(config.clientName);
+      const thread = await client.startThread(config);
+      const turnId = await client.startTurn(thread.id, "Prompt", config);
+      const result = await client.waitForTurn(thread.id, turnId);
+      await client.flushRawEventHandler();
+
+      expect(result.text).toBe("app-server answer turn-test");
+      expect(client.terminalFailure()).toBeNull();
+      expect(client.turnStateCount()).toBe(0);
+      expect(durableEvents).toContain("child-thread");
+      expect(
+        client
+          .getRawEvents()
+          .some(
+            (event) =>
+              (event.params as Record<string, unknown> | undefined)
+                ?.threadId === "child-thread"
+          )
+      ).toBe(true);
+    } finally {
+      await client.closeAndWait(200).catch(() => undefined);
       fs.rmSync(tempDirectory, { recursive: true, force: true });
     }
   });

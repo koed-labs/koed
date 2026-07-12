@@ -7,11 +7,22 @@ import os from "node:os";
 import path from "node:path";
 import { splitCodexIdePrompt } from "@koed/core";
 import {
+  RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES,
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
+  RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT,
+  rawConversationTransportChunkGroupId
+} from "@koed/shared";
+import {
   MemoryApiError,
   MemoryApiClient,
   type McpServerConfig,
   defaultConfig
 } from "./index.js";
+import {
+  KOED_MANAGED_CONVERSATION_ENV,
+  type RawConversationItemRequest
+} from "./conversation-source-types.js";
+import { codexCanonicalConversationItemKey } from "./codex-conversation-source-adapter.js";
 
 export interface HookPayload {
   session_id?: string;
@@ -30,6 +41,8 @@ export interface HookPayload {
   tool_name?: string;
   tool_input?: unknown;
   tool_response?: unknown;
+  /** Internal boundary captured before detached transcript catch-up starts. */
+  transcript_bytes_at_hook?: number;
 }
 
 export interface CaptureItem {
@@ -45,42 +58,12 @@ interface RawConversationItemResponse {
   idempotencyKey: string;
 }
 
-type RawConversationItemRequest = {
-  sourceKind: string;
-  sourceAdapterVersion: string;
-  sourceTransport: string;
-  sessionId?: string;
-  externalSessionId?: string;
-  externalThreadId?: string;
-  externalTurnId?: string;
-  externalItemId?: string;
-  parentExternalItemId?: string;
-  sourceRecordType: string;
-  sourceEventType?: string;
-  sourcePath?: string;
-  sourceLineNumber?: number;
-  sourceSequence?: number;
-  eventTime?: string;
-  rawJson: unknown;
-  rawText?: string;
-  logicalSourceId?: string;
-  transportChunkIndex?: number;
-  transportChunkCount?: number;
-  transportChunkText?: string;
-  transportChunkEncoding?: string;
-  sourceHash: string;
-  idempotencyKey: string;
-  projectionStatus: string;
-  projectionVersion: string;
-  metadata: Record<string, unknown>;
-};
-
 type SourceEventTimeAccuracy =
   | "source"
   | "interpolated_between_sources"
   | "observed_fallback";
 
-interface CaptureState {
+export interface CaptureState {
   seen: Record<string, true>;
   rawSeen: Record<string, true>;
   transcriptOffsets?: Record<
@@ -90,6 +73,8 @@ interface CaptureState {
       lineCount: number;
       size: number;
       lastEventTime?: string;
+      activeTurnId?: string;
+      assistantMessagePreference?: "response_item";
     }
   >;
 }
@@ -241,6 +226,10 @@ const transcriptInferredEventTimeSymbol = Symbol(
 const transcriptEventTimeAccuracySymbol = Symbol(
   "koedTranscriptEventTimeAccuracy"
 );
+const transcriptAssignedTurnIdSymbol = Symbol("koedTranscriptAssignedTurnId");
+const transcriptAssistantMessagePreferenceSymbol = Symbol(
+  "koedTranscriptAssistantMessagePreference"
+);
 
 const attachTranscriptRecordPosition = (
   record: unknown,
@@ -288,6 +277,54 @@ const transcriptRecordLineIndex = (record: unknown): number | undefined => {
     : undefined;
 };
 
+const attachTranscriptAssignedTurnId = (
+  record: unknown,
+  turnId: string | undefined
+): void => {
+  if (record && typeof record === "object" && turnId) {
+    Object.defineProperty(record, transcriptAssignedTurnIdSymbol, {
+      value: turnId,
+      enumerable: false,
+      configurable: false
+    });
+  }
+};
+
+const transcriptAssignedTurnId = (record: unknown): string | undefined => {
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+  const value = (record as { [transcriptAssignedTurnIdSymbol]?: unknown })[
+    transcriptAssignedTurnIdSymbol
+  ];
+  return typeof value === "string" && value.trim() ? value : undefined;
+};
+
+const attachTranscriptAssistantMessagePreference = (
+  record: unknown,
+  preference: "response_item" | undefined
+): void => {
+  if (record && typeof record === "object" && preference) {
+    Object.defineProperty(record, transcriptAssistantMessagePreferenceSymbol, {
+      value: preference,
+      enumerable: false,
+      configurable: false
+    });
+  }
+};
+
+const transcriptAssistantMessagePreference = (
+  record: unknown
+): "response_item" | undefined => {
+  if (!record || typeof record !== "object") {
+    return undefined;
+  }
+  const value = (
+    record as { [transcriptAssistantMessagePreferenceSymbol]?: unknown }
+  )[transcriptAssistantMessagePreferenceSymbol];
+  return value === "response_item" ? value : undefined;
+};
+
 const attachTranscriptInferredEventTime = (
   record: unknown,
   eventTime: string,
@@ -316,14 +353,25 @@ const positiveIntEnv = (name: string, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const transcriptByteBoundary = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
+
 const hookTranscriptTailBytes = (): number =>
   positiveIntEnv("MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES", 1_000_000);
+
+const maxTranscriptRecordBytes = (): number =>
+  positiveIntEnv("MEMORY_TRANSCRIPT_MAX_RECORD_BYTES", 64 * 1024 * 1024);
 
 const transcriptFirstContactGraceMs = (): number =>
   positiveIntEnv("MEMORY_TRANSCRIPT_FIRST_CONTACT_GRACE_MS", 30_000);
 
 const foregroundTranscriptTailBytes = (): number =>
   positiveIntEnv("MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES", 128_000);
+
+const foregroundTranscriptScanBytes = (): number =>
+  positiveIntEnv("MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES", 4_000_000);
 
 const hookDeadlineMs = (): number =>
   positiveIntEnv("MEMORY_HOOK_DEADLINE_MS", 8_500);
@@ -391,6 +439,12 @@ export const rawItemRequestChunks = (
     rawJson: item.rawJson,
     rawText: typeof item.rawText === "string" ? item.rawText : null
   });
+  if (
+    Buffer.byteLength(serializedRawItem, "utf8") >
+    RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES
+  ) {
+    throw new Error("Raw conversation item exceeds the logical item limit");
+  }
   const envelopeBytes = rawItemBodyBytes({
     ...item,
     rawJson: {
@@ -406,12 +460,26 @@ export const rawItemRequestChunks = (
     transportChunkText: "",
     transportChunkEncoding: "conversation-item-json-v1"
   });
-  let chunkBudget = Math.max(
-    100,
-    Math.floor((maxBytes - envelopeBytes - 1_024) / 2)
+  let chunkBudget = Math.min(
+    RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES,
+    Math.max(100, Math.floor((maxBytes - envelopeBytes - 1_024) / 2))
   );
   while (chunkBudget > 0) {
     const chunks = chunkStringByUtf8Bytes(serializedRawItem, chunkBudget);
+    if (chunks.length > RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT) {
+      throw new Error(
+        "Raw conversation item requires too many transport chunks"
+      );
+    }
+    const transportChunkGroupId = rawConversationTransportChunkGroupId({
+      sourceKind: item.sourceKind,
+      sourceAdapterVersion: item.sourceAdapterVersion,
+      sourceTransport: item.sourceTransport,
+      logicalSourceId: item.sourceHash,
+      sourceItemHash: item.sourceHash,
+      transportChunkCount: chunks.length,
+      transportChunkEncoding: "conversation-item-json-v1"
+    });
     const requests = chunks.map((chunk, index) => {
       const chunkHash = hash({
         sourceHash: item.sourceHash,
@@ -422,6 +490,7 @@ export const rawItemRequestChunks = (
         ...item,
         rawJson: {
           transportChunk: true,
+          transportChunkGroupId,
           sourceItemHash: item.sourceHash,
           chunkIndex: index,
           chunkCount: chunks.length
@@ -436,6 +505,7 @@ export const rawItemRequestChunks = (
         idempotencyKey: chunkHash,
         metadata: {
           ...item.metadata,
+          transportChunkGroupId,
           sourceItemHash: item.sourceHash,
           sourceChunkIndex: index,
           sourceChunkCount: chunks.length
@@ -559,6 +629,10 @@ const pausedUntilActive = (value?: string | null): boolean => {
   return Number.isFinite(timestamp) && timestamp > Date.now();
 };
 
+export const managedConversationCaptureGuardActive = (
+  environment: NodeJS.ProcessEnv = process.env
+): boolean => Object.hasOwn(environment, KOED_MANAGED_CONVERSATION_ENV);
+
 const stringifyContent = (value: unknown): string => {
   if (typeof value === "string") {
     return value;
@@ -585,6 +659,9 @@ const stringifyContent = (value: unknown): string => {
 
 const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value : undefined;
+
+const asFiniteNumber = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 const roleToActor = (role: unknown): CaptureItem["actor"] | null =>
   role === "user" ||
@@ -803,6 +880,47 @@ const compactDisplay = (value: unknown, maxLength = 240): string => {
   return `${content.slice(0, maxLength - 1)}...`;
 };
 
+const parseStructuredToolValue = (value: unknown): unknown => {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (
+    !(
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    )
+  ) {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return isRecord(parsed) || Array.isArray(parsed) ? parsed : value;
+  } catch {
+    return value;
+  }
+};
+
+const parseCodexCommandOutput = (value: unknown): unknown => {
+  const structured = parseStructuredToolValue(value);
+  if (typeof structured !== "string") {
+    return structured;
+  }
+  const match = structured.match(
+    /^Chunk ID:\s*(.*?)\r?\nWall time:\s*([0-9.]+)\s*seconds\r?\nProcess exited with code\s*(-?\d+)\r?\nOriginal token count:\s*(\d+)\r?\nOutput:\r?\n([\s\S]*)$/
+  );
+  if (!match) {
+    return structured;
+  }
+  return {
+    output: match[5]!.replace(/\r?\n$/, ""),
+    exitCode: Number.parseInt(match[3]!, 10),
+    chunkId: match[1]!,
+    wallTimeSeconds: Number.parseFloat(match[2]!),
+    originalTokenCount: Number.parseInt(match[4]!, 10)
+  };
+};
+
 const toolMetadata = (
   item: Record<string, unknown>,
   raw: Record<string, unknown>,
@@ -814,10 +932,30 @@ const toolMetadata = (
   const toolTitle = asString(item.title) ?? toolName;
   const callId =
     asString(item.call_id) ?? asString(item.callId) ?? asString(item.id);
-  const input = item.arguments ?? item.input;
-  const output = item.output ?? item.content ?? item.result;
-  const status = asString(item.status);
+  const input = parseStructuredToolValue(item.arguments ?? item.input);
+  const output = parseCodexCommandOutput(
+    item.output ?? item.content ?? item.result
+  );
+  const outputRecord = isRecord(output) ? output : null;
+  const exitCode = asFiniteNumber(outputRecord?.exitCode);
+  const status =
+    asString(item.status) ??
+    (exitCode === undefined
+      ? undefined
+      : exitCode === 0
+        ? "completed"
+        : "failed");
   const error = item.error ?? item.failure;
+  const durationMs =
+    asFiniteNumber(item.durationMs) ??
+    asFiniteNumber(item.duration_ms) ??
+    (asFiniteNumber(outputRecord?.wallTimeSeconds) !== undefined
+      ? asFiniteNumber(outputRecord?.wallTimeSeconds)! * 1_000
+      : undefined);
+  const startedAtMs =
+    asFiniteNumber(item.startedAtMs) ?? asFiniteNumber(item.started_at_ms);
+  const completedAtMs =
+    asFiniteNumber(item.completedAtMs) ?? asFiniteNumber(item.completed_at_ms);
   const summary =
     kind === "call"
       ? `Tool call: ${toolTitle ?? callId ?? "tool"}`
@@ -835,6 +973,9 @@ const toolMetadata = (
     ...(toolTitle ? { toolTitle } : {}),
     ...(callId ? { callId, toolCallId: callId } : {}),
     ...(status ? { status } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+    ...(completedAtMs !== undefined ? { completedAtMs } : {}),
     ...(error !== undefined ? { error } : {}),
     toolCall: {
       kind,
@@ -845,6 +986,9 @@ const toolMetadata = (
       ...(input !== undefined ? { input } : {}),
       ...(output !== undefined ? { output } : {}),
       ...(status ? { status } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      ...(completedAtMs !== undefined ? { completedAtMs } : {}),
       ...(error !== undefined ? { error } : {})
     },
     rawTranscriptPayload: item
@@ -1135,6 +1279,31 @@ const extractPrimaryTranscriptItem = (
       metadata
     };
   }
+  if (item.type === "reasoning") {
+    const summary = Array.isArray(item.summary)
+      ? item.summary
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .join("\n")
+      : "";
+    if (!summary) {
+      return null;
+    }
+    return {
+      actor: options.context.threadKind === "subagent" ? "subagent" : "agent",
+      eventType: "codex_transcript_reasoning_summary",
+      content: summary,
+      metadata: {
+        ...contextMetadata(options.context),
+        transcriptIndex: index,
+        transcriptType: "reasoning_summary",
+        transcriptParentType: raw.type,
+        transcriptId: item.id,
+        rawReasoningRetainedAsProvenance: Array.isArray(item.content)
+      }
+    };
+  }
   if (
     item.type === "function_call_output" ||
     item.type === "custom_tool_call_output"
@@ -1184,7 +1353,8 @@ const extractPrimaryTranscriptItem = (
       transcriptIndex: index,
       transcriptType: item.type,
       transcriptParentType: raw.type,
-      transcriptId: item.id
+      transcriptId: item.id,
+      ...(asString(item.phase) ? { phase: asString(item.phase) } : {})
     }
   };
 };
@@ -1192,7 +1362,11 @@ const extractPrimaryTranscriptItem = (
 const extractTranscriptItems = (
   record: unknown,
   index: number,
-  options: { preferEventMessages: boolean; context: TranscriptContext }
+  options: {
+    preferEventMessages: boolean;
+    preferStableResponseItems?: boolean;
+    context: TranscriptContext;
+  }
 ): ParsedTranscriptItem[] => {
   if (!record || typeof record !== "object") {
     return [];
@@ -1204,6 +1378,13 @@ const extractTranscriptItems = (
   }
   const payload = isRecord(raw.payload) ? raw.payload : undefined;
   const item = payload ?? raw;
+  if (
+    options.preferStableResponseItems &&
+    raw.type === "event_msg" &&
+    ["agent_message", "assistant_message"].includes(asString(item.type) ?? "")
+  ) {
+    return [];
+  }
   if (
     options.preferEventMessages &&
     raw.type === "response_item" &&
@@ -1363,6 +1544,25 @@ const transcriptPrefersEventMessages = (records: unknown[]): boolean =>
     );
   });
 
+const transcriptHasProviderResponseMessage = (records: unknown[]): boolean =>
+  records.some((record) => {
+    const payload = rawRecordPayload(record);
+    return (
+      rawRecordType(record) === "response_item" &&
+      payload?.type === "message" &&
+      payload.role === "assistant" &&
+      Boolean(asString(payload.id))
+    );
+  });
+
+const transcriptIsAssistantEventMessage = (record: unknown): boolean => {
+  const payload = rawRecordPayload(record);
+  return (
+    rawRecordType(record) === "event_msg" &&
+    /^(agent_message|assistant_message)$/i.test(asString(payload?.type) ?? "")
+  );
+};
+
 export const parseTranscriptText = (text: string): CaptureItem[] =>
   parseTranscriptRecords(parseTranscriptRecordsText(text));
 
@@ -1374,6 +1574,18 @@ export const shouldReadTranscriptForHook = (payload: HookPayload): boolean =>
   payload.hook_event_name === "SubagentStart" ||
   payload.hook_event_name === "SubagentStop";
 
+const isCompleteTranscriptJsonLine = (line: string): boolean => {
+  if (!line.trim()) {
+    return false;
+  }
+  try {
+    JSON.parse(line);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const splitCompleteTranscriptLines = (
   text: string,
   reachedEnd: boolean
@@ -1383,15 +1595,102 @@ const splitCompleteTranscriptLines = (
   let consumedText = text;
   if (hasTrailingNewline) {
     parts.pop();
-  } else if (!reachedEnd) {
-    const incomplete = parts.pop() ?? "";
-    consumedText = text.slice(0, Math.max(0, text.length - incomplete.length));
+  } else {
+    const trailing = parts.at(-1) ?? "";
+    if (!reachedEnd || !isCompleteTranscriptJsonLine(trailing)) {
+      parts.pop();
+      consumedText = text.slice(0, Math.max(0, text.length - trailing.length));
+    }
   }
   const lines = parts.filter((line) => line.trim());
   return {
     lines,
     consumedBytes: Buffer.byteLength(consumedText, "utf8")
   };
+};
+
+const completedTranscriptReadBoundary = (
+  transcriptPath: string,
+  requestedBoundary: number,
+  fileSize: number
+): number => {
+  if (requestedBoundary <= 0 || requestedBoundary >= fileSize) {
+    return Math.min(requestedBoundary, fileSize);
+  }
+  const descriptor = fs.openSync(transcriptPath, "r");
+  try {
+    const previous = Buffer.allocUnsafe(1);
+    fs.readSync(descriptor, previous, 0, 1, requestedBoundary - 1);
+    if (previous[0] === 0x0a) {
+      return requestedBoundary;
+    }
+    const chunkSize = 64 * 1024;
+    let position = requestedBoundary;
+    while (
+      position < fileSize &&
+      position - requestedBoundary < maxTranscriptRecordBytes()
+    ) {
+      const length = Math.min(
+        chunkSize,
+        fileSize - position,
+        maxTranscriptRecordBytes() - (position - requestedBoundary)
+      );
+      const chunk = Buffer.allocUnsafe(length);
+      const bytesRead = fs.readSync(descriptor, chunk, 0, length, position);
+      if (bytesRead <= 0) {
+        break;
+      }
+      const newline = chunk.subarray(0, bytesRead).indexOf(0x0a);
+      if (newline >= 0) {
+        return position + newline + 1;
+      }
+      position += bytesRead;
+    }
+    if (position - requestedBoundary >= maxTranscriptRecordBytes()) {
+      throw new Error(
+        `Codex transcript record exceeds MEMORY_TRANSCRIPT_MAX_RECORD_BYTES (${maxTranscriptRecordBytes()})`
+      );
+    }
+    return requestedBoundary;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+
+const transcriptIsUserMessage = (record: unknown): boolean => {
+  const payload = rawRecordPayload(record);
+  return (
+    (rawRecordType(record) === "event_msg" &&
+      payload?.type === "user_message") ||
+    (rawRecordType(record) === "response_item" &&
+      payload?.type === "message" &&
+      payload.role === "user")
+  );
+};
+
+const unresolvedAssistantEventIndex = (
+  records: unknown[]
+): number | undefined => {
+  if (transcriptHasProviderResponseMessage(records)) {
+    return undefined;
+  }
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    if (!transcriptIsAssistantEventMessage(records[index])) {
+      continue;
+    }
+    const suffix = records.slice(index + 1);
+    if (
+      suffix.some(
+        (record) =>
+          transcriptRecordCompletesTurn(record) ||
+          transcriptIsUserMessage(record)
+      )
+    ) {
+      return undefined;
+    }
+    return index;
+  }
+  return undefined;
 };
 
 const transcriptStateKey = (scope: string, transcriptPath: string): string =>
@@ -1406,6 +1705,8 @@ type TranscriptFileRead = {
     lineCount: number;
     size: number;
     lastEventTime?: string;
+    activeTurnId?: string;
+    assistantMessagePreference?: "response_item";
   };
   backgroundCatchupNeeded: boolean;
   backlogBytes: number;
@@ -1417,6 +1718,8 @@ export const parseTranscriptFileRecords = (input: {
   stateScope: string;
   maxBytes?: number;
   firstContactAfter?: string;
+  readThroughOffset?: number;
+  deferPageEndingAssistantEvent?: boolean;
 }): {
   records: unknown[];
   indexOffset: number;
@@ -1426,6 +1729,8 @@ export const parseTranscriptFileRecords = (input: {
     lineCount: number;
     size: number;
     lastEventTime?: string;
+    activeTurnId?: string;
+    assistantMessagePreference?: "response_item";
   };
 } => {
   const { transcriptPath } = input;
@@ -1434,6 +1739,15 @@ export const parseTranscriptFileRecords = (input: {
   }
 
   const stat = fs.statSync(transcriptPath);
+  const readThroughOffset = transcriptByteBoundary(input.readThroughOffset);
+  const readableSize =
+    readThroughOffset === undefined
+      ? stat.size
+      : completedTranscriptReadBoundary(
+          transcriptPath,
+          Math.min(stat.size, readThroughOffset),
+          stat.size
+        );
   const key = transcriptStateKey(input.stateScope, transcriptPath);
   const prior = input.state.transcriptOffsets?.[key];
   const maxBytes = input.maxBytes ?? hookTranscriptTailBytes();
@@ -1445,11 +1759,11 @@ export const parseTranscriptFileRecords = (input: {
     prior && hasUsableCheckpoint
       ? Math.max(0, prior.offset)
       : liveFirstContact
-        ? Math.max(0, stat.size - maxBytes)
+        ? Math.max(0, readableSize - maxBytes)
         : 0;
   const indexOffset =
     prior && hasUsableCheckpoint && start > 0 ? prior.lineCount : 0;
-  const end = Math.min(stat.size, start + maxBytes);
+  let end = Math.min(readableSize, start + maxBytes);
   if (end <= start) {
     return {
       records: [],
@@ -1459,23 +1773,45 @@ export const parseTranscriptFileRecords = (input: {
         offset: start,
         lineCount: indexOffset,
         size: stat.size,
-        ...(prior?.lastEventTime ? { lastEventTime: prior.lastEventTime } : {})
+        ...(prior?.lastEventTime ? { lastEventTime: prior.lastEventTime } : {}),
+        ...(prior?.activeTurnId ? { activeTurnId: prior.activeTurnId } : {}),
+        ...(prior?.assistantMessagePreference
+          ? { assistantMessagePreference: prior.assistantMessagePreference }
+          : {})
       }
     };
   }
 
-  const buffer = Buffer.allocUnsafe(end - start);
-  const fd = fs.openSync(transcriptPath, "r");
-  try {
-    fs.readSync(fd, buffer, 0, buffer.length, start);
-  } finally {
-    fs.closeSync(fd);
+  let lines: string[];
+  let consumedBytes: number;
+  while (true) {
+    const buffer = Buffer.allocUnsafe(end - start);
+    const fd = fs.openSync(transcriptPath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, buffer.length, start);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const split = splitCompleteTranscriptLines(
+      buffer.toString("utf8"),
+      end >= readableSize
+    );
+    lines = split.lines;
+    consumedBytes = split.consumedBytes;
+    if (consumedBytes > 0 || end >= readableSize) {
+      break;
+    }
+    const attemptedBytes = end - start;
+    if (attemptedBytes >= maxTranscriptRecordBytes()) {
+      throw new Error(
+        `Codex transcript record exceeds MEMORY_TRANSCRIPT_MAX_RECORD_BYTES (${maxTranscriptRecordBytes()})`
+      );
+    }
+    end = Math.min(
+      readableSize,
+      start + Math.min(maxTranscriptRecordBytes(), attemptedBytes * 2)
+    );
   }
-
-  const { lines, consumedBytes } = splitCompleteTranscriptLines(
-    buffer.toString("utf8"),
-    end >= stat.size
-  );
   const parsedRecords = parseTranscriptLineRecords(lines, start, indexOffset);
   const firstContactAfterMs =
     !hasUsableCheckpoint && input.firstContactAfter
@@ -1490,16 +1826,55 @@ export const parseTranscriptFileRecords = (input: {
   const effectiveStartIndex =
     liveStartIndex < 0 ? parsedRecords.length : liveStartIndex;
   const candidateRecords = parsedRecords.slice(effectiveStartIndex);
+  const priorAssistantMessagePreference =
+    prior && hasUsableCheckpoint ? prior.assistantMessagePreference : undefined;
+  const pageHasProviderResponseMessage =
+    transcriptHasProviderResponseMessage(candidateRecords);
+  const pageEndingAssistantEventIndex =
+    input.deferPageEndingAssistantEvent === true &&
+    !priorAssistantMessagePreference &&
+    !pageHasProviderResponseMessage
+      ? unresolvedAssistantEventIndex(candidateRecords)
+      : undefined;
+  const recordsForResolution =
+    pageEndingAssistantEventIndex === undefined
+      ? candidateRecords
+      : candidateRecords.slice(0, pageEndingAssistantEventIndex);
   const resolvedRecords = resolveTranscriptRecordEventTimes({
-    records: candidateRecords,
+    records: recordsForResolution,
     previousEventTime:
       prior && hasUsableCheckpoint ? prior.lastEventTime : undefined
   });
   const records = resolvedRecords.records;
+  const assistantMessagePreference =
+    priorAssistantMessagePreference ??
+    (pageHasProviderResponseMessage ? "response_item" : undefined);
+  let activeTurnId =
+    prior && hasUsableCheckpoint ? prior.activeTurnId : undefined;
+  for (const record of records) {
+    const explicitTurnId = transcriptTurnId(record);
+    if (explicitTurnId && transcriptRecordStartsTurn(record)) {
+      activeTurnId = explicitTurnId;
+    }
+    attachTranscriptAssignedTurnId(record, explicitTurnId ?? activeTurnId);
+    attachTranscriptAssistantMessagePreference(
+      record,
+      assistantMessagePreference
+    );
+    if (
+      explicitTurnId &&
+      transcriptRecordCompletesTurn(record) &&
+      activeTurnId === explicitTurnId
+    ) {
+      activeTurnId = undefined;
+    }
+  }
   const heldRecord =
-    resolvedRecords.holdFromIndex === undefined
-      ? undefined
-      : candidateRecords[resolvedRecords.holdFromIndex];
+    pageEndingAssistantEventIndex !== undefined
+      ? candidateRecords[pageEndingAssistantEventIndex]
+      : resolvedRecords.holdFromIndex === undefined
+        ? undefined
+        : recordsForResolution[resolvedRecords.holdFromIndex];
   const checkpointOffset =
     heldRecord !== undefined
       ? transcriptRecordPosition(heldRecord)
@@ -1521,7 +1896,9 @@ export const parseTranscriptFileRecords = (input: {
         ? { lastEventTime: resolvedRecords.lastEventTime }
         : prior?.lastEventTime
           ? { lastEventTime: prior.lastEventTime }
-          : {})
+          : {}),
+      ...(activeTurnId ? { activeTurnId } : {}),
+      ...(assistantMessagePreference ? { assistantMessagePreference } : {})
     }
   };
 };
@@ -1531,6 +1908,8 @@ export const parseForegroundTranscriptFileRecords = (input: {
   state: CaptureState;
   stateScope: string;
   foregroundMaxBytes?: number;
+  readThroughOffset?: number;
+  deferPageEndingAssistantEvent?: boolean;
 }): {
   records: unknown[];
   indexOffset: number;
@@ -1540,6 +1919,8 @@ export const parseForegroundTranscriptFileRecords = (input: {
     lineCount: number;
     size: number;
     lastEventTime?: string;
+    activeTurnId?: string;
+    assistantMessagePreference?: "response_item";
   };
   backgroundCatchupNeeded: boolean;
   backlogBytes: number;
@@ -1555,6 +1936,15 @@ export const parseForegroundTranscriptFileRecords = (input: {
   }
 
   const stat = fs.statSync(transcriptPath);
+  const readThroughOffset = transcriptByteBoundary(input.readThroughOffset);
+  const readableSize =
+    readThroughOffset === undefined
+      ? stat.size
+      : completedTranscriptReadBoundary(
+          transcriptPath,
+          Math.min(stat.size, readThroughOffset),
+          stat.size
+        );
   const key = transcriptStateKey(input.stateScope, transcriptPath);
   const prior = input.state.transcriptOffsets?.[key];
   const hasUsableCheckpoint = Boolean(prior && prior.size <= stat.size);
@@ -1564,7 +1954,9 @@ export const parseForegroundTranscriptFileRecords = (input: {
       transcriptPath,
       state: input.state,
       stateScope: input.stateScope,
-      maxBytes
+      maxBytes,
+      readThroughOffset,
+      deferPageEndingAssistantEvent: input.deferPageEndingAssistantEvent
     });
     return {
       ...sequential,
@@ -1574,13 +1966,15 @@ export const parseForegroundTranscriptFileRecords = (input: {
   }
 
   const checkpointOffset = Math.max(0, prior!.offset);
-  const backlogBytes = Math.max(0, stat.size - checkpointOffset);
+  const backlogBytes = Math.max(0, readableSize - checkpointOffset);
   if (backlogBytes <= maxBytes) {
     const sequential = parseTranscriptFileRecords({
       transcriptPath,
       state: input.state,
       stateScope: input.stateScope,
-      maxBytes
+      maxBytes,
+      readThroughOffset,
+      deferPageEndingAssistantEvent: input.deferPageEndingAssistantEvent
     });
     return {
       ...sequential,
@@ -1589,21 +1983,39 @@ export const parseForegroundTranscriptFileRecords = (input: {
     };
   }
 
-  const start = Math.max(checkpointOffset, stat.size - maxBytes);
-  const buffer = Buffer.allocUnsafe(stat.size - start);
-  const fd = fs.openSync(transcriptPath, "r");
-  try {
-    fs.readSync(fd, buffer, 0, buffer.length, start);
-  } finally {
-    fs.closeSync(fd);
+  if (backlogBytes > foregroundTranscriptScanBytes()) {
+    const sequential = parseTranscriptFileRecords({
+      transcriptPath,
+      state: input.state,
+      stateScope: input.stateScope,
+      maxBytes,
+      readThroughOffset,
+      deferPageEndingAssistantEvent: input.deferPageEndingAssistantEvent
+    });
+    return {
+      ...sequential,
+      backgroundCatchupNeeded:
+        (sequential.checkpoint?.offset ?? checkpointOffset) < readableSize,
+      backlogBytes
+    };
   }
 
-  const { lines } = splitCompleteTranscriptLines(buffer.toString("utf8"), true);
+  const start = Math.max(checkpointOffset, readableSize - maxBytes);
+  const records = scanForegroundTranscriptRecords({
+    transcriptPath,
+    scanStart: checkpointOffset,
+    targetStart: start,
+    scanEnd: readableSize,
+    lineIndexOffset: prior!.lineCount,
+    previousEventTime: prior!.lastEventTime,
+    activeTurnId: prior!.activeTurnId,
+    assistantMessagePreference: prior!.assistantMessagePreference,
+    deferUnresolvedAssistantEvent: input.deferPageEndingAssistantEvent === true
+  });
   return {
-    records: parseTranscriptLineRecords(lines, start, prior!.lineCount),
-    // While backlog exists, this is a bounded temporary line-based ordering
-    // value. Raw idempotency uses the private transcript byte position, so
-    // background catch-up will no-op these same lines once it reaches the tail.
+    records,
+    // Tail records carry their exact private line indexes. This fallback is
+    // retained for callers that construct transcript records directly.
     indexOffset: prior!.lineCount,
     backgroundCatchupNeeded: true,
     backlogBytes
@@ -1642,9 +2054,16 @@ const transcriptTurnId = (record: unknown): string | undefined => {
     return undefined;
   }
   const payload = isRecord(record.payload) ? record.payload : undefined;
+  const internalMetadata = isRecord(
+    payload?.internal_chat_message_metadata_passthrough
+  )
+    ? payload.internal_chat_message_metadata_passthrough
+    : undefined;
   return (
     asString(payload?.turn_id) ??
     asString(payload?.turnId) ??
+    asString(internalMetadata?.turn_id) ??
+    asString(internalMetadata?.turnId) ??
     asString(record.turn_id) ??
     asString(record.turnId)
   );
@@ -1657,7 +2076,11 @@ const transcriptRecordStartsTurn = (record: unknown): boolean => {
 
 const transcriptRecordCompletesTurn = (record: unknown): boolean => {
   const eventType = rawEventType(record);
-  return eventType === "task_complete" || eventType === "turn/completed";
+  return (
+    eventType === "task_complete" ||
+    eventType === "turn/completed" ||
+    eventType === "turn_aborted"
+  );
 };
 
 const semanticTurnIdForUserPrompt = (input: {
@@ -1856,6 +2279,157 @@ const resolveTranscriptRecordEventTimes = (input: {
   return { records: input.records, lastEventTime };
 };
 
+const scanForegroundTranscriptRecords = (input: {
+  transcriptPath: string;
+  scanStart: number;
+  targetStart: number;
+  scanEnd: number;
+  lineIndexOffset: number;
+  previousEventTime?: string;
+  activeTurnId?: string;
+  assistantMessagePreference?: "response_item";
+  deferUnresolvedAssistantEvent?: boolean;
+}): unknown[] => {
+  const selected: unknown[] = [];
+  const pendingSelected: Array<{ record: unknown; offset: number }> = [];
+  let missingCount = 0;
+  let previousMs =
+    input.previousEventTime &&
+    !Number.isNaN(Date.parse(input.previousEventTime))
+      ? Date.parse(input.previousEventTime)
+      : null;
+  let activeTurnId = input.activeTurnId;
+  let assistantMessagePreference = input.assistantMessagePreference;
+  let lineIndex = input.lineIndexOffset;
+
+  const resolvePendingTimes = (nextMs: number): void => {
+    for (const pending of pendingSelected) {
+      const eventTime =
+        previousMs === null
+          ? new Date(nextMs - missingCount + pending.offset).toISOString()
+          : interpolateTimestamp(
+              previousMs,
+              nextMs,
+              pending.offset,
+              missingCount
+            );
+      attachTranscriptInferredEventTime(
+        pending.record,
+        eventTime,
+        "interpolated_between_sources"
+      );
+      selected.push(pending.record);
+    }
+    pendingSelected.length = 0;
+    missingCount = 0;
+  };
+
+  const processLine = (lineBuffer: Buffer, lineOffset: number): void => {
+    const line = lineBuffer.toString("utf8").replace(/\r$/, "");
+    if (!line.trim()) {
+      return;
+    }
+    const records = parseTranscriptLineRecords([line], lineOffset, lineIndex);
+    lineIndex += 1;
+    for (const record of records) {
+      const explicitTurnId = transcriptTurnId(record);
+      if (explicitTurnId && transcriptRecordStartsTurn(record)) {
+        activeTurnId = explicitTurnId;
+      }
+      attachTranscriptAssignedTurnId(record, explicitTurnId ?? activeTurnId);
+      if (transcriptHasProviderResponseMessage([record])) {
+        assistantMessagePreference = "response_item";
+      }
+
+      const target = lineOffset >= input.targetStart;
+      const sourceMs = sourceTimestampMs(record);
+      if (sourceMs === null) {
+        if (target) {
+          pendingSelected.push({ record, offset: missingCount });
+        }
+        missingCount += 1;
+      } else {
+        if (missingCount > 0) {
+          resolvePendingTimes(sourceMs);
+        }
+        if (target) {
+          selected.push(record);
+        }
+        previousMs = sourceMs;
+      }
+
+      if (
+        explicitTurnId &&
+        transcriptRecordCompletesTurn(record) &&
+        activeTurnId === explicitTurnId
+      ) {
+        activeTurnId = undefined;
+      }
+    }
+  };
+
+  const descriptor = fs.openSync(input.transcriptPath, "r");
+  const chunkSize = 256 * 1024;
+  let position = input.scanStart;
+  let carry = Buffer.alloc(0);
+  let carryOffset = input.scanStart;
+  try {
+    while (position < input.scanEnd) {
+      const length = Math.min(chunkSize, input.scanEnd - position);
+      const chunk = Buffer.allocUnsafe(length);
+      const bytesRead = fs.readSync(descriptor, chunk, 0, length, position);
+      if (bytesRead <= 0) {
+        break;
+      }
+      position += bytesRead;
+      const data =
+        carry.length === 0
+          ? chunk.subarray(0, bytesRead)
+          : Buffer.concat([carry, chunk.subarray(0, bytesRead)]);
+      let lineStart = 0;
+      while (true) {
+        const newline = data.indexOf(0x0a, lineStart);
+        if (newline < 0) {
+          break;
+        }
+        processLine(data.subarray(lineStart, newline), carryOffset + lineStart);
+        lineStart = newline + 1;
+      }
+      carry = Buffer.from(data.subarray(lineStart));
+      carryOffset += lineStart;
+      if (carry.length > maxTranscriptRecordBytes()) {
+        throw new Error(
+          `Codex transcript record exceeds MEMORY_TRANSCRIPT_MAX_RECORD_BYTES (${maxTranscriptRecordBytes()})`
+        );
+      }
+    }
+    if (
+      carry.length > 0 &&
+      isCompleteTranscriptJsonLine(carry.toString("utf8"))
+    ) {
+      processLine(carry, carryOffset);
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+
+  const assistantHoldIndex =
+    input.deferUnresolvedAssistantEvent && !assistantMessagePreference
+      ? unresolvedAssistantEventIndex(selected)
+      : undefined;
+  const resolvedSelected =
+    assistantHoldIndex === undefined
+      ? selected
+      : selected.slice(0, assistantHoldIndex);
+  for (const record of resolvedSelected) {
+    attachTranscriptAssistantMessagePreference(
+      record,
+      assistantMessagePreference
+    );
+  }
+  return resolvedSelected;
+};
+
 const transcriptFirstContactAfterForPayload = (
   payload: HookPayload
 ): string | undefined => {
@@ -1879,6 +2453,57 @@ const rawExternalItemId = (record: unknown): string | undefined => {
   );
 };
 
+const rawClientUserMessageId = (record: unknown): string | undefined => {
+  const payload = rawRecordPayload(record);
+  return asString(payload?.client_id) ?? asString(payload?.clientId);
+};
+
+const responseItemStableId = (record: unknown): string | undefined => {
+  if (rawRecordType(record) !== "response_item") {
+    return undefined;
+  }
+  const payload = rawRecordPayload(record);
+  const type = asString(payload?.type);
+  if (type === "message" && payload?.role === "user") {
+    return rawClientUserMessageId(record);
+  }
+  if (
+    type === "function_call" ||
+    type === "custom_tool_call" ||
+    type === "function_call_output" ||
+    type === "custom_tool_call_output"
+  ) {
+    return asString(payload?.call_id) ?? asString(payload?.callId);
+  }
+  return (
+    asString(payload?.id) ??
+    asString(payload?.item_id) ??
+    asString(payload?.itemId)
+  );
+};
+
+const responseItemCanonicalComponent = (
+  record: unknown
+): string | undefined => {
+  if (rawRecordType(record) !== "response_item") {
+    return undefined;
+  }
+  switch (rawEventType(record)) {
+    case "function_call":
+    case "custom_tool_call":
+      return "tool_call";
+    case "function_call_output":
+    case "custom_tool_call_output":
+      return "tool_result";
+    case "reasoning":
+      return "reasoning_summary";
+    case "message":
+      return "message";
+    default:
+      return "raw";
+  }
+};
+
 const rawText = (record: unknown): string | undefined => {
   const payload = rawRecordPayload(record);
   if (!payload) {
@@ -1889,24 +2514,33 @@ const rawText = (record: unknown): string | undefined => {
   );
 };
 
-const sourceHashForRawRecord = (input: {
+const sourceObservationIdentityForRawRecord = (input: {
   externalSessionId?: string;
   transcriptPath?: string;
-  index: number;
+  sourceLineNumber: number;
+  transcriptByteOffset?: number;
   record: unknown;
   itemDiscriminator?: string;
 }): string =>
   hash({
+    adapter: "codex-transcript-v1",
     externalSessionId: input.externalSessionId,
     transcriptPath: input.transcriptPath,
+    sourcePosition:
+      input.transcriptByteOffset ?? `line:${input.sourceLineNumber}`,
     itemDiscriminator: input.itemDiscriminator,
-    recordIdentity: rawExternalItemId(input.record) ??
-      transcriptRecordPosition(input.record) ?? {
-        eventType: rawEventType(input.record),
-        eventTime: effectiveRawEventTime(input.record),
-        rawText: rawText(input.record),
-        record: input.record
-      }
+    sourceRecordType: rawRecordType(input.record),
+    sourceEventType: rawEventType(input.record)
+  });
+
+const sourceContentHashForRawRecord = (input: {
+  record: unknown;
+  itemDiscriminator?: string;
+}): string =>
+  hash({
+    adapter: "codex-transcript-v1",
+    itemDiscriminator: input.itemDiscriminator,
+    record: input.record
   });
 
 const buildRawHookConversationItem = (input: {
@@ -1919,6 +2553,7 @@ const buildRawHookConversationItem = (input: {
     last_assistant_message: _lastAssistantMessage,
     tool_input: _toolInput,
     tool_response: _toolResponse,
+    transcript_bytes_at_hook: _transcriptBytesAtHook,
     ...controlPayload
   } = input.payload;
   const sourceHash = hash({
@@ -1931,6 +2566,7 @@ const buildRawHookConversationItem = (input: {
   void _lastAssistantMessage;
   void _toolInput;
   void _toolResponse;
+  void _transcriptBytesAtHook;
   return {
     sessionId: input.sessionId,
     sourceKind: "codex",
@@ -1972,6 +2608,8 @@ export const selectRawConversationItemsForHook = (input: {
   transcriptPath?: string;
   payload: HookPayload;
   mode: "foreground" | "catchup";
+  transcriptCheckpointOffset?: number;
+  transcriptBytesAtHook?: number;
 }): RawConversationItemRequest[] => {
   const transcriptItems =
     input.transcriptRecords.length > 0
@@ -1985,11 +2623,21 @@ export const selectRawConversationItemsForHook = (input: {
         })
       : [];
 
-  const controlHookItems = buildRawHookConversationItems({
-    sessionId: input.sessionId,
-    effectiveContext: input.effectiveContext,
-    payload: input.payload
-  });
+  const isTerminalControl = /^(Stop|SubagentStop)$/i.test(
+    input.payload.hook_event_name ?? ""
+  );
+  const terminalBoundaryReached =
+    !isTerminalControl ||
+    (input.transcriptBytesAtHook !== undefined &&
+      input.transcriptCheckpointOffset !== undefined &&
+      input.transcriptCheckpointOffset >= input.transcriptBytesAtHook);
+  const controlHookItems = terminalBoundaryReached
+    ? buildRawHookConversationItems({
+        sessionId: input.sessionId,
+        effectiveContext: input.effectiveContext,
+        payload: input.payload
+      })
+    : [];
 
   return [...transcriptItems, ...controlHookItems];
 };
@@ -2001,8 +2649,19 @@ export const buildRawTranscriptConversationItems = (input: {
   effectiveContext: EffectiveCaptureContext;
   transcriptPath?: string;
   payload: HookPayload;
+  sourceTransport?: "hook" | "transcript";
+  preferStableResponseItems?: boolean;
 }): RawConversationItemRequest[] => {
-  const preferEventMessages = transcriptPrefersEventMessages(input.records);
+  const preferProviderResponseItems =
+    input.preferStableResponseItems ||
+    input.records.some(
+      (record) =>
+        transcriptAssistantMessagePreference(record) === "response_item"
+    ) ||
+    transcriptHasProviderResponseMessage(input.records);
+  const preferEventMessages =
+    !preferProviderResponseItems &&
+    transcriptPrefersEventMessages(input.records);
   const transcriptContext = extractTranscriptSessionMetadata(input.records);
   const context: TranscriptContext = {
     ...transcriptContext,
@@ -2019,7 +2678,8 @@ export const buildRawTranscriptConversationItems = (input: {
   let activeSemanticTurnId: string | undefined;
 
   for (const [index, record] of input.records.entries()) {
-    const sourceLineNumber = index + (input.indexOffset ?? 0);
+    const sourceLineNumber =
+      transcriptRecordLineIndex(record) ?? index + (input.indexOffset ?? 0);
     const transcriptByteOffset = transcriptRecordPosition(record);
     const sourceSequenceBase = safeSourceSequence(
       (transcriptByteOffset ?? sourceLineNumber) * 2
@@ -2031,6 +2691,7 @@ export const buildRawTranscriptConversationItems = (input: {
     }
     const parsedItems = extractTranscriptItems(record, sourceLineNumber, {
       preferEventMessages,
+      preferStableResponseItems: preferProviderResponseItems,
       context
     });
     const hasLogicalUserPrompt = parsedItems.some(
@@ -2055,29 +2716,121 @@ export const buildRawTranscriptConversationItems = (input: {
         sourceSequence: sourceSequenceBase
       });
     }
-    const assignedTurnId =
-      explicitTurnId ?? activeTranscriptTurnId ?? activeSemanticTurnId;
+    const providerTurnId =
+      transcriptAssignedTurnId(record) ??
+      explicitTurnId ??
+      activeTranscriptTurnId;
+    const assignedTurnId = providerTurnId ?? activeSemanticTurnId;
 
     for (const parsedItem of rawItems) {
       const sourceSequence = safeSourceSequence(
         sourceSequenceBase + parsedItem.sourceOffset
       );
-      const sourceHash = sourceHashForRawRecord({
+      const itemDiscriminator = needsItemDiscriminator
+        ? parsedItem.itemDiscriminator
+        : undefined;
+      const sourceHash = sourceContentHashForRawRecord({
+        record,
+        itemDiscriminator
+      });
+      const sourceIdempotencyKey = sourceObservationIdentityForRawRecord({
         externalSessionId: input.effectiveContext.externalSessionId,
         transcriptPath: input.transcriptPath,
-        index: sourceSequence,
+        sourceLineNumber,
+        transcriptByteOffset,
         record,
-        itemDiscriminator: needsItemDiscriminator
-          ? parsedItem.itemDiscriminator
-          : undefined
+        itemDiscriminator
       });
+      const transcriptType = asString(parsedItem.item?.metadata.transcriptType);
+      const managedTurnComplete =
+        input.preferStableResponseItems &&
+        transcriptRecordCompletesTurn(record) &&
+        assignedTurnId !== undefined;
+      const toolCall = isRecord(parsedItem.item?.metadata.toolCall)
+        ? parsedItem.item.metadata.toolCall
+        : undefined;
+      const toolKind = asString(toolCall?.kind);
+      const stableItemId = (() => {
+        if (managedTurnComplete) {
+          return `turn:${assignedTurnId}:completed`;
+        }
+        const responseStableId = responseItemStableId(record);
+        if (responseStableId) {
+          return responseStableId;
+        }
+        if (!input.preferStableResponseItems || !parsedItem.item) {
+          return undefined;
+        }
+        if (parsedItem.item.actor === "user") {
+          return rawClientUserMessageId(record);
+        }
+        if (parsedItem.item.actor === "tool") {
+          return (
+            asString(parsedItem.item.metadata.toolCallId) ??
+            asString(parsedItem.item.metadata.callId) ??
+            rawExternalItemId(record)
+          );
+        }
+        return rawExternalItemId(record);
+      })();
+      const canonicalComponent =
+        (managedTurnComplete ? "control" : undefined) ??
+        responseItemCanonicalComponent(record) ??
+        (parsedItem.item?.actor === "tool"
+          ? toolKind === "output"
+            ? "tool_result"
+            : "tool_call"
+          : /reasoning/i.test(transcriptType ?? "")
+            ? "reasoning_summary"
+            : "message");
+      const canonicalThreadId =
+        input.effectiveContext.externalSessionId ?? context.transcriptSessionId;
+      const canonicalItemKey =
+        (rawRecordType(record) === "response_item" ||
+          (input.preferStableResponseItems && parsedItem.item) ||
+          managedTurnComplete) &&
+        canonicalThreadId &&
+        providerTurnId &&
+        stableItemId
+          ? codexCanonicalConversationItemKey({
+              externalThreadId: canonicalThreadId,
+              externalTurnId: providerTurnId,
+              stableItemId,
+              component: canonicalComponent
+            })
+          : undefined;
+      const requiresExactManagedIdentity =
+        parsedItem.item &&
+        ["user", "agent", "assistant", "subagent", "tool"].includes(
+          parsedItem.item.actor
+        );
+      const ambiguousResponseUserObservation =
+        rawRecordPayload(record)?.role === "user" &&
+        !canonicalItemKey &&
+        rawRecordType(record) === "response_item";
+      const duplicateEventMessageObservation =
+        preferProviderResponseItems &&
+        !canonicalItemKey &&
+        rawRecordType(record) === "event_msg" &&
+        /^(agent_message|assistant_message)$/i.test(rawEventType(record) ?? "");
+      if (
+        input.preferStableResponseItems &&
+        requiresExactManagedIdentity &&
+        !canonicalItemKey &&
+        !ambiguousResponseUserObservation
+      ) {
+        throw new Error(
+          `Managed transcript reconciliation could not establish exact identity for ${transcriptType ?? parsedItem.item.eventType}`
+        );
+      }
+      const unlinkedObservation = duplicateEventMessageObservation;
       items.push({
         sessionId: input.sessionId,
         sourceKind: "codex",
         sourceAdapterVersion: "codex-transcript-v1",
-        sourceTransport: "hook",
+        sourceTransport: input.sourceTransport ?? "hook",
         externalSessionId: input.effectiveContext.externalSessionId,
-        externalThreadId: input.effectiveContext.externalSessionId,
+        externalThreadId: canonicalThreadId,
         externalTurnId: assignedTurnId,
         externalItemId: rawExternalItemId(record),
         sourceRecordType: rawRecordType(record),
@@ -2089,8 +2842,20 @@ export const buildRawTranscriptConversationItems = (input: {
         rawJson: record,
         rawText: parsedItem.item?.content ?? rawText(record),
         sourceHash,
-        idempotencyKey: sourceHash,
-        projectionStatus: "pending",
+        idempotencyKey: sourceIdempotencyKey,
+        ...(unlinkedObservation ? { observationOnly: true } : {}),
+        ...(canonicalItemKey ? { canonicalItemKey } : {}),
+        ...(canonicalItemKey && stableItemId
+          ? { canonicalStableItemId: stableItemId }
+          : {}),
+        ...(canonicalItemKey ? { observationKind: "reconciliation" } : {}),
+        ...(canonicalItemKey
+          ? { observationComponent: canonicalComponent }
+          : {}),
+        projectionStatus:
+          unlinkedObservation || ambiguousResponseUserObservation
+            ? "raw_only"
+            : "pending",
         projectionVersion: "codex-transcript-v1",
         metadata: {
           ...(parsedItem.item?.metadata ?? {}),
@@ -2099,6 +2864,27 @@ export const buildRawTranscriptConversationItems = (input: {
             : { transcriptByteOffset }),
           transcriptSourceLineNumber: sourceLineNumber,
           hookEventName: input.payload.hook_event_name,
+          ...(canonicalItemKey
+            ? {
+                canonicalIdentityBasis: "provider_ids",
+                ...(input.preferStableResponseItems
+                  ? { managedConversationReconciliation: true }
+                  : {})
+              }
+            : {}),
+          ...(managedTurnComplete ? { semanticControl: "turn_completed" } : {}),
+          ...(ambiguousResponseUserObservation
+            ? {
+                managedConversationSourceRole:
+                  "ambiguous_user_context_provenance",
+                projectionPolicyKey: "managed_context_user",
+                projectionActor: "system"
+              }
+            : {}),
+          ...(duplicateEventMessageObservation &&
+          input.preferStableResponseItems
+            ? { managedConversationSourceRole: "duplicate_representation" }
+            : {}),
           sourceEventTimeAccuracy: rawEventTimeAccuracy(record),
           ...(assignedTurnId
             ? { transcriptAssignedTurnId: assignedTurnId }
@@ -2365,23 +3151,58 @@ const triggerDetachedLocalMemoryProcessing = (configPath?: string): void => {
   child.unref();
 };
 
+const payloadWithCurrentTranscriptBoundary = (
+  payload: HookPayload
+): HookPayload => {
+  if (transcriptByteBoundary(payload.transcript_bytes_at_hook) !== undefined) {
+    return payload;
+  }
+  const transcriptPath = captureTranscriptPathForPayload(payload);
+  if (!transcriptPath) {
+    return payload;
+  }
+  try {
+    return {
+      ...payload,
+      transcript_bytes_at_hook: fs.statSync(transcriptPath).size
+    };
+  } catch {
+    return payload;
+  }
+};
+
 const triggerDetachedTranscriptCatchup = (
   configPath: string | undefined,
   payload: HookPayload
 ): void => {
+  const boundedPayload = payloadWithCurrentTranscriptBoundary(payload);
+  const transcriptPath = captureTranscriptPathForPayload(boundedPayload);
+  let transcriptBytesAtHook = transcriptByteBoundary(
+    boundedPayload.transcript_bytes_at_hook
+  );
+  if (transcriptBytesAtHook === undefined && transcriptPath) {
+    try {
+      transcriptBytesAtHook = fs.statSync(transcriptPath).size;
+    } catch {
+      // The catch-up process will retry the transcript path if it reappears.
+    }
+  }
   const catchupPayload: HookPayload = {
-    hook_event_name: payload.hook_event_name,
+    hook_event_name: boundedPayload.hook_event_name,
     hook_observed_at: new Date().toISOString(),
-    session_id: payload.session_id,
-    agent_id: payload.agent_id,
-    agent_type: payload.agent_type,
-    turn_id: payload.turn_id,
-    tool_use_id: payload.tool_use_id,
-    tool_name: payload.tool_name,
-    transcript_path: payload.transcript_path,
-    agent_transcript_path: payload.agent_transcript_path,
-    cwd: payload.cwd,
-    model: payload.model
+    session_id: boundedPayload.session_id,
+    agent_id: boundedPayload.agent_id,
+    agent_type: boundedPayload.agent_type,
+    turn_id: boundedPayload.turn_id,
+    tool_use_id: boundedPayload.tool_use_id,
+    tool_name: boundedPayload.tool_name,
+    transcript_path: boundedPayload.transcript_path,
+    agent_transcript_path: boundedPayload.agent_transcript_path,
+    cwd: boundedPayload.cwd,
+    model: boundedPayload.model,
+    ...(transcriptBytesAtHook === undefined
+      ? {}
+      : { transcript_bytes_at_hook: transcriptBytesAtHook })
   };
   const scriptPath = fileURLToPath(import.meta.url);
   const args = [
@@ -2614,6 +3435,14 @@ const runCapturePass = async (input: {
   transcriptBacklogRemaining: boolean;
   transcriptCheckpointAdvanced: boolean;
 }> => {
+  if (managedConversationCaptureGuardActive()) {
+    return {
+      rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    };
+  }
   const { configPath, payload, mode } = input;
   const config = loadConfig(configPath, mode);
   if (config.captureEnabled === false) {
@@ -2649,7 +3478,9 @@ const runCapturePass = async (input: {
       ? parseForegroundTranscriptFileRecords({
           transcriptPath: captureTranscriptPath,
           state,
-          stateScope
+          stateScope,
+          readThroughOffset: payload.transcript_bytes_at_hook,
+          deferPageEndingAssistantEvent: true
         })
       : {
           ...parseTranscriptFileRecords({
@@ -2657,7 +3488,9 @@ const runCapturePass = async (input: {
             state,
             stateScope,
             maxBytes: hookTranscriptTailBytes(),
-            firstContactAfter: transcriptFirstContactAfterForPayload(payload)
+            firstContactAfter: transcriptFirstContactAfterForPayload(payload),
+            readThroughOffset: payload.transcript_bytes_at_hook,
+            deferPageEndingAssistantEvent: true
           }),
           backgroundCatchupNeeded: false,
           backlogBytes: 0
@@ -2741,31 +3574,66 @@ const runCapturePass = async (input: {
     effectiveContext,
     transcriptPath: captureTranscriptPath,
     payload,
-    mode
+    mode,
+    transcriptCheckpointOffset: transcriptFile.checkpoint?.offset,
+    transcriptBytesAtHook: payload.transcript_bytes_at_hook
   });
   const rawItemsToSend = rawItemsForCapture(
     rawItemsRequest,
     scopedRawSeen(state.rawSeen, stateScope, rawItemsRequest),
     new Set()
   );
-  const rawItemsResult = await createConversationItemsBatched(
+  const deferredTerminalControls = rawItemsToSend.filter(
+    (item) =>
+      item.sourceRecordType === "hook_payload" &&
+      /^(Stop|SubagentStop)$/i.test(item.sourceEventType ?? "")
+  );
+  const transcriptItemsToSend = rawItemsToSend.filter(
+    (item) => !deferredTerminalControls.includes(item)
+  );
+  const transcriptItemsResult = await createConversationItemsBatched(
     client,
-    rawItemsToSend,
+    transcriptItemsToSend,
     deadlineAtMs
   );
-  const rawItemsResponse = rawItemsResult.items;
-  const projectionCompleted =
-    rawItemsResponse.length === 0
+  const transcriptProjectionCompleted =
+    transcriptItemsResult.items.length === 0
       ? true
       : await projectConversationItemsBatched(
           client,
-          rawItemsResponse,
+          transcriptItemsResult.items,
           deadlineAtMs
         );
-  for (const item of rawItemsResponse) {
-    state.rawSeen[scopedStateKey(stateScope, item.idempotencyKey)] = true;
+  const terminalControlResult =
+    transcriptItemsResult.completed && transcriptProjectionCompleted
+      ? await createConversationItemsBatched(
+          client,
+          deferredTerminalControls,
+          deadlineAtMs
+        )
+      : { completed: false, items: [] };
+  const terminalProjectionCompleted =
+    terminalControlResult.items.length === 0
+      ? deferredTerminalControls.length === 0 || terminalControlResult.completed
+      : await projectConversationItemsBatched(
+          client,
+          terminalControlResult.items,
+          deadlineAtMs
+        );
+  const rawItemsResponse = [
+    ...transcriptItemsResult.items,
+    ...terminalControlResult.items
+  ];
+  const rawCaptureCompleted =
+    transcriptItemsResult.completed && terminalControlResult.completed;
+  const projectionCompleted =
+    transcriptProjectionCompleted && terminalProjectionCompleted;
+  if (rawCaptureCompleted && projectionCompleted) {
+    for (const item of rawItemsResponse) {
+      state.rawSeen[scopedStateKey(stateScope, item.idempotencyKey)] = true;
+    }
   }
-  if (!rawItemsResult.completed) {
+  if (!rawCaptureCompleted) {
     console.error(
       "koed capture hook left transcript checkpoint unchanged because raw capture did not finish before the deadline"
     );
@@ -2777,11 +3645,9 @@ const runCapturePass = async (input: {
   }
 
   let transcriptCheckpointAdvanced = false;
-  if (
-    transcriptFile.checkpoint &&
-    rawItemsResult.completed &&
-    projectionCompleted
-  ) {
+  if (transcriptFile.checkpoint && rawCaptureCompleted && projectionCompleted) {
+    const previousCheckpointOffset =
+      state.transcriptOffsets?.[transcriptFile.checkpoint.key]?.offset ?? 0;
     state.transcriptOffsets = {
       ...(state.transcriptOffsets ?? {}),
       [transcriptFile.checkpoint.key]: {
@@ -2790,10 +3656,20 @@ const runCapturePass = async (input: {
         size: transcriptFile.checkpoint.size,
         ...(transcriptFile.checkpoint.lastEventTime
           ? { lastEventTime: transcriptFile.checkpoint.lastEventTime }
+          : {}),
+        ...(transcriptFile.checkpoint.activeTurnId
+          ? { activeTurnId: transcriptFile.checkpoint.activeTurnId }
+          : {}),
+        ...(transcriptFile.checkpoint.assistantMessagePreference
+          ? {
+              assistantMessagePreference:
+                transcriptFile.checkpoint.assistantMessagePreference
+            }
           : {})
       }
     };
-    transcriptCheckpointAdvanced = true;
+    transcriptCheckpointAdvanced =
+      transcriptFile.checkpoint.offset > previousCheckpointOffset;
   } else if (transcriptFile.checkpoint) {
     console.error(
       "koed capture hook left transcript checkpoint unchanged so unread events can retry"
@@ -2831,7 +3707,12 @@ const runCapturePass = async (input: {
       ("backgroundCatchupNeeded" in transcriptFile &&
         transcriptFile.backgroundCatchupNeeded) ||
       (transcriptFile.checkpoint &&
-        transcriptFile.checkpoint.offset < transcriptFile.checkpoint.size)
+        transcriptFile.checkpoint.offset <
+          Math.min(
+            transcriptFile.checkpoint.size,
+            transcriptByteBoundary(payload.transcript_bytes_at_hook) ??
+              transcriptFile.checkpoint.size
+          ))
     ),
     transcriptCheckpointAdvanced
   };
@@ -2842,8 +3723,18 @@ export const runForegroundCapturePass = (input: {
   payload: HookPayload;
   runPass?: typeof runCapturePass;
   triggerCatchup?: typeof triggerDetachedTranscriptCatchup;
+  environment?: NodeJS.ProcessEnv;
 }): Promise<Awaited<ReturnType<typeof runCapturePass>>> => {
-  const { configPath, payload } = input;
+  if (managedConversationCaptureGuardActive(input.environment)) {
+    return Promise.resolve({
+      rawItemsStored: 0,
+      rawItemsProjected: 0,
+      transcriptBacklogRemaining: false,
+      transcriptCheckpointAdvanced: false
+    });
+  }
+  const { configPath } = input;
+  const payload = payloadWithCurrentTranscriptBoundary(input.payload);
   const transcriptPath = captureTranscriptPathForPayload(payload);
   if (!transcriptPath) {
     return Promise.resolve({
@@ -2899,6 +3790,7 @@ type TranscriptCatchupRunnerOptions = {
   acquireCatchupLock?: typeof acquireCatchupLock;
   sleepUntilCatchupStop?: typeof sleepUntilCatchupStop;
   maxRuntimeMs?: number;
+  environment?: NodeJS.ProcessEnv;
 };
 
 export const runTranscriptCatchup = async (
@@ -2906,6 +3798,9 @@ export const runTranscriptCatchup = async (
   payload: HookPayload,
   options: TranscriptCatchupRunnerOptions = {}
 ): Promise<void> => {
+  if (managedConversationCaptureGuardActive(options.environment)) {
+    return;
+  }
   const config = loadConfig(configPath, "catchup");
   const client = options.client ?? new MemoryApiClient(config);
   const breakerKey = hookBreakerKey(config);
@@ -2921,6 +3816,19 @@ export const runTranscriptCatchup = async (
   const transcriptStat = fs.existsSync(transcriptPath)
     ? fs.statSync(transcriptPath)
     : null;
+  const requestedTranscriptBoundary = transcriptByteBoundary(
+    payload.transcript_bytes_at_hook
+  );
+  const catchupPayload: HookPayload = {
+    ...payload,
+    ...(requestedTranscriptBoundary !== undefined
+      ? {
+          transcript_bytes_at_hook: requestedTranscriptBoundary
+        }
+      : transcriptStat
+        ? { transcript_bytes_at_hook: transcriptStat.size }
+        : {})
+  };
   const startedState = loadHookBreakerState();
   updateTranscriptCatchupStatus(startedState, catchupStatusKey, {
     transcriptPath,
@@ -2993,7 +3901,7 @@ export const runTranscriptCatchup = async (
         try {
           result = await runPass({
             configPath,
-            payload,
+            payload: catchupPayload,
             mode: "catchup"
           });
           const breakerState = loadHookBreakerState();
@@ -3048,7 +3956,11 @@ export const runTranscriptCatchup = async (
           !result.transcriptCheckpointAdvanced &&
           result.rawItemsStored === 0
         ) {
-          break;
+          lock.heartbeat();
+          if (!(await sleepUntilStop(250, stopAt))) {
+            break;
+          }
+          continue;
         }
         lock.heartbeat();
         if (!(await sleepUntilStop(100, stopAt))) {
@@ -3069,6 +3981,9 @@ export const runTranscriptCatchup = async (
 };
 
 const main = async () => {
+  if (managedConversationCaptureGuardActive()) {
+    return;
+  }
   const { configPath, catchUp, payloadBase64 } = parseArgs(
     process.argv.slice(2)
   );

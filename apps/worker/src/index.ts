@@ -8,12 +8,17 @@ import { createEmbeddingWorkflow } from "./embedding-workflow.js";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  embeddingDispatchKey,
+  lcmCompactQueueName,
   lcmEmbedQueueName,
+  memoryEmbedQueueName,
   workerQueueNames
 } from "@koed/shared";
 import {
   createWorkerJobWorkflow,
-  enqueueLcmNodeEmbeddings,
+  enqueueLcmCompaction,
+  enqueueSourceEmbedding,
+  type CompactionQueueJobData,
   type EmbeddingQueueJobData
 } from "./job-workflows.js";
 import {
@@ -63,6 +68,24 @@ const embeddingWorkflow = createEmbeddingWorkflow({
   repository: requireRepository
 });
 
+const memoryEmbedQueue = createWorkerQueueProducer<EmbeddingQueueJobData>(
+  memoryEmbedQueueName,
+  {
+    backend: workerEnv.queueBackend,
+    redisUrl: workerEnv.redisUrl,
+    pool
+  }
+);
+
+const lcmCompactQueue = createWorkerQueueProducer<CompactionQueueJobData>(
+  lcmCompactQueueName,
+  {
+    backend: workerEnv.queueBackend,
+    redisUrl: workerEnv.redisUrl,
+    pool
+  }
+);
+
 const lcmEmbedQueue = createWorkerQueueProducer<EmbeddingQueueJobData>(
   lcmEmbedQueueName,
   {
@@ -72,7 +95,13 @@ const lcmEmbedQueue = createWorkerQueueProducer<EmbeddingQueueJobData>(
   }
 );
 
+const workerEmbeddingDispatchKey = embeddingDispatchKey(
+  workerEnv.embeddingVersion,
+  workerEnv.embeddingDimensions
+);
+
 const handleJob = createWorkerJobWorkflow({
+  embeddingDispatchKey: workerEmbeddingDispatchKey,
   embeddingWorkflow,
   lcmEmbedQueue,
   repository: requireRepository
@@ -104,9 +133,21 @@ const rawProjectionService = repository
   ? createRawProjectionService({
       actorLimit: workerEnv.rawProjectionActorLimit,
       batchLimit: workerEnv.rawProjectionBatchLimit,
-      embeddingWorkflow,
-      enqueueLcmNodeEmbeddings: (nodeIds) =>
-        enqueueLcmNodeEmbeddings(lcmEmbedQueue, nodeIds),
+      embeddingDispatchKey: workerEmbeddingDispatchKey,
+      enqueueLcmCompaction: (requesterContext, visibility, dispatchKey) =>
+        enqueueLcmCompaction(
+          lcmCompactQueue,
+          requesterContext,
+          visibility,
+          dispatchKey
+        ),
+      enqueueSourceEmbedding: (sourceType, sourceId, dispatchKey) =>
+        enqueueSourceEmbedding(
+          sourceType === "memory_node" ? lcmEmbedQueue : memoryEmbedQueue,
+          sourceType,
+          sourceId,
+          dispatchKey
+        ),
       intervalMs: workerEnv.rawProjectionIntervalMs,
       logger,
       repository
@@ -125,7 +166,11 @@ const shutdown = async () => {
     "worker shutting down"
   );
   rawProjectionService?.stop();
-  await queueRuntime.close();
+  await Promise.all([
+    queueRuntime.close(),
+    memoryEmbedQueue.close(),
+    lcmCompactQueue.close()
+  ]);
   await pool?.end();
   logger.info(
     {

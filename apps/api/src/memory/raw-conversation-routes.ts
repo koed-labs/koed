@@ -1,8 +1,10 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
   createConversationItemsSchema,
   projectConversationItemsSchema,
+  releaseConversationProjectionHoldSchema,
+  resetConversationProjectionSchema,
   tokenUsageRollupQuerySchema,
   tokenUsageSchema
 } from "./raw-conversation-schemas.js";
@@ -13,13 +15,29 @@ export const registerRawConversationRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticateApiToken },
+    auth: { authenticateApiToken, authenticateSession },
     capture: { scheduleProjectedMemoryEventProcessing },
     rateLimit: {
       memoryRead: memoryReadRateLimit,
-      memoryWrite: memoryWriteRateLimit
+      memoryWrite: memoryWriteRateLimit,
+      projectionRebuild: projectionRebuildRateLimit
     }
   } = context;
+  const projectionRebuildUsers = new WeakMap<FastifyRequest, { id: string }>();
+  const authenticateProjectionRebuild = async (request: FastifyRequest) => {
+    const user = await authenticateSession(request);
+    projectionRebuildUsers.set(request, user);
+  };
+  const projectionRebuildUser = (request: FastifyRequest): { id: string } => {
+    const user = projectionRebuildUsers.get(request);
+    if (!user) {
+      throw Object.assign(
+        new Error("Projection rebuild authentication context is missing"),
+        { statusCode: 500 }
+      );
+    }
+    return user;
+  };
 
   app.post(
     "/v1/memory/conversation-items",
@@ -39,7 +57,12 @@ export const registerRawConversationRoutes = (
         }
       );
 
-      return { items };
+      return {
+        items,
+        acceptedCount: input.items.length,
+        canonicalItemCount: items.length,
+        sourceObservationCount: input.items.length - items.length
+      };
     }
   );
 
@@ -87,6 +110,95 @@ export const registerRawConversationRoutes = (
           }
         )
       };
+    }
+  );
+
+  app.post(
+    "/v1/memory/conversation-items/release",
+    { preHandler: memoryWriteRateLimit },
+    async (request) => {
+      const repo = requireRepository();
+      const user = await authenticateApiToken(request);
+      const input = releaseConversationProjectionHoldSchema.parse(request.body);
+      return repo.releaseConversationProjectionHold({ userId: user.id }, input);
+    }
+  );
+
+  app.post(
+    "/v1/memory/conversation-items/rebuild",
+    {
+      preHandler: [
+        authenticateProjectionRebuild,
+        memoryWriteRateLimit,
+        projectionRebuildRateLimit
+      ]
+    },
+    async (request) => {
+      const repo = requireRepository();
+      const user = projectionRebuildUser(request);
+      const input = resetConversationProjectionSchema.parse(request.body);
+      const reset = await repo.resetConversationProjection(
+        { userId: user.id },
+        input
+      );
+      const projection = {
+        rawItemsScanned: 0,
+        rawItemsProjected: 0,
+        rawItemsWaitingForAgentSeal: 0,
+        messagesCreated: 0,
+        toolEventsCreated: 0,
+        memoryEventsCreated: 0,
+        tokenUsageRowsCreated: 0,
+        memoryEventIds: [] as string[],
+        memoryEventScopes: [] as Array<{
+          eventId: string;
+          visibility: "personal";
+          includeInEmbedding: boolean;
+          includeInLcm: boolean;
+        }>
+      };
+      for (
+        let index = 0;
+        index < reset.conversationItemIds.length;
+        index += 1000
+      ) {
+        const conversationItemIds = reset.conversationItemIds.slice(
+          index,
+          index + 1000
+        );
+        const batch = await repo.projectPendingConversationItems(
+          { userId: user.id },
+          {
+            visibility: "personal",
+            conversationItemIds,
+            limit: conversationItemIds.length
+          }
+        );
+        projection.rawItemsScanned += batch.rawItemsScanned;
+        projection.rawItemsProjected += batch.rawItemsProjected;
+        projection.rawItemsWaitingForAgentSeal = Math.max(
+          projection.rawItemsWaitingForAgentSeal,
+          batch.rawItemsWaitingForAgentSeal
+        );
+        projection.messagesCreated += batch.messagesCreated;
+        projection.toolEventsCreated += batch.toolEventsCreated;
+        projection.memoryEventsCreated += batch.memoryEventsCreated;
+        projection.tokenUsageRowsCreated += batch.tokenUsageRowsCreated;
+        projection.memoryEventIds.push(...batch.memoryEventIds);
+        projection.memoryEventScopes.push(...batch.memoryEventScopes);
+      }
+      projection.memoryEventIds = [...new Set(projection.memoryEventIds)];
+      projection.memoryEventScopes = [
+        ...new Map(
+          projection.memoryEventScopes.map((scope) => [scope.eventId, scope])
+        ).values()
+      ];
+      const processing = await scheduleProjectedMemoryEventProcessing(
+        repo,
+        { userId: user.id },
+        projection.memoryEventScopes
+      );
+      return { reset, projection, processing };
     }
   );
 

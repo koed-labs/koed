@@ -121,12 +121,38 @@ MEMORY_HOOK_STRICT=false
 MEMORY_HOOK_API_REQUEST_TIMEOUT_MS=1500
 MEMORY_HOOK_BREAKER_FAILURE_THRESHOLD=3
 MEMORY_HOOK_BREAKER_COOLDOWN_MS=60000
+MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES=4000000
 MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS=60000
 MEMORY_HOOK_TRIGGER_LCM_SUMMARY=true
 MEMORY_HOOK_LCM_SUMMARY_DELAY_MS=10000
 MEMORY_HOOK_LCM_SUMMARY_LIMIT=2
 MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS=48000
 ```
+
+## Experimental Koed-managed threads
+
+The MCP package also exports a local `CodexManagedConversationSession` for the
+app-server-first ingestion experiment. It owns a persistent stdio app-server
+thread, stores completed typed items promptly, and reconciles the generated
+JSONL rollout into the same canonical records before sealing each turn. It can
+resume an existing provider thread and Koed Captured Session after restart.
+Its isolated Codex home is durable under `KOED_HOME`; the rollout and atomic
+ingestion checkpoint must be retained for the managed Captured Session's
+lifetime and removed only through explicit managed-home cleanup.
+An exclusive process lease prevents concurrent coordinators from using the same
+home and includes operating-system process-start identity so PID reuse cannot
+adopt a stale lease. Managed subagent `thread/started` events create linked
+child Captured Sessions and reconcile each child rollout separately. Normal
+shutdown releases the lease without deleting the rollout. Hook
+signals also capture a transcript byte boundary: foreground and detached reads
+cannot consume a later turn that happened to be appended while processing the
+signal. `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES` bounds synchronous
+history scanning; remaining exact pages are handled by detached catch-up.
+
+There is no Desktop or Explorer entry point for this experiment. It does not
+attach to external Codex processes and does not change the supported automatic
+capture setup above. Existing Codex CLI and native-app conversations continue
+to use Capture Hook signals plus JSONL catch-up.
 
 Codex hook configuration should include `Stop` as well as prompt/tool hooks. If
 Codex asks you to review or trust changed hooks after editing `config.toml`,

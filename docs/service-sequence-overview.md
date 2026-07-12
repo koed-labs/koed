@@ -507,18 +507,21 @@ remains a later integration on top of this durable seat lifecycle state.
    source timestamps are held at the checkpoint until a later timestamped row
    lets Koed interpolate their source time without reordering transcript
    chronology.
-4. Catch-up converts Codex transcript records into canonical raw
-   `conversation_items` observations with source adapter metadata, idempotency
-   keys, source hashes, and `projectionStatus=pending`. `Stop` and
+4. Catch-up converts Codex transcript records into canonical
+   `conversation_items` plus immutable `conversation_item_observations` with
+   source adapter metadata, source identity, hashes, and chronology. `Stop` and
    `SubagentStop` hook signals may also be stored as stripped control records so
    Projection can seal an agent turn, but content-bearing hook fields are
    omitted before storage. Transcript JSONL records are the source of truth for
    display and semantic content.
-5. The API authenticates the API Token and persists the raw items as
+5. The API authenticates the API Token and persists canonical items and source
+   observations atomically as
    `personal` memory through `POST /v1/memory/conversation-items`.
-6. During persistence, the API assigns canonical identity only to transcript
-   observations. Hook control records do not become canonical messages, tool
-   events, Memory Events, LCM sources, or embeddings.
+6. During persistence, exact provider identity controls canonicalization.
+   Replayed observations are idempotent, conflicting observation bytes fail,
+   and Capture Policy/Pause is enforced again at this common boundary. Hook
+   control records do not become messages, tool events, Memory Event content,
+   LCM sources, or embeddings.
 7. Projection reads `projection_policy_rules` to decide which Codex transcript
    item types become UI rows, tool events, Memory Events, embeddings, and LCM
    sources. The seeded policy projects user, agent, subagent, tool call/result,
@@ -540,12 +543,15 @@ remains a later integration on top of this durable seat lifecycle state.
    and repository read paths hydrate authorized graph, embedding, retrieval,
    LCM source content, and Memory Question payloads from encrypted companions
    after access checks.
-9. The API schedules processing for newly projected Memory Events through the
-   configured work queue backend. The Worker also runs a catch-up loop over
-   pending or failed raw rows.
+9. The Worker runs catch-up over pending or failed canonical rows, then derives
+   missing embedding jobs and pending LCM compaction scopes from PostgreSQL.
+   Deterministic queue identities make that reconciliation idempotent, so queue
+   admission failure or exhausted retries cannot permanently strand work.
+   Embedding reconciliation recognizes only complete active chunk sets for the
+   current source version, and LCM dispatch is bounded per owner.
 10. The Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`,
-    embeds Memory Events by calling the Embedding Service, and then upserts
-    source embeddings.
+    embeds Memory Events by calling the Embedding Service, and atomically
+    replaces the source's complete embedding chunk set.
 11. The Worker schedules compaction, creating or updating LCM Placeholder Memory
     Nodes from Memory Events and child nodes, then queues Memory Node embedding.
     In paid Koed-managed cloud, placeholder summaries, body text, source item
@@ -553,6 +559,44 @@ remains a later integration on top of this durable seat lifecycle state.
     redacted Memory Node fields with encrypted companions.
 12. Pending LCM placeholders remain available as degraded evidence until local
     LCM summaries are submitted.
+
+### Experimental Koed-managed Codex threads
+
+For a Koed-managed thread, local `koed-server` owns a persistent Codex
+app-server stdio connection. Before starting it, the source adapter verifies the
+installed binary's generated protocol schema. Stable item lifecycle events are
+persisted immediately as source observations of canonical conversation items;
+completed item payloads are preferred over started snapshots. App-server source
+time and Koed observation time remain separate.
+
+Koed assigns each managed prompt a `clientUserMessageId`, which is the exact
+shared user-item identity in app-server and JSONL. Role-user response records
+without that id are retained as raw-only context because Codex uses that shape
+for injected setup data as well as rendered prompt copies.
+
+Managed canonical rows are held outside the worker backlog. At turn completion,
+Koed first reconciles the persisted JSONL rollout. JSONL records attach to the
+same canonical keys, provide transcript-only context and chronology, and
+recover missed lifecycle notifications. Only after that pass and terminal
+verification from a persisted `task_complete` or `turn_aborted` record does the
+API release the full turn for Projection. Projection orders that control after
+all non-control items in the same turn and orders tool calls before their
+results even when source times or source sequence spaces differ. A restarted
+coordinator reuses the durable isolated Codex home and atomic transcript
+checkpoint, resumes by provider thread id, verifies the rollout path,
+revalidates the existing Captured Session, and runs the same reconciliation.
+The common Projection, embedding, LCM, encryption, retention, and sync paths
+receive only canonical rows and do not know whether app-server or JSONL was the
+first observation.
+
+When app-server reports a child `thread/started`, Koed creates a linked child
+Captured Session and reconciles that child's rollout independently. Parent and
+child turns use the same terminal-evidence requirement and remain distinct
+through Projection and downstream memory.
+
+This path currently has no frontend and does not replace the Supported Capture
+Hook. Threads started outside Koed continue using hook-triggered detached JSONL
+catch-up.
 
 Commercial/private VPS/Team deployments can run encrypted-field backfill over
 existing human-readable Memory and evidence columns. Backfill is whitelist-based

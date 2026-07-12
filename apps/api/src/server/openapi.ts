@@ -1,3 +1,8 @@
+import { z } from "zod";
+import {
+  releaseConversationProjectionHoldSchema,
+  resetConversationProjectionSchema
+} from "../memory/raw-conversation-schemas.js";
 import {
   implementedRouteIdentityContracts,
   type RouteIdentity,
@@ -5,6 +10,22 @@ import {
 } from "./route-identity.js";
 
 type OpenApiSecurityRequirement = Record<string, never[]>;
+
+const jsonSchemaFor = (schema: z.ZodType) =>
+  Object.fromEntries(
+    Object.entries(z.toJSONSchema(schema)).filter(([key]) => key !== "$schema")
+  );
+
+const requestSchemas = new Map<string, Record<string, unknown>>([
+  [
+    "POST /v1/memory/conversation-items/release",
+    jsonSchemaFor(releaseConversationProjectionHoldSchema)
+  ],
+  [
+    "POST /v1/memory/conversation-items/rebuild",
+    jsonSchemaFor(resetConversationProjectionSchema)
+  ]
+]);
 
 const capabilityDescriptorSchema = {
   type: "object",
@@ -70,6 +91,18 @@ const responsesForContract = (contract: RouteIdentityContract) => {
   return { "200": { description: "OK" } };
 };
 
+const requestBodyForContract = (contract: RouteIdentityContract) => {
+  const schema = requestSchemas.get(`${contract.method} ${contract.path}`);
+  return schema
+    ? {
+        required: true,
+        content: {
+          "application/json": { schema }
+        }
+      }
+    : undefined;
+};
+
 const securityForIdentity = (
   identity: RouteIdentity
 ): Array<OpenApiSecurityRequirement | Record<string, never>> => {
@@ -107,18 +140,22 @@ const securityForIdentity = (
 
 const pathItemFor = (contracts: readonly RouteIdentityContract[]) =>
   Object.fromEntries(
-    contracts.map((contract) => [
-      contract.method.toLowerCase(),
-      {
-        responses: responsesForContract(contract),
-        security: securityForIdentity(contract.identity),
-        "x-koed-identity": contract.identity,
-        "x-koed-identity-status": contract.status,
-        "x-koed-domain": contract.domain,
-        "x-koed-team-authority": contract.teamAuthority,
-        "x-koed-deployment-modes": contract.deploymentModes
-      }
-    ])
+    contracts.map((contract) => {
+      const requestBody = requestBodyForContract(contract);
+      return [
+        contract.method.toLowerCase(),
+        {
+          ...(requestBody ? { requestBody } : {}),
+          responses: responsesForContract(contract),
+          security: securityForIdentity(contract.identity),
+          "x-koed-identity": contract.identity,
+          "x-koed-identity-status": contract.status,
+          "x-koed-domain": contract.domain,
+          "x-koed-team-authority": contract.teamAuthority,
+          "x-koed-deployment-modes": contract.deploymentModes
+        }
+      ];
+    })
   );
 
 const contractsByPath = implementedRouteIdentityContracts.reduce<

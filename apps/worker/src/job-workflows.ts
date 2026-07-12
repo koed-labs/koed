@@ -1,6 +1,11 @@
 import { scheduleCompaction, type Visibility } from "@koed/core";
 import type { EmbeddableSourceType, MemorySourceRepository } from "@koed/db";
-import { type KoedJobQueue, type WorkerQueueName } from "@koed/shared";
+import {
+  embeddingQueueJobId,
+  lcmCompactionQueueJobId,
+  type KoedJobQueue,
+  type WorkerQueueName
+} from "@koed/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
 
 export interface EmbeddingQueueJobData {
@@ -8,7 +13,13 @@ export interface EmbeddingQueueJobData {
   sourceId: string;
 }
 
+export interface CompactionQueueJobData {
+  userId: string;
+  visibility: Visibility;
+}
+
 export interface WorkerJobWorkflowConfig {
+  embeddingDispatchKey: string;
   embeddingWorkflow: EmbeddingWorkflow;
   lcmEmbedQueue: KoedJobQueue<EmbeddingQueueJobData>;
   repository: () => MemorySourceRepository;
@@ -55,9 +66,57 @@ const visibilityFromJobData = (data: Record<string, unknown>): Visibility => {
   return visibility === "personal" ? visibility : "personal";
 };
 
+const durableJobOptions = () => ({
+  attempts: 5,
+  backoff: { type: "exponential", delay: 10_000 },
+  removeOnComplete: 1000,
+  removeOnFail: 5000
+});
+
+const reconciliationJobOptions = () => ({
+  ...durableJobOptions(),
+  // PostgreSQL remains the retry source after queue-level attempts are spent.
+  removeOnFail: true
+});
+
+export const enqueueSourceEmbedding = (
+  queue: KoedJobQueue<EmbeddingQueueJobData>,
+  sourceType: EmbeddableSourceType,
+  sourceId: string,
+  dispatchKey = "current"
+) =>
+  queue.add(
+    "embed-source",
+    { sourceType, sourceId },
+    {
+      ...reconciliationJobOptions(),
+      jobId: embeddingQueueJobId(dispatchKey, sourceType, sourceId)
+    }
+  );
+
+export const enqueueLcmCompaction = (
+  lcmCompactQueue: KoedJobQueue<CompactionQueueJobData>,
+  requesterContext: { userId: string },
+  visibility: Visibility,
+  dispatchKey = "projected"
+) =>
+  lcmCompactQueue.add(
+    "compact-scope",
+    { userId: requesterContext.userId, visibility },
+    {
+      ...reconciliationJobOptions(),
+      jobId: lcmCompactionQueueJobId(
+        requesterContext.userId,
+        visibility,
+        dispatchKey
+      )
+    }
+  );
+
 export const enqueueLcmNodeEmbeddings = async (
   lcmEmbedQueue: KoedJobQueue<EmbeddingQueueJobData>,
-  nodeIds: string[]
+  nodeIds: string[],
+  dispatchKey: string
 ) =>
   Promise.all(
     nodeIds.map((nodeId) =>
@@ -65,10 +124,8 @@ export const enqueueLcmNodeEmbeddings = async (
         "embed-lcm-node",
         { sourceType: "memory_node", sourceId: nodeId },
         {
-          attempts: 5,
-          backoff: { type: "exponential", delay: 10_000 },
-          removeOnComplete: 1000,
-          removeOnFail: 5000
+          ...reconciliationJobOptions(),
+          jobId: embeddingQueueJobId(dispatchKey, "memory_node", nodeId)
         }
       )
     )
@@ -90,7 +147,8 @@ export const createWorkerJobWorkflow = (config: WorkerJobWorkflowConfig) => {
     ];
     const embeddingJobs = await enqueueLcmNodeEmbeddings(
       config.lcmEmbedQueue,
-      nodeIds
+      nodeIds,
+      config.embeddingDispatchKey
     );
     return {
       compaction,

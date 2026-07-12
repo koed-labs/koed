@@ -296,11 +296,13 @@ describe("LCM summary worker", () => {
           turnId: "turn-lcm-test",
           rawEvents: [
             {
+              sequence: 1,
               method: "turn/completed",
               observedAt: "2026-05-27T00:00:00.000Z",
               params: { threadId: "thread-lcm-test" }
             },
             {
+              sequence: 2,
               method: "thread/tokenUsage/updated",
               observedAt: "2026-05-27T00:00:01.000Z",
               params: {
@@ -479,6 +481,7 @@ describe("LCM summary worker", () => {
             turnId: "turn-lcm-failed",
             rawEvents: [
               {
+                sequence: 1,
                 method: "thread/tokenUsage/updated",
                 observedAt: "2026-05-27T00:00:00.000Z",
                 params: { threadId: "thread-lcm-failed" }
@@ -503,6 +506,7 @@ describe("LCM summary worker", () => {
           turnId: "turn-lcm-success",
           rawEvents: [
             {
+              sequence: 1,
               method: "thread/tokenUsage/updated",
               observedAt: "2026-05-27T00:00:01.000Z",
               params: { threadId: "thread-lcm-success" }
