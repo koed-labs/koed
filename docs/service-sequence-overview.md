@@ -113,14 +113,20 @@ MCP-side workers.
    running the full bootstrap.
 10. Koed Desktop can start/connect to the same headless command surface, run
     the first-launch Codex bootstrap and health-check sequence, poll status,
-    offer one-click Codex integration repair for stale local config, provision
-    the embedding model through `koed-server models status/install --json` in
-    bundled-local mode, and embed Explorer without requiring the Operator to
-    invoke repo-local scripts directly. Desktop readiness waits for API,
-    Worker/queues, Explorer, and the provisioned Explorer credential so static
-    Explorer reachability cannot mask an unhealthy processing path. Desktop
-    manages only its local personal `koed-server`; remote, Team Self-Hosted,
-    and cloud targets are connect-only.
+    offer one-click Codex integration repair for stale local config, and
+    provision the embedding model through `koed-server models status/install
+--json` in bundled-local mode without requiring the Operator to invoke
+    repo-local scripts directly. Its Project and Captured Session navigation is
+    native to the Desktop renderer. Selecting a Captured Session requests
+    paginated Memory Events from the API and renders the raw Conversation
+    in-process; Desktop does not embed Explorer or put API Token credentials in
+    navigation URLs. Desktop and Explorer share only stable selection and
+    virtualized timeline primitives, while each retains its own client state
+    and navigation shell. Desktop readiness still reports API, Worker/queues,
+    Explorer, and provisioned app-credential health so a local service failure
+    is actionable, but the Conversation surface does not depend on an Explorer
+    iframe. Desktop manages only its local personal `koed-server`; remote, Team
+    Self-Hosted, and cloud targets are connect-only.
 
 ## Server Deployment Boundary
 

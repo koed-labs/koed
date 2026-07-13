@@ -93,16 +93,34 @@ importers:
       '@koed/koed-server':
         specifier: workspace:*
         version: link:../../packages/koed-server
+      '@koed/memory-ui':
+        specifier: workspace:*
+        version: link:../../packages/memory-ui
+      react:
+        specifier: 19.2.6
+        version: 19.2.6
+      react-dom:
+        specifier: 19.2.6
+        version: 19.2.6(react@19.2.6)
     devDependencies:
       '@electron/asar':
         specifier: ^3.4.1
         version: 3.4.1
+      '@types/react':
+        specifier: ~19.2.14
+        version: 19.2.16
+      '@types/react-dom':
+        specifier: ~19.2.3
+        version: 19.2.3(@types/react@19.2.16)
       electron:
         specifier: ^39.2.7
         version: 39.8.10
       electron-builder:
         specifier: ^26.15.3
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)
+      happy-dom:
+        specifier: ^20.9.0
+        version: 20.10.1
 
   apps/embedding-service: {}
 
@@ -111,6 +129,9 @@ importers:
       '@base-ui/react':
         specifier: ^1.4.1
         version: 1.5.0(@types/react@19.2.16)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@koed/memory-ui':
+        specifier: workspace:*
+        version: link:../../packages/memory-ui
       '@legendapp/list':
         specifier: 3.0.0-beta.44
         version: 3.0.0-beta.44(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -304,6 +325,25 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
+
+  packages/memory-ui:
+    dependencies:
+      '@legendapp/list':
+        specifier: 3.0.0-beta.44
+        version: 3.0.0-beta.44(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react:
+        specifier: 19.2.6
+        version: 19.2.6
+    devDependencies:
+      '@types/react':
+        specifier: ~19.2.14
+        version: 19.2.16
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@types/node@25.8.0)(happy-dom@20.10.1)(vite@8.0.13(@types/node@25.8.0)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.1))
 
   packages/shared: {}
 

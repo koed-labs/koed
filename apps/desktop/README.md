@@ -3,15 +3,19 @@
 Koed Desktop is the Electron control surface for Koed.
 
 It wraps the same local `koed-server` command surface, shows service status,
-runs the first-time Codex setup and health checks automatically, and embeds
-the Explorer so an Operator can start the supervisor and open the local UI
-from one window.
+runs the first-time Codex setup and health checks automatically, and provides
+the local Project, Captured Session, and raw Conversation UI in one window.
 
 The main Desktop experience is Project-first: active local Projects appear
 first, inactive Projects remain available behind an explicit disclosure, and
-opening a Project reveals its captured sessions. Opening a session embeds the
-Explorer's raw-conversation view without duplicating Explorer navigation or
-settings. Persisted Project discovery metadata is merged with captured memory
+opening a Project reveals its Captured Sessions. Opening a Captured Session
+loads its Memory Events directly from the local API and renders the raw
+Conversation inside the Desktop process. Desktop owns the selected Project and
+Captured Session; it does not pass selection or API Token credentials through
+an Explorer URL. Desktop and Explorer share the virtualized timeline contract,
+so long Conversations retain bounded rendering and older-event pagination
+without coupling their navigation shells. Persisted Project discovery metadata
+is merged with captured Memory
 activity locally, so a discovered Project can remain visible before its first
 captured session. Team Backend enrollment stays in setup/readiness; the main
 Projects flow remains Personal Memory-first and works without an upstream.
@@ -20,6 +24,12 @@ Git common-directory signal. Current and historical network remote aliases are
 stored only as future matching evidence; Desktop does not yet combine Personal
 Memory from multiple devices or use those aliases to create Team Workspace
 links.
+
+The current client boundary is intentionally local-first. The Desktop selection
+model includes stable Project and Captured Session identity, while backend scope
+and authorization remain API concerns. Future Team Workspace and multi-device
+surfaces should extend that scope contract rather than introduce another
+embedded client or encode credentials in navigation state.
 
 ## Run
 

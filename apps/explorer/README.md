@@ -11,10 +11,10 @@ local control plane live elsewhere in this repository.
 
 - Browse Koed memory graph/session history from the React app.
 - Run as a browser-hosted Vite app.
-- Provide a session-only embed for Koed Desktop with
-  `?koedDesktop=1&embed=session&selectedThreadId=...`; this keeps the
-  virtualized raw conversation while omitting Explorer's sidebar, settings,
-  Memory composer, and LCM inspector.
+- Share stable Captured Session selection and virtualized timeline behavior
+  with Koed Desktop through `@koed/memory-ui`. Explorer keeps its own browser
+  navigation, graph cache, prewarming, normalization, and rich Memory Event row
+  rendering; Desktop does not embed this app.
 - Keep the active workspace scoped to `apps/explorer`.
 - Remove desktop, server, release, package-library, and marketing paths from the
   active workspace.
@@ -70,6 +70,9 @@ Use `pnpm test` for Vitest.
 The browser intentionally keeps the project/thread shell separate from
 selected-thread detail data. Be careful when changing sidebar shell loading,
 thread detail loading, prewarming, cache retention, or long event rendering.
+The virtualized timeline container and stable Project/thread selection key live
+in `packages/memory-ui`; Explorer-specific row rendering and graph state remain
+in this package.
 
 ## License and Attribution
 
