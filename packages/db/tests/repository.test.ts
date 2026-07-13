@@ -16183,6 +16183,53 @@ describeDb("memory repository visibility", () => {
     expect(graph[0]).toMatchObject({ id: "unassigned", name: "Unassigned" });
   });
 
+  it("preserves automatic Project assignment on incomplete idempotent replays", async () => {
+    const owner = await repo.createUser({
+      email: `project-replay-owner-${randomUUID()}@example.com`
+    });
+    const idempotencyKey = `project-replay-${randomUUID()}`;
+    const created = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `project-replay-thread-${randomUUID()}`,
+        idempotencyKey,
+        detectedProjects: [
+          { id: "project-a", name: "Project A", path: "/work/project-a" }
+        ]
+      }
+    );
+    const incompleteReplay = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: created.externalSessionId ?? undefined,
+        idempotencyKey
+      }
+    );
+    const explicitNoSignalReplay = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: created.externalSessionId ?? undefined,
+        idempotencyKey,
+        detectedProjects: []
+      }
+    );
+
+    expect(incompleteReplay).toMatchObject({
+      id: created.id,
+      automaticProject: { id: "project-a" },
+      project: { id: "project-a" },
+      projectAssignmentSource: "detected",
+      capturedProjectProvenance: created.capturedProjectProvenance
+    });
+    expect(explicitNoSignalReplay).toMatchObject({
+      id: created.id,
+      automaticProject: null,
+      project: null,
+      projectAssignmentSource: null,
+      capturedProjectProvenance: created.capturedProjectProvenance
+    });
+  });
+
   it("keeps Personal Project assignment mutable without changing capture or Team authority", async () => {
     const owner = await repo.createUser({
       email: `project-assignment-owner-${randomUUID()}@example.com`

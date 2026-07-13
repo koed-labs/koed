@@ -242,6 +242,19 @@ const detectedProjectsForCapture = (input: {
   ];
 };
 
+const hasDetectedProjectInput = (input: {
+  workspaceId?: string;
+  cwd?: string;
+  metadata?: Record<string, unknown>;
+  detectedProjects?: PersonalProjectReference[];
+}): boolean =>
+  input.detectedProjects !== undefined ||
+  input.workspaceId !== undefined ||
+  input.cwd !== undefined ||
+  ["localProjectId", "projectId", "projectPath", "projectName"].some((key) =>
+    Object.hasOwn(input.metadata ?? {}, key)
+  );
+
 const capturedSessionColumns = `
   id, owner_user_id, visibility, external_session_id, workspace_id,
   source_runtime, capture_method, model, cwd, metadata,
@@ -288,6 +301,7 @@ export const createCapturedSessionRepository = (
     const detectedProjects = detectedProjectsForCapture(input);
     const automaticProject =
       detectedProjects.length === 1 ? detectedProjects[0]! : null;
+    const detectedProjectInputProvided = hasDetectedProjectInput(input);
     const capturedProjectProvenance = {
       schemaVersion: 1,
       capturedCwd: input.cwd ?? null,
@@ -370,10 +384,22 @@ export const createCapturedSessionRepository = (
             end,
           parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
           source_metadata = sessions.source_metadata || excluded.source_metadata,
-          automatic_project_id = excluded.automatic_project_id,
-          automatic_project_name = excluded.automatic_project_name,
-          automatic_project_path = excluded.automatic_project_path,
-          automatic_project_detected_at = excluded.automatic_project_detected_at
+          automatic_project_id = case
+            when $26::boolean then excluded.automatic_project_id
+            else sessions.automatic_project_id
+          end,
+          automatic_project_name = case
+            when $26::boolean then excluded.automatic_project_name
+            else sessions.automatic_project_name
+          end,
+          automatic_project_path = case
+            when $26::boolean then excluded.automatic_project_path
+            else sessions.automatic_project_path
+          end,
+          automatic_project_detected_at = case
+            when $26::boolean then excluded.automatic_project_detected_at
+            else sessions.automatic_project_detected_at
+          end
         where sessions.owner_user_id = excluded.owner_user_id
           and sessions.visibility = excluded.visibility
           and sessions.invalidated_at is null
@@ -425,7 +451,8 @@ export const createCapturedSessionRepository = (
         capturedProjectProvenance,
         automaticProject?.id ?? null,
         automaticProject?.name ?? null,
-        automaticProject?.path ?? null
+        automaticProject?.path ?? null,
+        detectedProjectInputProvided
       ]
     );
 

@@ -2194,6 +2194,8 @@ const createFakeRepository = () => {
           : []);
       const automaticProject =
         detectedProjects.length === 1 ? detectedProjects[0]! : null;
+      const detectedProjectInputProvided =
+        input.detectedProjects !== undefined || input.cwd !== undefined;
       const createdAt = new Date(
         Date.now() + capturedSessionCounter++
       ).toISOString();
@@ -2235,19 +2237,30 @@ const createFakeRepository = () => {
                 ? "ambiguous"
                 : "no_signal"
         },
-        automaticProject,
+        automaticProject:
+          existing && !detectedProjectInputProvided
+            ? existing.automaticProject
+            : automaticProject,
         projectOverride: existing?.projectOverride ?? null,
-        project: existing?.projectOverride ?? automaticProject,
+        project:
+          existing?.projectOverride ??
+          (existing && !detectedProjectInputProvided
+            ? existing.automaticProject
+            : automaticProject),
         projectAssignmentSource: existing?.projectOverride
           ? "user_override"
-          : automaticProject
-            ? "detected"
-            : null,
+          : existing && !detectedProjectInputProvided
+            ? existing.projectAssignmentSource
+            : automaticProject
+              ? "detected"
+              : null,
         projectAssignmentUpdatedAt: existing?.projectOverride
           ? existing.projectAssignmentUpdatedAt
-          : automaticProject
-            ? createdAt
-            : null,
+          : existing && !detectedProjectInputProvided
+            ? existing.projectAssignmentUpdatedAt
+            : automaticProject
+              ? createdAt
+              : null,
         createdAt: existing?.createdAt ?? createdAt
       };
       capturedSessions.set(record.id, record);
@@ -9589,6 +9602,15 @@ describe("account and access flows", () => {
       }
     });
     const session = jsonBody<SessionResponse>(created).session;
+    const incompleteReplay = await app.inject({
+      method: "POST",
+      url: "/v1/sessions",
+      headers: captureHeaders,
+      payload: {
+        externalSessionId: "project-assignment-thread",
+        idempotencyKey
+      }
+    });
     const rejectedIdempotencyReplay = await app.inject({
       method: "POST",
       url: "/v1/sessions",
@@ -9711,6 +9733,12 @@ describe("account and access flows", () => {
         outcome: "unambiguous",
         candidates: [{ id: "project-a" }]
       }
+    });
+    expect(jsonBody<SessionResponse>(incompleteReplay).session).toMatchObject({
+      id: session.id,
+      automaticProject: { id: "project-a" },
+      project: { id: "project-a" },
+      projectAssignmentSource: "detected"
     });
     expect(jsonBody<SessionResponse>(moved).session).toMatchObject({
       project: { id: "project-b" },
