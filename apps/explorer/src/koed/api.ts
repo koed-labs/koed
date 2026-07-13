@@ -40,7 +40,7 @@ export const apiBaseUrl = resolveBrowserApiBaseUrl(
     import.meta.env.VITE_KOED_API_BASE_URL ??
     import.meta.env.VITE_API_BASE_URL ??
     "http://localhost:3300",
-  window.location.href
+  typeof window === "undefined" ? "" : window.location.href
 );
 
 const includeInvalidated = false;
