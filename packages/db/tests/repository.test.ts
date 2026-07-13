@@ -18930,26 +18930,20 @@ describeDb("memory repository visibility", () => {
     );
     const capturedProvenance = session.capturedProjectProvenance;
 
-    await expect(
-      repo.createCapturedSession(
-        { userId: bob.id },
-        {
-          externalSessionId: `attacker-${randomUUID()}`,
-          idempotencyKey,
-          detectedProjects: [
-            {
-              id: "project-attacker",
-              name: "Attacker Project",
-              path: "/work/attacker"
-            }
-          ]
-        }
-      )
-    ).rejects.toMatchObject({
-      message:
-        "Duplicate Captured Session conflicts with data outside caller visibility",
-      statusCode: 409
-    });
+    const bobSession = await repo.createCapturedSession(
+      { userId: bob.id },
+      {
+        externalSessionId: `other-owner-${randomUUID()}`,
+        idempotencyKey,
+        detectedProjects: [
+          {
+            id: "project-other-owner",
+            name: "Other Owner Project",
+            path: "/work/other-owner"
+          }
+        ]
+      }
+    );
 
     const moved = await repo.moveCapturedSessionToProject(
       { userId: alice.id },
@@ -19022,6 +19016,13 @@ describeDb("memory repository visibility", () => {
       project: { id: "project-detected-a" },
       projectAssignmentSource: "detected"
     });
+    expect(bobSession).toMatchObject({
+      ownerUserId: bob.id,
+      automaticProject: { id: "project-other-owner" },
+      project: { id: "project-other-owner" },
+      projectAssignmentSource: "detected"
+    });
+    expect(bobSession.id).not.toBe(session.id);
     expect(moved).toMatchObject({
       workspaceId: capturedWorkspaceId,
       projectOverride: { id: "project-manual" },

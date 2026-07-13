@@ -2287,20 +2287,15 @@ const createFakeRepository = () => {
       const createdAt = new Date(
         Date.now() + capturedSessionCounter++
       ).toISOString();
-      const existingId = input.idempotencyKey
-        ? capturedSessionIdsByIdempotencyKey.get(input.idempotencyKey)
+      const scopedIdempotencyKey = input.idempotencyKey
+        ? `${actor.userId}:${input.idempotencyKey}`
+        : null;
+      const existingId = scopedIdempotencyKey
+        ? capturedSessionIdsByIdempotencyKey.get(scopedIdempotencyKey)
         : undefined;
       const existing = existingId
         ? capturedSessions.get(existingId)
         : undefined;
-      if (existing && existing.ownerUserId !== actor.userId) {
-        throw Object.assign(
-          new Error(
-            "Duplicate Captured Session conflicts with data outside caller visibility"
-          ),
-          { statusCode: 409 }
-        );
-      }
       const record: CapturedSessionRecord = {
         id: existing?.id ?? id,
         ownerUserId: actor.userId,
@@ -2352,8 +2347,8 @@ const createFakeRepository = () => {
         createdAt: existing?.createdAt ?? createdAt
       };
       capturedSessions.set(record.id, record);
-      if (input.idempotencyKey) {
-        capturedSessionIdsByIdempotencyKey.set(input.idempotencyKey, record.id);
+      if (scopedIdempotencyKey) {
+        capturedSessionIdsByIdempotencyKey.set(scopedIdempotencyKey, record.id);
       }
       return record;
     },
@@ -10705,7 +10700,7 @@ describe("account and access flows", () => {
         idempotencyKey
       }
     });
-    const rejectedIdempotencyReplay = await app.inject({
+    const otherOwnerSession = await app.inject({
       method: "POST",
       url: "/v1/sessions",
       headers: otherCaptureHeaders,
@@ -10816,9 +10811,14 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(rejectedIdempotencyReplay.statusCode).toBe(409);
-    expect(jsonBody<{ error: string }>(rejectedIdempotencyReplay).error).toBe(
-      "Duplicate Captured Session conflicts with data outside caller visibility"
+    expect(otherOwnerSession.statusCode).toBe(200);
+    expect(jsonBody<SessionResponse>(otherOwnerSession).session).toMatchObject({
+      ownerUserId: jsonBody<{ user: { id: string } }>(other).user.id,
+      externalSessionId: "attacker-thread",
+      project: { id: "attacker-project" }
+    });
+    expect(jsonBody<SessionResponse>(otherOwnerSession).session.id).not.toBe(
+      session.id
     );
     expect(session).toMatchObject({
       project: { id: "project-a" },
