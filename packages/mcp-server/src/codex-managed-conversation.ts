@@ -246,6 +246,39 @@ const threadInfoFromStartedEvent = (
   };
 };
 
+const mergeStartedThreadInfo = (
+  responseThread: CodexAppServerThreadInfo,
+  events: CodexAppServerRawEvent[]
+): CodexAppServerThreadInfo => {
+  const startedThreads = events.map(threadInfoFromStartedEvent).filter(
+    (
+      thread
+    ): thread is CodexAppServerThreadInfo & {
+      parentThreadId?: string;
+    } => thread?.id === responseThread.id && !thread.parentThreadId
+  );
+  let merged = responseThread;
+  for (const startedThread of startedThreads) {
+    for (const field of ["sessionId", "path", "cwd"] as const) {
+      if (
+        merged[field] !== undefined &&
+        startedThread[field] !== undefined &&
+        merged[field] !== startedThread[field]
+      ) {
+        throw new Error(
+          `Codex app-server thread/start and thread/started disagree on ${field}`
+        );
+      }
+    }
+    merged = {
+      ...startedThread,
+      ...merged,
+      raw: { ...startedThread.raw, ...merged.raw }
+    };
+  }
+  return merged;
+};
+
 export class CodexManagedConversationSession {
   private client: CodexAppServerClient | null = null;
   private readonly bufferedEvents: CodexAppServerRawEvent[] = [];
@@ -387,7 +420,7 @@ export class CodexManagedConversationSession {
           "Codex app-server initialize response reported an unexpected codexHome"
         );
       }
-      const thread = resumeTarget
+      let thread = resumeTarget
         ? await client.resumeThread(
             resumeTarget.threadId,
             this.config.appServer
@@ -399,6 +432,7 @@ export class CodexManagedConversationSession {
             minimalContext: false
           });
       await client.flushRawEventHandler();
+      thread = mergeStartedThreadInfo(thread, this.bufferedEvents);
       if (!thread.path) {
         throw new Error(
           "Codex managed conversation must have a persisted rollout path"
