@@ -371,6 +371,7 @@ class FakeMemoryClient {
   readonly observationKeys = new Set<string>();
   persistAttempts = 0;
   private persistFailuresRemaining = 0;
+  private appServerPersistenceUnavailable = false;
   private delayedPersistsRemaining = 0;
   private persistDelayMs = 0;
   private releaseFailuresRemaining = 0;
@@ -380,6 +381,10 @@ class FakeMemoryClient {
 
   failNextPersist(count = 1): void {
     this.persistFailuresRemaining = count;
+  }
+
+  setAppServerPersistenceUnavailable(unavailable: boolean): void {
+    this.appServerPersistenceUnavailable = unavailable;
   }
 
   delayNextPersist(delayMs: number, count = 1): void {
@@ -414,6 +419,12 @@ class FakeMemoryClient {
     if (this.persistFailuresRemaining > 0) {
       this.persistFailuresRemaining -= 1;
       throw new Error("transient memory API failure");
+    }
+    if (
+      this.appServerPersistenceUnavailable &&
+      input.items.some((item) => item.sourceTransport === "app_server")
+    ) {
+      throw new Error("persistent app-server ingestion failure");
     }
     const items = input.items.flatMap((item) => {
       if (item.observationOnly === true) {
@@ -1861,6 +1872,98 @@ describe("Codex managed conversation coordinator", () => {
     } finally {
       await resumed?.closeAndWait().catch(() => undefined);
       await first.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("replays terminal JSONL after persistent app-server ingestion failure and restart", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-ingestion-restart-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const memoryClient = new FakeMemoryClient();
+    const binary = writeManagedFakeAppServer(directory, transcriptPath);
+    const first = new CodexManagedConversationSession(
+      configFor(memoryClient, binary, directory)
+    );
+    let resumed: CodexManagedConversationSession | undefined;
+
+    try {
+      const started = await first.start();
+      memoryClient.setAppServerPersistenceUnavailable(true);
+
+      await expect(
+        first.runTurn("Persist through transcript recovery", 2_000)
+      ).rejects.toThrow("persistent app-server ingestion failure");
+
+      const terminal = memoryClient.observations.find(
+        (item) =>
+          item.sourceTransport === "transcript" &&
+          item.sourceEventType === "task_complete"
+      );
+      expect(terminal).toBeDefined();
+      expect(
+        memoryClient.operations.some(
+          (operation) =>
+            operation.kind === "release" &&
+            operation.externalTurnId === "managed-turn-1"
+        )
+      ).toBe(false);
+
+      const checkpointPath = path.join(
+        started.codexHome,
+        "koed-ingestion-state.json"
+      );
+      const committedOffset = fs.existsSync(checkpointPath)
+        ? (Object.values(
+            (
+              JSON.parse(fs.readFileSync(checkpointPath, "utf8")) as {
+                transcriptOffsets: Record<string, { offset: number }>;
+              }
+            ).transcriptOffsets
+          )[0]?.offset ?? 0)
+        : 0;
+      expect(committedOffset).toBeLessThan(fs.statSync(transcriptPath).size);
+
+      const leasePath = path.join(
+        started.codexHome,
+        ".koed-managed-home.lease"
+      );
+      first.close();
+      await expect
+        .poll(() => fs.existsSync(leasePath), { timeout: 1_000, interval: 10 })
+        .toBe(false);
+      memoryClient.setAppServerPersistenceUnavailable(false);
+      resumed = new CodexManagedConversationSession(
+        configFor(memoryClient, binary, directory, {
+          threadId: started.thread.id,
+          sessionId: started.sessionId,
+          transcriptPath: started.transcriptPath,
+          codexHome: started.codexHome
+        })
+      );
+      await resumed.start();
+
+      expect(
+        memoryClient.operations.some(
+          (operation) =>
+            operation.kind === "release" &&
+            operation.externalTurnId === "managed-turn-1"
+        )
+      ).toBe(true);
+      expect(
+        memoryClient.operations.some(
+          (operation) =>
+            operation.kind === "project" &&
+            Array.isArray(operation.ids) &&
+            operation.ids.includes(String(terminal?.id))
+        )
+      ).toBe(true);
+    } finally {
+      memoryClient.setAppServerPersistenceUnavailable(false);
+      await resumed?.closeAndWait().catch(() => undefined);
+      first.close();
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
