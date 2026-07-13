@@ -1016,6 +1016,17 @@ type ConversationProjectionPolicySnapshot = {
   rules: Map<string, ConversationProjectionPolicyRule>;
 };
 
+const projectionPolicyRuleMapKey = (
+  sourceKind: string,
+  sourceAdapterVersion: string,
+  transcriptType: string
+): string =>
+  JSON.stringify([
+    sourceKind,
+    sourceAdapterVersion,
+    normalizeProjectionRuleKey(transcriptType)
+  ]);
+
 type ConversationProjectionCandidate = {
   logicalItem: LogicalConversationProjectionItem;
   row: ConversationProjectionRawRow;
@@ -1172,15 +1183,17 @@ const loadConversationProjectionPolicyRules = async (
         include_in_lcm,
         enabled
       from projection_policy_rules
-      where source_kind = 'codex'
-        and source_adapter_version = 'codex-transcript-v1'
     `
   );
   return {
     revision: Number(state.rows[0]?.revision ?? 0),
     rules: new Map(
       rows.rows.map((row) => [
-        normalizeProjectionRuleKey(row.transcript_type),
+        projectionPolicyRuleMapKey(
+          row.source_kind,
+          row.source_adapter_version,
+          row.transcript_type
+        ),
         {
           sourceKind: row.source_kind,
           sourceAdapterVersion: row.source_adapter_version,
@@ -1236,9 +1249,21 @@ const classifyConversationItemProjection = (
   if (row.source_record_type === "hook_payload") {
     return { ...base, reason: "hook-control-record" };
   }
-  const matchedRule = projectionRuleLookupKeysForConversationItem(row)
-    .map((key) => input.projectionRules.get(key))
-    .find((rule): rule is ConversationProjectionPolicyRule => Boolean(rule));
+  const lookupKeys = projectionRuleLookupKeysForConversationItem(row);
+  const findRule = (sourceAdapterVersion: string) =>
+    lookupKeys
+      .map((key) =>
+        input.projectionRules.get(
+          projectionPolicyRuleMapKey(row.source_kind, sourceAdapterVersion, key)
+        )
+      )
+      .find((rule): rule is ConversationProjectionPolicyRule => Boolean(rule));
+  const matchedRule =
+    findRule(row.source_adapter_version) ??
+    (row.source_kind === "codex" &&
+    row.source_adapter_version !== "codex-transcript-v1"
+      ? findRule("codex-transcript-v1")
+      : undefined);
   if (matchedRule) {
     if (!matchedRule.enabled) {
       return {

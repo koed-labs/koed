@@ -10437,6 +10437,130 @@ describeDb("memory repository visibility", () => {
     }
   });
 
+  it("prefers an exact app-server projection policy over transcript defaults", async () => {
+    const alice = await repo.createUser({
+      email: `alice-app-server-policy-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `app-server-policy-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "api",
+        idempotencyKey: `app-server-policy-session-${randomUUID()}`
+      }
+    );
+    await pool.query(
+      `
+        insert into projection_policy_rules (
+          source_kind,
+          source_adapter_version,
+          transcript_type,
+          description,
+          project_to_ui,
+          create_message,
+          create_tool_event,
+          create_memory_event,
+          include_in_embedding,
+          include_in_lcm
+        )
+        values (
+          'codex',
+          'codex-app-server-conversation-v1',
+          'user_message',
+          'App-server user messages remain raw for this policy test.',
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        )
+      `
+    );
+
+    try {
+      const [item] = await repo.createConversationItems(
+        { userId: alice.id },
+        {
+          items: [
+            {
+              sessionId: session.id,
+              sourceKind: "codex",
+              sourceAdapterVersion: "codex-app-server-conversation-v1",
+              sourceTransport: "app_server",
+              externalSessionId: session.externalSessionId ?? undefined,
+              externalThreadId: session.externalSessionId ?? undefined,
+              externalTurnId: "app-server-policy-turn",
+              externalItemId: "app-server-policy-user",
+              canonicalItemKey: codexCanonicalConversationItemKey({
+                externalThreadId: session.externalSessionId!,
+                externalTurnId: "app-server-policy-turn",
+                stableItemId: "app-server-policy-user",
+                component: "message"
+              }),
+              canonicalStableItemId: "app-server-policy-user",
+              observationComponent: "message",
+              sourceRecordType: "app_server_notification",
+              sourceEventType: "item/completed",
+              sourceSequence: 1,
+              eventTime: "2026-04-01T12:00:00.000Z",
+              rawJson: {
+                method: "item/completed",
+                params: {
+                  item: {
+                    id: "app-server-policy-user",
+                    type: "userMessage",
+                    content: [{ type: "text", text: "Keep this raw." }]
+                  }
+                }
+              },
+              rawText: "Keep this raw.",
+              sourceHash: `app-server-policy-${randomUUID()}`,
+              idempotencyKey: `app-server-policy-${randomUUID()}`,
+              projectionStatus: "pending",
+              metadata: { transcriptType: "user_message" }
+            }
+          ]
+        }
+      );
+
+      const projection = await repo.projectPendingConversationItems(
+        { userId: alice.id },
+        { limit: 10 }
+      );
+      const messages = await pool.query(
+        "select id from messages where session_id = $1",
+        [session.id]
+      );
+      const memoryEvents = await pool.query(
+        "select id from memory_events where session_id = $1",
+        [session.id]
+      );
+      const stored = await pool.query<{ projection_status: string }>(
+        "select projection_status from conversation_items where id = $1",
+        [item!.id]
+      );
+
+      expect(projection).toMatchObject({
+        messagesCreated: 0,
+        memoryEventsCreated: 0
+      });
+      expect(messages.rows).toEqual([]);
+      expect(memoryEvents.rows).toEqual([]);
+      expect(stored.rows[0]?.projection_status).toBe("projected");
+    } finally {
+      await pool.query(
+        `
+          delete from projection_policy_rules
+          where source_kind = 'codex'
+            and source_adapter_version = 'codex-app-server-conversation-v1'
+            and transcript_type = 'user_message'
+        `
+      );
+    }
+  });
+
   it("uses projection policy rules to keep semantic events out of LCM", async () => {
     const alice = await repo.createUser({
       email: `alice-projection-policy-lcm-${randomUUID()}@example.com`
