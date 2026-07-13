@@ -11,6 +11,15 @@ describe("resolveBrowserApiBaseUrl", () => {
     ).toBe("https://api.koed.ai");
   });
 
+  it("preserves a reverse-proxy path prefix for remote enrollment", () => {
+    expect(
+      resolveBrowserApiBaseUrl(
+        "http://localhost:3300",
+        "https://host.example/koed/device-enrollment/challenge-id"
+      )
+    ).toBe("https://host.example/koed");
+  });
+
   it("preserves loopback configuration for local Explorer", () => {
     expect(
       resolveBrowserApiBaseUrl(

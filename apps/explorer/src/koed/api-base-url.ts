@@ -3,6 +3,11 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 export const isLoopbackHostname = (hostname: string): boolean =>
   LOOPBACK_HOSTS.has(hostname) || hostname.startsWith("127.");
 
+const enrollmentApiPathPrefix = (pathname: string): string => {
+  const match = pathname.match(/^(.*)\/device-enrollment\/[^/]+\/?$/);
+  return match?.[1]?.replace(/\/$/, "") ?? "";
+};
+
 export const resolveBrowserApiBaseUrl = (
   configuredBaseUrl: string,
   pageHref: string
@@ -16,7 +21,7 @@ export const resolveBrowserApiBaseUrl = (
       !isLoopbackHostname(pageUrl.hostname) &&
       isLoopbackHostname(apiUrl.hostname)
     ) {
-      return pageUrl.origin;
+      return `${pageUrl.origin}${enrollmentApiPathPrefix(pageUrl.pathname)}`;
     }
   } catch {
     return normalized;
