@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { test } from "node:test";
 import { parseBootstrapArgs, runCodexBootstrap } from "./codex-bootstrap.mjs";
 
@@ -160,7 +161,7 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
       env.MEMORY_API_URL = "http://127.0.0.1:3300";
       env.MEMORY_NODE_COMMAND = "/opt/node";
       env.MEMORY_CODEX_APP_SERVER_BINARY = "/opt/codex";
-      env.KOED_PROMPT_DIR = "/opt/koed/custom-prompts";
+      env.KOED_PROMPT_DIR = "custom-prompts";
     },
     createTokenBootstrap: async () => tokenResult,
     runCommandFn: async ({ label, env = {} }) => {
@@ -181,6 +182,6 @@ test("codex bootstrap loads root env before resolving defaults", async () => {
     MEMORY_API_TOKEN: "cmt_env_token",
     MEMORY_NODE_COMMAND: "/opt/node",
     MEMORY_CODEX_APP_SERVER_BINARY: "/opt/codex",
-    KOED_PROMPT_DIR: "/opt/koed/custom-prompts"
+    KOED_PROMPT_DIR: path.resolve("custom-prompts")
   });
 });

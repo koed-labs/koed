@@ -384,9 +384,11 @@ These values are copied into the AI Client configuration and are not consumed au
   add optional content, but code still owns required placeholders, JSON schemas,
   parser validation, source serialization, authorization, redaction, and
   retrieval boundaries. MCP builds carry the bundled defaults inside the
-  deployed runtime, and `pnpm codex:bootstrap` writes a configured override
-  directory into the MCP environment. LCM summaries persist the frontmatter
-  version of the prompt that produced the final summary.
+  deployed runtime. `pnpm codex:bootstrap` resolves relative override paths
+  against the Koed checkout and writes an absolute directory into the persistent
+  MCP environment, so opening Codex from a different Project does not change
+  which prompts are loaded. LCM summaries, Memory Answer, and generated session
+  titles persist the frontmatter version of the prompt that produced them.
 
 - `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
 - `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.

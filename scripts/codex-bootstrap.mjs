@@ -249,7 +249,11 @@ export const runCodexBootstrap = async ({
     const resolvedPaths = resolveBootstrapPaths(environment);
     const appServerBinary =
       environment.MEMORY_CODEX_APP_SERVER_BINARY ?? defaultAppServerBinary;
-    const promptOverrideDirectory = environment.KOED_PROMPT_DIR?.trim();
+    const configuredPromptOverrideDirectory =
+      environment.KOED_PROMPT_DIR?.trim();
+    const promptOverrideDirectory = configuredPromptOverrideDirectory
+      ? resolve(rootDir, configuredPromptOverrideDirectory)
+      : undefined;
     const promptOverrideEnv = promptOverrideDirectory
       ? { KOED_PROMPT_DIR: promptOverrideDirectory }
       : {};

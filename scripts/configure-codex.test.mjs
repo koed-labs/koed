@@ -32,7 +32,7 @@ test("codex configure writes hook timeout config and command timeouts", async ()
         MEMORY_API_TOKEN: "cmt_test",
         MEMORY_API_URL: "http://127.0.0.1:3300",
         MEMORY_NODE_COMMAND: "node",
-        KOED_PROMPT_DIR: path.join(dir, "custom-prompts"),
+        KOED_PROMPT_DIR: "custom-prompts",
         MEMORY_HOOK_CONFIG: hookConfigPath,
         CODEX_CONFIG_PATH: codexConfigPath
       }

@@ -19,7 +19,10 @@ const apiUrl =
   "http://localhost:3300";
 const nodeCommand = process.env.MEMORY_NODE_COMMAND ?? "node";
 const appServerBinary = process.env.MEMORY_CODEX_APP_SERVER_BINARY ?? "codex";
-const promptOverrideDirectory = process.env.KOED_PROMPT_DIR?.trim();
+const configuredPromptOverrideDirectory = process.env.KOED_PROMPT_DIR?.trim();
+const promptOverrideDirectory = configuredPromptOverrideDirectory
+  ? resolve(repoRoot, configuredPromptOverrideDirectory)
+  : undefined;
 const mcpName = process.env.MEMORY_MCP_NAME ?? "koed";
 const codexConfigPath = resolve(
   process.env.CODEX_CONFIG_PATH ?? `${homedir()}/.codex/config.toml`
