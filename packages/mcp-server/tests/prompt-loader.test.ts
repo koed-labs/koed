@@ -8,6 +8,7 @@ import {
   loadPrompt,
   promptFileNames,
   renderPrompt,
+  renderPromptWithMetadata,
   renderPromptTemplate
 } from "../src/prompt-loader.js";
 
@@ -194,5 +195,29 @@ describe("prompt loader", () => {
     expect(prompt).toContain("session_id: session-1");
     expect(prompt).toContain("Rename this session");
     expect(prompt).not.toContain("{{");
+  });
+
+  it("returns rendered text with metadata from the same loaded prompt", async () => {
+    const directory = await tempPromptDir();
+    await writeFile(
+      path.join(directory, "mcp-server-instructions.md"),
+      [
+        "---",
+        "id: mcp-server-instructions",
+        "version: operator-instructions-v2",
+        "---",
+        "Custom instructions."
+      ].join("\n")
+    );
+
+    const prompt = renderPromptWithMetadata(
+      "mcp-server-instructions",
+      {},
+      { env: { [PROMPT_OVERRIDE_DIR_ENV]: directory } }
+    );
+
+    expect(prompt.text).toBe("Custom instructions.");
+    expect(prompt.version).toBe("operator-instructions-v2");
+    expect(prompt.overridden).toBe(true);
   });
 });

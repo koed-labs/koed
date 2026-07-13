@@ -13,7 +13,11 @@ import {
   resolveLcmSummaryWorkerConfig,
   type LcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
-import { loadPrompt, renderPrompt } from "./prompt-loader.js";
+import {
+  loadPrompt,
+  renderPromptWithMetadata,
+  type RenderedPrompt
+} from "./prompt-loader.js";
 
 export const SESSION_TITLE_PROMPT_VERSION = "session-title-codex-json-v1";
 const MAX_SESSION_TITLE_EXCERPT_CHARS = 1_200;
@@ -103,19 +107,28 @@ const sourceItemsForPrompt = (session: SessionTitleCandidate): string =>
     })
     .join("\n");
 
+const buildVersionedSessionTitlePrompt = (
+  session: SessionTitleCandidate,
+  env: NodeJS.ProcessEnv = process.env
+): RenderedPrompt =>
+  renderPromptWithMetadata(
+    "session-title",
+    {
+      session_id: session.id,
+      external_session_id: session.externalSessionId ?? "none",
+      current_title: session.currentTitle
+        ? titlePromptText(session.currentTitle) || "none"
+        : "none",
+      project: session.projectName ?? session.projectPath ?? "unknown",
+      title_event_count: session.eventCount,
+      conversation_excerpts: sourceItemsForPrompt(session)
+    },
+    { env }
+  );
+
 export const buildSessionTitlePrompt = (
   session: SessionTitleCandidate
-): string =>
-  renderPrompt("session-title", {
-    session_id: session.id,
-    external_session_id: session.externalSessionId ?? "none",
-    current_title: session.currentTitle
-      ? titlePromptText(session.currentTitle) || "none"
-      : "none",
-    project: session.projectName ?? session.projectPath ?? "unknown",
-    title_event_count: session.eventCount,
-    conversation_excerpts: sourceItemsForPrompt(session)
-  });
+): string => buildVersionedSessionTitlePrompt(session).text;
 
 export const runCodexAppServerSessionTitle: CodexSessionTitleRunner = async (
   prompt,
@@ -174,15 +187,12 @@ const generateSessionTitle = async (
   runner: CodexSessionTitleRunner
 ): Promise<SessionTitleResult> => {
   try {
-    const result = await runPromptWithRetries(
-      buildSessionTitlePrompt(session),
-      config,
-      runner
-    );
+    const prompt = buildVersionedSessionTitlePrompt(session, config.env);
+    const result = await runPromptWithRetries(prompt.text, config, runner);
     await client.submitSessionTitle(session.id, {
       title: result.title,
       titleModel: result.model,
-      titlePromptVersion: SESSION_TITLE_PROMPT_VERSION
+      titlePromptVersion: prompt.version
     });
     return {
       sessionId: session.id,

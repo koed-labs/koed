@@ -12,6 +12,7 @@ import {
   type MemoryAnswerRetrievalClient
 } from "../src/answer-worker.js";
 import { toolAnswerResponse } from "../src/memory-question-answer-persistence.js";
+import { loadPrompt } from "../src/prompt-loader.js";
 
 const answerObject = (
   answer_markdown: string,
@@ -332,6 +333,16 @@ describe("memory answer worker", () => {
   it("sends recency and conflict guidance to the memory-answer worker prompt", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-answer-"));
     try {
+      const bundledPrompt = loadPrompt("memory-answer-worker");
+      fs.writeFileSync(
+        path.join(directory, "memory-answer-worker.md"),
+        fs
+          .readFileSync(bundledPrompt.sourcePath, "utf8")
+          .replace(
+            `version: ${MEMORY_ANSWER_PROMPT_VERSION}`,
+            "version: operator-memory-answer-v9"
+          )
+      );
       const appServerBinary = writeFakeDynamicMemoryAnswerAppServer(directory, {
         useTools: false,
         requiredPromptSnippets: [
@@ -362,14 +373,15 @@ describe("memory answer worker", () => {
         workspaceId: "workspace-1",
         config: resolveMemoryAnswerWorkerConfig({
           MEMORY_ANSWER_PROVIDER: "codex",
-          MEMORY_ANSWER_CODEX_BINARY: appServerBinary
+          MEMORY_ANSWER_CODEX_BINARY: appServerBinary,
+          KOED_PROMPT_DIR: directory
         })
       });
 
       expect(response.localMemoryWorker.errorMessage).toBeUndefined();
       expect(response.localMemoryWorker.usedFallback).toBe(false);
       expect(response.localMemoryWorker.promptVersion).toBe(
-        MEMORY_ANSWER_PROMPT_VERSION
+        "operator-memory-answer-v9"
       );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

@@ -72,6 +72,10 @@ export interface LoadedPrompt {
   overridden: boolean;
 }
 
+export interface RenderedPrompt extends LoadedPrompt {
+  text: string;
+}
+
 export interface PromptLoadOptions {
   env?: NodeJS.ProcessEnv;
 }
@@ -330,8 +334,22 @@ export const renderPromptTemplate = (
   );
 };
 
+export const renderLoadedPrompt = (
+  prompt: LoadedPrompt,
+  values: Record<string, string | number | boolean | null | undefined>
+): RenderedPrompt => ({
+  ...prompt,
+  text: renderPromptTemplate(prompt.body, values)
+});
+
+export const renderPromptWithMetadata = (
+  id: PromptId,
+  values: Record<string, string | number | boolean | null | undefined>,
+  options: PromptLoadOptions = {}
+): RenderedPrompt => renderLoadedPrompt(loadPrompt(id, options), values);
+
 export const renderPrompt = (
   id: PromptId,
   values: Record<string, string | number | boolean | null | undefined>,
   options: PromptLoadOptions = {}
-): string => renderPromptTemplate(loadPrompt(id, options).body, values);
+): string => renderPromptWithMetadata(id, values, options).text;

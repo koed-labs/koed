@@ -11,7 +11,11 @@ import {
   type CodexAppServerRawEvent,
   type CodexThreadTokenUsage
 } from "./codex-app-server-runner.js";
-import { loadPrompt, renderPrompt } from "./prompt-loader.js";
+import {
+  loadPrompt,
+  renderLoadedPrompt,
+  type LoadedPrompt
+} from "./prompt-loader.js";
 
 const CODEX_ANSWER_PROVIDER = "codex";
 const DEFAULT_ANSWER_TIMEOUT_MS = 120_000;
@@ -1163,7 +1167,8 @@ const createMemoryAnswerDynamicToolHandler = (
 
 const buildDynamicMemoryAnswerPrompt = (
   state: MemoryAnswerToolState,
-  config: MemoryAnswerWorkerConfig
+  config: MemoryAnswerWorkerConfig,
+  promptTemplate: LoadedPrompt
 ): string => {
   const requiredJsonSchema = JSON.stringify(
     {
@@ -1218,7 +1223,7 @@ const buildDynamicMemoryAnswerPrompt = (
         ].join("\n")
       : "No initial evidence has been supplied. Start with koed_memory.scan.";
 
-  return renderPrompt("memory-answer-worker", {
+  return renderLoadedPrompt(promptTemplate, {
     search_domain: state.searchDomain,
     required_json_schema: requiredJsonSchema,
     question: state.query,
@@ -1229,7 +1234,7 @@ const buildDynamicMemoryAnswerPrompt = (
     max_searches: config.maxSearches,
     max_expansions: config.maxExpansions,
     initial_evidence_section: initialEvidenceSection
-  });
+  }).text;
 };
 
 const runCodexWithRetries = async (
@@ -1364,6 +1369,7 @@ const runDynamicToolMemoryAnswer = async (
     sourceAfter?: string;
     sourceBefore?: string;
     limit: number;
+    promptTemplate: LoadedPrompt;
   }
 ): Promise<{
   markdown: string;
@@ -1403,7 +1409,11 @@ const runDynamicToolMemoryAnswer = async (
     errors: []
   });
   const promptState = createState();
-  const prompt = buildDynamicMemoryAnswerPrompt(promptState, options.config);
+  const prompt = buildDynamicMemoryAnswerPrompt(
+    promptState,
+    options.config,
+    options.promptTemplate
+  );
   const promptTokens = countTokensForModel(prompt, {
     model: options.config.model
   });
@@ -1542,7 +1552,10 @@ export const answerWithMemoryWorker = async (
   } = {}
 ): Promise<MemoryAnswerWorkerResponse> => {
   const config = options.config ?? resolveMemoryAnswerWorkerConfig();
-  const promptVersion = MEMORY_ANSWER_PROMPT_VERSION;
+  const promptTemplate = loadPrompt("memory-answer-worker", {
+    env: config.env
+  });
+  const promptVersion = promptTemplate.version;
   const jobId = randomUUID();
   const responseDetail = options.responseDetail ?? "answer_only";
   const promptTokens = countTokensForModel(
@@ -1599,7 +1612,8 @@ export const answerWithMemoryWorker = async (
       recentDays: options.recentDays,
       sourceAfter: options.sourceAfter,
       sourceBefore: options.sourceBefore,
-      limit: options.limit ?? 10
+      limit: options.limit ?? 10,
+      promptTemplate
     });
     return compactMemoryAnswerPayload(
       {

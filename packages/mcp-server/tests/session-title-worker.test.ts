@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MemoryApiClient } from "../src/index.js";
 import {
-  SESSION_TITLE_PROMPT_VERSION,
   buildSessionTitlePrompt,
   generatePendingSessionTitles,
   type SessionTitleCandidate
@@ -104,6 +103,25 @@ Please review the IDE parser parity fix.`;
   });
 
   it("submits generated titles for pending sessions", async () => {
+    const promptDirectory = await mkdtemp(
+      path.join(os.tmpdir(), "koed-title-prompts-")
+    );
+    tempDirs.push(promptDirectory);
+    await writeFile(
+      path.join(promptDirectory, "session-title.md"),
+      [
+        "---",
+        "id: session-title",
+        "version: operator-session-title-v4",
+        "---",
+        "Session {{ session_id }}",
+        "External {{ external_session_id }}",
+        "Current {{ current_title }}",
+        "Project {{ project }}",
+        "Events {{ title_event_count }}",
+        "Conversation {{ conversation_excerpts }}"
+      ].join("\n")
+    );
     const submitted: unknown[] = [];
     const client = {
       async listPendingSessionTitles(input: Record<string, unknown>) {
@@ -135,6 +153,7 @@ Please review the IDE parser parity fix.`;
         cwd: process.cwd(),
         env: {
           ...process.env,
+          KOED_PROMPT_DIR: promptDirectory,
           MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
         }
       },
@@ -157,7 +176,7 @@ Please review the IDE parser parity fix.`;
         input: {
           title: "Explorer Titles",
           titleModel: "codex-app-server:test",
-          titlePromptVersion: SESSION_TITLE_PROMPT_VERSION
+          titlePromptVersion: "operator-session-title-v4"
         }
       }
     ]);
