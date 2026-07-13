@@ -401,6 +401,7 @@ const corsOrigins = (
   } catch {
     // Keep configured origins only.
   }
+  configured.push("koed://app");
   return Array.from(new Set(configured)).join(",");
 };
 

@@ -322,6 +322,10 @@ describe("JSON command output", () => {
         "11111111-1111-4111-8111-111111111111",
         "--backend-id",
         "dev_backend",
+        "--local-project-id",
+        "lp_1111111111111111",
+        "--project-display-name",
+        "koed",
         "--json"
       ],
       {
@@ -339,6 +343,8 @@ describe("JSON command output", () => {
               projectRoot: input.projectRoot,
               teamWorkspaceId: input.teamWorkspaceId,
               backendId: input.backendId ?? null,
+              localProjectId: input.localProjectId ?? null,
+              projectDisplayName: input.projectDisplayName ?? null,
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z"
             }
@@ -351,7 +357,9 @@ describe("JSON command output", () => {
     expect(calls[0]).toMatchObject({
       projectRoot: "/repo/koed",
       teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
-      backendId: "dev_backend"
+      backendId: "dev_backend",
+      localProjectId: "lp_1111111111111111",
+      projectDisplayName: "koed"
     });
     expect(JSON.parse(stdout.text())).toMatchObject({
       ok: true,
@@ -392,6 +400,8 @@ describe("JSON command output", () => {
               projectRoot: input.projectRoot,
               teamWorkspaceId: input.teamWorkspaceId,
               backendId: input.backendId ?? null,
+              localProjectId: input.localProjectId ?? null,
+              projectDisplayName: input.projectDisplayName ?? null,
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z"
             }
@@ -1042,6 +1052,71 @@ describe("JSON command output", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({
       ok: true,
       state: "canceled"
+    });
+  });
+
+  it("prints project discover --json", async () => {
+    const stdout = writer();
+    const seen: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      ["project", "discover", "--cwd", "/repo/koed", "--codex", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+        discoverProjectMetadata: async (_paths, input) => {
+          seen.push(input);
+          return {
+            ok: true,
+            state: "discovered",
+            message: "Project metadata discovered.",
+            project: {
+              schemaVersion: 1,
+              discoveredAt: "2026-01-01T00:00:00.000Z",
+              lastSeenAt: "2026-01-01T00:00:00.000Z",
+              localProjectId: "lp_1111111111111111",
+              displayName: "koed",
+              path: {
+                cwd: "/repo/koed",
+                projectRoot: "/repo/koed",
+                basename: "koed",
+                localPathHash: "hmac_sha256:abc"
+              },
+              packages: []
+            }
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(seen).toEqual([{ cwd: "/repo/koed", aiClientSource: "codex" }]);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "discovered",
+      project: { localProjectId: "lp_1111111111111111" }
+    });
+  });
+
+  it("prints project list --json", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["project", "list", "--json"], {
+      stdout: stdout.stream,
+      resolvePaths: () => ({ repoRoot: "/repo" }) as never,
+      listProjectMetadata: () => ({
+        ok: true,
+        state: "listed",
+        message: "listed",
+        projects: []
+      })
+    });
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      ok: true,
+      state: "listed",
+      projects: []
     });
   });
 

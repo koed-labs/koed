@@ -446,6 +446,25 @@ export const sessions = pgTable(
     sourceHash: text("source_hash"),
     model: text("model"),
     cwd: text("cwd"),
+    capturedProjectProvenance: jsonb("captured_project_provenance")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    automaticProjectId: text("automatic_project_id"),
+    automaticProjectName: text("automatic_project_name"),
+    automaticProjectPath: text("automatic_project_path"),
+    automaticProjectDetectedAt: timestamp("automatic_project_detected_at", {
+      withTimezone: true
+    }),
+    projectOverrideId: text("project_override_id"),
+    projectOverrideName: text("project_override_name"),
+    projectOverridePath: text("project_override_path"),
+    projectOverrideAt: timestamp("project_override_at", {
+      withTimezone: true
+    }),
+    projectOverrideByUserId: uuid("project_override_by_user_id").references(
+      () => users.id
+    ),
     sourceKind: text("source_kind"),
     sourceAdapterVersion: text("source_adapter_version"),
     externalThreadId: text("external_thread_id"),
@@ -493,6 +512,21 @@ export const sessions = pgTable(
     check(
       "sessions_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "sessions_automatic_project_shape_check",
+      sql`(${table.automaticProjectId} is null and ${table.automaticProjectName} is null and ${table.automaticProjectPath} is null and ${table.automaticProjectDetectedAt} is null)
+        or (${table.automaticProjectId} is not null and ${table.automaticProjectName} is not null and ${table.automaticProjectDetectedAt} is not null)`
+    ),
+    check(
+      "sessions_project_override_shape_check",
+      sql`(${table.projectOverrideId} is null and ${table.projectOverrideName} is null and ${table.projectOverridePath} is null and ${table.projectOverrideAt} is null and ${table.projectOverrideByUserId} is null)
+        or (${table.projectOverrideId} is not null and ${table.projectOverrideName} is not null and ${table.projectOverrideAt} is not null and ${table.projectOverrideByUserId} is not null)`
+    ),
+    index("sessions_owner_effective_project_idx").on(
+      table.ownerUserId,
+      table.projectOverrideId,
+      table.automaticProjectId
     )
   ]
 );

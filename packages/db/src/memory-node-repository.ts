@@ -304,15 +304,21 @@ export const createMemoryNodeRepository = (
           mn.updated_at,
           mn.pinned_at,
           coalesce(
-            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
-            s.workspace_id::text,
-            s.cwd
+            s.project_override_id,
+            s.automatic_project_id,
+            case when s.id is null then ev.payload ->> 'workspaceId' end,
+            'unassigned'
           ) as project_id,
-          coalesce(ev.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
           coalesce(
-            ev.payload #>> '{metadata,projectPath}',
-            s.cwd,
-            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end
+            s.project_override_name,
+            s.automatic_project_name,
+            case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
+            'Unassigned'
+          ) as project_name,
+          coalesce(
+            s.project_override_path,
+            s.automatic_project_path,
+            case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
           ) as project_path,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name
@@ -331,11 +337,16 @@ export const createMemoryNodeRepository = (
           and mn.visibility = 'personal'
           and mn.owner_user_id = $1
           and ($2::visibility_scope is null or mn.visibility = $2::visibility_scope)
-          and ($3::text is null or coalesce(
-            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
-            s.workspace_id::text,
-            s.cwd
-          ) = $3)
+          and (
+            $3::text is null
+            or coalesce(
+              s.project_override_id,
+              s.automatic_project_id,
+              case when s.id is null then ev.payload ->> 'workspaceId' end,
+              'unassigned'
+            ) = $3
+            or coalesce(s.project_override_path, s.automatic_project_path) = $3
+          )
           and ($4::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $4)
           and ($5::boolean is null or (($5::boolean = true and mn.pinned_at is not null) or ($5::boolean = false and mn.pinned_at is null)))
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or coalesce(mn.title, '') ilike '%' || $6 || '%')

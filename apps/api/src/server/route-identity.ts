@@ -418,6 +418,13 @@ export const routeIdentityContracts = [
     "Rename a personal captured session."
   ),
   route(
+    "PATCH",
+    "/v1/memory/graph/sessions/{sessionId}/project",
+    "session_or_api_token",
+    "personal_memory",
+    "Move a personal Captured Session to a Personal Project or reset automatic placement."
+  ),
+  route(
     "DELETE",
     "/v1/memory/graph/events/{eventId}",
     "session_or_api_token",

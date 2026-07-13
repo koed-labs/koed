@@ -12,6 +12,15 @@ const memoryActorSchema = z.enum([
   "system"
 ]);
 
+const personalProjectReferenceSchema = z
+  .object({
+    id: z.string().trim().min(1).max(512),
+    name: z.string().trim().min(1).max(160),
+    path: z.string().trim().min(1).max(4096).nullable().optional()
+  })
+  .strict()
+  .transform((project) => ({ ...project, path: project.path ?? null }));
+
 export const createMcpSessionSchema = z.object({
   workspaceId: z.string().uuid().optional(),
   externalSessionId: z.string().min(1).optional(),
@@ -22,7 +31,8 @@ export const createMcpSessionSchema = z.object({
   codexTranscriptPath: z.string().min(1).optional(),
   idempotencyKey: z.string().min(1).optional(),
   sourceHash: z.string().min(1).optional(),
-  metadata: metadataSchema
+  metadata: metadataSchema,
+  detectedProjects: z.array(personalProjectReferenceSchema).max(20).optional()
 });
 
 export const latestCapturedSessionQuerySchema = z

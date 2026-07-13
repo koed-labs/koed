@@ -252,6 +252,16 @@ const mapLcmGraphNode = (row: {
   summaryCorrectedByUserId: row.summary_corrected_by_user_id ?? null
 });
 
+const redactLocalProjectMetadata = (
+  metadata: Record<string, unknown> | null
+): Record<string, unknown> => {
+  const redacted = { ...(metadata ?? {}) };
+  for (const key of ["cwd", "projectPath", "localProjectId", "projectId"]) {
+    delete redacted[key];
+  }
+  return redacted;
+};
+
 const mapLcmGraphEvent = (row: {
   id: string;
   owner_user_id?: string | null;
@@ -322,6 +332,8 @@ const mapLcmGraphThreadRow = (row: {
   project_id: string;
   project_name: string;
   project_path: string | null;
+  project_assignment_source: "detected" | "user_override" | null;
+  captured_project_provenance: Record<string, unknown> | null;
   thread_id: string;
   thread_name: string;
   session_id: string | null;
@@ -357,6 +369,8 @@ const mapLcmGraphThreadRow = (row: {
     projectId: row.project_id,
     projectName: row.project_name,
     projectPath: row.project_path,
+    projectAssignmentSource: row.project_assignment_source,
+    capturedProjectProvenance: row.captured_project_provenance ?? {},
     eventCount: Number(row.event_count),
     invalidatedCount: Number(row.invalidated_count),
     latestAt: row.latest_at.toISOString(),
@@ -5119,17 +5133,32 @@ export const createMemorySourceRepository = (
           mn.summary_structured_json, mn.summary_structured_schema_version,
           mn.lcm_algorithm_version, mn.summary_corrected_at,
           mn.summary_corrected_by_user_id,
-          coalesce(
-            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
-            s.workspace_id::text,
-            s.cwd
-          ) as project_id,
-          coalesce(ev.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
-          coalesce(
-            ev.payload #>> '{metadata,projectPath}',
-            s.cwd,
-            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end
-          ) as project_path,
+          case
+            when $9::uuid is null then coalesce(
+              s.project_override_id,
+              s.automatic_project_id,
+              case when s.id is null then ev.payload ->> 'workspaceId' end,
+              'unassigned'
+            )
+            else $9::text
+          end as project_id,
+          case
+            when $9::uuid is null then coalesce(
+              s.project_override_name,
+              s.automatic_project_name,
+              case when s.id is null then ev.payload #>> '{metadata,projectName}' end,
+              'Unassigned'
+            )
+            else 'Team Workspace'
+          end as project_name,
+          case
+            when $9::uuid is null then coalesce(
+              s.project_override_path,
+              s.automatic_project_path,
+              case when s.id is null then ev.payload #>> '{metadata,projectPath}' end
+            )
+            else null::text
+          end as project_path,
           s.id::text as session_id,
           coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) as thread_id,
           coalesce(s.metadata ->> 'threadName', ev.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text) as thread_name,
@@ -5148,11 +5177,22 @@ export const createMemorySourceRepository = (
         where mn.kind in ('leaf', 'rollup')
           and ($2::boolean = true or mn.invalidated_at is null)
           and ($3::visibility_scope is null or mn.visibility = $3::visibility_scope)
-          and ($4::text is null or coalesce(
-            case when ev.payload ->> 'workspaceId' = s.id::text then null else ev.payload ->> 'workspaceId' end,
-            s.workspace_id::text,
-            s.cwd
-          ) = $4)
+          and (
+            $4::text is null
+            or (
+              $9::uuid is null
+              and (
+                coalesce(
+                  s.project_override_id,
+                  s.automatic_project_id,
+                  case when s.id is null then ev.payload ->> 'workspaceId' end,
+                  'unassigned'
+                ) = $4
+                or coalesce(s.project_override_path, s.automatic_project_path) = $4
+              )
+            )
+            or ($9::uuid is not null and $9::text = $4)
+          )
           and ($5::text is null or coalesce(ev.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text) = $5)
           and ($6::text is null or mn.summary_text ilike '%' || $6 || '%' or mn.id::text = $6)
           and ($7::uuid[] is null or mn.id = any($7::uuid[]))
@@ -5513,22 +5553,40 @@ export const createMemorySourceRepository = (
             me.source_runtime,
             me.capture_method,
             s.model,
-            coalesce(
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
-              s.workspace_id::text,
-              s.cwd
-            ) as workspace_id,
-            coalesce(
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
-              s.workspace_id::text,
-              s.cwd
-            ) as project_id,
-            coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd) as project_name,
-            coalesce(
-              me.payload #>> '{metadata,projectPath}',
-              s.cwd,
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end
-            ) as project_path,
+            case
+              when $12::uuid is null then coalesce(
+                case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
+                s.workspace_id::text,
+                s.cwd
+              )
+              else $12::text
+            end as workspace_id,
+            case
+              when $12::uuid is null then coalesce(
+                s.project_override_id,
+                s.automatic_project_id,
+                case when s.id is null then me.payload ->> 'workspaceId' end,
+                'unassigned'
+              )
+              else $12::text
+            end as project_id,
+            case
+              when $12::uuid is null then coalesce(
+                s.project_override_name,
+                s.automatic_project_name,
+                case when s.id is null then me.payload #>> '{metadata,projectName}' end,
+                'Unassigned'
+              )
+              else 'Team Workspace'
+            end as project_name,
+            case
+              when $12::uuid is null then coalesce(
+                s.project_override_path,
+                s.automatic_project_path,
+                case when s.id is null then me.payload #>> '{metadata,projectPath}' end
+              )
+              else null::text
+            end as project_path,
             s.id::text as session_id,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -5542,18 +5600,33 @@ export const createMemorySourceRepository = (
             me.invalidation_reason,
             me.payload ->> 'content' as content,
             jsonb_build_object('sourceTable', 'memory_events') ||
-              coalesce(me.payload -> 'metadata', '{}'::jsonb) as metadata
+              case
+                when $12::uuid is null then coalesce(me.payload -> 'metadata', '{}'::jsonb)
+                else coalesce(me.payload -> 'metadata', '{}'::jsonb)
+                  - 'projectPath' - 'cwd' - 'localProjectId' - 'projectId'
+              end as metadata
           from memory_events me
           cross join cursor_order co
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
             and ($6::uuid is not null or me.session_id is null or me.capture_method = 'api')
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
-            and ($4::text is null or coalesce(
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
-              s.workspace_id::text,
-              s.cwd
-            ) = $4)
+            and (
+              $4::text is null
+              or (
+                $12::uuid is null
+                and (
+                  coalesce(
+                    s.project_override_id,
+                    s.automatic_project_id,
+                    case when s.id is null then me.payload ->> 'workspaceId' end,
+                    'unassigned'
+                  ) = $4
+                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
+                )
+              )
+              or ($12::uuid is not null and $12::text = $4)
+            )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and ($6::uuid is null or me.id = $6)
             and ($7::text is null or me.payload ->> 'content' ilike '%' || $7 || '%' or me.id::text = $7)
@@ -5621,10 +5694,22 @@ export const createMemorySourceRepository = (
             msg.source_runtime,
             msg.capture_method,
             s.model,
-            coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) as workspace_id,
-            coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) as project_id,
-            coalesce(s.metadata ->> 'projectName', s.workspace_id::text, s.cwd) as project_name,
-            coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
+            case
+              when $12::uuid is null then coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd)
+              else $12::text
+            end as workspace_id,
+            case
+              when $12::uuid is null then coalesce(s.project_override_id, s.automatic_project_id, 'unassigned')
+              else $12::text
+            end as project_id,
+            case
+              when $12::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
+              else 'Team Workspace'
+            end as project_name,
+            case
+              when $12::uuid is null then coalesce(s.project_override_path, s.automatic_project_path)
+              else null::text
+            end as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -5654,7 +5739,17 @@ export const createMemorySourceRepository = (
             and msg.role <> 'tool'
             and msg.capture_method = 'hook'
             and ($3::visibility_scope is null or msg.visibility = $3::visibility_scope)
-            and ($4::text is null or coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
+            and (
+              $4::text is null
+              or (
+                $12::uuid is null
+                and (
+                  coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
+                )
+              )
+              or ($12::uuid is not null and $12::text = $4)
+            )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or msg.id = $6)
             and ($7::text is null or msg.content ilike '%' || $7 || '%' or msg.id::text = $7)
@@ -5745,10 +5840,22 @@ export const createMemorySourceRepository = (
             te.source_runtime,
             te.capture_method,
             s.model,
-            coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) as workspace_id,
-            coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) as project_id,
-            coalesce(s.metadata ->> 'projectName', s.workspace_id::text, s.cwd) as project_name,
-            coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
+            case
+              when $12::uuid is null then coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd)
+              else $12::text
+            end as workspace_id,
+            case
+              when $12::uuid is null then coalesce(s.project_override_id, s.automatic_project_id, 'unassigned')
+              else $12::text
+            end as project_id,
+            case
+              when $12::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
+              else 'Team Workspace'
+            end as project_name,
+            case
+              when $12::uuid is null then coalesce(s.project_override_path, s.automatic_project_path)
+              else null::text
+            end as project_path,
             s.id::text as session_id,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
@@ -5799,7 +5906,17 @@ export const createMemorySourceRepository = (
           where ($2::boolean = true or te.invalidated_at is null)
             and te.capture_method = 'hook'
             and ($3::visibility_scope is null or te.visibility = $3::visibility_scope)
-            and ($4::text is null or coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd) = $4)
+            and (
+              $4::text is null
+              or (
+                $12::uuid is null
+                and (
+                  coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
+                )
+              )
+              or ($12::uuid is not null and $12::text = $4)
+            )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and ($6::uuid is null or te.id = $6)
             and (
@@ -6060,6 +6177,9 @@ export const createMemorySourceRepository = (
       return hydratedRows.map((row) =>
         mapLcmGraphEvent({
           ...row,
+          metadata: teamWorkspaceBoundary
+            ? redactLocalProjectMetadata(row.metadata)
+            : row.metadata,
           includeContent: input.includeContent ?? false,
           includeRaw: input.includeRaw ?? false
         })
@@ -6099,18 +6219,41 @@ export const createMemorySourceRepository = (
           select
             me.id::text as id,
             'event' as row_kind,
-            coalesce(
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
-              s.workspace_id::text,
-              s.cwd,
-              'unknown-project'
-            ) as project_id,
-            coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') as project_name,
-            coalesce(
-              me.payload #>> '{metadata,projectPath}',
-              s.cwd,
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end
-            ) as project_path,
+            case
+              when $9::uuid is null then coalesce(
+                s.project_override_id,
+                s.automatic_project_id,
+                case when s.id is null then me.payload ->> 'workspaceId' end,
+                'unassigned'
+              )
+              else $9::text
+            end as project_id,
+            case
+              when $9::uuid is null then coalesce(
+                s.project_override_name,
+                s.automatic_project_name,
+                case when s.id is null then me.payload #>> '{metadata,projectName}' end,
+                'Unassigned'
+              )
+              else 'Team Workspace'
+            end as project_name,
+            case
+              when $9::uuid is null then coalesce(
+                s.project_override_path,
+                s.automatic_project_path,
+                case when s.id is null then me.payload #>> '{metadata,projectPath}' end
+              )
+              else null::text
+            end as project_path,
+            case
+              when $9::uuid is null and s.project_override_id is not null then 'user_override'
+              when $9::uuid is null and s.automatic_project_id is not null then 'detected'
+              else null
+            end as project_assignment_source,
+            case
+              when $9::uuid is null then coalesce(s.captured_project_provenance, '{}'::jsonb)
+              else '{}'::jsonb
+            end as captured_project_provenance,
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
@@ -6139,19 +6282,32 @@ export const createMemorySourceRepository = (
           left join sessions s on s.id = me.session_id
           where ($2::boolean = true or me.invalidated_at is null)
             and ($3::visibility_scope is null or me.visibility = $3::visibility_scope)
-            and ($4::text is null or coalesce(
-              case when me.payload ->> 'workspaceId' = s.id::text then null else me.payload ->> 'workspaceId' end,
-              s.workspace_id::text,
-              s.cwd,
-              'unknown-project'
-            ) = $4)
+            and (
+              $4::text is null
+              or (
+                $9::uuid is null
+                and (
+                  coalesce(
+                    s.project_override_id,
+                    s.automatic_project_id,
+                    case when s.id is null then me.payload ->> 'workspaceId' end,
+                    'unassigned'
+                  ) = $4
+                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
+                )
+              )
+              or ($9::uuid is not null and $9::text = $4)
+            )
             and ($5::text is null or coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) = $5)
             and (
               $6::text is null
               or me.payload ->> 'content' ilike '%' || $6 || '%'
               or me.id::text = $6
               or coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or coalesce(me.payload #>> '{metadata,projectName}', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
+              or case
+                when $9::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
+                else 'Team Workspace'
+              end ilike '%' || $6 || '%'
             )
             and me.visibility = 'personal'
             and (
@@ -6172,9 +6328,27 @@ export const createMemorySourceRepository = (
           select
             s.id::text as id,
             'session' as row_kind,
-            coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') as project_id,
-            coalesce(s.metadata ->> 'projectName', s.workspace_id::text, s.cwd, 'Unknown project') as project_name,
-            coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
+            case
+              when $9::uuid is null then coalesce(s.project_override_id, s.automatic_project_id, 'unassigned')
+              else $9::text
+            end as project_id,
+            case
+              when $9::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
+              else 'Team Workspace'
+            end as project_name,
+            case
+              when $9::uuid is null then coalesce(s.project_override_path, s.automatic_project_path)
+              else null::text
+            end as project_path,
+            case
+              when $9::uuid is null and s.project_override_id is not null then 'user_override'
+              when $9::uuid is null and s.automatic_project_id is not null then 'detected'
+              else null
+            end as project_assignment_source,
+            case
+              when $9::uuid is null then s.captured_project_provenance
+              else '{}'::jsonb
+            end as captured_project_provenance,
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             s.id as session_id,
@@ -6193,13 +6367,26 @@ export const createMemorySourceRepository = (
           from sessions s
           where ($2::boolean = true or s.invalidated_at is null)
             and ($3::visibility_scope is null or s.visibility = $3::visibility_scope)
-            and ($4::text is null or coalesce(s.metadata ->> 'workspaceId', s.workspace_id::text, s.cwd, 'unknown-project') = $4)
+            and (
+              $4::text is null
+              or (
+                $9::uuid is null
+                and (
+                  coalesce(s.project_override_id, s.automatic_project_id, 'unassigned') = $4
+                  or coalesce(s.project_override_path, s.automatic_project_path) = $4
+                )
+              )
+              or ($9::uuid is not null and $9::text = $4)
+            )
             and ($5::text is null or coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) = $5)
             and (
               $6::text is null
               or s.id::text = $6
               or coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') ilike '%' || $6 || '%'
-              or coalesce(s.metadata ->> 'projectName', s.workspace_id::text, s.cwd, 'Unknown project') ilike '%' || $6 || '%'
+              or case
+                when $9::uuid is null then coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned')
+                else 'Team Workspace'
+              end ilike '%' || $6 || '%'
             )
             and s.visibility = 'personal'
             and (
@@ -6222,6 +6409,8 @@ export const createMemorySourceRepository = (
             project_id,
             (array_agg(project_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_name,
             (array_agg(project_path order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_path,
+            (array_agg(project_assignment_source order by order_at desc, source_sequence desc nulls last, id desc))[1] as project_assignment_source,
+            (array_agg(captured_project_provenance order by order_at desc, source_sequence desc nulls last, id desc))[1] as captured_project_provenance,
             thread_id,
             (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
             (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
@@ -6298,6 +6487,9 @@ export const createMemorySourceRepository = (
           sessionId: thread.sessionId,
           projectId: thread.projectId,
           projectName: thread.projectName,
+          projectPath: thread.projectPath,
+          projectAssignmentSource: thread.projectAssignmentSource,
+          capturedProjectProvenance: thread.capturedProjectProvenance,
           eventCount: thread.eventCount,
           invalidatedCount: thread.invalidatedCount,
           latestAt: thread.latestAt,
@@ -7949,12 +8141,18 @@ export const createMemorySourceRepository = (
                   coalesce(source_ev.id, source_msg.id) as source_id,
                   coalesce(source_ev.captured_at, source_msg.captured_at) as source_created_at,
                   coalesce(source_ev.payload ->> 'content', source_msg.content, '') as source_text,
-                  nullif(source_ev.payload ->> 'projectName', '') as project_name,
-                  coalesce(nullif(source_ev.payload ->> 'projectPath', ''), nullif(source_ev.payload ->> 'workspaceId', ''), nullif(source_msg_session.cwd, '')) as project_path
+                  case
+                    when $13::uuid is null then coalesce(source_session.project_override_name, source_session.automatic_project_name, 'Unassigned')
+                    else 'Team Workspace'
+                  end as project_name,
+                  case
+                    when $13::uuid is null then coalesce(source_session.project_override_path, source_session.automatic_project_path)
+                    else null::text
+                  end as project_path
                 from memory_node_sources source_mns
                 left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
                 left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
-                left join sessions source_msg_session on source_msg_session.id = source_msg.session_id
+                left join sessions source_session on source_session.id = coalesce(source_ev.session_id, source_msg.session_id)
                 where source_mns.memory_node_id = mn.id
                   and (
                     $5::text = 'global'
@@ -7965,8 +8163,19 @@ export const createMemorySourceRepository = (
                     or (
                       $5::text = 'project'
                       and (
-                        source_ev.payload ->> 'workspaceId' = $7
-                        or source_msg_session.cwd = $7
+                        (
+                          $13::uuid is null
+                          and (
+                            coalesce(
+                              source_session.project_override_id,
+                              source_session.automatic_project_id,
+                              case when source_session.id is null then source_ev.payload ->> 'workspaceId' end,
+                              'unassigned'
+                            ) = $7
+                            or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
+                          )
+                        )
+                        or $13::uuid is not null
                       )
                     )
                   )
@@ -8042,6 +8251,7 @@ export const createMemorySourceRepository = (
                 else 0.05
               end::double precision as source_rank
             from memory_events me
+            left join sessions me_session on me_session.id = me.session_id
             where me.invalidated_at is null
               and me.visibility = 'personal'
               and (
@@ -8068,7 +8278,21 @@ export const createMemorySourceRepository = (
                 )
                 or (
                   $5::text = 'project'
-                  and me.payload ->> 'workspaceId' = $7
+                  and (
+                    (
+                      $13::uuid is null
+                      and (
+                        coalesce(
+                          me_session.project_override_id,
+                          me_session.automatic_project_id,
+                          case when me_session.id is null then me.payload ->> 'workspaceId' end,
+                          'unassigned'
+                        ) = $7
+                        or coalesce(me_session.project_override_path, me_session.automatic_project_path) = $7
+                      )
+                    )
+                    or $13::uuid is not null
+                  )
                 )
               )
               and ($8::timestamptz is null or me.captured_at >= $8::timestamptz)
@@ -8122,7 +8346,16 @@ export const createMemorySourceRepository = (
                 )
                 or (
                   $5::text = 'project'
-                  and msg_session.cwd = $7
+                  and (
+                    (
+                      $13::uuid is null
+                      and (
+                        coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $7
+                        or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $7
+                      )
+                    )
+                    or $13::uuid is not null
+                  )
                 )
               )
               and ($8::timestamptz is null or msg.captured_at >= $8::timestamptz)
@@ -8439,7 +8672,7 @@ export const createMemorySourceRepository = (
                       from memory_node_sources boundary_mns
                       left join memory_events boundary_ev on boundary_ev.id = boundary_mns.memory_event_id and boundary_ev.invalidated_at is null and boundary_ev.personal_deleted_at is null
                       left join messages boundary_msg on boundary_msg.id = boundary_mns.message_id and boundary_msg.invalidated_at is null
-                      left join sessions boundary_msg_session on boundary_msg_session.id = boundary_msg.session_id
+                      left join sessions boundary_session on boundary_session.id = coalesce(boundary_ev.session_id, boundary_msg.session_id)
                       where boundary_mns.memory_node_id = me.memory_node_id
                         and not (
                           (
@@ -8451,8 +8684,19 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                boundary_ev.payload ->> 'workspaceId' = $10
-                                or boundary_msg_session.cwd = $10
+                                (
+                                  $15::uuid is null
+                                  and (
+                                    coalesce(
+                                      boundary_session.project_override_id,
+                                      boundary_session.automatic_project_id,
+                                      case when boundary_session.id is null then boundary_ev.payload ->> 'workspaceId' end,
+                                      'unassigned'
+                                    ) = $10
+                                    or coalesce(boundary_session.project_override_path, boundary_session.automatic_project_path) = $10
+                                  )
+                                )
+                                or $15::uuid is not null
                               )
                             )
                           )
@@ -8490,12 +8734,18 @@ export const createMemorySourceRepository = (
                           coalesce(time_ev.id, time_msg.id) as source_id,
                           coalesce(time_ev.captured_at, time_msg.captured_at) as source_created_at,
                           coalesce(time_ev.payload ->> 'content', time_msg.content, '') as source_text,
-                          nullif(time_ev.payload ->> 'projectName', '') as project_name,
-                          coalesce(nullif(time_ev.payload ->> 'projectPath', ''), nullif(time_ev.payload ->> 'workspaceId', ''), nullif(time_msg_session.cwd, '')) as project_path
+                          case
+                            when $15::uuid is null then coalesce(time_session.project_override_name, time_session.automatic_project_name, 'Unassigned')
+                            else 'Team Workspace'
+                          end as project_name,
+                          case
+                            when $15::uuid is null then coalesce(time_session.project_override_path, time_session.automatic_project_path)
+                            else null::text
+                          end as project_path
                         from memory_node_sources time_mns
                         left join memory_events time_ev on time_ev.id = time_mns.memory_event_id and time_ev.invalidated_at is null and time_ev.personal_deleted_at is null
                         left join messages time_msg on time_msg.id = time_mns.message_id and time_msg.invalidated_at is null
-                        left join sessions time_msg_session on time_msg_session.id = time_msg.session_id
+                        left join sessions time_session on time_session.id = coalesce(time_ev.session_id, time_msg.session_id)
                         where time_mns.memory_node_id = me.memory_node_id
                           and (
                             $8::text = 'global'
@@ -8506,8 +8756,19 @@ export const createMemorySourceRepository = (
                             or (
                               $8::text = 'project'
                               and (
-                                time_ev.payload ->> 'workspaceId' = $10
-                                or time_msg_session.cwd = $10
+                                (
+                                  $15::uuid is null
+                                  and (
+                                    coalesce(
+                                      time_session.project_override_id,
+                                      time_session.automatic_project_id,
+                                      case when time_session.id is null then time_ev.payload ->> 'workspaceId' end,
+                                      'unassigned'
+                                    ) = $10
+                                    or coalesce(time_session.project_override_path, time_session.automatic_project_path) = $10
+                                  )
+                                )
+                                or $15::uuid is not null
                               )
                             )
                           )
@@ -8592,6 +8853,7 @@ export const createMemorySourceRepository = (
                 left join memory_nodes mn on mn.id = me.memory_node_id and mn.invalidated_at is null and mn.personal_deleted_at is null
                 left join memory_events ev on ev.id = me.memory_event_id and ev.invalidated_at is null
                 left join messages msg on msg.id = me.message_id and msg.invalidated_at is null
+                left join sessions ev_session on ev_session.id = ev.session_id
                 left join sessions msg_session on msg_session.id = msg.session_id
                 left join memory_node_sources mns on mns.memory_event_id = me.memory_event_id or mns.message_id = me.message_id
                 left join memory_nodes linked_mn on linked_mn.id = mns.memory_node_id and linked_mn.invalidated_at is null and linked_mn.personal_deleted_at is null
@@ -8700,18 +8962,52 @@ export const createMemorySourceRepository = (
                     or (
                       $8::text = 'project'
                       and (
-                        ev.payload ->> 'workspaceId' = $10
-                        or msg_session.cwd = $10
+                        (
+                          $15::uuid is null
+                          and (
+                            (
+                              ev.id is not null
+                              and (
+                                coalesce(
+                                  ev_session.project_override_id,
+                                  ev_session.automatic_project_id,
+                                  case when ev_session.id is null then ev.payload ->> 'workspaceId' end,
+                                  'unassigned'
+                                ) = $10
+                                or coalesce(ev_session.project_override_path, ev_session.automatic_project_path) = $10
+                              )
+                            )
+                            or (
+                              msg.id is not null
+                              and (
+                                coalesce(msg_session.project_override_id, msg_session.automatic_project_id, 'unassigned') = $10
+                                or coalesce(msg_session.project_override_path, msg_session.automatic_project_path) = $10
+                              )
+                            )
+                          )
+                        )
+                        or $15::uuid is not null
                         or exists (
                           select 1
                           from memory_node_sources filter_mns
                           left join memory_events filter_ev on filter_ev.id = filter_mns.memory_event_id and filter_ev.invalidated_at is null and filter_ev.personal_deleted_at is null
                           left join messages filter_msg on filter_msg.id = filter_mns.message_id and filter_msg.invalidated_at is null
-                          left join sessions filter_msg_session on filter_msg_session.id = filter_msg.session_id
+                          left join sessions filter_session on filter_session.id = coalesce(filter_ev.session_id, filter_msg.session_id)
                           where filter_mns.memory_node_id = me.memory_node_id
                             and (
-                              filter_ev.payload ->> 'workspaceId' = $10
-                              or filter_msg_session.cwd = $10
+                              (
+                                $15::uuid is null
+                                and (
+                                  coalesce(
+                                    filter_session.project_override_id,
+                                    filter_session.automatic_project_id,
+                                    case when filter_session.id is null then filter_ev.payload ->> 'workspaceId' end,
+                                    'unassigned'
+                                  ) = $10
+                                  or coalesce(filter_session.project_override_path, filter_session.automatic_project_path) = $10
+                                )
+                              )
+                              or $15::uuid is not null
                             )
                         )
                       )
@@ -8749,7 +9045,7 @@ export const createMemorySourceRepository = (
                       from memory_node_sources source_mns
                       left join memory_events source_ev on source_ev.id = source_mns.memory_event_id and source_ev.invalidated_at is null and source_ev.personal_deleted_at is null
                       left join messages source_msg on source_msg.id = source_mns.message_id and source_msg.invalidated_at is null
-                      left join sessions source_msg_session on source_msg_session.id = source_msg.session_id
+                      left join sessions source_session on source_session.id = coalesce(source_ev.session_id, source_msg.session_id)
                       where source_mns.memory_node_id = me.memory_node_id
                         and (
                           $8::text = 'global'
@@ -8760,8 +9056,19 @@ export const createMemorySourceRepository = (
                           or (
                             $8::text = 'project'
                             and (
-                              source_ev.payload ->> 'workspaceId' = $10
-                              or source_msg_session.cwd = $10
+                              (
+                                $15::uuid is null
+                                and (
+                                  coalesce(
+                                    source_session.project_override_id,
+                                    source_session.automatic_project_id,
+                                    case when source_session.id is null then source_ev.payload ->> 'workspaceId' end,
+                                    'unassigned'
+                                  ) = $10
+                                  or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $10
+                                )
+                              )
+                              or $15::uuid is not null
                             )
                           )
                         )
@@ -9907,6 +10214,7 @@ export const createMemorySourceRepository = (
         select me.id, me.owner_user_id, me.visibility, me.event_type, me.session_id, me.turn_id, me.payload, me.created_at, me.captured_at
         from memory_node_sources mns
         join memory_events me on me.id = mns.memory_event_id
+        left join sessions source_session on source_session.id = me.session_id
         where mns.memory_node_id = $1
           and me.invalidated_at is null
           and me.visibility = 'personal'
@@ -9929,7 +10237,24 @@ export const createMemorySourceRepository = (
           and (
             $5::text = 'global'
             or ($5::text = 'session' and me.session_id = $6::uuid)
-            or ($5::text = 'project' and me.payload ->> 'workspaceId' = $7)
+            or (
+              $5::text = 'project'
+              and (
+                (
+                  $8::uuid is null
+                  and (
+                    coalesce(
+                      source_session.project_override_id,
+                      source_session.automatic_project_id,
+                      case when source_session.id is null then me.payload ->> 'workspaceId' end,
+                      'unassigned'
+                    ) = $7
+                    or coalesce(source_session.project_override_path, source_session.automatic_project_path) = $7
+                  )
+                )
+                or $8::uuid is not null
+              )
+            )
           )
         order by me.captured_at asc, me.id asc
       `,

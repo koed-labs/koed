@@ -11,6 +11,10 @@ local control plane live elsewhere in this repository.
 
 - Browse Koed memory graph/session history from the React app.
 - Run as a browser-hosted Vite app.
+- Provide a session-only embed for Koed Desktop with
+  `?koedDesktop=1&embed=session&selectedThreadId=...`; this keeps the
+  virtualized raw conversation while omitting Explorer's sidebar, settings,
+  Memory composer, and LCM inspector.
 - Keep the active workspace scoped to `apps/explorer`.
 - Remove desktop, server, release, package-library, and marketing paths from the
   active workspace.

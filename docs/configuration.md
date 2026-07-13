@@ -157,7 +157,9 @@ operation families.
 
 Koed-owned local state lives under `KOED_HOME`:
 
-- `config/` for `server.json`, `local-ports.json`, and `explorer-token.json`
+- `config/` for `server.json`, `local-ports.json`, `explorer-token.json`,
+  local Project metadata in `projects.json`, and Project-to-Team Workspace
+  mappings in `project-team-workspaces.json`
 - `run/` for `koed-server.json`, `last-verification.json`, upstream enrollment
   orchestration state, and native runtime state
 - `logs/` for service logs, including `postgres.log`

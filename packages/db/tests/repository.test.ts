@@ -4996,6 +4996,12 @@ describeDb("memory repository visibility", () => {
             eventType: "captured",
             rawEventType: "user_prompt",
             content: `${input.label} fixture memory payload sentinel.`,
+            metadata: {
+              cwd: "/Users/owner/private-checkout",
+              projectPath: "/Users/owner/private-checkout",
+              localProjectId: "owner-device-local-project",
+              projectId: "owner-personal-project"
+            },
             captureMethod: "api",
             idempotencyKey: `encrypted-fixture-event-${randomUUID()}`
           }
@@ -5157,6 +5163,13 @@ describeDb("memory repository visibility", () => {
       );
       expect(JSON.stringify(memberEvents)).not.toContain(
         "RevokedEncryptedFixtureUnique"
+      );
+      expect(memberEvents[0]?.metadata).not.toHaveProperty("cwd");
+      expect(memberEvents[0]?.metadata).not.toHaveProperty("projectPath");
+      expect(memberEvents[0]?.metadata).not.toHaveProperty("localProjectId");
+      expect(memberEvents[0]?.metadata).not.toHaveProperty("projectId");
+      expect(JSON.stringify(memberEvents)).not.toContain(
+        "/Users/owner/private-checkout"
       );
       expect(decrypt).toHaveBeenCalledTimes(1);
 
@@ -15979,6 +15992,451 @@ describeDb("memory repository visibility", () => {
           replacementCount: 2
         }
       }
+    });
+  });
+
+  it("keeps Personal Project overrides authoritative and preserves capture provenance", async () => {
+    const alice = await repo.createUser({
+      email: `alice-project-assignment-${randomUUID()}@example.com`
+    });
+    const bob = await repo.createUser({
+      email: `bob-project-assignment-${randomUUID()}@example.com`
+    });
+    const idempotencyKey = `project-assignment-${randomUUID()}`;
+    const capturedWorkspaceId = randomUUID();
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId: capturedWorkspaceId,
+        externalSessionId: `project-assignment-thread-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        idempotencyKey,
+        detectedProjects: [
+          {
+            id: "project-detected-a",
+            name: "Detected A",
+            path: "/work/detected-a"
+          }
+        ]
+      }
+    );
+    const capturedProvenance = session.capturedProjectProvenance;
+
+    await expect(
+      repo.createCapturedSession(
+        { userId: bob.id },
+        {
+          externalSessionId: `attacker-${randomUUID()}`,
+          idempotencyKey,
+          detectedProjects: [
+            {
+              id: "project-attacker",
+              name: "Attacker Project",
+              path: "/work/attacker"
+            }
+          ]
+        }
+      )
+    ).rejects.toMatchObject({
+      message:
+        "Duplicate Captured Session conflicts with data outside caller visibility",
+      statusCode: 409
+    });
+
+    const moved = await repo.moveCapturedSessionToProject(
+      { userId: alice.id },
+      session.id,
+      {
+        id: "project-manual",
+        name: "Manual Project",
+        path: "/work/manual"
+      }
+    );
+    const forbiddenMove = await repo.moveCapturedSessionToProject(
+      { userId: bob.id },
+      session.id,
+      { id: "project-bob", name: "Bob Project", path: "/work/bob" }
+    );
+    const redetected = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        workspaceId: capturedWorkspaceId,
+        externalSessionId: session.externalSessionId ?? undefined,
+        sourceRuntime: "codex-cli",
+        idempotencyKey,
+        detectedProjects: [
+          {
+            id: "project-detected-b",
+            name: "Detected B",
+            path: "/work/detected-b"
+          }
+        ]
+      }
+    );
+    const latestCapturedSession = await repo.getLatestCapturedSessionForProject(
+      { userId: alice.id },
+      { workspaceId: capturedWorkspaceId }
+    );
+    const organizationalLookup = await repo.getLatestCapturedSessionForProject(
+      { userId: alice.id },
+      { workspaceId: "project-manual" }
+    );
+    await repo.createMemoryEvent(
+      { userId: alice.id },
+      {
+        workspaceId: capturedWorkspaceId,
+        sessionId: session.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "Project assignment should drive grouping and filtering.",
+        idempotencyKey: `project-assignment-event-${randomUUID()}`,
+        sourceHash: `project-assignment-event-${randomUUID()}`
+      }
+    );
+    const manualGraph = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { projectId: "project-manual", limit: 10 }
+    );
+    const reset = await repo.resetCapturedSessionProject(
+      { userId: alice.id },
+      session.id
+    );
+    const automaticGraph = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { projectId: "project-detected-b", limit: 10 }
+    );
+
+    expect(session).toMatchObject({
+      workspaceId: capturedWorkspaceId,
+      automaticProject: { id: "project-detected-a" },
+      project: { id: "project-detected-a" },
+      projectAssignmentSource: "detected"
+    });
+    expect(moved).toMatchObject({
+      workspaceId: capturedWorkspaceId,
+      projectOverride: { id: "project-manual" },
+      project: { id: "project-manual" },
+      projectAssignmentSource: "user_override",
+      capturedProjectProvenance: capturedProvenance
+    });
+    expect(forbiddenMove).toBeNull();
+    expect(redetected).toMatchObject({
+      workspaceId: capturedWorkspaceId,
+      automaticProject: { id: "project-detected-b" },
+      projectOverride: { id: "project-manual" },
+      project: { id: "project-manual" },
+      projectAssignmentSource: "user_override",
+      capturedProjectProvenance: capturedProvenance
+    });
+    expect(latestCapturedSession?.id).toBe(session.id);
+    expect(organizationalLookup).toBeNull();
+    expect(manualGraph[0]).toMatchObject({
+      id: "project-manual",
+      eventCount: 1,
+      threads: [
+        { sessionId: session.id, projectAssignmentSource: "user_override" }
+      ]
+    });
+    expect(reset).toMatchObject({
+      workspaceId: capturedWorkspaceId,
+      projectOverride: null,
+      project: { id: "project-detected-b" },
+      projectAssignmentSource: "detected",
+      capturedProjectProvenance: capturedProvenance
+    });
+    expect(automaticGraph[0]).toMatchObject({
+      id: "project-detected-b",
+      eventCount: 1,
+      threads: [{ sessionId: session.id, projectAssignmentSource: "detected" }]
+    });
+  });
+
+  it("leaves ambiguous detected Personal Projects unassigned", async () => {
+    const alice = await repo.createUser({
+      email: `alice-ambiguous-project-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `ambiguous-project-${randomUUID()}`,
+        idempotencyKey: `ambiguous-project-${randomUUID()}`,
+        detectedProjects: [
+          { id: "project-a", name: "Project A", path: "/work/a" },
+          { id: "project-b", name: "Project B", path: "/work/b" }
+        ]
+      }
+    );
+    const graph = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { projectId: "unassigned", limit: 10 }
+    );
+
+    expect(session).toMatchObject({
+      automaticProject: null,
+      projectOverride: null,
+      project: null,
+      projectAssignmentSource: null,
+      capturedProjectProvenance: { outcome: "ambiguous" }
+    });
+    expect(graph[0]).toMatchObject({ id: "unassigned", name: "Unassigned" });
+  });
+
+  it("preserves automatic Project assignment on incomplete idempotent replays", async () => {
+    const owner = await repo.createUser({
+      email: `project-replay-owner-${randomUUID()}@example.com`
+    });
+    const idempotencyKey = `project-replay-${randomUUID()}`;
+    const created = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `project-replay-thread-${randomUUID()}`,
+        idempotencyKey,
+        detectedProjects: [
+          { id: "project-a", name: "Project A", path: "/work/project-a" }
+        ]
+      }
+    );
+    const incompleteReplay = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: created.externalSessionId ?? undefined,
+        idempotencyKey
+      }
+    );
+    const explicitNoSignalReplay = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: created.externalSessionId ?? undefined,
+        idempotencyKey,
+        detectedProjects: []
+      }
+    );
+
+    expect(incompleteReplay).toMatchObject({
+      id: created.id,
+      automaticProject: { id: "project-a" },
+      project: { id: "project-a" },
+      projectAssignmentSource: "detected",
+      capturedProjectProvenance: created.capturedProjectProvenance
+    });
+    expect(explicitNoSignalReplay).toMatchObject({
+      id: created.id,
+      automaticProject: null,
+      project: null,
+      projectAssignmentSource: null,
+      capturedProjectProvenance: created.capturedProjectProvenance
+    });
+  });
+
+  it("keeps Personal Project assignment mutable without changing capture or Team authority", async () => {
+    const owner = await repo.createUser({
+      email: `project-assignment-owner-${randomUUID()}@example.com`
+    });
+    const member = await repo.createUser({
+      email: `project-assignment-member-${randomUUID()}@example.com`
+    });
+    const team = await repo.createTeam(
+      { userId: owner.id },
+      { name: "Project Assignment Team" }
+    );
+    await repo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
+    const teamWorkspace = await repo.createTeamWorkspace(
+      { userId: owner.id },
+      { teamId: team.id, name: "Project Assignment Workspace" }
+    );
+    await repo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: teamWorkspace!.id,
+        userId: member.id,
+        access: "read"
+      }
+    );
+
+    const idempotencyKey = `project-assignment-${randomUUID()}`;
+    const captured = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "source-project-a",
+        externalSessionId: `project-assignment-thread-${randomUUID()}`,
+        idempotencyKey,
+        metadata: {
+          projectName: "Source Project A",
+          projectPath: "/work/source-a"
+        },
+        detectedProjects: [
+          {
+            id: "project-a",
+            name: "Project A",
+            path: "/work/source-a"
+          }
+        ]
+      }
+    );
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        workspaceId: "source-project-a",
+        sessionId: captured.id,
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_prompt",
+        visibility: "personal",
+        content: "Mutable assignment lexical sentinel",
+        metadata: {
+          projectName: "Source Project A",
+          projectPath: "/work/source-a",
+          externalSessionId: captured.externalSessionId
+        }
+      }
+    );
+    await repo.createTeamSessionShareGrant(
+      { userId: owner.id },
+      { teamWorkspaceId: teamWorkspace!.id, sessionId: captured.id }
+    );
+
+    const moved = await repo.moveCapturedSessionToProject(
+      { userId: owner.id },
+      captured.id,
+      { id: "project-b", name: "Project B", path: "/work/manual-b" }
+    );
+    const redetected = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        workspaceId: "source-project-c",
+        externalSessionId: captured.externalSessionId ?? undefined,
+        idempotencyKey,
+        metadata: {
+          projectName: "Source Project C",
+          projectPath: "/work/source-c"
+        },
+        detectedProjects: [
+          {
+            id: "project-c",
+            name: "Project C",
+            path: "/work/source-c"
+          }
+        ]
+      }
+    );
+    const rejectedOtherOwner = await repo.moveCapturedSessionToProject(
+      { userId: member.id },
+      captured.id,
+      { id: "project-c", name: "Project C", path: null }
+    );
+    const personalProjects = await repo.listLcmGraphThreads(
+      { userId: owner.id },
+      { projectId: "project-b", limit: 20 }
+    );
+    const teamProjects = await repo.listLcmGraphThreads(
+      { userId: member.id },
+      { teamWorkspaceId: teamWorkspace!.id, limit: 20 }
+    );
+    const engine = createMemoryEngine(repo);
+    const movedRecall = await engine.searchMemory({
+      requesterContext: { userId: owner.id },
+      query: "Mutable assignment lexical sentinel",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: "project-b",
+      retrievalStage: "lexical_search",
+      strictLimit: true,
+      limit: 1
+    });
+    const oldProjectRecall = await engine.searchMemory({
+      requesterContext: { userId: owner.id },
+      query: "Mutable assignment lexical sentinel",
+      scope: "personal",
+      searchDomain: "project",
+      workspaceId: "project-a",
+      retrievalStage: "lexical_search",
+      strictLimit: false,
+      limit: 1
+    });
+    const reset = await repo.resetCapturedSessionProject(
+      { userId: owner.id },
+      captured.id
+    );
+    const ambiguous = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        idempotencyKey: `ambiguous-project-${randomUUID()}`,
+        detectedProjects: [
+          { id: "project-a", name: "Project A", path: "/work/a" },
+          { id: "project-b", name: "Project B", path: "/work/b" }
+        ]
+      }
+    );
+
+    expect(captured).toMatchObject({
+      project: { id: "project-a" },
+      projectAssignmentSource: "detected",
+      capturedProjectProvenance: {
+        outcome: "unambiguous",
+        candidates: [{ id: "project-a" }]
+      }
+    });
+    expect(moved).toMatchObject({
+      project: { id: "project-b" },
+      projectOverride: { id: "project-b" },
+      projectAssignmentSource: "user_override"
+    });
+    expect(redetected).toMatchObject({
+      id: captured.id,
+      automaticProject: { id: "project-c" },
+      project: { id: "project-b" },
+      projectAssignmentSource: "user_override",
+      capturedProjectProvenance: {
+        candidates: [{ id: "project-a" }]
+      }
+    });
+    expect(rejectedOtherOwner).toBeNull();
+    expect(personalProjects).toEqual([
+      expect.objectContaining({
+        id: "project-b",
+        eventCount: 1,
+        threads: [
+          expect.objectContaining({
+            sessionId: captured.id,
+            projectAssignmentSource: "user_override"
+          })
+        ]
+      })
+    ]);
+    expect(movedRecall.results).toEqual([
+      expect.objectContaining({ sourceId: event.id })
+    ]);
+    expect(oldProjectRecall.results).toHaveLength(0);
+    expect(teamProjects).toEqual([
+      expect.objectContaining({
+        id: teamWorkspace!.id,
+        name: "Team Workspace",
+        path: null,
+        threads: [
+          expect.objectContaining({
+            projectAssignmentSource: null,
+            capturedProjectProvenance: {}
+          })
+        ]
+      })
+    ]);
+    expect(reset).toMatchObject({
+      automaticProject: { id: "project-c" },
+      projectOverride: null,
+      project: { id: "project-c" },
+      projectAssignmentSource: "detected"
+    });
+    expect(ambiguous).toMatchObject({
+      automaticProject: null,
+      projectOverride: null,
+      project: null,
+      projectAssignmentSource: null,
+      capturedProjectProvenance: { outcome: "ambiguous" }
     });
   });
 

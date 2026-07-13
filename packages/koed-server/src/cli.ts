@@ -43,6 +43,12 @@ import {
   listProjectTeamWorkspaceLinks,
   removeProjectTeamWorkspaceLink
 } from "./project-team-workspace-links.js";
+import {
+  discoverProjectMetadata,
+  forgetProjectMetadata,
+  getProjectMetadataForCwd,
+  listProjectMetadata
+} from "./project-metadata.js";
 import { shareProjectCapturedSession } from "./team-dogfood.js";
 import {
   cancelUpstreamEnrollment,
@@ -79,6 +85,10 @@ Commands:
   upstream enroll status --json Print local upstream enrollment state
   upstream enroll cancel --json Cancel local upstream enrollment orchestration
   upstream disconnect --json Disable local upstream routes and enrollment state
+  project discover --json Discover and store local Project metadata
+  project list --json     List discovered local Project metadata
+  project show --json     Show discovered Project metadata for a cwd
+  project forget --json   Forget discovered Project metadata by local Project id
   team workspace link --json Link a local Project root to a Team Workspace id
   team workspace list --json List local Project to Team Workspace links
   team workspace show --json Show the Team Workspace link for a Project root
@@ -132,6 +142,10 @@ export interface KoedServerCliDependencies {
   listProjectTeamWorkspaceLinks?: typeof listProjectTeamWorkspaceLinks;
   getProjectTeamWorkspaceLink?: typeof getProjectTeamWorkspaceLink;
   removeProjectTeamWorkspaceLink?: typeof removeProjectTeamWorkspaceLink;
+  discoverProjectMetadata?: typeof discoverProjectMetadata;
+  listProjectMetadata?: typeof listProjectMetadata;
+  getProjectMetadataForCwd?: typeof getProjectMetadataForCwd;
+  forgetProjectMetadata?: typeof forgetProjectMetadata;
   shareProjectCapturedSession?: typeof shareProjectCapturedSession;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
@@ -370,6 +384,10 @@ export const runKoedServerCli = async (
       getProjectWorkspaceLink = getProjectTeamWorkspaceLink,
     removeProjectTeamWorkspaceLink:
       removeProjectWorkspaceLink = removeProjectTeamWorkspaceLink,
+    discoverProjectMetadata: discoverProject = discoverProjectMetadata,
+    listProjectMetadata: listProjects = listProjectMetadata,
+    getProjectMetadataForCwd: getProjectForCwd = getProjectMetadataForCwd,
+    forgetProjectMetadata: forgetProject = forgetProjectMetadata,
     shareProjectCapturedSession:
       shareProjectSession = shareProjectCapturedSession,
     loadEnvironment = loadRepoEnv,
@@ -718,6 +736,41 @@ export const runKoedServerCli = async (
       return result.ok ? 0 : 1;
     }
 
+    if (command === "project") {
+      const projectCommand = subcommand;
+      const paths = resolvePaths();
+      const result =
+        projectCommand === "discover"
+          ? await discoverProject(paths, {
+              cwd: flagValue(args, "--cwd") ?? process.cwd(),
+              aiClientSource: args.includes("--codex") ? "codex" : undefined
+            })
+          : projectCommand === "list"
+            ? listProjects(paths)
+            : projectCommand === "show"
+              ? getProjectForCwd(
+                  paths,
+                  flagValue(args, "--cwd") ?? process.cwd()
+                )
+              : projectCommand === "forget"
+                ? forgetProject(
+                    paths,
+                    requireFlagValue(args, "--local-project-id")
+                  )
+                : null;
+      if (!result) {
+        throw new Error(
+          "project command must be discover, list, show, or forget."
+        );
+      }
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
+    }
+
     if (command === "team" && subcommand === "workspace") {
       const teamWorkspaceCommand = args[2];
       const paths = resolvePaths();
@@ -728,7 +781,9 @@ export const runKoedServerCli = async (
               teamWorkspaceId: requireFlagValue(args, "--team-workspace-id"),
               backendId:
                 flagValue(args, "--backend-id") ??
-                flagValue(args, "--upstream-backend-id")
+                flagValue(args, "--upstream-backend-id"),
+              localProjectId: flagValue(args, "--local-project-id"),
+              projectDisplayName: flagValue(args, "--project-display-name")
             })
           : teamWorkspaceCommand === "list"
             ? listProjectWorkspaceLinks(paths)

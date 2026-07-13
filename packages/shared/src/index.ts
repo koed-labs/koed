@@ -35,6 +35,15 @@ export {
   isLoopbackHostname
 } from "./http-transport-security.js";
 export {
+  deriveLocalProjectId,
+  hmacProjectValue,
+  isPortableGitRemote,
+  mergeGitRemoteAliases,
+  normalizeGitRemoteUrl,
+  normalizeProjectDisplayName,
+  safeProjectMetadataForRemote
+} from "./project-metadata.js";
+export {
   deleteLocalEdgeClientCredential,
   deleteUpstreamCredentialSecret,
   localEdgeClientCredentialReferenceFor,
@@ -69,6 +78,11 @@ export type {
   EncryptedPackageManifest,
   EncryptedPackageObjectClass
 } from "./encrypted-package.js";
+export type {
+  NormalizedGitRemote,
+  ProjectMetadataV1,
+  ProjectPackageMetadata
+} from "./project-metadata.js";
 export type {
   LocalEdgeClientCredentialAuthorization,
   LocalEdgeClientCredentialInput,

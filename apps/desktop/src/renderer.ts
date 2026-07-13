@@ -3,10 +3,27 @@ import "./styles.css";
 import {
   stateLabels,
   statusCards,
+  statusGroups,
   type StatusCardAction,
   type StatusCardId,
   type StatusComponentKey
 } from "./status-model.js";
+import {
+  assignmentTargetProjects,
+  LatestRequestGate,
+  mergeProjectSources,
+  projectIdForSession,
+  projectIsActive,
+  projectLatestAt,
+  relativeTime,
+  sessionSelectionId,
+  sortProjects,
+  type DesktopProject,
+  type DesktopProjectGroup,
+  type DesktopProjectMetadata,
+  type DesktopThreadGroup,
+  type DesktopView
+} from "./project-memory-ui.js";
 import type {
   ComponentState,
   ComponentStatus,
@@ -23,6 +40,9 @@ const startupStepLabels = {
   integration: "Codex/MCP/Capture Hook",
   health: "Health checks"
 } as const;
+
+const PROJECT_ASSIGNMENT_REFRESH_ERROR =
+  "Project assignment saved, but Project list could not refresh. Koed will retry automatically.";
 
 const startupPhaseLabels = {
   status: "Checking local status",
@@ -96,6 +116,19 @@ let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
 let explorerApiToken: string | null = null;
 let teamBackendUrlInput = "";
+let activeDesktopView: DesktopView = "projects";
+let showInactiveProjects = false;
+let selectedProjectId: string | null = null;
+let selectedSessionId: string | null = null;
+let projectGraph: DesktopProjectGroup[] = [];
+let projectCatalog: DesktopProjectMetadata[] = [];
+let projectGraphError = "";
+let projectDataRevision = 0;
+let projectGraphFingerprint = "";
+let projectCatalogFingerprint = "";
+const projectGraphRequestGate = new LatestRequestGate();
+let projectAssignmentBusy = false;
+let projectAssignmentError = "";
 type StartupLogLine = {
   key?: string;
   text: string;
@@ -1170,6 +1203,12 @@ const statusCardResultCue = (cardId: StatusCardId): string => {
     return "Waiting for first status";
   }
   const state = statusCardState(cardId);
+  if (
+    cardId === "serverPackage" &&
+    status.serverPackage?.source === "bundled-fallback"
+  ) {
+    return "Bundled fallback active";
+  }
   if (state === "healthy") {
     return "Reachable";
   }
@@ -1340,11 +1379,11 @@ const readinessCheckSummary = (check: ReadinessCheckDefinition): string => {
   }
   if (check.id === "package") {
     const serverPackage = status.serverPackage;
-    if (serverPackage?.state === "healthy") {
-      return `${checkedAtLabel(check.id)} · Standalone package ${serverPackage.currentVersion ?? "active"}.`;
-    }
     if (serverPackage?.source === "bundled-fallback") {
       return `${checkedAtLabel(check.id)} · Using bundled fallback runtime.`;
+    }
+    if (serverPackage?.state === "healthy") {
+      return `${checkedAtLabel(check.id)} · Standalone package ${serverPackage.currentVersion ?? "active"}.`;
     }
     return `${checkedAtLabel(check.id)} · ${serverPackage?.message ?? "Waiting for server package status"}.`;
   }
@@ -1419,75 +1458,226 @@ const renderStatusCardActions = (cardId: StatusCardId): string => {
     .join("");
 };
 
-const renderStartupSteps = (): string => `
-  <div class="startup-steps">
-    ${startupSteps
-      .map((step) => {
-        const stepState = stepStates[step.id];
-        const support = getStartupSupportForStep(step.id);
-        return `
-          <details class="startup-step ${stepState}" data-startup-step="${step.id}">
-            <summary>
-              <div class="startup-step-summary">
-                <span class="startup-step-disclosure" aria-hidden="true"></span>
-                <div class="startup-step-copy">
-                  <strong>${escapeHtml(step.label)}</strong>
-                  <small data-startup-step-summary="${step.id}">${escapeHtml(support.body)}</small>
-                </div>
-                <span data-startup-step-state="${step.id}">${startupStatusLabel(stepState)}</span>
-              </div>
-            </summary>
-            <div class="startup-step-body">
-              <pre class="startup-step-log" data-startup-step-log="${step.id}">${escapeHtml(startupLogText(step.id))}</pre>
-              <div class="status-group-actions" data-startup-step-actions="${step.id}"></div>
-            </div>
-          </details>
-        `;
-      })
-      .join("")}
+const desktopProjects = (): DesktopProject[] =>
+  mergeProjectSources(projectGraph, projectCatalog);
+
+const sortedProjects = (): DesktopProject[] => sortProjects(desktopProjects());
+
+const selectedProject = (): DesktopProject | null =>
+  sortedProjects().find((project) => project.id === selectedProjectId) ?? null;
+
+const selectedSession = (): DesktopThreadGroup | null =>
+  selectedProject()?.threads.find(
+    (thread) => sessionSelectionId(thread) === selectedSessionId
+  ) ?? null;
+
+const countLabel = (count: number, singular: string): string =>
+  `${count} ${count === 1 ? singular : `${singular}s`}`;
+
+const projectSecondaryLabel = (project: DesktopProject): string =>
+  project.remoteDisplay ?? project.path ?? "Local Project";
+
+const projectAssignmentLabel = (session: DesktopThreadGroup): string => {
+  if (session.projectAssignmentSource === "user_override") return "Manual";
+  if (session.projectAssignmentSource === "detected") return "Automatic";
+  return "Unassigned";
+};
+
+const renderProjectAssignmentControls = (
+  session: DesktopThreadGroup
+): string => {
+  if (!session.sessionId) {
+    return `<span class="assignment-state unassigned">Unassigned · session unavailable</span>`;
+  }
+  const targets = assignmentTargetProjects(sortedProjects(), session.projectId);
+  const options = targets
+    .map(
+      (project) =>
+        `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`
+    )
+    .join("");
+  return `
+    <form class="project-assignment-form" data-session-project-form aria-busy="${projectAssignmentBusy}">
+      <label><span>Personal Project</span><select data-session-project-target required ${projectAssignmentBusy || targets.length === 0 ? "disabled" : ""}><option value="" selected disabled>Choose Project…</option>${options}</select></label>
+      <button type="submit" class="secondary" ${projectAssignmentBusy || targets.length === 0 ? "disabled" : ""}>${projectAssignmentBusy ? "Saving…" : "Move"}</button>
+      ${session.projectAssignmentSource === "user_override" ? `<button type="button" class="secondary" data-reset-session-project ${projectAssignmentBusy ? "disabled" : ""}>Reset to automatic</button>` : ""}
+      <span class="assignment-state ${session.projectAssignmentSource ?? "unassigned"}" role="status" aria-live="polite">${projectAssignmentLabel(session)}</span>
+    </form>
+    ${projectAssignmentError ? `<p class="assignment-error" role="alert">${escapeHtml(projectAssignmentError)}</p>` : ""}
+  `;
+};
+
+const renderProjectCard = (project: DesktopProject): string => {
+  const active = projectIsActive(project);
+  return `
+    <button type="button" class="project-card" data-project-id="${escapeHtml(project.id)}">
+      <span class="project-icon" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase() || "P")}</span>
+      <span class="project-card-copy">
+        <strong>${escapeHtml(project.name || "Untitled Project")}</strong>
+        <small>${escapeHtml(projectSecondaryLabel(project))}</small>
+        <span>${countLabel(project.threads.length, "session")} · ${countLabel(project.eventCount, "memory event")}${project.branch ? ` · ${escapeHtml(project.branch)}` : ""}</span>
+      </span>
+      <span class="project-card-tail"><span class="activity-state ${active ? "active" : "inactive"}">${active ? "Active" : "Inactive"}</span><small>${escapeHtml(relativeTime(projectLatestAt(project)))}</small><span aria-hidden="true">›</span></span>
+    </button>
+  `;
+};
+
+const renderProjectSection = (
+  title: string,
+  projects: DesktopProject[],
+  tone: "active" | "inactive"
+): string => `
+  <section class="project-section ${tone}">
+    <div class="section-heading"><span></span><strong>${escapeHtml(title)}</strong><em>${projects.length}</em></div>
+    <div class="project-list">${projects.map(renderProjectCard).join("")}</div>
+  </section>
+`;
+
+const renderProjectList = (): string => {
+  const projects = sortedProjects();
+  const activeProjects = projects.filter((project) => projectIsActive(project));
+  const inactiveProjects = projects.filter(
+    (project) => !projectIsActive(project)
+  );
+  return `
+    <div class="projects-screen screen-stack">
+      <header class="screen-header">
+        <div><p class="eyebrow">Personal Memory</p><h1>Projects</h1><p>Recent local Projects, with every captured session gathered in one place.</p></div>
+        <span class="scope-badge"><span></span> On this device</span>
+      </header>
+      ${activeProjects.length ? renderProjectSection("ACTIVE PROJECTS", activeProjects, "active") : `<div class="empty-card hero-empty"><strong>No active Projects yet</strong><p>${escapeHtml(projectGraphError || "Use your AI Client in a Project and captured sessions will appear here.")}</p></div>`}
+      ${inactiveProjects.length ? `<button type="button" class="show-inactive" data-toggle-inactive aria-expanded="${showInactiveProjects}">${showInactiveProjects ? "Hide inactive Projects" : `Show inactive Projects · ${inactiveProjects.length}`} <span aria-hidden="true">${showInactiveProjects ? "↑" : "↓"}</span></button>` : ""}
+      ${showInactiveProjects && inactiveProjects.length ? renderProjectSection("INACTIVE PROJECTS", inactiveProjects, "inactive") : ""}
+    </div>
+  `;
+};
+
+const renderSessionList = (): string => {
+  const project = selectedProject();
+  if (!project) {
+    return renderProjectList();
+  }
+  const threads = [...project.threads].sort(
+    (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
+  );
+  return `
+    <div class="project-detail-screen screen-stack">
+      <nav class="breadcrumbs" aria-label="Breadcrumb"><button type="button" data-back-to-projects>Projects</button><span>›</span><strong>${escapeHtml(project.name)}</strong></nav>
+      <header class="project-detail-header"><span class="project-monogram" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase() || "P")}</span><div><p class="eyebrow">Local Project</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.path ?? "Local path unavailable")}</p></div></header>
+      <div class="project-summary-grid"><div><strong>${project.threads.length}</strong><span>Sessions</span></div><div><strong>${project.eventCount}</strong><span>Memory events</span></div><div><strong>${escapeHtml(relativeTime(projectLatestAt(project)))}</strong><span>Last activity</span></div></div>
+      <div class="project-identity-row">${project.branch ? `<span>Branch · ${escapeHtml(project.branch)}</span>` : ""}${project.isWorktree ? "<span>Git worktree</span>" : ""}${project.catalogued ? "<span>Project metadata discovered</span>" : ""}</div>
+      <section class="sessions-pane">
+        <div class="section-heading"><span></span><strong>CAPTURED SESSIONS</strong><em>${threads.length}</em></div>
+        <div class="session-list">
+        ${
+          threads.length
+            ? threads
+                .map((thread) => {
+                  const id = sessionSelectionId(thread);
+                  return `<button type="button" class="session-row" data-session-id="${escapeHtml(id)}"><span class="session-icon" aria-hidden="true">↳</span><span class="session-row-copy"><strong>${escapeHtml(thread.name || "Untitled session")}</strong><small>${escapeHtml(thread.sample || "Captured conversation")}</small><span>${countLabel(thread.eventCount, "memory event")} · ${escapeHtml(relativeTime(thread.latestAt))}</span></span><span class="session-row-tail" aria-hidden="true">›</span></button>`;
+                })
+                .join("")
+            : `<div class="empty-card"><strong>No captured sessions yet</strong><p>The Project metadata is ready. Sessions will appear after the Supported Capture Hook records activity here.</p></div>`
+        }
+        </div>
+      </section>
+    </div>
+  `;
+};
+
+const explorerSessionUrl = (): string => {
+  const url = new URL(status?.explorer.url || "http://localhost:5173");
+  url.searchParams.set("koedDesktop", "1");
+  url.searchParams.set("embed", "session");
+  if (status?.api.url) url.searchParams.set("koedApiBaseUrl", status.api.url);
+  if (explorerApiToken) url.searchParams.set("koedApiToken", explorerApiToken);
+  if (selectedSessionId) url.searchParams.set("sessionId", selectedSessionId);
+  const session = selectedSession();
+  if (session) {
+    url.searchParams.set(
+      "selectedThreadId",
+      `${encodeURIComponent(session.projectId)}:${encodeURIComponent(session.id)}`
+    );
+  }
+  return url.toString();
+};
+
+const renderConversationPane = (): string => {
+  const session = selectedSession();
+  if (!session) {
+    return selectedProject() ? renderSessionList() : renderProjectList();
+  }
+  return `
+    <div class="conversation-screen">
+      <nav class="breadcrumbs conversation-breadcrumbs" aria-label="Breadcrumb"><button type="button" data-back-to-projects>Projects</button><span>›</span><button type="button" data-back-to-project>${escapeHtml(selectedProject()?.name ?? session.projectName)}</button><span>›</span><strong>${escapeHtml(session.name || "Untitled session")}</strong></nav>
+      <section class="conversation-pane">
+        <div class="conversation-toolbar"><div><p class="eyebrow">Raw conversation</p><strong>${escapeHtml(session.name || "Untitled session")}</strong><small>${countLabel(session.eventCount, "memory event")} · ${escapeHtml(relativeTime(session.latestAt))}</small></div><button type="button" class="secondary" data-open-explorer-session>Open full Explorer ↗</button></div>
+        <div class="conversation-assignment">${renderProjectAssignmentControls(session)}</div>
+        <iframe class="conversation-frame" title="Koed Explorer raw conversation" src="${escapeHtml(explorerSessionUrl())}"></iframe>
+      </section>
+    </div>
+  `;
+};
+
+const statusGroupState = (
+  group: (typeof statusGroups)[number]
+): ComponentState =>
+  aggregateGroupState(
+    group.componentKeys.map((key) => statusComponent(key)?.state ?? "starting")
+  );
+
+const statusGroupSummary = (group: (typeof statusGroups)[number]): string => {
+  if (!status) return "Waiting for first status";
+  const unhealthy = group.componentKeys
+    .map((key) => statusComponent(key))
+    .find((component) => component && component.state !== "healthy");
+  return unhealthy
+    ? componentMessage(unhealthy)
+    : `${group.componentKeys.length}/${group.componentKeys.length} checks healthy`;
+};
+
+const renderSettingsPane = (): string => `
+  <div class="settings-screen screen-stack">
+    <header class="screen-header"><div><p class="eyebrow">This device</p><h1>Settings</h1><p>A compact view of local Personal Memory readiness.</p></div><span class="overall-health ${status?.state ?? "starting"}">${status ? stateLabels[status.state] : "Checking"}</span></header>
+    <div class="settings-list">
+      ${statusGroups
+        .map((group) => {
+          const state = statusGroupState(group);
+          return `<article class="settings-row ${state}"><span class="settings-state-dot" aria-hidden="true"></span><span><strong>${escapeHtml(group.title)}</strong><small>${escapeHtml(group.description)}</small></span><span class="settings-result"><strong>${escapeHtml(stateLabels[state])}</strong><small>${escapeHtml(statusGroupSummary(group))}</small></span></article>`;
+        })
+        .join("")}
+    </div>
+    <div class="settings-actions">
+      <button type="button" data-startup-action="refresh-status">Refresh</button>
+      <button type="button" class="secondary" data-startup-action="doctor">Run doctor</button>
+      <button type="button" class="secondary" data-startup-action="setup_codex">Setup AI Client</button>
+    </div>
+    <details class="diagnostic-details"><summary>Advanced diagnostics <span>${statusCards.length} components</span></summary><div class="diagnostic-list">${statusCards.map((card) => `<div class="diagnostic-row"><span>${escapeHtml(card.title)}</span><strong class="${statusCardState(card.id)}">${escapeHtml(statusCardResultCue(card.id))}</strong></div>`).join("")}</div></details>
   </div>
 `;
 
-const renderStatusCards = (variant: "startup" | "sidebar"): string => `
-  <div class="dependency-cards ${variant}" data-status-card-list="${variant}">
-    ${statusCards
-      .map((card) => {
-        const state = statusCardState(card.id);
-        const liveOutputClass =
-          variant === "sidebar" ? "status-card-live-output" : "readiness-log";
-        return `
-          <details class="status-group dependency-card ${state}" data-status-card="${card.id}">
-            <summary>
-              <div class="status-group-summary">
-                <div class="status-group-title-row">
-                  <span class="status-group-disclosure" aria-hidden="true"></span>
-                  <strong>${escapeHtml(card.title)}</strong>
-                  <span data-status-card-state="${card.id}">${stateLabels[state]}</span>
-                </div>
-                <p class="status-card-meta" data-status-card-meta="${card.id}">${escapeHtml(
-                  statusCardMeta(card.id)
-                )}</p>
-              </div>
-            </summary>
-            <div class="status-group-body">
-              <p class="status-card-role">${escapeHtml(card.role)}</p>
-              <p class="status-card-checkline" data-status-card-summary="${card.id}">${escapeHtml(
-                statusCardSummary(card.id)
-              )}</p>
-              <p class="status-card-impact">${escapeHtml(card.impact)}</p>
-              <div class="status-card-live-heading">Live output</div>
-              <div class="${liveOutputClass}" data-status-card-log="${card.id}"></div>
-              <div class="status-card-live-heading">Actions</div>
-              <div class="status-group-actions status-card-actions" data-status-card-actions="${card.id}">
-                ${renderStatusCardActions(card.id)}
-              </div>
-            </div>
-          </details>
-        `;
-      })
-      .join("")}
-  </div>
-`;
+const renderProjectDashboard = (): string => {
+  if (activeDesktopView === "settings") return renderSettingsPane();
+  if (activeDesktopView === "session") return renderConversationPane();
+  if (activeDesktopView === "project") return renderSessionList();
+  return renderProjectList();
+};
+
+const dashboardRenderKey = (): string => {
+  if (activeDesktopView === "session") {
+    return `session:${selectedProjectId ?? ""}:${selectedSessionId ?? ""}:${explorerSessionUrl()}:${projectDataRevision}:${projectAssignmentBusy}:${projectAssignmentError}`;
+  }
+  if (activeDesktopView === "settings") {
+    const cardState = statusCards
+      .map(
+        (card) =>
+          `${card.id}:${statusCardState(card.id)}:${statusCardResultCue(card.id)}`
+      )
+      .join("|");
+    return `settings:${status?.state ?? "starting"}:${busyAction ?? ""}:${cardState}`;
+  }
+  return `${activeDesktopView}:${selectedProjectId ?? ""}:${showInactiveProjects}:${projectDataRevision}:${projectAssignmentBusy}:${projectAssignmentError}`;
+};
 
 const renderShell = () => {
   if (rendered) {
@@ -1495,63 +1685,16 @@ const renderShell = () => {
   }
 
   app.innerHTML = `
-    <section class="desktop-shell">
-      <section class="shell${sidebarCollapsed ? " sidebar-collapsed" : ""}" data-main-shell>
-        <aside class="sidebar" data-sidebar>
-          <div class="sidebar-header">
-            <button
-              type="button"
-              class="brand brand-button"
-              data-action="toggle-sidebar"
-              aria-label="${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}"
-              aria-expanded="${String(!sidebarCollapsed)}"
-              title="${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}"
-            >
-              <img class="brand-logo" src="${koedMarkUrl}" alt="Koed" />
-              <div>
-                <h1>Koed Desktop</h1>
-              </div>
-            </button>
-            <span class="status-pill starting" data-status-pill>${stateLabels.starting}</span>
-            <span
-              class="status-dot starting"
-              data-status-dot
-              title="Overall health: ${stateLabels.starting}"
-              aria-label="Overall health: ${stateLabels.starting}"
-            ></span>
-          </div>
-          <div class="status-groups">
-            <section class="sidebar-startup-status" aria-live="polite">
-              <p class="eyebrow">Startup progress</p>
-              <h2 data-startup-phase>${escapeHtml(startupPhase)}</h2>
-              <small data-startup-detail>${escapeHtml(startupDetail)}</small>
-              <p class="hint" data-startup-hint>${escapeHtml(getStartupHint())}</p>
-            </section>
-            ${renderStartupSteps()}
-            ${renderStatusCards("sidebar")}
-          </div>
-          <div class="sidebar-footer">
-            <button
-              type="button"
-              class="sidebar-toggle"
-              data-action="toggle-sidebar"
-              aria-label="${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}"
-              aria-expanded="${String(!sidebarCollapsed)}"
-              title="${sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}"
-            >
-              <span aria-hidden="true">${sidebarCollapsed ? "›" : "‹"}</span>
-            </button>
-          </div>
-        </aside>
-        <section class="explorer">
-          <div class="explorer-body">
-            <div class="empty explorer-overlay" data-explorer-empty>
-              Starting Explorer…
-            </div>
-            <iframe title="Koed Explorer" data-explorer-frame hidden></iframe>
-          </div>
-        </section>
-      </section>
+    <section class="desktop-shell koed-memory-shell">
+      <aside class="desktop-navigation">
+        <button type="button" class="memory-brand" data-pane="projects" aria-label="Open Projects"><img class="brand-logo" src="${koedMarkUrl}" alt="" /><span>koed</span></button>
+        <nav class="memory-tabs" aria-label="Koed sections"><button type="button" class="active" data-pane="projects"><span aria-hidden="true">◇</span>Projects</button><button type="button" data-pane="settings"><span aria-hidden="true">⚙</span>Settings</button></nav>
+        <div class="navigation-footer"><span class="status-dot starting" data-status-dot title="Overall health: ${stateLabels.starting}" aria-label="Overall health: ${stateLabels.starting}"></span><span><strong>Personal Memory</strong><small>Stored locally</small></span></div>
+      </aside>
+      <main class="desktop-workspace">
+        <header class="workspace-bar"><span>Personal</span><span class="status-pill starting" data-status-pill>${stateLabels.starting}</span></header>
+        <div class="project-dashboard" data-project-dashboard data-render-key="${escapeHtml(dashboardRenderKey())}">${renderProjectDashboard()}</div>
+      </main>
     </section>
   `;
 
@@ -1801,6 +1944,31 @@ const syncStatusCards = () => {
   }
 };
 
+const syncProjectDashboard = () => {
+  const dashboard = app.querySelector<HTMLElement>("[data-project-dashboard]");
+  const nextRenderKey = dashboardRenderKey();
+  if (dashboard && dashboard.dataset.renderKey !== nextRenderKey) {
+    const diagnosticsOpen =
+      dashboard.querySelector<HTMLDetailsElement>(".diagnostic-details")
+        ?.open ?? false;
+    dashboard.innerHTML = renderProjectDashboard();
+    dashboard.dataset.renderKey = nextRenderKey;
+    const diagnostics = dashboard.querySelector<HTMLDetailsElement>(
+      ".diagnostic-details"
+    );
+    if (diagnostics) diagnostics.open = diagnosticsOpen;
+  }
+  app.querySelectorAll<HTMLButtonElement>("[data-pane]").forEach((button) => {
+    const projectsActive =
+      button.dataset.pane === "projects" && activeDesktopView !== "settings";
+    button.classList.toggle(
+      "active",
+      projectsActive ||
+        (button.dataset.pane === "settings" && activeDesktopView === "settings")
+    );
+  });
+};
+
 const syncUI = () => {
   if (!rendered) {
     return;
@@ -1808,6 +1976,7 @@ const syncUI = () => {
   syncStartupSteps();
   syncStatusCards();
   syncSidebar();
+  syncProjectDashboard();
 
   app
     .querySelectorAll<HTMLButtonElement>("[data-readiness-action]")
@@ -1843,6 +2012,172 @@ const refreshExplorerCredential = async (): Promise<void> => {
   }
 };
 
+const refreshProjectGraph = async (): Promise<boolean> => {
+  const requestRevision = projectGraphRequestGate.begin();
+  if (!status?.api.url || !explorerApiToken) {
+    if (projectGraph.length) {
+      projectGraph = [];
+      projectGraphFingerprint = "";
+      projectDataRevision += 1;
+    }
+    return false;
+  }
+  try {
+    const response = await fetch(
+      `${status.api.url.replace(/\/$/, "")}/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false`,
+      {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${explorerApiToken}`
+        }
+      }
+    );
+    const payload = (await response.json().catch(() => ({}))) as {
+      projects?: DesktopProjectGroup[];
+    };
+    if (!response.ok) {
+      throw new Error(
+        typeof (payload as { error?: unknown }).error === "string"
+          ? String((payload as { error?: unknown }).error)
+          : `Project graph failed with HTTP ${response.status}`
+      );
+    }
+    if (!projectGraphRequestGate.isCurrent(requestRevision)) return false;
+    const nextProjects = Array.isArray(payload.projects)
+      ? payload.projects
+      : [];
+    const nextFingerprint = JSON.stringify(nextProjects);
+    if (nextFingerprint !== projectGraphFingerprint) {
+      projectGraph = nextProjects;
+      projectGraphFingerprint = nextFingerprint;
+      if (selectedSessionId) {
+        selectedProjectId =
+          projectIdForSession(nextProjects, selectedSessionId) ??
+          selectedProjectId;
+      }
+      projectDataRevision += 1;
+    }
+    if (projectAssignmentError === PROJECT_ASSIGNMENT_REFRESH_ERROR) {
+      projectAssignmentError = "";
+      projectDataRevision += 1;
+    }
+    if (projectGraphError) {
+      projectGraphError = "";
+      projectDataRevision += 1;
+    }
+    return true;
+  } catch (error) {
+    if (!projectGraphRequestGate.isCurrent(requestRevision)) return false;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message !== projectGraphError) {
+      projectGraphError = message;
+      projectDataRevision += 1;
+    }
+    return false;
+  }
+};
+
+const refreshProjectCatalog = async (): Promise<void> => {
+  const result = await invokeWithTimeout<{
+    ok?: boolean;
+    projects?: DesktopProjectMetadata[];
+  }>("project_list", undefined, 10_000);
+  const nextProjects = Array.isArray(result.projects) ? result.projects : [];
+  const nextFingerprint = JSON.stringify(nextProjects);
+  if (nextFingerprint !== projectCatalogFingerprint) {
+    projectCatalog = nextProjects;
+    projectCatalogFingerprint = nextFingerprint;
+    projectDataRevision += 1;
+  }
+};
+
+const patchSessionProject = async (
+  apiUrl: string,
+  apiToken: string,
+  sessionId: string,
+  action: "move" | "reset",
+  target: DesktopProject | null
+): Promise<string> => {
+  if (action === "move" && !target) {
+    throw new Error("Personal Project target is required.");
+  }
+  const project = target
+    ? { id: target.id, name: target.name, path: target.path }
+    : null;
+  const response = await fetch(
+    `${apiUrl.replace(/\/$/, "")}/v1/memory/graph/sessions/${encodeURIComponent(sessionId)}/project`,
+    {
+      method: "PATCH",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${apiToken}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(
+        action === "reset"
+          ? { action }
+          : {
+              action,
+              project
+            }
+      )
+    }
+  );
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: unknown;
+    session?: { project?: { id: string } | null };
+  };
+  if (!response.ok || !payload.session) {
+    throw new Error(
+      typeof payload.error === "string"
+        ? payload.error
+        : `Project assignment failed with HTTP ${response.status}`
+    );
+  }
+  return payload.session.project?.id ?? "unassigned";
+};
+
+const updateSessionProject = async (
+  action: "move" | "reset",
+  targetProjectId?: string
+): Promise<void> => {
+  const session = selectedSession();
+  if (!session?.sessionId || !status?.api.url || !explorerApiToken) return;
+  const target = targetProjectId
+    ? (assignmentTargetProjects(sortedProjects()).find(
+        (project) => project.id === targetProjectId
+      ) ?? null)
+    : null;
+  if (action === "move" && !target) {
+    projectAssignmentError = "Select a Personal Project.";
+    syncUI();
+    return;
+  }
+  projectAssignmentBusy = true;
+  projectAssignmentError = "";
+  syncUI();
+  try {
+    const nextProjectId = await patchSessionProject(
+      status.api.url,
+      explorerApiToken,
+      session.sessionId,
+      action,
+      target
+    );
+    const refreshed = await refreshProjectGraph();
+    if (!refreshed && selectedProjectId !== nextProjectId) {
+      projectAssignmentError = PROJECT_ASSIGNMENT_REFRESH_ERROR;
+    }
+    projectDataRevision += 1;
+  } catch (error) {
+    projectAssignmentError =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    projectAssignmentBusy = false;
+    syncUI();
+  }
+};
+
 const refreshStatus = async () => {
   if (refreshInFlight) {
     return refreshInFlight;
@@ -1869,6 +2204,12 @@ const refreshStatus = async () => {
       appendDesktopStartLog(nextStatus);
       return refreshExplorerCredential()
         .catch(() => undefined)
+        .then(() =>
+          Promise.all([
+            refreshProjectGraph().catch(() => undefined),
+            refreshProjectCatalog().catch(() => undefined)
+          ])
+        )
         .then(() => {
           syncUI();
         });
@@ -2607,16 +2948,24 @@ const registerHandlers = () => {
     if (!(form instanceof HTMLFormElement)) {
       return;
     }
-    if (!form.matches("[data-team-backend-form]")) {
+    if (form.matches("[data-session-project-form]")) {
+      event.preventDefault();
+      event.stopPropagation();
+      const select = form.querySelector<HTMLSelectElement>(
+        "[data-session-project-target]"
+      );
+      void updateSessionProject("move", select?.value);
       return;
     }
-    event.preventDefault();
-    event.stopPropagation();
-    const input = form.querySelector<HTMLInputElement>(
-      "[data-team-backend-url]"
-    );
-    teamBackendUrlInput = input?.value ?? "";
-    void runTeamBackendConnect();
+    if (form.matches("[data-team-backend-form]")) {
+      event.preventDefault();
+      event.stopPropagation();
+      const input = form.querySelector<HTMLInputElement>(
+        "[data-team-backend-url]"
+      );
+      teamBackendUrlInput = input?.value ?? "";
+      void runTeamBackendConnect();
+    }
   });
 
   app.addEventListener("input", (event) => {
@@ -2686,6 +3035,95 @@ const registerHandlers = () => {
   app.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const paneButton = target.closest<HTMLButtonElement>("[data-pane]");
+    if (
+      paneButton?.dataset.pane === "projects" ||
+      paneButton?.dataset.pane === "settings"
+    ) {
+      event.preventDefault();
+      activeDesktopView = paneButton.dataset.pane;
+      if (activeDesktopView === "projects") {
+        selectedProjectId = null;
+        selectedSessionId = null;
+      }
+      syncUI();
+      return;
+    }
+
+    const backToProjects = target.closest<HTMLButtonElement>(
+      "[data-back-to-projects]"
+    );
+    if (backToProjects) {
+      event.preventDefault();
+      activeDesktopView = "projects";
+      selectedProjectId = null;
+      selectedSessionId = null;
+      syncUI();
+      return;
+    }
+
+    const backToProject = target.closest<HTMLButtonElement>(
+      "[data-back-to-project]"
+    );
+    if (backToProject) {
+      event.preventDefault();
+      activeDesktopView = "project";
+      selectedSessionId = null;
+      syncUI();
+      return;
+    }
+
+    const inactiveButton = target.closest<HTMLButtonElement>(
+      "[data-toggle-inactive]"
+    );
+    if (inactiveButton) {
+      event.preventDefault();
+      showInactiveProjects = !showInactiveProjects;
+      syncUI();
+      return;
+    }
+
+    const projectButton =
+      target.closest<HTMLButtonElement>("[data-project-id]");
+    if (projectButton?.dataset.projectId) {
+      event.preventDefault();
+      selectedProjectId = projectButton.dataset.projectId;
+      selectedSessionId = null;
+      projectAssignmentError = "";
+      activeDesktopView = "project";
+      syncUI();
+      return;
+    }
+
+    const sessionButton =
+      target.closest<HTMLButtonElement>("[data-session-id]");
+    if (sessionButton?.dataset.sessionId) {
+      event.preventDefault();
+      selectedSessionId = sessionButton.dataset.sessionId;
+      projectAssignmentError = "";
+      activeDesktopView = "session";
+      syncUI();
+      return;
+    }
+
+    const resetSessionProject = target.closest<HTMLButtonElement>(
+      "[data-reset-session-project]"
+    );
+    if (resetSessionProject) {
+      event.preventDefault();
+      void updateSessionProject("reset");
+      return;
+    }
+
+    const openExplorerSession = target.closest<HTMLButtonElement>(
+      "[data-open-explorer-session]"
+    );
+    if (openExplorerSession) {
+      event.preventDefault();
+      window.open(explorerSessionUrl(), "_blank", "noopener,noreferrer");
       return;
     }
 

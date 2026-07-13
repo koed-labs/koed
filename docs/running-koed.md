@@ -69,11 +69,58 @@ configured. `upstream disconnect` disables local upstream route families and
 marks the local enrollment state revoked. Browser approval and upstream-side
 device credential revocation remain browser/session-mediated local-edge flows.
 
+## Project metadata discovery
+
+Headless and Desktop flows can discover local Project metadata before linking a
+Project to a Team Workspace:
+
+```bash
+node packages/koed-server/dist/cli.js project discover --cwd "$PWD" --json
+node packages/koed-server/dist/cli.js project show --cwd "$PWD" --json
+node packages/koed-server/dist/cli.js project list --json
+```
+
+Project metadata is local matching/display data, not authorization. Discovery
+stores raw local paths only under `KOED_HOME/config/projects.json`, strips
+credentials from Git remotes, derives a device-local Project id, and retains
+individual current and historical network remote aliases as non-authoritative
+matching signals. Remote signals never select or authorize a Team Workspace;
+explicit Project linking is authoritative. The Team Workspace id remains the
+stable Team memory boundary.
+
+Discovery inspects the supplied directory and its enclosing Git repository only;
+it does not recursively discover child repositories, submodules, or monorepo
+packages. Worktrees retain separate local Project ids while a salted Git
+common-directory hash identifies worktrees backed by the same device-local Git
+repository. Local-only repositories have no portable remote signal.
+
+Captured Sessions adopt one unambiguous detected Personal Project immediately.
+Ambiguous or signal-free captures remain `Unassigned`. Users can move a
+Captured Session to another Personal Project in Desktop; that override remains
+authoritative across later capture detection. Resetting returns assignment to
+the latest automatic detection. Original capture candidates and source context
+remain stored separately as immutable provenance. Effective assignment drives
+Personal Memory grouping, counts, filters, and Project-scoped recall.
+
+Personal Project assignment never creates, changes, resolves, or authorizes a
+Team Workspace link. Team Workspace identity still comes only from explicit
+Project linking, and Team access still requires Koed-owned Membership,
+Workspace Access, and Share Grant authorization.
+
+Future personal multi-device enrollment may use remote-alias overlap to
+automatically associate local Project contexts after both devices are bound to
+the same User. This build has no personal multi-device registry or sync path, so
+remote aliases remain evidence only. They cannot merge Personal Memory across
+deployments or create a Team Workspace link. `project forget
+--local-project-id <id>` removes the local Project record, including retained
+remote-alias history.
+
 ## KOED_HOME layout
 
 `koed-server` keeps local state under `KOED_HOME`:
 
-- `config/` for `server.json`, `local-ports.json`, and `explorer-token.json`
+- `config/` for `server.json`, `local-ports.json`, `explorer-token.json`,
+  local Project metadata, and Project-to-Team Workspace mappings
 - `run/` for `koed-server.json`, `last-verification.json`, upstream enrollment
   orchestration state, and supervisor state
 - `logs/` for service logs, including `postgres.log`

@@ -602,6 +602,9 @@ export interface LcmGraphThread {
   sessionId: string | null;
   projectId: string;
   projectName: string;
+  projectPath: string | null;
+  projectAssignmentSource: "detected" | "user_override" | null;
+  capturedProjectProvenance: Record<string, unknown>;
   eventCount: number;
   invalidatedCount: number;
   latestAt: string;
@@ -662,6 +665,12 @@ export interface LocalEmbeddingStatus {
   error?: string;
 }
 
+export interface PersonalProjectReference {
+  id: string;
+  name: string;
+  path: string | null;
+}
+
 export interface CapturedSessionRecord {
   id: string;
   ownerUserId: string | null;
@@ -673,6 +682,12 @@ export interface CapturedSessionRecord {
   model: string | null;
   cwd: string | null;
   metadata: Record<string, unknown>;
+  capturedProjectProvenance: Record<string, unknown>;
+  automaticProject: PersonalProjectReference | null;
+  projectOverride: PersonalProjectReference | null;
+  project: PersonalProjectReference | null;
+  projectAssignmentSource: "detected" | "user_override" | null;
+  projectAssignmentUpdatedAt: string | null;
   createdAt: string;
 }
 

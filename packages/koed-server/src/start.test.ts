@@ -606,6 +606,9 @@ describe("start supervisor", () => {
     expect(spawned.at(-1)?.env?.CORS_ORIGINS).toContain(
       `http://localhost:${ports.explorer}`
     );
+    expect(spawned.at(-1)?.env?.CORS_ORIGINS?.split(",")).toContain(
+      "koed://app"
+    );
     const credential = JSON.parse(
       readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
     ) as { apiToken: string };

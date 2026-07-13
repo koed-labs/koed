@@ -98,6 +98,19 @@ describe("Koed server desktop manager", () => {
       command: "/node",
       args: ["/repo/packages/koed-server/dist/cli.js", "status", "--json"]
     });
+
+    await expect(manager.handlers.project_list!()).resolves.toMatchObject({
+      ok: true
+    });
+    expect(calls[1]).toEqual({
+      command: "/node",
+      args: [
+        "/repo/packages/koed-server/dist/cli.js",
+        "project",
+        "list",
+        "--json"
+      ]
+    });
   });
 
   it("runs explicit runtime install through koed-server", async () => {
@@ -372,10 +385,63 @@ describe("Koed server desktop manager", () => {
 
     await expect(manager.handlers.status!()).resolves.toMatchObject({
       serverPackage: {
-        state: "not_configured",
+        state: "healthy",
         source: "bundled-fallback",
+        message:
+          "Using the bundled fallback koed-server runtime; a standalone package is optional for this Desktop build."
+      }
+    });
+  });
+
+  it("keeps invalid standalone package configuration visible", async () => {
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {
+        KOED_SERVER_PACKAGE_SOURCE: "https://downloads.example.test/server.tgz"
+      },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("package")) {
+          callback(
+            null,
+            JSON.stringify({
+              ok: false,
+              state: "missing",
+              message: "No koed-server package is installed."
+            }),
+            ""
+          );
+          return;
+        }
+        callback(
+          null,
+          JSON.stringify({
+            ok: false,
+            state: "starting",
+            generatedAt: "2026-07-09T00:00:00.000Z",
+            api: { state: "starting" }
+          }),
+          ""
+        );
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(manager.handlers.status!()).resolves.toMatchObject({
+      serverPackage: {
+        state: "not_configured",
+        source: "unavailable",
+        message:
+          "koed-server package source is configured, but SHA-256 metadata is missing.",
         action:
-          "Continue with the bundled fallback runtime, or configure KOED_SERVER_PACKAGE_SOURCE with SHA-256 metadata."
+          "Set KOED_SERVER_PACKAGE_SHA256 or KOED_SERVER_PACKAGE_SHA256_FILE."
       }
     });
   });

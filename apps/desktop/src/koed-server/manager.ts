@@ -83,6 +83,7 @@ type ServerPackageInstallPlan =
   | {
       available: false;
       sourceKind: "unavailable";
+      useBundledFallback: boolean;
       message: string;
       action: string;
     };
@@ -329,6 +330,7 @@ const resolveServerPackageInstallPlan = (
       return {
         available: false,
         sourceKind: "unavailable",
+        useBundledFallback: false,
         message:
           "koed-server package source is configured, but SHA-256 metadata is missing.",
         action:
@@ -367,6 +369,7 @@ const resolveServerPackageInstallPlan = (
       return {
         available: false,
         sourceKind: "unavailable",
+        useBundledFallback: false,
         message:
           "Bundled koed-server package artifact is present, but its SHA-256 file is missing.",
         action:
@@ -388,6 +391,7 @@ const resolveServerPackageInstallPlan = (
   return {
     available: false,
     sourceKind: "unavailable",
+    useBundledFallback: true,
     message:
       "No standalone koed-server package source is configured or bundled with this Desktop build.",
     action:
@@ -425,11 +429,15 @@ const packageComponent = (
       }
     };
   }
-  if (state === "missing" && !installPlan.available) {
+  if (
+    state === "missing" &&
+    !installPlan.available &&
+    installPlan.useBundledFallback
+  ) {
     return {
-      state: "not_configured",
-      message: installPlan.message,
-      action: installPlan.action,
+      state: "healthy",
+      message:
+        "Using the bundled fallback koed-server runtime; a standalone package is optional for this Desktop build.",
       source: "bundled-fallback",
       details: { sourceKind: installPlan.sourceKind }
     };
@@ -437,8 +445,10 @@ const packageComponent = (
   if (state === "missing") {
     return {
       state: "not_configured",
-      message,
-      action: "Install standalone koed-server package",
+      message: installPlan.available ? message : installPlan.message,
+      action: installPlan.available
+        ? "Install standalone koed-server package"
+        : installPlan.action,
       source: "unavailable",
       details: { sourceKind: installPlan.sourceKind }
     };
@@ -1003,6 +1013,7 @@ export const createKoedServerManager = ({
       models_install: () => runModelInstallJson(),
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
+      project_list: () => runJson(["project", "list"], 10_000),
       explorer_credential: () => provisionExplorerCredential(),
       upstream_connect: connectTeamBackend,
       upstream_disconnect: disconnectTeamBackend,

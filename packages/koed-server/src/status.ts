@@ -927,8 +927,7 @@ export const collectKoedServerStatus = async (
     statusWithoutState.mcpServer,
     statusWithoutState.captureHook,
     statusWithoutState.codex,
-    statusWithoutState.lcmSummaryService,
-    statusWithoutState.upstreamBackends
+    statusWithoutState.lcmSummaryService
   ];
   const state = aggregateState(blockingComponents);
   return { ...statusWithoutState, state, ok: state === "healthy" };
@@ -958,7 +957,8 @@ export const collectKoedServerDoctor = async (
     ...(component as KoedServerComponentStatus)
   }));
   const blockingChecks = checks.filter(
-    (check) => check.id !== "lastVerification"
+    (check) =>
+      check.id !== "lastVerification" && check.id !== "upstreamBackends"
   );
   const failed = blockingChecks.filter(
     (check) => check.state === "needs_attention"

@@ -10,6 +10,7 @@ import {
   graphEventPatchSchema,
   graphEventsQuerySchema,
   graphSessionParamsSchema,
+  graphSessionProjectPatchSchema,
   graphSessionTitlePatchSchema,
   graphNodesQuerySchema,
   graphQuerySchema,
@@ -275,6 +276,35 @@ export const registerGraphRoutes = (
         : reply
             .status(404)
             .send({ error: "Captured session not found or not visible" });
+    }
+  );
+
+  app.patch(
+    "/v1/memory/graph/sessions/:sessionId/project",
+    { preHandler: memoryWriteRateLimit },
+    async (request, reply) => {
+      const repo = requireRepository();
+      const user = await authenticate(request);
+      const params = graphSessionParamsSchema.parse(request.params);
+      const input = graphSessionProjectPatchSchema.parse(request.body);
+      const session =
+        input.action === "move"
+          ? await repo.moveCapturedSessionToProject(
+              { userId: user.id },
+              params.sessionId,
+              input.project
+            )
+          : await repo.resetCapturedSessionProject(
+              { userId: user.id },
+              params.sessionId
+            );
+      if (!session) {
+        return reply
+          .status(404)
+          .send({ error: "Captured session not found or not visible" });
+      }
+      await cacheProvider.deleteByPrefix("koed:graph:");
+      return { session };
     }
   );
 

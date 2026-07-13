@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import pg from "pg";
 import type { MemoryActor } from "@koed/core";
 import type {
@@ -5,6 +6,7 @@ import type {
   CaptureMethod,
   CapturedSessionRecord,
   CapturedSessionTitleCandidate,
+  PersonalProjectReference,
   SourceRuntime,
   Visibility
 } from "./types.js";
@@ -23,6 +25,7 @@ export interface CapturedSessionRepository {
       idempotencyKey?: string;
       sourceHash?: string;
       metadata?: Record<string, unknown>;
+      detectedProjects?: PersonalProjectReference[];
     }
   ): Promise<CapturedSessionRecord>;
   getCapturedSession(
@@ -33,6 +36,15 @@ export interface CapturedSessionRepository {
     actor: ActorContext,
     sessionId: string,
     input: { title: string }
+  ): Promise<CapturedSessionRecord | null>;
+  moveCapturedSessionToProject(
+    actor: ActorContext,
+    sessionId: string,
+    project: PersonalProjectReference
+  ): Promise<CapturedSessionRecord | null>;
+  resetCapturedSessionProject(
+    actor: ActorContext,
+    sessionId: string
   ): Promise<CapturedSessionRecord | null>;
   listCapturedSessionsNeedingTitles(
     actor: ActorContext,
@@ -60,6 +72,15 @@ type CapturedSessionRow = {
   model: string | null;
   cwd: string | null;
   metadata: Record<string, unknown> | null;
+  captured_project_provenance: Record<string, unknown> | null;
+  automatic_project_id: string | null;
+  automatic_project_name: string | null;
+  automatic_project_path: string | null;
+  automatic_project_detected_at: Date | null;
+  project_override_id: string | null;
+  project_override_name: string | null;
+  project_override_path: string | null;
+  project_override_at: Date | null;
   created_at: Date;
 };
 
@@ -78,25 +99,54 @@ type CapturedSessionTitleCandidateRow = {
   }> | null;
 };
 
-const mapCapturedSession = (
-  row: CapturedSessionRow
-): CapturedSessionRecord => ({
-  id: row.id,
-  ownerUserId: row.owner_user_id,
-  visibility: row.visibility,
-  externalSessionId: row.external_session_id,
-  workspaceId:
-    row.workspace_id ??
-    (typeof row.metadata?.workspaceId === "string"
-      ? row.metadata.workspaceId
-      : null),
-  sourceRuntime: row.source_runtime,
-  captureMethod: row.capture_method,
-  model: row.model,
-  cwd: row.cwd,
-  metadata: row.metadata ?? {},
-  createdAt: row.created_at.toISOString()
-});
+const projectReference = (
+  id: string | null,
+  name: string | null,
+  path: string | null
+): PersonalProjectReference | null => (id && name ? { id, name, path } : null);
+
+const mapCapturedSession = (row: CapturedSessionRow): CapturedSessionRecord => {
+  const automaticProject = projectReference(
+    row.automatic_project_id,
+    row.automatic_project_name,
+    row.automatic_project_path
+  );
+  const projectOverride = projectReference(
+    row.project_override_id,
+    row.project_override_name,
+    row.project_override_path
+  );
+  return {
+    id: row.id,
+    ownerUserId: row.owner_user_id,
+    visibility: row.visibility,
+    externalSessionId: row.external_session_id,
+    workspaceId:
+      row.workspace_id ??
+      (typeof row.metadata?.workspaceId === "string"
+        ? row.metadata.workspaceId
+        : null),
+    sourceRuntime: row.source_runtime,
+    captureMethod: row.capture_method,
+    model: row.model,
+    cwd: row.cwd,
+    metadata: row.metadata ?? {},
+    capturedProjectProvenance: row.captured_project_provenance ?? {},
+    automaticProject,
+    projectOverride,
+    project: projectOverride ?? automaticProject,
+    projectAssignmentSource: projectOverride
+      ? "user_override"
+      : automaticProject
+        ? "detected"
+        : null,
+    projectAssignmentUpdatedAt:
+      (
+        row.project_override_at ?? row.automatic_project_detected_at
+      )?.toISOString() ?? null,
+    createdAt: row.created_at.toISOString()
+  };
+};
 
 const mapCapturedSessionTitleCandidate = (
   row: CapturedSessionTitleCandidateRow
@@ -138,6 +188,83 @@ const normalizeSessionMetadata = (input: {
   return metadata;
 };
 
+const normalizedProjectReference = (
+  value: PersonalProjectReference
+): PersonalProjectReference | null => {
+  const id = value.id.trim();
+  const name = value.name.trim();
+  const projectPath = value.path?.trim() || null;
+  return id && name ? { id, name, path: projectPath } : null;
+};
+
+const detectedProjectsForCapture = (input: {
+  workspaceId?: string;
+  cwd?: string;
+  metadata?: Record<string, unknown>;
+  detectedProjects?: PersonalProjectReference[];
+}): PersonalProjectReference[] => {
+  const explicitProjects = input.detectedProjects;
+  const candidates = explicitProjects
+    ? explicitProjects.map(normalizedProjectReference)
+    : (() => {
+        const metadata = input.metadata ?? {};
+        const metadataId =
+          typeof metadata.localProjectId === "string"
+            ? metadata.localProjectId
+            : typeof metadata.projectId === "string"
+              ? metadata.projectId
+              : null;
+        const projectPath =
+          typeof metadata.projectPath === "string"
+            ? metadata.projectPath
+            : (input.cwd ?? null);
+        const id =
+          metadataId ??
+          (input.workspaceId && input.workspaceId !== "default"
+            ? input.workspaceId
+            : projectPath);
+        if (!id) return [];
+        const name =
+          typeof metadata.projectName === "string" &&
+          metadata.projectName.trim()
+            ? metadata.projectName
+            : basename(projectPath ?? id) || id;
+        return [{ id, name, path: projectPath }];
+      })();
+  return [
+    ...new Map(
+      candidates
+        .filter((project): project is PersonalProjectReference =>
+          Boolean(project)
+        )
+        .map((project) => [project.id, project])
+    ).values()
+  ];
+};
+
+const hasDetectedProjectInput = (input: {
+  workspaceId?: string;
+  cwd?: string;
+  metadata?: Record<string, unknown>;
+  detectedProjects?: PersonalProjectReference[];
+}): boolean =>
+  input.detectedProjects !== undefined ||
+  input.workspaceId !== undefined ||
+  input.cwd !== undefined ||
+  ["localProjectId", "projectId", "projectPath", "projectName"].some((key) =>
+    Object.hasOwn(input.metadata ?? {}, key)
+  );
+
+const capturedSessionColumns = `
+  id, owner_user_id, visibility, external_session_id, workspace_id,
+  source_runtime, capture_method, model, cwd, metadata,
+  captured_project_provenance,
+  automatic_project_id, automatic_project_name, automatic_project_path,
+  automatic_project_detected_at,
+  project_override_id, project_override_name, project_override_path,
+  project_override_at, created_at
+`;
+
 const resolveWorkspaceForeignKey = async (
   pool: pg.Pool,
   actor: ActorContext,
@@ -171,6 +298,22 @@ export const createCapturedSessionRepository = (
       actor,
       input.workspaceId
     );
+    const detectedProjects = detectedProjectsForCapture(input);
+    const automaticProject =
+      detectedProjects.length === 1 ? detectedProjects[0]! : null;
+    const detectedProjectInputProvided = hasDetectedProjectInput(input);
+    const capturedProjectProvenance = {
+      schemaVersion: 1,
+      capturedCwd: input.cwd ?? null,
+      capturedWorkspaceId: input.workspaceId ?? null,
+      candidates: detectedProjects,
+      outcome:
+        detectedProjects.length === 1
+          ? "unambiguous"
+          : detectedProjects.length > 1
+            ? "ambiguous"
+            : "no_signal"
+    };
     const result = await pool.query<CapturedSessionRow>(
       `
         insert into sessions (
@@ -196,7 +339,12 @@ export const createCapturedSessionRepository = (
           agent_role,
           agent_path,
           thread_source,
-          source_metadata
+          source_metadata,
+          captured_project_provenance,
+          automatic_project_id,
+          automatic_project_name,
+          automatic_project_path,
+          automatic_project_detected_at
         )
         values (
           $1, $2, 'personal', $3, $4, $5, $6, $7, $8, $9, $10, $11,
@@ -214,7 +362,9 @@ export const createCapturedSessionRepository = (
             order by parent.created_at desc
             limit 1
           ),
-          $17, $18, $19, $20, $21
+          $17, $18, $19, $20, $21,
+          $22, $23, $24, $25,
+          case when $23::text is null then null else now() end
         )
         on conflict (idempotency_key)
         where idempotency_key is not null
@@ -233,8 +383,28 @@ export const createCapturedSessionRepository = (
               else '{}'::jsonb
             end,
           parent_session_id = coalesce(sessions.parent_session_id, excluded.parent_session_id),
-          source_metadata = sessions.source_metadata || excluded.source_metadata
-        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+          source_metadata = sessions.source_metadata || excluded.source_metadata,
+          automatic_project_id = case
+            when $26::boolean then excluded.automatic_project_id
+            else sessions.automatic_project_id
+          end,
+          automatic_project_name = case
+            when $26::boolean then excluded.automatic_project_name
+            else sessions.automatic_project_name
+          end,
+          automatic_project_path = case
+            when $26::boolean then excluded.automatic_project_path
+            else sessions.automatic_project_path
+          end,
+          automatic_project_detected_at = case
+            when $26::boolean then excluded.automatic_project_detected_at
+            else sessions.automatic_project_detected_at
+          end
+        where sessions.owner_user_id = excluded.owner_user_id
+          and sessions.visibility = excluded.visibility
+          and sessions.invalidated_at is null
+          and sessions.personal_deleted_at is null
+        returning ${capturedSessionColumns}
       `,
       [
         actor.userId,
@@ -277,11 +447,25 @@ export const createCapturedSessionRepository = (
           : typeof metadata.threadKind === "string"
             ? metadata.threadKind
             : null,
-        metadata
+        metadata,
+        capturedProjectProvenance,
+        automaticProject?.id ?? null,
+        automaticProject?.name ?? null,
+        automaticProject?.path ?? null,
+        detectedProjectInputProvided
       ]
     );
 
-    return mapCapturedSession(result.rows[0]!);
+    const row = result.rows[0];
+    if (!row) {
+      throw Object.assign(
+        new Error(
+          "Duplicate Captured Session conflicts with data outside caller visibility"
+        ),
+        { statusCode: 409 }
+      );
+    }
+    return mapCapturedSession(row);
   },
 
   async updateCapturedSessionTitle(actor, sessionId, input) {
@@ -303,9 +487,57 @@ export const createCapturedSessionRepository = (
           and owner_user_id = $1
           and visibility = 'personal'
           and invalidated_at is null
-        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+        returning ${capturedSessionColumns}
       `,
       [actor.userId, sessionId, title]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  async moveCapturedSessionToProject(actor, sessionId, input) {
+    const project = normalizedProjectReference(input);
+    if (!project) return null;
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        update sessions
+        set
+          project_override_id = $3,
+          project_override_name = $4,
+          project_override_path = $5,
+          project_override_at = now(),
+          project_override_by_user_id = $1,
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+          and personal_deleted_at is null
+        returning ${capturedSessionColumns}
+      `,
+      [actor.userId, sessionId, project.id, project.name, project.path]
+    );
+    return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
+  },
+
+  async resetCapturedSessionProject(actor, sessionId) {
+    const result = await pool.query<CapturedSessionRow>(
+      `
+        update sessions
+        set
+          project_override_id = null,
+          project_override_name = null,
+          project_override_path = null,
+          project_override_at = null,
+          project_override_by_user_id = null,
+          updated_at = now()
+        where id = $2
+          and owner_user_id = $1
+          and visibility = 'personal'
+          and invalidated_at is null
+          and personal_deleted_at is null
+        returning ${capturedSessionColumns}
+      `,
+      [actor.userId, sessionId]
     );
     return result.rows[0] ? mapCapturedSession(result.rows[0]) : null;
   },
@@ -313,7 +545,7 @@ export const createCapturedSessionRepository = (
   async getCapturedSession(actor, sessionId) {
     const result = await pool.query<CapturedSessionRow>(
       `
-        select id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+        select ${capturedSessionColumns}
         from sessions
         where id = $2
           and owner_user_id = $1
@@ -334,8 +566,8 @@ export const createCapturedSessionRepository = (
           select
             s.id,
             s.external_session_id,
-            coalesce(s.metadata ->> 'projectName', s.cwd, s.workspace_id::text) as project_name,
-            coalesce(s.metadata ->> 'projectPath', s.cwd, s.workspace_id::text) as project_path,
+            coalesce(s.project_override_name, s.automatic_project_name, 'Unassigned') as project_name,
+            coalesce(s.project_override_path, s.automatic_project_path) as project_path,
             s.metadata ->> 'threadName' as current_title,
             count(me.id) filter (where me.payload ->> 'actor' in ('user', 'agent'))::text as event_count,
             max(coalesce(me.source_event_time, me.captured_at)) as latest_event_at
@@ -397,9 +629,7 @@ export const createCapturedSessionRepository = (
   async getLatestCapturedSessionForProject(actor, input) {
     const result = await pool.query<CapturedSessionRow>(
       `
-        select
-          id, owner_user_id, visibility, external_session_id, workspace_id,
-          source_runtime, capture_method, model, cwd, metadata, created_at
+        select ${capturedSessionColumns}
         from sessions
         where owner_user_id = $1
           and visibility = 'personal'
@@ -447,7 +677,7 @@ export const createCapturedSessionRepository = (
             or metadata ->> 'threadName' = id::text
             or metadata ->> 'threadNameSource' in ('generated', 'lcm', 'provisional')
           )
-        returning id, owner_user_id, visibility, external_session_id, workspace_id, source_runtime, capture_method, model, cwd, metadata, created_at
+        returning ${capturedSessionColumns}
       `,
       [actor.userId, sessionId, title, input.source]
     );

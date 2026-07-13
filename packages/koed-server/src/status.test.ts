@@ -155,8 +155,24 @@ describe("status and doctor JSON contracts", () => {
     expect(status.workerQueues.state).toBe("starting");
   });
 
-  it("reports registered upstreams that still need capability validation", async () => {
+  it("reports registered upstreams without degrading local Personal Memory health", async () => {
     const root = tempDir();
+    const dependencies = {
+      fetch: async () => response(true, 200, { checks: [] }),
+      spawnSync: () => spawnResult("", 0),
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    };
+    const environment = {
+      KOED_HOME: root,
+      KOED_REPO_ROOT: root,
+      HOME: root,
+      WORK_QUEUE_BACKEND: "local"
+    };
+    const baseline = await collectKoedServerStatus(environment, dependencies);
+    const baselineDoctor = await collectKoedServerDoctor(
+      environment,
+      dependencies
+    );
     mkdirSync(resolve(root, "config"), { recursive: true });
     writeFileSync(
       resolve(root, "config", "upstream-backends.json"),
@@ -181,39 +197,34 @@ describe("status and doctor JSON contracts", () => {
             },
             credential: { status: "not_configured" },
             capabilities: {
-              state: "not_checked",
-              checkedAt: null,
-              expiresAt: null,
-              schemaVersion: null,
-              profile: null,
-              releaseVersion: null
+              state: "validated",
+              checkedAt: "2025-12-31T22:00:00.000Z",
+              expiresAt: "2025-12-31T23:00:00.000Z",
+              schemaVersion: 3,
+              profile: "private_vps",
+              releaseVersion: "1.0.0"
             }
           }
         ]
       })
     );
 
-    const status = await collectKoedServerStatus(
-      {
-        KOED_HOME: root,
-        KOED_REPO_ROOT: root,
-        HOME: root,
-        WORK_QUEUE_BACKEND: "local"
-      },
-      {
-        fetch: async () => response(true, 200, { checks: [] }),
-        spawnSync: () => spawnResult("", 0),
-        now: () => new Date("2026-01-01T00:00:00.000Z")
-      }
-    );
+    const status = await collectKoedServerStatus(environment, dependencies);
+    const doctor = await collectKoedServerDoctor(environment, dependencies);
 
     expect(status.upstreamBackends).toMatchObject({
       state: "needs_attention",
       registered: 1,
-      notChecked: 1,
+      notChecked: 0,
       failed: 0,
-      stale: 0
+      stale: 1
     });
+    expect(status.state).toBe(baseline.state);
+    expect(doctor.ok).toBe(baselineDoctor.ok);
+    expect(doctor.summary).toBe(baselineDoctor.summary);
+    expect(
+      doctor.checks.find((check) => check.id === "upstreamBackends")
+    ).toMatchObject({ state: "needs_attention" });
     expect(JSON.stringify(status.upstreamBackends)).not.toContain("token");
   });
 

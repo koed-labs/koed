@@ -118,6 +118,25 @@ export const graphSessionTitlePatchSchema = z.object({
   title: z.string().trim().min(1).max(120)
 });
 
+const personalProjectReferenceSchema = z
+  .object({
+    id: z.string().trim().min(1).max(512),
+    name: z.string().trim().min(1).max(160),
+    path: z.string().trim().min(1).max(4096).nullable().optional()
+  })
+  .strict()
+  .transform((project) => ({ ...project, path: project.path ?? null }));
+
+export const graphSessionProjectPatchSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("move"),
+      project: personalProjectReferenceSchema
+    })
+    .strict(),
+  z.object({ action: z.literal("reset") }).strict()
+]);
+
 export const nodeIdParamsSchema = z.object({ nodeId: z.string().uuid() });
 
 export const expandMemoryNodeQuerySchema = z

@@ -167,6 +167,8 @@ export function KoedExplorerApp() {
 }
 
 function KoedExplorerMain() {
+  const sessionEmbedMode =
+    new URLSearchParams(window.location.search).get("embed") === "session";
   const { theme, setTheme } = useTheme();
   const [apiToken, setApiToken] = useState(readConfiguredToken);
   const [answerBridgeUrl] = useState(readConfiguredAnswerBridgeUrl);
@@ -175,7 +177,10 @@ function KoedExplorerMain() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState(
-    () => window.localStorage.getItem(selectedThreadStorageKey) ?? ""
+    () =>
+      new URLSearchParams(window.location.search).get("selectedThreadId") ??
+      window.localStorage.getItem(selectedThreadStorageKey) ??
+      ""
   );
   const [rawOpen, setRawOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -693,6 +698,62 @@ function KoedExplorerMain() {
       return next;
     });
   };
+
+  if (sessionEmbedMode) {
+    return (
+      <main className="h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+        <section className="flex h-full min-h-0 min-w-0 flex-col">
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {selectedThread && threadEvents.length > 0 ? (
+              <VirtualizedEventList
+                key={threadSelectionKey(selectedThread)}
+                events={threadEvents}
+                hasOlderEvents={hasOlderThreadEvents}
+                onLoadOlder={loadOlderThreadEvents}
+                onSelectEvent={setSelectedEventId}
+                selectedEventId={selectedEvent?.id ?? null}
+                threadKey={threadSelectionKey(selectedThread)}
+              />
+            ) : (
+              <div className="h-full overflow-auto px-3 py-4 sm:px-5">
+                <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+                  {loading || threadLoading ? (
+                    <div className="rounded-lg border border-border bg-card/60 px-4 py-3 text-muted-foreground text-sm">
+                      Loading captured conversation...
+                    </div>
+                  ) : null}
+                  {!loading && !threadLoading && !selectedThread ? (
+                    <div className="rounded-lg border border-border/60 bg-card/40 px-8 py-12 text-center">
+                      <DatabaseIcon className="mx-auto mb-3 size-8 text-muted-foreground" />
+                      <div className="font-medium">Select a conversation</div>
+                      <p className="mt-1 text-muted-foreground text-sm">
+                        Return to Projects and choose a captured session to load
+                        its events.
+                      </p>
+                    </div>
+                  ) : null}
+                  {!loading &&
+                  !threadLoading &&
+                  selectedThread &&
+                  threadEvents.length === 0 ? (
+                    <div className="rounded-lg border border-border/60 bg-card/40 px-8 py-12 text-center">
+                      <DatabaseIcon className="mx-auto mb-3 size-8 text-muted-foreground" />
+                      <div className="font-medium">
+                        No captured events visible
+                      </div>
+                      <p className="mt-1 text-muted-foreground text-sm">
+                        Start the Koed API, then reopen this session.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen>
