@@ -20,6 +20,7 @@ export const statusComponentKeys = [
   "captureHook",
   "codex",
   "lcmSummaryService",
+  "upstreamBackends",
   "lastVerification"
 ] as const satisfies ReadonlyArray<keyof KoedServerStatus>;
 
@@ -82,6 +83,11 @@ export const componentDefinitions = {
     label: "LCM Summary Service",
     description: "Local background summarization service for memory nodes."
   },
+  upstreamBackends: {
+    label: "Team Backend",
+    description:
+      "Registered remote Team Backend used by local edge routing and Team Workspace recall."
+  },
   lastVerification: {
     label: "Last verification",
     description: "Most recent local system verification result."
@@ -113,7 +119,9 @@ export type StatusCardActionCommand =
   | "doctor"
   | "open_explorer"
   | "open_logs"
-  | "copy_diagnostics";
+  | "copy_diagnostics"
+  | "connect_team_backend"
+  | "disconnect_team_backend";
 
 export interface StatusCardAction {
   label: string;
@@ -292,6 +300,29 @@ export const statusCards = [
     secondaryActions: [
       { label: "Run doctor", command: "doctor", timeoutMs: 90_000 },
       { label: "Refresh", command: "status", timeoutMs: 10_000 }
+    ]
+  },
+  {
+    id: "teamBackend",
+    title: "Team Backend",
+    role: "Remote Team Backend connection used for shared Workspace memory.",
+    impact:
+      "Team Workspace recall stays unavailable until a backend is connected and enrolled.",
+    componentKeys: ["upstreamBackends"],
+    primaryAction: {
+      label: "Connect backend",
+      command: "connect_team_backend",
+      timeoutMs: 120_000,
+      primary: true
+    },
+    secondaryActions: [
+      { label: "Refresh", command: "status", timeoutMs: 10_000 },
+      {
+        label: "Disconnect",
+        command: "disconnect_team_backend",
+        timeoutMs: 45_000
+      },
+      { label: "Run doctor", command: "doctor", timeoutMs: 90_000 }
     ]
   },
   {

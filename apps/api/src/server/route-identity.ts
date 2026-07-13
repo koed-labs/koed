@@ -8,6 +8,7 @@ export type RouteIdentity =
   | "session_or_api_token"
   | "session_or_device_credential"
   | "conditional_team_session_or_device"
+  | "api_token_or_device_credential"
   | "internal_service_token"
   | "device_credential"
   | "upstream_credential";
@@ -736,9 +737,9 @@ export const routeIdentityContracts = [
   route(
     "POST",
     "/v1/local-edge/device-enrollments/challenges",
-    "session",
+    "public",
     "future_remote",
-    "Create browser-mediated local edge device enrollment challenge.",
+    "Create safe browser-mediated local edge device enrollment challenge context.",
     "none",
     "implemented",
     remoteEnrollmentDeploymentModes
@@ -746,7 +747,7 @@ export const routeIdentityContracts = [
   route(
     "GET",
     "/v1/local-edge/device-enrollments/challenges/{challengeId}",
-    "session",
+    "public",
     "future_remote",
     "Read safe local edge device enrollment challenge approval context.",
     "none",
@@ -801,7 +802,7 @@ export const routeIdentityContracts = [
     "Validate an enrolled local edge device credential without granting Team authority.",
     "future_request_time",
     "implemented",
-    localEdgeDeploymentModes
+    remoteEnrollmentDeploymentModes
   ),
   route(
     "POST",
@@ -816,9 +817,9 @@ export const routeIdentityContracts = [
   route(
     "POST",
     "/v1/local-edge/upstream-operations",
-    "device_credential",
+    "api_token_or_device_credential",
     "future_remote",
-    "Relay an allowed upstream operation through local edge after route-policy, capability, and upstream-scoped device-credential checks.",
+    "Relay an allowed upstream operation through local edge after route-policy, capability, and upstream credential checks.",
     "future_request_time",
     "implemented",
     localEdgeDeploymentModes

@@ -35,6 +35,7 @@ interface GraphListenClient {
     callback: (message: { channel: string; payload?: string }) => void
   ): void;
   on(event: "error", callback: (error: unknown) => void): void;
+  removeAllListeners?(event: "notification" | "error"): void;
   release(): void;
 }
 
@@ -146,6 +147,8 @@ export const createGraphStreamService = async ({
     }
   >();
   let graphListenClient: GraphListenClient | null = null;
+  let graphListenReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let closing = false;
 
   const scheduleGraphUpdate = (payload: GraphUpdatePayload) => {
     const action = graphUpdateActionForPayload(payload);
@@ -231,11 +234,40 @@ export const createGraphStreamService = async ({
     });
   };
 
-  if (pool) {
+  const scheduleGraphListenerReconnect = () => {
+    if (closing || !pool || graphListenReconnectTimer) {
+      return;
+    }
+    graphListenReconnectTimer = setTimeout(() => {
+      graphListenReconnectTimer = null;
+      void startGraphListener();
+    }, 1500);
+    graphListenReconnectTimer.unref?.();
+  };
+
+  const releaseGraphListener = (client: GraphListenClient) => {
+    client.removeAllListeners?.("notification");
+    client.removeAllListeners?.("error");
+    client.release();
+    if (graphListenClient === client) {
+      graphListenClient = null;
+    }
+  };
+
+  const startGraphListener = async () => {
+    if (closing || !pool) {
+      return;
+    }
+    if (graphListenClient) {
+      releaseGraphListener(graphListenClient);
+    }
+    let client: GraphListenClient | null = null;
     try {
-      graphListenClient = await pool.connect();
-      await graphListenClient.query("LISTEN koed_graph_updates");
-      graphListenClient.on("notification", (message) => {
+      const connectedClient = await pool.connect();
+      client = connectedClient;
+      graphListenClient = connectedClient;
+      await connectedClient.query("LISTEN koed_graph_updates");
+      connectedClient.on("notification", (message) => {
         if (message.channel !== "koed_graph_updates" || !message.payload) {
           return;
         }
@@ -261,7 +293,7 @@ export const createGraphStreamService = async ({
           );
         }
       });
-      graphListenClient.on("error", (error) => {
+      connectedClient.on("error", (error) => {
         app.log.warn(
           {
             event: {
@@ -273,10 +305,16 @@ export const createGraphStreamService = async ({
           },
           "graph update listener failed"
         );
+        if (graphListenClient !== connectedClient) {
+          return;
+        }
+        releaseGraphListener(connectedClient);
+        scheduleGraphListenerReconnect();
       });
     } catch (error) {
-      graphListenClient?.release();
-      graphListenClient = null;
+      if (client && graphListenClient === client) {
+        releaseGraphListener(client);
+      }
       app.log.warn(
         {
           event: {
@@ -288,8 +326,11 @@ export const createGraphStreamService = async ({
         },
         "could not start graph update listener"
       );
+      scheduleGraphListenerReconnect();
     }
-  }
+  };
+
+  await startGraphListener();
 
   const registerRoutes = () => {
     app.options("/v1/memory/graph/stream", async (request, reply) => {
@@ -350,6 +391,7 @@ export const createGraphStreamService = async ({
   };
 
   const close = () => {
+    closing = true;
     for (const client of graphStreamClients) {
       client.reply.raw.end();
     }
@@ -358,7 +400,13 @@ export const createGraphStreamService = async ({
       clearTimeout(pending.timer);
     }
     pendingGraphUpdates.clear();
-    graphListenClient?.release();
+    if (graphListenReconnectTimer) {
+      clearTimeout(graphListenReconnectTimer);
+      graphListenReconnectTimer = null;
+    }
+    if (graphListenClient) {
+      releaseGraphListener(graphListenClient);
+    }
   };
 
   return { registerRoutes, close };

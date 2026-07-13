@@ -43,6 +43,7 @@ import { createDbPool } from "@koed/db";
 import {
   createLocalTestKeyEnvelopeEncryptionProvider,
   decryptEncryptedJsonPackage,
+  storeLocalEdgeClientCredential,
   type EnvelopeEncryptionProvider,
   type EncryptedJsonPackage
 } from "@koed/shared";
@@ -5838,7 +5839,7 @@ describe("account and access flows", () => {
     const overScopedChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
     const deviceSecret = `device-secret-${randomUUID()}`;
     const credentialKeyId = `device-key-${randomUUID()}`;
-    const deniedTokenChallenge = await app.inject({
+    const tokenCreatedChallenge = await app.inject({
       method: "POST",
       url: "/v1/local-edge/device-enrollments/challenges",
       headers: { authorization: `Bearer ${apiToken}` },
@@ -5983,7 +5984,7 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(deniedTokenChallenge.statusCode).toBe(401);
+    expect(tokenCreatedChallenge.statusCode).toBe(200);
     expect(createdChallenge.statusCode).toBe(200);
     expect(deniedAdminChallenge.statusCode).toBe(400);
     expect(deniedOverScopedRedeem.statusCode).toBe(400);
@@ -6073,7 +6074,7 @@ describe("account and access flows", () => {
         metadata: Record<string, unknown>;
       };
     }>(createdChallenge).challenge;
-    const deniedTokenLookup = await app.inject({
+    const tokenLookup = await app.inject({
       method: "GET",
       url: `/v1/local-edge/device-enrollments/challenges/${challenge.id}`,
       headers: { authorization: `Bearer ${apiToken}` }
@@ -6181,7 +6182,8 @@ describe("account and access flows", () => {
       supportToken: "[redacted]"
     });
     expect(challenge.metadata).not.toHaveProperty("enrollmentDecision");
-    expect(deniedTokenLookup.statusCode).toBe(401);
+    expect(tokenLookup.statusCode).toBe(200);
+    expect(JSON.stringify(tokenLookup.json())).not.toContain(verifierHash);
     expect(lookup.statusCode).toBe(200);
     expect(JSON.stringify(lookup.json())).not.toContain(verifierHash);
     expect(approved.statusCode).toBe(200);
@@ -6229,6 +6231,13 @@ describe("account and access flows", () => {
       payload: { email: "route-owner@example.com", password: "password123" }
     });
     const cookie = cookieHeader(registered);
+    const createdToken = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Local MCP" }
+    });
+    const apiToken = jsonBody<TokenResponse>(createdToken).token;
     const challengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
     const deviceSecret = `device-secret-${randomUUID()}`;
     const credentialKeyId = `device-key-${randomUUID()}`;
@@ -6303,6 +6312,18 @@ describe("account and access flows", () => {
         body: { query: "postgres", team_workspace_id: randomUUID() }
       }
     });
+    const proxiedWithApiToken = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: { authorization: `Bearer ${apiToken}` },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/memory/search",
+        body: { query: "redis", team_workspace_id: randomUUID() }
+      }
+    });
     const blockedLocalEdgeProxy = await app.inject({
       method: "POST",
       url: "/v1/local-edge/upstream-operations",
@@ -6351,10 +6372,12 @@ describe("account and access flows", () => {
       reason: "route_policy_disabled"
     });
     expect(proxied.statusCode).toBe(200);
+    expect(proxiedWithApiToken.statusCode).toBe(403);
     expect(jsonBody<{ markdown: string }>(proxied).markdown).toBeDefined();
     expect(upstreamCalls).toHaveLength(1);
     expect(upstreamCalls[0]).toMatchObject({
-      url: "https://team.example.test/v1/memory/answer"
+      url: "https://team.example.test/v1/memory/answer",
+      init: { redirect: "error" }
     });
     expect(
       (upstreamCalls[0]?.init.headers as Record<string, string>).authorization
@@ -6364,7 +6387,88 @@ describe("account and access flows", () => {
     expect(upstreamCalls).toHaveLength(1);
   });
 
-  it("does not expose local-edge runtime operations from non-local deployment profiles", async () => {
+  it("routes Team operations with a scoped local-edge client credential", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-local-client-"));
+    process.env.KOED_HOME = koedHome;
+    const upstreamPath = writeUpstreamRegistryFixture({
+      baseUrl: "https://team.example.test",
+      routePolicy: { teamWorkspaceRead: "enabled" }
+    });
+    const localClient = storeLocalEdgeClientCredential(koedHome, {
+      backendId: "team-vps",
+      secret: "scoped-local-client-secret",
+      operationFamilies: ["team_workspace_read"]
+    });
+    const authorization = `Koed-Device ${localClient.credentialKeyId}:scoped-local-client-secret`;
+    const upstreamCalls: string[] = [];
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      upstreamBackendsPath: upstreamPath,
+      resolveUpstreamAuthorization: () =>
+        "Koed-Device upstream-key:upstream-secret",
+      fetch: async (input) => {
+        upstreamCalls.push(String(input));
+        return new Response(JSON.stringify({ hits: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+    });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "local-client-session@example.test",
+        password: "password123"
+      }
+    });
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: { authorization },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/memory/search",
+        body: { query: "team" }
+      }
+    });
+    const wrongFamily = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: { authorization },
+      payload: {
+        operation_family: "admin",
+        upstream_backend_id: "team-vps",
+        method: "GET",
+        path: "/v1/teams"
+      }
+    });
+    const browserSessionOnly = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/upstream-operations",
+      headers: { cookie: cookieHeader(registered) },
+      payload: {
+        operation_family: "team_workspace_read",
+        upstream_backend_id: "team-vps",
+        method: "POST",
+        path: "/v1/memory/search",
+        body: { query: "team" }
+      }
+    });
+    await app.close();
+
+    expect(allowed.statusCode).toBe(200);
+    expect(wrongFamily.statusCode).toBe(401);
+    expect(browserSessionOnly.statusCode).toBe(401);
+    expect(upstreamCalls).toEqual([
+      "https://team.example.test/v1/memory/search"
+    ]);
+  });
+
+  it("does not expose local-edge runtime proxy operations from non-local deployment profiles", async () => {
     process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
@@ -6405,7 +6509,7 @@ describe("account and access flows", () => {
     });
     await app.close();
 
-    expect(status.statusCode).toBe(404);
+    expect(status.statusCode).toBe(401);
     expect(decision.statusCode).toBe(404);
     expect(proxied.statusCode).toBe(404);
   });

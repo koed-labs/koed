@@ -90,6 +90,13 @@ _Avoid_: Agent tool, backend LLM worker, manual summarization
 Trusted commands run from the deployment checkout, such as API Token bootstrap.
 _Avoid_: Console, dashboard, admin app
 
+**Local-Edge Client Credential**:
+A revocable credential scoped to one enrolled upstream backend and explicit
+operation families, used by a local integration such as the MCP Server to ask
+the local edge to perform Team operations. It is distinct from a Personal API
+Token and from the upstream device credential used against the Team Backend.
+_Avoid_: API Token, upstream credential, browser session
+
 **MCP Server**:
 The local integration process that exposes Koed memory tools to an AI client.
 _Avoid_: AI client, backend, capture hook

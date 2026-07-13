@@ -1,4 +1,5 @@
 import type { DeviceCredentialRecord } from "@koed/db";
+import { verifyLocalEdgeClientCredentialAuthorization } from "@koed/shared";
 import type { FastifyInstance } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -261,7 +262,12 @@ export const registerLocalEdgeRoutes = (
 ) => {
   const {
     requireRepository,
-    auth: { authenticateSession, authenticateDeviceCredential, hashSecret },
+    auth: {
+      authenticateSession,
+      authenticateApiToken,
+      authenticateDeviceCredential,
+      hashSecret
+    },
     rateLimit: {
       memoryRead: memoryReadRateLimit,
       memoryWrite: memoryWriteRateLimit
@@ -282,7 +288,6 @@ export const registerLocalEdgeRoutes = (
     { preHandler: memoryWriteRateLimit },
     async (request) => {
       const repo = requireRepository();
-      await authenticateSession(request);
       const input = createDeviceEnrollmentChallengeSchema.parse(request.body);
       const pendingCredential = pendingDeviceCredentialFromInput(
         input.pending_credential,
@@ -327,7 +332,6 @@ export const registerLocalEdgeRoutes = (
     { preHandler: memoryReadRateLimit },
     async (request) => {
       const repo = requireRepository();
-      await authenticateSession(request);
       const params = deviceEnrollmentChallengeParamsSchema.parse(
         request.params
       );
@@ -509,7 +513,6 @@ export const registerLocalEdgeRoutes = (
     "/v1/local-edge/device-credentials/status",
     { preHandler: memoryReadRateLimit },
     async (request) => {
-      assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const authContext = await authenticateDeviceCredential(request);
 
       return {
@@ -580,8 +583,63 @@ export const registerLocalEdgeRoutes = (
     async (request, reply) => {
       assertLocalEdgeRuntimeProfile(context.config.deploymentProfile);
       const repo = requireRepository();
-      const authContext = await authenticateDeviceCredential(request);
       const input = localEdgeUpstreamOperationSchema.parse(request.body);
+      const authHeader = request.headers.authorization?.trim() ?? "";
+      const authScheme = authHeader.split(/\s+/, 1)[0]?.toLowerCase();
+      let authContext:
+        | Awaited<ReturnType<typeof authenticateDeviceCredential>>
+        | {
+            user: Awaited<ReturnType<typeof authenticateApiToken>>;
+            credential: null;
+          }
+        | {
+            user: null;
+            credential: {
+              upstreamBackendId: string;
+              operationFamilies: string[];
+            };
+          };
+      if (authScheme === "bearer") {
+        const user = await authenticateApiToken(request);
+        if (
+          input.operation_family !== "personal_memory_read" &&
+          input.operation_family !== "capture_writes"
+        ) {
+          throw Object.assign(
+            new Error(
+              "Scoped local-edge client credential required for Team upstream operations"
+            ),
+            { statusCode: 403 }
+          );
+        }
+        authContext = { user, credential: null };
+      } else if (authScheme === "koed-device") {
+        const localClientCredential =
+          verifyLocalEdgeClientCredentialAuthorization(
+            context.config.koedHome,
+            authHeader,
+            {
+              backendId: input.upstream_backend_id,
+              operationFamily: input.operation_family
+            }
+          );
+        authContext = localClientCredential
+          ? {
+              user: null,
+              credential: {
+                upstreamBackendId: localClientCredential.backendId,
+                operationFamilies: localClientCredential.operationFamilies
+              }
+            }
+          : await authenticateDeviceCredential(request);
+      } else {
+        throw Object.assign(
+          new Error(
+            "Scoped local-edge client or device credential required for upstream operations"
+          ),
+          { statusCode: 401 }
+        );
+      }
       const registry = upstreamRegistry();
       const upstreamBackend = upstreamBackendById(
         registry,
@@ -591,7 +649,7 @@ export const registerLocalEdgeRoutes = (
         input.operation_family === "capture_writes"
           ? await resolveCapturePolicyForRequest(
               repo,
-              { userId: authContext.user.id },
+              { userId: authContext.user!.id },
               {
                 workspaceId: input.capture_context?.workspace_id,
                 sessionId: input.capture_context?.session_id,
@@ -631,6 +689,7 @@ export const registerLocalEdgeRoutes = (
       }
       const upstreamResponse = await upstreamFetch(url, {
         method: input.method,
+        redirect: "error",
         headers: {
           "content-type": "application/json",
           accept: "application/json",

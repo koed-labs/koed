@@ -35,7 +35,20 @@ describe("route identity contract", () => {
     }
   });
 
-  it("keeps device credential routes explicit and future-only credential classes unimplemented", () => {
+  it("keeps local-edge route identities explicit and future-only credential classes unimplemented", () => {
+    expect(
+      openApiPaths["/v1/local-edge/device-enrollments/challenges"]?.post
+    ).toMatchObject({
+      security: [],
+      "x-koed-identity": "public"
+    });
+    expect(
+      openApiPaths["/v1/local-edge/device-enrollments/challenges/{challengeId}"]
+        ?.get
+    ).toMatchObject({
+      security: [],
+      "x-koed-identity": "public"
+    });
     expect(
       routeIdentityFor("GET", "/v1/local-edge/device-credentials/status")
     ).toMatchObject({
@@ -57,8 +70,8 @@ describe("route identity contract", () => {
     expect(
       openApiPaths["/v1/local-edge/upstream-operations"]?.post
     ).toMatchObject({
-      security: [{ deviceCredential: [] }],
-      "x-koed-identity": "device_credential"
+      security: [{ bearerApiToken: [] }, { deviceCredential: [] }],
+      "x-koed-identity": "api_token_or_device_credential"
     });
     expect(
       routeIdentityContracts.filter(

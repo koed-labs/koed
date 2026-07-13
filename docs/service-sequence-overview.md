@@ -364,6 +364,10 @@ metadata: stable upstream id, display name, base URL, deployment profile,
 credential existence/status, route-policy metadata, and a sanitized cache of the
 upstream public capability contract.
 
+Remote upstream base URLs must use HTTPS. Exact loopback HTTP targets remain
+available for local development, and capability, enrollment, and Memory proxy
+requests reject redirects rather than allowing a transport downgrade.
+
 Registering an upstream is not sufficient to route memory traffic. Route policy
 defaults are fail-closed for capture-bearing writes, Team Workspace recall,
 Share Grant management, sync/offload, and admin operations. `koed-server
@@ -403,6 +407,13 @@ an explicit
 state model records logical memory identity, source and target replicas, sync
 relationships, resumable upload sessions, chunks, and inbox/outbox entries for
 the later hosted intake and worker implementation.
+
+For MCP Team recall, the incoming `Koed-Device` value is a Local-Edge Client
+Credential created during enrollment and scoped to the selected backend plus
+`team_workspace_read`. It is not the upstream device credential. The local edge
+validates the local credential before opening secure storage for the separate
+upstream credential. Personal API Tokens remain on Personal Memory routes and
+cannot be promoted into Team authority from the requested operation body.
 
 ## Explorer-First Auth And Device Enrollment
 

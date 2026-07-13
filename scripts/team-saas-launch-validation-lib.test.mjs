@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertSeparateLaunchTestDatabase,
   assertLaunchValidationEnvironment,
   automatedLaunchTestCommands,
+  buildAutomatedLaunchTestEnvironment,
   formatLaunchValidationReport,
   launchValidationGates,
+  provisionAutomatedLaunchTestDatabase,
+  runAutomatedLaunchTests,
   runStagedRemoteValidation,
   summarizeLaunchValidation
 } from "./team-saas-launch-validation-lib.mjs";
@@ -21,6 +25,243 @@ test("launch validation requires API_TOKEN_PEPPER for Auth gate coverage", () =>
     () => assertLaunchValidationEnvironment({}),
     /API_TOKEN_PEPPER is required/
   );
+});
+
+test("automated launch commands select only their intended test files", () => {
+  const dbCommand = automatedLaunchTestCommands.find(
+    (command) => command.id === "db-encrypted-tenant-boundaries"
+  );
+  const apiCommand = automatedLaunchTestCommands.find(
+    (command) => command.id === "api-auth-runtime-boundaries"
+  );
+
+  assert.deepEqual(dbCommand?.args.slice(0, 6), [
+    "--filter",
+    "@koed/db",
+    "exec",
+    "vitest",
+    "run",
+    "--passWithNoTests"
+  ]);
+  assert.ok(dbCommand?.args.includes("tests/repository.test.ts"));
+  assert.ok(dbCommand?.args.includes("--testNamePattern"));
+  assert.ok(!dbCommand?.args.includes("--"));
+
+  assert.deepEqual(apiCommand?.args.slice(0, 6), [
+    "--filter",
+    "@koed/api",
+    "exec",
+    "vitest",
+    "run",
+    "--passWithNoTests"
+  ]);
+  assert.ok(apiCommand?.args.includes("src/server.test.ts"));
+  assert.ok(apiCommand?.args.includes("--testNamePattern"));
+  assert.ok(
+    apiCommand?.args.some((arg) =>
+      arg.includes("encrypted Memory Event companions")
+    )
+  );
+  assert.ok(!apiCommand?.args.includes("--"));
+});
+
+test("automated launch tests remove inherited deployment secrets and profiles", () => {
+  const parent = {
+    PATH: "/usr/bin",
+    DATABASE_URL: "postgres://fixture",
+    API_TOKEN_PEPPER: "production-pepper",
+    SESSION_SECRET: "production-session-secret",
+    KOED_LAUNCH_SESSION_COOKIE: "production-session-cookie",
+    KOED_LAUNCH_DEVICE_CREDENTIAL: "production-device-credential",
+    KOED_DEPLOYMENT_PROFILE: "team_self_hosted",
+    KOED_MANAGED_CLOUD_RELEASE_STAGE: "paid",
+    NODE_ENV: "production",
+    API_ENVELOPE_ENCRYPTION_PROVIDER: "local_test_key",
+    API_DATA_ENCRYPTION_KEY: "do-not-inherit",
+    MANAGED_KMS_AUTH_TOKEN: "do-not-inherit",
+    WORKOS_API_KEY: "do-not-inherit"
+  };
+  const child = buildAutomatedLaunchTestEnvironment(parent, {
+    API_TOKEN_PEPPER: "synthetic-pepper",
+    DATABASE_URL: "postgres://scratch",
+    NODE_ENV: "test",
+    SESSION_SECRET: "synthetic-session-secret"
+  });
+
+  assert.equal(child.PATH, "/usr/bin");
+  assert.equal(child.API_TOKEN_PEPPER, "synthetic-pepper");
+  assert.equal(child.SESSION_SECRET, "synthetic-session-secret");
+  assert.equal(child.DATABASE_URL, "postgres://scratch");
+  assert.equal(child.NODE_ENV, "test");
+  assert.equal(child.KOED_DEPLOYMENT_PROFILE, undefined);
+  assert.equal(child.KOED_MANAGED_CLOUD_RELEASE_STAGE, undefined);
+  assert.equal(child.API_ENVELOPE_ENCRYPTION_PROVIDER, undefined);
+  assert.equal(child.API_DATA_ENCRYPTION_KEY, undefined);
+  assert.equal(child.MANAGED_KMS_AUTH_TOKEN, undefined);
+  assert.equal(child.WORKOS_API_KEY, undefined);
+  assert.equal(child.KOED_LAUNCH_SESSION_COOKIE, undefined);
+  assert.equal(child.KOED_LAUNCH_DEVICE_CREDENTIAL, undefined);
+  assert.equal(parent.API_TOKEN_PEPPER, "production-pepper");
+  assert.equal(parent.NODE_ENV, "production");
+  assert.equal(parent.KOED_DEPLOYMENT_PROFILE, "team_self_hosted");
+});
+
+test("automated launch test failures identify the failing gate", () => {
+  const calls = [];
+  assert.throws(
+    () =>
+      runAutomatedLaunchTests({
+        commands: [
+          { id: "first-gate", command: "first", args: ["test"] },
+          { id: "second-gate", command: "second", args: ["test"] }
+        ],
+        cwd: "/repo",
+        environment: {
+          PATH: "/usr/bin",
+          KOED_DEPLOYMENT_PROFILE: "team_self_hosted"
+        },
+        environmentOverrides: { DATABASE_URL: "postgres://scratch" },
+        spawn(command, args, options) {
+          calls.push({ command, args, options });
+          return { status: 7 };
+        }
+      }),
+    /Automated launch test command failed: first-gate \(exit 7\)/
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.KOED_DEPLOYMENT_PROFILE, undefined);
+  assert.equal(calls[0].options.env.DATABASE_URL, "postgres://scratch");
+});
+
+test("launch validation refuses to use the fixture database for destructive tests", () => {
+  assert.throws(
+    () =>
+      assertSeparateLaunchTestDatabase(
+        "postgres://koed:secret@postgres:5432/koed",
+        "postgresql://other:secret@postgres/koed?sslmode=require"
+      ),
+    /must not target the fixture database/
+  );
+  assert.doesNotThrow(() =>
+    assertSeparateLaunchTestDatabase(
+      "postgres://koed:secret@postgres:5432/koed",
+      "postgres://koed:secret@separate-cluster:5432/koed"
+    )
+  );
+  assert.doesNotThrow(() =>
+    assertSeparateLaunchTestDatabase(
+      "postgres://koed:secret@postgres:5432/koed",
+      "postgres://koed:secret@postgres:5432/koed_launch_test"
+    )
+  );
+});
+
+const databaseIdentityClientFactory =
+  (identityForUrl, clients) => (connectionString) => {
+    const client = {
+      connectionString,
+      ends: 0,
+      async connect() {},
+      async query() {
+        return { rows: [identityForUrl(connectionString)] };
+      },
+      async end() {
+        this.ends += 1;
+      }
+    };
+    clients.push(client);
+    return client;
+  };
+
+test("launch validation rejects database aliases resolving to the fixture", async () => {
+  const clients = [];
+  const createClient = databaseIdentityClientFactory(
+    () => ({
+      database_name: "koed",
+      server_address: "10.0.0.12",
+      server_port: 5432
+    }),
+    clients
+  );
+
+  await assert.rejects(
+    () =>
+      provisionAutomatedLaunchTestDatabase({
+        fixtureDatabaseUrl: "postgres://koed:secret@postgres:5432/koed",
+        explicitTestDatabaseUrl:
+          "postgres://koed:secret@database-alias:5432/koed",
+        createClient
+      }),
+    /resolves to the fixture database/
+  );
+  assert.equal(clients.length, 2);
+  assert.ok(clients.every((client) => client.ends === 1));
+});
+
+test("launch validation allows the same database name on a separate server", async () => {
+  const clients = [];
+  const createClient = databaseIdentityClientFactory(
+    (connectionString) => ({
+      database_name: "koed",
+      server_address: connectionString.includes("separate-cluster")
+        ? "10.0.1.20"
+        : "10.0.0.12",
+      server_port: 5432
+    }),
+    clients
+  );
+  const explicitTestDatabaseUrl =
+    "postgres://koed:secret@separate-cluster:5432/koed";
+
+  const provisioned = await provisionAutomatedLaunchTestDatabase({
+    fixtureDatabaseUrl: "postgres://koed:secret@postgres:5432/koed",
+    explicitTestDatabaseUrl,
+    createClient
+  });
+  assert.equal(provisioned.databaseUrl, explicitTestDatabaseUrl);
+  assert.equal(provisioned.managed, false);
+  assert.equal(clients.length, 2);
+  assert.ok(clients.every((client) => client.ends === 1));
+});
+
+test("launch validation provisions and cleans up a disposable test database", async () => {
+  const clients = [];
+  const createClient = (connectionString) => {
+    const client = {
+      connectionString,
+      queries: [],
+      connects: 0,
+      ends: 0,
+      async connect() {
+        this.connects += 1;
+      },
+      async query(...args) {
+        this.queries.push(args);
+      },
+      async end() {
+        this.ends += 1;
+      }
+    };
+    clients.push(client);
+    return client;
+  };
+
+  const provisioned = await provisionAutomatedLaunchTestDatabase({
+    fixtureDatabaseUrl: "postgres://koed:secret@postgres:5432/koed",
+    createClient,
+    uniqueId: "A1-B2-C3"
+  });
+  assert.equal(provisioned.managed, true);
+  assert.equal(
+    provisioned.databaseUrl,
+    "postgres://koed:secret@postgres:5432/koed_launch_a1b2c3"
+  );
+  assert.match(clients[0].queries[0][0], /create database/);
+  await provisioned.cleanup();
+  await provisioned.cleanup();
+  assert.equal(clients.length, 2);
+  assert.match(clients[1].queries[0][0], /pg_terminate_backend/);
+  assert.match(clients[1].queries[1][0], /drop database/);
 });
 
 test("launch validation gates cover Team SaaS critical path areas", () => {

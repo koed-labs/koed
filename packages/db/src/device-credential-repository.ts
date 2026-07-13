@@ -121,6 +121,16 @@ const resolveCredentialOperationFamilies = (
   return requested;
 };
 
+const validateCredentialKeyId = (value: string): string => {
+  const credentialKeyId = value.trim();
+  if (!/^[a-z0-9_.-]{16,160}$/i.test(credentialKeyId)) {
+    throw Object.assign(new Error("Device credential key id is invalid"), {
+      statusCode: 400
+    });
+  }
+  return credentialKeyId;
+};
+
 export const createDeviceCredentialRepository = (db: KoedDb) => ({
   async createDeviceEnrollmentChallenge(input: {
     challengeHash: string;
@@ -197,16 +207,41 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         challenge.requestedOperationFamilies,
         input.operationFamilies
       );
+      const credentialKeyId = validateCredentialKeyId(input.credentialKeyId);
+      const deviceInstanceId =
+        challenge.deviceInstanceId ?? `device-${challenge.id}`;
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`${actor.userId}:${challenge.upstreamBackendId}:${deviceInstanceId}`}, 0))`
+      );
+      const supersededRows = await tx
+        .update(deviceCredentials)
+        .set({
+          revokedAt: sql`now()`,
+          revokedByUserId: actor.userId,
+          revocationReason: "superseded_by_device_enrollment",
+          updatedAt: sql`now()`
+        })
+        .where(
+          and(
+            eq(deviceCredentials.ownerUserId, actor.userId),
+            eq(
+              deviceCredentials.upstreamBackendId,
+              challenge.upstreamBackendId
+            ),
+            eq(deviceCredentials.deviceInstanceId, deviceInstanceId),
+            isNull(deviceCredentials.revokedAt)
+          )
+        )
+        .returning();
 
       const credentialRows = await tx
         .insert(deviceCredentials)
         .values({
           ownerUserId: actor.userId,
           enrollmentChallengeId: challenge.id,
-          credentialKeyId: input.credentialKeyId,
+          credentialKeyId,
           upstreamBackendId: challenge.upstreamBackendId,
-          deviceInstanceId:
-            challenge.deviceInstanceId ?? `device-${challenge.id}`,
+          deviceInstanceId,
           deviceLabel: challenge.deviceLabel,
           verifierKind: input.verifierKind,
           verifierHash:
@@ -224,6 +259,25 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .returning();
 
       const credential = mapDeviceCredentialRecord(credentialRows[0]!);
+      if (supersededRows.length > 0) {
+        await tx.insert(auditEvents).values(
+          supersededRows.map((row) => {
+            const superseded = mapDeviceCredentialRecord(row);
+            return auditEventValues({
+              actorUserId: actor.userId,
+              ownerUserId: actor.userId,
+              visibility: "personal",
+              action: "device_credential.revoked",
+              targetTable: "device_credentials",
+              targetId: superseded.id,
+              metadata: deviceCredentialAuditMetadata(superseded, {
+                reason: "superseded_by_device_enrollment",
+                supersededByCredentialId: credential.id
+              })
+            });
+          })
+        );
+      }
       await tx.insert(auditEvents).values(
         auditEventValues({
           actorUserId: actor.userId,
@@ -280,16 +334,41 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         challenge.requestedOperationFamilies,
         input.operationFamilies
       );
+      const credentialKeyId = validateCredentialKeyId(input.credentialKeyId);
+      const deviceInstanceId =
+        challenge.deviceInstanceId ?? `device-${challenge.id}`;
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`${actor.userId}:${challenge.upstreamBackendId}:${deviceInstanceId}`}, 0))`
+      );
+      const supersededRows = await tx
+        .update(deviceCredentials)
+        .set({
+          revokedAt: sql`now()`,
+          revokedByUserId: actor.userId,
+          revocationReason: "superseded_by_device_enrollment",
+          updatedAt: sql`now()`
+        })
+        .where(
+          and(
+            eq(deviceCredentials.ownerUserId, actor.userId),
+            eq(
+              deviceCredentials.upstreamBackendId,
+              challenge.upstreamBackendId
+            ),
+            eq(deviceCredentials.deviceInstanceId, deviceInstanceId),
+            isNull(deviceCredentials.revokedAt)
+          )
+        )
+        .returning();
 
       const credentialRows = await tx
         .insert(deviceCredentials)
         .values({
           ownerUserId: actor.userId,
           enrollmentChallengeId: challenge.id,
-          credentialKeyId: input.credentialKeyId,
+          credentialKeyId,
           upstreamBackendId: challenge.upstreamBackendId,
-          deviceInstanceId:
-            challenge.deviceInstanceId ?? `device-${challenge.id}`,
+          deviceInstanceId,
           deviceLabel: challenge.deviceLabel,
           verifierKind: input.verifierKind,
           verifierHash:
@@ -307,6 +386,25 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .returning();
 
       const credential = mapDeviceCredentialRecord(credentialRows[0]!);
+      if (supersededRows.length > 0) {
+        await tx.insert(auditEvents).values(
+          supersededRows.map((row) => {
+            const superseded = mapDeviceCredentialRecord(row);
+            return auditEventValues({
+              actorUserId: actor.userId,
+              ownerUserId: actor.userId,
+              visibility: "personal",
+              action: "device_credential.revoked",
+              targetTable: "device_credentials",
+              targetId: superseded.id,
+              metadata: deviceCredentialAuditMetadata(superseded, {
+                reason: "superseded_by_device_enrollment",
+                supersededByCredentialId: credential.id
+              })
+            });
+          })
+        );
+      }
       await tx.insert(auditEvents).values(
         auditEventValues({
           actorUserId: actor.userId,

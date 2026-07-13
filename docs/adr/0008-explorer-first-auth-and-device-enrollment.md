@@ -71,6 +71,11 @@ Human auth, device auth, and AI-client compatibility credentials stay separate:
   Supported Capture Hook, Explorer JavaScript runtime, ordinary config files, or
   support bundles. Ordinary status surfaces show existence, freshness, and
   revocation state only.
+- A **Local-Edge Client Credential** is separate, revocable material scoped to
+  one upstream backend and explicit operation families. MCP may use it to ask
+  local `koed-server` for Team recall without receiving the upstream credential.
+  It does not grant Team authority by itself; the Team Backend still checks
+  Team Membership, Workspace Access, Share Grants, lifecycle, and entitlements.
 - A **WorkOS API key** is an Operator/server configuration secret for hosted
   human auth. It is not a Koed API Token, device credential, upstream
   credential, Capture Hook credential, or AI-client credential.
@@ -88,7 +93,15 @@ Device enrollment is browser-mediated:
    Operator-managed secrets.
 6. Koed stores only verifier/public-key or equivalent non-reusable material on
    the server side.
-7. All remote operations still resolve current Koed authorization state at
+
+7. For MCP Team recall, enrollment also creates a separate Local-Edge Client
+   Credential. MCP presents only that credential to localhost. Local
+   `koed-server` validates its backend and operation-family scope, loads the
+   upstream credential from secure storage, and never treats a Personal API
+   Token or a requested operation body as Team authority. Disconnect and
+   re-enrollment remove or rotate both local credential classes independently of
+   Personal API Tokens.
+8. All remote operations still resolve current Koed authorization state at
    request time.
 
 No enrollment flow may rely on email-only trust. External identity linking must

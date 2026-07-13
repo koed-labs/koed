@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { readLocalEdgeClientCredentialAuthorization } from "@koed/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
   answerWithMemoryWorker,
+  type MemoryAnswerRetrievalClient,
   type MemoryAnswerResponseDetail,
   resolveMemoryAnswerWorkerConfig
 } from "./answer-worker.js";
@@ -154,6 +157,67 @@ const normalizeToolWorkspaceId = (workspaceId?: string): string =>
   workspaceId && path.isAbsolute(workspaceId)
     ? workspaceId
     : defaultWorkspaceId();
+
+class LocalEdgeTeamMemoryClient implements MemoryAnswerRetrievalClient {
+  constructor(
+    private readonly client: MemoryApiClient,
+    private readonly upstreamBackendId: string,
+    private readonly authorization: string
+  ) {}
+
+  async search(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return await this.client.upstreamOperation(
+      {
+        upstreamBackendId: this.upstreamBackendId,
+        operationFamily: "team_workspace_read",
+        method: "POST",
+        path: "/v1/memory/search",
+        body: input
+      },
+      this.authorization
+    );
+  }
+
+  async expand(
+    nodeId: string,
+    input: {
+      searchDomain?: string;
+      sessionId?: string;
+      workspaceId?: string;
+      teamWorkspaceId?: string;
+      recentDays?: number;
+      sourceAfter?: string;
+      sourceBefore?: string;
+    } = {}
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams();
+    if (input.searchDomain) params.set("search_domain", input.searchDomain);
+    if (input.sessionId) params.set("session_id", input.sessionId);
+    if (input.workspaceId) params.set("workspace_id", input.workspaceId);
+    if (input.teamWorkspaceId) {
+      params.set("team_workspace_id", input.teamWorkspaceId);
+    }
+    if (input.recentDays !== undefined) {
+      params.set("recent_days", String(input.recentDays));
+    }
+    if (input.sourceAfter) params.set("source_after", input.sourceAfter);
+    if (input.sourceBefore) params.set("source_before", input.sourceBefore);
+    const query = params.toString();
+    return await this.client.upstreamOperation(
+      {
+        upstreamBackendId: this.upstreamBackendId,
+        operationFamily: "team_workspace_read",
+        method: "GET",
+        path: `/v1/memory/nodes/${encodeURIComponent(nodeId)}/expand${
+          query ? `?${query}` : ""
+        }`
+      },
+      this.authorization
+    );
+  }
+}
 
 const {
   command,
@@ -404,32 +468,72 @@ server.registerTool(
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
-    const mappedTeamWorkspaceId =
+    const projectTeamWorkspaceLink =
       !input.team_workspace_id &&
       input.search_domain === "project" &&
       workspace_id &&
       teamMemoryDogfoodEnabled(process.env)
         ? resolveProjectTeamWorkspaceLink(workspace_id, process.env)
-            ?.teamWorkspaceId
         : undefined;
+    const mappedTeamWorkspaceId = projectTeamWorkspaceLink?.teamWorkspaceId;
     const team_workspace_id = input.team_workspace_id ?? mappedTeamWorkspaceId;
-    if (team_workspace_id) {
+    const upstream_backend_id =
+      projectTeamWorkspaceLink?.backendId ??
+      process.env.KOED_TEAM_UPSTREAM_BACKEND_ID?.trim();
+    if (team_workspace_id && !upstream_backend_id) {
       return jsonResponse({
         markdown:
-          "Team Workspace recall requires scoped browser-session or device-credential authorization. This MCP Server is configured with a Personal Memory API Token, so Team recall is fail-closed until the upstream enrollment bridge in KOE-311 provides local device authorization.",
+          "Team Workspace recall is configured for this request, but no upstream Team Backend id is available. Link this Project to a Team Workspace backend or set KOED_TEAM_UPSTREAM_BACKEND_ID for explicit Team Workspace calls.",
         evidenceBundle: {
           query: answerInput.query,
           instructions:
-            "Team Workspace recall was requested but device/session authorization is not available to the MCP Server.",
+            "Team Workspace recall was requested but no local-edge upstream backend id was available.",
           evidence: [],
           retrieval: {
-            mode: "team_workspace_auth_unavailable",
+            mode: "team_workspace_upstream_backend_unavailable",
             teamWorkspaceId: team_workspace_id,
             followUpIssue: "KOE-311"
           }
         }
       });
     }
+    const localEdgeClientCredential = upstream_backend_id
+      ? readLocalEdgeClientCredentialAuthorization(
+          path.resolve(
+            process.env.KOED_HOME?.trim() || path.join(os.homedir(), ".koed")
+          ),
+          upstream_backend_id
+        )
+      : null;
+    if (
+      team_workspace_id &&
+      upstream_backend_id &&
+      !localEdgeClientCredential
+    ) {
+      return jsonResponse({
+        markdown:
+          "Team Workspace recall is configured, but this MCP installation has no scoped local-edge client credential. Reconnect the Team Backend from Koed Desktop.",
+        evidenceBundle: {
+          query: answerInput.query,
+          instructions:
+            "Team Workspace recall was requested without a scoped local-edge client credential.",
+          evidence: [],
+          retrieval: {
+            mode: "team_workspace_local_credential_unavailable",
+            teamWorkspaceId: team_workspace_id,
+            upstreamBackendId: upstream_backend_id
+          }
+        }
+      });
+    }
+    const retrievalClient =
+      team_workspace_id && upstream_backend_id
+        ? new LocalEdgeTeamMemoryClient(
+            client,
+            upstream_backend_id,
+            localEdgeClientCredential!.authorization
+          )
+        : client;
     const evidence = {
       markdown: "",
       evidenceBundle: {
@@ -442,7 +546,7 @@ server.registerTool(
     };
     const answer = await answerWithMemoryWorker(evidence, {
       config: workerConfig,
-      client,
+      client: retrievalClient,
       retrievalScope: retrieval_scope,
       searchDomain: input.search_domain,
       workspaceId: workspace_id,

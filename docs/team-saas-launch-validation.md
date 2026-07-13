@@ -31,7 +31,23 @@ default; the report marks those backing tests as `not_run`.
 then runs the focused API, DB, encryption, backup, database-role, capacity, and
 launch-validation tests that back the non-fixture automated gates. Use this for
 full local/disposable-staging launch validation before treating the automated
-gate list as passed.
+gate list as passed. The harness runs those tests in a separate process
+environment without inheriting the deployment profile, encryption keys, KMS
+credentials, WorkOS credentials, staged route credentials, or service endpoints
+from the target deployment. Required token and session secrets are generated
+for the test run, and child processes run with `NODE_ENV=test`.
+Profile-specific tests configure and verify their intended profile explicitly.
+
+Repository tests never run against the fixture database because they truncate
+tables by design. By default, the harness creates a uniquely named disposable
+database on the same PostgreSQL server and removes it after the run, including
+after a failed gate. The `DATABASE_URL` user therefore needs `CREATEDB` for this
+command. Operators without that permission must set
+`KOED_LAUNCH_TEST_DATABASE_URL` to a different disposable database. That
+database is destructive test infrastructure and must never be the fixture,
+staging, or production database; the harness rejects an exact fixture-database
+match and verifies the runtime server identity of an explicitly supplied test
+database. A genuinely separate server may use the same database name.
 
 `pnpm team-launch:validate --with-staged-remote` validates the fixture and also
 probes a running hosted/private backend over HTTP. It proves public and
@@ -90,6 +106,10 @@ for:
   run with `--with-staged-remote` against a seeded target backend, including
   public/authenticated capability discovery and API-token rejection from Team
   answer and graph routes.
+
+Each printed gate command uses explicit Vitest file and test-name filters. A
+failed command stops the run, identifies the failed gate, exits non-zero, and
+still removes an automatically provisioned test database.
 
 ## Manual Gates
 

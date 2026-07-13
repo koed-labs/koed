@@ -688,9 +688,9 @@ export const runKoedServerCli = async (
       const id = requireFlagValue(args, "--id");
       const result =
         enrollCommand === "start"
-          ? startUpstreamEnroll(paths, id)
+          ? await startUpstreamEnroll(paths, id)
           : enrollCommand === "status"
-            ? getUpstreamEnrollStatus(paths, id)
+            ? await getUpstreamEnrollStatus(paths, id)
             : enrollCommand === "cancel"
               ? cancelUpstreamEnroll(paths, id)
               : null;
@@ -726,7 +726,9 @@ export const runKoedServerCli = async (
           ? linkProjectWorkspace(paths, {
               projectRoot: requireFlagValue(args, "--project-root"),
               teamWorkspaceId: requireFlagValue(args, "--team-workspace-id"),
-              backendId: flagValue(args, "--backend-id")
+              backendId:
+                flagValue(args, "--backend-id") ??
+                flagValue(args, "--upstream-backend-id")
             })
           : teamWorkspaceCommand === "list"
             ? listProjectWorkspaceLinks(paths)

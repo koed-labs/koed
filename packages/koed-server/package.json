@@ -19,6 +19,9 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@koed/shared": "workspace:*"
+  },
   "scripts": {
     "build": "tsc -b tsconfig.json --force",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",

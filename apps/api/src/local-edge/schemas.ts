@@ -7,6 +7,13 @@ const operationFamilySchema = z
   .max(80)
   .regex(/^[a-z0-9_.:-]+$/i);
 
+const credentialKeyIdSchema = z
+  .string()
+  .trim()
+  .min(16)
+  .max(160)
+  .regex(/^[a-z0-9_.-]+$/i);
+
 export const localEdgeOperationFamilySchema = z.enum([
   "personal_memory_read",
   "team_workspace_read",
@@ -34,7 +41,7 @@ export const createDeviceEnrollmentChallengeSchema = z
       .optional(),
     pending_credential: z
       .object({
-        credential_key_id: z.string().trim().min(16).max(160),
+        credential_key_id: credentialKeyIdSchema,
         verifier_kind: z.literal("secret_hash"),
         verifier_secret: z.string().min(32),
         operation_families: z.array(operationFamilySchema).max(20).optional(),
@@ -74,7 +81,7 @@ export const approveDeviceEnrollmentChallengeSchema = z.object({
 export const redeemDeviceEnrollmentChallengeSchema = z
   .object({
     challenge_hash: z.string().min(32),
-    credential_key_id: z.string().trim().min(16).max(160),
+    credential_key_id: credentialKeyIdSchema,
     verifier_kind: z.literal("secret_hash"),
     verifier_secret: z.string().min(32).optional(),
     operation_families: z.array(operationFamilySchema).max(20).optional(),

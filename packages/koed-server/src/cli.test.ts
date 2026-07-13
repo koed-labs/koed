@@ -360,6 +360,54 @@ describe("JSON command output", () => {
     });
   });
 
+  it("accepts --upstream-backend-id as a team workspace link alias", async () => {
+    const stdout = writer();
+    const calls: Record<string, unknown>[] = [];
+
+    const exitCode = await runKoedServerCli(
+      [
+        "team",
+        "workspace",
+        "link",
+        "--project-root",
+        "/repo/koed",
+        "--team-workspace-id",
+        "11111111-1111-4111-8111-111111111111",
+        "--upstream-backend-id",
+        "dev_backend",
+        "--json"
+      ],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () =>
+          ({ projectTeamWorkspaceLinksPath: "/tmp/links.json" }) as never,
+        linkProjectTeamWorkspace: (_paths, input) => {
+          calls.push(input);
+          return {
+            ok: true,
+            state: "linked",
+            message: "linked",
+            link: {
+              id: "ptw_test",
+              projectRoot: input.projectRoot,
+              teamWorkspaceId: input.teamWorkspaceId,
+              backendId: input.backendId ?? null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z"
+            }
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(calls[0]).toMatchObject({
+      projectRoot: "/repo/koed",
+      teamWorkspaceId: "11111111-1111-4111-8111-111111111111",
+      backendId: "dev_backend"
+    });
+  });
+
   it("prints team capture share-latest --json", async () => {
     const stdout = writer();
     const calls: Record<string, unknown>[] = [];
@@ -904,7 +952,7 @@ describe("JSON command output", () => {
       {
         stdout: stdout.stream,
         resolvePaths: () => ({ repoRoot: "/repo" }) as never,
-        startUpstreamEnroll: (_paths, id) => {
+        startUpstreamEnroll: async (_paths, id) => {
           seen.push(id);
           return {
             ok: true,
@@ -945,7 +993,7 @@ describe("JSON command output", () => {
       {
         stdout: stdout.stream,
         resolvePaths: () => ({ repoRoot: "/repo" }) as never,
-        getUpstreamEnrollStatus: () => ({
+        getUpstreamEnrollStatus: async () => ({
           ok: true,
           state: "exchanged",
           message: "exchanged",

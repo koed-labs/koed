@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   FIXTURE_VERSION,
   fixtureTeam,
@@ -171,33 +172,87 @@ export const launchValidationGates = [
   }
 ];
 
+const automatedLaunchTestEnvironmentKeys = [
+  "API_CORS_ORIGINS",
+  "API_DATA_ENCRYPTION_KEY",
+  "API_ENVELOPE_ENCRYPTION_PROVIDER",
+  "API_TOKEN_PEPPER",
+  "CACHE_REDIS_URL",
+  "CACHE_STORE",
+  "CORS_ORIGINS",
+  "EMBEDDING_SERVICE_URL",
+  "GRAPH_CACHE_TTL_SECONDS",
+  "KOED_ALLOW_PUBLIC_REGISTRATION",
+  "KOED_BACKUP_STATUS_PATH",
+  "KOED_DEPLOYMENT_PROFILE",
+  "KOED_HOME",
+  "KOED_LAUNCH_API_TOKEN",
+  "KOED_LAUNCH_BASE_URL",
+  "KOED_LAUNCH_DEVICE_CREDENTIAL",
+  "KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID",
+  "KOED_LAUNCH_LOCAL_EDGE_BASE_URL",
+  "KOED_LAUNCH_SESSION_COOKIE",
+  "KOED_LAUNCH_TEAM_NODE_ID",
+  "KOED_LAUNCH_TEAM_WORKSPACE_ID",
+  "KOED_LAUNCH_TEST_DATABASE_URL",
+  "KOED_MANAGED_CLOUD_RELEASE_STAGE",
+  "KOED_OPS_ALERT_WEBHOOK_TOKEN",
+  "KOED_OPS_ALERT_WEBHOOK_URL",
+  "KOED_OPS_OPERATOR_EMAILS",
+  "KOED_OPS_REQUEST_METRICS_STATUS_PATH",
+  "KOED_RUNBOOK_BASE_URL",
+  "MEMORY_API_TOKEN",
+  "MANAGED_KMS_AUTH_TOKEN",
+  "MANAGED_KMS_ENDPOINT_URL",
+  "MANAGED_KMS_KEY_ID",
+  "MANAGED_KMS_KEY_VERSION",
+  "MEMORY_PLAINTEXT_LEXICAL_SEARCH_ENABLED",
+  "NODE_ENV",
+  "POSTGRES_PASSWORD",
+  "RATE_LIMIT_REDIS_URL",
+  "RATE_LIMIT_STORE",
+  "REDIS_URL",
+  "SESSION_SECRET",
+  "WORK_QUEUE_BACKEND",
+  "WORKOS_API_BASE_URL",
+  "WORKOS_API_KEY",
+  "WORKOS_AUTHKIT_ENABLED",
+  "WORKOS_CLIENT_ID",
+  "WORKOS_PROVIDER_ENVIRONMENT",
+  "WORKOS_REDIRECT_URI"
+];
+
 export const automatedLaunchTestCommands = [
-  {
-    id: "api-auth-runtime-boundaries",
-    command: "pnpm",
-    args: [
-      "--filter",
-      "@koed/api",
-      "test",
-      "--",
-      "src/server.test.ts",
-      "src/server/logging.test.ts",
-      "src/server/route-identity.test.ts",
-      "-t",
-      "WorkOS|AuthKit|capabilities|support overview|activation analytics|billing seats|entitlement|redact|route identity|device|local-edge|ops|backup|export|return targets"
-    ]
-  },
   {
     id: "db-encrypted-tenant-boundaries",
     command: "pnpm",
     args: [
       "--filter",
       "@koed/db",
-      "test",
-      "--",
+      "exec",
+      "vitest",
+      "run",
+      "--passWithNoTests",
       "tests/repository.test.ts",
-      "-t",
+      "--testNamePattern",
       "encrypted|support overview|activation analytics|billing seats|Cross-Identity Sync|device credentials|Captured Session Share Grants|Team fixture boundaries|managed-cloud|plaintext lexical"
+    ]
+  },
+  {
+    id: "api-auth-runtime-boundaries",
+    command: "pnpm",
+    args: [
+      "--filter",
+      "@koed/api",
+      "exec",
+      "vitest",
+      "run",
+      "--passWithNoTests",
+      "src/server.test.ts",
+      "src/server/logging.test.ts",
+      "src/server/route-identity.test.ts",
+      "--testNamePattern",
+      "WorkOS|AuthKit|capabilities|support overview|activation analytics|billing seats|entitlement|redact|route identity|device|local-edge|ops|backup|export|return targets|encrypted Memory Event companions"
     ]
   },
   {
@@ -212,6 +267,227 @@ export const automatedLaunchTestCommands = [
     ]
   }
 ];
+
+export const buildAutomatedLaunchTestEnvironment = (
+  parentEnvironment,
+  overrides = {}
+) => {
+  const environment = { ...parentEnvironment };
+  for (const key of automatedLaunchTestEnvironmentKeys) {
+    delete environment[key];
+  }
+  return { ...environment, ...overrides };
+};
+
+export const runAutomatedLaunchTests = ({
+  commands = automatedLaunchTestCommands,
+  cwd,
+  environment,
+  environmentOverrides = {},
+  spawn,
+  onStart = () => {}
+}) => {
+  const childEnvironment = buildAutomatedLaunchTestEnvironment(
+    environment,
+    environmentOverrides
+  );
+  for (const testCommand of commands) {
+    const displayCommand = [testCommand.command, ...testCommand.args].join(" ");
+    onStart(testCommand, displayCommand);
+    const result = spawn(testCommand.command, testCommand.args, {
+      cwd,
+      env: childEnvironment,
+      stdio: "inherit"
+    });
+    if (result.error) {
+      throw new Error(
+        `Automated launch test command could not start: ${testCommand.id} (${result.error.message})`
+      );
+    }
+    if (result.status !== 0) {
+      const outcome =
+        result.status === null
+          ? `signal ${result.signal ?? "unknown"}`
+          : `exit ${result.status}`;
+      throw new Error(
+        `Automated launch test command failed: ${testCommand.id} (${outcome})`
+      );
+    }
+  }
+};
+
+const databaseIdentity = (value, label) => {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid PostgreSQL URL.`);
+  }
+  if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+    throw new Error(`${label} must be a PostgreSQL URL.`);
+  }
+  const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+  if (!databaseName || databaseName.includes("/")) {
+    throw new Error(`${label} must name exactly one PostgreSQL database.`);
+  }
+  return {
+    host: parsed.hostname.toLowerCase(),
+    port: parsed.port || "5432",
+    databaseName
+  };
+};
+
+export const assertSeparateLaunchTestDatabase = (
+  fixtureDatabaseUrl,
+  testDatabaseUrl
+) => {
+  const fixture = databaseIdentity(fixtureDatabaseUrl, "DATABASE_URL");
+  const test = databaseIdentity(
+    testDatabaseUrl,
+    "KOED_LAUNCH_TEST_DATABASE_URL"
+  );
+  if (
+    fixture.host === test.host &&
+    fixture.port === test.port &&
+    fixture.databaseName === test.databaseName
+  ) {
+    throw new Error(
+      "KOED_LAUNCH_TEST_DATABASE_URL must not target the fixture database. Automated repository tests are destructive and require a separate disposable database."
+    );
+  }
+};
+
+const readDatabaseRuntimeIdentity = async (
+  databaseUrl,
+  label,
+  createClient
+) => {
+  const client = createClient(databaseUrl);
+  try {
+    await client.connect();
+    const result = await client.query(
+      "select current_database() as database_name, inet_server_addr()::text as server_address, inet_server_port() as server_port"
+    );
+    const row = result.rows?.[0];
+    if (
+      !row ||
+      typeof row.database_name !== "string" ||
+      (row.server_address !== null && typeof row.server_address !== "string") ||
+      (typeof row.server_port !== "number" &&
+        typeof row.server_port !== "string")
+    ) {
+      throw new Error("PostgreSQL returned an invalid database identity.");
+    }
+    const urlIdentity = databaseIdentity(databaseUrl, label);
+    return {
+      databaseName: row.database_name,
+      serverAddress: row.server_address ?? urlIdentity.host,
+      serverPort: String(row.server_port)
+    };
+  } catch (error) {
+    throw new Error(
+      `${label} could not be verified as a separate PostgreSQL database target.`,
+      { cause: error }
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+};
+
+const runtimeDatabaseIdentityMatches = (fixture, test) =>
+  fixture.databaseName === test.databaseName &&
+  fixture.serverAddress === test.serverAddress &&
+  fixture.serverPort === test.serverPort;
+
+const testDatabaseUrlFrom = (sourceDatabaseUrl, databaseName) => {
+  const parsed = new URL(sourceDatabaseUrl);
+  parsed.pathname = `/${databaseName}`;
+  return parsed.toString();
+};
+
+export const provisionAutomatedLaunchTestDatabase = async ({
+  fixtureDatabaseUrl,
+  explicitTestDatabaseUrl,
+  createClient,
+  uniqueId = randomUUID()
+}) => {
+  if (explicitTestDatabaseUrl?.trim()) {
+    const normalizedTestDatabaseUrl = explicitTestDatabaseUrl.trim();
+    assertSeparateLaunchTestDatabase(
+      fixtureDatabaseUrl,
+      normalizedTestDatabaseUrl
+    );
+    const [fixtureIdentity, testIdentity] = await Promise.all([
+      readDatabaseRuntimeIdentity(
+        fixtureDatabaseUrl,
+        "DATABASE_URL",
+        createClient
+      ),
+      readDatabaseRuntimeIdentity(
+        normalizedTestDatabaseUrl,
+        "KOED_LAUNCH_TEST_DATABASE_URL",
+        createClient
+      )
+    ]);
+    if (runtimeDatabaseIdentityMatches(fixtureIdentity, testIdentity)) {
+      throw new Error(
+        "KOED_LAUNCH_TEST_DATABASE_URL resolves to the fixture database. Automated repository tests are destructive and require a separate disposable database."
+      );
+    }
+    return {
+      databaseUrl: normalizedTestDatabaseUrl,
+      managed: false,
+      cleanup: async () => {}
+    };
+  }
+
+  databaseIdentity(fixtureDatabaseUrl, "DATABASE_URL");
+  const suffix = uniqueId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .slice(0, 24);
+  if (!suffix) {
+    throw new Error("Could not create a safe launch-test database name.");
+  }
+  const databaseName = `koed_launch_${suffix}`;
+  const adminClient = createClient(fixtureDatabaseUrl);
+  try {
+    await adminClient.connect();
+    await adminClient.query(
+      `create database "${databaseName}" template template0`
+    );
+  } catch (error) {
+    throw new Error(
+      `Could not create the disposable launch-test database. Grant the validation database user CREATEDB or set KOED_LAUNCH_TEST_DATABASE_URL to a separate disposable database. (${error instanceof Error ? error.message : String(error)})`,
+      { cause: error }
+    );
+  } finally {
+    await adminClient.end().catch(() => {});
+  }
+
+  let cleaned = false;
+  return {
+    databaseUrl: testDatabaseUrlFrom(fixtureDatabaseUrl, databaseName),
+    managed: true,
+    cleanup: async () => {
+      if (cleaned) {
+        return;
+      }
+      const cleanupClient = createClient(fixtureDatabaseUrl);
+      try {
+        await cleanupClient.connect();
+        await cleanupClient.query(
+          "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
+          [databaseName]
+        );
+        await cleanupClient.query(`drop database if exists "${databaseName}"`);
+        cleaned = true;
+      } finally {
+        await cleanupClient.end().catch(() => {});
+      }
+    }
+  };
+};
 
 const modeOrder = ["automated", "manual", "staging"];
 

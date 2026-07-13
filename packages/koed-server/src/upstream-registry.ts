@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
+import { assertSecureHttpTransport } from "@koed/shared";
 import type { KoedServerPaths } from "./paths.js";
 
 export type UpstreamDeploymentProfile =
@@ -204,6 +205,7 @@ const normalizeBaseUrl = (value: string): string => {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("Upstream URL must use http or https.");
   }
+  assertSecureHttpTransport(parsed, "Upstream URL");
   if (parsed.username || parsed.password) {
     throw new Error("Upstream URL must not include credentials.");
   }
@@ -305,7 +307,7 @@ const sanitizeCredentialReference = (
     return undefined;
   }
   if (
-    trimmed.length > 120 ||
+    trimmed.length > 240 ||
     /[\s?#]/.test(trimmed) ||
     /(?:token|secret|password|bearer|cookie|authorization)/i.test(trimmed)
   ) {
@@ -710,7 +712,8 @@ export const refreshUpstreamBackendCapabilities = async (
   const attemptedAt = resolvedDeps.now();
   try {
     const response = await resolvedDeps.fetch(
-      new URL("v1/capabilities", `${backend.baseUrl}/`)
+      new URL("v1/capabilities", `${backend.baseUrl}/`),
+      { redirect: "error" }
     );
     if (!response.ok) {
       throw Object.assign(

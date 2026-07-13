@@ -486,12 +486,41 @@ export class MemoryApiClient {
     return this.request("GET", "/v1/memory/graph/overview");
   }
 
-  private async request<T>(
+  async upstreamOperation(
+    input: {
+      upstreamBackendId: string;
+      operationFamily: "team_workspace_read";
+      method: "GET" | "POST";
+      path: string;
+      body?: unknown;
+    },
+    authorization: string
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/local-edge/upstream-operations",
+      {
+        upstream_backend_id: input.upstreamBackendId,
+        operation_family: input.operationFamily,
+        requested_mode: "live_upstream_proxy",
+        method: input.method,
+        path: input.path,
+        body: input.body
+      },
+      { authorization }
+    );
+  }
+
+  protected async request<T>(
     method: "GET" | "POST" | "PATCH" | "PUT",
     path: string,
-    body?: unknown
+    body?: unknown,
+    options: { authorization?: string } = {}
   ): Promise<T> {
-    if (!this.config.apiToken) {
+    const authorization =
+      options.authorization ??
+      (this.config.apiToken ? `Bearer ${this.config.apiToken}` : null);
+    if (!authorization) {
       throw new MemoryApiError(
         "Memory API token is not configured. Set MEMORY_API_TOKEN and MEMORY_API_URL before starting the MCP server or Capture Hook.",
         { status: 401 }
@@ -508,7 +537,7 @@ export class MemoryApiClient {
         method,
         signal,
         headers: {
-          authorization: `Bearer ${this.config.apiToken}`,
+          authorization,
           ...(body === undefined ? {} : { "content-type": "application/json" })
         },
         body: body === undefined ? undefined : JSON.stringify(body)
@@ -642,7 +671,7 @@ export const memoryAccessCheck = async (
           "Store normal Codex/Codex CLI conversation context as personal memory through Codex hooks/transcript ingestion. The backend does not decide that a fact is important and create a separate extracted memory.",
           "MCP alone does not automatically observe the whole conversation; the main-agent MCP surface is for retrieval and local summarisation.",
           "Use memory_answer as the normal retrieval entry point. It defaults to response_detail=answer_only and search_domain=project for the current Codex workspace/cwd; use response_detail=with_citations for source metadata, response_detail=with_evidence only for debugging/UI inspection, search_domain=session with a backend session_id for one conversation, or search_domain=global only for deliberate cross-project memory checks.",
-          "MCP recall is personal-only in this build. search_domain controls the search boundary (session, project, or global).",
+          "MCP recall is personal by default. When the current Project is linked to an enrolled Team Backend, project-scoped memory_answer can route Team Workspace recall through the local edge.",
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval work to the local memory-answer worker.",
           "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
           "Local memory processing: backend workers create pending title and LCM summary work, while the MCP background service runs Codex on the user's machine and submits results back for storage and embedding.",

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import {
-  automatedLaunchTestCommands,
   assertLaunchValidationEnvironment,
   defaultStagedRemoteOptions,
   formatLaunchValidationReport,
+  provisionAutomatedLaunchTestDatabase,
+  runAutomatedLaunchTests,
   runStagedRemoteValidation,
   validateLaunchReadiness
 } from "./team-saas-launch-validation-lib.mjs";
@@ -41,6 +43,9 @@ Environment:
   KOED_LAUNCH_TEAM_WORKSPACE_ID, KOED_LAUNCH_TEAM_NODE_ID,
   KOED_LAUNCH_LOCAL_EDGE_BASE_URL, and KOED_LAUNCH_LOCAL_EDGE_BACKEND_ID
   provide equivalent staged-remote defaults.
+  KOED_LAUNCH_TEST_DATABASE_URL may name a separate disposable database for
+  automated repository tests. When omitted, Koed creates and removes one on
+  the DATABASE_URL server; that database user must have CREATEDB permission.
 `;
 
 loadRootEnv(process.cwd(), process.env);
@@ -114,6 +119,7 @@ try {
 }
 
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+let automatedTestDatabase = null;
 
 try {
   await client.connect();
@@ -125,29 +131,36 @@ try {
     stagedRemote
   });
   if (withAutomatedTests) {
-    for (const testCommand of automatedLaunchTestCommands) {
-      console.error(
-        `Running ${testCommand.id}: ${[
-          testCommand.command,
-          ...testCommand.args
-        ].join(" ")}`
-      );
-      const result = spawnSync(testCommand.command, testCommand.args, {
-        cwd: process.cwd(),
-        env: process.env,
-        stdio: "inherit"
-      });
-      if (result.status !== 0) {
-        throw new Error(
-          `Automated launch test command failed: ${testCommand.id}`
-        );
+    automatedTestDatabase = await provisionAutomatedLaunchTestDatabase({
+      fixtureDatabaseUrl: process.env.DATABASE_URL,
+      explicitTestDatabaseUrl: process.env.KOED_LAUNCH_TEST_DATABASE_URL,
+      createClient: (connectionString) => new pg.Client({ connectionString })
+    });
+    runAutomatedLaunchTests({
+      cwd: process.cwd(),
+      environment: process.env,
+      environmentOverrides: {
+        API_TOKEN_PEPPER: randomBytes(32).toString("base64url"),
+        DATABASE_URL: automatedTestDatabase.databaseUrl,
+        NODE_ENV: "test",
+        SESSION_SECRET: randomBytes(32).toString("base64url")
+      },
+      spawn: spawnSync,
+      onStart: (testCommand, displayCommand) => {
+        console.error(`Running ${testCommand.id}: ${displayCommand}`);
       }
-    }
+    });
   }
   process.stdout.write(formatLaunchValidationReport(summary));
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 } finally {
+  await automatedTestDatabase?.cleanup().catch((error) => {
+    console.error(
+      `Could not remove the disposable launch-test database: ${error instanceof Error ? error.message : String(error)}`
+    );
+    process.exitCode = 1;
+  });
   await client.end().catch(() => {});
 }

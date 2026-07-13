@@ -50,6 +50,7 @@ import {
 } from "../memory/index.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
+  readUpstreamCredentialAuthorization,
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
   memoryEmbedQueueName
@@ -132,12 +133,22 @@ const normalizeUpstreamAuthorization = (
   return `Koed-Device ${trimmed}`;
 };
 
-const defaultResolveUpstreamAuthorization: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"] =
+const createDefaultResolveUpstreamAuthorization =
+  (
+    koedHome: string
+  ): ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"] =>
   (backend) => {
     if (backend.credential?.status !== "configured") {
       return null;
     }
     const reference = backend.credential.reference?.trim();
+    const storedAuthorization = readUpstreamCredentialAuthorization(
+      koedHome,
+      reference
+    );
+    if (storedAuthorization) {
+      return storedAuthorization;
+    }
     return normalizeUpstreamAuthorization(
       reference
         ? process.env[reference]
@@ -383,7 +394,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
       resolveUpstreamAuthorization:
         options.resolveUpstreamAuthorization ??
-        defaultResolveUpstreamAuthorization
+        createDefaultResolveUpstreamAuthorization(config.koedHome)
     },
     workos: {
       client:

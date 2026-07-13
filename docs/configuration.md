@@ -92,18 +92,25 @@ route-policy metadata.
 The registry must not contain reusable upstream credentials, WorkOS secrets,
 API Tokens, device secrets, bearer tokens, token prefixes, or database
 credentials. Upstream URLs with username/password material, query strings, or
-fragments are rejected. Device/upstream credential material is handled by the
-separate credential model; this registry only records non-secret existence and
-status metadata.
+fragments are rejected. Remote upstreams must use HTTPS; HTTP is accepted only
+for exact loopback targets (`localhost`, `127.0.0.1`, or `::1`) used by local
+development. Upstream requests reject redirects so an accepted endpoint cannot
+downgrade credential or Memory traffic. Device/upstream credential material is
+handled by the separate credential model; this registry only records non-secret
+existence and status metadata.
 
 Live local-edge upstream proxying needs separate upstream relay authorization.
 The registry may record a sanitized credential `reference`, but the reusable
-secret must live in deployment secret storage. At runtime the API resolves that
-reference from the environment; when no reference is configured it falls back to
-`KOED_UPSTREAM_CREDENTIAL_<BACKEND_ID>`, where the backend id is uppercased and
-non-alphanumeric characters become `_`. The value may be a full `Bearer ...` or
-`Koed-Device ...` authorization header, or a `key:secret` value which is sent as
-`Koed-Device key:secret`. Local device credentials are never forwarded upstream.
+secret must live in the encrypted local credential store or deployment secret
+storage. Browser-mediated upstream enrollment writes a `keychain://koed-upstream/...`
+reference into the registry and stores the reusable device secret separately
+under `KOED_HOME/secrets` with owner-only file permissions. At runtime the API
+resolves that reference from the local credential store; when no reference is
+configured it falls back to `KOED_UPSTREAM_CREDENTIAL_<BACKEND_ID>`, where the
+backend id is uppercased and non-alphanumeric characters become `_`. The value
+may be a full `Bearer ...` or `Koed-Device ...` authorization header, or a
+`key:secret` value which is sent as `Koed-Device key:secret`. Local browser
+session cookies and personal API Tokens are never forwarded upstream.
 
 Supported commands:
 
@@ -134,10 +141,17 @@ Enrollment orchestration state is separate from the upstream backend registry.
 `upstream enroll start/status/cancel` and `upstream disconnect` record only
 non-secret local state under `KOED_HOME/run/upstream-enrollments.json`, including
 state, requested operation families, timestamps, and credential status/reference
-metadata. The CLI does not mint browser-session enrollment challenges or return
-an API collection route as an activation URL. API Tokens remain personal
-AI-client compatibility credentials and are not used for upstream enrollment or
-Team Workspace recall.
+metadata. `upstream enroll start` creates a short-lived browser approval
+challenge on the upstream backend and prints the activation URL. After the user
+approves the challenge in a browser session, `upstream enroll status` validates
+the scoped device credential with the upstream backend and marks the local
+backend credential configured. API Tokens remain personal AI-client
+compatibility credentials. Team Workspace recall through MCP uses a distinct
+Local-Edge Client Credential scoped to the selected backend and
+`team_workspace_read`. The local edge validates that credential, then uses the
+separate enrolled upstream device credential without exposing it to MCP. A
+Personal API Token alone is rejected from Team, Share Grant, sync, and admin
+operation families.
 
 ## KOED_HOME Layout
 

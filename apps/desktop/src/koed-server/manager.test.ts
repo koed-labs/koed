@@ -380,6 +380,195 @@ describe("Koed server desktop manager", () => {
     });
   });
 
+  it("connects a Team Backend by registering, validating, enabling policy, and starting enrollment", async () => {
+    const calls: string[][] = [];
+    const opened: string[] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("register")) {
+          callback(
+            null,
+            JSON.stringify({ ok: true, backend: { id: "team-vps" } }),
+            ""
+          );
+          return;
+        }
+        if (args.includes("start")) {
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              state: "pending",
+              enrollment: {
+                activationUrl:
+                  "https://team.example.test/device-enrollment/challenge-1"
+              }
+            }),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async (url) => {
+        opened.push(url);
+      }
+    });
+
+    await expect(
+      manager.handlers.upstream_connect!({
+        url: " https://team.example.test "
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      backendId: "team-vps",
+      activationUrl: "https://team.example.test/device-enrollment/challenge-1"
+    });
+
+    expect(calls).toEqual([
+      [
+        "/repo/cli.js",
+        "upstream",
+        "register",
+        "--url",
+        "https://team.example.test",
+        "--name",
+        "Team Backend",
+        "--profile",
+        "team_self_hosted",
+        "--json"
+      ],
+      ["/repo/cli.js", "upstream", "refresh", "--id", "team-vps", "--json"],
+      [
+        "/repo/cli.js",
+        "upstream",
+        "policy",
+        "--id",
+        "team-vps",
+        "--team-workspace-read",
+        "enabled",
+        "--share-grant-management",
+        "enabled",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "upstream",
+        "enroll",
+        "start",
+        "--id",
+        "team-vps",
+        "--json"
+      ]
+    ]);
+    expect(opened).toEqual([
+      "https://team.example.test/device-enrollment/challenge-1"
+    ]);
+  });
+
+  it("does not report a revoked enrollment as a new browser challenge", async () => {
+    const opened: string[] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        if (args.includes("register")) {
+          callback(
+            null,
+            JSON.stringify({ ok: true, backend: { id: "team-vps" } }),
+            ""
+          );
+          return;
+        }
+        if (args.includes("start")) {
+          callback(
+            null,
+            JSON.stringify({ ok: true, state: "revoked", enrollment: {} }),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async (url) => {
+        opened.push(url);
+      }
+    });
+
+    await expect(
+      manager.handlers.upstream_connect!({ url: "https://team.example.test" })
+    ).resolves.toMatchObject({
+      ok: false,
+      error:
+        "Team Backend enrollment did not return a new pending browser approval challenge."
+    });
+    expect(opened).toEqual([]);
+  });
+
+  it("disconnects the first registered Team Backend when no explicit id is supplied", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        if (args.includes("status")) {
+          callback(
+            null,
+            JSON.stringify({
+              ok: true,
+              upstreamBackends: {
+                details: { backends: [{ id: "team-vps" }] }
+              }
+            }),
+            ""
+          );
+          return;
+        }
+        callback(null, JSON.stringify({ ok: true, state: "revoked" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.handlers.upstream_disconnect!()
+    ).resolves.toMatchObject({
+      ok: true,
+      state: "revoked"
+    });
+    expect(calls).toEqual([
+      ["/repo/cli.js", "status", "--json"],
+      ["/repo/cli.js", "upstream", "disconnect", "--id", "team-vps", "--json"]
+    ]);
+  });
+
   it("runs explicit stop through koed-server", async () => {
     const spawned = childProcess();
     const calls: string[][] = [];

@@ -22,6 +22,11 @@ Postgres, Redis, and the Embedding Service stay private on the Compose network.
 Use a reverse proxy/TLS in front of `koed-server` for a real private VPS or
 Team self-hosted deployment.
 
+Browser self-registration is disabled by default. For a local mock server or
+closed dogfood environment where registration is intentionally open, set
+`KOED_ALLOW_PUBLIC_REGISTRATION=true` in the Compose env file. Production
+operators should prefer WorkOS/AuthKit or operator-managed account bootstrap.
+
 The Embedding Service container mounts `${KOED_MODELS_DIR}` at `/models`; when
 `KOED_MODELS_DIR` is unset it mounts `$HOME/.koed/models`, which matches the
 default `koed-server models install --kind embedding` destination.

@@ -95,6 +95,7 @@ let rendered = false;
 let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
 let explorerApiToken: string | null = null;
+let teamBackendUrlInput = "";
 type StartupLogLine = {
   key?: string;
   text: string;
@@ -466,6 +467,8 @@ const componentLabel = (key: StatusComponentKey): string => {
       return "Codex";
     case "lcmSummaryService":
       return "LCM Summary Service";
+    case "upstreamBackends":
+      return "Team Backend";
     case "lastVerification":
       return "Last verification";
   }
@@ -1214,6 +1217,11 @@ const statusCardMeta = (cardId: StatusCardId): string => {
   if (cardId === "memoryProcessing") {
     return `Last verification ${status.lastVerification.checkedAt ?? "not recorded"}`;
   }
+  if (cardId === "teamBackend") {
+    return status.upstreamBackends.registered
+      ? `${status.upstreamBackends.registered} registered · ${status.upstreamBackends.validated} validated`
+      : "No Team Backend connected";
+  }
   const card = statusCards.find((entry) => entry.id === cardId);
   const healthyCount = card?.componentKeys.filter(
     (key) => statusComponent(key)?.state === "healthy"
@@ -1221,6 +1229,17 @@ const statusCardMeta = (cardId: StatusCardId): string => {
   return card
     ? `${healthyCount ?? 0}/${card.componentKeys.length} dependencies healthy`
     : "";
+};
+
+const firstUpstreamBackendId = (): string | null => {
+  const details = status?.upstreamBackends.details;
+  const backends = Array.isArray(
+    (details as { backends?: unknown } | undefined)?.backends
+  )
+    ? ((details as { backends: Array<{ id?: unknown }> }).backends ?? [])
+    : [];
+  const id = backends[0]?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
 };
 
 const statusCardLiveOutput = (cardId: StatusCardId): string => {
@@ -1362,6 +1381,27 @@ const renderStatusCardActions = (cardId: StatusCardId): string => {
   const card = statusCards.find((entry) => entry.id === cardId);
   if (!card) {
     return "";
+  }
+  if (cardId === "teamBackend") {
+    const backendId = firstUpstreamBackendId();
+    return `
+      <form class="team-backend-form" data-team-backend-form>
+        <input
+          type="url"
+          data-team-backend-url
+          placeholder="https://team.example.com"
+          value="${escapeHtml(teamBackendUrlInput)}"
+          ${busyAction ? "disabled" : ""}
+        />
+        <button type="submit" class="primary" ${busyAction ? "disabled" : ""}>Connect</button>
+        <button
+          type="button"
+          class="secondary"
+          data-team-backend-disconnect
+          ${busyAction || !backendId ? "disabled" : ""}
+        >Disconnect</button>
+      </form>
+    `;
   }
   const actions = [card.primaryAction, ...card.secondaryActions];
   return actions
@@ -2243,7 +2283,12 @@ const runStartupSequence = async () => {
       await waitForStartupStepReady("database", 240_000);
       setStartupStep("database", "done");
     } else {
-      setStartupStep("database", "skipped");
+      appendStartupLog(
+        "database already healthy; no initialization or migration action needed.",
+        undefined,
+        "database"
+      );
+      setStartupStep("database", "done");
     }
 
     if (!startupStepReady("services")) {
@@ -2254,7 +2299,12 @@ const runStartupSequence = async () => {
       await waitForStartupStepReady("services", 240_000);
       setStartupStep("services", "done");
     } else {
-      setStartupStep("services", "skipped");
+      appendStartupLog(
+        "API, Worker, and Explorer already healthy; no start action needed.",
+        undefined,
+        "services"
+      );
+      setStartupStep("services", "done");
     }
 
     if (!startupStepReady("integration")) {
@@ -2276,7 +2326,12 @@ const runStartupSequence = async () => {
       await waitForStartupStepReady("integration");
       setStartupStep("integration", "done");
     } else {
-      setStartupStep("integration", "skipped");
+      appendStartupLog(
+        "Codex, MCP Server, and Supported Capture Hook already healthy; no repair action needed.",
+        undefined,
+        "integration"
+      );
+      setStartupStep("integration", "done");
     }
 
     startupDetail =
@@ -2476,7 +2531,104 @@ const runStatusCardAction = async (
   }
 };
 
+const runTeamBackendConnect = async (): Promise<void> => {
+  const cardId = "teamBackend" as StatusCardId;
+  const url = teamBackendUrlInput.trim();
+  if (!url) {
+    appendStatusCardLog(cardId, "failed: Team Backend URL is required");
+    syncUI();
+    return;
+  }
+  busyAction = "Connect Team Backend";
+  syncUI();
+  try {
+    const result = await invokeWithTimeout(
+      "upstream_connect",
+      { url },
+      120_000
+    );
+    const error = commandResultError(result);
+    if (error) {
+      appendStatusCardLog(cardId, `failed: ${error}`);
+    } else {
+      appendStatusCardLog(cardId, "enrollment started; browser opened");
+    }
+    await refreshStatus();
+  } catch (error) {
+    appendStatusCardLog(
+      cardId,
+      `failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    statusCardCheckedAt[cardId] = new Date().toISOString();
+    busyAction = null;
+    syncUI();
+  }
+};
+
+const runTeamBackendDisconnect = async (): Promise<void> => {
+  const cardId = "teamBackend" as StatusCardId;
+  const backendId = firstUpstreamBackendId();
+  if (!backendId) {
+    appendStatusCardLog(cardId, "failed: no Team Backend is registered");
+    syncUI();
+    return;
+  }
+  busyAction = "Disconnect Team Backend";
+  syncUI();
+  try {
+    const result = await invokeWithTimeout(
+      "upstream_disconnect",
+      { backendId },
+      45_000
+    );
+    const error = commandResultError(result);
+    if (error) {
+      appendStatusCardLog(cardId, `failed: ${error}`);
+    } else {
+      appendStatusCardLog(cardId, "backend disconnected");
+    }
+    await refreshStatus();
+  } catch (error) {
+    appendStatusCardLog(
+      cardId,
+      `failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    statusCardCheckedAt[cardId] = new Date().toISOString();
+    busyAction = null;
+    syncUI();
+  }
+};
+
 const registerHandlers = () => {
+  app.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) {
+      return;
+    }
+    if (!form.matches("[data-team-backend-form]")) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const input = form.querySelector<HTMLInputElement>(
+      "[data-team-backend-url]"
+    );
+    teamBackendUrlInput = input?.value ?? "";
+    void runTeamBackendConnect();
+  });
+
+  app.addEventListener("input", (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+    if (input.matches("[data-team-backend-url]")) {
+      teamBackendUrlInput = input.value;
+    }
+  });
+
   app
     .querySelector<HTMLElement>("[data-sidebar]")
     ?.addEventListener("click", () => {
@@ -2534,6 +2686,16 @@ const registerHandlers = () => {
   app.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const teamBackendDisconnectButton = target.closest<HTMLButtonElement>(
+      "[data-team-backend-disconnect]"
+    );
+    if (teamBackendDisconnectButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void runTeamBackendDisconnect();
       return;
     }
 

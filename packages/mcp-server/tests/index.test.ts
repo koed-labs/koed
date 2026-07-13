@@ -284,6 +284,28 @@ describe("Project Team Workspace dogfood mapping", () => {
 });
 
 describe("MemoryApiClient", () => {
+  it("uses a scoped local-edge credential instead of the Personal API Token for upstream operations", async () => {
+    let authorization = "";
+    const apiUrl = await createApi((request, response) => {
+      authorization = request.headers.authorization ?? "";
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ hits: [] }));
+    });
+    const client = new MemoryApiClient({ apiUrl, apiToken: "personal-token" });
+
+    await client.upstreamOperation(
+      {
+        upstreamBackendId: "team-vps",
+        operationFamily: "team_workspace_read",
+        method: "POST",
+        path: "/v1/memory/search",
+        body: { query: "team" }
+      },
+      "Koed-Device local-key:local-secret"
+    );
+
+    expect(authorization).toBe("Koed-Device local-key:local-secret");
+  });
   it("validates bearer token access through /v1/access/check", async () => {
     const apiUrl = await createApi((request, response) => {
       expect(request.headers.authorization).toBe("Bearer cmt_test");

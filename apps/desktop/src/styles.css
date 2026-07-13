@@ -713,6 +713,25 @@ button:disabled {
   color: #17211b;
 }
 
+.team-backend-form {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  width: 100%;
+}
+
+.team-backend-form input {
+  background: #fffdf6;
+  border: 1px solid #dedbd0;
+  border-radius: 8px;
+  color: #17211b;
+  font: inherit;
+  font-size: 11px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
 .status-group-body {
   border-top: 1px solid #ece8dc;
   display: grid;

@@ -28,6 +28,13 @@ export interface KoedServerStatus {
   captureHook: ComponentStatus;
   codex: ComponentStatus & { configured: boolean };
   lcmSummaryService: ComponentStatus;
+  upstreamBackends: ComponentStatus & {
+    registered: number;
+    validated: number;
+    stale: number;
+    failed: number;
+    notChecked: number;
+  };
   explorer: ComponentStatus & { url: string };
   lastVerification: ComponentStatus & { checkedAt: string | null };
   serverPackage?: ComponentStatus & {

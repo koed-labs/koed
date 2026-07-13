@@ -1,11 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { DeviceCredentialRecord } from "@koed/db";
 import {
   assertUpstreamOperationPathAllowed,
+  readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
   type LocalEdgeUpstreamBackend
 } from "./upstream-routing.js";
+
+const tempDirectories: string[] = [];
+
+afterEach(() => {
+  for (const path of tempDirectories.splice(0)) {
+    rmSync(path, { recursive: true, force: true });
+  }
+});
 
 const backend = (
   overrides: Partial<LocalEdgeUpstreamBackend> = {}
@@ -266,6 +278,38 @@ describe("local edge upstream routing", () => {
     expect(() =>
       safeUpstreamProxyUrl(backend(), "/v1/local-edge/route-decisions")
     ).toThrow("Unsupported upstream proxy path");
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend({ baseUrl: "http://team.example.test" }),
+        "/v1/memory/answer"
+      )
+    ).toThrow("must use HTTPS unless it targets localhost");
+    expect(() =>
+      safeUpstreamProxyUrl(
+        backend({ baseUrl: "http://127.0.0.1:3300" }),
+        "/v1/memory/answer"
+      )
+    ).not.toThrow();
+  });
+
+  it("drops insecure remote HTTP entries from a hand-edited registry", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "koed-upstream-routing-"));
+    tempDirectories.push(directory);
+    const path = resolve(directory, "upstream-backends.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        backends: [
+          { id: "insecure", baseUrl: "http://team.example.test" },
+          { id: "loopback", baseUrl: "http://127.0.0.1:3300" },
+          { id: "secure", baseUrl: "https://team.example.test" }
+        ]
+      })
+    );
+
+    expect(
+      readLocalEdgeUpstreamRegistry(path).backends.map(({ id }) => id)
+    ).toEqual(["loopback", "secure"]);
   });
 
   it("keeps upstream proxy paths matched to the authorized operation family", () => {

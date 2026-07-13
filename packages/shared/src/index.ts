@@ -30,6 +30,22 @@ export {
   ENCRYPTED_PACKAGE_MANIFEST_VERSION,
   encryptedPackageObjectClasses
 } from "./encrypted-package.js";
+export {
+  assertSecureHttpTransport,
+  isLoopbackHostname
+} from "./http-transport-security.js";
+export {
+  deleteLocalEdgeClientCredential,
+  deleteUpstreamCredentialSecret,
+  localEdgeClientCredentialReferenceFor,
+  parseUpstreamCredentialReference,
+  readLocalEdgeClientCredentialAuthorization,
+  readUpstreamCredentialAuthorization,
+  storeLocalEdgeClientCredential,
+  storeUpstreamCredentialSecret,
+  upstreamCredentialReferenceFor,
+  verifyLocalEdgeClientCredentialAuthorization
+} from "./upstream-credential-store.js";
 export type {
   EncryptedPayloadEnvelope,
   EncryptedPayloadProvenance,
@@ -53,6 +69,12 @@ export type {
   EncryptedPackageManifest,
   EncryptedPackageObjectClass
 } from "./encrypted-package.js";
+export type {
+  LocalEdgeClientCredentialAuthorization,
+  LocalEdgeClientCredentialInput,
+  UpstreamCredentialSecretInput,
+  UpstreamCredentialSecretStoreDeps
+} from "./upstream-credential-store.js";
 
 export type HealthStatus = "ok" | "degraded" | "error";
 

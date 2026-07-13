@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
   canReceiveGraphStreamPayload,
+  createGraphStreamService,
   graphUpdateKey,
   guardedBroadcastGraphUpdate
 } from "./graph-stream.js";
@@ -87,5 +88,77 @@ describe("graph stream updates", () => {
     expect(writableReply.raw.write).toHaveBeenCalledWith(
       "event: graph_update\n"
     );
+  });
+
+  it("reconnects the Postgres graph listener after client errors", async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const listeners: Array<{
+      notification?: (message: { channel: string; payload?: string }) => void;
+      error?: (error: unknown) => void;
+      release: ReturnType<typeof vi.fn>;
+      query: ReturnType<typeof vi.fn>;
+      removeAllListeners: ReturnType<typeof vi.fn>;
+    }> = [];
+    const pool = {
+      connect: vi.fn(async () => {
+        const listener = {
+          release: vi.fn(),
+          query: vi.fn(async () => undefined),
+          removeAllListeners: vi.fn(),
+          on: vi.fn(
+            (
+              event: "notification" | "error",
+              callback: (message: never) => void
+            ) => {
+              if (event === "notification") {
+                listener.notification =
+                  callback as typeof listener.notification;
+              } else {
+                listener.error = callback as typeof listener.error;
+              }
+            }
+          ),
+          notification: undefined as
+            | ((message: { channel: string; payload?: string }) => void)
+            | undefined,
+          error: undefined as ((error: unknown) => void) | undefined
+        };
+        listeners.push(listener);
+        return listener;
+      })
+    };
+    const service = await createGraphStreamService({
+      app: { log: { warn } } as unknown as FastifyInstance,
+      auth: {} as never,
+      pool,
+      cacheProvider: {
+        getJson: vi.fn(async () => null),
+        setJson: vi.fn(async () => undefined),
+        deleteByPrefix: vi.fn(async () => undefined)
+      },
+      corsOrigins: new Set(),
+      graphUpdateDebounceMs: 10,
+      memoryEventGraphUpdateDebounceMs: 10
+    });
+
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    expect(listeners[0]?.query).toHaveBeenCalledWith(
+      "LISTEN koed_graph_updates"
+    );
+
+    listeners[0]?.error?.(new Error("connection lost"));
+    expect(listeners[0]?.release).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(pool.connect).toHaveBeenCalledTimes(2);
+    expect(listeners[1]?.query).toHaveBeenCalledWith(
+      "LISTEN koed_graph_updates"
+    );
+    listeners[0]?.error?.(new Error("late old listener error"));
+    expect(listeners[1]?.release).not.toHaveBeenCalled();
+
+    service.close();
+    vi.useRealTimers();
   });
 });

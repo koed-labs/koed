@@ -92,6 +92,8 @@ const securityForIdentity = (
         { bearerApiToken: [] },
         { deviceCredential: [] }
       ];
+    case "api_token_or_device_credential":
+      return [{ bearerApiToken: [] }, { deviceCredential: [] }];
     case "device_credential":
       return [{ deviceCredential: [] }];
     case "internal_service_token":
