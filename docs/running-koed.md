@@ -68,9 +68,11 @@ against the upstream backend before marking the local backend credential
 configured. Koed Desktop performs this reconciliation automatically while an
 enrollment is pending and shows the activation URL as a manual fallback when
 Linux/WSL host-browser integration is delayed or unavailable. `upstream
-disconnect` disables local upstream route families and
-marks the local enrollment state revoked. Browser approval and upstream-side
-device credential revocation remain browser/session-mediated local-edge flows.
+disconnect` disables local upstream route families and marks the local enrollment
+state revoked. These local mutations use a per-backend inter-process lock, with
+remote requests kept outside the locked mutation phase. Browser approval and
+upstream-side device credential revocation remain browser/session-mediated
+local-edge flows.
 
 ## Project metadata discovery
 

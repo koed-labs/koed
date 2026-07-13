@@ -710,7 +710,7 @@ export const runKoedServerCli = async (
           : enrollCommand === "status"
             ? await getUpstreamEnrollStatus(paths, id)
             : enrollCommand === "cancel"
-              ? cancelUpstreamEnroll(paths, id)
+              ? await cancelUpstreamEnroll(paths, id)
               : null;
       if (!result) {
         throw new Error(
@@ -727,7 +727,10 @@ export const runKoedServerCli = async (
 
     if (command === "upstream" && subcommand === "disconnect") {
       const paths = resolvePaths();
-      const result = disconnectUpstream(paths, requireFlagValue(args, "--id"));
+      const result = await disconnectUpstream(
+        paths,
+        requireFlagValue(args, "--id")
+      );
       if (wantsJson) {
         printJson(stdout, result);
       } else {

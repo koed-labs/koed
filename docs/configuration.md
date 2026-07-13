@@ -155,7 +155,9 @@ Local-Edge Client Credential scoped to the selected backend and
 `team_workspace_read`. The local edge validates that credential, then uses the
 separate enrolled upstream device credential without exposing it to MCP. A
 Personal API Token alone is rejected from Team, Share Grant, sync, and admin
-operation families.
+operation families. Enrollment status, replacement, cancellation, and disconnect
+mutations are serialized per backend across CLI processes; remote requests run
+before lock acquisition, and each mutation rereads current state while locked.
 
 ## KOED_HOME Layout
 

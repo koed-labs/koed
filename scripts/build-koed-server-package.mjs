@@ -2,6 +2,7 @@
 import { gzipSync } from "node:zlib";
 import {
   chmodSync,
+  copyFileSync,
   cpSync,
   lstatSync,
   mkdirSync,
@@ -93,6 +94,7 @@ const run = (label, command, args, options = {}) => {
 
 const deploy = (filter, runtimeRoot, to) =>
   run(`Deploy ${filter}`, "pnpm", [
+    ...(filter === "@koed/koed-server" ? ["--config.node-linker=hoisted"] : []),
     "--filter",
     filter,
     "deploy",
@@ -118,6 +120,14 @@ const writeLauncher = (packageRoot) => {
   );
   chmodSync(launcher, 0o755);
 };
+
+const validatePackagedCli = (packageRoot) =>
+  run(
+    "Validate packaged koed-server CLI",
+    process.execPath,
+    [resolve(packageRoot, "koed-server", "dist", "cli.js"), "--help"],
+    { cwd: packageRoot, stdio: "pipe" }
+  );
 
 const writeReadme = (packageRoot) => {
   writeFileSync(
@@ -157,10 +167,11 @@ const dereferencePackageSymlinks = (root, dir = root) => {
     const targetStat = statSync(path);
     const tempPath = `${path}.dereferenced-${process.pid}`;
     rmSync(tempPath, { recursive: true, force: true });
-    cpSync(path, tempPath, {
-      recursive: targetStat.isDirectory(),
-      dereference: true
-    });
+    if (targetStat.isDirectory()) {
+      cpSync(path, tempPath, { recursive: true, dereference: true });
+    } else {
+      copyFileSync(path, tempPath);
+    }
     rmSync(path, { recursive: true, force: true });
     renameSync(tempPath, path);
     if (targetStat.isDirectory()) {
@@ -400,6 +411,7 @@ const main = () => {
 
     prunePythonEmbeddingRuntimeFiles(runtimeRoot);
     dereferencePackageSymlinks(packageRoot);
+    validatePackagedCli(packageRoot);
     writeLauncher(packageRoot);
     writeReadme(packageRoot);
     const manifest = buildPackageManifest({

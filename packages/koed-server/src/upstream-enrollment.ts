@@ -11,6 +11,7 @@ import {
   storeUpstreamCredentialSecret
 } from "@koed/shared";
 import type { KoedServerPaths } from "./paths.js";
+import { withUpstreamEnrollmentLock } from "./upstream-enrollment-lock.js";
 import {
   collectUpstreamRegistryStatus,
   updateUpstreamBackendCredential,
@@ -675,8 +676,8 @@ export const startUpstreamEnrollment = async (
   }
 
   let store = readStore(paths, resolvedDeps);
-  const existing = latestEnrollment(store, backendId);
-  if (existing) {
+  let expectedRecord = latestEnrollment(store, backendId);
+  if (expectedRecord) {
     const current = await getUpstreamEnrollmentStatus(
       paths,
       backendId,
@@ -690,6 +691,7 @@ export const startUpstreamEnrollment = async (
       return current;
     }
     store = readStore(paths, resolvedDeps);
+    expectedRecord = latestEnrollment(store, backendId);
   }
 
   const requestId = resolvedDeps.randomId();
@@ -701,22 +703,10 @@ export const startUpstreamEnrollment = async (
     .digest("hex")
     .slice(0, 40)}`;
   const expiresAt = expiresAtFor(now);
-  const { reference } = storeUpstreamCredentialSecret(paths.koedHome, {
-    backendId,
-    credentialKeyId,
-    secret: verifierSecret
-  });
   const localClientOperationFamilies = operationFamilies.filter(
     (family) => family === "team_workspace_read"
   );
-  const localClientCredential =
-    localClientOperationFamilies.length > 0
-      ? storeLocalEdgeClientCredential(paths.koedHome, {
-          backendId,
-          secret: randomSecret(resolvedDeps),
-          operationFamilies: localClientOperationFamilies
-        })
-      : null;
+  const localClientSecret = randomSecret(resolvedDeps);
 
   let challenge: { challengeId: string; activationUrl: string };
   try {
@@ -734,8 +724,6 @@ export const startUpstreamEnrollment = async (
       resolvedDeps
     );
   } catch (error) {
-    deleteUpstreamCredentialSecret(paths.koedHome, reference);
-    deleteLocalEdgeClientCredential(paths.koedHome, backendId);
     return {
       ok: false,
       state: "failed",
@@ -747,47 +735,93 @@ export const startUpstreamEnrollment = async (
     };
   }
 
-  updateUpstreamBackendCredential(
-    paths,
-    backendId,
-    { status: "unknown", reference },
-    {
-      existsSync: resolvedDeps.existsSync,
-      readFileSync: resolvedDeps.readFileSync,
-      writeFileSync: resolvedDeps.writeFileSync,
-      renameSync: resolvedDeps.renameSync,
-      now: resolvedDeps.now
+  return withUpstreamEnrollmentLock(paths, backendId, () => {
+    store = readStore(paths, resolvedDeps);
+    const currentRecord = latestEnrollment(store, backendId);
+    const currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+    const expectedStillCurrent = expectedRecord
+      ? sameEnrollmentIdentity(currentRecord, expectedRecord) &&
+        currentRecord.state === expectedRecord.state
+      : currentRecord === undefined;
+    const currentOperationFamilies = currentBackend
+      ? browserEnrollmentOperationFamilies(currentBackend.routePolicy)
+      : [];
+    if (
+      !expectedStillCurrent ||
+      !currentBackend ||
+      currentBackend.capabilities.state !== "validated" ||
+      JSON.stringify(currentOperationFamilies) !==
+        JSON.stringify(operationFamilies)
+    ) {
+      return currentRecord
+        ? enrollmentResultFromSnapshot(backendId, currentRecord, currentBackend)
+        : {
+            ok: false,
+            state: "failed" as const,
+            backend: currentBackend,
+            message: `Upstream backend ${backendId} changed while enrollment was starting; retry with its current configuration.`
+          };
     }
-  );
 
-  const record: UpstreamEnrollmentRecord = {
-    backendId,
-    requestId,
-    state: "pending",
-    activationUrl: challenge.activationUrl,
-    requestedOperationFamilies: operationFamilies,
-    challengeId: challenge.challengeId,
-    credentialKeyId,
-    credentialReference: reference,
-    ...(localClientCredential
-      ? { localClientCredentialReference: localClientCredential.reference }
-      : {}),
-    createdAt: nowIso,
-    updatedAt: nowIso,
-    expiresAt,
-    credential: { status: "unknown", reference }
-  };
-  store.enrollments.push(record);
-  store.updatedAt = nowIso;
-  writeStore(paths, store, resolvedDeps);
-  const refreshedBackend = backendById(paths, backendId, resolvedDeps).backend;
-  return {
-    ok: true,
-    state: "pending",
-    backend: refreshedBackend,
-    enrollment: summarizeEnrollment(record, refreshedBackend),
-    message: `Started upstream enrollment for ${backendId}. Open the activation URL to approve this local edge.`
-  };
+    const { reference } = storeUpstreamCredentialSecret(paths.koedHome, {
+      backendId,
+      credentialKeyId,
+      secret: verifierSecret
+    });
+    const localClientCredential =
+      localClientOperationFamilies.length > 0
+        ? storeLocalEdgeClientCredential(paths.koedHome, {
+            backendId,
+            secret: localClientSecret,
+            operationFamilies: localClientOperationFamilies
+          })
+        : null;
+    updateUpstreamBackendCredential(
+      paths,
+      backendId,
+      { status: "unknown", reference },
+      {
+        existsSync: resolvedDeps.existsSync,
+        readFileSync: resolvedDeps.readFileSync,
+        writeFileSync: resolvedDeps.writeFileSync,
+        renameSync: resolvedDeps.renameSync,
+        now: resolvedDeps.now
+      }
+    );
+
+    const record: UpstreamEnrollmentRecord = {
+      backendId,
+      requestId,
+      state: "pending",
+      activationUrl: challenge.activationUrl,
+      requestedOperationFamilies: operationFamilies,
+      challengeId: challenge.challengeId,
+      credentialKeyId,
+      credentialReference: reference,
+      ...(localClientCredential
+        ? { localClientCredentialReference: localClientCredential.reference }
+        : {}),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      expiresAt,
+      credential: { status: "unknown", reference }
+    };
+    store.enrollments.push(record);
+    store.updatedAt = nowIso;
+    writeStore(paths, store, resolvedDeps);
+    const refreshedBackend = backendById(
+      paths,
+      backendId,
+      resolvedDeps
+    ).backend;
+    return {
+      ok: true,
+      state: "pending" as const,
+      backend: refreshedBackend,
+      enrollment: summarizeEnrollment(record, refreshedBackend),
+      message: `Started upstream enrollment for ${backendId}. Open the activation URL to approve this local edge.`
+    };
+  });
 };
 
 export const getUpstreamEnrollmentStatus = async (
@@ -798,8 +832,8 @@ export const getUpstreamEnrollmentStatus = async (
   const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
   const now = resolvedDeps.now();
-  let { backend } = backendById(paths, backendId, resolvedDeps);
-  let store = readStore(paths, resolvedDeps);
+  const { backend } = backendById(paths, backendId, resolvedDeps);
+  const store = readStore(paths, resolvedDeps);
   const record = latestEnrollment(store, backendId);
   if (!record) {
     return {
@@ -809,42 +843,71 @@ export const getUpstreamEnrollmentStatus = async (
       message: `No upstream enrollment has been started for ${backendId}.`
     };
   }
-  let materialized = materializeState(record, now, backend);
-  let temporaryCredentialStatusFailure = false;
+  const materialized = materializeState(record, now, backend);
+  let credentialStatus: RemoteCredentialStatus | null = null;
+  let upstreamStatus:
+    | "pending"
+    | "approved"
+    | "denied"
+    | "expired"
+    | "unknown"
+    | null = null;
   if (
     backend &&
-    (materialized.state === "pending" ||
-      materialized.state === "approved" ||
-      materialized.state === "exchanged") &&
+    enrollmentCanReceiveRemoteStatus(materialized) &&
     materialized.credentialReference
   ) {
-    const credentialStatus = await remoteCredentialStatus(
+    credentialStatus = await remoteCredentialStatus(
       paths,
       backend,
       materialized.credentialReference,
       resolvedDeps
     );
-    store = readStore(paths, resolvedDeps);
-    const currentRecord = latestEnrollment(store, backendId);
-    backend = backendById(paths, backendId, resolvedDeps).backend;
     if (
-      !sameEnrollmentIdentity(currentRecord, record) ||
-      !enrollmentCanReceiveRemoteStatus(currentRecord) ||
-      !backend ||
-      backend.credential.status === "revoked" ||
-      backend.credential.status === "not_configured" ||
-      backend.credential.reference !== record.credentialReference
+      credentialStatus !== "active" &&
+      !(
+        materialized.state === "exchanged" &&
+        (credentialStatus === "rejected" || credentialStatus === "unknown")
+      ) &&
+      materialized.challengeId
     ) {
-      return enrollmentResultFromSnapshot(backendId, currentRecord, backend);
+      upstreamStatus = await readUpstreamChallengeStatus(
+        backend,
+        materialized.challengeId,
+        resolvedDeps
+      );
     }
-    materialized = materializeState(currentRecord, now, backend);
-    if (credentialStatus === "active") {
+  }
+
+  return withUpstreamEnrollmentLock(paths, backendId, () => {
+    const currentStore = readStore(paths, resolvedDeps);
+    const currentRecord = latestEnrollment(currentStore, backendId);
+    let currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+    if (!sameEnrollmentIdentity(currentRecord, record)) {
+      return enrollmentResultFromSnapshot(
+        backendId,
+        currentRecord,
+        currentBackend
+      );
+    }
+
+    let current = materializeState(currentRecord, now, currentBackend);
+    let temporaryCredentialStatusFailure = false;
+    const remoteResultStillApplies =
+      currentBackend &&
+      enrollmentCanReceiveRemoteStatus(current) &&
+      current.credentialReference === record.credentialReference &&
+      currentBackend.credential.status !== "revoked" &&
+      currentBackend.credential.status !== "not_configured" &&
+      currentBackend.credential.reference === record.credentialReference;
+
+    if (remoteResultStillApplies && credentialStatus === "active") {
       updateUpstreamBackendCredential(
         paths,
         backendId,
         {
           status: "configured",
-          reference: materialized.credentialReference
+          reference: current.credentialReference
         },
         {
           existsSync: resolvedDeps.existsSync,
@@ -854,25 +917,26 @@ export const getUpstreamEnrollmentStatus = async (
           now: resolvedDeps.now
         }
       );
-      backend = backendById(paths, backendId, resolvedDeps).backend;
-      materialized = {
-        ...materialized,
+      currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+      current = {
+        ...current,
         state: "exchanged",
         updatedAt: now.toISOString(),
         failureReason: undefined,
         failureMessage: undefined,
         credential: {
           status: "configured",
-          reference: materialized.credentialReference
+          reference: current.credentialReference
         }
       };
     } else if (
+      remoteResultStillApplies &&
       credentialStatus === "rejected" &&
-      materialized.state === "exchanged"
+      current.state === "exchanged"
     ) {
       deleteUpstreamCredentialSecret(
         paths.koedHome,
-        materialized.credentialReference
+        current.credentialReference
       );
       deleteLocalEdgeClientCredential(paths.koedHome, backendId);
       updateUpstreamBackendCredential(
@@ -887,9 +951,9 @@ export const getUpstreamEnrollmentStatus = async (
           now: resolvedDeps.now
         }
       );
-      backend = backendById(paths, backendId, resolvedDeps).backend;
-      materialized = {
-        ...materialized,
+      currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+      current = {
+        ...current,
         state: "failed",
         updatedAt: now.toISOString(),
         failureReason: "credential_rejected",
@@ -898,41 +962,23 @@ export const getUpstreamEnrollmentStatus = async (
         credential: { status: "not_configured" }
       };
     } else if (
+      remoteResultStillApplies &&
       credentialStatus === "unknown" &&
-      materialized.state === "exchanged"
+      current.state === "exchanged"
     ) {
       temporaryCredentialStatusFailure = true;
-      materialized = {
-        ...materialized,
+      current = {
+        ...current,
         updatedAt: now.toISOString(),
         failureReason: "credential_status_unavailable",
         failureMessage:
           "Could not verify the upstream device credential. Stored credentials were kept; retry when the Team Backend is available."
       };
-    } else if (materialized.challengeId) {
-      const upstreamStatus = await readUpstreamChallengeStatus(
-        backend,
-        materialized.challengeId,
-        resolvedDeps
-      );
-      store = readStore(paths, resolvedDeps);
-      const latestRecord = latestEnrollment(store, backendId);
-      backend = backendById(paths, backendId, resolvedDeps).backend;
-      if (
-        !sameEnrollmentIdentity(latestRecord, record) ||
-        !enrollmentCanReceiveRemoteStatus(latestRecord) ||
-        !backend ||
-        backend.credential.status === "revoked" ||
-        backend.credential.status === "not_configured" ||
-        backend.credential.reference !== record.credentialReference
-      ) {
-        return enrollmentResultFromSnapshot(backendId, latestRecord, backend);
-      }
-      materialized = materializeState(latestRecord, now, backend);
+    } else if (remoteResultStillApplies) {
       if (upstreamStatus === "denied" || upstreamStatus === "expired") {
         deleteUpstreamCredentialSecret(
           paths.koedHome,
-          materialized.credentialReference
+          current.credentialReference
         );
         deleteLocalEdgeClientCredential(paths.koedHome, backendId);
         updateUpstreamBackendCredential(
@@ -947,31 +993,159 @@ export const getUpstreamEnrollmentStatus = async (
             now: resolvedDeps.now
           }
         );
-        materialized = {
-          ...materialized,
+        currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+        current = {
+          ...current,
           state: upstreamStatus,
           updatedAt: now.toISOString(),
           credential: { status: "not_configured" }
         };
       } else if (upstreamStatus === "approved") {
-        materialized = {
-          ...materialized,
+        current = {
+          ...current,
           state: "approved",
           updatedAt: now.toISOString()
         };
       }
     }
-  }
-  if (materialized.state === "expired") {
+
+    if (current.state === "expired") {
+      deleteUpstreamCredentialSecret(
+        paths.koedHome,
+        current.credentialReference
+      );
+      deleteLocalEdgeClientCredential(paths.koedHome, backendId);
+      updateUpstreamBackendCredential(
+        paths,
+        backendId,
+        { status: "not_configured" },
+        {
+          existsSync: resolvedDeps.existsSync,
+          readFileSync: resolvedDeps.readFileSync,
+          writeFileSync: resolvedDeps.writeFileSync,
+          renameSync: resolvedDeps.renameSync,
+          now: resolvedDeps.now
+        }
+      );
+      currentBackend = backendById(paths, backendId, resolvedDeps).backend;
+    }
+
+    if (JSON.stringify(current) !== JSON.stringify(currentRecord)) {
+      currentStore.enrollments = currentStore.enrollments.map((entry) =>
+        entry.backendId === currentRecord.backendId &&
+        entry.requestId === currentRecord.requestId
+          ? current
+          : entry
+      );
+      currentStore.updatedAt = now.toISOString();
+      writeStore(paths, currentStore, resolvedDeps);
+    }
+    return {
+      ok: !temporaryCredentialStatusFailure,
+      state: current.state,
+      backend: currentBackend,
+      enrollment: summarizeEnrollment(current, currentBackend),
+      message: temporaryCredentialStatusFailure
+        ? current.failureMessage!
+        : `Upstream enrollment for ${backendId} is ${current.state}.`
+    };
+  });
+};
+
+export const cancelUpstreamEnrollment = async (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const backendId = validateBackendId(id);
+  return withUpstreamEnrollmentLock(paths, backendId, () => {
+    const nowDate = resolvedDeps.now();
+    const now = nowDate.toISOString();
+    const { backend } = backendById(paths, backendId, resolvedDeps);
+    const store = readStore(paths, resolvedDeps);
+    const record = latestEnrollment(store, backendId);
+    if (!record) {
+      return {
+        ok: true,
+        state: "missing" as const,
+        backend,
+        message: `No upstream enrollment has been started for ${backendId}.`
+      };
+    }
+    const materialized = materializeState(record, nowDate, backend);
+    if (
+      materialized.state === "exchanged" ||
+      materialized.state === "revoked" ||
+      materialized.state === "expired" ||
+      materialized.state === "failed" ||
+      materialized.state === "denied"
+    ) {
+      return {
+        ok: true,
+        state: materialized.state,
+        backend,
+        enrollment: summarizeEnrollment(materialized, backend),
+        message: `Upstream enrollment for ${backendId} is already ${materialized.state}.`
+      };
+    }
+    const canceled: UpstreamEnrollmentRecord = {
+      ...materialized,
+      state: "canceled",
+      updatedAt: now,
+      credential: { status: "not_configured" }
+    };
     deleteUpstreamCredentialSecret(
       paths.koedHome,
       materialized.credentialReference
     );
     deleteLocalEdgeClientCredential(paths.koedHome, backendId);
-    updateUpstreamBackendCredential(
+    store.enrollments = store.enrollments.map((entry) =>
+      entry.backendId === record.backendId &&
+      entry.requestId === record.requestId
+        ? canceled
+        : entry
+    );
+    store.updatedAt = now;
+    writeStore(paths, store, resolvedDeps);
+    return {
+      ok: true,
+      state: "canceled" as const,
+      backend,
+      enrollment: summarizeEnrollment(canceled, backend),
+      message: `Canceled upstream enrollment for ${backendId}.`
+    };
+  });
+};
+
+export const disconnectUpstreamBackendEnrollment = async (
+  paths: KoedServerPaths,
+  id: string,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<UpstreamEnrollmentResult> => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const backendId = validateBackendId(id);
+  return withUpstreamEnrollmentLock(paths, backendId, () => {
+    const now = resolvedDeps.now().toISOString();
+    const { backend } = backendById(paths, backendId, resolvedDeps);
+    if (!backend) {
+      return {
+        ok: false,
+        state: "missing" as const,
+        message: `Upstream backend ${backendId} is not registered.`
+      };
+    }
+    updateUpstreamBackendRoutePolicy(
       paths,
       backendId,
-      { status: "not_configured" },
+      {
+        personalMemoryRead: "disabled",
+        teamWorkspaceRead: "disabled",
+        shareGrantManagement: "disabled",
+        captureWrites: "disabled",
+        sync: "disabled",
+        admin: "disabled"
+      },
       {
         existsSync: resolvedDeps.existsSync,
         readFileSync: resolvedDeps.readFileSync,
@@ -980,183 +1154,61 @@ export const getUpstreamEnrollmentStatus = async (
         now: resolvedDeps.now
       }
     );
-  }
-  if (JSON.stringify(materialized) !== JSON.stringify(record)) {
-    store = readStore(paths, resolvedDeps);
-    const currentRecord = latestEnrollment(store, backendId);
-    if (
-      !sameEnrollmentIdentity(currentRecord, record) ||
-      (!enrollmentCanReceiveRemoteStatus(currentRecord) &&
-        JSON.stringify(currentRecord) !== JSON.stringify(materialized))
-    ) {
-      backend = backendById(paths, backendId, resolvedDeps).backend;
-      return enrollmentResultFromSnapshot(backendId, currentRecord, backend);
-    }
-    store.enrollments = store.enrollments.map((entry) =>
-      entry.backendId === record.backendId &&
-      entry.requestId === record.requestId
-        ? materialized
-        : entry
-    );
-    store.updatedAt = now.toISOString();
-    writeStore(paths, store, resolvedDeps);
-  }
-  return {
-    ok: !temporaryCredentialStatusFailure,
-    state: materialized.state,
-    backend,
-    enrollment: summarizeEnrollment(materialized, backend),
-    message: temporaryCredentialStatusFailure
-      ? materialized.failureMessage!
-      : `Upstream enrollment for ${backendId} is ${materialized.state}.`
-  };
-};
-
-export const cancelUpstreamEnrollment = (
-  paths: KoedServerPaths,
-  id: string,
-  deps: UpstreamEnrollmentDeps = {}
-): UpstreamEnrollmentResult => {
-  const resolvedDeps = depsWithDefaults(deps);
-  const backendId = validateBackendId(id);
-  const nowDate = resolvedDeps.now();
-  const now = nowDate.toISOString();
-  const { backend } = backendById(paths, backendId, resolvedDeps);
-  const store = readStore(paths, resolvedDeps);
-  const record = latestEnrollment(store, backendId);
-  if (!record) {
-    return {
-      ok: true,
-      state: "missing",
-      backend,
-      message: `No upstream enrollment has been started for ${backendId}.`
-    };
-  }
-  const materialized = materializeState(record, nowDate, backend);
-  if (
-    materialized.state === "exchanged" ||
-    materialized.state === "revoked" ||
-    materialized.state === "expired" ||
-    materialized.state === "failed" ||
-    materialized.state === "denied"
-  ) {
-    return {
-      ok: true,
-      state: materialized.state,
-      backend,
-      enrollment: summarizeEnrollment(materialized, backend),
-      message: `Upstream enrollment for ${backendId} is already ${materialized.state}.`
-    };
-  }
-  const canceled: UpstreamEnrollmentRecord = {
-    ...materialized,
-    state: "canceled",
-    updatedAt: now,
-    credential: { status: "not_configured" }
-  };
-  deleteUpstreamCredentialSecret(
-    paths.koedHome,
-    materialized.credentialReference
-  );
-  deleteLocalEdgeClientCredential(paths.koedHome, backendId);
-  store.enrollments = store.enrollments.map((entry) =>
-    entry.backendId === record.backendId && entry.requestId === record.requestId
-      ? canceled
-      : entry
-  );
-  store.updatedAt = now;
-  writeStore(paths, store, resolvedDeps);
-  return {
-    ok: true,
-    state: "canceled",
-    backend,
-    enrollment: summarizeEnrollment(canceled, backend),
-    message: `Canceled upstream enrollment for ${backendId}.`
-  };
-};
-
-export const disconnectUpstreamBackendEnrollment = (
-  paths: KoedServerPaths,
-  id: string,
-  deps: UpstreamEnrollmentDeps = {}
-): UpstreamEnrollmentResult => {
-  const resolvedDeps = depsWithDefaults(deps);
-  const backendId = validateBackendId(id);
-  const now = resolvedDeps.now().toISOString();
-  const { backend } = backendById(paths, backendId, resolvedDeps);
-  if (!backend) {
-    return {
-      ok: false,
-      state: "missing",
-      message: `Upstream backend ${backendId} is not registered.`
-    };
-  }
-  updateUpstreamBackendRoutePolicy(
-    paths,
-    backendId,
-    {
-      personalMemoryRead: "disabled",
-      teamWorkspaceRead: "disabled",
-      shareGrantManagement: "disabled",
-      captureWrites: "disabled",
-      sync: "disabled",
-      admin: "disabled"
-    },
-    {
-      existsSync: resolvedDeps.existsSync,
-      readFileSync: resolvedDeps.readFileSync,
-      writeFileSync: resolvedDeps.writeFileSync,
-      renameSync: resolvedDeps.renameSync,
-      now: resolvedDeps.now
-    }
-  );
-  updateUpstreamBackendCredential(
-    paths,
-    backendId,
-    { status: "revoked", reference: backend.credential.reference },
-    {
-      existsSync: resolvedDeps.existsSync,
-      readFileSync: resolvedDeps.readFileSync,
-      writeFileSync: resolvedDeps.writeFileSync,
-      renameSync: resolvedDeps.renameSync,
-      now: resolvedDeps.now
-    }
-  );
-  deleteUpstreamCredentialSecret(paths.koedHome, backend.credential.reference);
-  deleteLocalEdgeClientCredential(paths.koedHome, backendId);
-  const refreshedBackend = backendById(paths, backendId, resolvedDeps).backend;
-  const store = readStore(paths, resolvedDeps);
-  const existing = latestEnrollment(store, backendId);
-  const record: UpstreamEnrollmentRecord = {
-    ...(existing ?? {
+    updateUpstreamBackendCredential(
+      paths,
       backendId,
-      requestId: resolvedDeps.randomId(),
-      activationUrl: null,
-      requestedOperationFamilies: []
-    }),
-    state: "revoked",
-    updatedAt: now,
-    createdAt: existing?.createdAt ?? now,
-    expiresAt: existing?.expiresAt ?? null,
-    credential: { status: "revoked", reference: backend.credential.reference }
-  };
-  if (existing) {
-    store.enrollments = store.enrollments.map((entry) =>
-      entry.backendId === existing.backendId &&
-      entry.requestId === existing.requestId
-        ? record
-        : entry
+      { status: "revoked", reference: backend.credential.reference },
+      {
+        existsSync: resolvedDeps.existsSync,
+        readFileSync: resolvedDeps.readFileSync,
+        writeFileSync: resolvedDeps.writeFileSync,
+        renameSync: resolvedDeps.renameSync,
+        now: resolvedDeps.now
+      }
     );
-  } else {
-    store.enrollments.push(record);
-  }
-  store.updatedAt = now;
-  writeStore(paths, store, resolvedDeps);
-  return {
-    ok: true,
-    state: "revoked",
-    backend: refreshedBackend,
-    enrollment: summarizeEnrollment(record, refreshedBackend),
-    message: `Disconnected upstream backend ${backendId} locally. Revoke any browser/session-issued device credential on the upstream backend if it was already exchanged.`
-  };
+    deleteUpstreamCredentialSecret(
+      paths.koedHome,
+      backend.credential.reference
+    );
+    deleteLocalEdgeClientCredential(paths.koedHome, backendId);
+    const refreshedBackend = backendById(
+      paths,
+      backendId,
+      resolvedDeps
+    ).backend;
+    const store = readStore(paths, resolvedDeps);
+    const existing = latestEnrollment(store, backendId);
+    const record: UpstreamEnrollmentRecord = {
+      ...(existing ?? {
+        backendId,
+        requestId: resolvedDeps.randomId(),
+        activationUrl: null,
+        requestedOperationFamilies: []
+      }),
+      state: "revoked",
+      updatedAt: now,
+      createdAt: existing?.createdAt ?? now,
+      expiresAt: existing?.expiresAt ?? null,
+      credential: { status: "revoked", reference: backend.credential.reference }
+    };
+    if (existing) {
+      store.enrollments = store.enrollments.map((entry) =>
+        entry.backendId === existing.backendId &&
+        entry.requestId === existing.requestId
+          ? record
+          : entry
+      );
+    } else {
+      store.enrollments.push(record);
+    }
+    store.updatedAt = now;
+    writeStore(paths, store, resolvedDeps);
+    return {
+      ok: true,
+      state: "revoked" as const,
+      backend: refreshedBackend,
+      enrollment: summarizeEnrollment(record, refreshedBackend),
+      message: `Disconnected upstream backend ${backendId} locally. Revoke any browser/session-issued device credential on the upstream backend if it was already exchanged.`
+    };
+  });
 };

@@ -20,7 +20,8 @@
     }
   },
   "dependencies": {
-    "@koed/shared": "workspace:*"
+    "@koed/shared": "workspace:*",
+    "proper-lockfile": "4.1.2"
   },
   "scripts": {
     "build": "tsc -b tsconfig.json --force",
@@ -28,5 +29,8 @@
     "start": "node dist/cli.js start",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4"
   }
 }

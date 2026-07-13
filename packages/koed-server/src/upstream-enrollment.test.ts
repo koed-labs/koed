@@ -71,6 +71,32 @@ const deferredCredentialStatusFetch = () => {
   };
 };
 
+const deferredChallengeCreationFetch = () => {
+  const requested = deferred<void>();
+  const release = deferred<void>();
+  const fallback = enrollmentFetch();
+  return {
+    requested: requested.promise,
+    release: () => release.resolve(),
+    fetch: async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ): Promise<Response> => {
+      const url =
+        typeof input === "string" || input instanceof URL ? input : input.url;
+      if (
+        init?.method === "POST" &&
+        new URL(String(url)).pathname ===
+          "/v1/local-edge/device-enrollments/challenges"
+      ) {
+        requested.resolve();
+        await release.promise;
+      }
+      return fallback(input, init);
+    }
+  };
+};
+
 const enrollmentFetch =
   (
     status: "pending" | "approved" | "denied" | "expired" = "pending",
@@ -434,7 +460,7 @@ describe("upstream enrollment orchestration", () => {
       };
     });
 
-    const canceled = cancelUpstreamEnrollment(paths, "team-vps", {
+    const canceled = await cancelUpstreamEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:01:00.000Z")
     });
 
@@ -456,7 +482,7 @@ describe("upstream enrollment orchestration", () => {
       fetch: enrollmentFetch()
     });
 
-    const canceled = cancelUpstreamEnrollment(paths, "team-vps", {
+    const canceled = await cancelUpstreamEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:01:00.000Z")
     });
 
@@ -480,7 +506,7 @@ describe("upstream enrollment orchestration", () => {
       fetch: enrollmentFetch()
     });
 
-    const disconnected = disconnectUpstreamBackendEnrollment(
+    const disconnected = await disconnectUpstreamBackendEnrollment(
       paths,
       "team-vps",
       {
@@ -554,7 +580,7 @@ describe("upstream enrollment orchestration", () => {
     });
     await pendingStatus.requested;
 
-    disconnectUpstreamBackendEnrollment(paths, "team-vps", {
+    await disconnectUpstreamBackendEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:02:00.000Z")
     });
     pendingStatus.release();
@@ -594,7 +620,7 @@ describe("upstream enrollment orchestration", () => {
     });
     await pendingStatus.requested;
 
-    disconnectUpstreamBackendEnrollment(paths, "team-vps", {
+    await disconnectUpstreamBackendEnrollment(paths, "team-vps", {
       now: () => new Date("2026-01-01T00:02:00.000Z")
     });
     updateUpstreamBackendRoutePolicy(paths, "team-vps", {
@@ -623,5 +649,34 @@ describe("upstream enrollment orchestration", () => {
     expect(
       readUpstreamCredentialAuthorization(paths.koedHome, replacementReference)
     ).not.toBeNull();
+  });
+
+  it("does not persist a new enrollment after a concurrent disconnect", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const pendingChallenge = deferredChallengeCreationFetch();
+    const startPromise = startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enrollment-starting",
+      fetch: pendingChallenge.fetch
+    });
+    await pendingChallenge.requested;
+
+    await disconnectUpstreamBackendEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      randomId: () => "disconnect-record"
+    });
+    pendingChallenge.release();
+
+    await expect(startPromise).resolves.toMatchObject({
+      ok: true,
+      state: "revoked",
+      enrollment: { requestId: "disconnect-record", state: "revoked" }
+    });
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+    ).toBeNull();
   });
 });
