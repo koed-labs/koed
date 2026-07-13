@@ -37,6 +37,9 @@ export interface AuthHelpers {
     displayName: string | null;
     passwordHash?: string | null;
   } | null>;
+  resolveDeviceCredentialContext(
+    request: FastifyRequest
+  ): Promise<DeviceCredentialAuthContext | null>;
   setSessionCookie(reply: FastifyReply, secret: string): void;
   authenticate(request: FastifyRequest): Promise<{
     id: string;
@@ -100,6 +103,10 @@ export const createAuthHelpers = (
       passwordHash?: string | null;
     } | null>
   >();
+  const deviceCredentialContexts = new WeakMap<
+    FastifyRequest,
+    Promise<DeviceCredentialAuthContext | null>
+  >();
   const readAuthorizationCredential = (
     request: FastifyRequest,
     expectedScheme: string
@@ -142,6 +149,35 @@ export const createAuthHelpers = (
       ? requireRepository().getApiTokenUser(hashSecret(bearer))
       : Promise.resolve(null);
     apiTokenUsers.set(request, lookup);
+    return lookup;
+  };
+
+  const readDeviceCredential = (
+    request: FastifyRequest
+  ): { credentialKeyId: string; secret: string } | null => {
+    const credential = readAuthorizationCredential(request, "Koed-Device");
+    const separatorIndex = credential?.indexOf(":") ?? -1;
+    if (!credential || separatorIndex <= 0) {
+      return null;
+    }
+    const credentialKeyId = credential.slice(0, separatorIndex);
+    const secret = credential.slice(separatorIndex + 1);
+    return credentialKeyId && secret ? { credentialKeyId, secret } : null;
+  };
+
+  const resolveDeviceCredentialContext = (request: FastifyRequest) => {
+    const cached = deviceCredentialContexts.get(request);
+    if (cached) {
+      return cached;
+    }
+    const credential = readDeviceCredential(request);
+    const lookup = credential
+      ? requireRepository().getDeviceCredentialUser({
+          credentialKeyId: credential.credentialKeyId,
+          verifierHash: hashSecret(credential.secret)
+        })
+      : Promise.resolve(null);
+    deviceCredentialContexts.set(request, lookup);
     return lookup;
   };
 
@@ -197,27 +233,12 @@ export const createAuthHelpers = (
   };
 
   const authenticateDeviceCredential = async (request: FastifyRequest) => {
-    const repo = requireRepository();
-    const credential = readAuthorizationCredential(request, "Koed-Device");
-    const separatorIndex = credential?.indexOf(":") ?? -1;
-    const credentialKeyId =
-      credential && separatorIndex > 0
-        ? credential.slice(0, separatorIndex)
-        : null;
-    const secret =
-      credential && separatorIndex > 0
-        ? credential.slice(separatorIndex + 1)
-        : null;
-    if (!credentialKeyId || !secret) {
+    if (!readDeviceCredential(request)) {
       throw Object.assign(new Error("Device credential required"), {
         statusCode: 401
       });
     }
-
-    const context = await repo.getDeviceCredentialUser({
-      credentialKeyId,
-      verifierHash: hashSecret(secret)
-    });
+    const context = await resolveDeviceCredentialContext(request);
     if (!context) {
       throw Object.assign(new Error("Invalid device credential"), {
         statusCode: 401
@@ -271,6 +292,7 @@ export const createAuthHelpers = (
   return {
     hashSecret,
     resolveApiTokenUser,
+    resolveDeviceCredentialContext,
     setSessionCookie,
     authenticate,
     authenticateSession,

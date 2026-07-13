@@ -4934,6 +4934,76 @@ describe("api health", () => {
     expect(secondRecall.statusCode).toBe(429);
   });
 
+  it("keys valid device credentials by user while invalid credentials remain IP-scoped", async () => {
+    process.env.MEMORY_READ_RATE_LIMIT_WINDOW_MS = "60000";
+    process.env.MEMORY_READ_RATE_LIMIT_MAX = "1";
+    let enforceLimits = false;
+    const counts = new Map<string, number>();
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      rateLimitStore: {
+        increment(key, windowMs) {
+          if (!enforceLimits) {
+            return Promise.resolve({
+              count: 1,
+              resetAt: Date.now() + windowMs
+            });
+          }
+          const count = (counts.get(key) ?? 0) + 1;
+          counts.set(key, count);
+          return Promise.resolve({
+            count,
+            resetAt: Date.now() + windowMs
+          });
+        }
+      }
+    });
+    const aliceRegistration = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "device-rate-alice@example.com",
+        password: "password123"
+      }
+    });
+    const bobRegistration = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "device-rate-bob@example.com", password: "password123" }
+    });
+    const aliceCredential = await enrollDeviceCredentialForTest(
+      app,
+      cookieHeader(aliceRegistration),
+      ["team_workspace_read"]
+    );
+    const bobCredential = await enrollDeviceCredentialForTest(
+      app,
+      cookieHeader(bobRegistration),
+      ["team_workspace_read"]
+    );
+    enforceLimits = true;
+
+    const status = (authorization: string) =>
+      app.inject({
+        method: "GET",
+        url: "/v1/local-edge/device-credentials/status",
+        headers: { authorization }
+      });
+    const aliceFirst = await status(aliceCredential.authorization);
+    const bobFirst = await status(bobCredential.authorization);
+    const aliceSecond = await status(aliceCredential.authorization);
+    counts.clear();
+    const invalidFirst = await status("Koed-Device invalid-one:secret");
+    const invalidSecond = await status("Koed-Device invalid-two:secret");
+    await app.close();
+
+    expect(aliceFirst.statusCode).toBe(200);
+    expect(bobFirst.statusCode).toBe(200);
+    expect(aliceSecond.statusCode).toBe(429);
+    expect(invalidFirst.statusCode).toBe(401);
+    expect(invalidSecond.statusCode).toBe(429);
+  });
+
   it("uses injected rate-limit and cache providers", async () => {
     const cacheReads: string[] = [];
     const cacheWrites: string[] = [];

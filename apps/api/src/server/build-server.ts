@@ -333,7 +333,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     {
       resolveAuthenticatedUserId: async (request) =>
         getRequestLogContext(request).actor?.user_id ??
-        (await authHelpers.resolveApiTokenUser(request))?.id
+        (await authHelpers.resolveApiTokenUser(request))?.id ??
+        (await authHelpers.resolveDeviceCredentialContext(request))?.user.id
     }
   );
   const embeddingModelConfig = resolveSupportedEmbeddingModelConfig(
