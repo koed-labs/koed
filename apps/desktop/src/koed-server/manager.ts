@@ -994,25 +994,22 @@ export const createKoedServerManager = ({
           "Team Backend enrollment did not return a new pending browser approval challenge."
       };
     }
-    let browserOpenError: string | null = null;
     try {
-      await openExternal(activationUrl);
-    } catch (error) {
-      browserOpenError = error instanceof Error ? error.message : String(error);
+      void openExternal(activationUrl).catch(() => undefined);
+    } catch {
+      // The approval URL remains available when the platform cannot launch it.
     }
     return {
       ok: true,
       backendId,
       activationUrl,
-      browserOpenRequested: browserOpenError === null,
-      ...(browserOpenError ? { browserOpenError } : {}),
+      browserOpenRequested: true,
       register: registerResult,
       refresh: refreshResult,
       policy: policyResult,
       enrollment: enrollResult,
-      message: browserOpenError
-        ? "Team Backend enrollment started, but the browser could not be opened automatically. Open the activation URL to continue."
-        : "Team Backend enrollment started. Complete approval in the browser."
+      message:
+        "Team Backend enrollment started. Complete approval in the browser."
     };
   };
 

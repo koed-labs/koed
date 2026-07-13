@@ -683,7 +683,7 @@ describe("Koed server desktop manager", () => {
     ]);
   });
 
-  it("returns the activation URL when the system browser cannot be opened", async () => {
+  it("returns the activation URL without waiting for the system browser", async () => {
     const manager = createKoedServerManager({
       repoRoot: "/repo",
       cliPath: "/repo/cli.js",
@@ -721,17 +721,14 @@ describe("Koed server desktop manager", () => {
         callback(null, JSON.stringify({ ok: true }), "");
       },
       spawn: () => childProcess() as never,
-      openExternal: async () => {
-        throw new Error("No browser handler is available");
-      }
+      openExternal: () => new Promise(() => undefined)
     });
 
     await expect(
       manager.handlers.upstream_connect!({ url: "https://team.example.test" })
     ).resolves.toMatchObject({
       ok: true,
-      browserOpenRequested: false,
-      browserOpenError: "No browser handler is available",
+      browserOpenRequested: true,
       activationUrl: "https://team.example.test/device-enrollment/challenge-1"
     });
   });
