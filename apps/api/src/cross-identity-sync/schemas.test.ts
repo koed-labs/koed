@@ -1,85 +1,181 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import {
-  createEncryptedJsonPackage,
-  createLocalTestKeyEnvelopeEncryptionProvider,
-  createRecipientPublicKeyEnvelopeEncryptionProvider,
-  generateRecipientKeyMaterial,
-  toRecipientPublicKeyMaterial
-} from "@koed/shared";
 import { describe, expect, it } from "vitest";
-import { uploadChunkSchema } from "./schemas.js";
+import {
+  applyRemoteSyncRevocationSchema,
+  createTargetSyncRelationshipSchema,
+  createUploadSessionSchema,
+  targetSyncRelationshipResponseSchema,
+  uploadChunkParamsSchema
+} from "./schemas.js";
 
-const encryptedSyncChunk = async () => {
-  const rootProvider = createLocalTestKeyEnvelopeEncryptionProvider(
-    randomBytes(32).toString("base64")
-  );
-  const deploymentId = randomUUID();
-  const targetUserId = randomUUID();
-  const relationshipId = randomUUID();
-  const protocolPackageId = randomUUID();
-  const material = await generateRecipientKeyMaterial(rootProvider, {
-    keyId: `sync-recipient:${deploymentId}`,
-    keyVersion: 1
-  });
-  const provider = createRecipientPublicKeyEnvelopeEncryptionProvider(
-    toRecipientPublicKeyMaterial(material)
-  );
-  const encryptedPackage = await createEncryptedJsonPackage(provider, {
-    objectClass: "sync_package",
-    payload: { format: "koed.captured-session-sync", formatVersion: 1 },
-    scope: { deploymentId, tenantId: targetUserId },
-    provenance: {
-      rowFamily: "sync_package",
-      sourceId: protocolPackageId
-    },
-    aad: {
-      relationshipId,
-      packageId: protocolPackageId,
-      packageSequence: 1,
-      chunkIndex: 0,
-      chunkCount: 1,
-      sourceDeploymentId: randomUUID(),
-      targetDeploymentId: deploymentId
-    },
-    metadata: { formatVersion: 1, chunkIndex: 0, chunkCount: 1 }
-  });
-  return {
-    checksum_sha256: "a".repeat(64),
-    byte_count: Buffer.byteLength(JSON.stringify(encryptedPackage), "utf8"),
-    encrypted_package: encryptedPackage
-  };
-};
+const responseFixture = () => ({
+  relationship: { id: "11111111-1111-4111-8111-111111111111" },
+  target_deployment_id: "22222222-2222-4222-8222-222222222222",
+  target_deployment_profile: "team_self_hosted",
+  target_user_id: "33333333-3333-4333-8333-333333333333",
+  target_replica_id: "44444444-4444-4444-8444-444444444444",
+  recipient_key: {
+    algorithm: "RSA-OAEP-SHA256",
+    keyId: "sync-recipient:test",
+    keyVersion: 1,
+    publicJwk: {
+      kty: "RSA",
+      n: "public-modulus",
+      e: "AQAB",
+      alg: "RSA-OAEP-256",
+      key_ops: ["encrypt"],
+      ext: true,
+      kid: "sync-recipient:test",
+      use: "enc"
+    }
+  }
+});
 
-describe("Cross-Identity Sync upload schemas", () => {
-  it("accepts the exact encrypted sync package contract", async () => {
-    expect(uploadChunkSchema.parse(await encryptedSyncChunk())).toBeDefined();
-  });
+const uploadManifestFixture = () => ({
+  objectClass: "sync_package",
+  format: "koed.captured-session-sync/v1",
+  formatVersion: 1,
+  packageDigest: "c".repeat(64),
+  recipientKeyId: "sync-recipient:test",
+  recipientKeyVersion: 1,
+  recordCount: 1
+});
 
-  it("rejects unknown manifest fields and malformed ciphertext", async () => {
-    const input = await encryptedSyncChunk();
-    expect(() =>
-      uploadChunkSchema.parse({
-        ...input,
-        encrypted_package: {
-          ...input.encrypted_package,
-          manifest: {
-            ...input.encrypted_package.manifest,
-            plaintext: "must never be accepted"
-          }
+describe("Cross-Identity Sync response schemas", () => {
+  it("accepts only the exact target enrollment response contract", () => {
+    expect(
+      targetSyncRelationshipResponseSchema.safeParse(responseFixture()).success
+    ).toBe(true);
+    expect(
+      targetSyncRelationshipResponseSchema.safeParse({
+        ...responseFixture(),
+        target_deployment_profile: "developer"
+      }).success
+    ).toBe(false);
+    expect(
+      targetSyncRelationshipResponseSchema.safeParse({
+        ...responseFixture(),
+        recipient_key: {
+          ...responseFixture().recipient_key,
+          privateJwk: { d: "must-never-cross-the-boundary" }
         }
-      })
-    ).toThrow();
-    expect(() =>
-      uploadChunkSchema.parse({
-        ...input,
-        encrypted_package: {
-          ...input.encrypted_package,
-          envelope: {
-            ...input.encrypted_package.envelope,
-            ciphertext: "not base64!"
-          }
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects protocol counters outside JavaScript's safe integer range", () => {
+    expect(
+      applyRemoteSyncRevocationSchema.safeParse({
+        revocation_id: "11111111-1111-4111-8111-111111111111",
+        revocation_sequence: Number.MAX_SAFE_INTEGER + 1
+      }).success
+    ).toBe(false);
+    expect(
+      createUploadSessionSchema.safeParse({
+        protocol_package_id: "11111111-1111-4111-8111-111111111111",
+        idempotency_key: "safe-integer-test",
+        request_hash: "a".repeat(64),
+        package_manifest: uploadManifestFixture(),
+        package_checksum: "b".repeat(64),
+        total_bytes: 1,
+        expected_chunk_count: 1,
+        source_sequence: Number.MAX_SAFE_INTEGER + 1,
+        from_cursor: 0,
+        to_cursor: 1
+      }).success
+    ).toBe(false);
+    expect(
+      uploadChunkParamsSchema.safeParse({
+        uploadSessionId: "11111111-1111-4111-8111-111111111111",
+        chunkIndex: "128"
+      }).success
+    ).toBe(false);
+  });
+
+  it("requires the complete bounded upload manifest contract", () => {
+    const upload = {
+      protocol_package_id: "11111111-1111-4111-8111-111111111111",
+      idempotency_key: "upload-manifest-test",
+      request_hash: "a".repeat(64),
+      package_manifest: uploadManifestFixture(),
+      package_checksum: "b".repeat(64),
+      total_bytes: 1,
+      expected_chunk_count: 1,
+      source_sequence: 1,
+      from_cursor: 0,
+      to_cursor: 1
+    };
+
+    expect(createUploadSessionSchema.safeParse(upload).success).toBe(true);
+    expect(
+      createUploadSessionSchema.safeParse({
+        ...upload,
+        package_manifest: { recordCount: 1 }
+      }).success
+    ).toBe(false);
+    expect(
+      createUploadSessionSchema.safeParse({
+        ...upload,
+        package_manifest: {
+          ...uploadManifestFixture(),
+          source_text: "must not enter upload metadata"
         }
-      })
-    ).toThrow();
+      }).success
+    ).toBe(false);
+  });
+
+  it("accepts only the exact captured-session policy and consent manifests", () => {
+    const relationship = {
+      relationship_id: "11111111-1111-4111-8111-111111111111",
+      logical_memory_id: "22222222-2222-4222-8222-222222222222",
+      source_replica_id: "33333333-3333-4333-8333-333333333333",
+      source_deployment_id: "44444444-4444-4444-8444-444444444444",
+      source_user_id: "source-user",
+      origin_session_id: "55555555-5555-4555-8555-555555555555",
+      idempotency_key: "target-relationship-test",
+      creation_request_hash: "a".repeat(64),
+      policy_manifest: {
+        version: 1,
+        sourceBoundary: "captured_session",
+        transcriptIncluded: false,
+        sourceVectorsAccepted: false
+      },
+      consent_manifest: {
+        consented_at: "2026-07-13T00:00:00.000Z",
+        policy_version: 1,
+        source_boundary: "captured_session",
+        selectedSessionId: "55555555-5555-4555-8555-555555555555"
+      },
+      session: {
+        originSessionId: "55555555-5555-4555-8555-555555555555",
+        externalSessionId: null,
+        sourceRuntime: "codex",
+        captureMethod: "hook",
+        capturedAt: "2026-07-13T00:00:00.000Z",
+        title: null,
+        sourceAdapterVersion: null
+      }
+    };
+
+    expect(
+      createTargetSyncRelationshipSchema.safeParse(relationship).success
+    ).toBe(true);
+    expect(
+      createTargetSyncRelationshipSchema.safeParse({
+        ...relationship,
+        policy_manifest: {
+          ...relationship.policy_manifest,
+          note: "raw memory disguised as harmless metadata"
+        }
+      }).success
+    ).toBe(false);
+    expect(
+      createTargetSyncRelationshipSchema.safeParse({
+        ...relationship,
+        consent_manifest: {
+          ...relationship.consent_manifest,
+          policy_version: 2
+        }
+      }).success
+    ).toBe(false);
   });
 });

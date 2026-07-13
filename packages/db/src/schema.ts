@@ -1442,6 +1442,15 @@ export const deviceEnrollmentChallenges = pgTable(
     challengeHash: text("challenge_hash").notNull().unique(),
     upstreamBackendId: text("upstream_backend_id").notNull(),
     deviceInstanceId: text("device_instance_id"),
+    rotationLineageId: uuid("rotation_lineage_id"),
+    rotationOwnerUserId: uuid("rotation_owner_user_id").references(
+      () => users.id,
+      { onDelete: "cascade" }
+    ),
+    rotationCredentialId: uuid("rotation_credential_id").references(
+      (): AnyPgColumn => deviceCredentials.id,
+      { onDelete: "cascade" }
+    ),
     deviceLabel: text("device_label"),
     requestedOperationFamilies: text("requested_operation_families")
       .array()
@@ -1484,6 +1493,7 @@ export const deviceCredentials = pgTable(
     credentialKeyId: text("credential_key_id").notNull().unique(),
     upstreamBackendId: text("upstream_backend_id").notNull(),
     deviceInstanceId: text("device_instance_id").notNull(),
+    lineageId: uuid("lineage_id").notNull().defaultRandom(),
     deviceLabel: text("device_label"),
     credentialVersion: integer("credential_version").notNull().default(1),
     verifierKind: deviceCredentialVerifierKind("verifier_kind").notNull(),
@@ -1514,6 +1524,9 @@ export const deviceCredentials = pgTable(
       .where(sql`${table.revokedAt} is null`),
     index("device_credentials_owner_upstream_idx")
       .on(table.ownerUserId, table.upstreamBackendId, table.createdAt.desc())
+      .where(sql`${table.revokedAt} is null`),
+    index("device_credentials_active_lineage_idx")
+      .on(table.ownerUserId, table.upstreamBackendId, table.lineageId)
       .where(sql`${table.revokedAt} is null`),
     uniqueIndex("device_credentials_active_device_unique")
       .on(table.ownerUserId, table.upstreamBackendId, table.deviceInstanceId)
@@ -2201,6 +2214,10 @@ export const crossIdentitySyncRelationships = pgTable(
     localUserId: uuid("local_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    deviceCredentialId: uuid("device_credential_id").references(
+      () => deviceCredentials.id,
+      { onDelete: "restrict" }
+    ),
     remoteDeploymentIdentityId: uuid("remote_deployment_identity_id")
       .notNull()
       .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
@@ -2267,6 +2284,9 @@ export const crossIdentitySyncRelationships = pgTable(
       table.state,
       table.updatedAt.desc()
     ),
+    index("cross_identity_sync_relationships_device_credential_idx")
+      .on(table.deviceCredentialId, table.updatedAt.desc())
+      .where(sql`${table.deviceCredentialId} is not null`),
     check(
       "cross_identity_sync_relationships_captured_session_source_check",
       sql`${table.sourceBoundary} = 'captured_session'`
@@ -2282,6 +2302,10 @@ export const crossIdentitySyncRelationships = pgTable(
     check(
       "cross_identity_sync_relationships_cursor_check",
       sql`${table.sourceCursor} >= 0 and ${table.targetProcessingCursor} >= 0 and ${table.packageSequence} >= 0`
+    ),
+    check(
+      "cross_identity_sync_relationships_credential_side_check",
+      sql`(${table.side} = 'source' and ${table.deviceCredentialId} is null) or (${table.side} = 'target' and ${table.deviceCredentialId} is not null)`
     ),
     foreignKey({
       columns: [table.localReplicaId, table.logicalMemoryId, table.localUserId],
@@ -2477,6 +2501,7 @@ export const syncOutboxEntries = pgTable(
       .notNull()
       .defaultNow(),
     lockedAt: timestamp("locked_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     lastErrorMessage: text("last_error_message"),
@@ -2534,6 +2559,7 @@ export const syncInboxEntries = pgTable(
       .notNull()
       .defaultNow(),
     lockedAt: timestamp("locked_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     lastErrorMessage: text("last_error_message"),

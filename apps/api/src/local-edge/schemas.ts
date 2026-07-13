@@ -34,6 +34,7 @@ export const createDeviceEnrollmentChallengeSchema = z
     challenge_hash: z.string().min(32),
     upstream_backend_id: z.string().trim().min(1).max(160),
     device_instance_id: z.string().trim().min(1).max(160).optional(),
+    rotate_credential_id: z.uuid().optional(),
     device_label: z.string().trim().min(1).max(160).optional(),
     requested_operation_families: z
       .array(operationFamilySchema)

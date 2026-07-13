@@ -3180,16 +3180,44 @@ describeDb("memory repository visibility", () => {
       lastUsedAt: null,
       revokedAt: null
     });
+    const otherUser = await repo.createUser({
+      email: `device-credential-other-${randomUUID()}@example.com`
+    });
     const replacementChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
     await repo.createDeviceEnrollmentChallenge({
       challengeHash: replacementChallengeHash,
       upstreamBackendId: "team-vps",
       deviceInstanceId: "desktop-1",
+      rotationLineageId: credential!.lineageId,
+      rotationOwnerUserId: user.id,
+      rotationCredentialId: credential!.id,
       deviceLabel: "Desktop",
       requestedOperationFamilies: ["team.recall"],
       expiresAt: new Date(Date.now() + 60_000)
     });
+    const siblingChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    await repo.createDeviceEnrollmentChallenge({
+      challengeHash: siblingChallengeHash,
+      upstreamBackendId: "team-vps",
+      deviceInstanceId: "desktop-1",
+      rotationLineageId: credential!.lineageId,
+      rotationOwnerUserId: user.id,
+      rotationCredentialId: credential!.id,
+      requestedOperationFamilies: ["team.recall"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
     const replacementVerifierHash = `verifier-${randomUUID()}-${randomUUID()}`;
+    await expect(
+      repo.redeemDeviceEnrollmentChallenge(
+        { userId: otherUser.id },
+        {
+          challengeHash: replacementChallengeHash,
+          credentialKeyId: `device-key-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: replacementVerifierHash
+        }
+      )
+    ).resolves.toBeNull();
     const replacementCredential = await repo.redeemDeviceEnrollmentChallenge(
       { userId: user.id },
       {
@@ -3206,6 +3234,17 @@ describeDb("memory repository visibility", () => {
       operationFamilies: ["team.recall"],
       revokedAt: null
     });
+    await expect(
+      repo.redeemDeviceEnrollmentChallenge(
+        { userId: user.id },
+        {
+          challengeHash: siblingChallengeHash,
+          credentialKeyId: `device-key-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: replacementVerifierHash
+        }
+      )
+    ).rejects.toThrow("requires authenticated rotation");
     expect(
       await repo.getDeviceCredentialUser({
         credentialKeyId: credential!.credentialKeyId,
@@ -3271,7 +3310,7 @@ describeDb("memory repository visibility", () => {
     expect(auditJson).not.toContain(challengeHash);
   });
 
-  it("serializes concurrent device credential replacement for one device", async () => {
+  it("rejects concurrent device credential replacement without rotation proof", async () => {
     const user = await repo.createUser({
       email: `concurrent-device-${randomUUID()}@example.com`,
       displayName: "Concurrent Device User"
@@ -3289,7 +3328,7 @@ describeDb("memory repository visibility", () => {
       )
     );
 
-    const credentials = await Promise.all(
+    const credentials = await Promise.allSettled(
       challenges.map((challenge, index) =>
         repo.approveDeviceEnrollmentChallenge(
           { userId: user.id },
@@ -3303,7 +3342,12 @@ describeDb("memory repository visibility", () => {
       )
     );
 
-    expect(credentials.every(Boolean)).toBe(true);
+    expect(
+      credentials.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1);
+    expect(
+      credentials.filter((result) => result.status === "rejected")
+    ).toHaveLength(1);
     const active = await repo.listDeviceCredentials(
       { userId: user.id },
       { upstreamBackendId: "team-vps" }
@@ -3319,7 +3363,7 @@ describeDb("memory repository visibility", () => {
          and device_instance_id = $2`,
       [user.id, deviceInstanceId]
     );
-    expect(counts.rows[0]).toEqual({ active: "1", total: "2" });
+    expect(counts.rows[0]).toEqual({ active: "1", total: "1" });
   });
 
   it("rejects ambiguous device credential key ids", async () => {
@@ -4327,6 +4371,41 @@ describeDb("memory repository visibility", () => {
         proofReference: `backend-${randomUUID()}`
       }
     );
+    const replacementProof = `backend-${randomUUID()}`;
+    await expect(
+      encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: remoteUser.id,
+          proofKind: "device_enrollment",
+          proofReference: replacementProof
+        }
+      )
+    ).resolves.toBeUndefined();
+    await expect(
+      pool.query(
+        "select proof_reference from sync_principal_links where external_user_identity_id=$1",
+        [remoteUser.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ proof_reference: replacementProof }]
+    });
+    const otherRemoteUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+      deploymentIdentityId: remoteDeployment.id,
+      externalSubjectId: "other-remote-user"
+    });
+    await expect(
+      encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: otherRemoteUser.id,
+          proofKind: "device_enrollment",
+          proofReference: replacementProof
+        }
+      )
+    ).rejects.toThrow(
+      "Sync credential is already bound to another external principal"
+    );
     const ids = {
       relationshipId: randomUUID(),
       logicalMemoryId: randomUUID(),
@@ -4452,9 +4531,13 @@ describeDb("memory repository visibility", () => {
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .sourceLagRecords - lagBefore
     ).toBe(2);
-    await pool.query(
-      "update sync_outbox_entries set state='processing',attempt_count=1 where sync_relationship_id=$1",
-      [ids.relationshipId]
+    const claimedOutbox = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(claimedOutbox).toMatchObject({ id: outboxEntry.id });
+    expect(claimedOutbox?.claimToken).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
     await encryptedRepo.markSourceSyncProcessing({
       relationshipId: ids.relationshipId,
@@ -4463,6 +4546,7 @@ describeDb("memory repository visibility", () => {
     await encryptedRepo.deferSyncQueueEntry({
       queue: "outbox",
       id: outboxEntry.id,
+      claimToken: claimedOutbox!.claimToken!,
       delayMs: 250
     });
     await expect(
@@ -4472,6 +4556,57 @@ describeDb("memory repository visibility", () => {
       )
     ).resolves.toMatchObject({
       rows: [{ state: "pending", attempt_count: 0 }]
+    });
+    await pool.query(
+      "update sync_outbox_entries set available_at=now() where id=$1",
+      [outboxEntry.id]
+    );
+    const expiredClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    await pool.query(
+      "update sync_outbox_entries set lease_expires_at=now()-interval '1 second' where id=$1",
+      [outboxEntry.id]
+    );
+    const replacementClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(replacementClaim?.claimToken).not.toBe(expiredClaim?.claimToken);
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: outboxEntry.id,
+        claimToken: expiredClaim!.claimToken!
+      })
+    ).resolves.toBe(false);
+    await expect(
+      encryptedRepo.renewSyncQueueLease({
+        queue: "outbox",
+        id: outboxEntry.id,
+        claimToken: expiredClaim!.claimToken!,
+        leaseMs: 30_000
+      })
+    ).resolves.toBe(false);
+    await pool.query(
+      "update sync_outbox_entries set last_error_message='previous transient failure' where id=$1",
+      [outboxEntry.id]
+    );
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: outboxEntry.id,
+        claimToken: replacementClaim!.claimToken!
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query(
+        "select state,last_error_message from sync_outbox_entries where id=$1",
+        [outboxEntry.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "pending", last_error_message: null }]
     });
     await pool.query(
       "update sync_outbox_entries set state='failed',attempt_count=max_attempts,last_error_message='RemoteSyncUnavailableError' where sync_relationship_id=$1",
@@ -4503,8 +4638,22 @@ describeDb("memory repository visibility", () => {
       relationshipId: ids.relationshipId,
       packageId: randomUUID(),
       sourceCursor: delta!.changes[0]!.cursor,
+      targetProcessingCursor: delta!.changes[1]!.cursor,
       packageSequence: 1,
       staleAfterSeconds: 3_600
+    });
+    await expect(
+      pool.query(
+        "select source_cursor,target_processing_cursor from cross_identity_sync_relationships where id=$1",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          source_cursor: String(delta!.changes[0]!.cursor),
+          target_processing_cursor: String(delta!.changes[1]!.cursor)
+        }
+      ]
     });
     await expect(
       pool.query(
@@ -4519,6 +4668,155 @@ describeDb("memory repository visibility", () => {
         relationshipId: ids.relationshipId
       })
     ).resolves.toMatchObject({ changes: [delta!.changes[1]] });
+    await pool.query(
+      "update sync_outbox_entries set state='processing',attempt_count=max_attempts,claim_token=gen_random_uuid(),lease_expires_at=now()-interval '1 second',available_at=now() where sync_relationship_id=$1 and idempotency_key='changes'",
+      [ids.relationshipId]
+    );
+    const reconciledSourceClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(reconciledSourceClaim).toMatchObject({
+      id: outboxEntry.id,
+      state: "processing",
+      attemptCount: 1
+    });
+    await expect(
+      encryptedRepo.completeSyncQueueEntry({
+        queue: "outbox",
+        id: outboxEntry.id,
+        claimToken: reconciledSourceClaim!.claimToken!
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query(
+        "select state,last_error_class from cross_identity_sync_relationships where id=$1",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "ready", last_error_class: null }]
+    });
+    await expect(
+      encryptedRepo.revokeCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        { syncRelationshipId: ids.relationshipId }
+      )
+    ).resolves.toMatchObject({ state: "revoked" });
+    await expect(
+      encryptedRepo.acknowledgeSourceSyncPackage({
+        relationshipId: ids.relationshipId,
+        packageId: randomUUID(),
+        sourceCursor: delta!.changes[1]!.cursor,
+        targetProcessingCursor: delta!.changes[1]!.cursor,
+        packageSequence: 2,
+        staleAfterSeconds: 3_600
+      })
+    ).rejects.toThrow("can no longer acknowledge");
+    const outboxAfterRevocation = await pool.query<{
+      idempotency_key: string;
+      state: string;
+    }>(
+      "select idempotency_key,state from sync_outbox_entries where sync_relationship_id=$1 order by idempotency_key",
+      [ids.relationshipId]
+    );
+    expect(outboxAfterRevocation.rows).toHaveLength(2);
+    expect(outboxAfterRevocation.rows[0]).toEqual({
+      idempotency_key: "changes",
+      state: "cancelled"
+    });
+    expect(outboxAfterRevocation.rows[1]?.idempotency_key).toMatch(
+      /^revocation:/
+    );
+    expect(outboxAfterRevocation.rows[1]?.state).toBe("pending");
+    await pool.query(
+      "update sync_outbox_entries set state='failed',attempt_count=max_attempts,last_error_message='RemoteSyncAuthorizationError' where sync_relationship_id=$1 and payload_manifest->>'kind'='revocation'",
+      [ids.relationshipId]
+    );
+    await expect(
+      encryptedRepo.retryCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        ids.relationshipId
+      )
+    ).resolves.toMatchObject({ state: "revoked" });
+    await expect(
+      pool.query(
+        "select state,attempt_count from sync_outbox_entries where sync_relationship_id=$1 and payload_manifest->>'kind'='revocation'",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "pending", attempt_count: 0 }]
+    });
+    await pool.query(
+      "update sync_outbox_entries set attempt_count=max_attempts-1,available_at=now() where sync_relationship_id=$1 and payload_manifest->>'kind'='revocation'",
+      [ids.relationshipId]
+    );
+    const revocationClaim = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(revocationClaim?.payloadManifest.kind).toBe("revocation");
+    await expect(
+      encryptedRepo.failSyncQueueEntry({
+        queue: "outbox",
+        id: revocationClaim!.id,
+        claimToken: revocationClaim!.claimToken!,
+        errorClass: "RemoteSyncUnavailableError",
+        retryAfterMs: 250,
+        terminal: false
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query(
+        "select state,attempt_count from sync_outbox_entries where id=$1",
+        [revocationClaim!.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "pending", attempt_count: 0 }]
+    });
+    await pool.query(
+      "update sync_outbox_entries set available_at=now()+interval '1 hour' where id=$1",
+      [revocationClaim!.id]
+    );
+    await pool.query(
+      "update sync_outbox_entries set state='processing',attempt_count=max_attempts,claim_token=gen_random_uuid(),lease_expires_at=now()-interval '1 second',available_at=now() where sync_relationship_id=$1 and idempotency_key='changes'",
+      [ids.relationshipId]
+    );
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({
+        queue: "outbox",
+        leaseMs: 30_000
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        "select state,processed_at is not null as processed,last_error_message from sync_outbox_entries where sync_relationship_id=$1 and idempotency_key='changes'",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "failed",
+          processed: true,
+          last_error_message: "SyncQueueLeaseExpiredError"
+        }
+      ]
+    });
+    await pool.query(
+      "update sync_outbox_entries set state='processing',attempt_count=max_attempts,claim_token=gen_random_uuid(),lease_expires_at=now()-interval '1 second',available_at=now() where id=$1",
+      [revocationClaim!.id]
+    );
+    const recoveredRevocation = await encryptedRepo.claimSyncQueueEntry({
+      queue: "outbox",
+      leaseMs: 30_000
+    });
+    expect(recoveredRevocation).toMatchObject({
+      id: revocationClaim!.id,
+      state: "processing",
+      attemptCount: 1
+    });
+    expect(recoveredRevocation?.claimToken).not.toBe(
+      revocationClaim?.claimToken
+    );
   });
 
   it("applies target packages once and keeps the synchronized session read-only until ready", async () => {
@@ -4536,6 +4834,25 @@ describeDb("memory repository visibility", () => {
     const owner = await encryptedRepo.createUser({
       email: `sync-target-${randomUUID()}@example.com`
     });
+    const credentialChallengeHash = randomBytes(32).toString("hex");
+    const sourceDeviceInstanceId = `source-device-${randomUUID()}`;
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash: credentialChallengeHash,
+      upstreamBackendId: "sync-source",
+      deviceInstanceId: sourceDeviceInstanceId,
+      requestedOperationFamilies: ["sync"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const syncCredential = await encryptedRepo.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash: credentialChallengeHash,
+        credentialKeyId: `sync-credential-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: randomBytes(32).toString("hex"),
+        operationFamilies: ["sync"]
+      }
+    );
     const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
       profile: "team_self_hosted"
     });
@@ -4551,8 +4868,8 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       {
         externalUserIdentityId: sourceUser.id,
-        proofKind: "device_credential",
-        proofReference: `credential-${randomUUID()}`
+        proofKind: "device_credential_lineage",
+        proofReference: syncCredential!.lineageId
       }
     );
     const relationshipId = randomUUID();
@@ -4561,7 +4878,10 @@ describeDb("memory repository visibility", () => {
     const targetReplicaId = randomUUID();
     const originSessionId = randomUUID();
     const created = await encryptedRepo.createTargetSyncRelationship(
-      { userId: owner.id },
+      {
+        userId: owner.id,
+        deviceCredentialId: syncCredential!.id
+      },
       {
         relationshipId,
         logicalMemoryId,
@@ -4586,6 +4906,188 @@ describeDb("memory repository visibility", () => {
         }
       }
     );
+    const unprovenRotationHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash: unprovenRotationHash,
+      upstreamBackendId: "sync-source",
+      deviceInstanceId: sourceDeviceInstanceId,
+      requestedOperationFamilies: ["sync"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    await expect(
+      encryptedRepo.redeemDeviceEnrollmentChallenge(
+        { userId: owner.id },
+        {
+          challengeHash: unprovenRotationHash,
+          credentialKeyId: `sync-credential-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: randomBytes(32).toString("hex"),
+          operationFamilies: ["sync"]
+        }
+      )
+    ).rejects.toThrow("requires authenticated rotation");
+    const provenRotationHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash: provenRotationHash,
+      upstreamBackendId: "sync-source",
+      deviceInstanceId: sourceDeviceInstanceId,
+      rotationLineageId: syncCredential!.lineageId,
+      rotationOwnerUserId: owner.id,
+      rotationCredentialId: syncCredential!.id,
+      requestedOperationFamilies: ["sync"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const rotatedCredential =
+      await encryptedRepo.redeemDeviceEnrollmentChallenge(
+        { userId: owner.id },
+        {
+          challengeHash: provenRotationHash,
+          credentialKeyId: `sync-credential-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: randomBytes(32).toString("hex"),
+          operationFamilies: ["sync"]
+        }
+      );
+    expect(rotatedCredential?.lineageId).toBe(syncCredential!.lineageId);
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id, deviceCredentialId: rotatedCredential!.id },
+        relationshipId
+      )
+    ).resolves.toMatchObject({ id: relationshipId });
+    const switchedSourceUser =
+      await encryptedRepo.upsertExternalSyncUserIdentity({
+        deploymentIdentityId: sourceDeployment.id,
+        externalSubjectId: "different-source-user"
+      });
+    await expect(
+      encryptedRepo.linkExternalSyncUser(
+        { userId: owner.id },
+        {
+          externalUserIdentityId: switchedSourceUser.id,
+          proofKind: "device_credential_lineage",
+          proofReference: rotatedCredential!.lineageId
+        }
+      )
+    ).rejects.toThrow(
+      "Sync credential is already bound to another external principal"
+    );
+    const switchedOriginSessionId = randomUUID();
+    await expect(
+      encryptedRepo.createTargetSyncRelationship(
+        {
+          userId: owner.id,
+          deviceCredentialId: rotatedCredential!.id
+        },
+        {
+          relationshipId: randomUUID(),
+          logicalMemoryId: randomUUID(),
+          originSessionId: switchedOriginSessionId,
+          localDeploymentIdentityId: localDeployment.id,
+          remoteDeploymentIdentityId: sourceDeployment.id,
+          remoteUserIdentityId: switchedSourceUser.id,
+          remoteReplicaId: randomUUID(),
+          localReplicaId: randomUUID(),
+          idempotencyKey: "switched-source-principal",
+          creationRequestHash: "c".repeat(64),
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest: { consented: true },
+          session: {
+            originSessionId: switchedOriginSessionId,
+            externalSessionId: "switched-source-thread",
+            sourceRuntime: "codex",
+            captureMethod: "hook",
+            capturedAt: "2026-07-12T00:00:00.000Z",
+            title: "Switched source principal",
+            sourceAdapterVersion: "1"
+          }
+        }
+      )
+    ).rejects.toThrow("already bound to another source principal");
+    const secondChallengeHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash: secondChallengeHash,
+      upstreamBackendId: "sync-source",
+      deviceInstanceId: `other-source-device-${randomUUID()}`,
+      requestedOperationFamilies: ["sync"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const otherCredential = await encryptedRepo.redeemDeviceEnrollmentChallenge(
+      { userId: owner.id },
+      {
+        challengeHash: secondChallengeHash,
+        credentialKeyId: `sync-credential-${randomUUID()}`,
+        verifierKind: "secret_hash",
+        verifierHash: randomBytes(32).toString("hex"),
+        operationFamilies: ["sync"]
+      }
+    );
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id, deviceCredentialId: otherCredential!.id },
+        relationshipId
+      )
+    ).resolves.toBeNull();
+    await expect(
+      encryptedRepo.createSyncPackageUploadSession(
+        { userId: owner.id, deviceCredentialId: otherCredential!.id },
+        {
+          syncRelationshipId: relationshipId,
+          protocolPackageId: randomUUID(),
+          idempotencyKey: "wrong-device-credential",
+          requestHash: "1".repeat(64),
+          packageManifest: {},
+          packageChecksum: "2".repeat(64),
+          totalBytes: 1,
+          expectedChunkCount: 1,
+          sourceSequence: 1,
+          fromCursor: 0,
+          toCursor: 1,
+          relationshipSide: "target"
+        }
+      )
+    ).resolves.toBeNull();
+    const otherSourceDeployment =
+      await encryptedRepo.upsertRemoteSyncDeployment({
+        protocolDeploymentId: randomUUID(),
+        profile: "local_personal"
+      });
+    const otherSourceUser = await encryptedRepo.upsertExternalSyncUserIdentity({
+      deploymentIdentityId: otherSourceDeployment.id,
+      externalSubjectId: "source-user"
+    });
+    const spoofedOriginSessionId = randomUUID();
+    await expect(
+      encryptedRepo.createTargetSyncRelationship(
+        {
+          userId: owner.id,
+          deviceCredentialId: rotatedCredential!.id
+        },
+        {
+          relationshipId: randomUUID(),
+          logicalMemoryId: randomUUID(),
+          originSessionId: spoofedOriginSessionId,
+          localDeploymentIdentityId: localDeployment.id,
+          remoteDeploymentIdentityId: otherSourceDeployment.id,
+          remoteUserIdentityId: otherSourceUser.id,
+          remoteReplicaId: randomUUID(),
+          localReplicaId: randomUUID(),
+          idempotencyKey: "spoofed-source-deployment",
+          creationRequestHash: "d".repeat(64),
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest: { consented: true },
+          session: {
+            originSessionId: spoofedOriginSessionId,
+            externalSessionId: "spoofed-source-thread",
+            sourceRuntime: "codex",
+            captureMethod: "hook",
+            capturedAt: "2026-07-12T00:00:00.000Z",
+            title: "Spoofed synchronized session",
+            sourceAdapterVersion: "1"
+          }
+        }
+      )
+    ).rejects.toThrow("already bound to another source deployment");
     const targetSessionId = created!.localReplica.localSessionId!;
     await expect(
       encryptedRepo.createSyncPackageUploadSession(
@@ -4740,6 +5242,12 @@ describeDb("memory repository visibility", () => {
         { visibility: "personal" }
       );
       await expect(
+        encryptedRepo.listDerivedMemoryNodeIdsForSyncRelationship({
+          relationshipId,
+          ownerUserId: owner.id
+        })
+      ).resolves.toContain(compacted.leafNodeIds[0]);
+      await expect(
         encryptedRepo.expandMemoryNode(
           compacted.leafNodeIds[0]!,
           { userId: owner.id },
@@ -4769,9 +5277,24 @@ describeDb("memory repository visibility", () => {
       { userId: owner.id },
       { name: "Synchronized readiness team" }
     );
+    const member = await encryptedRepo.createUser({
+      email: `sync-target-member-${randomUUID()}@example.com`
+    });
+    await encryptedRepo.upsertTeamMember(
+      { userId: owner.id },
+      { teamId: team.id, userId: member.id, role: "member" }
+    );
     const workspace = await encryptedRepo.createTeamWorkspace(
       { userId: owner.id },
       { teamId: team.id, name: "Synchronized readiness workspace" }
+    );
+    await encryptedRepo.setTeamWorkspaceAccess(
+      { userId: owner.id },
+      {
+        teamWorkspaceId: workspace!.id,
+        userId: member.id,
+        access: "read"
+      }
     );
     await expect(
       encryptedRepo.createTeamSessionShareGrant(
@@ -4795,6 +5318,42 @@ describeDb("memory repository visibility", () => {
       packageId,
       staleAfterSeconds: 3_600
     });
+    await pool.query(
+      "update sync_inbox_entries set state='completed',processed_at=now() where sync_relationship_id=$1",
+      [relationshipId]
+    );
+    const durableInbox = await encryptedRepo.enqueueSyncInboxEntry({
+      syncRelationshipId: relationshipId,
+      uploadSessionId: uploadId,
+      idempotencyKey: `durable-ready-${randomUUID()}`,
+      requestHash: randomBytes(32).toString("hex")
+    });
+    await pool.query(
+      "update sync_inbox_entries set state='processing',attempt_count=max_attempts,claim_token=gen_random_uuid(),lease_expires_at=now()-interval '1 second' where id=$1",
+      [durableInbox.id]
+    );
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({
+        queue: "inbox",
+        leaseMs: 30_000
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        "select state,last_error_message from sync_inbox_entries where id=$1",
+        [durableInbox.id]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "completed", last_error_message: null }]
+    });
+    await expect(
+      pool.query(
+        "select state,last_error_class from cross_identity_sync_relationships where id=$1",
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "ready", last_error_class: null }]
+    });
     expect(
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .targetLagRecords - targetLagBefore
@@ -4813,6 +5372,24 @@ describeDb("memory repository visibility", () => {
         { teamWorkspaceId: workspace!.id, sessionId: targetSessionId }
       )
     ).resolves.toMatchObject({ sessionId: targetSessionId });
+    await expect(
+      encryptedRepo.getLcmGraphEvent(
+        { userId: member.id },
+        applied.eventIds[0]!,
+        { teamWorkspaceId: workspace!.id, includeRaw: true }
+      )
+    ).resolves.toMatchObject({
+      id: applied.eventIds[0],
+      contentPreview: "Synchronized canonical memory",
+      rawContent: "Synchronized canonical memory"
+    });
+    await expect(
+      encryptedRepo.getLcmGraphEvent(
+        { userId: member.id },
+        applied.eventIds[0]!,
+        { includeRaw: true }
+      )
+    ).resolves.toBeNull();
     await pool.query(
       "update cross_identity_sync_relationships set stale_after=now()-interval '1 second' where id=$1",
       [relationshipId]
@@ -4902,6 +5479,70 @@ describeDb("memory repository visibility", () => {
       rows: [{ state: "pending", attempt_count: 0, last_error_message: null }]
     });
     await pool.query(
+      "update sync_inbox_entries set state='processing',attempt_count=max_attempts,claim_token=gen_random_uuid(),lease_expires_at=now()-interval '1 second',available_at=now() where sync_relationship_id=$1 and idempotency_key='retry-target'",
+      [relationshipId]
+    );
+    await pool.query(
+      "update sync_package_upload_sessions set state='verified',failed_at=null,last_error_message=null where id=$1",
+      [uploadId]
+    );
+    await expect(
+      encryptedRepo.claimSyncQueueEntry({
+        queue: "inbox",
+        leaseMs: 30_000
+      })
+    ).resolves.toBeNull();
+    await expect(
+      pool.query(
+        "select state,processed_at is not null as processed,last_error_message from sync_inbox_entries where sync_relationship_id=$1 and idempotency_key='retry-target'",
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "failed",
+          processed: true,
+          last_error_message: "SyncQueueLeaseExpiredError"
+        }
+      ]
+    });
+    await expect(
+      pool.query(
+        "select state,last_error_message from sync_package_upload_sessions where id=$1",
+        [uploadId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "failed",
+          last_error_message: "SyncQueueLeaseExpiredError"
+        }
+      ]
+    });
+    await expect(
+      pool.query(
+        "select state,last_error_class from cross_identity_sync_relationships where id=$1",
+        [relationshipId]
+      )
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: "failed",
+          last_error_class: "SyncQueueLeaseExpiredError"
+        }
+      ]
+    });
+    await expect(
+      encryptedRepo.retryCrossIdentitySyncRelationship(
+        { userId: owner.id },
+        relationshipId
+      )
+    ).resolves.toMatchObject({ state: "processing" });
+    await pool.query(
+      "update sync_inbox_entries set state='completed',processed_at=now() where sync_relationship_id=$1 and idempotency_key='retry-target'",
+      [relationshipId]
+    );
+    await pool.query(
       "update sync_package_upload_sessions set state='completed',completed_at=now() where id=$1",
       [uploadId]
     );
@@ -4940,14 +5581,86 @@ describeDb("memory repository visibility", () => {
       (await encryptedRepo.getCrossIdentitySyncOperationalStatus())
         .completedRecordsLastHour - completedRecordsBefore
     ).toBe(1);
+    const replacementChallengeHash = randomBytes(32).toString("hex");
+    await encryptedRepo.createDeviceEnrollmentChallenge({
+      challengeHash: replacementChallengeHash,
+      upstreamBackendId: "sync-source",
+      deviceInstanceId: sourceDeviceInstanceId,
+      rotationLineageId: rotatedCredential!.lineageId,
+      rotationOwnerUserId: owner.id,
+      rotationCredentialId: rotatedCredential!.id,
+      requestedOperationFamilies: ["sync"],
+      expiresAt: new Date(Date.now() + 60_000)
+    });
+    const replacementCredential =
+      await encryptedRepo.redeemDeviceEnrollmentChallenge(
+        { userId: owner.id },
+        {
+          challengeHash: replacementChallengeHash,
+          credentialKeyId: `sync-credential-${randomUUID()}`,
+          verifierKind: "secret_hash",
+          verifierHash: randomBytes(32).toString("hex"),
+          operationFamilies: ["sync"]
+        }
+      );
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id, deviceCredentialId: replacementCredential!.id },
+        relationshipId
+      )
+    ).resolves.toMatchObject({ id: relationshipId });
+    const interruptedUploadId = randomUUID();
+    await pool.query(
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,'{}',$5,2,1,2,1,1,'revocation-interrupt')",
+      [
+        interruptedUploadId,
+        relationshipId,
+        randomUUID(),
+        "6".repeat(64),
+        "7".repeat(64)
+      ]
+    );
+    await pool.query(
+      "insert into sync_inbox_entries (sync_relationship_id,upload_session_id,state,idempotency_key,request_hash,claim_token,lease_expires_at) values ($1,$2,'processing','revocation-interrupt',$3,$4,now()+interval '5 minutes')",
+      [relationshipId, interruptedUploadId, "8".repeat(64), randomUUID()]
+    );
     await encryptedRepo.applyRemoteSyncRevocation(
-      { userId: owner.id },
+      { userId: owner.id, deviceCredentialId: replacementCredential!.id },
       {
         syncRelationshipId: relationshipId,
         revocationId: randomUUID(),
         revocationSequence: 2
       }
     );
+    await expect(
+      pool.query(
+        "select state,last_error_message from sync_package_upload_sessions where id=$1",
+        [interruptedUploadId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "failed", last_error_message: "SyncRelationshipRevoked" }]
+    });
+    await expect(
+      pool.query(
+        "select state,claim_token,lease_expires_at from sync_inbox_entries where upload_session_id=$1",
+        [interruptedUploadId]
+      )
+    ).resolves.toMatchObject({
+      rows: [{ state: "cancelled", claim_token: null, lease_expires_at: null }]
+    });
+    await expect(
+      encryptedRepo.revokeDeviceCredential(
+        { userId: owner.id },
+        replacementCredential!.id,
+        "sync source disconnected"
+      )
+    ).resolves.toBe(true);
+    await expect(
+      encryptedRepo.getCrossIdentitySyncRelationship(
+        { userId: owner.id, deviceCredentialId: replacementCredential!.id },
+        relationshipId
+      )
+    ).resolves.toBeNull();
     expect(
       await pool.query("select sync_session_recall_ready($1) as ready", [
         targetSessionId

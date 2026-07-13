@@ -311,6 +311,9 @@ export interface DeviceEnrollmentChallengeRecord {
   id: string;
   upstreamBackendId: string;
   deviceInstanceId: string | null;
+  rotationLineageId: string | null;
+  rotationOwnerUserId: string | null;
+  rotationCredentialId: string | null;
   deviceLabel: string | null;
   requestedOperationFamilies: string[];
   metadata: Record<string, unknown>;
@@ -328,6 +331,7 @@ export interface DeviceCredentialRecord {
   credentialKeyId: string;
   upstreamBackendId: string;
   deviceInstanceId: string;
+  lineageId: string;
   deviceLabel: string | null;
   credentialVersion: number;
   verifierKind: DeviceCredentialVerifierKind;
@@ -1142,6 +1146,9 @@ export interface MemorySourceRepository
     challengeHash: string;
     upstreamBackendId: string;
     deviceInstanceId?: string | null;
+    rotationLineageId?: string | null;
+    rotationOwnerUserId?: string | null;
+    rotationCredentialId?: string | null;
     deviceLabel?: string | null;
     requestedOperationFamilies?: string[];
     metadata?: Record<string, unknown>;

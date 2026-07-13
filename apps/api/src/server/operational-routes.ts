@@ -748,7 +748,7 @@ export const registerOperationalRoutes = (
   });
 
   app.get("/health/details", async (request) => {
-    await auth.authenticateSession(request);
+    await assertOpsOperatorSession(request, context);
     const checks = [createHealth("api")];
 
     if (config.databaseUrl) {
@@ -791,7 +791,9 @@ export const registerOperationalRoutes = (
 
   app.get("/self-host/status", async (request) => {
     const repo = requireRepository();
-    const user = await auth.authenticateSession(request).catch(() => null);
+    const user = await assertOpsOperatorSession(request, context).catch(
+      () => null
+    );
     if (!user) {
       const ready = await repo.health().catch(() => false);
       return {

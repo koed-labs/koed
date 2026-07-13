@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+  CAPTURED_SESSION_SYNC_MAX_CHUNKS,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
@@ -69,6 +70,23 @@ describe("Cross-Identity Sync protocol", () => {
     );
   });
 
+  it("uses locale-independent canonical key ordering", () => {
+    const first = Object.fromEntries([
+      ["ä", 1],
+      ["z", 2]
+    ]);
+    const second = Object.fromEntries([
+      ["z", 2],
+      ["ä", 1]
+    ]);
+    expect(crossIdentitySyncDigest(first)).toBe(
+      crossIdentitySyncDigest(second)
+    );
+    expect(() => crossIdentitySyncDigest({ value: Number.NaN })).toThrow(
+      "finite numbers"
+    );
+  });
+
   it("recognizes only the supported package version", () => {
     const value = packageFixture();
     expect(isCapturedSessionSyncPackageV1(value)).toBe(true);
@@ -76,6 +94,9 @@ describe("Cross-Identity Sync protocol", () => {
       false
     );
     expect(isCapturedSessionSyncPackageV1({ ...value, unknown: true })).toBe(
+      false
+    );
+    expect(isCapturedSessionSyncPackageV1({ ...value, toCursor: 2 })).toBe(
       false
     );
     expect(
@@ -119,6 +140,13 @@ describe("Cross-Identity Sync protocol", () => {
         chunkIndex: 0
       })
     ).toBe(true);
+    expect(
+      isCapturedSessionSyncChunkV1({
+        ...chunk,
+        chunkIndex: 0,
+        chunkCount: CAPTURED_SESSION_SYNC_MAX_CHUNKS + 1
+      })
+    ).toBe(false);
   });
 
   it("fails closed across a bounded protocol mutation corpus", () => {
@@ -135,6 +163,7 @@ describe("Cross-Identity Sync protocol", () => {
     const malformed: unknown[] = [
       { ...fixture, packageSequence: Number.MAX_SAFE_INTEGER + 1 },
       { ...fixture, fromCursor: 2, toCursor: 1 },
+      { ...fixture, toCursor: 2 },
       {
         ...fixture,
         session: { ...fixture.session, title: "x".repeat(2_001) }
@@ -170,6 +199,30 @@ describe("Cross-Identity Sync protocol", () => {
               sourceEventTime: null,
               sourceSequence: null,
               contributors: []
+            }
+          }
+        ]
+      },
+      { ...fixture, changes: [null] },
+      {
+        ...fixture,
+        changes: [
+          {
+            ...fixture.changes[0],
+            operation: "upsert",
+            event: {
+              originEventId: fixture.changes[0]!.originEventId,
+              revisionHash: fixture.changes[0]!.revisionHash,
+              eventType: "captured",
+              actor: "agent",
+              content: "safe",
+              metadata: {},
+              tokenCount: 1,
+              sealReason: "agent_stop",
+              capturedAt: fixture.createdAt,
+              sourceEventTime: fixture.createdAt,
+              sourceSequence: 1,
+              contributors: [null]
             }
           }
         ]

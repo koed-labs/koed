@@ -289,6 +289,30 @@ export const registerLocalEdgeRoutes = (
     async (request) => {
       const repo = requireRepository();
       const input = createDeviceEnrollmentChallengeSchema.parse(request.body);
+      let rotationLineageId: string | null = null;
+      let rotationOwnerUserId: string | null = null;
+      let rotationCredentialId: string | null = null;
+      let deviceInstanceId = input.device_instance_id;
+      if (input.rotate_credential_id) {
+        const rotation = await authenticateDeviceCredential(request);
+        if (
+          rotation.credential.id !== input.rotate_credential_id ||
+          rotation.credential.upstreamBackendId !== input.upstream_backend_id ||
+          (input.device_instance_id !== undefined &&
+            rotation.credential.deviceInstanceId !== input.device_instance_id)
+        ) {
+          throw Object.assign(
+            new Error("Device credential rotation is invalid"),
+            {
+              statusCode: 403
+            }
+          );
+        }
+        rotationLineageId = rotation.credential.lineageId;
+        rotationOwnerUserId = rotation.credential.ownerUserId;
+        rotationCredentialId = rotation.credential.id;
+        deviceInstanceId = rotation.credential.deviceInstanceId;
+      }
       const pendingCredential = pendingDeviceCredentialFromInput(
         input.pending_credential,
         hashSecret
@@ -316,7 +340,10 @@ export const registerLocalEdgeRoutes = (
       const challenge = await repo.createDeviceEnrollmentChallenge({
         challengeHash: input.challenge_hash,
         upstreamBackendId: input.upstream_backend_id,
-        deviceInstanceId: input.device_instance_id,
+        deviceInstanceId,
+        rotationLineageId,
+        rotationOwnerUserId,
+        rotationCredentialId,
         deviceLabel: input.device_label,
         requestedOperationFamilies: requestedOperationFamilies,
         metadata,

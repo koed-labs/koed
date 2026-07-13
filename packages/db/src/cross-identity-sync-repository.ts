@@ -18,6 +18,10 @@ import { recordAuditEventWithClient } from "./audit-repository.js";
 import type { RecordAuditEventInput } from "./types.js";
 import type { ActorContext } from "./types.js";
 
+export interface SyncActorContext extends ActorContext {
+  deviceCredentialId?: string | null;
+}
+
 export type DeploymentProfile =
   | "developer"
   | "local_personal"
@@ -173,6 +177,7 @@ export interface SyncQueueEntryRecord {
   attemptCount: number;
   maxAttempts: number;
   availableAt: string;
+  claimToken: string | null;
   leaseExpiresAt: string | null;
 }
 
@@ -252,7 +257,7 @@ export interface CrossIdentitySyncRepository {
     localReplica: MemoryReplicaRecord;
   } | null>;
   createTargetSyncRelationship(
-    actor: ActorContext,
+    actor: SyncActorContext,
     input: {
       relationshipId: string;
       logicalMemoryId: string;
@@ -274,14 +279,17 @@ export interface CrossIdentitySyncRepository {
     localReplica: MemoryReplicaRecord;
   } | null>;
   getCrossIdentitySyncRelationship(
-    actor: ActorContext,
+    actor: SyncActorContext,
     id: string
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   getSyncRelationshipForService(
     id: string,
     side?: SyncRelationshipSide
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
-  getSyncTransportContext(relationshipId: string): Promise<{
+  getSyncTransportContext(
+    relationshipId: string,
+    input?: { includeRevoked?: boolean }
+  ): Promise<{
     relationship: CrossIdentitySyncRelationshipRecord;
     localDeploymentId: string;
     localProtocolDeploymentId: string;
@@ -314,7 +322,7 @@ export interface CrossIdentitySyncRepository {
     toCursor: number;
   } | null>;
   createSyncPackageUploadSession(
-    actor: ActorContext,
+    actor: SyncActorContext,
     input: {
       syncRelationshipId: string;
       protocolPackageId: string;
@@ -331,7 +339,7 @@ export interface CrossIdentitySyncRepository {
     }
   ): Promise<SyncPackageUploadSessionRecord | null>;
   recordSyncPackageChunk(
-    actor: ActorContext,
+    actor: SyncActorContext,
     input: {
       uploadSessionId: string;
       chunkIndex: number;
@@ -342,7 +350,7 @@ export interface CrossIdentitySyncRepository {
     }
   ): Promise<SyncPackageChunkRecord | null>;
   getSyncPackageUploadSession(
-    actor: ActorContext,
+    actor: SyncActorContext,
     id: string,
     relationshipSide?: SyncRelationshipSide
   ): Promise<{
@@ -361,7 +369,7 @@ export interface CrossIdentitySyncRepository {
     chunks: SyncPackageChunkRecord[];
   } | null>;
   verifySyncPackageUpload(
-    actor: ActorContext,
+    actor: SyncActorContext,
     uploadSessionId: string,
     relationshipSide?: SyncRelationshipSide
   ): Promise<SyncPackageUploadSessionRecord | null>;
@@ -388,32 +396,50 @@ export interface CrossIdentitySyncRepository {
   completeSyncQueueEntry(input: {
     queue: "outbox" | "inbox";
     id: string;
-  }): Promise<void>;
+    claimToken: string;
+  }): Promise<boolean>;
+  renewSyncQueueLease(input: {
+    queue: "outbox" | "inbox";
+    id: string;
+    claimToken: string;
+    leaseMs: number;
+  }): Promise<boolean>;
   deferSyncQueueEntry(input: {
     queue: "outbox" | "inbox";
     id: string;
+    claimToken: string;
     delayMs: number;
-  }): Promise<void>;
+  }): Promise<boolean>;
   failSyncQueueEntry(input: {
     queue: "outbox" | "inbox";
     id: string;
+    claimToken: string;
     errorClass: string;
     retryAfterMs: number;
     terminal?: boolean;
-  }): Promise<void>;
+  }): Promise<boolean>;
   applyCapturedSessionSyncPackage(input: {
     relationshipId: string;
     uploadSessionId: string;
     package: CapturedSessionSyncPackageV1;
   }): Promise<{ eventIds: string[]; invalidatedEventIds: string[] }>;
+  listDerivedMemoryNodeIdsForSyncRelationship(input: {
+    relationshipId: string;
+    ownerUserId: string;
+  }): Promise<string[]>;
   acknowledgeSourceSyncPackage(input: {
     relationshipId: string;
     packageId: string;
     sourceCursor: number;
+    targetProcessingCursor: number;
     packageSequence: number;
     staleAfterSeconds: number;
   }): Promise<void>;
   markSourceSyncProcessing(input: {
+    relationshipId: string;
+    packageId: string;
+  }): Promise<void>;
+  markSourceSyncUploadCommitted(input: {
     relationshipId: string;
     packageId: string;
   }): Promise<void>;
@@ -425,15 +451,15 @@ export interface CrossIdentitySyncRepository {
   }): Promise<void>;
   markOverdueSyncRelationshipsStale(): Promise<number>;
   retryCrossIdentitySyncRelationship(
-    actor: ActorContext,
+    actor: SyncActorContext,
     syncRelationshipId: string
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   revokeCrossIdentitySyncRelationship(
-    actor: ActorContext,
+    actor: SyncActorContext,
     input: { syncRelationshipId: string; reason?: string | null }
   ): Promise<CrossIdentitySyncRelationshipRecord | null>;
   applyRemoteSyncRevocation(
-    actor: ActorContext,
+    actor: SyncActorContext,
     input: {
       syncRelationshipId: string;
       revocationId: string;
@@ -596,20 +622,58 @@ const mapQueue = (r: Row): SyncQueueEntryRecord => ({
   attemptCount: numberValue(r.attempt_count),
   maxAttempts: numberValue(r.max_attempts),
   availableAt: iso(r.available_at)!,
+  claimToken: optionalString(r.claim_token),
   leaseExpiresAt: iso(r.lease_expires_at)
 });
 
 const relationshipForActor = async (
   pool: pg.Pool,
-  actor: ActorContext,
+  actor: SyncActorContext,
   id: string
 ) => {
   const result = await pool.query(
-    "select * from cross_identity_sync_relationships where id = $1 and local_user_id = $2 limit 1",
-    [id, actor.userId]
+    "select * from cross_identity_sync_relationships where id = $1 and local_user_id = $2 and ($3::uuid is null or device_credential_id = $3) limit 1",
+    [id, actor.userId, actor.deviceCredentialId ?? null]
   );
   return result.rows[0] as Row | undefined;
 };
+
+const lockActiveSyncDeviceCredential = async (
+  client: pg.PoolClient,
+  actor: SyncActorContext
+): Promise<boolean> => {
+  if (!actor.deviceCredentialId) return true;
+  const result = await client.query(
+    `select credential.id
+       from device_credentials credential
+       join users owner on owner.id = credential.owner_user_id
+      where credential.id = $1
+        and credential.owner_user_id = $2
+        and credential.revoked_at is null
+        and (credential.expires_at is null or credential.expires_at > now())
+        and ('sync' = any(credential.operation_families) or '*' = any(credential.operation_families))
+        and owner.disabled_at is null
+        and owner.deleted_at is null
+      for update of credential`,
+    [actor.deviceCredentialId, actor.userId]
+  );
+  return Boolean(result.rows[0]);
+};
+
+const relationshipCredentialClause = (
+  relationshipAlias: string,
+  parameter: number
+): string =>
+  `($${parameter}::uuid is null or exists (
+    select 1
+      from device_credentials bound_credential
+      join device_credentials presented_credential
+        on presented_credential.id = $${parameter}
+     where bound_credential.id = ${relationshipAlias}.device_credential_id
+       and bound_credential.owner_user_id = presented_credential.owner_user_id
+       and bound_credential.upstream_backend_id = presented_credential.upstream_backend_id
+       and bound_credential.lineage_id = presented_credential.lineage_id
+  ))`;
 
 const contentFromUnknown = (value: unknown): string => {
   if (typeof value === "string") return value;
@@ -809,7 +873,7 @@ export const createCrossIdentitySyncRepository = (
       }
       await pool
         .query(
-          "insert into sync_principal_links (local_user_id,external_user_identity_id,proof_kind,proof_reference) values ($1,$2,$3,$4) on conflict (external_user_identity_id) do update set verified_at=now(),revoked_at=null where sync_principal_links.local_user_id=excluded.local_user_id and sync_principal_links.proof_kind=excluded.proof_kind and sync_principal_links.proof_reference=excluded.proof_reference returning id",
+          "insert into sync_principal_links (local_user_id,external_user_identity_id,proof_kind,proof_reference) values ($1,$2,$3,$4) on conflict (external_user_identity_id) do update set proof_kind=excluded.proof_kind,proof_reference=excluded.proof_reference,verified_at=now(),revoked_at=null where sync_principal_links.local_user_id=excluded.local_user_id returning id",
           [
             actor.userId,
             input.externalUserIdentityId,
@@ -910,7 +974,7 @@ export const createCrossIdentitySyncRepository = (
           [input.sessionId]
         );
         await client.query(
-          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest) values ($1,'changes',$2,'{}') on conflict (sync_relationship_id,idempotency_key) do update set state='pending',attempt_count=0,available_at=now(),request_hash=excluded.request_hash,payload_manifest=excluded.payload_manifest,processed_at=null,lease_expires_at=null,last_error_message=null,updated_at=now()",
+          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest) values ($1,'changes',$2,'{}') on conflict (sync_relationship_id,idempotency_key) do update set state='pending',attempt_count=0,available_at=now(),request_hash=excluded.request_hash,payload_manifest=excluded.payload_manifest,processed_at=null,claim_token=null,lease_expires_at=null,last_error_message=null,updated_at=now()",
           [
             relationship.id,
             crossIdentitySyncDigest({
@@ -945,6 +1009,45 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (
+          !actor.deviceCredentialId ||
+          !(await lockActiveSyncDeviceCredential(client, actor))
+        ) {
+          await client.query("rollback");
+          return null;
+        }
+        const existingDeviceBinding = await client.query<Row>(
+          `select relationship.device_credential_id,
+                  relationship.remote_deployment_identity_id,
+                  relationship.remote_user_identity_id
+             from cross_identity_sync_relationships relationship
+            where relationship.side='target'
+              and ${relationshipCredentialClause("relationship", 1)}
+            limit 1`,
+          [actor.deviceCredentialId]
+        );
+        if (
+          existingDeviceBinding.rows[0] &&
+          String(
+            existingDeviceBinding.rows[0].remote_deployment_identity_id
+          ) !== input.remoteDeploymentIdentityId
+        ) {
+          throw new SyncStateConflictError(
+            "Device credential is already bound to another source deployment"
+          );
+        }
+        if (
+          existingDeviceBinding.rows[0] &&
+          String(existingDeviceBinding.rows[0].remote_user_identity_id) !==
+            input.remoteUserIdentityId
+        ) {
+          throw new SyncStateConflictError(
+            "Device credential lineage is already bound to another source principal"
+          );
+        }
+        const boundDeviceCredentialId = existingDeviceBinding.rows[0]
+          ? String(existingDeviceBinding.rows[0].device_credential_id)
+          : actor.deviceCredentialId;
         const sessionResult = await client.query(
           "insert into sessions (owner_user_id,visibility,external_session_id,source_runtime,capture_method,idempotency_key,source_kind,source_adapter_version,metadata,captured_at) values ($1,'personal',$2,$3,'api',$4,'koed_sync',$5,$6::jsonb,$7) on conflict (idempotency_key) where idempotency_key is not null do update set updated_at=now() returning *",
           [
@@ -987,12 +1090,13 @@ export const createCrossIdentitySyncRepository = (
         if (!replicaResult.rows[0]) throw new SyncIdempotencyConflictError();
         const replica = mapReplica(replicaResult.rows[0] as Row);
         const relationshipResult = await client.query(
-          "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'target',$3,$4,$5,$6,$7,'captured_session',$8,$9,$10::jsonb,$11::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
+          "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,device_credential_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'target',$3,$4,$5,$6,$7,$8,'captured_session',$9,$10,$11::jsonb,$12::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.device_credential_id=excluded.device_credential_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
           [
             input.relationshipId,
             logical.id,
             replica.id,
             actor.userId,
+            boundDeviceCredentialId,
             input.remoteDeploymentIdentityId,
             input.remoteUserIdentityId,
             input.remoteReplicaId,
@@ -1032,8 +1136,29 @@ export const createCrossIdentitySyncRepository = (
       }
     },
     async getCrossIdentitySyncRelationship(actor, id) {
-      const row = await relationshipForActor(pool, actor, id);
-      return row ? mapRelationship(row) : null;
+      if (!actor.deviceCredentialId) {
+        const row = await relationshipForActor(pool, actor, id);
+        return row ? mapRelationship(row) : null;
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
+        const result = await client.query<Row>(
+          `select * from cross_identity_sync_relationships relationship where id=$1 and local_user_id=$2 and ${relationshipCredentialClause("relationship", 3)} limit 1`,
+          [id, actor.userId, actor.deviceCredentialId]
+        );
+        await client.query("commit");
+        return result.rows[0] ? mapRelationship(result.rows[0]) : null;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async getSyncRelationshipForService(id, side) {
       const result = await pool.query(
@@ -1042,7 +1167,7 @@ export const createCrossIdentitySyncRepository = (
       );
       return result.rows[0] ? mapRelationship(result.rows[0] as Row) : null;
     },
-    async getSyncTransportContext(relationshipId) {
+    async getSyncTransportContext(relationshipId, input = {}) {
       const result = await pool.query<Row>(
         `
           select
@@ -1060,9 +1185,10 @@ export const createCrossIdentitySyncRepository = (
           join deployment_identities remote_deployment on remote_deployment.id = relationship.remote_deployment_identity_id
           join sync_external_user_identities remote_user on remote_user.id = relationship.remote_user_identity_id
           where relationship.id = $1
+            and ($2::boolean or relationship.revoked_at is null)
           limit 1
         `,
-        [relationshipId]
+        [relationshipId, input.includeRevoked ?? false]
       );
       const row = result.rows[0];
       return row
@@ -1334,12 +1460,17 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
         const relationshipResult = await client.query<Row>(
-          "select * from cross_identity_sync_relationships where id=$1 and local_user_id=$2 and revoked_at is null and ($3::text is null or side::text=$3) for update",
+          `select * from cross_identity_sync_relationships relationship where id=$1 and local_user_id=$2 and revoked_at is null and ($3::text is null or side::text=$3) and ${relationshipCredentialClause("relationship", 4)} for update`,
           [
             input.syncRelationshipId,
             actor.userId,
-            input.relationshipSide ?? null
+            input.relationshipSide ?? null,
+            actor.deviceCredentialId ?? null
           ]
         );
         const relationship = relationshipResult.rows[0];
@@ -1418,9 +1549,18 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
         const uploadResult = await client.query(
-          "select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) for update",
-          [input.uploadSessionId, actor.userId, input.relationshipSide ?? null]
+          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)} for update`,
+          [
+            input.uploadSessionId,
+            actor.userId,
+            input.relationshipSide ?? null,
+            actor.deviceCredentialId ?? null
+          ]
         );
         const upload = uploadResult.rows[0] as Row | undefined;
         if (!upload) {
@@ -1490,19 +1630,41 @@ export const createCrossIdentitySyncRepository = (
       }
     },
     async getSyncPackageUploadSession(actor, id, relationshipSide) {
-      const uploadResult = await pool.query(
-        "select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and ($3::text is null or sr.side::text=$3)",
-        [id, actor.userId, relationshipSide ?? null]
-      );
-      if (!uploadResult.rows[0]) return null;
-      const chunks = await pool.query(
-        "select * from sync_package_chunks where upload_session_id=$1 order by chunk_index",
-        [id]
-      );
-      return {
-        upload: mapUpload(uploadResult.rows[0] as Row),
-        chunks: chunks.rows.map((row) => mapChunk(row as Row))
-      };
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
+        const uploadResult = await client.query(
+          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)}`,
+          [
+            id,
+            actor.userId,
+            relationshipSide ?? null,
+            actor.deviceCredentialId ?? null
+          ]
+        );
+        if (!uploadResult.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+        const chunks = await client.query(
+          "select * from sync_package_chunks where upload_session_id=$1 order by chunk_index",
+          [id]
+        );
+        await client.query("commit");
+        return {
+          upload: mapUpload(uploadResult.rows[0] as Row),
+          chunks: chunks.rows.map((row) => mapChunk(row as Row))
+        };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async getSyncPackageForService(id) {
       const uploadResult = await pool.query<Row>(
@@ -1532,9 +1694,18 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
         const result = await client.query(
-          "select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) for update",
-          [uploadSessionId, actor.userId, relationshipSide ?? null]
+          `select spu.* from sync_package_upload_sessions spu join cross_identity_sync_relationships sr on sr.id=spu.sync_relationship_id where spu.id=$1 and sr.local_user_id=$2 and sr.revoked_at is null and ($3::text is null or sr.side::text=$3) and ${relationshipCredentialClause("sr", 4)} for update`,
+          [
+            uploadSessionId,
+            actor.userId,
+            relationshipSide ?? null,
+            actor.deviceCredentialId ?? null
+          ]
         );
         const row = result.rows[0] as Row | undefined;
         if (!row) {
@@ -1621,27 +1792,225 @@ export const createCrossIdentitySyncRepository = (
     async claimSyncQueueEntry(input) {
       const table =
         input.queue === "outbox" ? "sync_outbox_entries" : "sync_inbox_entries";
-      const result = await pool.query(
-        `with candidate as (select id from ${table} where (state='pending' or (state='processing' and lease_expires_at<=now())) and available_at<=now() and attempt_count<max_attempts order by available_at,created_at for update skip locked limit 1) update ${table} q set state='processing',attempt_count=attempt_count+1,locked_at=now(),lease_expires_at=now()+($1::int*interval '1 millisecond'),updated_at=now() from candidate where q.id=candidate.id returning q.*`,
-        [input.leaseMs]
-      );
-      return result.rows[0] ? mapQueue(result.rows[0] as Row) : null;
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const expired = await client.query<Row>(
+          `select id,sync_relationship_id,upload_session_id,idempotency_key,payload_manifest->>'kind' as payload_kind
+           from ${table}
+           where state='processing'
+             and lease_expires_at<=now()
+             and attempt_count>=max_attempts
+           order by lease_expires_at,created_at
+           for update skip locked
+           limit 1`
+        );
+        const expiredRow = expired.rows[0];
+        if (expiredRow) {
+          const isRevocation =
+            input.queue === "outbox" &&
+            expiredRow.payload_kind === "revocation";
+          let reconciled = false;
+          if (
+            input.queue === "outbox" &&
+            expiredRow.idempotency_key === "changes"
+          ) {
+            const durable = await client.query<{ complete: boolean }>(
+              `select exists (
+                 select 1
+                 from cross_identity_sync_relationships
+                 where id=$1
+                   and side='source'
+                   and state in ('ready','stale')
+                   and revoked_at is null
+               ) as complete`,
+              [expiredRow.sync_relationship_id]
+            );
+            if (durable.rows[0]?.complete) {
+              const pending = await client.query<{ pending: boolean }>(
+                `select exists (
+                   select 1
+                   from cross_identity_sync_relationships relationship
+                   join memory_replicas replica on replica.id=relationship.local_replica_id
+                   join sync_semantic_changes change on change.session_id=replica.local_session_id
+                   where relationship.id=$1
+                     and change.cursor>relationship.source_cursor
+                 ) as pending`,
+                [expiredRow.sync_relationship_id]
+              );
+              const hasPendingChanges = pending.rows[0]?.pending === true;
+              await client.query(
+                `update ${table}
+                 set state=$2::sync_queue_entry_state,
+                     attempt_count=case when $3::boolean then 0 else attempt_count end,
+                     available_at=now(),
+                     locked_at=null,
+                     claim_token=null,
+                     lease_expires_at=null,
+                     processed_at=case when $3::boolean then null else now() end,
+                     last_error_message=null,
+                     updated_at=now()
+                 where id=$1`,
+                [
+                  expiredRow.id,
+                  hasPendingChanges ? "pending" : "completed",
+                  hasPendingChanges
+                ]
+              );
+              reconciled = true;
+            }
+          } else if (input.queue === "inbox" && expiredRow.upload_session_id) {
+            const durable = await client.query<{ complete: boolean }>(
+              `select exists (
+                 select 1
+                 from sync_package_upload_sessions upload
+                 join cross_identity_sync_relationships relationship
+                   on relationship.id=upload.sync_relationship_id
+                 where upload.id=$1
+                   and upload.state='completed'
+                   and relationship.side='target'
+                   and relationship.state in ('ready','stale')
+                   and relationship.target_processing_cursor>=upload.to_cursor
+                   and relationship.revoked_at is null
+               ) as complete`,
+              [expiredRow.upload_session_id]
+            );
+            if (durable.rows[0]?.complete) {
+              await client.query(
+                `update ${table}
+                 set state='completed',
+                     locked_at=null,
+                     claim_token=null,
+                     lease_expires_at=null,
+                     processed_at=now(),
+                     last_error_message=null,
+                     updated_at=now()
+                 where id=$1`,
+                [expiredRow.id]
+              );
+              reconciled = true;
+            }
+          }
+          if (!reconciled) {
+            const recovered = await client.query<Row>(
+              `update ${table}
+               set state=$2::sync_queue_entry_state,
+                   attempt_count=case when $3::boolean then 0 else attempt_count end,
+                   available_at=now(),
+                   locked_at=null,
+                   claim_token=null,
+                   lease_expires_at=null,
+                   processed_at=case when $3::boolean then null else now() end,
+                   last_error_message='SyncQueueLeaseExpiredError',
+                   updated_at=now()
+               where id=$1
+               returning sync_relationship_id,upload_session_id,state,attempt_count`,
+              [expiredRow.id, isRevocation ? "pending" : "failed", isRevocation]
+            );
+            const recoveredRow = recovered.rows[0];
+            if (!isRevocation && recoveredRow) {
+              if (input.queue === "inbox" && recoveredRow.upload_session_id) {
+                await client.query(
+                  "update sync_package_upload_sessions set state='failed',failed_at=coalesce(failed_at,now()),last_error_message='SyncQueueLeaseExpiredError',updated_at=now() where id=$1 and state<>'completed'",
+                  [recoveredRow.upload_session_id]
+                );
+              }
+              const relationship = await client.query<Row>(
+                "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class='SyncQueueLeaseExpiredError',updated_at=now() where id=$1 and revoked_at is null returning local_replica_id,local_user_id",
+                [recoveredRow.sync_relationship_id]
+              );
+              if (relationship.rows[0]) {
+                await client.query(
+                  "update memory_replicas set freshness_status='failed',updated_at=now() where id=$1",
+                  [relationship.rows[0].local_replica_id]
+                );
+                await recordSyncAuditEventWithClient(client, {
+                  actorUserId: null,
+                  ownerUserId: String(relationship.rows[0].local_user_id),
+                  visibility: "personal",
+                  action:
+                    input.queue === "inbox"
+                      ? "cross_identity_sync.processing.failed"
+                      : "cross_identity_sync.transport.failed",
+                  targetTable: table,
+                  targetId: String(expiredRow.id),
+                  metadata: {
+                    eventKey: `terminal:${String(expiredRow.id)}`,
+                    errorClass: "SyncQueueLeaseExpiredError",
+                    attemptCount: numberValue(recoveredRow.attempt_count)
+                  }
+                });
+              }
+            }
+          }
+        }
+        const result = await client.query(
+          `with candidate as (select id from ${table} where (state='pending' or (state='processing' and lease_expires_at<=now())) and available_at<=now() and attempt_count<max_attempts order by available_at,created_at for update skip locked limit 1) update ${table} q set state='processing',attempt_count=attempt_count+1,locked_at=now(),claim_token=gen_random_uuid(),lease_expires_at=now()+($1::int*interval '1 millisecond'),updated_at=now() from candidate where q.id=candidate.id returning q.*`,
+          [input.leaseMs]
+        );
+        await client.query("commit");
+        return result.rows[0] ? mapQueue(result.rows[0] as Row) : null;
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
     },
     async completeSyncQueueEntry(input) {
       const table =
         input.queue === "outbox" ? "sync_outbox_entries" : "sync_inbox_entries";
-      await pool.query(
-        `update ${table} set state='completed',processed_at=now(),lease_expires_at=null,updated_at=now() where id=$1 and state='processing'`,
-        [input.id]
+      const completion =
+        input.queue === "outbox"
+          ? `state=case when idempotency_key='changes' and exists (
+               select 1
+               from cross_identity_sync_relationships relationship
+               join memory_replicas replica on replica.id=relationship.local_replica_id
+               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               where relationship.id=${table}.sync_relationship_id
+                 and change.cursor>relationship.source_cursor
+             ) then 'pending'::sync_queue_entry_state else 'completed'::sync_queue_entry_state end,
+             attempt_count=case when idempotency_key='changes' and exists (
+               select 1
+               from cross_identity_sync_relationships relationship
+               join memory_replicas replica on replica.id=relationship.local_replica_id
+               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               where relationship.id=${table}.sync_relationship_id
+                 and change.cursor>relationship.source_cursor
+             ) then 0 else attempt_count end,
+             available_at=now(),
+             processed_at=case when idempotency_key='changes' and exists (
+               select 1
+               from cross_identity_sync_relationships relationship
+               join memory_replicas replica on replica.id=relationship.local_replica_id
+               join sync_semantic_changes change on change.session_id=replica.local_session_id
+               where relationship.id=${table}.sync_relationship_id
+                 and change.cursor>relationship.source_cursor
+             ) then null else now() end`
+          : "state='completed',processed_at=now()";
+      const result = await pool.query(
+        `update ${table} set ${completion},claim_token=null,lease_expires_at=null,last_error_message=null,updated_at=now() where id=$1 and state='processing' and claim_token=$2 and lease_expires_at>now() returning id`,
+        [input.id, input.claimToken]
       );
+      return result.rowCount === 1;
+    },
+    async renewSyncQueueLease(input) {
+      const table =
+        input.queue === "outbox" ? "sync_outbox_entries" : "sync_inbox_entries";
+      const result = await pool.query(
+        `update ${table} set lease_expires_at=now()+($3::int*interval '1 millisecond'),updated_at=now() where id=$1 and state='processing' and claim_token=$2 and lease_expires_at>now() returning id`,
+        [input.id, input.claimToken, input.leaseMs]
+      );
+      return result.rowCount === 1;
     },
     async deferSyncQueueEntry(input) {
       const table =
         input.queue === "outbox" ? "sync_outbox_entries" : "sync_inbox_entries";
-      await pool.query(
-        `update ${table} set state='pending',attempt_count=greatest(attempt_count-1,0),available_at=now()+($2::int*interval '1 millisecond'),lease_expires_at=null,last_error_message=null,updated_at=now() where id=$1 and state='processing'`,
-        [input.id, Math.max(input.delayMs, 250)]
+      const result = await pool.query(
+        `update ${table} set state='pending',attempt_count=greatest(attempt_count-1,0),available_at=now()+($3::int*interval '1 millisecond'),claim_token=null,lease_expires_at=null,last_error_message=null,updated_at=now() where id=$1 and state='processing' and claim_token=$2 and lease_expires_at>now() returning id`,
+        [input.id, input.claimToken, Math.max(input.delayMs, 250)]
       );
+      return result.rowCount === 1;
     },
     async failSyncQueueEntry(input) {
       const table =
@@ -1651,10 +2020,35 @@ export const createCrossIdentitySyncRepository = (
         await client.query("begin");
         const errorClass = input.errorClass.slice(0, 120);
         const result = await client.query<Row>(
-          `update ${table} set state=case when $4::boolean or attempt_count>=max_attempts then 'failed'::sync_queue_entry_state else 'pending'::sync_queue_entry_state end,available_at=now()+($2::int*interval '1 millisecond'),lease_expires_at=null,last_error_message=$3,updated_at=now() where id=$1 and state='processing' returning sync_relationship_id,state,attempt_count`,
-          [input.id, input.retryAfterMs, errorClass, input.terminal ?? false]
+          `update ${table} set
+             state=case
+               when $5::boolean then 'failed'::sync_queue_entry_state
+               when payload_manifest->>'kind'='revocation' then 'pending'::sync_queue_entry_state
+               when attempt_count>=max_attempts then 'failed'::sync_queue_entry_state
+               else 'pending'::sync_queue_entry_state
+             end,
+             attempt_count=case
+               when not $5::boolean and payload_manifest->>'kind'='revocation' and attempt_count>=max_attempts then 0
+               else attempt_count
+             end,
+             available_at=now()+($3::int*interval '1 millisecond'),claim_token=null,lease_expires_at=null,last_error_message=$4,updated_at=now()
+           where id=$1 and state='processing' and claim_token=$2 and lease_expires_at>now()
+           returning sync_relationship_id,upload_session_id,state,attempt_count`,
+          [
+            input.id,
+            input.claimToken,
+            input.retryAfterMs,
+            errorClass,
+            input.terminal ?? false
+          ]
         );
         if (result.rows[0]?.state === "failed") {
+          if (input.queue === "inbox" && result.rows[0].upload_session_id) {
+            await client.query(
+              "update sync_package_upload_sessions set state='failed',failed_at=coalesce(failed_at,now()),last_error_message=$2,updated_at=now() where id=$1 and state<>'completed'",
+              [result.rows[0].upload_session_id, errorClass]
+            );
+          }
           const relationship = await client.query<Row>(
             "update cross_identity_sync_relationships set state='failed',failed_at=now(),last_error_class=$2,updated_at=now() where id=$1 and revoked_at is null returning local_replica_id,local_user_id",
             [result.rows[0].sync_relationship_id, errorClass]
@@ -1683,6 +2077,7 @@ export const createCrossIdentitySyncRepository = (
           }
         }
         await client.query("commit");
+        return result.rowCount === 1;
       } catch (error) {
         await client.query("rollback");
         throw error;
@@ -1962,27 +2357,51 @@ export const createCrossIdentitySyncRepository = (
         client.release();
       }
     },
+    async listDerivedMemoryNodeIdsForSyncRelationship(input) {
+      const result = await pool.query<Row>(
+        `select distinct node.id
+         from memory_nodes node
+         join memory_node_sources source on source.memory_node_id=node.id
+         join sync_event_mappings mapping
+           on mapping.local_memory_event_id=source.memory_event_id
+          and mapping.active=true
+         where node.owner_user_id=$1
+           and node.visibility='personal'
+           and node.invalidated_at is null
+           and node.personal_deleted_at is null
+           and mapping.sync_relationship_id=$2
+         order by node.id`,
+        [input.ownerUserId, input.relationshipId]
+      );
+      return result.rows.map((row) => String(row.id));
+    },
     async acknowledgeSourceSyncPackage(input) {
       const client = await pool.connect();
       try {
         await client.query("begin");
-        await client.query(
-          "update cross_identity_sync_relationships set source_cursor=$2,package_sequence=$3,last_package_id=$4,state='ready',last_synced_at=now(),stale_after=now()+($5::int*interval '1 second'),updated_at=now() where id=$1 and side='source' and revoked_at is null and source_cursor<=$2 and package_sequence<$3",
+        const relationship = await client.query(
+          "update cross_identity_sync_relationships set source_cursor=$2,target_processing_cursor=$3,package_sequence=$4,last_package_id=$5,state='ready',last_synced_at=now(),stale_after=now()+($6::int*interval '1 second'),updated_at=now() where id=$1 and side='source' and revoked_at is null and source_cursor<=$2 and target_processing_cursor<=$3 and (package_sequence<$4 or (package_sequence=$4 and source_cursor=$2 and last_package_id=$5)) returning id",
           [
             input.relationshipId,
             input.sourceCursor,
+            input.targetProcessingCursor,
             input.packageSequence,
             input.packageId,
             input.staleAfterSeconds
           ]
         );
+        if (!relationship.rows[0]) {
+          throw new SyncStateConflictError(
+            "Source sync relationship can no longer acknowledge this package"
+          );
+        }
         await client.query(
           "update sync_package_upload_sessions set state='completed',completed_at=now(),updated_at=now() where sync_relationship_id=$1 and protocol_package_id=$2",
           [input.relationshipId, input.packageId]
         );
         await client.query(
           `update sync_outbox_entries entry
-           set state='pending',attempt_count=0,available_at=now(),processed_at=null,lease_expires_at=null,last_error_message=null,updated_at=now()
+           set state='pending',attempt_count=0,available_at=now(),processed_at=null,claim_token=null,lease_expires_at=null,last_error_message=null,updated_at=now()
            where entry.sync_relationship_id=$1
              and entry.idempotency_key='changes'
              and exists (
@@ -2005,6 +2424,12 @@ export const createCrossIdentitySyncRepository = (
     async markSourceSyncProcessing(input) {
       await pool.query(
         "update cross_identity_sync_relationships set state='processing',last_package_id=$2,updated_at=now() where id=$1 and side='source' and revoked_at is null and state not in ('failed','paused')",
+        [input.relationshipId, input.packageId]
+      );
+    },
+    async markSourceSyncUploadCommitted(input) {
+      await pool.query(
+        "update sync_package_upload_sessions upload set state='uploaded',uploaded_at=coalesce(uploaded_at,now()),updated_at=now() from cross_identity_sync_relationships relationship where upload.sync_relationship_id=relationship.id and relationship.id=$1 and relationship.side='source' and relationship.revoked_at is null and upload.protocol_package_id=$2 and upload.state in ('created','uploading','uploaded')",
         [input.relationshipId, input.packageId]
       );
     },
@@ -2073,9 +2498,31 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
         const relationshipResult = await client.query<Row>(
-          "select * from cross_identity_sync_relationships where id=$1 and local_user_id=$2 and state='failed' and revoked_at is null for update",
-          [syncRelationshipId, actor.userId]
+          `select *
+           from cross_identity_sync_relationships relationship
+           where id=$1
+             and local_user_id=$2
+             and ${relationshipCredentialClause("relationship", 3)}
+             and (
+               (state='failed' and revoked_at is null)
+               or (
+                 side='source'
+                 and revoked_at is not null
+                 and exists (
+                   select 1 from sync_outbox_entries entry
+                   where entry.sync_relationship_id=relationship.id
+                     and entry.state='failed'
+                     and entry.payload_manifest->>'kind'='revocation'
+                 )
+               )
+             )
+           for update`,
+          [syncRelationshipId, actor.userId, actor.deviceCredentialId ?? null]
         );
         const relationshipRow = relationshipResult.rows[0];
         if (!relationshipRow) {
@@ -2086,22 +2533,33 @@ export const createCrossIdentitySyncRepository = (
         const queueTable =
           side === "source" ? "sync_outbox_entries" : "sync_inbox_entries";
         const retried = await client.query(
-          `update ${queueTable} set state='pending',attempt_count=0,available_at=now(),locked_at=null,lease_expires_at=null,processed_at=null,last_error_message=null,updated_at=now() where sync_relationship_id=$1 and state='failed' returning id`,
+          `update ${queueTable} set state='pending',attempt_count=0,available_at=now(),locked_at=null,claim_token=null,lease_expires_at=null,processed_at=null,last_error_message=null,updated_at=now() where sync_relationship_id=$1 and state='failed' returning id`,
           [syncRelationshipId]
         );
         if (retried.rowCount === 0) {
           await client.query("rollback");
           return null;
         }
-        const state = side === "source" ? "created" : "processing";
-        const relationship = await client.query<Row>(
-          "update cross_identity_sync_relationships set state=$3::sync_relationship_state,failed_at=null,last_error_class=null,updated_at=now() where id=$1 and local_user_id=$2 returning *",
-          [syncRelationshipId, actor.userId, state]
-        );
-        await client.query(
-          "update memory_replicas set freshness_status='unknown',updated_at=now() where id=$1",
-          [relationshipRow.local_replica_id]
-        );
+        const relationship =
+          relationshipRow.revoked_at !== null
+            ? await client.query<Row>(
+                "update cross_identity_sync_relationships set updated_at=now() where id=$1 and local_user_id=$2 returning *",
+                [syncRelationshipId, actor.userId]
+              )
+            : await client.query<Row>(
+                "update cross_identity_sync_relationships set state=$3::sync_relationship_state,failed_at=null,last_error_class=null,updated_at=now() where id=$1 and local_user_id=$2 returning *",
+                [
+                  syncRelationshipId,
+                  actor.userId,
+                  side === "source" ? "created" : "processing"
+                ]
+              );
+        if (relationshipRow.revoked_at === null) {
+          await client.query(
+            "update memory_replicas set freshness_status='unknown',updated_at=now() where id=$1",
+            [relationshipRow.local_replica_id]
+          );
+        }
         await recordSyncAuditEventWithClient(client, {
           actorUserId: actor.userId,
           ownerUserId: actor.userId,
@@ -2127,14 +2585,19 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (!(await lockActiveSyncDeviceCredential(client, actor))) {
+          await client.query("rollback");
+          return null;
+        }
         const revocationId = randomUUID();
         const result = await client.query(
-          "update cross_identity_sync_relationships set state='revoked',revoked_at=now(),revoked_by_user_id=$2,revocation_reason=nullif(trim($3),''),revocation_id=$4,revocation_sequence=package_sequence+1,revocation_origin=side,updated_at=now() where id=$1 and local_user_id=$2 and revoked_at is null returning *",
+          `update cross_identity_sync_relationships relationship set state='revoked',revoked_at=now(),revoked_by_user_id=$2,revocation_reason=nullif(trim($3),''),revocation_id=$4,revocation_sequence=package_sequence+1,revocation_origin=side,updated_at=now() where id=$1 and local_user_id=$2 and revoked_at is null and ${relationshipCredentialClause("relationship", 5)} returning relationship.*`,
           [
             input.syncRelationshipId,
             actor.userId,
             input.reason ?? null,
-            revocationId
+            revocationId,
+            actor.deviceCredentialId ?? null
           ]
         );
         if (!result.rows[0]) {
@@ -2142,11 +2605,15 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         await client.query(
-          "update sync_outbox_entries set state='cancelled',processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing')",
+          "update sync_outbox_entries set state='cancelled',claim_token=null,lease_expires_at=null,processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing')",
           [input.syncRelationshipId]
         );
         await client.query(
-          "update sync_inbox_entries set state='cancelled',processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing')",
+          "update sync_inbox_entries set state='cancelled',claim_token=null,lease_expires_at=null,processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing')",
+          [input.syncRelationshipId]
+        );
+        await client.query(
+          "update sync_package_upload_sessions set state='failed',failed_at=coalesce(failed_at,now()),last_error_message='SyncRelationshipRevoked',updated_at=now() where sync_relationship_id=$1 and state not in ('completed','failed')",
           [input.syncRelationshipId]
         );
         await client.query(
@@ -2193,13 +2660,21 @@ export const createCrossIdentitySyncRepository = (
       const client = await pool.connect();
       try {
         await client.query("begin");
+        if (
+          !actor.deviceCredentialId ||
+          !(await lockActiveSyncDeviceCredential(client, actor))
+        ) {
+          await client.query("rollback");
+          return null;
+        }
         const result = await client.query(
-          "update cross_identity_sync_relationships set state='revoked',revoked_at=coalesce(revoked_at,now()),revoked_by_user_id=$2,revocation_reason=coalesce(revocation_reason,'remote_sync_revoked'),revocation_id=coalesce(revocation_id,$3),revocation_sequence=greatest(coalesce(revocation_sequence,0),$4),revocation_origin='source',updated_at=now() where id=$1 and local_user_id=$2 and side='target' and (revocation_id is null or revocation_id=$3) returning *",
+          `update cross_identity_sync_relationships relationship set state='revoked',revoked_at=coalesce(revoked_at,now()),revoked_by_user_id=$2,revocation_reason=coalesce(revocation_reason,'remote_sync_revoked'),revocation_id=coalesce(revocation_id,$3),revocation_sequence=greatest(coalesce(revocation_sequence,0),$4),revocation_origin='source',updated_at=now() where id=$1 and local_user_id=$2 and side='target' and ${relationshipCredentialClause("relationship", 5)} and (revocation_id is null or revocation_id=$3) returning relationship.*`,
           [
             input.syncRelationshipId,
             actor.userId,
             input.revocationId,
-            input.revocationSequence
+            input.revocationSequence,
+            actor.deviceCredentialId
           ]
         );
         if (!result.rows[0]) {
@@ -2207,11 +2682,15 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         await client.query(
-          "update sync_outbox_entries set state='cancelled',processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing') and idempotency_key not like 'revocation:%'",
+          "update sync_outbox_entries set state='cancelled',claim_token=null,lease_expires_at=null,processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing') and idempotency_key not like 'revocation:%'",
           [input.syncRelationshipId]
         );
         await client.query(
-          "update sync_inbox_entries set state='cancelled',processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing')",
+          "update sync_inbox_entries set state='cancelled',claim_token=null,lease_expires_at=null,processed_at=now(),updated_at=now() where sync_relationship_id=$1 and state in ('pending','processing')",
+          [input.syncRelationshipId]
+        );
+        await client.query(
+          "update sync_package_upload_sessions set state='failed',failed_at=coalesce(failed_at,now()),last_error_message='SyncRelationshipRevoked',updated_at=now() where sync_relationship_id=$1 and state not in ('completed','failed')",
           [input.syncRelationshipId]
         );
         await recordSyncAuditEventWithClient(client, {
@@ -2305,12 +2784,12 @@ export const createCrossIdentitySyncRepository = (
       try {
         await client.query("begin");
         const abandoned = await client.query(
-          "update sync_package_upload_sessions set state='failed',updated_at=now() where state in ('created','uploading','uploaded') and updated_at<now()-($1::int*interval '1 hour') returning id",
+          "update sync_package_upload_sessions upload set state='failed',failed_at=coalesce(failed_at,now()),last_error_message=coalesce(last_error_message,'AbandonedSyncUpload'),updated_at=now() where ((state in ('created','uploading','uploaded')) or (state in ('verified','processing') and not exists (select 1 from sync_inbox_entries inbox where inbox.upload_session_id=upload.id and inbox.state in ('pending','processing')))) and updated_at<now()-($1::int*interval '1 hour') returning id",
           [abandonedUploadHours]
         );
         const chunks = await client.query(
-          "delete from sync_package_chunks chunk using sync_package_upload_sessions upload where chunk.upload_session_id=upload.id and ((upload.state='completed' and upload.completed_at<now()-($1::int*interval '1 hour')) or (upload.state='failed' and upload.updated_at<now()-($1::int*interval '1 hour'))) returning chunk.id",
-          [completedRetentionHours]
+          "delete from sync_package_chunks chunk using sync_package_upload_sessions upload where chunk.upload_session_id=upload.id and ((upload.state='completed' and upload.completed_at<now()-($1::int*interval '1 hour')) or (upload.state='failed' and upload.updated_at<now()-($2::int*interval '1 hour'))) returning chunk.id",
+          [completedRetentionHours, terminalUploadRetentionHours]
         );
         const queues = await client.query<Row>(
           "with deleted_outbox as (delete from sync_outbox_entries where state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id), deleted_inbox as (delete from sync_inbox_entries where state in ('completed','failed','cancelled') and updated_at<now()-($1::int*interval '1 hour') returning id) select (select count(*) from deleted_outbox)+(select count(*) from deleted_inbox) as count",

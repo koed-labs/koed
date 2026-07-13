@@ -210,6 +210,22 @@ describe("createLocalTestKeyEnvelopeEncryptionProvider", () => {
     expect(() => provider.decrypt(tampered)).toThrow();
   });
 
+  it("rejects truncated authentication tags and invalid nonce lengths", async () => {
+    const { provider, envelope } = await encryptFixture();
+    const truncatedTag = Buffer.from(envelope.tag, "base64").subarray(0, 4);
+    const truncatedNonce = Buffer.from(envelope.nonce, "base64").subarray(0, 8);
+
+    expect(() =>
+      provider.decrypt({ ...envelope, tag: truncatedTag.toString("base64") })
+    ).toThrow("authentication tag must be 16 bytes");
+    expect(() =>
+      provider.decrypt({
+        ...envelope,
+        nonce: truncatedNonce.toString("base64")
+      })
+    ).toThrow("nonce must be 12 bytes");
+  });
+
   it("rewraps DEKs without changing payload bytes", async () => {
     const { provider, envelope } = await encryptFixture();
     const rewrapped = await provider.rewrap?.(envelope, {

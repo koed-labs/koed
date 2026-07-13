@@ -71,6 +71,20 @@ CREATE TABLE "sync_semantic_changes" (
 	CONSTRAINT "sync_semantic_changes_revision_hash_check" CHECK (length("sync_semantic_changes"."revision_hash") = 64)
 );
 --> statement-breakpoint
+-- The prior tables were a non-transporting foundation scaffold. Their identity
+-- and package rows do not contain the recipient-key or cursor bindings required
+-- by the production protocol and must not be treated as synchronized data.
+-- Actual Users, Captured Sessions, Memory Events, and Team grants are untouched.
+TRUNCATE TABLE
+  "sync_inbox_entries",
+  "sync_outbox_entries",
+  "sync_package_chunks",
+  "sync_package_upload_sessions",
+  "cross_identity_sync_relationships",
+  "memory_replicas",
+  "logical_memories",
+  "deployment_identities"
+CASCADE;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" DROP CONSTRAINT "cross_identity_sync_relationships_owner_idempotency_unique";--> statement-breakpoint
 ALTER TABLE "deployment_identities" DROP CONSTRAINT "deployment_identities_owner_key_unique";--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" DROP CONSTRAINT "cross_identity_sync_relationships_captured_session_source_check";--> statement-breakpoint
@@ -114,6 +128,7 @@ DROP INDEX "logical_memories_owner_session_unique";--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "side" "sync_relationship_side" NOT NULL;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "local_replica_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "local_user_id" uuid NOT NULL;--> statement-breakpoint
+ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "device_credential_id" uuid;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "remote_deployment_identity_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "remote_user_identity_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "remote_replica_id" uuid;--> statement-breakpoint
@@ -128,14 +143,20 @@ ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "revocation_sequence"
 ALTER TABLE "cross_identity_sync_relationships" ADD COLUMN "revocation_origin" "sync_relationship_side";--> statement-breakpoint
 ALTER TABLE "deployment_identities" ADD COLUMN "protocol_deployment_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "deployment_identities" ADD COLUMN "locality" "sync_deployment_locality" NOT NULL;--> statement-breakpoint
+ALTER TABLE "device_enrollment_challenges" ADD COLUMN "rotation_lineage_id" uuid;--> statement-breakpoint
+ALTER TABLE "device_enrollment_challenges" ADD COLUMN "rotation_owner_user_id" uuid;--> statement-breakpoint
+ALTER TABLE "device_enrollment_challenges" ADD COLUMN "rotation_credential_id" uuid;--> statement-breakpoint
+ALTER TABLE "device_credentials" ADD COLUMN "lineage_id" uuid DEFAULT gen_random_uuid() NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "origin_deployment_identity_id" uuid NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "origin_source_id" text NOT NULL;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD COLUMN "local_session_id" uuid;--> statement-breakpoint
 ALTER TABLE "memory_replicas" ADD COLUMN "local_session_id" uuid;--> statement-breakpoint
 ALTER TABLE "sync_inbox_entries" ADD COLUMN "request_hash" text NOT NULL;--> statement-breakpoint
 ALTER TABLE "sync_inbox_entries" ADD COLUMN "lease_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "sync_inbox_entries" ADD COLUMN "claim_token" uuid;--> statement-breakpoint
 ALTER TABLE "sync_outbox_entries" ADD COLUMN "request_hash" text NOT NULL;--> statement-breakpoint
 ALTER TABLE "sync_outbox_entries" ADD COLUMN "lease_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "sync_outbox_entries" ADD COLUMN "claim_token" uuid;--> statement-breakpoint
 ALTER TABLE "sync_outbox_entries" ALTER COLUMN "max_attempts" SET DEFAULT 8;--> statement-breakpoint
 ALTER TABLE "sync_inbox_entries" ALTER COLUMN "max_attempts" SET DEFAULT 8;--> statement-breakpoint
 ALTER TABLE "sync_package_chunks" ADD COLUMN "encrypted_payload" jsonb NOT NULL;--> statement-breakpoint
@@ -157,14 +178,19 @@ CREATE UNIQUE INDEX "sync_event_mappings_active_origin_unique" ON "sync_event_ma
 CREATE INDEX "sync_event_mappings_cursor_idx" ON "sync_event_mappings" USING btree ("sync_relationship_id","source_cursor");--> statement-breakpoint
 CREATE UNIQUE INDEX "sync_recipient_keys_active_unique" ON "sync_recipient_keys" USING btree ("deployment_identity_id") WHERE "sync_recipient_keys"."retired_at" is null;--> statement-breakpoint
 CREATE INDEX "sync_semantic_changes_session_cursor_idx" ON "sync_semantic_changes" USING btree ("session_id","cursor");--> statement-breakpoint
+CREATE INDEX "device_credentials_active_lineage_idx" ON "device_credentials" USING btree ("owner_user_id","upstream_backend_id","lineage_id") WHERE "device_credentials"."revoked_at" is null;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_local_user_id_users_id_fk" FOREIGN KEY ("local_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_device_credential_id_device_credentials_id_fk" FOREIGN KEY ("device_credential_id") REFERENCES "public"."device_credentials"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_remote_deployment_identity_id_deployment_identities_id_fk" FOREIGN KEY ("remote_deployment_identity_id") REFERENCES "public"."deployment_identities"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_remote_user_fk" FOREIGN KEY ("remote_user_identity_id","remote_deployment_identity_id") REFERENCES "public"."sync_external_user_identities"("id","deployment_identity_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_enrollment_challenges" ADD CONSTRAINT "device_enrollment_challenges_rotation_owner_user_id_users_id_fk" FOREIGN KEY ("rotation_owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "device_enrollment_challenges" ADD CONSTRAINT "device_enrollment_challenges_rotation_credential_id_device_credentials_id_fk" FOREIGN KEY ("rotation_credential_id") REFERENCES "public"."device_credentials"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD CONSTRAINT "logical_memories_origin_deployment_identity_id_deployment_identities_id_fk" FOREIGN KEY ("origin_deployment_identity_id") REFERENCES "public"."deployment_identities"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD CONSTRAINT "logical_memories_local_session_id_sessions_id_fk" FOREIGN KEY ("local_session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "memory_replicas" ADD CONSTRAINT "memory_replicas_local_session_id_sessions_id_fk" FOREIGN KEY ("local_session_id") REFERENCES "public"."sessions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "cross_identity_sync_relationships_active_replica_unique" ON "cross_identity_sync_relationships" USING btree ("local_replica_id","remote_deployment_identity_id","sync_mode") WHERE "cross_identity_sync_relationships"."revoked_at" is null;--> statement-breakpoint
 CREATE INDEX "cross_identity_sync_relationships_local_user_idx" ON "cross_identity_sync_relationships" USING btree ("local_user_id","updated_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "cross_identity_sync_relationships_device_credential_idx" ON "cross_identity_sync_relationships" USING btree ("device_credential_id","updated_at" DESC NULLS LAST) WHERE "cross_identity_sync_relationships"."device_credential_id" is not null;--> statement-breakpoint
 CREATE UNIQUE INDEX "deployment_identities_one_local_unique" ON "deployment_identities" USING btree ("locality") WHERE "deployment_identities"."locality" = 'local';--> statement-breakpoint
 CREATE INDEX "deployment_identities_profile_idx" ON "deployment_identities" USING btree ("profile","created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE UNIQUE INDEX "logical_memories_owner_session_unique" ON "logical_memories" USING btree ("owner_user_id","local_session_id") WHERE "logical_memories"."local_session_id" is not null;--> statement-breakpoint
@@ -199,6 +225,7 @@ ALTER TABLE "sync_inbox_entries" ADD CONSTRAINT "sync_inbox_upload_relationship_
 ALTER TABLE "sync_outbox_entries" ADD CONSTRAINT "sync_outbox_upload_relationship_fk" FOREIGN KEY ("upload_session_id","sync_relationship_id") REFERENCES "public"."sync_package_upload_sessions"("id","sync_relationship_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_request_hash_check" CHECK (length("cross_identity_sync_relationships"."creation_request_hash") = 64);--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_cursor_check" CHECK ("cross_identity_sync_relationships"."source_cursor" >= 0 and "cross_identity_sync_relationships"."target_processing_cursor" >= 0 and "cross_identity_sync_relationships"."package_sequence" >= 0);--> statement-breakpoint
+ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_credential_side_check" CHECK (("cross_identity_sync_relationships"."side" = 'source' and "cross_identity_sync_relationships"."device_credential_id" is null) or ("cross_identity_sync_relationships"."side" = 'target' and "cross_identity_sync_relationships"."device_credential_id" is not null));--> statement-breakpoint
 ALTER TABLE "cross_identity_sync_relationships" ADD CONSTRAINT "cross_identity_sync_relationships_captured_session_source_check" CHECK ("cross_identity_sync_relationships"."source_boundary" = 'captured_session');--> statement-breakpoint
 ALTER TABLE "logical_memories" ADD CONSTRAINT "logical_memories_captured_session_source_check" CHECK ("logical_memories"."source_boundary" <> 'captured_session' or length(trim("logical_memories"."origin_source_id")) > 0);--> statement-breakpoint
 ALTER TABLE "memory_replicas" ADD CONSTRAINT "memory_replicas_captured_session_source_check" CHECK ("memory_replicas"."source_boundary" <> 'captured_session' or "memory_replicas"."local_session_id" is not null);--> statement-breakpoint
@@ -288,13 +315,34 @@ BEGIN
     AND relationship.state NOT IN ('paused', 'revoked', 'purge_pending')
     AND replica.local_session_id = source_row.session_id
   ON CONFLICT (sync_relationship_id, idempotency_key) DO UPDATE SET
-    state = 'pending',
-    attempt_count = 0,
+    state = CASE
+      WHEN sync_outbox_entries.state = 'processing'
+        AND sync_outbox_entries.lease_expires_at > now()
+        THEN sync_outbox_entries.state
+      ELSE 'pending'::sync_queue_entry_state
+    END,
+    attempt_count = CASE
+      WHEN sync_outbox_entries.state = 'processing'
+        AND sync_outbox_entries.lease_expires_at > now()
+        THEN sync_outbox_entries.attempt_count
+      ELSE 0
+    END,
     request_hash = EXCLUDED.request_hash,
     payload_manifest = EXCLUDED.payload_manifest,
     available_at = now(),
     processed_at = NULL,
-    lease_expires_at = NULL,
+    claim_token = CASE
+      WHEN sync_outbox_entries.state = 'processing'
+        AND sync_outbox_entries.lease_expires_at > now()
+        THEN sync_outbox_entries.claim_token
+      ELSE NULL
+    END,
+    lease_expires_at = CASE
+      WHEN sync_outbox_entries.state = 'processing'
+        AND sync_outbox_entries.lease_expires_at > now()
+        THEN sync_outbox_entries.lease_expires_at
+      ELSE NULL
+    END,
     last_error_message = NULL,
     updated_at = now();
 

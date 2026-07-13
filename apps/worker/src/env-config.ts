@@ -27,6 +27,10 @@ export interface WorkerEnvConfig {
   embeddingServiceToken?: string;
   embeddingDimensions: number;
   embeddingVersion: string;
+  embeddingBatchLimit: number;
+  embeddingMaxTextChars: number;
+  embeddingMaxRequestChars: number;
+  embeddingRequestTimeoutMs: number;
   rawProjectionIntervalMs: number;
   rawProjectionBatchLimit: number;
   rawProjectionActorLimit: number;
@@ -96,6 +100,26 @@ export const resolveWorkerEnv = (
     ...(embeddingServiceToken ? { embeddingServiceToken } : {}),
     embeddingDimensions: embeddingModel.dimensions,
     embeddingVersion: embeddingModel.key,
+    embeddingBatchLimit: positiveIntEnv(
+      environment,
+      "EMBEDDING_BATCH_LIMIT",
+      16
+    ),
+    embeddingMaxTextChars: positiveIntEnv(
+      environment,
+      "EMBEDDING_MAX_TEXT_CHARS",
+      200_000
+    ),
+    embeddingMaxRequestChars: positiveIntEnv(
+      environment,
+      "EMBEDDING_MAX_REQUEST_CHARS",
+      1_000_000
+    ),
+    embeddingRequestTimeoutMs: positiveIntEnv(
+      environment,
+      "EMBEDDING_REQUEST_TIMEOUT_MS",
+      900_000
+    ),
     rawProjectionIntervalMs: positiveIntEnv(
       environment,
       "MEMORY_RAW_PROJECTION_INTERVAL_MS",

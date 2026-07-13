@@ -38,7 +38,7 @@ describe("worker job workflows", () => {
       .mockResolvedValue({ dimensions: 1024, inserted: true, chunks: 1 });
     const workflow = createWorkerJobWorkflow({
       embeddingDispatchKey: "test-model-1024",
-      embeddingWorkflow: { embedSource },
+      embeddingWorkflow: { embedSource, embedSources: vi.fn() },
       lcmEmbedQueue: {} as KoedJobQueue<EmbeddingQueueJobData>,
       repository: () => ({}) as MemorySourceRepository
     });

@@ -7276,7 +7276,7 @@ export const createMemorySourceRepository = (
           }
           if (
             row.metadata?.sourceTable !== "memory_events" ||
-            row.content ||
+            (row.content && row.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
             !options.envelopeEncryptionProvider
           ) {
             return row;

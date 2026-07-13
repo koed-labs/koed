@@ -114,6 +114,14 @@ ciphertext, or object-storage credentials. If the envelope provider cannot
 encrypt or decrypt the package, package creation, intake, and restore must fail
 closed.
 
+Before accepting package bytes, the target validates a strict upload-manifest
+contract containing only the `sync_package` object class, protocol format and
+format version, package digest, recipient key ID and version, and bounded
+canonical record count. Missing or unknown fields, unsafe metadata, unsupported
+versions, and counts outside protocol bounds are rejected before an upload
+session is created. The authenticated record count is checked again after
+decrypting the package.
+
 The V1 Captured Session package contains:
 
 - Package manifest:
@@ -244,6 +252,44 @@ The sync contract must distinguish all of these identifiers:
 Mapping must be explicit and auditable. A package should not be accepted merely
 because two email addresses match.
 
+On the target, each sync relationship is bound to the exact enrolled source
+device lineage that created it. A credential for another device owned by the
+same User does not inherit access to that relationship. A replacement
+credential may continue it only through an authenticated rotation request that
+proves the active credential being replaced. Reusing the client-supplied device
+instance identifier does not prove lineage. The target assigns the opaque
+lineage identifier, and the first relationship permanently binds that lineage
+to one source deployment identity; later requests cannot use it to claim
+another source deployment. Every target intake mutation rechecks the presented
+credential's owner, expiry, revocation state, and `sync` operation family inside
+the same database transaction that changes sync state.
+
+The same mapped User may verify another enrolled device and create a separate
+sync relationship from that device. Re-verification rotates the principal's
+recorded proof reference only when the local and external principal mapping is
+unchanged; a proof already associated with that principal cannot be reused to
+claim a different external principal. Each relationship still retains its own
+exact device-credential binding and revocation lifecycle.
+
+This is multi-device source participation, not bidirectional local database
+replication. Each device keeps its own local Personal Memory and may push
+explicitly selected Captured Sessions to the target. The hosted replica can be
+recalled from authorized devices, but V1 does not automatically download one
+device's local Memory Events into another device's local database. A future
+pull protocol would need explicit cursor, conflict, deletion, key, retention,
+and offline semantics before it could add that behavior.
+
+Queue claims use a unique claim token plus a bounded lease. Completion, retry,
+failure, and lease renewal require the current token, so an expired worker
+cannot overwrite a replacement worker's result. If a worker disappears on its
+final allowed attempt, lease recovery first reconciles an already-committed
+source acknowledgement or target-ready package. Otherwise it fails ordinary
+work through the same relationship and upload failure path instead of
+stranding it in processing. Revocation delivery is reset and reclaimed because
+it must continue retrying until acknowledged. Relationship or credential
+revocation prevents new target mutations; relationship revocation also cancels
+active queue claims and fails unfinished uploads.
+
 ## Consent And Privacy
 
 Before any upload leaves self-hosted infrastructure, Koed should present a clear
@@ -290,6 +336,15 @@ Deferred from the V1.0 implementation unless explicitly prioritized:
 - Full hard-purge automation across source and hosted deployments.
 
 ## Operation
+
+### Upgrade from the foundation scaffold
+
+The production Cross-Identity Sync protocol replaces the earlier metadata-only
+foundation schema. Its migration resets only the old sync identity, replica,
+relationship, queue, upload, and chunk rows because those rows lack the
+recipient-key and cursor bindings required to prove a valid encrypted transfer.
+Users, Captured Sessions, Memory Events, and Team Share Grants are retained.
+Existing sync relationships must be enrolled again after the upgrade.
 
 Cross-Identity Sync runs as durable source outbox and target inbox work. A
 source signal coalesces changes for one relationship, packages only canonical

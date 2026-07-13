@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalJsonStringify } from "./canonical-json.js";
 
 export const CAPTURED_SESSION_SYNC_FORMAT =
   "koed.captured-session-sync/v1" as const;
@@ -8,6 +9,12 @@ export const CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES = 512 * 1024;
 export const CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 export const CAPTURED_SESSION_SYNC_MAX_CHANGES = 10_000;
 export const CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT = 512;
+export const CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS = 30_000;
+export const CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES = 1024 * 1024;
+export const CAPTURED_SESSION_SYNC_MAX_CHUNKS = Math.ceil(
+  CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES /
+    CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES
+);
 
 export type CapturedSessionSyncChangeOperation = "upsert" | "delete";
 
@@ -91,22 +98,8 @@ export interface CapturedSessionSyncChunkV1 {
   package: CapturedSessionSyncPackageV1;
 }
 
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
-
 export const crossIdentitySyncDigest = (value: unknown): string =>
-  createHash("sha256").update(canonicalJson(value)).digest("hex");
+  createHash("sha256").update(canonicalJsonStringify(value)).digest("hex");
 
 export const crossIdentitySyncDeterministicUuid = (value: unknown): string => {
   const bytes = Buffer.from(crossIdentitySyncDigest(value).slice(0, 32), "hex");
@@ -119,10 +112,15 @@ export const crossIdentitySyncDeterministicUuid = (value: unknown): string => {
 export const crossIdentitySyncPackageRequestHash = (
   value: Pick<
     CapturedSessionSyncPackageV1,
+    | "packageId"
     | "relationshipId"
     | "logicalMemoryId"
     | "sourceDeploymentId"
+    | "sourceUserId"
+    | "sourceReplicaId"
     | "targetDeploymentId"
+    | "targetUserId"
+    | "targetReplicaId"
     | "packageSequence"
     | "fromCursor"
     | "toCursor"
@@ -131,7 +129,8 @@ export const crossIdentitySyncPackageRequestHash = (
   >
 ): string => crossIdentitySyncDigest(value);
 
-const hasOnlyKeys = (value: object, allowed: readonly string[]): boolean => {
+const hasOnlyKeys = (value: unknown, allowed: readonly string[]): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const keys = Object.keys(value);
   return (
     keys.length === allowed.length && keys.every((key) => allowed.includes(key))
@@ -161,8 +160,9 @@ const validEventMetadata = (
   );
 };
 
-export const isCapturedSessionSyncPackageV1 = (
-  value: unknown
+const validateCapturedSessionSyncPackageV1 = (
+  value: unknown,
+  requireFinalCursor: boolean
 ): value is CapturedSessionSyncPackageV1 => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -254,6 +254,9 @@ export const isCapturedSessionSyncPackageV1 = (
     Array.isArray(changes) &&
     changes.length > 0 &&
     changes.length <= CAPTURED_SESSION_SYNC_MAX_CHANGES &&
+    (!requireFinalCursor ||
+      (changes[changes.length - 1] as { cursor?: unknown } | null)?.cursor ===
+        input.toCursor) &&
     changes.every((change, index) => {
       if (
         !hasOnlyKeys(change, [
@@ -349,6 +352,11 @@ export const isCapturedSessionSyncPackageV1 = (
   );
 };
 
+export const isCapturedSessionSyncPackageV1 = (
+  value: unknown
+): value is CapturedSessionSyncPackageV1 =>
+  validateCapturedSessionSyncPackageV1(value, true);
+
 export const isCapturedSessionSyncChunkV1 = (
   value: unknown
 ): value is CapturedSessionSyncChunkV1 => {
@@ -381,11 +389,11 @@ export const isCapturedSessionSyncChunkV1 = (
     Number.isSafeInteger(input.chunkCount) &&
     input.chunkIndex! >= 0 &&
     input.chunkCount! > 0 &&
-    input.chunkCount! <= 10_000 &&
+    input.chunkCount! <= CAPTURED_SESSION_SYNC_MAX_CHUNKS &&
     input.chunkIndex! < input.chunkCount! &&
     typeof input.packageDigest === "string" &&
     input.packageDigest.length === 64 &&
-    isCapturedSessionSyncPackageV1(input.package) &&
+    validateCapturedSessionSyncPackageV1(input.package, false) &&
     input.package.packageId === input.packageId &&
     input.package.relationshipId === input.relationshipId &&
     input.package.packageSequence === input.packageSequence &&

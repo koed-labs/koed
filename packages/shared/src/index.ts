@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 
 export {
+  fetchWithTimeout,
+  fetchBoundedJsonObject,
+  readBoundedJsonObject,
+  RemoteRequestTimeoutError,
+  RemoteResponseLimitError
+} from "./bounded-http.js";
+export {
   API_DATA_ENCRYPTION_KEY_ENV,
   createByokEnvelopeEncryptionProvider,
   createCmekEnvelopeEncryptionProvider,
@@ -99,6 +106,9 @@ export {
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
   CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
+  CAPTURED_SESSION_SYNC_MAX_CHUNKS,
+  CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
+  CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES,
   CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
   CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
   CAPTURED_SESSION_SYNC_POLICY_VERSION,

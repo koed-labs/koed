@@ -230,6 +230,29 @@ describe("local edge upstream routing", () => {
     ).toMatchObject({ action: "deny_fail_closed", reason: "missing" });
   });
 
+  it("does not authorize capture writes from a relay credential alone", () => {
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "capture_writes",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend({ routePolicy: { captureWrites: "enabled" } }),
+        upstreamCredentialAvailable: true,
+        capturePolicy: {
+          captureState: "enabled",
+          visibility: "personal",
+          paused: false,
+          pauseUntil: null,
+          source: "default",
+          policy: null
+        }
+      })
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "missing",
+      credentialState: "missing"
+    });
+  });
+
   it("fails closed when the device credential does not allow the operation family", () => {
     expect(
       resolveLocalEdgeRouteDecision({

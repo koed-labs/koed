@@ -13,6 +13,7 @@ import {
   timingSafeEqual,
   type KeyObject
 } from "node:crypto";
+import { canonicalJsonStringify } from "./canonical-json.js";
 
 export type EnvelopeEncryptionRootProviderMode =
   | "local_test_key"
@@ -48,6 +49,7 @@ const LOCAL_TEST_KEY_VERSION = 1;
 const LOCAL_TEST_KEY_ID_PREFIX = "local_test_key";
 const AES_256_KEY_BYTES = 32;
 const GCM_NONCE_BYTES = 12;
+const GCM_TAG_BYTES = 16;
 export const API_DATA_ENCRYPTION_KEY_ENV = "API_DATA_ENCRYPTION_KEY";
 export const DATA_ENCRYPTION_KEY_ENV_ALIAS = "DATA_ENCRYPTION_KEY";
 
@@ -403,24 +405,6 @@ const normalizeAad = (
   );
 };
 
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries
-      .map(
-        ([key, entryValue]) =>
-          `${JSON.stringify(key)}:${canonicalJson(entryValue)}`
-      )
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
-
 const payloadAad = (envelope: {
   version: number;
   scope: EncryptedPayloadScope;
@@ -431,7 +415,7 @@ const payloadAad = (envelope: {
   createdAt: string;
 }): Buffer =>
   Buffer.from(
-    canonicalJson({
+    canonicalJsonStringify({
       version: envelope.version,
       scope: envelope.scope,
       provenance: envelope.provenance,
@@ -449,7 +433,7 @@ const wrappedDekAad = (input: {
   keyVersion: number;
   wrappedDekId: string;
   wrappedDekVersion: number;
-}): Buffer => Buffer.from(canonicalJson(input), "utf8");
+}): Buffer => Buffer.from(canonicalJsonStringify(input), "utf8");
 
 const encryptAesGcm = (
   key: Uint8Array,
@@ -471,8 +455,25 @@ const decryptAesGcm = (
   tag: Uint8Array,
   aad: Uint8Array
 ): Buffer => {
+  if (key.byteLength !== AES_256_KEY_BYTES) {
+    throw new InvalidEncryptedPayloadEnvelopeError(
+      "Encrypted payload key must be 32 bytes"
+    );
+  }
+  if (nonce.byteLength !== GCM_NONCE_BYTES) {
+    throw new InvalidEncryptedPayloadEnvelopeError(
+      "Encrypted payload nonce must be 12 bytes"
+    );
+  }
+  if (tag.byteLength !== GCM_TAG_BYTES) {
+    throw new InvalidEncryptedPayloadEnvelopeError(
+      "Encrypted payload authentication tag must be 16 bytes"
+    );
+  }
   try {
-    const decipher = createDecipheriv(ENCRYPTED_PAYLOAD_ALGORITHM, key, nonce);
+    const decipher = createDecipheriv(ENCRYPTED_PAYLOAD_ALGORITHM, key, nonce, {
+      authTagLength: GCM_TAG_BYTES
+    });
     decipher.setAAD(aad);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
@@ -698,7 +699,7 @@ const recipientKeyMetadataAad = (material: RecipientPublicKeyMaterial) => ({
   recipientKeyVersion: material.keyVersion,
   recipientPublicKeyFingerprint: createHash("sha256")
     .update(
-      canonicalJson({
+      canonicalJsonStringify({
         kty: material.publicJwk.kty,
         n: material.publicJwk.n,
         e: material.publicJwk.e
@@ -714,7 +715,7 @@ const recipientWrappedDekAad = (input: {
   wrappedDekVersion: number;
 }): Buffer =>
   Buffer.from(
-    canonicalJson({
+    canonicalJsonStringify({
       providerMode: RECIPIENT_PUBLIC_KEY_PROVIDER_MODE,
       keyId: input.keyId,
       keyVersion: input.keyVersion,
@@ -1092,8 +1093,8 @@ export const createRecipientPrivateKeyEnvelopeEncryptionProvider = async (
   const publicMaterial = toRecipientPublicKeyMaterial(material);
   const expectedAad = normalizeAad(recipientKeyMetadataAad(publicMaterial));
   if (
-    canonicalJson(material.encryptedPrivateKey.aad) !==
-    canonicalJson(expectedAad)
+    canonicalJsonStringify(material.encryptedPrivateKey.aad) !==
+    canonicalJsonStringify(expectedAad)
   ) {
     throw new RecipientKeyTransportError(
       "Encrypted recipient private key metadata does not match the public key"

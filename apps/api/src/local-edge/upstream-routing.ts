@@ -451,7 +451,7 @@ const credentialState = (input: {
   requestedMode?: LocalEdgeRouteMode;
 }): LocalEdgeRouteDecision["credentialState"] => {
   const mode = input.requestedMode ?? defaultRouteMode[input.operationFamily];
-  if (mode === "queued_sync_handoff") {
+  if (mode === "queued_sync_handoff" && input.operationFamily === "sync") {
     return input.upstreamCredentialAvailable ? "configured" : "missing";
   }
   const credential = input.deviceCredential;

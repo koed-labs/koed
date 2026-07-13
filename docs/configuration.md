@@ -368,9 +368,12 @@ policy, or full URLs containing customer content.
 - `EMBEDDING_QUERY_INSTRUCTION`: optional instruction text for semantic recall query embeddings. Leave blank to use the Koed default instruction for retrieving relevant Memory Events, conversation items, and summaries.
 - `EMBEDDING_LOG_LEVEL`: embedding service structured JSON log level. Default `info`; use `debug` for scheduler, chunking, batching, and reranker scoring details.
 - `EMBEDDING_BATCH_LIMIT`: embedding service batch limit.
+- `EMBEDDING_REQUEST_TIMEOUT_MS`: maximum time the Worker allows an internal
+  embedding request to run. Long LCM sources are submitted individually and
+  retain their queue lease while this bounded request is active.
 - `EMBEDDING_MAX_TOKENS`: Koed adapter chunking limit and the hard cap for a single projected source item before forced split metadata is used. Default `4096`; values above `32768` are clamped by the embedding service and values above the configured llama context or batch envelope are reduced to that limit.
-- `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding or reranking text before model processing. It is not a semantic chunking limit.
-- `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters accepted for one embedding or reranking request before model processing. It is not a semantic chunking limit.
+- `EMBEDDING_MAX_TEXT_CHARS`: transport and abuse guard for the maximum characters accepted for any single embedding or reranking text before model processing. The Worker divides a larger logical source into bounded transport segments without splitting Unicode characters, then restores one continuous source-level embedding chunk sequence from the responses. It is not a semantic chunking limit.
+- `EMBEDDING_MAX_REQUEST_CHARS`: transport and abuse guard for the maximum total characters the Worker sends, and the Embedding Service accepts, in one embedding or reranking request before model processing. It is not a semantic chunking limit.
 - `EMBEDDING_LLAMA_N_CTX`: llama.cpp context size for the embedding service. Default `32768`; values above `32768` are clamped by the embedding service.
 - `EMBEDDING_LLAMA_N_BATCH`: llama-server execution batch capacity. This is a runtime throughput and capacity knob, not Koed's semantic chunk size; keep it large enough for `EMBEDDING_MAX_TOKENS` plus batching/headroom.
 - `EMBEDDING_LLAMA_BATCH_TOKEN_HEADROOM`: token safety margin subtracted from `EMBEDDING_LLAMA_N_BATCH` when chunking and batching embedding texts. Default `8`; this avoids tokenizer boundary cases where a nominal 8192-token text becomes 8193 tokens at model execution time.

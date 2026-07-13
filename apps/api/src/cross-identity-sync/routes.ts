@@ -2,6 +2,9 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   crossIdentitySyncDeterministicUuid,
   crossIdentitySyncDigest,
+  CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
+  CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES,
+  fetchBoundedJsonObject,
   generateRecipientKeyMaterial,
   toRecipientPublicKeyMaterial,
   type RecipientPublicKeyMaterial
@@ -20,6 +23,7 @@ import {
   createUploadSessionSchema,
   relationshipParamsSchema,
   revokeSyncRelationshipSchema,
+  targetSyncRelationshipResponseSchema,
   uploadChunkParamsSchema,
   uploadChunkSchema,
   uploadSessionParamsSchema
@@ -42,18 +46,39 @@ const assertSyncDeviceCredential = async (
   return auth;
 };
 
-const checkedJson = async (response: Response) => {
-  const body = (await response.json().catch(() => ({}))) as Record<
-    string,
-    unknown
-  >;
+const authenticateSyncActor = async (
+  request: FastifyRequest,
+  context: ApiRouteContext,
+  apiTokenError: string
+): Promise<{
+  user: { id: string };
+  deviceCredentialId: string | null;
+}> => {
+  const scheme = request.headers.authorization
+    ?.trim()
+    .split(/\s+/, 1)[0]
+    ?.toLowerCase();
+  if (scheme === "bearer") {
+    throw Object.assign(new Error(apiTokenError), { statusCode: 403 });
+  }
+  if (scheme === "koed-device") {
+    const auth = await assertSyncDeviceCredential(request, context);
+    return { user: auth.user, deviceCredentialId: auth.credential.id };
+  }
+  return {
+    user: await context.auth.authenticateSession(request),
+    deviceCredentialId: null
+  };
+};
+
+const checkedJson = (response: Response, payload: Record<string, unknown>) => {
   if (!response.ok) {
     throw Object.assign(new Error("Remote sync operation failed"), {
       statusCode: response.status >= 500 ? 424 : response.status,
       remoteStatus: response.status
     });
   }
-  return body;
+  return payload;
 };
 
 const publicRelationship = (relationship: {
@@ -190,7 +215,8 @@ export const registerCrossIdentitySyncRoutes = (
         consentDigest: crossIdentitySyncDigest(consentManifest)
       };
       const creationRequestHash = crossIdentitySyncDigest(requestBinding);
-      const response = await context.localEdge.fetch(
+      const { response, payload } = await fetchBoundedJsonObject(
+        context.localEdge.fetch,
         new URL(
           "/v1/cross-identity-sync/intake/relationships",
           `${backend.baseUrl}/`
@@ -216,12 +242,30 @@ export const registerCrossIdentitySyncRoutes = (
             consent_manifest: consentManifest,
             session
           })
+        },
+        {
+          timeoutMs: CAPTURED_SESSION_SYNC_HTTP_TIMEOUT_MS,
+          maxBytes: CAPTURED_SESSION_SYNC_MAX_CONTROL_RESPONSE_BYTES
         }
       );
-      const remote = await checkedJson(response);
+      const remote = targetSyncRelationshipResponseSchema.parse(
+        checkedJson(response, payload)
+      );
+      if (
+        remote.relationship.id !== relationshipId ||
+        remote.target_deployment_id === localDeployment.protocolDeploymentId ||
+        remote.recipient_key.keyId !== remote.recipient_key.publicJwk.kid
+      ) {
+        throw Object.assign(
+          new Error("Remote sync identity binding is invalid"),
+          {
+            statusCode: 424
+          }
+        );
+      }
       const remoteDeployment = await repository.upsertRemoteSyncDeployment({
         protocolDeploymentId: String(remote.target_deployment_id),
-        profile: String(remote.target_deployment_profile) as never,
+        profile: remote.target_deployment_profile,
         baseUrl: backend.baseUrl,
         upstreamBackendId: backend.id,
         metadata: {
@@ -232,7 +276,7 @@ export const registerCrossIdentitySyncRoutes = (
       });
       const remoteUser = await repository.upsertExternalSyncUserIdentity({
         deploymentIdentityId: remoteDeployment.id,
-        externalSubjectId: String(remote.target_user_id)
+        externalSubjectId: remote.target_user_id
       });
       await repository.linkExternalSyncUser(
         { userId: user.id },
@@ -252,7 +296,7 @@ export const registerCrossIdentitySyncRoutes = (
           localDeploymentIdentityId: localDeployment.id,
           remoteDeploymentIdentityId: remoteDeployment.id,
           remoteUserIdentityId: remoteUser.id,
-          remoteReplicaId: String(remote.target_replica_id),
+          remoteReplicaId: remote.target_replica_id,
           idempotencyKey: input.idempotency_key,
           creationRequestHash,
           policyManifest: {
@@ -325,8 +369,8 @@ export const registerCrossIdentitySyncRoutes = (
         { userId: auth.user.id },
         {
           externalUserIdentityId: remoteUser.id,
-          proofKind: "device_credential",
-          proofReference: auth.credential.id
+          proofKind: "device_credential_lineage",
+          proofReference: auth.credential.lineageId
         }
       );
       const localReplicaId = crossIdentitySyncDeterministicUuid({
@@ -337,7 +381,10 @@ export const registerCrossIdentitySyncRoutes = (
         identity: "target-replica"
       });
       const created = await repository.createTargetSyncRelationship(
-        { userId: auth.user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.credential.id
+        },
         {
           relationshipId: input.relationship_id,
           logicalMemoryId: input.logical_memory_id,
@@ -394,14 +441,17 @@ export const registerCrossIdentitySyncRoutes = (
     "/v1/cross-identity-sync/relationships/:relationshipId",
     { preHandler: memoryRead },
     async (request) => {
-      const user = await context.auth.authenticateSessionOrDeviceCredential(
+      const auth = await authenticateSyncActor(
         request,
-        "sync",
-        { apiTokenError: "API Tokens cannot inspect Team sync" }
+        context,
+        "API Tokens cannot inspect Team sync"
       );
       const { relationshipId } = relationshipParamsSchema.parse(request.params);
       const relationship = await repo().getCrossIdentitySyncRelationship(
-        { userId: user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.deviceCredentialId
+        },
         relationshipId
       );
       if (!relationship) {
@@ -417,14 +467,17 @@ export const registerCrossIdentitySyncRoutes = (
     "/v1/cross-identity-sync/relationships/:relationshipId/retry",
     { preHandler: memoryWrite },
     async (request) => {
-      const user = await context.auth.authenticateSessionOrDeviceCredential(
+      const auth = await authenticateSyncActor(
         request,
-        "sync",
-        { apiTokenError: "API Tokens cannot retry Team sync" }
+        context,
+        "API Tokens cannot retry Team sync"
       );
       const { relationshipId } = relationshipParamsSchema.parse(request.params);
       const relationship = await repo().retryCrossIdentitySyncRelationship(
-        { userId: user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.deviceCredentialId
+        },
         relationshipId
       );
       if (!relationship) {
@@ -440,15 +493,18 @@ export const registerCrossIdentitySyncRoutes = (
     "/v1/cross-identity-sync/relationships/:relationshipId/revoke",
     { preHandler: memoryWrite },
     async (request) => {
-      const user = await context.auth.authenticateSessionOrDeviceCredential(
+      const auth = await authenticateSyncActor(
         request,
-        "sync",
-        { apiTokenError: "API Tokens cannot revoke Team sync" }
+        context,
+        "API Tokens cannot revoke Team sync"
       );
       const { relationshipId } = relationshipParamsSchema.parse(request.params);
       const input = revokeSyncRelationshipSchema.parse(request.body ?? {});
       const relationship = await repo().revokeCrossIdentitySyncRelationship(
-        { userId: user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.deviceCredentialId
+        },
         { syncRelationshipId: relationshipId, reason: input.reason }
       );
       if (!relationship) {
@@ -469,7 +525,10 @@ export const registerCrossIdentitySyncRoutes = (
       const { relationshipId } = relationshipParamsSchema.parse(request.params);
       const input = applyRemoteSyncRevocationSchema.parse(request.body);
       const relationship = await repo().applyRemoteSyncRevocation(
-        { userId: auth.user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.credential.id
+        },
         {
           syncRelationshipId: relationshipId,
           revocationId: input.revocation_id,
@@ -494,7 +553,10 @@ export const registerCrossIdentitySyncRoutes = (
       const { relationshipId } = relationshipParamsSchema.parse(request.params);
       const input = createUploadSessionSchema.parse(request.body);
       const upload = await repo().createSyncPackageUploadSession(
-        { userId: auth.user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.credential.id
+        },
         {
           syncRelationshipId: relationshipId,
           protocolPackageId: input.protocol_package_id,
@@ -528,7 +590,10 @@ export const registerCrossIdentitySyncRoutes = (
       const params = uploadChunkParamsSchema.parse(request.params);
       const input = uploadChunkSchema.parse(request.body);
       const chunk = await repo().recordSyncPackageChunk(
-        { userId: auth.user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.credential.id
+        },
         {
           uploadSessionId: params.uploadSessionId,
           chunkIndex: params.chunkIndex,
@@ -557,7 +622,10 @@ export const registerCrossIdentitySyncRoutes = (
         request.params
       );
       const status = await repo().getSyncPackageUploadSession(
-        { userId: auth.user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.credential.id
+        },
         uploadSessionId,
         "target"
       );
@@ -583,7 +651,10 @@ export const registerCrossIdentitySyncRoutes = (
         request.params
       );
       const upload = await repo().verifySyncPackageUpload(
-        { userId: auth.user.id },
+        {
+          userId: auth.user.id,
+          deviceCredentialId: auth.credential.id
+        },
         uploadSessionId,
         "target"
       );

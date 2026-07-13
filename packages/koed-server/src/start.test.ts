@@ -120,6 +120,21 @@ const listen = (port: number): Promise<Server> =>
     server.listen(port, "127.0.0.1", () => resolveListen(server));
   });
 
+const occupyPort = async (port: number): Promise<Server | null> => {
+  try {
+    return await listen(port);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "EADDRINUSE"
+    ) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 const closeServer = (server: Server): Promise<void> =>
   new Promise((resolveClose) => server.close(() => resolveClose()));
 
@@ -578,7 +593,7 @@ describe("start supervisor", () => {
   it("allocates and persists free local ports for Desktop bundled-local startup", async () => {
     const root = tempDir();
     createNativeResources(root);
-    const occupiedApi = await listen(43300);
+    const occupiedApi = await occupyPort(43300);
     const spawned: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
     try {
@@ -621,7 +636,9 @@ describe("start supervisor", () => {
         collectStatus: async () => healthyStatus(root)
       });
     } finally {
-      await closeServer(occupiedApi);
+      if (occupiedApi) {
+        await closeServer(occupiedApi);
+      }
     }
 
     const ports = JSON.parse(
