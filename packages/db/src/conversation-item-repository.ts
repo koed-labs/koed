@@ -210,17 +210,11 @@ const ENCRYPTED_CONVERSATION_ITEM_SOURCE_COLUMNS = [
 
 const synchronizeEncryptedConversationItemColumns = async (input: {
   client: pg.PoolClient;
-  sourceTable: "conversation_items" | "conversation_item_observations";
   sourceId: string;
 }): Promise<void> => {
-  const markerKey =
-    input.sourceTable === "conversation_items"
-      ? "encryptedConversationItemColumns"
-      : "encryptedConversationItemObservationColumns";
-  const table = input.sourceTable;
   await input.client.query(
     `
-      update ${table} as source
+      update conversation_items as source
       set metadata = jsonb_set(
         coalesce(source.metadata, '{}'::jsonb),
         $2::text[],
@@ -241,9 +235,9 @@ const synchronizeEncryptedConversationItemColumns = async (input: {
     `,
     [
       input.sourceId,
-      [markerKey],
+      ["encryptedConversationItemColumns"],
       [...ENCRYPTED_CONVERSATION_ITEM_SOURCE_COLUMNS],
-      input.sourceTable
+      "conversation_items"
     ]
   );
 };
@@ -1493,11 +1487,6 @@ const persistConversationItemObservation = async (input: {
         ...encryptionInput
       }
     );
-    await synchronizeEncryptedConversationItemColumns({
-      client: input.client,
-      sourceTable: "conversation_item_observations",
-      sourceId: observation.id
-    });
   }
 };
 
@@ -2374,7 +2363,6 @@ export const createConversationItemRepository = (
           }
           await synchronizeEncryptedConversationItemColumns({
             client,
-            sourceTable: "conversation_items",
             sourceId: row.id
           });
         }
