@@ -74,6 +74,8 @@ The README keeps to one basic local path. For other options, see:
   modes, model overrides, logging, and production settings.
 - [Codex integration](docs/codex-integration.md) for manual Codex setup and
   recovery.
+- [Curated Memory](docs/curated-memory.md) for source-linked durable facts and
+  recall behavior.
 - [Security](docs/security.md), [Backup and restore](docs/backup-restore.md),
   and [Upgrades](docs/upgrades.md) for operational guidance.
 
@@ -147,5 +149,6 @@ services, and managed add-ons.
 - [Hosted backups](docs/hosted-backups.md)
 - [Upgrades](docs/upgrades.md)
 - [Codex integration](docs/codex-integration.md)
+- [Curated Memory](docs/curated-memory.md)
 - [License](docs/license.md)
 - [Commercial feature boundary](docs/commercial-feature-boundary.md)

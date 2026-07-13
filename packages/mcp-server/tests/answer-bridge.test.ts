@@ -100,6 +100,7 @@ type LocalMemoryAgentSettingsResponse = {
     manualMemoryAnswer: Record<string, unknown>;
     mcpMemoryAnswer: Record<string, unknown>;
     lcmSummary: Record<string, unknown>;
+    curatedMemoryReview: Record<string, unknown>;
   };
 };
 
@@ -587,6 +588,7 @@ describe("local memory answer bridge", () => {
     vi.stubEnv("MEMORY_MANUAL_ANSWER_MODEL", "gpt-5.4");
     vi.stubEnv("MEMORY_MANUAL_ANSWER_REASONING_EFFORT", "medium");
     vi.stubEnv("MEMORY_LCM_SUMMARY_MODEL", "gpt-5.4-mini-lcm");
+    vi.stubEnv("MEMORY_CURATED_REVIEW_MODEL", "gpt-5.4-mini-curated");
     checkCodexAppServerAvailability.mockResolvedValue({ available: true });
     listCodexAppServerModels.mockResolvedValue([
       {
@@ -664,6 +666,13 @@ describe("local memory answer bridge", () => {
       maxAttempts: 4,
       source: "db"
     });
+    expect(body.flows.curatedMemoryReview).toMatchObject({
+      model: "gpt-5.4-mini-curated",
+      reasoningEffort: "medium",
+      timeoutMs: 90000,
+      maxAttempts: 2,
+      source: "env"
+    });
   });
 
   it("allows credentialed browser preflight for local agent settings", async () => {
@@ -702,13 +711,13 @@ describe("local memory answer bridge", () => {
     const apiUrl = await createServer(async (request, response) => {
       if (
         request.method === "PUT" &&
-        request.url === "/v1/memory/local-agent-settings/mcp_memory_answer"
+        request.url === "/v1/memory/local-agent-settings/curated_memory_review"
       ) {
         expect(request.headers.authorization).toBe("Bearer cmt_test");
         updates.push(await readJson(request));
         json(response, 200, {
           setting: {
-            flowKey: "mcp_memory_answer",
+            flowKey: "curated_memory_review",
             provider: "codex",
             model: "gpt-5.4",
             reasoningEffort: "xhigh",
@@ -728,7 +737,7 @@ describe("local memory answer bridge", () => {
     );
 
     const response = await fetch(
-      `${bridgeUrl}/v1/memory/local-agent-settings/mcp_memory_answer`,
+      `${bridgeUrl}/v1/memory/local-agent-settings/curated_memory_review`,
       {
         method: "PUT",
         headers: {
@@ -756,7 +765,7 @@ describe("local memory answer bridge", () => {
     expect(await response.json()).toEqual({
       ok: true,
       setting: {
-        flowKey: "mcp_memory_answer",
+        flowKey: "curated_memory_review",
         provider: "codex",
         model: "gpt-5.4",
         reasoningEffort: "xhigh",

@@ -2,7 +2,8 @@ import { z } from "zod";
 
 export const localMemoryAgentFlowKeySchema = z.enum([
   "mcp_memory_answer",
-  "lcm_summary"
+  "lcm_summary",
+  "curated_memory_review"
 ]);
 
 export const localMemoryAgentSettingsParamsSchema = z.object({

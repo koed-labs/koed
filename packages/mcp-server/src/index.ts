@@ -29,6 +29,21 @@ import {
   resolveLcmSummaryWorkerConfig
 } from "./lcm-summary-worker.js";
 import { loadPrompt } from "./prompt-loader.js";
+import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
+export {
+  CURATED_MEMORY_REVIEW_PROMPT_VERSION,
+  buildCuratedMemoryReviewPrompt,
+  curatedMemoryReviewDecisionSchema,
+  resolveCuratedMemoryReviewConfig,
+  reviewCuratedMemoryProposal,
+  runCodexCuratedMemoryReview
+} from "./curated-memory-review-worker.js";
+export type {
+  CuratedMemoryReviewBundle,
+  CuratedMemoryReviewConfig,
+  CuratedMemoryReviewDecision,
+  CuratedMemoryReviewResult
+} from "./curated-memory-review-worker.js";
 export {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   buildLcmSummaryPrompt,
@@ -72,7 +87,10 @@ export interface McpServerConfig {
   requestTimeoutMs?: number;
 }
 
-export type LocalMemoryAgentFlowKey = "mcp_memory_answer" | "lcm_summary";
+export type LocalMemoryAgentFlowKey =
+  | "mcp_memory_answer"
+  | "lcm_summary"
+  | "curated_memory_review";
 
 export interface LocalMemoryAgentSettingRecord {
   ownerUserId: string;
@@ -194,6 +212,22 @@ export interface MemoryAccessCheckResult extends AccessCheckResult {
     lastSuccessAt: string | null;
     lastError: string | null;
   };
+  localCuratedMemoryReviewWorker: {
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+    timeoutMs: number;
+    maxAttempts: number;
+    maxPromptTokens: number;
+    appServerBinary: string;
+  };
+  localCuratedMemoryReviewDiagnostics: {
+    running: boolean;
+    lastRunAt: string | null;
+    lastSuccessAt: string | null;
+    lastError: string | null;
+    lastResult: unknown;
+  };
   notes: string[];
 }
 
@@ -202,7 +236,17 @@ export interface ToolExposureConfig {
   exposeLowLevelMemoryTools: boolean;
 }
 
+export interface BackendToolCapabilities {
+  curatedMemoryIntakeAvailable: boolean;
+}
+
+export const unavailableBackendToolCapabilities: BackendToolCapabilities = {
+  curatedMemoryIntakeAvailable: false
+};
+
 export const defaultTools = ["memory_answer"] as const;
+
+export const capabilityGatedTools = ["memory_intake_propose"] as const;
 
 export const memoryServerInstructions = loadPrompt(
   "mcp-server-instructions"
@@ -212,12 +256,16 @@ export const memoryAnswerToolDescription = loadPrompt(
   "memory-answer-tool-description"
 ).body;
 
+export const memoryIntakeProposeToolDescription =
+  "Propose durable Curated Memory when the user provides stable personal or project information such as preferences, corrections, decisions, plans, relationships, or other reusable context. Submit a concise candidate and real source evidence; an asynchronous local review agent receives the complete evidence, decides whether it is supported and durable, rewrites accepted assertions clearly, and handles duplicates or corrections. The proposal call returns immediately. Do not propose public facts, transient task state, guesses, agent-authored claims, or information without source evidence.";
+
 export const diagnosticMemoryTools = ["memory_access_check"] as const;
 
 export const lowLevelMemoryTools = ["memory_search", "memory_expand"] as const;
 
 export const allTools = [
   ...defaultTools,
+  ...capabilityGatedTools,
   ...diagnosticMemoryTools,
   ...lowLevelMemoryTools
 ] as const;
@@ -234,14 +282,42 @@ export const resolveToolExposureConfig = (
 });
 
 export const exposedTools = (
-  config: ToolExposureConfig = resolveToolExposureConfig()
+  config: ToolExposureConfig = resolveToolExposureConfig(),
+  capabilities: BackendToolCapabilities = unavailableBackendToolCapabilities
 ): MemoryToolName[] => [
   ...defaultTools,
+  ...(capabilities.curatedMemoryIntakeAvailable ? capabilityGatedTools : []),
   ...(config.exposeDiagnosticMemoryTools ? diagnosticMemoryTools : []),
   ...(config.exposeLowLevelMemoryTools ? lowLevelMemoryTools : [])
 ];
 
 export const requiredTools = defaultTools;
+
+export const backendToolCapabilitiesFrom = (
+  payload: unknown
+): BackendToolCapabilities => {
+  if (!payload || typeof payload !== "object") {
+    return unavailableBackendToolCapabilities;
+  }
+  const response = payload as {
+    capabilitySchemaVersion?: unknown;
+    capabilities?: unknown;
+  };
+  if (
+    typeof response.capabilitySchemaVersion !== "number" ||
+    response.capabilitySchemaVersion < 4 ||
+    !response.capabilities ||
+    typeof response.capabilities !== "object"
+  ) {
+    return unavailableBackendToolCapabilities;
+  }
+  const descriptor = (
+    response.capabilities as Record<string, { availability?: unknown }>
+  )["memory.curatedIntake"];
+  return {
+    curatedMemoryIntakeAvailable: descriptor?.availability === "available"
+  };
+};
 
 export const normalizeApiUrl = (apiUrl: string): string =>
   apiUrl.replace(/\/+$/, "");
@@ -281,6 +357,10 @@ export class MemoryApiClient {
 
   async accessCheck(): Promise<AccessCheckResult> {
     return this.request<AccessCheckResult>("GET", "/v1/access/check");
+  }
+
+  async capabilities(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>("GET", "/v1/capabilities");
   }
 
   async createSession(
@@ -342,6 +422,33 @@ export class MemoryApiClient {
     input: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     return this.request("POST", "/v1/memory/answer", input);
+  }
+
+  async proposeCuratedMemory(
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/v1/memory/curated/proposals", input);
+  }
+
+  async claimPendingCuratedMemoryReviews(
+    input: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "POST",
+      "/v1/memory/curated/proposals/claim-pending",
+      input
+    );
+  }
+
+  async submitCuratedMemoryReview(
+    proposalId: string,
+    input: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    return this.request(
+      "PATCH",
+      `/v1/memory/curated/proposals/${encodeURIComponent(proposalId)}/review`,
+      input
+    );
   }
 
   async createQuestion(
@@ -617,15 +724,26 @@ export const defaultAnswerScope = (
 export const memoryAccessCheck = async (
   client = new MemoryApiClient(),
   includeNotes = true,
-  options: { lcmSummaryService?: LcmSummaryServiceHandle | null } = {}
+  options: {
+    lcmSummaryService?: LcmSummaryServiceHandle | null;
+    curatedMemoryReviewService?: {
+      snapshot(): Record<string, unknown>;
+    } | null;
+  } = {}
 ): Promise<MemoryAccessCheckResult> => {
   const access = await client.accessCheck();
   const answerWorker = resolveMemoryAnswerWorkerConfig();
   const manualAnswerWorker = resolveManualMemoryAnswerWorkerConfig();
   const lcmSummaryWorker = resolveLcmSummaryWorkerConfig();
   const lcmSummaryService = resolveLcmSummaryServiceConfig();
+  const curatedMemoryReviewWorker = resolveCuratedMemoryReviewConfig();
   const toolExposure = resolveToolExposureConfig();
+  const backendToolCapabilities = await client
+    .capabilities()
+    .then(backendToolCapabilitiesFrom)
+    .catch(() => unavailableBackendToolCapabilities);
   const lcmSnapshot = options.lcmSummaryService?.snapshot();
+  const curatedMemorySnapshot = options.curatedMemoryReviewService?.snapshot();
   const lock = lcmSummaryLockState(
     lcmSummaryWorker.env,
     Math.max(lcmSummaryWorker.timeoutMs * lcmSummaryWorker.maxAttempts, 60_000)
@@ -651,7 +769,7 @@ export const memoryAccessCheck = async (
     codexCanCallTools: true,
     automaticDiscussionCapture: "not_via_mcp",
     captureFallback: "codex_lifecycle_hooks_transcript_path",
-    exposedTools: exposedTools(toolExposure),
+    exposedTools: exposedTools(toolExposure, backendToolCapabilities),
     diagnosticMemoryToolsExposed: toolExposure.exposeDiagnosticMemoryTools,
     lowLevelMemoryToolsExposed: toolExposure.exposeLowLevelMemoryTools,
     localMemoryAnswerWorker: {
@@ -696,6 +814,31 @@ export const memoryAccessCheck = async (
       lastSuccessAt: lcmSnapshot?.lastSuccessAt ?? null,
       lastError: lcmSnapshot?.lastError ?? null
     },
+    localCuratedMemoryReviewWorker: {
+      provider: curatedMemoryReviewWorker.provider,
+      model: curatedMemoryReviewWorker.model,
+      reasoningEffort: curatedMemoryReviewWorker.reasoningEffort,
+      timeoutMs: curatedMemoryReviewWorker.timeoutMs,
+      maxAttempts: curatedMemoryReviewWorker.maxAttempts,
+      maxPromptTokens: curatedMemoryReviewWorker.maxPromptTokens,
+      appServerBinary: curatedMemoryReviewWorker.appServerBinary
+    },
+    localCuratedMemoryReviewDiagnostics: {
+      running: curatedMemorySnapshot?.running === true,
+      lastRunAt:
+        typeof curatedMemorySnapshot?.lastRunAt === "string"
+          ? curatedMemorySnapshot.lastRunAt
+          : null,
+      lastSuccessAt:
+        typeof curatedMemorySnapshot?.lastSuccessAt === "string"
+          ? curatedMemorySnapshot.lastSuccessAt
+          : null,
+      lastError:
+        typeof curatedMemorySnapshot?.lastError === "string"
+          ? curatedMemorySnapshot.lastError
+          : null,
+      lastResult: curatedMemorySnapshot?.lastResult ?? null
+    },
     notes: includeNotes
       ? [
           "Store normal Codex/Codex CLI conversation context as personal memory through Codex hooks/transcript ingestion. The backend does not decide that a fact is important and create a separate extracted memory.",
@@ -705,6 +848,7 @@ export const memoryAccessCheck = async (
           "Low-level memory_search/memory_expand tools are hidden by default so the main agent delegates retrieval work to the local memory-answer worker.",
           "Backend LLM provider configuration is unsupported in this build. The backend retrieves cited evidence with local semantic embeddings; the local MCP memory-answer worker can plan follow-up searches/expansions and synthesize the final answer through the user's Codex CLI subscription.",
           "Local memory processing: backend workers create pending title and LCM summary work, while the MCP background service runs Codex on the user's machine and submits results back for storage and embedding.",
+          "Curated Memory proposals are reviewed asynchronously by a separate local Codex worker using complete source evidence; the proposing agent is not blocked and cannot directly write a canonical assertion.",
           "When answering from memory, cite each source."
         ]
       : []

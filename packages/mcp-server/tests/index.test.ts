@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MemoryApiClient,
   allTools,
+  backendToolCapabilitiesFrom,
+  capabilityGatedTools,
   defaultTools,
   diagnosticMemoryTools,
   exposedTools,
@@ -15,6 +17,7 @@ import {
   memoryAccessCheck,
   memoryServerInstructions,
   requiredTools,
+  resolveCuratedMemoryReviewConfig,
   resolveToolExposureConfig
 } from "../src/index.js";
 import {
@@ -41,6 +44,71 @@ import {
 } from "../src/project-team-workspace-links.js";
 
 const servers: http.Server[] = [];
+
+describe("Curated Memory review settings", () => {
+  it("uses only dedicated environment settings when no persisted override exists", () => {
+    expect(
+      resolveCuratedMemoryReviewConfig({
+        MEMORY_CURATED_REVIEW_PROVIDER: "CODEX",
+        MEMORY_CURATED_REVIEW_MODEL: "gpt-curated",
+        MEMORY_CURATED_REVIEW_REASONING_EFFORT: "high",
+        MEMORY_CURATED_REVIEW_TIMEOUT_MS: "180000",
+        MEMORY_CURATED_REVIEW_MAX_ATTEMPTS: "4",
+        MEMORY_ANSWER_MODEL: "gpt-answer",
+        MEMORY_LCM_SUMMARY_MODEL: "gpt-lcm"
+      } as NodeJS.ProcessEnv)
+    ).toMatchObject({
+      provider: "codex",
+      model: "gpt-curated",
+      reasoningEffort: "high",
+      timeoutMs: 180000,
+      maxAttempts: 4
+    });
+  });
+
+  it("does not fall back to another flow's environment settings", () => {
+    expect(
+      resolveCuratedMemoryReviewConfig({
+        MEMORY_ANSWER_PROVIDER: "other-answer-provider",
+        MEMORY_ANSWER_MODEL: "gpt-answer",
+        MEMORY_ANSWER_REASONING_EFFORT: "xhigh",
+        MEMORY_ANSWER_TIMEOUT_MS: "300000",
+        MEMORY_ANSWER_MAX_ATTEMPTS: "9",
+        MEMORY_LCM_SUMMARY_MODEL: "gpt-lcm"
+      } as NodeJS.ProcessEnv)
+    ).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      reasoningEffort: "medium",
+      timeoutMs: 90000,
+      maxAttempts: 2
+    });
+  });
+
+  it("applies persisted overrides ahead of dedicated environment settings", () => {
+    expect(
+      resolveCuratedMemoryReviewConfig(
+        {
+          MEMORY_CURATED_REVIEW_MODEL: "gpt-env",
+          MEMORY_CURATED_REVIEW_REASONING_EFFORT: "low"
+        } as NodeJS.ProcessEnv,
+        {
+          provider: "codex",
+          model: "gpt-persisted",
+          reasoningEffort: "high",
+          timeoutMs: 150000,
+          maxAttempts: 3
+        }
+      )
+    ).toMatchObject({
+      provider: "codex",
+      model: "gpt-persisted",
+      reasoningEffort: "high",
+      timeoutMs: 150000,
+      maxAttempts: 3
+    });
+  });
+});
 
 const memoryAnswerObject = (answer_markdown: string) => ({
   schema_version: MEMORY_ANSWER_STRUCTURED_SCHEMA_VERSION,
@@ -159,16 +227,54 @@ afterEach(async () => {
 });
 
 describe("MCP tool exposure", () => {
-  it("exposes only memory_answer by default", () => {
+  it("exposes only required memory tools without backend capabilities", () => {
     const config = resolveToolExposureConfig({} as NodeJS.ProcessEnv);
 
     expect([...defaultTools]).toEqual(["memory_answer"]);
+    expect([...capabilityGatedTools]).toEqual(["memory_intake_propose"]);
     expect([...requiredTools]).toEqual(["memory_answer"]);
     expect(exposedTools(config)).toEqual(["memory_answer"]);
     expect(exposedTools(config)).not.toContain("memory_access_check");
     expect(exposedTools(config)).not.toContain("memory_search");
     expect(exposedTools(config)).not.toContain("memory_expand");
     expect(exposedTools(config)).not.toContain("memory_lcm_summarize_pending");
+  });
+
+  it("gates Curated Memory intake on the versioned backend capability", () => {
+    const config = resolveToolExposureConfig({} as NodeJS.ProcessEnv);
+    const available = backendToolCapabilitiesFrom({
+      capabilitySchemaVersion: 4,
+      capabilities: {
+        "memory.curatedIntake": { availability: "available" }
+      }
+    });
+
+    expect(exposedTools(config, available)).toEqual([
+      "memory_answer",
+      "memory_intake_propose"
+    ]);
+    expect(
+      backendToolCapabilitiesFrom({
+        capabilitySchemaVersion: 3,
+        capabilities: {
+          "memory.curatedIntake": { availability: "available" }
+        }
+      }).curatedMemoryIntakeAvailable
+    ).toBe(false);
+    expect(
+      backendToolCapabilitiesFrom({
+        capabilitySchemaVersion: 4,
+        capabilities: {}
+      }).curatedMemoryIntakeAvailable
+    ).toBe(false);
+    expect(
+      backendToolCapabilitiesFrom({
+        capabilitySchemaVersion: 4,
+        capabilities: {
+          "memory.curatedIntake": { availability: "partial" }
+        }
+      }).curatedMemoryIntakeAvailable
+    ).toBe(false);
   });
 
   it("exposes diagnostic and low-level tools only through explicit env flags", () => {
@@ -183,27 +289,40 @@ describe("MCP tool exposure", () => {
       exposedTools(
         resolveToolExposureConfig({
           MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS: "true"
-        } as NodeJS.ProcessEnv)
+        } as NodeJS.ProcessEnv),
+        { curatedMemoryIntakeAvailable: true }
       )
-    ).toEqual(["memory_answer", "memory_access_check"]);
+    ).toEqual([
+      "memory_answer",
+      "memory_intake_propose",
+      "memory_access_check"
+    ]);
 
     expect(
       exposedTools(
         resolveToolExposureConfig({
           MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS: "true"
-        } as NodeJS.ProcessEnv)
+        } as NodeJS.ProcessEnv),
+        { curatedMemoryIntakeAvailable: true }
       )
-    ).toEqual(["memory_answer", "memory_search", "memory_expand"]);
+    ).toEqual([
+      "memory_answer",
+      "memory_intake_propose",
+      "memory_search",
+      "memory_expand"
+    ]);
 
     expect(
       exposedTools(
         resolveToolExposureConfig({
           MEMORY_EXPOSE_DIAGNOSTIC_MEMORY_TOOLS: "true",
           MEMORY_EXPOSE_LOW_LEVEL_MEMORY_TOOLS: "true"
-        } as NodeJS.ProcessEnv)
+        } as NodeJS.ProcessEnv),
+        { curatedMemoryIntakeAvailable: true }
       )
     ).toEqual([
       "memory_answer",
+      "memory_intake_propose",
       "memory_access_check",
       "memory_search",
       "memory_expand"
@@ -513,10 +632,48 @@ describe("MemoryApiClient", () => {
 
     expect(authorization).toBe("Koed-Device local-key:local-secret");
   });
+
+  it("loads the public backend capability contract", async () => {
+    const apiUrl = await createApi((request, response) => {
+      expect(request.method).toBe("GET");
+      expect(request.url).toBe("/v1/capabilities");
+      expect(request.headers.authorization).toBe("Bearer cmt_test");
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          capabilitySchemaVersion: 4,
+          capabilities: {
+            "memory.curatedIntake": { availability: "available" }
+          }
+        })
+      );
+    });
+
+    const result = await new MemoryApiClient({
+      apiUrl,
+      apiToken: "cmt_test"
+    }).capabilities();
+
+    expect(backendToolCapabilitiesFrom(result)).toEqual({
+      curatedMemoryIntakeAvailable: true
+    });
+  });
+
   it("validates bearer token access through /v1/access/check", async () => {
     const apiUrl = await createApi((request, response) => {
       expect(request.headers.authorization).toBe("Bearer cmt_test");
       response.setHeader("content-type", "application/json");
+      if (request.url === "/v1/capabilities") {
+        response.end(
+          JSON.stringify({
+            capabilitySchemaVersion: 4,
+            capabilities: {
+              "memory.curatedIntake": { availability: "available" }
+            }
+          })
+        );
+        return;
+      }
       if (request.url === "/v1/memory/graph/overview") {
         response.end(
           JSON.stringify({
@@ -554,7 +711,10 @@ describe("MemoryApiClient", () => {
     expect(result.configuredApiUrl).toBe(apiUrl);
     expect(result.defaultAutomaticCaptureScope).toBe("personal");
     expect(result.defaultAnswerScope).toBe("personal");
+    expect(result.exposedTools).toContain("memory_intake_propose");
     expect(result.localLcmSummaryDiagnostics.pendingCount).toBe(3);
+    expect(result.localCuratedMemoryReviewWorker.model).toBe("gpt-5.4-mini");
+    expect(result.localCuratedMemoryReviewDiagnostics.running).toBe(false);
     expect(result.localMemoryAnswerWorker.defaultResponseDetail).toBe(
       "answer_only"
     );

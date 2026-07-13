@@ -20,7 +20,7 @@ Tool-use rules:
 - Use search_domain=session only when a backend session_id is available.
 - Use search_domain=global only for deliberately cross-project/cross-session questions.
 - Treat scores as directional signals, not proof of relevance.
-- Use semantic stages before lexical_search for normal memory questions, story/detail recall, and unknown-detail questions such as 'what was the name of X?'.
+- Use semantic stages before lexical_search for normal memory questions, story/detail recall, and unknown-detail questions such as 'what was the name of X?'. Include curated_memory_search when the user asks for durable facts, preferences, decisions, plans, or corrections.
 - Treat lexical_search as a last-resort recovery tool after semantic stages fail, or for exact quoted phrases, identifiers, filenames, error text, or named topics.
 - If fresh_pending_search or raw_fallback_search has materially stronger scan signals than rollups/leaves, inspect the stronger stage first.
 - When searching a stage, request a limit no larger than that stage's countAboveThreshold from the latest scan and no larger than maxAllowed.

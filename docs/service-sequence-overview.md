@@ -152,9 +152,10 @@ does not inspect Memory, emit diagnostics, disclose local paths, or expose
 deployment secrets.
 
 Clients should use the capability contract before enabling backend-specific
-surfaces. Capability schema version 3 reports the deployment profile, runtime
+surfaces. Capability schema version 4 reports the deployment profile, runtime
 shape, authentication providers, memory surfaces, commercial gates, entitlement
-status shape, and security posture for the current `koed-server` instance.
+status shape, security posture, and capability-gated Curated Memory intake for
+the current `koed-server` instance.
 Supported deployment profiles
 are `developer`, `local_personal`, `private_vps`, `team_self_hosted`, and
 `koed_managed_cloud`. The profile tells clients which positive surfaces are

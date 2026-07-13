@@ -22,6 +22,10 @@ import type {
 
 export interface MemoryNodeRepositoryOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  onSourceLifecycleChanged?: (
+    client: pg.PoolClient,
+    actor: ActorContext
+  ) => Promise<void>;
 }
 
 export interface MemoryNodeRepository {
@@ -735,6 +739,7 @@ export const createMemoryNodeRepository = (
               threadName: existing.threadName ?? null
             }
           });
+          await options.onSourceLifecycleChanged?.(client, actor);
         }
         await client.query("commit");
         return deleted;

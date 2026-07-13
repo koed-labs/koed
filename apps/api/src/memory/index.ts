@@ -1,4 +1,5 @@
 export { registerCaptureRoutes } from "./capture-routes.js";
+export { registerCuratedMemoryRoutes } from "./curated-memory-routes.js";
 export { registerGraphRoutes } from "./graph-routes.js";
 export {
   canReceiveGraphStreamPayload,

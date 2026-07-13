@@ -10,6 +10,10 @@ import type { ActorContext, Visibility } from "./types.js";
 export type EncryptedFieldSourceTable =
   | "conversation_items"
   | "conversation_item_observations"
+  | "curated_memory_assertions"
+  | "curated_memory_proposals"
+  | "curated_memory_sources"
+  | "curated_memory_topics"
   | "memory_embeddings"
   | "memory_events"
   | "memory_nodes"
@@ -217,86 +221,87 @@ const jsonbValue = (sourceColumn: string): string => sourceColumn;
 
 const textValue = (sourceColumn: string): string => sourceColumn;
 
-const backfillSources: Record<EncryptedFieldSourceTable, BackfillSourceConfig> =
-  {
-    conversation_items: {
-      columns: new Set([
-        "raw_json",
-        "raw_text",
-        "transport_chunk_text",
-        "source_path",
-        "metadata"
-      ]),
-      valueSql: jsonbValue,
-      activePredicate: "personal_deleted_at is null"
-    },
-    conversation_item_observations: {
-      columns: new Set([
-        "raw_json",
-        "raw_text",
-        "transport_chunk_text",
-        "source_path",
-        "metadata"
-      ]),
-      valueSql: jsonbValue,
-      activePredicate:
-        "(exists (select 1 from conversation_items ci where ci.id = conversation_item_id and ci.personal_deleted_at is null) or exists (select 1 from sessions s where s.id = session_id and s.personal_deleted_at is null))"
-    },
-    memory_embeddings: {
-      columns: new Set(["source_text"]),
-      valueSql: textValue,
-      activePredicate: "invalidated_at is null and personal_deleted_at is null"
-    },
-    memory_events: {
-      columns: new Set(["payload"]),
-      valueSql: jsonbValue,
-      activePredicate: "invalidated_at is null and personal_deleted_at is null"
-    },
-    memory_nodes: {
-      columns: new Set([
-        "title",
-        "summary_text",
-        "body_text",
-        "source_items_json",
-        "summary_structured_json"
-      ]),
-      valueSql: jsonbValue,
-      activePredicate: "invalidated_at is null and personal_deleted_at is null"
-    },
-    memory_questions: {
-      columns: new Set([
-        "query",
-        "answer_markdown",
-        "error_message",
-        "last_error_message",
-        "evidence",
-        "citations",
-        "retrieval",
-        "local_memory_worker",
-        "local_memory_worker_config",
-        "response"
-      ]),
-      valueSql: jsonbValue,
-      activePredicate: "true"
-    },
-    messages: {
-      columns: new Set(["content", "content_json"]),
-      valueSql: jsonbValue,
-      activePredicate: "invalidated_at is null"
-    },
-    tool_events: {
-      columns: new Set(["tool_input", "tool_response"]),
-      valueSql: jsonbValue,
-      activePredicate: "invalidated_at is null"
-    }
-  };
+const backfillSources: Partial<
+  Record<EncryptedFieldSourceTable, BackfillSourceConfig>
+> = {
+  conversation_items: {
+    columns: new Set([
+      "raw_json",
+      "raw_text",
+      "transport_chunk_text",
+      "source_path",
+      "metadata"
+    ]),
+    valueSql: jsonbValue,
+    activePredicate: "personal_deleted_at is null"
+  },
+  conversation_item_observations: {
+    columns: new Set([
+      "raw_json",
+      "raw_text",
+      "transport_chunk_text",
+      "source_path",
+      "metadata"
+    ]),
+    valueSql: jsonbValue,
+    activePredicate:
+      "(exists (select 1 from conversation_items ci where ci.id = conversation_item_id and ci.personal_deleted_at is null) or exists (select 1 from sessions s where s.id = session_id and s.personal_deleted_at is null))"
+  },
+  memory_embeddings: {
+    columns: new Set(["source_text"]),
+    valueSql: textValue,
+    activePredicate: "invalidated_at is null and personal_deleted_at is null"
+  },
+  memory_events: {
+    columns: new Set(["payload"]),
+    valueSql: jsonbValue,
+    activePredicate: "invalidated_at is null and personal_deleted_at is null"
+  },
+  memory_nodes: {
+    columns: new Set([
+      "title",
+      "summary_text",
+      "body_text",
+      "source_items_json",
+      "summary_structured_json"
+    ]),
+    valueSql: jsonbValue,
+    activePredicate: "invalidated_at is null and personal_deleted_at is null"
+  },
+  memory_questions: {
+    columns: new Set([
+      "query",
+      "answer_markdown",
+      "error_message",
+      "last_error_message",
+      "evidence",
+      "citations",
+      "retrieval",
+      "local_memory_worker",
+      "local_memory_worker_config",
+      "response"
+    ]),
+    valueSql: jsonbValue,
+    activePredicate: "true"
+  },
+  messages: {
+    columns: new Set(["content", "content_json"]),
+    valueSql: jsonbValue,
+    activePredicate: "invalidated_at is null"
+  },
+  tool_events: {
+    columns: new Set(["tool_input", "tool_response"]),
+    valueSql: jsonbValue,
+    activePredicate: "invalidated_at is null"
+  }
+};
 
 const sourceConfigForBackfill = (
   sourceTable: EncryptedFieldSourceTable,
   sourceColumn: string
 ): BackfillSourceConfig => {
   const config = backfillSources[sourceTable];
-  if (!config.columns.has(sourceColumn)) {
+  if (!config?.columns.has(sourceColumn)) {
     throw new Error(
       `Unsupported encrypted field backfill source: ${sourceTable}.${sourceColumn}`
     );
@@ -399,8 +404,9 @@ const redactionForBackfillSource = (
       value: encryptedJsonMarker(sourceTable, sourceColumn)
     };
   }
-  const exhaustive: never = sourceTable;
-  throw new Error(`Unsupported encrypted field backfill source: ${exhaustive}`);
+  throw new Error(
+    `Unsupported encrypted field backfill source: ${sourceTable}`
+  );
 };
 
 const redactBackfilledSourceColumn = async (

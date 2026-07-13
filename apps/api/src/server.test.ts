@@ -3765,7 +3765,12 @@ const createFakeRepository = () => {
         ),
         events: await this.listLcmGraphEvents!(actor, {
           includeInvalidated: true
-        })
+        }),
+        curatedMemory: {
+          topics: [],
+          assertions: [],
+          proposals: []
+        }
       };
     },
     async listSourcesNeedingEmbeddings() {
@@ -4085,7 +4090,7 @@ describe("api health", () => {
     expect(capabilities).toMatchObject({
       product: "koed",
       apiVersion: "v1",
-      capabilitySchemaVersion: 3,
+      capabilitySchemaVersion: 4,
       audience: "public",
       deployment: {
         profile: "local_personal",
@@ -4216,6 +4221,10 @@ describe("api health", () => {
         },
         "memory.mcpRecall": {
           availability: "available"
+        },
+        "memory.curatedIntake": {
+          availability: "available",
+          endpoints: ["/v1/memory/curated/proposals"]
         },
         "memory.localLcmSummaries": {
           availability: "available"
@@ -4597,7 +4606,7 @@ describe("api health", () => {
     expect(allowed.statusCode).toBe(200);
     expect(jsonBody<CapabilitiesResponse>(allowed)).toMatchObject({
       audience: "authenticated",
-      capabilitySchemaVersion: 3
+      capabilitySchemaVersion: 4
     });
   });
 
@@ -10726,6 +10735,29 @@ describe("account and access flows", () => {
     process.env.API_ENVELOPE_ENCRYPTION_PROVIDER = "local_test_key";
     process.env.API_DATA_ENCRYPTION_KEY = rootKey;
     const repository = createFakeRepository();
+    const exportMemoryRecords = repository.exportMemoryRecords.bind(repository);
+    const curatedPlaintext = "Encrypted Curated Memory export marker";
+    repository.exportMemoryRecords = async (actor) => {
+      const records = await exportMemoryRecords(actor);
+      return {
+        ...records,
+        curatedMemory: {
+          topics: [
+            {
+              id: "00000000-0000-4000-8000-000000000901",
+              ownerUserId: actor.userId,
+              visibility: "personal",
+              title: curatedPlaintext,
+              normalizedTitle: curatedPlaintext.toLowerCase(),
+              createdAt: "2026-07-10T00:00:00.000Z",
+              updatedAt: "2026-07-10T00:00:00.000Z"
+            }
+          ],
+          assertions: [],
+          proposals: []
+        }
+      };
+    };
     const app = await buildServer({
       repository,
       runMemoryJobsInlineForTests: true
@@ -10783,11 +10815,15 @@ describe("account and access flows", () => {
     });
     expect(JSON.stringify(body.manifest)).not.toContain(plaintext);
     expect(exported.body).not.toContain(plaintext);
+    expect(exported.body).not.toContain(curatedPlaintext);
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(rootKey);
     await expect(
       decryptEncryptedJsonPackage(provider, body)
     ).resolves.toMatchObject({
-      events: [expect.objectContaining({ contentPreview: plaintext })]
+      events: [expect.objectContaining({ contentPreview: plaintext })],
+      curatedMemory: {
+        topics: [expect.objectContaining({ title: curatedPlaintext })]
+      }
     });
     const auditEvents = await repository.listAuditEvents(
       { userId: jsonBody<{ user: { id: string } }>(registered).user.id },
@@ -12118,6 +12154,18 @@ describe("account and access flows", () => {
         max_attempts: 2
       }
     });
+    const savedCuratedReview = await app.inject({
+      method: "PUT",
+      url: "/v1/memory/local-agent-settings/curated_memory_review",
+      headers,
+      payload: {
+        provider: "codex",
+        model: "gpt-5.4-mini",
+        reasoning_effort: "high",
+        timeout_ms: 150000,
+        max_attempts: 4
+      }
+    });
     const listed = await app.inject({
       method: "GET",
       url: "/v1/memory/local-agent-settings",
@@ -12127,10 +12175,16 @@ describe("account and access flows", () => {
 
     expect(savedMcp.statusCode).toBe(200);
     expect(savedLcm.statusCode).toBe(200);
+    expect(savedCuratedReview.statusCode).toBe(200);
     expect(listed.statusCode).toBe(200);
     expect(
       jsonBody<{ settings: LocalMemoryAgentSettingRecord[] }>(listed).settings
     ).toEqual([
+      expect.objectContaining({
+        flowKey: "curated_memory_review",
+        model: "gpt-5.4-mini",
+        reasoningEffort: "high"
+      }),
       expect.objectContaining({
         flowKey: "lcm_summary",
         model: "gpt-5.4-mini",
@@ -12338,6 +12392,173 @@ describe("account and access flows", () => {
     ).toMatchObject({
       get: {
         security: []
+      }
+    });
+  });
+
+  it("commits only the evidence selected by a local Curated Memory review", async () => {
+    const repository = createFakeRepository();
+    const selectedId = "11111111-1111-4111-8111-111111111111";
+    const unselectedId = "22222222-2222-4222-8222-222222222222";
+    const proposalId = "33333333-3333-4333-8333-333333333333";
+    const reviewInputs: unknown[] = [];
+    const now = new Date().toISOString();
+    const proposal = {
+      id: proposalId,
+      ownerUserId: "route-auth-owner",
+      visibility: "personal" as const,
+      proposedClaim: "window seat",
+      proposedTopic: "Travel",
+      rationale: null,
+      tags: ["travel"],
+      sensitivityHint: "normal" as const,
+      expiresAt: null,
+      evidenceConversationItemIds: [selectedId, unselectedId],
+      evidenceMemoryEventIds: [],
+      operation: "store" as const,
+      targetAssertionId: null,
+      status: "pending" as const,
+      decisionReason: null,
+      assertionId: null,
+      workerResult: null,
+      processingStartedAt: now,
+      processingLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      attemptCount: 1,
+      lastErrorMessage: null,
+      createdByModel: "codex",
+      createdByPromptVersion: "memory-intake-propose-mcp-v1",
+      createdAt: now,
+      updatedAt: now,
+      decidedAt: null
+    };
+    repository.claimPendingCuratedMemoryProposals = async () => [
+      {
+        proposal,
+        evidence: [
+          {
+            sourceType: "conversation_item",
+            sourceId: selectedId,
+            sourceHash: "selected-hash",
+            text: "I strongly prefer a window seat.",
+            occurredAt: now,
+            sessionId: null,
+            metadata: {}
+          },
+          {
+            sourceType: "conversation_item",
+            sourceId: unselectedId,
+            sourceHash: "unselected-hash",
+            text: "This separate evidence is not needed.",
+            occurredAt: now,
+            sessionId: null,
+            metadata: {}
+          }
+        ],
+        rejectedSourceCount: 0,
+        currentAssertions: []
+      }
+    ];
+    repository.getCuratedMemoryProposal = async () => proposal;
+    repository.processCuratedMemoryProposal = async (_actor, input) => {
+      reviewInputs.push(input);
+      return {
+        ...proposal,
+        status: input.decision === "skip" ? "skipped" : "stored",
+        assertionId: "44444444-4444-4444-8444-444444444444"
+      };
+    };
+
+    const app = await buildServer({ repository });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: `curated-review-${randomUUID()}@example.com`,
+        password: "password123"
+      }
+    });
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Curated review test" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const claimed = await app.inject({
+      method: "POST",
+      url: "/v1/memory/curated/proposals/claim-pending",
+      headers,
+      payload: { proposal_id: proposalId, limit: 1 }
+    });
+    expect(claimed.statusCode).toBe(200);
+
+    const missingSelection = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/curated/proposals/${proposalId}/review`,
+      headers,
+      payload: {
+        outcome: "accepted",
+        operation: "store",
+        attempt_count: 1,
+        evidence_revisions: [],
+        candidate_assertion_ids: [],
+        assertion_text: "The user prefers window seats.",
+        decision_reason: "Supported.",
+        reviewer_model: "gpt-5.4-mini",
+        reviewer_prompt_version: "curated-memory-local-review-v1"
+      }
+    });
+    expect(missingSelection.statusCode).toBe(400);
+
+    const completed = await app.inject({
+      method: "PATCH",
+      url: `/v1/memory/curated/proposals/${proposalId}/review`,
+      headers,
+      payload: {
+        outcome: "accepted",
+        operation: "store",
+        target_assertion_id: null,
+        attempt_count: 1,
+        evidence_revisions: [
+          {
+            source_type: "conversation_item",
+            source_id: selectedId,
+            source_hash: "selected-hash"
+          },
+          {
+            source_type: "conversation_item",
+            source_id: unselectedId,
+            source_hash: "unselected-hash"
+          }
+        ],
+        selected_evidence_ids: [selectedId],
+        candidate_assertion_ids: [],
+        assertion_text: "The user strongly prefers window seats when flying.",
+        topic_title: "Travel preferences",
+        tags: ["travel"],
+        sensitivity: "normal",
+        confidence: 95,
+        expires_at: null,
+        decision_reason: "Supported durable preference.",
+        reviewer_model: "gpt-5.4-mini",
+        reviewer_prompt_version: "curated-memory-local-review-v1"
+      }
+    });
+    await app.close();
+
+    expect(completed.statusCode).toBe(200);
+    expect(reviewInputs).toHaveLength(1);
+    expect(reviewInputs[0]).toMatchObject({
+      selectedEvidenceIds: [selectedId],
+      assertion: {
+        sources: [
+          {
+            sourceType: "conversation_item",
+            conversationItemId: selectedId
+          }
+        ]
       }
     });
   });

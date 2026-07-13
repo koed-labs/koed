@@ -19,6 +19,7 @@ import {
   defaultAnswerScope,
   defaultConfig,
   localMemoryAgentSettingFor,
+  resolveCuratedMemoryReviewConfig,
   type LocalMemoryAgentFlowKey,
   MemoryApiClient,
   MemoryApiError,
@@ -371,7 +372,11 @@ const localMemoryAgentSettingsFlowKeyFromUrl = (
   }
   try {
     const flowKey = decodeURIComponent(encodedFlowKey);
-    if (flowKey === "mcp_memory_answer" || flowKey === "lcm_summary") {
+    if (
+      flowKey === "mcp_memory_answer" ||
+      flowKey === "lcm_summary" ||
+      flowKey === "curated_memory_review"
+    ) {
       return flowKey;
     }
   } catch {
@@ -682,6 +687,12 @@ export const localMemoryAgentSettings = async (
       localMemoryAgentSettingFor(storedSettings, "lcm_summary")
     )
   );
+  const curatedMemoryReview = resolveCuratedMemoryReviewConfig(
+    env,
+    workerOverridesFromLocalMemorySetting(
+      localMemoryAgentSettingFor(storedSettings, "curated_memory_review")
+    )
+  );
   const representativeCodexConfig = manualMemoryAnswer;
   let modelListError: string | null = null;
   const codexAvailability =
@@ -742,6 +753,19 @@ export const localMemoryAgentSettings = async (
         source: localMemoryAgentSettingFor(storedSettings, "lcm_summary")
           ? "db"
           : "env"
+      },
+      curatedMemoryReview: {
+        provider: curatedMemoryReview.provider,
+        model: curatedMemoryReview.model,
+        reasoningEffort: curatedMemoryReview.reasoningEffort,
+        timeoutMs: curatedMemoryReview.timeoutMs,
+        maxAttempts: curatedMemoryReview.maxAttempts,
+        source: localMemoryAgentSettingFor(
+          storedSettings,
+          "curated_memory_review"
+        )
+          ? "db"
+          : "env"
       }
     },
     precedence: {
@@ -752,7 +776,12 @@ export const localMemoryAgentSettings = async (
         "MEMORY_ANSWER_*",
         "code defaults"
       ],
-      lcmSummary: ["API user setting", "MEMORY_LCM_SUMMARY_*", "code defaults"]
+      lcmSummary: ["API user setting", "MEMORY_LCM_SUMMARY_*", "code defaults"],
+      curatedMemoryReview: [
+        "API user setting",
+        "MEMORY_CURATED_REVIEW_*",
+        "code defaults"
+      ]
     }
   };
 };

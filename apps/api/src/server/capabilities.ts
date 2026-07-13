@@ -2,7 +2,7 @@ import releaseManifest from "@koed/koed/package.json" with { type: "json" };
 
 const koedReleaseVersion = releaseManifest.version;
 
-export const capabilitySchemaVersion = 3;
+export const capabilitySchemaVersion = 4;
 
 export const deploymentProfiles = [
   "developer",
@@ -386,6 +386,11 @@ const buildCapabilities = (input: {
   "memory.mcpRecall": descriptor(
     "available",
     "MCP recall through memory_answer."
+  ),
+  "memory.curatedIntake": descriptor(
+    "available",
+    "Capability-gated Curated Memory proposals through memory_intake_propose.",
+    { endpoints: ["/v1/memory/curated/proposals"] }
   ),
   "memory.localLcmSummaries": descriptor(
     "available",

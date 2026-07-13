@@ -460,6 +460,55 @@ export const routeIdentityContracts = [
     "Export visible personal memory records."
   ),
   route(
+    "POST",
+    "/v1/memory/curated/proposals",
+    "api_token",
+    "personal_memory",
+    "Create a source-linked Curated Memory proposal from an AI-client integration."
+  ),
+  route(
+    "GET",
+    "/v1/memory/curated/proposals",
+    "api_token",
+    "personal_memory",
+    "List Curated Memory proposals for the authenticated API Token owner."
+  ),
+  route(
+    "GET",
+    "/v1/memory/curated/assertions",
+    "api_token",
+    "personal_memory",
+    "List Curated Memory assertions for the authenticated API Token owner."
+  ),
+  route(
+    "POST",
+    "/v1/memory/curated/search",
+    "api_token",
+    "personal_memory",
+    "Search Curated Memory assertions for the authenticated API Token owner."
+  ),
+  route(
+    "GET",
+    "/v1/memory/curated/assertions/{assertionId}",
+    "api_token",
+    "personal_memory",
+    "Read a Curated Memory assertion for the authenticated API Token owner."
+  ),
+  route(
+    "POST",
+    "/v1/memory/curated/assertions/{assertionId}/suppress",
+    "api_token",
+    "personal_memory",
+    "Suppress or expire a Curated Memory assertion."
+  ),
+  route(
+    "POST",
+    "/v1/memory/curated/reconcile",
+    "api_token",
+    "personal_memory",
+    "Reconcile Curated Memory sources with derived Memory Events and LCM summaries."
+  ),
+  route(
     "GET",
     "/v1/memory/nodes/{nodeId}",
     "api_token",

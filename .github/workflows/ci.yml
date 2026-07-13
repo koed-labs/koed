@@ -38,6 +38,15 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -84,6 +93,7 @@ jobs:
       - name: Test
         env:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
+          REDIS_URL: redis://127.0.0.1:6379
         run: pnpm test
 
   build:

@@ -30,9 +30,48 @@ export type MemoryQuestionSearchDomain = "global" | "project" | "session";
 
 export type MemoryQuestionRetrievalScope = "personal";
 
+export type CuratedMemoryProposalOperation =
+  | "store"
+  | "merge"
+  | "supersede"
+  | "conflict";
+
+export type CuratedMemoryProposalStatus =
+  | "pending"
+  | "stored"
+  | "merged"
+  | "superseded"
+  | "conflicted"
+  | "skipped";
+
+export type CuratedMemoryAssertionStatus =
+  | "current"
+  | "superseded"
+  | "conflicting"
+  | "suppressed";
+
+export type CuratedMemorySensitivity =
+  | "normal"
+  | "sensitive"
+  | "review_required";
+
+export type CuratedMemorySourceType =
+  | "conversation_item"
+  | "memory_event"
+  | "lcm_summary";
+
+export type CuratedMemorySourceRole =
+  | "primary_evidence"
+  | "supporting_evidence"
+  | "superseding_evidence"
+  | "conflicting_evidence"
+  | "derived_bundle"
+  | "derived_summary";
+
 export type LocalMemoryAgentSettingsFlowKey =
   | "mcp_memory_answer"
-  | "lcm_summary";
+  | "lcm_summary"
+  | "curated_memory_review";
 
 export interface ActorContext {
   userId: string;
@@ -979,6 +1018,206 @@ export interface LocalMemoryAgentSettingRecord {
   updatedAt: string;
 }
 
+export interface CuratedMemoryTopicRecord {
+  id: string;
+  ownerUserId: string;
+  visibility: Visibility;
+  title: string;
+  normalizedTitle: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CuratedMemorySourceRecord {
+  id: string;
+  assertionId: string;
+  sourceType: CuratedMemorySourceType;
+  sourceRole: CuratedMemorySourceRole;
+  conversationItemId: string | null;
+  memoryEventId: string | null;
+  lcmNodeId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface CuratedMemoryAssertionRecord {
+  id: string;
+  ownerUserId: string;
+  visibility: Visibility;
+  topicId: string | null;
+  topicTitle: string | null;
+  assertionText: string;
+  normalizedAssertion: string;
+  status: CuratedMemoryAssertionStatus;
+  sensitivity: CuratedMemorySensitivity;
+  confidence: number;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  expiresAt: string | null;
+  observedAt: string;
+  supersedesAssertionId: string | null;
+  supersededByAssertionId: string | null;
+  conflictWithAssertionId: string | null;
+  createdByModel: string | null;
+  createdByPromptVersion: string | null;
+  createdAt: string;
+  updatedAt: string;
+  suppressedAt: string | null;
+  suppressionReason: string | null;
+  lastReconciledAt: string | null;
+  reconciliationStatus: string;
+  sources: CuratedMemorySourceRecord[];
+}
+
+export interface CuratedMemoryProposalRecord {
+  id: string;
+  ownerUserId: string;
+  visibility: Visibility;
+  proposedClaim: string;
+  proposedTopic: string | null;
+  rationale: string | null;
+  tags: string[];
+  sensitivityHint: CuratedMemorySensitivity | null;
+  expiresAt: string | null;
+  evidenceConversationItemIds: string[];
+  evidenceMemoryEventIds: string[];
+  operation: CuratedMemoryProposalOperation;
+  targetAssertionId: string | null;
+  status: CuratedMemoryProposalStatus;
+  decisionReason: string | null;
+  assertionId: string | null;
+  workerResult: Record<string, unknown> | null;
+  processingStartedAt: string | null;
+  processingLeaseUntil: string | null;
+  attemptCount: number;
+  lastErrorMessage: string | null;
+  createdByModel: string | null;
+  createdByPromptVersion: string | null;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt: string | null;
+}
+
+export interface CuratedMemorySourceInput {
+  sourceType: CuratedMemorySourceType;
+  sourceRole: CuratedMemorySourceRole;
+  conversationItemId?: string | null;
+  memoryEventId?: string | null;
+  lcmNodeId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CuratedMemoryProposalUserEvidenceResult {
+  sources: CuratedMemorySourceInput[];
+  evidence: CuratedMemoryReviewEvidence[];
+  rejectedSourceCount: number;
+}
+
+export interface CuratedMemoryReviewEvidence {
+  sourceType: "conversation_item" | "memory_event";
+  sourceId: string;
+  sourceHash: string;
+  text: string;
+  occurredAt: string;
+  sessionId: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CuratedMemoryReviewCandidate {
+  assertionId: string;
+  assertionText: string;
+  topicTitle: string | null;
+  tags: string[];
+  sensitivity: CuratedMemorySensitivity;
+  observedAt: string;
+  updatedAt: string;
+}
+
+export interface CuratedMemoryReviewBundle {
+  proposal: CuratedMemoryProposalRecord;
+  evidence: CuratedMemoryReviewEvidence[];
+  rejectedSourceCount: number;
+  currentAssertions: CuratedMemoryReviewCandidate[];
+}
+
+export interface CuratedMemoryResolvedEvidence {
+  evidenceConversationItemIds: string[];
+  evidenceMemoryEventIds: string[];
+}
+
+export interface CuratedMemoryCreateAssertionInput {
+  proposalId?: string;
+  assertionText: string;
+  topicTitle?: string | null;
+  sensitivity?: CuratedMemorySensitivity;
+  confidence?: number;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  expiresAt?: string | null;
+  observedAt?: string | null;
+  status?: CuratedMemoryAssertionStatus;
+  supersedesAssertionId?: string | null;
+  conflictWithAssertionId?: string | null;
+  createdByModel?: string | null;
+  createdByPromptVersion?: string | null;
+  sources: CuratedMemorySourceInput[];
+}
+
+export interface CuratedMemoryProposalInput {
+  proposedClaim: string;
+  proposedTopic?: string | null;
+  rationale?: string | null;
+  tags?: string[];
+  sensitivityHint?: CuratedMemorySensitivity | null;
+  expiresAt?: string | null;
+  evidenceConversationItemIds?: string[];
+  evidenceMemoryEventIds?: string[];
+  operation?: CuratedMemoryProposalOperation;
+  targetAssertionId?: string | null;
+  createdByModel?: string | null;
+  createdByPromptVersion?: string | null;
+}
+
+export interface CuratedMemoryListInput {
+  status?: CuratedMemoryAssertionStatus;
+  topicId?: string;
+  includeSources?: boolean;
+  limit?: number;
+}
+
+export interface CuratedMemorySearchInput {
+  query: string;
+  searchDomain?: MemoryQuestionSearchDomain;
+  sessionId?: string;
+  workspaceId?: string;
+  limit?: number;
+  currentOnly?: boolean;
+  sourceAfter?: string;
+  sourceBefore?: string;
+}
+
+export interface CuratedMemoryReconciliationResult {
+  assertionsScanned: number;
+  memoryEventLinksAdded: number;
+  lcmSummaryLinksAdded: number;
+}
+
+export interface CuratedMemoryRetrievalCandidate {
+  assertionId: string;
+  ownerUserId: string;
+  visibility: Visibility;
+  summaryText: string;
+  rerankText: string;
+  score: number;
+  updatedAt: string;
+}
+
+export interface CuratedMemoryExportRecords {
+  topics: CuratedMemoryTopicRecord[];
+  assertions: CuratedMemoryAssertionRecord[];
+  proposals: CuratedMemoryProposalRecord[];
+}
+
 export interface MemorySourceRepository
   extends
     MemoryEngineRepository,
@@ -995,6 +1234,81 @@ export interface MemorySourceRepository
   createUser(input: CreateUserInput): Promise<{ id: string }>;
   findUserByEmail(email: string): Promise<UserRecord | null>;
   getUser(userId: string): Promise<UserRecord | null>;
+  createCuratedMemoryProposal(
+    actor: ActorContext,
+    input: CuratedMemoryProposalInput
+  ): Promise<CuratedMemoryProposalRecord>;
+  listCuratedMemoryProposals(
+    actor: ActorContext,
+    input?: { status?: CuratedMemoryProposalStatus; limit?: number }
+  ): Promise<CuratedMemoryProposalRecord[]>;
+  getCuratedMemoryProposal(
+    actor: ActorContext,
+    proposalId: string
+  ): Promise<CuratedMemoryProposalRecord | null>;
+  getCuratedMemoryProposalUserEvidenceSources(
+    actor: ActorContext,
+    proposalId: string
+  ): Promise<CuratedMemoryProposalUserEvidenceResult>;
+  resolveCuratedMemoryProposalEvidence(
+    actor: ActorContext,
+    input: {
+      workspaceId?: string;
+      sessionId?: string;
+    }
+  ): Promise<CuratedMemoryResolvedEvidence>;
+  claimPendingCuratedMemoryProposals(
+    actor: ActorContext,
+    input?: { proposalId?: string; limit?: number; leaseSeconds?: number }
+  ): Promise<CuratedMemoryReviewBundle[]>;
+  releaseCuratedMemoryProposalReview(
+    actor: ActorContext,
+    proposalId: string,
+    input: { attemptCount: number; lastErrorMessage: string }
+  ): Promise<CuratedMemoryProposalRecord | null>;
+  processCuratedMemoryProposal(
+    actor: ActorContext,
+    input: {
+      proposalId: string;
+      decision: CuratedMemoryProposalOperation | "skip";
+      targetAssertionId?: string | null;
+      expectedAttemptCount?: number;
+      evidenceRevisions?: Array<{
+        sourceType: "conversation_item" | "memory_event";
+        sourceId: string;
+        sourceHash: string;
+      }>;
+      selectedEvidenceIds?: string[];
+      candidateAssertionIds?: string[];
+      assertion?: CuratedMemoryCreateAssertionInput;
+      decisionReason?: string | null;
+      workerResult?: Record<string, unknown>;
+    }
+  ): Promise<CuratedMemoryProposalRecord>;
+  listCuratedMemoryAssertions(
+    actor: ActorContext,
+    input?: CuratedMemoryListInput
+  ): Promise<CuratedMemoryAssertionRecord[]>;
+  getCuratedMemoryAssertion(
+    actor: ActorContext,
+    assertionId: string
+  ): Promise<CuratedMemoryAssertionRecord | null>;
+  searchCuratedMemoryAssertions(
+    actor: ActorContext,
+    input: CuratedMemorySearchInput
+  ): Promise<CuratedMemoryAssertionRecord[]>;
+  suppressCuratedMemoryAssertion(
+    actor: ActorContext,
+    assertionId: string,
+    input: { reason?: string | null; status?: "suppressed" }
+  ): Promise<CuratedMemoryAssertionRecord | null>;
+  reconcileCuratedMemorySources(
+    actor: ActorContext,
+    input?: { limit?: number }
+  ): Promise<CuratedMemoryReconciliationResult>;
+  reconcileCuratedMemoryLifecycle(
+    actor: ActorContext
+  ): Promise<{ assertionsSuppressed: number }>;
   upsertExternalAuthSession(input: {
     provider: ExternalAuthProvider;
     providerEnvironment?: string;
@@ -1341,6 +1655,7 @@ export interface MemorySourceRepository
     overview: LcmGraphOverview;
     nodes: LcmGraphNodeDetail[];
     events: LcmGraphEvent[];
+    curatedMemory: CuratedMemoryExportRecords;
   }>;
   listSourcesNeedingEmbeddings(
     limit?: number

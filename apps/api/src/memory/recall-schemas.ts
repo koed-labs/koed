@@ -23,6 +23,7 @@ export const searchMemorySchema = z
         "rollup_search",
         "scoped_leaf_search",
         "leaf_search",
+        "curated_memory_search",
         "fresh_pending_search",
         "raw_fallback_search",
         "lexical_search"

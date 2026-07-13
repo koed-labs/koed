@@ -24,6 +24,10 @@ import {
 import { createConversationItemRepository } from "./conversation-item-repository.js";
 import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
 import { createCrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
+import {
+  createCuratedMemoryRepository,
+  suppressCuratedMemoryWithoutActiveEvidenceWithClient
+} from "./curated-memory-repository.js";
 import { createDeviceCredentialRepository } from "./device-credential-repository.js";
 import {
   createEncryptedPayloadRepository,
@@ -3838,6 +3842,9 @@ export const createMemorySourceRepository = (
   const db = createDb(pool);
   const encryptedPayloadRepository = createEncryptedPayloadRepository(pool);
   const settingsRepository = createSettingsRepository(db);
+  const curatedMemoryRepository = createCuratedMemoryRepository(pool, {
+    envelopeEncryptionProvider: options.envelopeEncryptionProvider
+  });
 
   return {
     // Drizzle fragments cover table-shaped account, auth session, audit, and settings workflows.
@@ -3857,10 +3864,18 @@ export const createMemorySourceRepository = (
     ...createCrossIdentitySyncRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...curatedMemoryRepository,
     ...encryptedPayloadRepository,
     ...createLocalEmbeddingStatusRepository(),
     ...createMemoryNodeRepository(pool, {
-      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider,
+      onSourceLifecycleChanged: async (client, actor) => {
+        await suppressCuratedMemoryWithoutActiveEvidenceWithClient(
+          client,
+          actor,
+          options.envelopeEncryptionProvider
+        );
+      }
     }),
     ...createMemoryQuestionRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
@@ -7669,6 +7684,11 @@ export const createMemorySourceRepository = (
               sourceRuntime: existing.sourceRuntime
             }
           });
+          await suppressCuratedMemoryWithoutActiveEvidenceWithClient(
+            client,
+            actor,
+            options.envelopeEncryptionProvider
+          );
         }
         await client.query("commit");
       } catch (error) {
@@ -7720,6 +7740,8 @@ export const createMemorySourceRepository = (
         includeInvalidated: true,
         limit: 500
       });
+      const curatedMemory =
+        await curatedMemoryRepository.exportCuratedMemoryRecords(actor);
       return {
         exportedAt: new Date().toISOString(),
         overview,
@@ -7730,7 +7752,8 @@ export const createMemorySourceRepository = (
             )
           )
         ).filter((node): node is LcmGraphNodeDetail => Boolean(node)),
-        events
+        events,
+        curatedMemory
       };
     },
 
@@ -8897,7 +8920,8 @@ export const createMemorySourceRepository = (
             aad: {
               eventType: row.event_type,
               sessionId: row.session_id,
-              turnId: row.turn_id
+              turnId: row.turn_id,
+              actor: plaintextPayload.actor
             }
           }
         );
@@ -9211,13 +9235,18 @@ export const createMemorySourceRepository = (
         | "rollup_search"
         | "scoped_leaf_search"
         | "leaf_search"
+        | "curated_memory_search"
         | "fresh_pending_search"
         | "raw_fallback_search"
         | "lexical_search";
       type VectorRow = {
         id: string;
         embedding_id: string | null;
-        source_type: "memory_node" | "memory_event" | "message";
+        source_type:
+          | "memory_node"
+          | "memory_event"
+          | "message"
+          | "curated_memory";
         source_id: string;
         owner_user_id: string | null;
         retrieval_stage: RetrievalStageName;
@@ -9236,8 +9265,8 @@ export const createMemorySourceRepository = (
         lcm_summary_pending: boolean;
         score: number;
         created_at: Date;
-        embedding_model: string;
-        embedding_dimensions: number;
+        embedding_model: string | null;
+        embedding_dimensions: number | null;
         source_chunk_index: number;
         source_chunk_count: number;
       };
@@ -9257,6 +9286,7 @@ export const createMemorySourceRepository = (
         rollup_search: 5,
         scoped_leaf_search: 4,
         leaf_search: 3,
+        curated_memory_search: 3,
         fresh_pending_search: 2,
         raw_fallback_search: 1,
         lexical_search: 2
@@ -9265,6 +9295,7 @@ export const createMemorySourceRepository = (
         rollup_search: 1.1,
         scoped_leaf_search: 1.05,
         leaf_search: 1,
+        curated_memory_search: 1,
         fresh_pending_search: 0.95,
         raw_fallback_search: 0.7,
         lexical_search: 1.2
@@ -9295,6 +9326,10 @@ export const createMemorySourceRepository = (
         "MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT",
         Math.max(requestedLimit, 20)
       );
+      const curatedMemoryCandidateLimit = stageCandidateLimit(
+        "MEMORY_RAG_CURATED_MEMORY_CANDIDATE_LIMIT",
+        Math.max(requestedLimit, 20)
+      );
       const rollupResultLimit = stageCandidateLimit(
         "MEMORY_RAG_ROLLUP_RESULT_LIMIT",
         Math.max(1, Math.min(requestedLimit, 5))
@@ -9313,6 +9348,10 @@ export const createMemorySourceRepository = (
           nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0)
         ),
         leaf_search: nonNegativeFloatEnv("MEMORY_RAG_LEAF_MIN_SCORE", 0),
+        curated_memory_search: nonNegativeFloatEnv(
+          "MEMORY_RAG_CURATED_MEMORY_MIN_SCORE",
+          0
+        ),
         fresh_pending_search: nonNegativeFloatEnv(
           "MEMORY_RAG_FRESH_EVENT_MIN_SCORE",
           0
@@ -9327,6 +9366,7 @@ export const createMemorySourceRepository = (
         rollup_search: rollupCandidateLimit,
         scoped_leaf_search: scopedLeafCandidateLimit,
         leaf_search: leafCandidateLimit,
+        curated_memory_search: curatedMemoryCandidateLimit,
         fresh_pending_search: freshCandidateLimit,
         raw_fallback_search: rawCandidateLimit,
         lexical_search: lexicalCandidateLimit
@@ -9421,6 +9461,74 @@ export const createMemorySourceRepository = (
           .filter(Boolean)
           .slice(0, 16);
         return terms.length > 0 ? terms : [query.trim()].filter(Boolean);
+      };
+      const hasCuratedMemoryIntent = (query: string): boolean =>
+        /\b(remember|recall|preference|prefer|usually|decision|decid(?:e|ed|ing)|agreed?|plan|birthday|relationship|allerg(?:y|ic)|diet|travel|flight|hotel|address|phone|email|timezone|favou?rite|correction|personal fact)\b/i.test(
+          query
+        );
+      const shouldRunCuratedMemoryStage =
+        requestedStage === "curated_memory_search" ||
+        (!requestedStage && hasCuratedMemoryIntent(input.query));
+      const runCuratedMemoryStage = async (): Promise<StageResult> => {
+        const started = Date.now();
+        const terms = lexicalTerms(input.query);
+        if (
+          terms.length === 0 ||
+          teamWorkspaceBoundary ||
+          !shouldRunCuratedMemoryStage
+        ) {
+          return {
+            name: "curated_memory_search",
+            rows: [],
+            durationMs: Date.now() - started,
+            reranked: false,
+            rerankedCount: 0,
+            parentNodeIds: []
+          };
+        }
+        const candidates =
+          await curatedMemoryRepository.searchCuratedMemoryRetrievalCandidates(
+            actor,
+            {
+              query: input.query,
+              searchDomain,
+              sessionId: input.sessionId,
+              workspaceId: input.workspaceId,
+              limit: curatedMemoryCandidateLimit,
+              sourceAfter: sourceAfter?.toISOString(),
+              sourceBefore: sourceBefore?.toISOString()
+            }
+          );
+        const rows: VectorRow[] = candidates.map((candidate) => ({
+          id: candidate.assertionId,
+          embedding_id: null,
+          source_type: "curated_memory",
+          retrieval_stage: "curated_memory_search",
+          source_id: candidate.assertionId,
+          owner_user_id: candidate.ownerUserId,
+          parent_node_ids: [],
+          visibility: candidate.visibility,
+          summary_text: candidate.summaryText,
+          rerank_text: candidate.rerankText,
+          has_out_of_window_sources: false,
+          filtered_source_items: null,
+          lcm_summary_model: null,
+          lcm_summary_pending: false,
+          created_at: new Date(candidate.updatedAt),
+          embedding_model: null,
+          embedding_dimensions: null,
+          source_chunk_index: 0,
+          source_chunk_count: 1,
+          score: candidate.score
+        }));
+        return {
+          name: "curated_memory_search",
+          rows,
+          durationMs: Date.now() - started,
+          reranked: false,
+          rerankedCount: 0,
+          parentNodeIds: []
+        };
       };
       const runLexicalStage = async (): Promise<StageResult> => {
         const started = Date.now();
@@ -10674,6 +10782,9 @@ export const createMemorySourceRepository = (
               if (requestedStage === "leaf_search") {
                 return [await runStage("leaf_search", leafCandidateLimit)];
               }
+              if (requestedStage === "curated_memory_search") {
+                return [];
+              }
               if (requestedStage === "fresh_pending_search") {
                 return [
                   await runStage("fresh_pending_search", freshCandidateLimit)
@@ -10797,6 +10908,42 @@ export const createMemorySourceRepository = (
           }`
         );
       }
+      if (!requestedStage || requestedStage === "curated_memory_search") {
+        const curated = await runCuratedMemoryStage();
+        vectorRows.push(
+          ...curated.rows.filter(
+            (row) => Number(row.score) >= scoreThresholds.curated_memory_search
+          )
+        );
+        stageDiagnostics.push({
+          name: curated.name,
+          ran: shouldRunCuratedMemoryStage && !teamWorkspaceBoundary,
+          used: false,
+          candidateCount: curated.rows.length,
+          selectedCount: 0,
+          durationMs: curated.durationMs,
+          parallelGroup: "curated_memory_candidates",
+          temporalFilterApplied: Boolean(temporalFilter),
+          reranked: false,
+          parentNodeIds: [],
+          topScore: curated.rows[0]?.score,
+          scoreThreshold: scoreThresholds.curated_memory_search,
+          countAboveThreshold: curated.rows.filter(
+            (row) => Number(row.score) >= scoreThresholds.curated_memory_search
+          ).length,
+          maxAllowed: stageMaxAllowed.curated_memory_search,
+          rejectedCount: curated.rows.filter(
+            (row) => Number(row.score) < scoreThresholds.curated_memory_search
+          ).length,
+          candidateIds: curated.rows
+            .filter(
+              (row) =>
+                Number(row.score) >= scoreThresholds.curated_memory_search
+            )
+            .slice(0, stageMaxAllowed.curated_memory_search)
+            .map((row) => row.source_id)
+        });
+      }
       if (requestedStage === "lexical_search") {
         const lexical = await runLexicalStage();
         vectorRows.push(
@@ -10836,7 +10983,11 @@ export const createMemorySourceRepository = (
       const addRow = (
         row: {
           id: string;
-          source_type: "memory_node" | "memory_event" | "message";
+          source_type:
+            | "memory_node"
+            | "memory_event"
+            | "message"
+            | "curated_memory";
           source_id: string;
           retrieval_stage: RetrievalStageName;
           parent_node_ids?: string[] | null;
@@ -10861,8 +11012,8 @@ export const createMemorySourceRepository = (
         const existing = merged.get(key);
         if (
           !existing ||
-          priority > existing.stagePriority ||
-          (priority === existing.stagePriority && score > existing.score)
+          score > existing.score ||
+          (score === existing.score && priority > existing.stagePriority)
         ) {
           merged.set(key, {
             nodeId: row.id,
@@ -10966,6 +11117,7 @@ export const createMemorySourceRepository = (
         ),
         ...rowsByStage("scoped_leaf_search"),
         ...rowsByStage("leaf_search"),
+        ...rowsByStage("curated_memory_search"),
         ...rowsByStage("fresh_pending_search"),
         ...rowsByStage("lexical_search")
       ]) {
@@ -10987,8 +11139,8 @@ export const createMemorySourceRepository = (
       const results = [...merged.values()]
         .sort(
           (left, right) =>
-            right.stagePriority - left.stagePriority ||
             right.score - left.score ||
+            right.stagePriority - left.stagePriority ||
             right.createdAt.getTime() - left.createdAt.getTime() ||
             (left.sourceId ?? left.nodeId).localeCompare(
               right.sourceId ?? right.nodeId
@@ -11020,6 +11172,8 @@ export const createMemorySourceRepository = (
       }
       embeddingMetadata = {
         ...embeddingMetadata,
+        vectorHitsCount: vectorRows.length,
+        vectorCandidateCount: vectorRows.length,
         stages: stageDiagnostics
       };
 
@@ -11629,6 +11783,17 @@ export const createMemorySourceRepository = (
       );
       const node = visibleNode.rows[0];
       if (!node) {
+        if (teamWorkspaceBoundary) {
+          throw new Error("Memory node not found or not visible");
+        }
+        const curated =
+          await curatedMemoryRepository.expandCuratedMemoryRetrieval(
+            actor,
+            nodeId
+          );
+        if (curated) {
+          return curated;
+        }
         throw new Error("Memory node not found or not visible");
       }
       const hydratedNode = await hydrateMemoryNodeRow(

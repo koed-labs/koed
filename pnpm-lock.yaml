@@ -243,6 +243,9 @@ importers:
 
   packages/evals:
     dependencies:
+      '@koed/api':
+        specifier: workspace:*
+        version: link:../../apps/api
       '@koed/core':
         specifier: workspace:*
         version: link:../core
@@ -255,6 +258,12 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
+      fastify:
+        specifier: ^5.8.5
+        version: 5.8.5
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.10.1
       zod:
         specifier: ^4.4.3
         version: 4.4.3

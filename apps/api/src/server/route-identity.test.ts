@@ -247,6 +247,25 @@ describe("route identity contract", () => {
       "x-koed-identity": "session",
       "x-koed-domain": "operations"
     });
+    expect(openApiPaths["/v1/memory/curated/proposals"]?.post).toMatchObject({
+      security: [{ bearerApiToken: [] }],
+      "x-koed-identity": "api_token",
+      "x-koed-domain": "personal_memory"
+    });
+    expect(
+      openApiPaths["/v1/memory/curated/assertions/{assertionId}"]?.get
+    ).toMatchObject({
+      security: [{ bearerApiToken: [] }],
+      "x-koed-identity": "api_token",
+      "x-koed-domain": "personal_memory"
+    });
+    expect(
+      openApiPaths["/v1/memory/curated/assertions/{assertionId}/suppress"]?.post
+    ).toMatchObject({
+      security: [{ bearerApiToken: [] }],
+      "x-koed-identity": "api_token",
+      "x-koed-domain": "personal_memory"
+    });
     expect(openApiPaths["/v1/analytics/activation-funnel"]?.get).toMatchObject({
       security: [{ sessionCookie: [] }],
       "x-koed-identity": "session",

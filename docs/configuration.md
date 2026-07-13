@@ -248,6 +248,16 @@ Packaged Desktop, headless local-personal startup, and repair commands all read 
 - `API_GRAPH_CACHE_TTL_SECONDS`: graph overview/thread cache TTL when Redis caching is enabled.
 - `API_GRAPH_UPDATE_DEBOUNCE_MS`: debounce window for coalescing graph stream update events.
 - `API_MEMORY_EVENT_GRAPH_UPDATE_DEBOUNCE_MS`: shorter debounce window for captured event stream updates that drive the open history thread.
+- `MEMORY_CURATED_REVIEW_PROVIDER`: local Curated Memory review provider. Only `codex` is supported.
+- `MEMORY_CURATED_REVIEW_MODEL`: model for the separate local Curated Memory reviewer. Default `gpt-5.4-mini`.
+- `MEMORY_CURATED_REVIEW_REASONING_EFFORT`: reasoning effort for Curated Memory review. Default `medium`.
+- `MEMORY_CURATED_REVIEW_TIMEOUT_MS`: maximum duration of one local review call. Default `90000`.
+- `MEMORY_CURATED_REVIEW_MAX_ATTEMPTS`: maximum review attempts before a non-stale worker failure becomes a rejection. Default `2`.
+- `MEMORY_CURATED_REVIEW_MAX_PROMPT_TOKENS`: maximum complete review-bundle size. Oversized evidence fails closed instead of being truncated. Default `24000`.
+- `MEMORY_CURATED_REVIEW_INITIAL_DELAY_MS`: delay before the local service first checks pending proposals. Default `5000`.
+- `MEMORY_CURATED_REVIEW_PUSH_DELAY_MS`: debounce after the proposal tool nudges the local service. Default `250`.
+- `MEMORY_CURATED_REVIEW_INTERVAL_MS`: recovery scan interval for pending or expired review leases. Default `60000`.
+- `MEMORY_CURATED_REVIEW_BATCH_LIMIT`: maximum proposals leased by one service pass. Default `3`, maximum `20`.
 - `API_COOKIE_SECURE`: set `true` behind HTTPS; local HTTP development may use `false`.
 - `KOED_BACKUP_STATUS_PATH`: optional path to a redacted JSON backup status file consumed by `/ops/status`. When omitted, backup freshness is reported as `not_configured`.
 - `KOED_BACKUP_MAX_AGE_SECONDS`: maximum acceptable age for `lastSuccessfulAt` in the backup status file. Default `86400`.

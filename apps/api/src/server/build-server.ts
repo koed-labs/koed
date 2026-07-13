@@ -40,6 +40,7 @@ import {
   createMemoryJobScheduler,
   graphUpdateActionForPayload,
   registerCaptureRoutes,
+  registerCuratedMemoryRoutes,
   registerGraphRoutes,
   registerLocalAgentSettingsRoutes,
   registerLcmRoutes,
@@ -501,6 +502,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerLocalEdgeRoutes(app, routeContext);
   registerCrossIdentitySyncRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
+  registerCuratedMemoryRoutes(app, routeContext);
   registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);
   registerLocalAgentSettingsRoutes(app, routeContext);

@@ -38,6 +38,10 @@ export {
   SyncIdempotencyConflictError,
   SyncStateConflictError
 } from "./cross-identity-sync-repository.js";
+export {
+  createCuratedMemoryRepository,
+  type CuratedMemoryRepository
+} from "./curated-memory-repository.js";
 export { createDeviceCredentialRepository } from "./device-credential-repository.js";
 export {
   createEncryptedPayloadRepository,

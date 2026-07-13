@@ -452,6 +452,7 @@ export interface SearchMemoryInput {
     | "rollup_search"
     | "scoped_leaf_search"
     | "leaf_search"
+    | "curated_memory_search"
     | "fresh_pending_search"
     | "raw_fallback_search"
     | "lexical_search";
@@ -484,7 +485,7 @@ export interface MemoryEventRecord {
 
 export interface MemorySearchResult {
   nodeId: string;
-  sourceType?: "memory_node" | "memory_event" | "message";
+  sourceType?: "memory_node" | "memory_event" | "message" | "curated_memory";
   sourceId?: string;
   sourceChunkIndex?: number;
   sourceChunkCount?: number;
@@ -497,7 +498,7 @@ export interface MemorySearchResult {
   score: number;
   citation: {
     nodeId: string;
-    sourceType?: "memory_node" | "memory_event" | "message";
+    sourceType?: "memory_node" | "memory_event" | "message" | "curated_memory";
     sourceId?: string;
     sourceChunkIndex?: number;
     sourceChunkCount?: number;
@@ -530,8 +531,17 @@ export interface SupportingContextItem {
 }
 
 export interface LcmSourceItem {
-  kind: "memory_event" | "message" | "tool_event" | "lcm_child";
-  sourceTable?: "memory_events" | "messages" | "tool_events";
+  kind:
+    | "memory_event"
+    | "message"
+    | "tool_event"
+    | "conversation_item"
+    | "lcm_child";
+  sourceTable?:
+    | "memory_events"
+    | "messages"
+    | "tool_events"
+    | "conversation_items";
   sourceId?: string;
   nodeId?: string;
   visibility?: Visibility;

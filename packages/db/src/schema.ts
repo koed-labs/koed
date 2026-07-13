@@ -60,6 +60,36 @@ export const memoryQuestionStatus = pgEnum("memory_question_status", [
   "answered",
   "error"
 ]);
+export const curatedMemoryProposalStatus = pgEnum(
+  "curated_memory_proposal_status",
+  ["pending", "stored", "merged", "superseded", "conflicted", "skipped"]
+);
+export const curatedMemoryProposalOperation = pgEnum(
+  "curated_memory_proposal_operation",
+  ["store", "merge", "supersede", "conflict"]
+);
+export const curatedMemoryAssertionStatus = pgEnum(
+  "curated_memory_assertion_status",
+  ["current", "superseded", "conflicting", "suppressed"]
+);
+export const curatedMemorySensitivity = pgEnum("curated_memory_sensitivity", [
+  "normal",
+  "sensitive",
+  "review_required"
+]);
+export const curatedMemorySourceType = pgEnum("curated_memory_source_type", [
+  "conversation_item",
+  "memory_event",
+  "lcm_summary"
+]);
+export const curatedMemorySourceRole = pgEnum("curated_memory_source_role", [
+  "primary_evidence",
+  "supporting_evidence",
+  "superseding_evidence",
+  "conflicting_evidence",
+  "derived_bundle",
+  "derived_summary"
+]);
 export const memorySearchDomain = pgEnum("memory_search_domain", [
   "global",
   "project",
@@ -938,6 +968,266 @@ export const memoryNodeSources = pgTable(
   ]
 );
 
+export const curatedMemoryTopics = pgTable(
+  "curated_memory_topics",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    title: text("title").notNull(),
+    normalizedTitle: text("normalized_title").notNull(),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    uniqueIndex("curated_memory_topics_owner_normalized_unique").on(
+      table.ownerUserId,
+      table.normalizedTitle
+    ),
+    index("curated_memory_topics_owner_updated_idx")
+      .on(table.ownerUserId, table.updatedAt.desc(), table.id.desc())
+      .where(sql`${table.visibility} = 'personal'`),
+    check(
+      "curated_memory_topics_personal_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "curated_memory_topics_title_not_empty_check",
+      sql`length(trim(${table.title})) > 0 and length(trim(${table.normalizedTitle})) > 0`
+    )
+  ]
+);
+
+export const curatedMemoryAssertions = pgTable(
+  "curated_memory_assertions",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    topicId: uuid("topic_id").references(() => curatedMemoryTopics.id, {
+      onDelete: "set null"
+    }),
+    assertionText: text("assertion_text").notNull(),
+    normalizedAssertion: text("normalized_assertion").notNull(),
+    status: curatedMemoryAssertionStatus("status").notNull().default("current"),
+    sensitivity: curatedMemorySensitivity("sensitivity")
+      .notNull()
+      .default("normal"),
+    confidence: integer("confidence").notNull().default(80),
+    tags: text("tags")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    supersedesAssertionId: uuid("supersedes_assertion_id").references(
+      (): AnyPgColumn => curatedMemoryAssertions.id,
+      { onDelete: "set null" }
+    ),
+    supersededByAssertionId: uuid("superseded_by_assertion_id").references(
+      (): AnyPgColumn => curatedMemoryAssertions.id,
+      { onDelete: "set null" }
+    ),
+    conflictWithAssertionId: uuid("conflict_with_assertion_id").references(
+      (): AnyPgColumn => curatedMemoryAssertions.id,
+      { onDelete: "set null" }
+    ),
+    createdByModel: text("created_by_model"),
+    createdByPromptVersion: text("created_by_prompt_version"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    suppressedAt: timestamp("suppressed_at", { withTimezone: true }),
+    suppressedByUserId: uuid("suppressed_by_user_id").references(
+      () => users.id,
+      { onDelete: "set null" }
+    ),
+    suppressionReason: text("suppression_reason"),
+    lastReconciledAt: timestamp("last_reconciled_at", { withTimezone: true }),
+    reconciliationStatus: text("reconciliation_status")
+      .notNull()
+      .default("pending")
+  },
+  (table) => [
+    uniqueIndex("curated_memory_assertions_owner_current_unique")
+      .on(table.ownerUserId, table.normalizedAssertion)
+      .where(
+        sql`${table.visibility} = 'personal'
+          and ${table.status} = 'current'
+          and ${table.suppressedAt} is null
+          and ${table.expiresAt} is null`
+      ),
+    index("curated_memory_assertions_owner_topic_idx")
+      .on(table.ownerUserId, table.topicId, table.updatedAt.desc())
+      .where(sql`${table.visibility} = 'personal'`),
+    index("curated_memory_assertions_owner_status_idx")
+      .on(table.ownerUserId, table.status, table.updatedAt.desc())
+      .where(sql`${table.visibility} = 'personal'`),
+    index("curated_memory_assertions_reconcile_idx")
+      .on(table.reconciliationStatus, table.lastReconciledAt, table.id)
+      .where(
+        sql`${table.status} = 'current' and ${table.suppressedAt} is null`
+      ),
+    check(
+      "curated_memory_assertions_personal_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "curated_memory_assertions_text_not_empty_check",
+      sql`length(trim(${table.assertionText})) > 0 and length(trim(${table.normalizedAssertion})) > 0`
+    ),
+    check(
+      "curated_memory_assertions_confidence_check",
+      sql`${table.confidence} >= 0 and ${table.confidence} <= 100`
+    )
+  ]
+);
+
+export const curatedMemorySources = pgTable(
+  "curated_memory_sources",
+  {
+    id: id(),
+    assertionId: uuid("assertion_id")
+      .notNull()
+      .references(() => curatedMemoryAssertions.id, { onDelete: "cascade" }),
+    sourceType: curatedMemorySourceType("source_type").notNull(),
+    sourceRole: curatedMemorySourceRole("source_role").notNull(),
+    conversationItemId: uuid("conversation_item_id").references(
+      () => conversationItems.id,
+      { onDelete: "cascade" }
+    ),
+    memoryEventId: uuid("memory_event_id").references(() => memoryEvents.id, {
+      onDelete: "cascade"
+    }),
+    lcmNodeId: uuid("lcm_node_id").references(() => memoryNodes.id, {
+      onDelete: "cascade"
+    }),
+    metadata: jsonb("metadata")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("curated_memory_sources_unique").on(
+      table.assertionId,
+      table.sourceType,
+      table.sourceRole,
+      sql`coalesce(${table.conversationItemId}::text, '')`,
+      sql`coalesce(${table.memoryEventId}::text, '')`,
+      sql`coalesce(${table.lcmNodeId}::text, '')`
+    ),
+    index("curated_memory_sources_conversation_item_idx").on(
+      table.conversationItemId,
+      table.assertionId
+    ),
+    index("curated_memory_sources_memory_event_idx").on(
+      table.memoryEventId,
+      table.assertionId
+    ),
+    index("curated_memory_sources_lcm_node_idx").on(
+      table.lcmNodeId,
+      table.assertionId
+    ),
+    check(
+      "curated_memory_sources_one_source_check",
+      sql`(${table.sourceType} = 'conversation_item' and ${table.conversationItemId} is not null and ${table.memoryEventId} is null and ${table.lcmNodeId} is null)
+        or (${table.sourceType} = 'memory_event' and ${table.memoryEventId} is not null and ${table.conversationItemId} is null and ${table.lcmNodeId} is null)
+        or (${table.sourceType} = 'lcm_summary' and ${table.lcmNodeId} is not null and ${table.conversationItemId} is null and ${table.memoryEventId} is null)`
+    )
+  ]
+);
+
+export const curatedMemoryProposals = pgTable(
+  "curated_memory_proposals",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull().default("personal"),
+    proposedClaim: text("proposed_claim").notNull(),
+    proposedTopic: text("proposed_topic"),
+    rationale: text("rationale"),
+    tags: text("tags")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    sensitivityHint: curatedMemorySensitivity("sensitivity_hint"),
+    expiresAtHint: timestamp("expires_at_hint", { withTimezone: true }),
+    evidenceConversationItemIds: uuid("evidence_conversation_item_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    evidenceMemoryEventIds: uuid("evidence_memory_event_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    operation: curatedMemoryProposalOperation("operation")
+      .notNull()
+      .default("store"),
+    targetAssertionId: uuid("target_assertion_id").references(
+      () => curatedMemoryAssertions.id,
+      { onDelete: "set null" }
+    ),
+    status: curatedMemoryProposalStatus("status").notNull().default("pending"),
+    decisionReason: text("decision_reason"),
+    assertionId: uuid("assertion_id").references(
+      () => curatedMemoryAssertions.id,
+      { onDelete: "set null" }
+    ),
+    workerResult: jsonb("worker_result").$type<Record<string, unknown>>(),
+    processingStartedAt: timestamp("processing_started_at", {
+      withTimezone: true
+    }),
+    processingLeaseUntil: timestamp("processing_lease_until", {
+      withTimezone: true
+    }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    lastErrorMessage: text("last_error_message"),
+    createdByModel: text("created_by_model"),
+    createdByPromptVersion: text("created_by_prompt_version"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true })
+  },
+  (table) => [
+    index("curated_memory_proposals_owner_status_idx").on(
+      table.ownerUserId,
+      table.status,
+      table.createdAt.desc()
+    ),
+    index("curated_memory_proposals_pending_idx")
+      .on(table.createdAt, table.id)
+      .where(sql`${table.status} = 'pending'`),
+    check(
+      "curated_memory_proposals_personal_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "curated_memory_proposals_claim_not_empty_check",
+      sql`length(trim(${table.proposedClaim})) > 0`
+    ),
+    check(
+      "curated_memory_proposals_has_evidence_check",
+      sql`cardinality(${table.evidenceConversationItemIds}) > 0 or cardinality(${table.evidenceMemoryEventIds}) > 0`
+    ),
+    check(
+      "curated_memory_proposals_attempt_count_check",
+      sql`${table.attemptCount} >= 0`
+    )
+  ]
+);
+
 export const memoryNodeChildren = pgTable(
   "memory_node_children",
   {
@@ -1236,6 +1526,10 @@ export const encryptedFieldPayloads = pgTable(
       sql`${table.sourceTable} in (
         'conversation_items',
         'conversation_item_observations',
+        'curated_memory_assertions',
+        'curated_memory_proposals',
+        'curated_memory_sources',
+        'curated_memory_topics',
         'memory_embeddings',
         'memory_events',
         'memory_nodes',
@@ -3037,7 +3331,7 @@ export const localMemoryAgentSettings = pgTable(
     ),
     check(
       "local_memory_agent_settings_flow_key_check",
-      sql`${table.flowKey} in ('mcp_memory_answer', 'lcm_summary')`
+      sql`${table.flowKey} in ('mcp_memory_answer', 'lcm_summary', 'curated_memory_review')`
     ),
     check(
       "local_memory_agent_settings_provider_check",
