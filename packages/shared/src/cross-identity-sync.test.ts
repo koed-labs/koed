@@ -124,7 +124,9 @@ describe("Cross-Identity Sync protocol", () => {
   it("fails closed across a bounded protocol mutation corpus", () => {
     const fixture = packageFixture();
     for (const key of Object.keys(fixture)) {
-      const mutated = structuredClone(fixture) as Record<string, unknown>;
+      const mutated = Object.fromEntries(
+        Object.entries(structuredClone(fixture))
+      );
       mutated[key] = null;
       expect(() => isCapturedSessionSyncPackageV1(mutated)).not.toThrow();
       expect(isCapturedSessionSyncPackageV1(mutated)).toBe(false);

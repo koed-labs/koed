@@ -4421,13 +4421,17 @@ describeDb("memory repository visibility", () => {
       "select id,state,idempotency_key,payload_manifest,attempt_count,last_error_message from sync_outbox_entries where sync_relationship_id=$1",
       [ids.relationshipId]
     );
+    const outboxEntry = outbox.rows[0];
     expect(outbox.rows).toHaveLength(1);
-    expect(outbox.rows[0]).toMatchObject({
+    expect(outboxEntry).toMatchObject({
       state: "pending",
       idempotency_key: "changes",
       attempt_count: 0,
       last_error_message: null
     });
+    if (!outboxEntry) {
+      throw new Error("Expected a Cross-Identity Sync outbox entry");
+    }
     await pool.query("set timezone to 'Asia/Bangkok'");
     const delta = await (async () => {
       try {
@@ -4458,7 +4462,7 @@ describeDb("memory repository visibility", () => {
     });
     await encryptedRepo.deferSyncQueueEntry({
       queue: "outbox",
-      id: outbox.rows[0].id,
+      id: outboxEntry.id,
       delayMs: 250
     });
     await expect(

@@ -16,6 +16,7 @@ const workerEnv: WorkerEnvConfig = {
   rawProjectionBatchLimit: 1000,
   rawProjectionActorLimit: 10,
   crossIdentitySyncIntervalMs: 1000,
+  crossIdentitySyncStaleAfterSeconds: 86400,
   koedHome: "/tmp/koed-test",
   logLevel: "silent",
   logDestination: { destination: "stderr" },
