@@ -1865,6 +1865,92 @@ describe("Codex managed conversation coordinator", () => {
     }
   });
 
+  it("does not commit a terminal checkpoint while projection remains held", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-held-checkpoint-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const memoryClient = new FakeMemoryClient();
+    const session = new CodexManagedConversationSession(
+      configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath),
+        directory
+      )
+    );
+
+    try {
+      const started = await session.start();
+      fs.appendFileSync(
+        transcriptPath,
+        [
+          {
+            timestamp: "2026-07-11T14:00:00.000Z",
+            type: "event_msg",
+            payload: { type: "task_started", turn_id: "held-turn" }
+          },
+          {
+            timestamp: "2026-07-11T14:00:01.000Z",
+            type: "response_item",
+            payload: {
+              id: "held-message",
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "Held answer" }]
+            }
+          },
+          {
+            timestamp: "2026-07-11T14:00:02.000Z",
+            type: "event_msg",
+            payload: { type: "task_complete", turn_id: "held-turn" }
+          }
+        ]
+          .map((record) => JSON.stringify(record))
+          .join("\n") + "\n"
+      );
+
+      await (
+        session as unknown as {
+          reconcileAndSealTurn(
+            turnId: string,
+            releaseProjection: boolean
+          ): Promise<void>;
+        }
+      ).reconcileAndSealTurn("held-turn", false);
+
+      expect(
+        memoryClient.observations.some(
+          (item) => item.sourceEventType === "task_complete"
+        )
+      ).toBe(true);
+      expect(
+        memoryClient.operations.some(
+          (operation) =>
+            operation.kind === "release" &&
+            operation.externalTurnId === "held-turn"
+        )
+      ).toBe(false);
+      const checkpointPath = path.join(
+        started.codexHome,
+        "koed-ingestion-state.json"
+      );
+      const committedOffset = fs.existsSync(checkpointPath)
+        ? (Object.values(
+            (
+              JSON.parse(fs.readFileSync(checkpointPath, "utf8")) as {
+                transcriptOffsets: Record<string, { offset: number }>;
+              }
+            ).transcriptOffsets
+          )[0]?.offset ?? 0)
+        : 0;
+      expect(committedOffset).toBeLessThan(fs.statSync(transcriptPath).size);
+    } finally {
+      await session.closeAndWait().catch(() => undefined);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("treats a reconciled JSONL turn_aborted record as terminal", async () => {
     const directory = fs.mkdtempSync(
       path.join(os.tmpdir(), "koed-managed-aborted-recovery-")

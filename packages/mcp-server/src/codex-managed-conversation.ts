@@ -890,7 +890,9 @@ export class CodexManagedConversationSession {
               }
             : {})
         };
-        this.saveTranscriptState();
+        if (this.terminalTurnSessions.size === 0) {
+          this.saveTranscriptState();
+        }
         if (
           parsed.checkpoint.offset >= parsed.checkpoint.size ||
           parsed.checkpoint.offset <= previousCheckpointOffset
@@ -1316,6 +1318,9 @@ export class CodexManagedConversationSession {
     }
     this.terminalTurnSessions.delete(turnId);
     this.clientUserMessageIds.delete(turnId);
+    if (this.terminalTurnSessions.size === 0) {
+      this.saveTranscriptState();
+    }
   }
 
   private async releaseTerminalTurns(): Promise<void> {
