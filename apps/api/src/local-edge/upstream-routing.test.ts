@@ -51,6 +51,7 @@ const credential = (
   deviceInstanceId: "device-1",
   deviceLabel: "Desktop",
   credentialVersion: 1,
+  lineageId: "credential-lineage-id",
   verifierKind: "secret_hash",
   operationFamilies,
   metadata: {},
