@@ -36,6 +36,41 @@ const response = (ok: boolean, status: number, body: unknown): Response =>
     text: async () => JSON.stringify(body)
   }) as Response;
 
+const deferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+};
+
+const deferredCredentialStatusFetch = () => {
+  const requested = deferred<void>();
+  const release = deferred<void>();
+  const fallback = enrollmentFetch();
+  return {
+    requested: requested.promise,
+    release: () => release.resolve(),
+    fetch: async (
+      input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ): Promise<Response> => {
+      const url =
+        typeof input === "string" || input instanceof URL ? input : input.url;
+      if (
+        init?.method === "GET" &&
+        new URL(String(url)).pathname ===
+          "/v1/local-edge/device-credentials/status"
+      ) {
+        requested.resolve();
+        await release.promise;
+        return response(true, 200, { ok: true });
+      }
+      return fallback(input, init);
+    }
+  };
+};
+
 const enrollmentFetch =
   (
     status: "pending" | "approved" | "denied" | "expired" = "pending",
@@ -498,6 +533,95 @@ describe("upstream enrollment orchestration", () => {
     );
     expect(
       readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+    ).not.toBeNull();
+  });
+
+  it("does not let a late status response undo a disconnect", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const started = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "enroll-before-disconnect",
+      fetch: enrollmentFetch()
+    });
+    const reference = started.enrollment!.credential.reference!;
+    const pendingStatus = deferredCredentialStatusFetch();
+    const statusPromise = getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: pendingStatus.fetch
+    });
+    await pendingStatus.requested;
+
+    disconnectUpstreamBackendEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z")
+    });
+    pendingStatus.release();
+
+    await expect(statusPromise).resolves.toMatchObject({
+      ok: true,
+      state: "revoked",
+      enrollment: {
+        requestId: "enroll-before-disconnect",
+        state: "revoked",
+        credential: { status: "revoked" }
+      }
+    });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, reference)
+    ).toBeNull();
+    expect(
+      readLocalEdgeClientCredentialAuthorization(paths.koedHome, "team-vps")
+    ).toBeNull();
+  });
+
+  it("does not let a late status response overwrite a replacement enrollment", async () => {
+    const paths = await registerValidatedBackend();
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const original = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      randomId: () => "original-enrollment",
+      fetch: enrollmentFetch()
+    });
+    const originalReference = original.enrollment!.credential.reference!;
+    const pendingStatus = deferredCredentialStatusFetch();
+    const statusPromise = getUpstreamEnrollmentStatus(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:01:00.000Z"),
+      fetch: pendingStatus.fetch
+    });
+    await pendingStatus.requested;
+
+    disconnectUpstreamBackendEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:02:00.000Z")
+    });
+    updateUpstreamBackendRoutePolicy(paths, "team-vps", {
+      teamWorkspaceRead: "enabled"
+    });
+    const replacement = await startUpstreamEnrollment(paths, "team-vps", {
+      now: () => new Date("2026-01-01T00:03:00.000Z"),
+      randomId: () => "replacement-enrollment",
+      fetch: enrollmentFetch()
+    });
+    const replacementReference = replacement.enrollment!.credential.reference!;
+    pendingStatus.release();
+
+    await expect(statusPromise).resolves.toMatchObject({
+      ok: true,
+      state: "pending",
+      enrollment: {
+        requestId: "replacement-enrollment",
+        state: "pending",
+        credential: { reference: replacementReference }
+      }
+    });
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, originalReference)
+    ).toBeNull();
+    expect(
+      readUpstreamCredentialAuthorization(paths.koedHome, replacementReference)
     ).not.toBeNull();
   });
 });

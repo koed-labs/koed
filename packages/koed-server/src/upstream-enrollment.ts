@@ -530,6 +530,40 @@ const backendById = (
   };
 };
 
+const enrollmentCanReceiveRemoteStatus = (
+  record: UpstreamEnrollmentRecord
+): boolean =>
+  record.state === "pending" ||
+  record.state === "approved" ||
+  record.state === "exchanged";
+
+const sameEnrollmentIdentity = (
+  current: UpstreamEnrollmentRecord | undefined,
+  expected: UpstreamEnrollmentRecord
+): current is UpstreamEnrollmentRecord =>
+  current?.requestId === expected.requestId &&
+  current.credentialReference === expected.credentialReference;
+
+const enrollmentResultFromSnapshot = (
+  backendId: string,
+  record: UpstreamEnrollmentRecord | undefined,
+  backend: UpstreamBackendSummary | undefined
+): UpstreamEnrollmentResult =>
+  record
+    ? {
+        ok: true,
+        state: record.state,
+        backend,
+        enrollment: summarizeEnrollment(record, backend),
+        message: `Upstream enrollment for ${backendId} is ${record.state}.`
+      }
+    : {
+        ok: true,
+        state: "missing",
+        backend,
+        message: `No upstream enrollment has been started for ${backendId}.`
+      };
+
 const materializeState = (
   record: UpstreamEnrollmentRecord,
   now: Date,
@@ -746,11 +780,12 @@ export const startUpstreamEnrollment = async (
   store.enrollments.push(record);
   store.updatedAt = nowIso;
   writeStore(paths, store, resolvedDeps);
+  const refreshedBackend = backendById(paths, backendId, resolvedDeps).backend;
   return {
     ok: true,
     state: "pending",
-    backend,
-    enrollment: summarizeEnrollment(record, backend),
+    backend: refreshedBackend,
+    enrollment: summarizeEnrollment(record, refreshedBackend),
     message: `Started upstream enrollment for ${backendId}. Open the activation URL to approve this local edge.`
   };
 };
@@ -764,7 +799,7 @@ export const getUpstreamEnrollmentStatus = async (
   const backendId = validateBackendId(id);
   const now = resolvedDeps.now();
   let { backend } = backendById(paths, backendId, resolvedDeps);
-  const store = readStore(paths, resolvedDeps);
+  let store = readStore(paths, resolvedDeps);
   const record = latestEnrollment(store, backendId);
   if (!record) {
     return {
@@ -789,6 +824,20 @@ export const getUpstreamEnrollmentStatus = async (
       materialized.credentialReference,
       resolvedDeps
     );
+    store = readStore(paths, resolvedDeps);
+    const currentRecord = latestEnrollment(store, backendId);
+    backend = backendById(paths, backendId, resolvedDeps).backend;
+    if (
+      !sameEnrollmentIdentity(currentRecord, record) ||
+      !enrollmentCanReceiveRemoteStatus(currentRecord) ||
+      !backend ||
+      backend.credential.status === "revoked" ||
+      backend.credential.status === "not_configured" ||
+      backend.credential.reference !== record.credentialReference
+    ) {
+      return enrollmentResultFromSnapshot(backendId, currentRecord, backend);
+    }
+    materialized = materializeState(currentRecord, now, backend);
     if (credentialStatus === "active") {
       updateUpstreamBackendCredential(
         paths,
@@ -866,6 +915,20 @@ export const getUpstreamEnrollmentStatus = async (
         materialized.challengeId,
         resolvedDeps
       );
+      store = readStore(paths, resolvedDeps);
+      const latestRecord = latestEnrollment(store, backendId);
+      backend = backendById(paths, backendId, resolvedDeps).backend;
+      if (
+        !sameEnrollmentIdentity(latestRecord, record) ||
+        !enrollmentCanReceiveRemoteStatus(latestRecord) ||
+        !backend ||
+        backend.credential.status === "revoked" ||
+        backend.credential.status === "not_configured" ||
+        backend.credential.reference !== record.credentialReference
+      ) {
+        return enrollmentResultFromSnapshot(backendId, latestRecord, backend);
+      }
+      materialized = materializeState(latestRecord, now, backend);
       if (upstreamStatus === "denied" || upstreamStatus === "expired") {
         deleteUpstreamCredentialSecret(
           paths.koedHome,
@@ -919,6 +982,16 @@ export const getUpstreamEnrollmentStatus = async (
     );
   }
   if (JSON.stringify(materialized) !== JSON.stringify(record)) {
+    store = readStore(paths, resolvedDeps);
+    const currentRecord = latestEnrollment(store, backendId);
+    if (
+      !sameEnrollmentIdentity(currentRecord, record) ||
+      (!enrollmentCanReceiveRemoteStatus(currentRecord) &&
+        JSON.stringify(currentRecord) !== JSON.stringify(materialized))
+    ) {
+      backend = backendById(paths, backendId, resolvedDeps).backend;
+      return enrollmentResultFromSnapshot(backendId, currentRecord, backend);
+    }
     store.enrollments = store.enrollments.map((entry) =>
       entry.backendId === record.backendId &&
       entry.requestId === record.requestId
