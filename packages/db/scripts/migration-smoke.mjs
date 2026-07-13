@@ -66,19 +66,34 @@ const withDatabase = (connectionString, database) => {
 
 const quoteIdentifier = (value) => `"${value.replaceAll('"', '""')}"`;
 
-const createPre0009MigrationFolder = async () => {
+const appServerMigrationMarker =
+  'CREATE TABLE "conversation_item_observations"';
+
+const createPreAppServerMigrationFolder = async () => {
   const sourceFolder = resolve(packageDir, "drizzle");
   const targetFolder = await mkdtemp(
-    resolve(tmpdir(), "koed-pre-0009-migrations-")
+    resolve(tmpdir(), "koed-pre-app-server-migrations-")
   );
   const targetMetaFolder = resolve(targetFolder, "meta");
   await mkdir(targetMetaFolder, { recursive: true });
   const journal = JSON.parse(
     await readFile(resolve(sourceFolder, "meta", "_journal.json"), "utf8")
   );
-  const entries = journal.entries.filter(
-    (entry) => entry.tag !== "0009_app-server-source-ingestion"
+  const migrationContents = await Promise.all(
+    journal.entries.map((entry) =>
+      readFile(resolve(sourceFolder, `${entry.tag}.sql`), "utf8")
+    )
   );
+  const appServerMigrationIndexes = migrationContents.flatMap(
+    (contents, index) =>
+      contents.includes(appServerMigrationMarker) ? [index] : []
+  );
+  if (appServerMigrationIndexes.length !== 1) {
+    throw new Error(
+      `Expected exactly one app-server ingestion migration, found ${appServerMigrationIndexes.length}`
+    );
+  }
+  const entries = journal.entries.slice(0, appServerMigrationIndexes[0]);
   for (const entry of entries) {
     await copyFile(
       resolve(sourceFolder, `${entry.tag}.sql`),
@@ -92,7 +107,7 @@ const createPre0009MigrationFolder = async () => {
   return targetFolder;
 };
 
-const seedPopulatedPre0009Fixture = async (pool, provider) => {
+const seedPopulatedPreAppServerFixture = async (pool, provider) => {
   const ownerUserId = randomUUID();
   const sessionId = randomUUID();
   const conversationItemId = randomUUID();
@@ -309,7 +324,7 @@ const seedPopulatedPre0009Fixture = async (pool, provider) => {
     );
     if (!result.done || result.encryptedRows !== 1 || result.failedRows !== 0) {
       throw new Error(
-        `Pre-0009 encrypted fixture backfill failed for ${sourceColumn}`
+        `Pre-app-server encrypted fixture backfill failed for ${sourceColumn}`
       );
     }
   }
@@ -394,7 +409,7 @@ const seedPopulatedPre0009Fixture = async (pool, provider) => {
     chunkBackfill.encryptedRows !== chunkTexts.length ||
     chunkBackfill.failedRows !== 0
   ) {
-    throw new Error("Pre-0009 encrypted transport chunk backfill failed");
+    throw new Error("Pre-app-server encrypted transport chunk backfill failed");
   }
 
   return {
@@ -424,7 +439,7 @@ const seedPopulatedPre0009Fixture = async (pool, provider) => {
   };
 };
 
-const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
+const verifyPopulatedAppServerUpgrade = async (pool, provider, fixture) => {
   const encryptedRepository = createEncryptedPayloadRepository(pool);
   const observationCount = await pool.query(
     "select count(*)::int as count from conversation_item_observations"
@@ -437,10 +452,14 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     `
   );
   if (observationCount.rows[0]?.count !== 0) {
-    throw new Error("0009 synthesized historical conversation observations");
+    throw new Error(
+      "App-server migration synthesized historical conversation observations"
+    );
   }
   if (copiedCompanions.rows[0]?.count !== 0) {
-    throw new Error("0009 copied encrypted companions without rebinding");
+    throw new Error(
+      "App-server migration copied encrypted companions without rebinding"
+    );
   }
 
   for (const [sourceColumn, expected] of [
@@ -460,7 +479,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     );
     if (!isDeepStrictEqual(decrypted?.plaintext, expected)) {
       throw new Error(
-        `Populated 0009 upgrade could not decrypt legacy ${sourceColumn}`
+        `Populated app-server upgrade could not decrypt legacy ${sourceColumn}`
       );
     }
   }
@@ -508,14 +527,16 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
             rawJson: fixture.rawJson,
             rawText: fixture.rawText,
             sourceHash: fixture.sourceHash,
-            idempotencyKey: `post-0009-replay-${randomUUID()}`,
+            idempotencyKey: `post-app-server-replay-${randomUUID()}`,
             metadata: { transcriptType: "user_message" }
           }
         ]
       }
     );
     if (!replayed[0]?.id) {
-      throw new Error("0009 legacy replay did not create a canonical parent");
+      throw new Error(
+        "App-server migration legacy replay did not create a canonical parent"
+      );
     }
     const legacyReplayConvergence = await pool.query(
       `
@@ -541,7 +562,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
       })
     ) {
       throw new Error(
-        `0009 legacy replay did not converge safely: ${JSON.stringify(legacyReplayConvergence.rows[0])}`
+        `App-server migration legacy replay did not converge safely: ${JSON.stringify(legacyReplayConvergence.rows[0])}`
       );
     }
 
@@ -558,7 +579,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
         );
       if (decrypted?.plaintext !== expected) {
         throw new Error(
-          `0009 could not decrypt legacy transport chunk ${index}`
+          `App-server migration could not decrypt legacy transport chunk ${index}`
         );
       }
     }
@@ -568,7 +589,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     );
     if (chunkProjection.memoryEventsCreated !== 1) {
       throw new Error(
-        `0009 legacy chunk Projection created ${chunkProjection.memoryEventsCreated} Memory Events`
+        `App-server migration legacy chunk Projection created ${chunkProjection.memoryEventsCreated} Memory Events`
       );
     }
     const replayedChunks = await repository.createConversationItems(
@@ -606,7 +627,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
           transportChunkText: chunk,
           transportChunkEncoding: "conversation-item-json-v2",
           sourceHash: fixture.chunkSourceHashes[index],
-          idempotencyKey: `post-0009-chunk-replay-${index}-${randomUUID()}`,
+          idempotencyKey: `post-app-server-chunk-replay-${index}-${randomUUID()}`,
           metadata: {
             canonicalConversationItemActor: "user",
             canonicalConversationItemKind: "message",
@@ -617,7 +638,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     );
     if (new Set(replayedChunks.map((item) => item.id)).size !== 1) {
       throw new Error(
-        "0009 legacy chunk replay did not converge on one parent"
+        "App-server migration legacy chunk replay did not converge on one parent"
       );
     }
     const convergence = await pool.query(
@@ -638,7 +659,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
       JSON.stringify({ parents: 2, active_parents: 1, retired_parents: 1 })
     ) {
       throw new Error(
-        `0009 legacy chunk convergence failed: ${JSON.stringify(convergence.rows[0])}`
+        `App-server migration legacy chunk convergence failed: ${JSON.stringify(convergence.rows[0])}`
       );
     }
     const chunkMemoryEvents = await pool.query(
@@ -653,7 +674,9 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
       )
     ).map((source) => source?.text);
     if (!embeddableTexts.includes(fixture.chunkText)) {
-      throw new Error("0009 encrypted legacy chunks projected the wrong text");
+      throw new Error(
+        "App-server migration encrypted legacy chunks projected the wrong text"
+      );
     }
   } finally {
     if (previousProfile === undefined) {
@@ -688,7 +711,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     })
   ) {
     throw new Error(
-      `0009 replay integrity counts were unexpected: ${JSON.stringify(counts.rows[0])}`
+      `App-server migration replay integrity counts were unexpected: ${JSON.stringify(counts.rows[0])}`
     );
   }
 
@@ -706,7 +729,9 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     observationJson.includes(fixture.sourcePath) ||
     observationJson.includes("must remain encrypted")
   ) {
-    throw new Error("0009 replay persisted sensitive observation plaintext");
+    throw new Error(
+      "App-server migration replay persisted sensitive observation plaintext"
+    );
   }
   for (const [sourceColumn, expected] of [
     ["raw_json", fixture.rawJson],
@@ -724,7 +749,7 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     );
     if (!isDeepStrictEqual(decrypted?.plaintext, expected)) {
       throw new Error(
-        `0009 replay observation ${sourceColumn} did not decrypt`
+        `App-server migration replay observation ${sourceColumn} did not decrypt`
       );
     }
   }
@@ -746,7 +771,9 @@ const verifyPopulated0009Upgrade = async (pool, provider, fixture) => {
     observationMetadata.canonicalConversationItemKey !== canonicalItemKey ||
     JSON.stringify(observationMetadata).includes("must remain encrypted")
   ) {
-    throw new Error("0009 replay observation metadata did not decrypt safely");
+    throw new Error(
+      "App-server migration replay observation metadata did not decrypt safely"
+    );
   }
 
   const redactionClient = await pool.connect();
@@ -817,19 +844,20 @@ try {
   };
 
   try {
-    const pre0009MigrationFolder = await createPre0009MigrationFolder();
+    const preAppServerMigrationFolder =
+      await createPreAppServerMigrationFolder();
     const provider = createLocalTestKeyEnvelopeEncryptionProvider(
       Buffer.alloc(32, 19).toString("base64")
     );
     try {
       await runDbMigrations(pool, {
-        migrationsFolder: pre0009MigrationFolder
+        migrationsFolder: preAppServerMigrationFolder
       });
-      const fixture = await seedPopulatedPre0009Fixture(pool, provider);
+      const fixture = await seedPopulatedPreAppServerFixture(pool, provider);
       await runDbMigrations(pool);
-      await verifyPopulated0009Upgrade(pool, provider, fixture);
+      await verifyPopulatedAppServerUpgrade(pool, provider, fixture);
     } finally {
-      await rm(pre0009MigrationFolder, { recursive: true, force: true });
+      await rm(preAppServerMigrationFolder, { recursive: true, force: true });
     }
     throwUnexpectedPoolError();
 
