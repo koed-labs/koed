@@ -35,7 +35,7 @@ describe("rate limiting", () => {
         memoryRecall: { windowMs: 60_000, max: 1 },
         projectionRebuild: { windowMs: 60_000, max: 1 }
       },
-      { authenticatedUserId: () => undefined }
+      { resolveAuthenticatedUserId: () => undefined }
     );
     const reply = {
       header: () => reply
@@ -49,6 +49,43 @@ describe("rate limiting", () => {
     await handlers.memoryRead(request("Bearer attacker-one"), reply);
     await expect(
       handlers.memoryRead(request("Bearer attacker-two"), reply)
+    ).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("gives validated users behind one network address independent buckets", async () => {
+    const store = new MemoryRateLimitStore(10);
+    const handlers = createRateLimitHandlers(
+      store,
+      (value) => value,
+      {
+        auth: { windowMs: 60_000, max: 1 },
+        memoryRead: { windowMs: 60_000, max: 1 },
+        memoryWrite: { windowMs: 60_000, max: 1 },
+        memoryRecall: { windowMs: 60_000, max: 1 },
+        projectionRebuild: { windowMs: 60_000, max: 1 }
+      },
+      {
+        resolveAuthenticatedUserId: async (request) =>
+          request.headers.authorization === "Bearer valid-alice"
+            ? "alice"
+            : request.headers.authorization === "Bearer valid-bob"
+              ? "bob"
+              : undefined
+      }
+    );
+    const reply = {
+      header: () => reply
+    } as unknown as FastifyReply;
+    const request = (authorization: string) =>
+      ({
+        ip: "203.0.113.7",
+        headers: { authorization }
+      }) as unknown as FastifyRequest;
+
+    await handlers.memoryRead(request("Bearer valid-alice"), reply);
+    await handlers.memoryRead(request("Bearer valid-bob"), reply);
+    await expect(
+      handlers.memoryRead(request("Bearer valid-alice"), reply)
     ).rejects.toMatchObject({ statusCode: 429 });
   });
 });

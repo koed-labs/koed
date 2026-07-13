@@ -31,6 +31,12 @@ export const publicUser = (user: {
 
 export interface AuthHelpers {
   hashSecret: HashSecret;
+  resolveApiTokenUser(request: FastifyRequest): Promise<{
+    id: string;
+    email: string;
+    displayName: string | null;
+    passwordHash?: string | null;
+  } | null>;
   setSessionCookie(reply: FastifyReply, secret: string): void;
   authenticate(request: FastifyRequest): Promise<{
     id: string;
@@ -85,6 +91,15 @@ export const createAuthHelpers = (
   }
 ): AuthHelpers => {
   const { hashSecret } = options;
+  const apiTokenUsers = new WeakMap<
+    FastifyRequest,
+    Promise<{
+      id: string;
+      email: string;
+      displayName: string | null;
+      passwordHash?: string | null;
+    } | null>
+  >();
   const readAuthorizationCredential = (
     request: FastifyRequest,
     expectedScheme: string
@@ -117,16 +132,25 @@ export const createAuthHelpers = (
     });
   };
 
+  const resolveApiTokenUser = (request: FastifyRequest) => {
+    const cached = apiTokenUsers.get(request);
+    if (cached) {
+      return cached;
+    }
+    const bearer = readAuthorizationCredential(request, "Bearer");
+    const lookup = bearer
+      ? requireRepository().getApiTokenUser(hashSecret(bearer))
+      : Promise.resolve(null);
+    apiTokenUsers.set(request, lookup);
+    return lookup;
+  };
+
   const authenticate = async (request: FastifyRequest) => {
     const repo = requireRepository();
-    const bearer = readAuthorizationCredential(request, "Bearer");
-
-    if (bearer) {
-      const user = await repo.getApiTokenUser(hashSecret(bearer));
-      if (user) {
-        recordAuthContext(request, "api_token", user.id);
-        return user;
-      }
+    const apiTokenUser = await resolveApiTokenUser(request);
+    if (apiTokenUser) {
+      recordAuthContext(request, "api_token", apiTokenUser.id);
+      return apiTokenUser;
     }
 
     const sessionSecret = request.cookies[sessionCookieName];
@@ -158,14 +182,13 @@ export const createAuthHelpers = (
   };
 
   const authenticateApiToken = async (request: FastifyRequest) => {
-    const repo = requireRepository();
     const bearer = readAuthorizationCredential(request, "Bearer");
     if (!bearer) {
       throw Object.assign(new Error("Bearer API token required"), {
         statusCode: 401
       });
     }
-    const user = await repo.getApiTokenUser(hashSecret(bearer));
+    const user = await resolveApiTokenUser(request);
     if (!user) {
       throw Object.assign(new Error("Invalid API token"), { statusCode: 401 });
     }
@@ -247,6 +270,7 @@ export const createAuthHelpers = (
 
   return {
     hashSecret,
+    resolveApiTokenUser,
     setSessionCookie,
     authenticate,
     authenticateSession,

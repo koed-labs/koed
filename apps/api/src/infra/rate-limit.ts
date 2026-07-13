@@ -100,7 +100,9 @@ export type RateLimitHandler = (
 ) => Promise<void>;
 
 export interface RateLimitIdentityOptions {
-  authenticatedUserId(request: FastifyRequest): string | undefined;
+  resolveAuthenticatedUserId(
+    request: FastifyRequest
+  ): string | undefined | Promise<string | undefined>;
 }
 
 export const createRateLimitHandlers = (
@@ -113,7 +115,8 @@ export const createRateLimitHandlers = (
     (name: RateLimitName): RateLimitHandler =>
     async (request, reply) => {
       const policy = rateLimits[name];
-      const authenticatedUserId = identityOptions?.authenticatedUserId(request);
+      const authenticatedUserId =
+        await identityOptions?.resolveAuthenticatedUserId(request);
       if (name === "projectionRebuild" && !authenticatedUserId) {
         throw Object.assign(
           new Error("Authentication required before Projection rate limiting"),
