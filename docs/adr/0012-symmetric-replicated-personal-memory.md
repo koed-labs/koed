@@ -31,10 +31,12 @@ machine owns all Personal Memory.
 
 The current local-first model gives each `koed-server` its own Personal Memory
 store. Desktop manages its local personal `koed-server`; remote/private/cloud
-backends are connect-only from Desktop's perspective. Existing enrollment,
-upstream registry, routing, logical memory, replica, sync-package, outbox, and
-inbox foundations provide useful building blocks, but they do not implement
-personal multi-device replication.
+backends are connect-only from Desktop's perspective. Existing directed
+local-personal-to-hosted Cross-Identity Sync/offload work provides logical
+memory, replica, encrypted package, outbox, inbox, cursor, idempotency, retry,
+and readiness foundations. It does not implement personal multi-device
+replication, and its directed identity, recipient-key, package-closure, and
+deletion protocols are not Personal Device Sync protocols.
 
 Project metadata can help associate local code contexts, but it cannot prove
 User or device identity. Local paths, Git common-directory hashes, and checkout
@@ -56,7 +58,8 @@ local-first capture and avoiding general multi-primary database replication.
 ## Decision
 
 Koed should use **symmetric replicated Personal Memory** for trusted devices
-associated with the same User.
+associated with one **Local Personal Identity**. This is one user-facing
+personal profile across devices, not a set of locally selectable Users.
 
 The V1 replication model should be a relay-assisted, source-owned replicated
 log of immutable Captured Session packages:
@@ -88,6 +91,25 @@ It is application-level replication of source-owned logical Memory units.
 Consistent with ADR 0007, `koed-server` owns pairing, sync, status, recovery,
 and headless contracts; Desktop consumes those machine-readable contracts.
 
+## Relationship To Directed Hosted Cross-Identity Sync
+
+Cross-Identity Sync is an umbrella term with separate product modes:
+
+- **Directed Hosted Cross-Identity Sync / Offload** moves selected source Memory
+  from a local Personal Memory identity to one hosted target replica. The target
+  may independently derive Projection, embeddings, graph data, evidence paths,
+  and LCM Summaries.
+- **Personal Device Sync** is this ADR's symmetric replication of one Local
+  Personal Identity across its Personal Device Group. Every associated device
+  receives and materializes eligible closed Captured Sessions locally.
+
+These modes share only proven common foundations: logical-memory and replica
+provenance, encrypted resumable transport, durable inbox/outbox work,
+idempotency, retry, and readiness/freshness gates. They must retain distinct
+identity, key-management, package-closure, lifecycle, and anti-entropy
+contracts. In particular, a hosted target's independently generated LCM Summary
+does not replace this ADR's hash-bound source LCM Summary artifact.
+
 ## Personal Device Group Authority And Association
 
 A symmetric data plane still needs a neutral identity and key control plane.
@@ -98,8 +120,8 @@ implement the same protocol.
 
 The authority:
 
-- maps deployment-local User subjects into an explicitly approved same-User
-  Personal Device Group;
+- maps device-specific deployment-local User subjects into an explicitly
+  approved Personal Device Group for one Local Personal Identity;
 - verifies browser-mediated enrollment and device proof of possession;
 - records device public keys, membership, permitted personal operations,
   membership-statement expiry, revocation, and key epoch;
@@ -115,15 +137,31 @@ enrollment, revocation, recovery, and key-epoch changes fail closed. Existing
 package exchange may continue only while a cached signed membership statement
 is unexpired, which bounds revocation delay.
 
-Personal Device Association is a same-User, cross-deployment specialization of
-Cross-Identity Sync. It keeps one logical Memory lifespan across deployment-
-local identities; it is not Fork/Import and does not imply Team sharing.
+Personal Device Association is a same-Local-Personal-Identity,
+cross-deployment specialization of Cross-Identity Sync. It keeps one logical
+Memory lifespan across deployment-local identities; it is not Fork/Import and
+does not imply Team sharing.
+
+A device necessarily has its own database subject, device id, and device key.
+Those are replication and revocation implementation details, not locally
+selectable product Users. The Personal Device Group binds them into one visible
+Local Personal Identity.
+
+A **Remote Account Link** is separate from the Personal Device Group. It maps
+one Local Personal Identity to one explicitly approved remote deployment and
+remote User. One Local Personal Identity may have many Remote Account Links;
+a link is not proof of real-world identity equality, does not merge accounts,
+and does not create synchronization, Team Membership, Workspace Access, or a
+Share Grant. Browser-mediated remote authentication must assert the remote User
+before the link becomes active. A grouped device may see redacted link metadata,
+but must enroll its own device credential for that remote deployment; credentials
+are never copied between devices.
 
 Browser-mediated enrollment creates group membership but does not itself start
 Memory synchronization. The association must record at least:
 
-- stable opaque deployment and device instance ids;
-- source and target User subjects;
+- stable opaque Local Personal Identity, deployment, and device instance ids;
+- deployment-local User subjects for every group member;
 - device public key or equivalent verifier;
 - allowed personal operation families;
 - creation, validation, expiry, and revocation state;
@@ -147,9 +185,10 @@ ordinary config, or support diagnostics.
 
 Device association and synchronization consent are separate.
 
-Each User owns an explicit Personal Sync Policy that selects eligible devices,
-source classes, and time boundaries. V1 may offer an opt-in policy for future
-closed Captured Sessions, but association alone synchronizes nothing. Historical
+The Local Personal Identity owns an explicit Personal Sync Policy that selects
+eligible devices, source classes, and time boundaries. V1 may offer an opt-in
+policy for future closed Captured Sessions, but association alone synchronizes
+nothing. A Remote Account Link likewise synchronizes nothing. Historical
 backfill requires a separate, bounded consent step.
 
 Effective Capture Policy, Capture Target, Capture State, and Capture Pause still
@@ -161,7 +200,9 @@ pause, revocation, and status must remain visible.
 
 ## Replication Unit And Ownership
 
-V1 should replicate one Captured Session at a time.
+V1 should replicate one Captured Session at a time. Personal Device Sync uses
+its own versioned package protocol; it must not treat a directed hosted
+projected-event package as its source closure.
 
 A package should contain the closed source set needed to reconstruct that
 Session's Personal Memory representation, including where applicable:
@@ -301,6 +342,9 @@ as ambiguity rather than automatic association.
 - Forks, multiple candidates, or conflicting historical aliases require User
   confirmation.
 - Local-only repositories require manual association.
+- A User may inspect, correct, remove, or manually create an association.
+  Explicit User choice overrides detection and prevents future automatic
+  reassociation until that choice is removed.
 - Project association affects Personal Memory grouping and search context only.
 - Project association never creates, selects, or authorizes a Team Workspace.
 
@@ -378,7 +422,7 @@ Advantages:
 - one aggregate index and recall authority;
 - fewer replicas and less repeated Projection/embedding work;
 - easier operational status, quotas, backup, and support;
-- direct reuse of source-to-target Cross-Identity Sync semantics.
+- direct reuse of directed source-to-target Cross-Identity Sync semantics.
 
 Disadvantages:
 
@@ -448,7 +492,8 @@ Acceptance should create or amend implementation work for:
 
 1. stable deployment/device identity and cloned-`KOED_HOME` handling;
 2. secure Desktop and headless credential storage;
-3. same-User Personal Device Association and key epochs;
+3. one-Local-Personal-Identity Personal Device Association, group membership,
+   Remote Account Links, and key epochs;
 4. versioned Captured Session package closure;
 5. target-decryptable package encryption and source signatures;
 6. resumable source outbox, relay mailbox, and target inbox;
@@ -459,11 +504,13 @@ Acceptance should create or amend implementation work for:
 11. historical-import integration without implicit upload consent;
 12. two-device and N-device migration, outage, replay, and security validation.
 
-KOE-264 remains the persistence foundation, but its source-to-target model must
-be generalized to multiple device replicas and per-device cursors. KOE-269
-should own supported headless pairing and recovery surfaces. KOE-317 and its
-children should preserve origin deployment/device provenance and must not imply
-synchronization consent.
+KOE-264 remains a directed-hosted persistence foundation. Personal Device Sync
+must generalize only proven shared primitives to multiple device replicas and
+per-device cursors; it must not inherit directed hosted identity, recipient-key,
+package-closure, or deletion semantics unchanged. KOE-269 should own supported
+headless pairing, Remote Account Link enrollment, and recovery surfaces.
+KOE-317 and its children should preserve origin deployment/device provenance and
+must not imply synchronization consent.
 
 ## Discussion Required Before Acceptance
 
@@ -478,4 +525,7 @@ Reviewers should explicitly decide:
 - how long an encrypted relay retains undelivered packages and acknowledged
   tombstones;
 - which Project alias ambiguities always require confirmation;
-- what mixed-version window is supported during rolling device upgrades.
+- what mixed-version window is supported during rolling device upgrades;
+- how one Local Personal Identity, its device-specific implementation subjects,
+  and its explicitly linked remote Users are represented without local
+  multi-user setup or automatic account merging.
