@@ -37,7 +37,7 @@ describe("local work queue repository", () => {
     );
     const sql = String(pool.query.mock.calls[0]?.[0] ?? "");
     expect(sql).toContain("where job_key is not null");
-    expect(sql).toContain("local_work_queue.status = 'failed'");
+    expect(sql).toContain("local_work_queue.status in ('failed', 'completed')");
     expect(sql).toContain("then 'pending'");
   });
 

@@ -104,59 +104,59 @@ export const createLocalWorkQueueRepository = (
           where job_key is not null
           do update set
             job_name = case
-              when local_work_queue.status = 'failed' then excluded.job_name
+              when local_work_queue.status in ('failed', 'completed') then excluded.job_name
               else local_work_queue.job_name
             end,
             data = case
-              when local_work_queue.status = 'failed' then excluded.data
+              when local_work_queue.status in ('failed', 'completed') then excluded.data
               else local_work_queue.data
             end,
             status = case
-              when local_work_queue.status = 'failed' then 'pending'
+              when local_work_queue.status in ('failed', 'completed') then 'pending'
               else local_work_queue.status
             end,
             attempt_count = case
-              when local_work_queue.status = 'failed' then 0
+              when local_work_queue.status in ('failed', 'completed') then 0
               else local_work_queue.attempt_count
             end,
             max_attempts = case
-              when local_work_queue.status = 'failed' then excluded.max_attempts
+              when local_work_queue.status in ('failed', 'completed') then excluded.max_attempts
               else local_work_queue.max_attempts
             end,
             backoff_ms = case
-              when local_work_queue.status = 'failed' then excluded.backoff_ms
+              when local_work_queue.status in ('failed', 'completed') then excluded.backoff_ms
               else local_work_queue.backoff_ms
             end,
             available_at = case
-              when local_work_queue.status = 'failed' then excluded.available_at
+              when local_work_queue.status in ('failed', 'completed') then excluded.available_at
               else local_work_queue.available_at
             end,
             locked_at = case
-              when local_work_queue.status = 'failed' then null
+              when local_work_queue.status in ('failed', 'completed') then null
               else local_work_queue.locked_at
             end,
             locked_until = case
-              when local_work_queue.status = 'failed' then null
+              when local_work_queue.status in ('failed', 'completed') then null
               else local_work_queue.locked_until
             end,
             lock_token = case
-              when local_work_queue.status = 'failed' then null
+              when local_work_queue.status in ('failed', 'completed') then null
               else local_work_queue.lock_token
             end,
             completed_at = case
-              when local_work_queue.status = 'failed' then null
+              when local_work_queue.status in ('failed', 'completed') then null
               else local_work_queue.completed_at
             end,
             failed_at = case
-              when local_work_queue.status = 'failed' then null
+              when local_work_queue.status in ('failed', 'completed') then null
               else local_work_queue.failed_at
             end,
             last_error = case
-              when local_work_queue.status = 'failed' then null
+              when local_work_queue.status in ('failed', 'completed') then null
               else local_work_queue.last_error
             end,
             updated_at = case
-              when local_work_queue.status = 'failed' then now()
+              when local_work_queue.status in ('failed', 'completed') then now()
               else local_work_queue.updated_at
             end
         returning id

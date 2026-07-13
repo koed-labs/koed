@@ -257,6 +257,53 @@ describeDb("memory repository visibility", () => {
     await runDbMigrations(pool);
   });
 
+  it("requeues a completed deterministic local job", async () => {
+    const queue = createLocalWorkQueueRepository(pool);
+    const first = await queue.enqueue({
+      queueName: "memory-embed",
+      jobName: "embed-source",
+      jobKey: "completed-requeue",
+      data: { sourceId: "event-1" },
+      maxAttempts: 2
+    });
+    const firstClaim = await queue.claim<{ sourceId: string }>({
+      queueName: "memory-embed",
+      leaseMs: 60_000
+    });
+    expect(firstClaim).toMatchObject({
+      id: first.id,
+      data: { sourceId: "event-1" },
+      attemptCount: 1
+    });
+    expect(
+      await queue.complete({
+        id: firstClaim!.id,
+        lockToken: firstClaim!.lockToken
+      })
+    ).toBe(true);
+
+    const second = await queue.enqueue({
+      queueName: "memory-embed",
+      jobName: "embed-source-again",
+      jobKey: "completed-requeue",
+      data: { sourceId: "event-2" },
+      maxAttempts: 4
+    });
+    const secondClaim = await queue.claim<{ sourceId: string }>({
+      queueName: "memory-embed",
+      leaseMs: 60_000
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(secondClaim).toMatchObject({
+      id: first.id,
+      jobName: "embed-source-again",
+      data: { sourceId: "event-2" },
+      attemptCount: 1,
+      maxAttempts: 4
+    });
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     await pool.query(
