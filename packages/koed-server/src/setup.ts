@@ -385,7 +385,16 @@ const resolveBundledDatabaseEnvironment = (
   repoEnv: Record<string, string>,
   dependencies: Pick<KoedServerSetupOptions, "existsSync" | "readFileSync">
 ): BundledDatabaseResolution => {
-  const persisted = readLocalServiceSecrets(paths, dependencies);
+  const explicitDatabaseUrl = trimValue(invocationEnvironment.DATABASE_URL);
+  if (explicitDatabaseUrl) {
+    return { ok: true, environment: { DATABASE_URL: explicitDatabaseUrl } };
+  }
+  const explicitPassword =
+    trimValue(invocationEnvironment.POSTGRES_PASSWORD) ??
+    trimValue(invocationEnvironment.KOED_BUNDLED_POSTGRES_PASSWORD);
+  const persisted = explicitPassword
+    ? ({ state: "absent" } as const)
+    : readLocalServiceSecrets(paths, dependencies);
   if (persisted.state === "invalid") {
     return {
       ok: false,
@@ -400,9 +409,6 @@ const resolveBundledDatabaseEnvironment = (
       action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup codex --json.`
     };
   }
-  const explicitPassword =
-    trimValue(invocationEnvironment.POSTGRES_PASSWORD) ??
-    trimValue(invocationEnvironment.KOED_BUNDLED_POSTGRES_PASSWORD);
   const password =
     explicitPassword ??
     (persisted.state === "valid"

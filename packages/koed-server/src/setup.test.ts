@@ -180,7 +180,7 @@ describe("Codex setup wrapper", () => {
     const root = tempDir();
     writeRuntimeState(root);
     writeLocalPorts(root);
-    writeLocalSecrets(root, { POSTGRES_PASSWORD: "persisted-password" });
+    writeLocalSecrets(root, { API_TOKEN_PEPPER: "unrelated-pepper" });
     const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
     setupCodex({
@@ -199,6 +199,29 @@ describe("Codex setup wrapper", () => {
     expect(calls[0]?.env?.DATABASE_URL).toBe(
       "postgres://koed:explicit%3Ap%40ss@127.0.0.1:55432/koed"
     );
+  });
+
+  it("preserves an explicit DATABASE_URL without reading persisted secrets", () => {
+    const root = tempDir();
+    writeRuntimeState(root);
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(resolve(root, "config/local-service-secrets.json"), "{");
+    const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
+
+    const result = setupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        DATABASE_URL: "postgres://operator/explicit"
+      },
+      spawnSync: (_command, _args, options) => {
+        calls.push({ env: options?.env });
+        return spawnResult();
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://operator/explicit");
   });
 
   it("keeps explicit external setup isolated from bundled-local state", () => {
