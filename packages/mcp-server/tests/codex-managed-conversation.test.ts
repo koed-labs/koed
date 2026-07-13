@@ -105,6 +105,7 @@ const writeManagedFakeAppServer = (
     launchCounterPath?: string;
     lifecyclePath?: string;
     pathOnlyInThreadStarted?: boolean;
+    primaryParentThreadId?: string;
   } = {}
 ): string => {
   const modulePath = path.join(directory, "managed-fake-app-server.mjs");
@@ -265,7 +266,7 @@ reader.on("line", (line) => {
       send({ method: "item/completed", params: { threadId, turnId: "prestart-turn", completedAtMs: Date.now(), item: { id: "prestart-" + index, type: "agentMessage", text: "prestart" } } });
     }
     if (options.pathOnlyInThreadStarted) {
-      send({ method: "thread/started", params: { thread: { id: threadId, sessionId: "session-tree-1", path: transcriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1", gitInfo: { branch: "test" } } } });
+      send({ method: "thread/started", params: { thread: { id: threadId, sessionId: "session-tree-1", ...(options.primaryParentThreadId ? { parentThreadId: options.primaryParentThreadId } : {}), path: transcriptPath, cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1", gitInfo: { branch: "test" } } } });
     }
     send({ id: message.id, result: { thread: { id: threadId, sessionId: "session-tree-1", ...(options.pathOnlyInThreadStarted ? {} : { path: transcriptPath }), cwd: message.params.cwd, source: "user", modelProvider: "openai", cliVersion: "fake-1", gitInfo: { branch: "test" } } } });
     if (typeof options.idleNotificationDelayMs === "number") {
@@ -593,6 +594,51 @@ describe("Codex managed conversation coordinator", () => {
       await expect(session.start()).resolves.toMatchObject({
         thread: { id: "managed-thread-1", path: transcriptPath },
         transcriptPath
+      });
+    } finally {
+      session.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("retains parent identity when thread/started supplies the primary rollout path", async () => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "koed-managed-conversation-")
+    );
+    const transcriptPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(transcriptPath, "", { mode: 0o600 });
+    const memoryClient = new FakeMemoryClient();
+    const session = new CodexManagedConversationSession(
+      configFor(
+        memoryClient,
+        writeManagedFakeAppServer(directory, transcriptPath, {
+          pathOnlyInThreadStarted: true,
+          primaryParentThreadId: "parent-thread-1"
+        }),
+        directory
+      )
+    );
+
+    try {
+      await expect(session.start()).resolves.toMatchObject({
+        thread: {
+          id: "managed-thread-1",
+          parentThreadId: "parent-thread-1",
+          path: transcriptPath
+        },
+        transcriptPath
+      });
+      expect(
+        memoryClient.operations.find(
+          (operation) => operation.kind === "create_session"
+        )
+      ).toMatchObject({
+        input: {
+          metadata: {
+            parentThreadId: "parent-thread-1",
+            parentExternalSessionId: "parent-thread-1"
+          }
+        }
       });
     } finally {
       session.close();

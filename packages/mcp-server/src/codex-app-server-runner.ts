@@ -35,6 +35,7 @@ export interface CodexAppServerRawEvent {
 export interface CodexAppServerThreadInfo {
   id: string;
   sessionId?: string;
+  parentThreadId?: string;
   path?: string;
   cwd?: string;
   source?: unknown;
@@ -688,6 +689,9 @@ const threadInfoFromResponse = (
     id: thread.id,
     ...(typeof thread.sessionId === "string"
       ? { sessionId: thread.sessionId }
+      : {}),
+    ...(typeof thread.parentThreadId === "string"
+      ? { parentThreadId: thread.parentThreadId }
       : {}),
     ...(typeof thread.path === "string" ? { path: thread.path } : {}),
     ...(typeof thread.cwd === "string" ? { cwd: thread.cwd } : {}),

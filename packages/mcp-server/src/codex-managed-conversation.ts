@@ -215,7 +215,7 @@ type ManagedConversationSource = {
 
 const threadInfoFromStartedEvent = (
   event: CodexAppServerRawEvent
-): (CodexAppServerThreadInfo & { parentThreadId?: string }) | null => {
+): CodexAppServerThreadInfo | null => {
   if (event.method !== "thread/started") {
     return null;
   }
@@ -250,16 +250,20 @@ const mergeStartedThreadInfo = (
   responseThread: CodexAppServerThreadInfo,
   events: CodexAppServerRawEvent[]
 ): CodexAppServerThreadInfo => {
-  const startedThreads = events.map(threadInfoFromStartedEvent).filter(
-    (
-      thread
-    ): thread is CodexAppServerThreadInfo & {
-      parentThreadId?: string;
-    } => thread?.id === responseThread.id && !thread.parentThreadId
-  );
+  const startedThreads = events
+    .map(threadInfoFromStartedEvent)
+    .filter(
+      (thread): thread is CodexAppServerThreadInfo =>
+        thread?.id === responseThread.id
+    );
   let merged = responseThread;
   for (const startedThread of startedThreads) {
-    for (const field of ["sessionId", "path", "cwd"] as const) {
+    for (const field of [
+      "sessionId",
+      "parentThreadId",
+      "path",
+      "cwd"
+    ] as const) {
       if (
         merged[field] !== undefined &&
         startedThread[field] !== undefined &&
@@ -465,12 +469,19 @@ export class CodexManagedConversationSession {
           adapter: "codex-app-server-conversation-v1",
           threadId: thread.id,
           sessionId: thread.sessionId,
-          path: thread.path
+          path: thread.path,
+          parentThreadId: thread.parentThreadId
         }),
         metadata: {
           managedConversation: true,
           externalThreadId: thread.id,
           sessionTreeId: thread.sessionId,
+          ...(thread.parentThreadId
+            ? {
+                parentThreadId: thread.parentThreadId,
+                parentExternalSessionId: thread.parentThreadId
+              }
+            : {}),
           threadSource: thread.source,
           modelProvider: thread.modelProvider,
           cliVersion: thread.cliVersion,
@@ -1148,7 +1159,10 @@ export class CodexManagedConversationSession {
       return {
         thread: this.thread,
         sessionId: this.sessionId,
-        threadKind: "conversation"
+        threadKind: "conversation",
+        ...(this.thread.parentThreadId
+          ? { parentThreadId: this.thread.parentThreadId }
+          : {})
       };
     }
     return this.childSources.get(threadId) ?? null;
