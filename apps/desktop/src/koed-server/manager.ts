@@ -595,6 +595,7 @@ export const createKoedServerManager = ({
   openPath
 }: KoedServerManagerOptions): KoedServerManager => {
   let serverProcess: ChildProcess | null = null;
+  let enrollmentReconciliation: Promise<void> | null = null;
   const startOutputLines: string[] = [];
   void environment;
 
@@ -745,18 +746,32 @@ export const createKoedServerManager = ({
     };
   };
 
-  const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
-    let current = await runJson(["status"], 10_000);
+  const scheduleEnrollmentReconciliation = (current: unknown): void => {
     const backendIds = pendingEnrollmentBackendIds(current);
-    for (const backendId of backendIds) {
-      await runJson(
-        ["upstream", "enroll", "status", "--id", backendId],
-        15_000
-      );
+    if (backendIds.length === 0 || enrollmentReconciliation) {
+      return;
     }
-    if (backendIds.length > 0) {
-      current = await runJson(["status"], 10_000);
-    }
+    const reconciliation = (async () => {
+      for (const backendId of backendIds) {
+        await runJson(
+          ["upstream", "enroll", "status", "--id", backendId],
+          15_000
+        );
+      }
+    })();
+    enrollmentReconciliation = reconciliation;
+    void reconciliation
+      .catch(() => undefined)
+      .finally(() => {
+        if (enrollmentReconciliation === reconciliation) {
+          enrollmentReconciliation = null;
+        }
+      });
+  };
+
+  const statusWithEnrollmentReconciliation = async (): Promise<unknown> => {
+    const current = await runJson(["status"], 10_000);
+    scheduleEnrollmentReconciliation(current);
     return withPackageComponent(current);
   };
 
