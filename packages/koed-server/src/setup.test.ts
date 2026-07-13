@@ -84,6 +84,38 @@ describe("Codex setup wrapper", () => {
     expect(calls[0]?.env?.MEMORY_API_URL).toBe("http://localhost:43300");
   });
 
+  it("uses the bundled-local Postgres port instead of a repo DATABASE_URL", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config", "local-ports.json"),
+      JSON.stringify({ postgres: "45432" })
+    );
+    writeFileSync(
+      resolve(root, ".env"),
+      "DATABASE_URL=postgres://external:external@localhost:15432/koed\nPOSTGRES_PASSWORD=local-password\n"
+    );
+    const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
+
+    setupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "1",
+        KOED_DEPENDENCY_MODE: "bundled-local"
+      },
+      spawnSync: (_command, _args, options) => {
+        calls.push({ env: options?.env });
+        return spawnResult();
+      }
+    });
+
+    expect(calls[0]?.env?.POSTGRES_HOST_PORT).toBe("45432");
+    expect(calls[0]?.env?.DATABASE_URL).toBe(
+      "postgres://koed:local-password@127.0.0.1:45432/koed"
+    );
+  });
+
   it("returns actionable failure JSON on bootstrap error", () => {
     const root = tempDir();
     const result = setupCodex({

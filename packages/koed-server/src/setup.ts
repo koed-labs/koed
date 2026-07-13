@@ -15,7 +15,12 @@ import {
   resolveLocalApiToken,
   writeExplorerCredential
 } from "./credentials.js";
+import { resolveKoedServerConfig } from "./config.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
+import {
+  localPostgresEnv,
+  resolveLocalPostgresRuntimePaths
+} from "./local-postgres-runtime.js";
 import { ensureKoedHome, resolveKoedServerPaths } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
@@ -307,10 +312,24 @@ export const setupCodex = ({
     readRuntimeState(paths.runtimeStatePath)
   );
   const repoEnv = loadRepoEnv(paths.repoRoot);
+  const serverConfig = resolveKoedServerConfig(paths, {
+    ...repoEnv,
+    ...environment
+  });
+  const bundledLocalDatabaseEnvironment =
+    serverConfig.dependencyMode === "bundled-local"
+      ? localPostgresEnv(
+          resolveLocalPostgresRuntimePaths(paths, {
+            ...repoEnv,
+            ...environment
+          })
+        )
+      : {};
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...repoEnv,
     ...environment,
+    ...bundledLocalDatabaseEnvironment,
     KOED_SERVER_MANAGED: "1"
   };
   const apiUrl = resolveApiUrl(environment, repoEnv);
