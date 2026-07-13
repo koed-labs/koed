@@ -1040,7 +1040,7 @@ describe("JSON command output", () => {
       {
         stdout: stdout.stream,
         resolvePaths: () => ({ repoRoot: "/repo" }) as never,
-        cancelUpstreamEnroll: () => ({
+        cancelUpstreamEnroll: async () => ({
           ok: true,
           state: "canceled",
           message: "canceled"
@@ -1128,7 +1128,7 @@ describe("JSON command output", () => {
       {
         stdout: stdout.stream,
         resolvePaths: () => ({ repoRoot: "/repo" }) as never,
-        disconnectUpstream: () => ({
+        disconnectUpstream: async () => ({
           ok: true,
           state: "revoked",
           message: "revoked",
