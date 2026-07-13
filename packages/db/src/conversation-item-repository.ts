@@ -1045,6 +1045,7 @@ const loadAndValidateConversationItemSession = async (input: {
         and visibility = $3::visibility_scope
         and invalidated_at is null
         and personal_deleted_at is null
+        and coalesce((metadata->>'syncReplica')::boolean, false) = false
       limit 1
       for update
     `,

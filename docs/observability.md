@@ -51,10 +51,24 @@ Operational events use namespaced `event.name` values:
 - `graph_stream.notification.parse_failed`
 - `graph_stream.listener.failed`
 - `graph_stream.listener.start_failed`
+- `sync.outbox.failed`
+- `sync.inbox.failed`
+- `sync.service.failed`
 
 Use the database `audit_events` table for durable operator/audit history such
 as token lifecycle changes, login outcomes, policy changes, and destructive
 memory actions. Operational logs are for debugging and monitoring.
+
+Cross-Identity Sync logs include only the queue side, bounded attempt count,
+and redacted error class. Remote response bodies, package manifests and bytes,
+Memory content, relationship/customer identifiers, credentials, recipient-key
+material, and provider details are not log fields. `/ops/status` reports
+bounded-cardinality queue depth/age, retry count, relationship state counts,
+recent byte/record throughput, and source/target record lag. Record throughput
+uses the authenticated package-manifest record count rather than cursor
+distance because monotonic source cursors may contain gaps between sessions.
+Source lag counts unsynchronized canonical changes for each selected session;
+target lag counts authenticated package records beyond the processing cursor.
 
 Current durable audit action names:
 
@@ -65,6 +79,14 @@ Current durable audit action names:
 - `memory.deleted`
 - `memory.presentation_updated`
 - `memory_event.invalidated`
+- `cross_identity_sync.relationship.created`
+- `cross_identity_sync.upload.committed`
+- `cross_identity_sync.processing.completed`
+- `cross_identity_sync.processing.failed`
+- `cross_identity_sync.transport.failed`
+- `cross_identity_sync.relationship.revoked`
+- `cross_identity_sync.relationship.remote_revoked`
+- `cross_identity_sync.relationship.retry_requested`
 
 Audit metadata may include identifiers, target names, target type, capture
 state, visibility, pause timestamps, token prefixes, actor type, and changed

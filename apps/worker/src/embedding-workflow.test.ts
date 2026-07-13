@@ -15,6 +15,8 @@ const workerEnv: WorkerEnvConfig = {
   rawProjectionIntervalMs: 5000,
   rawProjectionBatchLimit: 1000,
   rawProjectionActorLimit: 10,
+  crossIdentitySyncIntervalMs: 1000,
+  koedHome: "/tmp/koed-test",
   logLevel: "silent",
   logDestination: { destination: "stderr" },
   nodeEnv: "test",
@@ -39,11 +41,14 @@ const jsonResponse = (body: Record<string, unknown>, status = 200) =>
 describe("embedding workflow", () => {
   it("stores validated embedding chunks without prefixing source text", async () => {
     const getEmbeddableSource = vi.fn().mockResolvedValue(source);
-    const replaceSourceEmbeddings = vi
-      .fn()
+    const replaceSourceEmbeddings = vi.fn();
+    const getCurrentSourceEmbeddingChunkCount = vi.fn().mockResolvedValue(null);
+    replaceSourceEmbeddings
+      .mockClear()
       .mockResolvedValue({ ids: ["embedding-1"], inserted: true });
     const repository = {
       getEmbeddableSource,
+      getCurrentSourceEmbeddingChunkCount,
       replaceSourceEmbeddings
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn().mockResolvedValue(
@@ -84,6 +89,12 @@ describe("embedding workflow", () => {
     );
     expect(String(fetchFn.mock.calls[0]?.[1]?.body)).not.toContain("Instruct:");
     expect(replaceSourceEmbeddings).toHaveBeenCalledWith(
+    expect(getCurrentSourceEmbeddingChunkCount).toHaveBeenCalledWith({
+      source,
+      model: "test-embedding-model",
+      dimensions: 3,
+      version: "test-embedding-model"
+    });
       expect.objectContaining({
         source,
         model: "embedding-model",
@@ -104,6 +115,7 @@ describe("embedding workflow", () => {
   it("rejects invalid embedding service payloads", async () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
       replaceSourceEmbeddings: vi.fn()
     } as unknown as MemorySourceRepository;
     const workflow = createEmbeddingWorkflow({
@@ -121,5 +133,29 @@ describe("embedding workflow", () => {
     await expect(
       workflow.embedSource("memory_event", "event-1")
     ).rejects.toThrow("embedding service returned an invalid 3-dim response");
+  });
+
+  it("reuses a complete current embedding without calling the service", async () => {
+    const repository = {
+      getEmbeddableSource: vi.fn().mockResolvedValue(source),
+      getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(2),
+      upsertSourceEmbedding: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn();
+    const workflow = createEmbeddingWorkflow({
+      env: workerEnv,
+      fetchFn,
+      repository: () => repository
+    });
+
+    await expect(
+      workflow.embedSource("memory_event", "event-1")
+    ).resolves.toEqual({
+      dimensions: 3,
+      inserted: false,
+      chunks: 2
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(repository.upsertSourceEmbedding).not.toHaveBeenCalled();
   });
 });

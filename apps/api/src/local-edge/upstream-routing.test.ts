@@ -213,12 +213,21 @@ describe("local edge upstream routing", () => {
         operationFamily: "sync",
         upstreamBackendId: "team-vps",
         upstreamBackend: backend(),
-        deviceCredential: credential(["sync"])
+        upstreamCredentialAvailable: true
       })
     ).toMatchObject({
       action: "queued_sync_handoff",
       reason: "queued_sync_handoff"
     });
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "sync",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend(),
+        deviceCredential: credential(["sync"]),
+        upstreamCredentialAvailable: false
+      })
+    ).toMatchObject({ action: "deny_fail_closed", reason: "missing" });
   });
 
   it("fails closed when the device credential does not allow the operation family", () => {

@@ -8,6 +8,8 @@ export {
   createHttpManagedKmsKeyring,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
+  createRecipientPrivateKeyEnvelopeEncryptionProvider,
+  createRecipientPublicKeyEnvelopeEncryptionProvider,
   createUnsupportedEnvelopeEncryptionProvider,
   DATA_ENCRYPTION_KEY_ENV_ALIAS,
   decryptEnvelopeToUtf8,
@@ -16,13 +18,20 @@ export {
   ENCRYPTED_PAYLOAD_KEY_WRAP_ALGORITHM,
   ENCRYPTED_PAYLOAD_KMS_KEY_WRAP_ALGORITHM,
   ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM,
+  ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM,
   envelopeEncryptionProviderModes,
   EnvelopeEncryptionError,
+  generateRecipientKeyMaterial,
   InvalidEncryptedPayloadEnvelopeError,
   ManagedKmsProviderError,
+  RECIPIENT_PUBLIC_KEY_PROVIDER_MODE,
+  RECIPIENT_RSA_JWK_ALGORITHM,
+  RECIPIENT_RSA_KEY_BITS,
   redactEnvelopeEncryptionProviderStatus,
   requireApiDataEncryptionKey,
   resolveApiDataEncryptionKeyFromEnv,
+  RecipientKeyTransportError,
+  toRecipientPublicKeyMaterial,
   UnsupportedEnvelopeEncryptionProviderError,
   validateEnvelopeEncryptionProviderEnvironment
 } from "./envelope-encryption.js";
@@ -64,14 +73,19 @@ export type {
   EnvelopeEncryptionProviderStatus,
   EnvelopeEncryptionProvider,
   EnvelopeEncryptionProviderMode,
+  EnvelopeEncryptionRootProviderMode,
   EncryptPayloadInput,
   EnvelopeEncryptionProviderEnvironmentOptions,
   EnvelopeEncryptionEnvironmentValidationOptions,
   HttpManagedKmsKeyringConfig,
+  GenerateRecipientKeyMaterialInput,
   ManagedKmsKeyring,
   ManagedKmsUnwrapDekInput,
   ManagedKmsWrapDekInput,
   ManagedKmsWrappedDek,
+  RecipientKeyMaterial,
+  RecipientPublicJwk,
+  RecipientPublicKeyMaterial,
   WrappedDataEncryptionKey
 } from "./envelope-encryption.js";
 export type {
@@ -80,6 +94,28 @@ export type {
   EncryptedPackageManifest,
   EncryptedPackageObjectClass
 } from "./encrypted-package.js";
+export {
+  CAPTURED_SESSION_SYNC_FORMAT,
+  CAPTURED_SESSION_SYNC_FORMAT_VERSION,
+  CAPTURED_SESSION_SYNC_MAX_CHANGES,
+  CAPTURED_SESSION_SYNC_MAX_CHUNK_BYTES,
+  CAPTURED_SESSION_SYNC_MAX_CONTRIBUTORS_PER_EVENT,
+  CAPTURED_SESSION_SYNC_MAX_PACKAGE_BYTES,
+  CAPTURED_SESSION_SYNC_POLICY_VERSION,
+  crossIdentitySyncDeterministicUuid,
+  crossIdentitySyncDigest,
+  crossIdentitySyncPackageRequestHash,
+  isCapturedSessionSyncChunkV1,
+  isCapturedSessionSyncPackageV1
+} from "./cross-identity-sync.js";
+export type {
+  CapturedSessionSyncChangeOperation,
+  CapturedSessionSyncChangeV1,
+  CapturedSessionSyncChunkV1,
+  CapturedSessionSyncContributorV1,
+  CapturedSessionSyncEventV1,
+  CapturedSessionSyncPackageV1
+} from "./cross-identity-sync.js";
 export type {
   NormalizedGitRemote,
   ProjectMetadataV1,

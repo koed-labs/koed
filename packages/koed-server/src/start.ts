@@ -680,44 +680,37 @@ const localServiceEnv = (
   };
 };
 
-const sleepSync = (ms: number): void => {
-  if (ms <= 0) return;
-  const buffer = new SharedArrayBuffer(4);
-  const view = new Int32Array(buffer);
-  Atomics.wait(view, 0, 0, ms);
-};
+const waitForChildExit = (
+  child: ChildProcess,
+  timeoutMs: number
+): Promise<boolean> =>
+  new Promise((resolveExit) => {
+    if (child.exitCode != null || child.signalCode != null) {
+      resolveExit(true);
+      return;
+    }
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolveExit(exited);
+    };
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
 
-const processRunning = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const stopChildProcessSync = (child: ChildProcess | undefined): void => {
-  if (!child?.pid || child.exitCode !== null) return;
+export const stopChildProcess = async (
+  child: ChildProcess | undefined,
+  timeoutMs = 5_000
+): Promise<void> => {
+  if (!child?.pid || child.exitCode != null || child.signalCode != null) return;
   child.kill("SIGTERM");
-  const deadline = Date.now() + 5_000;
-  while (
-    child.exitCode === null &&
-    processRunning(child.pid) &&
-    Date.now() < deadline
-  ) {
-    sleepSync(100);
-  }
-  if (child.exitCode !== null || !processRunning(child.pid)) return;
+  if (await waitForChildExit(child, timeoutMs)) return;
   child.kill("SIGKILL");
-  const killDeadline = Date.now() + 5_000;
-  while (
-    child.exitCode === null &&
-    processRunning(child.pid) &&
-    Date.now() < killDeadline
-  ) {
-    sleepSync(100);
-  }
-  if (child.exitCode === null && processRunning(child.pid)) {
+  if (!(await waitForChildExit(child, timeoutMs))) {
     throw new Error(
       `Timed out stopping native Embedding Service process ${child.pid}.`
     );
@@ -817,10 +810,10 @@ export const startKoedServer = async ({
     }
   };
 
-  const cleanupStartedResources = () => {
+  const cleanupStartedResources = async () => {
     const cleanupErrors: string[] = [];
     try {
-      stopChildProcessSync(nativeEmbeddingProcess);
+      await stopChildProcess(nativeEmbeddingProcess);
     } catch (error) {
       cleanupErrors.push(
         error instanceof Error ? error.message : String(error)
@@ -838,18 +831,21 @@ export const startKoedServer = async ({
       throw new Error(cleanupErrors.join("; "));
     }
   };
+  let shuttingDown = false;
   const shutdown = () => {
-    if (!runtimeStateOwnedByCurrentProcess()) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void (async () => {
+      if (!runtimeStateOwnedByCurrentProcess()) {
+        process.exit(0);
+      }
+      await stopChildProcess(nativeEmbeddingProcess);
+      stopKoedServer({ environment: refreshedEnv, spawnSync });
       process.exit(0);
-    }
-    stopKoedServer({ environment: refreshedEnv, spawnSync });
-    try {
-      cleanupStartedResources();
-    } catch (error) {
+    })().catch((error: unknown) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
-    }
-    process.exit(0);
+    });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -974,10 +970,11 @@ export const startKoedServer = async ({
           : spawnManagedProcess(
               paths,
               "API",
-              "pnpm",
-              ["--filter", "@koed/api", "start"],
+              process.execPath,
+              [resolve(paths.repoRoot, "apps/api/dist/index.js")],
               refreshedEnv,
-              spawn
+              spawn,
+              resolve(paths.repoRoot, "apps/api")
             ),
       worker:
         appRuntime.kind === "packaged"
@@ -993,10 +990,11 @@ export const startKoedServer = async ({
           : spawnManagedProcess(
               paths,
               "Worker",
-              "pnpm",
-              ["--filter", "@koed/worker", "start"],
+              process.execPath,
+              [resolve(paths.repoRoot, "apps/worker/dist/index.js")],
               refreshedEnv,
-              spawn
+              spawn,
+              resolve(paths.repoRoot, "apps/worker")
             ),
       explorer:
         appRuntime.kind === "packaged"
@@ -1019,12 +1017,9 @@ export const startKoedServer = async ({
           : spawnManagedProcess(
               paths,
               "Explorer",
-              "pnpm",
+              process.execPath,
               [
-                "--filter",
-                "@koed/explorer",
-                "exec",
-                "vite",
+                resolve(paths.repoRoot, "node_modules/vite/bin/vite.js"),
                 "preview",
                 "--host",
                 explorerHost,
@@ -1032,7 +1027,8 @@ export const startKoedServer = async ({
                 explorerPort
               ],
               refreshedEnv,
-              spawn
+              spawn,
+              resolve(paths.repoRoot, "apps/explorer")
             )
     };
 
@@ -1131,7 +1127,7 @@ export const startKoedServer = async ({
     });
   } catch (error) {
     try {
-      cleanupStartedResources();
+      await cleanupStartedResources();
     } catch (cleanupError) {
       throw new Error(
         `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,

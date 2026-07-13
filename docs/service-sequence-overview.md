@@ -846,6 +846,28 @@ Fork/Import operation is introduced.
    encrypted object storage; package manifests, queue metadata, logs, and
    status surfaces must not contain raw Memory, source payloads, credentials,
    raw DEKs, wrapped DEK ciphertext, or plaintext-equivalent vectors.
+10. In the implemented Captured Session path, a local-personal source writes a
+    durable coalesced outbox signal when canonical Memory changes. It packages
+    only changes after the acknowledged source cursor and encrypts each bounded
+    chunk to the target deployment's active recipient key.
+11. A private VPS, Team Self-Hosted, or Koed-managed cloud target verifies the
+    encrypted upload and queues durable inbox processing. Authorization,
+    deployment identity, target User, policy, consent, version, size, ordering,
+    hash, and replay checks run before content is decrypted or made visible.
+12. Target apply is atomic and idempotent. The target preserves canonical
+    provenance and timestamps, then uses its existing embedding, indexing, LCM,
+    evidence, graph, and invalidation paths. Source vectors and LCM nodes are
+    never trusted or copied as searchable state.
+13. Processing and partially available replicas are excluded from Recall. A
+    target replica becomes recallable only after target processing reaches the
+    package cursor and marks it ready. An overdue `stale_after` deadline removes
+    it from Recall until a later successful sync makes it ready again.
+    The source does not acknowledge the package cursor while the target remains
+    in processing; it polls durable target state without spending transport
+    retry attempts and becomes ready only after target completion.
+14. Sync revocation stops future transfer but leaves existing Share Grant and
+    retention semantics independent. Share Grant revocation removes Team
+    visibility without deleting the synchronized target replica.
 
 ## Future Memory Inbox
 

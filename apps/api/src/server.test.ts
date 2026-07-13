@@ -8289,6 +8289,111 @@ describe("account and access flows", () => {
     }
   });
 
+  it("keeps Cross-Identity Sync behind profile and scoped device boundaries", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const targetApp = await buildServer({ repository: createFakeRepository() });
+    const registered = await targetApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "sync-boundary@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await targetApp.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Sync boundary API Token" }
+    });
+    const token = jsonBody<TokenResponse>(createdToken).token;
+    const relationshipId = randomUUID();
+    const bearerTargetRequests = await Promise.all([
+      targetApp.inject({
+        method: "POST",
+        url: "/v1/cross-identity-sync/intake/relationships",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {}
+      }),
+      targetApp.inject({
+        method: "POST",
+        url: `/v1/cross-identity-sync/relationships/${relationshipId}/upload-sessions`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {}
+      }),
+      targetApp.inject({
+        method: "GET",
+        url: `/v1/cross-identity-sync/relationships/${relationshipId}`,
+        headers: { authorization: `Bearer ${token}` }
+      }),
+      targetApp.inject({
+        method: "POST",
+        url: `/v1/cross-identity-sync/relationships/${relationshipId}/retry`,
+        headers: { authorization: `Bearer ${token}` }
+      })
+    ]);
+    expect(bearerTargetRequests.map((response) => response.statusCode)).toEqual(
+      [401, 401, 403, 403]
+    );
+
+    const readOnlyDevice = await enrollDeviceCredentialForTest(
+      targetApp,
+      cookie,
+      ["team_workspace_read"]
+    );
+    const rejectedScope = await targetApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/relationships",
+      headers: { authorization: readOnlyDevice.authorization },
+      payload: {}
+    });
+    expect(rejectedScope.statusCode).toBe(403);
+
+    const syncDevice = await enrollDeviceCredentialForTest(targetApp, cookie, [
+      "sync"
+    ]);
+    const malformedAfterAuth = await targetApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/relationships",
+      headers: { authorization: syncDevice.authorization },
+      payload: {}
+    });
+    expect(malformedAfterAuth.statusCode).toBe(400);
+    await targetApp.close();
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "developer";
+    const sourceApp = await buildServer({ repository: createFakeRepository() });
+    const sourceRegistered = await sourceApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "sync-source-boundary@example.com",
+        password: "password123"
+      }
+    });
+    const sourceCookie = cookieHeader(sourceRegistered);
+    const sourceTokenResponse = await sourceApp.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: sourceCookie },
+      payload: { name: "Source boundary API Token" }
+    });
+    const sourceToken = jsonBody<TokenResponse>(sourceTokenResponse).token;
+    const rejectedSourceToken = await sourceApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/relationships",
+      headers: { authorization: `Bearer ${sourceToken}` },
+      payload: {}
+    });
+    const rejectedLocalIntake = await sourceApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/relationships",
+      headers: { cookie: sourceCookie },
+      payload: {}
+    });
+    expect(rejectedSourceToken.statusCode).toBe(401);
+    expect(rejectedLocalIntake.statusCode).toBe(404);
+    await sourceApp.close();
+  });
+
   it.skipIf(!process.env.DATABASE_URL)(
     "writes encrypted Memory Event companions through the real API repository wiring",
     async () => {

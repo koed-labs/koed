@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
@@ -29,6 +30,9 @@ export interface WorkerEnvConfig {
   rawProjectionIntervalMs: number;
   rawProjectionBatchLimit: number;
   rawProjectionActorLimit: number;
+  crossIdentitySyncIntervalMs: number;
+  crossIdentitySyncStaleAfterSeconds: number;
+  koedHome: string;
   logLevel: WorkerLogLevel;
   logDestination: WorkerLogDestinationConfig;
   nodeEnv: string;
@@ -107,6 +111,17 @@ export const resolveWorkerEnv = (
       "MEMORY_RAW_PROJECTION_ACTOR_LIMIT",
       10
     ),
+    crossIdentitySyncIntervalMs: positiveIntEnv(
+      environment,
+      "CROSS_IDENTITY_SYNC_INTERVAL_MS",
+      1_000
+    ),
+    crossIdentitySyncStaleAfterSeconds: positiveIntEnv(
+      environment,
+      "CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS",
+      86_400
+    ),
+    koedHome: resolve(environment.KOED_HOME ?? resolve(homedir(), ".koed")),
     logLevel: resolveWorkerLogLevel(environment),
     logDestination: resolveWorkerLogDestinationConfig(environment),
     nodeEnv,

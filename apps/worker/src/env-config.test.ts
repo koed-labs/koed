@@ -13,6 +13,9 @@ describe("resolveWorkerEnv", () => {
       rawProjectionIntervalMs: 5000,
       rawProjectionBatchLimit: 1000,
       rawProjectionActorLimit: 10,
+      crossIdentitySyncIntervalMs: 1000,
+      crossIdentitySyncStaleAfterSeconds: 86400,
+      koedHome: resolve(homedir(), ".koed"),
       logLevel: "info",
       logDestination: { destination: "stderr" },
       nodeEnv: "development",
@@ -30,6 +33,7 @@ describe("resolveWorkerEnv", () => {
         MEMORY_RAW_PROJECTION_INTERVAL_MS: "3000",
         MEMORY_RAW_PROJECTION_BATCH_LIMIT: "50",
         MEMORY_RAW_PROJECTION_ACTOR_LIMIT: "4",
+        CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS: "7200",
         WORKER_LOG_LEVEL: "debug",
         WORKER_LOG_DESTINATION: "both",
         WORKER_LOG_FILE: "/tmp/koed-worker.log",
@@ -47,6 +51,7 @@ describe("resolveWorkerEnv", () => {
       rawProjectionIntervalMs: 3000,
       rawProjectionBatchLimit: 50,
       rawProjectionActorLimit: 4,
+      crossIdentitySyncStaleAfterSeconds: 7200,
       logLevel: "debug",
       logDestination: {
         destination: "both",
@@ -184,3 +189,5 @@ describe("resolveWorkerEnv", () => {
     ).toThrow("Envelope encryption provider is not implemented: operator_kms");
   });
 });
+import { homedir } from "node:os";
+import { resolve } from "node:path";

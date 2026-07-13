@@ -1342,6 +1342,12 @@ export interface MemorySourceRepository
     sourceType: EmbeddableSourceType,
     sourceId: string
   ): Promise<EmbeddableSourceRecord | null>;
+  getCurrentSourceEmbeddingChunkCount(input: {
+    source: EmbeddableSourceRecord;
+    model: string;
+    dimensions: number;
+    version: string;
+  }): Promise<number | null>;
   getLcmNodeForSummarization(
     nodeId: string
   ): Promise<LcmNodeForSummarization | null>;

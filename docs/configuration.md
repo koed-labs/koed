@@ -318,6 +318,12 @@ policy, or full URLs containing customer content.
 - `REDIS_HOST_PORT`: host port mapped to the Redis dependency container when using the Docker Compose starter. Default `16379`.
 - `REDIS_URL`: explicit Redis/BullMQ URL consumed by `koed-server`, API, and Worker in external dependency mode when `WORK_QUEUE_BACKEND=bullmq`. For the Docker Compose starter, use `redis://localhost:${REDIS_HOST_PORT}`.
 - `WORK_QUEUE_BACKEND`: `bullmq` by default for Redis/BullMQ queues. Set `local` to use the Postgres-backed `local_work_queue` table for API/Worker jobs; this does not require Redis for job queues, though Redis may still be used for rate-limit or cache stores if configured.
+- `CROSS_IDENTITY_SYNC_INTERVAL_MS`: Worker interval for durable Cross-Identity
+  Sync outbox/inbox processing. Default `1000`; values below `250` are clamped.
+- `CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS`: freshness duration applied after a
+  successful source acknowledgement or target processing completion. Default
+  `86400`. Overdue ready replicas become stale and are excluded from Recall
+  until a later successful sync.
 - `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.

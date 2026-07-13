@@ -46,6 +46,11 @@ node packages/koed-server/dist/cli.js restart --json
 
 `start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. In bundled-local mode it stops Explorer, Worker, API, native Embedding Service, and native Postgres via `pg_ctl stop -D <dataDir> -m fast`. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
+In a source checkout, the supervisor launches the built API, Worker, and Explorer
+Node entry points directly. Recorded process IDs therefore identify the service
+processes themselves, so stop and restart do not leave package-manager child
+processes listening on Koed ports.
+
 Local upstream enrollment orchestration is exposed as machine-readable
 control-plane state for Desktop and headless scripts:
 
@@ -119,6 +124,23 @@ remote aliases remain evidence only. They cannot merge Personal Memory across
 deployments or create a Team Workspace link. `project forget
 --local-project-id <id>` removes the local Project record, including retained
 remote-alias history.
+
+## Cross-Identity Sync
+
+Cross-Identity Sync is available only when the complete path is reported by
+capabilities. Relationship creation runs on a `local_personal` or `developer`
+source after explicit User consent and a validated upstream enrollment whose
+device credential includes the `sync` operation family. Remote intake runs only
+on `private_vps`, `team_self_hosted`, or `koed_managed_cloud` targets. Personal
+API Tokens and Capture Hooks cannot exercise this authority.
+
+The source remains usable offline. Canonical changes accumulate in its durable
+outbox and resume from the last acknowledged cursor when the target returns.
+The target replica is read-only, and Team visibility still requires a separate
+Workspace Share Grant after target processing reaches `ready`. Use authenticated
+relationship status and redacted `/ops/status` sync metrics to diagnose queue
+lag, retries, stale replicas, and failure classes; do not inspect encrypted
+package rows as an operational workflow.
 
 ## KOED_HOME layout
 

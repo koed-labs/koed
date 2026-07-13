@@ -196,6 +196,21 @@ export const createEmbeddingWorkflow = (
       if (!source) {
         return { skipped: true, reason: "source missing or empty" };
       }
+      const currentChunkCount = await config
+        .repository()
+        .getCurrentSourceEmbeddingChunkCount({
+          source,
+          model: config.env.embeddingVersion,
+          dimensions: config.env.embeddingDimensions,
+          version: config.env.embeddingVersion
+        });
+      if (currentChunkCount !== null) {
+        return {
+          dimensions: config.env.embeddingDimensions,
+          inserted: false,
+          chunks: currentChunkCount
+        };
+      }
       const stored = await storeEmbedding(source);
       return {
         dimensions: config.env.embeddingDimensions,

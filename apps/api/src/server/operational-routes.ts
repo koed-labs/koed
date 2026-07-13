@@ -32,6 +32,10 @@ import {
 } from "./capabilities.js";
 import { openApiDocument } from "./openapi.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
+import {
+  readLocalEdgeUpstreamRegistry,
+  resolveLocalEdgeRouteDecision
+} from "../local-edge/upstream-routing.js";
 
 interface OperationalRouteOptions {
   dbPool?: DbPool | null;
@@ -498,6 +502,42 @@ export const registerOperationalRoutes = (
   options: OperationalRouteOptions
 ) => {
   const { config, requireRepository, auth } = context;
+  const readCrossIdentitySyncStatus = async () => {
+    try {
+      return await requireRepository().getCrossIdentitySyncOperationalStatus();
+    } catch {
+      return null;
+    }
+  };
+  const crossIdentitySyncCapability = () => {
+    if (
+      applicationLayerEncryptionCapability(
+        options.envelopeEncryptionProvider
+      ) === "unavailable"
+    ) {
+      return "unavailable" as const;
+    }
+    if (!["developer", "local_personal"].includes(config.deploymentProfile)) {
+      return "available" as const;
+    }
+    const registry = readLocalEdgeUpstreamRegistry(
+      context.localEdge.upstreamBackendsPath
+    );
+    return registry.backends.some((backend) => {
+      const authorization =
+        context.localEdge.resolveUpstreamAuthorization(backend);
+      return (
+        resolveLocalEdgeRouteDecision({
+          operationFamily: "sync",
+          upstreamBackend: backend,
+          upstreamBackendId: backend.id,
+          upstreamCredentialAvailable: Boolean(authorization)
+        }).action === "queued_sync_handoff"
+      );
+    })
+      ? ("available" as const)
+      : ("unavailable" as const);
+  };
   const {
     dbPool,
     repository,
@@ -652,7 +692,8 @@ export const registerOperationalRoutes = (
         workosAuthKitEnabled: config.workos.authkitEnabled,
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
-        )
+        ),
+        crossIdentitySync: crossIdentitySyncCapability()
       },
       "public"
     )
@@ -697,7 +738,8 @@ export const registerOperationalRoutes = (
         workosAuthKitEnabled: config.workos.authkitEnabled,
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
-        )
+        ),
+        crossIdentitySync: crossIdentitySyncCapability()
       },
       "authenticated",
       entitlement,
@@ -737,11 +779,13 @@ export const registerOperationalRoutes = (
       }
     }
 
+    const crossIdentitySync = await readCrossIdentitySyncStatus();
     return {
       status: checks.every((check) => check.status === "ok")
         ? "ok"
         : "degraded",
-      checks
+      checks,
+      crossIdentitySync
     };
   });
 
@@ -767,8 +811,8 @@ export const registerOperationalRoutes = (
         redacted: true
       };
     }
-    const [ready, embedding, embeddingJobs, compactionJobs] = await Promise.all(
-      [
+    const [ready, embedding, embeddingJobs, compactionJobs, crossIdentitySync] =
+      await Promise.all([
         repo.health().catch(() => false),
         repo.getLocalEmbeddingStatus().catch(() => ({
           enabled: true,
@@ -782,9 +826,9 @@ export const registerOperationalRoutes = (
           .catch(() => ({ status: "unavailable" })),
         compactionQueue
           ?.getJobCounts("waiting", "active", "delayed", "failed")
-          .catch(() => ({ status: "unavailable" }))
-      ]
-    );
+          .catch(() => ({ status: "unavailable" })),
+        readCrossIdentitySyncStatus()
+      ]);
 
     return {
       status: ready ? "ok" : "error",
@@ -799,7 +843,8 @@ export const registerOperationalRoutes = (
           backend: config.queueBackend,
           embedding: embeddingJobs ?? { status: "not_configured" },
           compaction: compactionJobs ?? { status: "not_configured" }
-        }
+        },
+        crossIdentitySync
       },
       configuration: {
         supportedClients: ["codex"],
@@ -952,6 +997,20 @@ export const registerOperationalRoutes = (
       config.ops.alertWebhookUrl,
       Boolean(config.ops.alertWebhookToken)
     );
+    try {
+      const sync = await repo.getCrossIdentitySyncOperationalStatus();
+      components.crossIdentitySync = {
+        status:
+          sync.outbox.failed > 0 ||
+          sync.inbox.failed > 0 ||
+          sync.relationships.failed > 0
+            ? "degraded"
+            : "ok",
+        details: { ...sync }
+      };
+    } catch {
+      components.crossIdentitySync = { status: "error" };
+    }
 
     const status = opsOverallStatus(components);
     return {
