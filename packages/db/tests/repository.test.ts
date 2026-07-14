@@ -1601,7 +1601,7 @@ describeDb("memory repository visibility", () => {
         }
       );
       const structured = {
-        schema_version: "lcm-semantic-summary-v2",
+        schema_version: "lcm-semantic-summary-v1",
         title: "Encrypted managed cloud node",
         summary_text:
           "Managed cloud finished summary sentinel 731f3c. The LCM worker summary is encrypted at rest."
@@ -1614,7 +1614,7 @@ describeDb("memory repository visibility", () => {
         summaryPromptVersion: "lcm-codex-summary-json-v3",
         summaryTokenEstimate: 23,
         summaryStructuredJson: structured,
-        summaryStructuredSchemaVersion: "lcm-semantic-summary-v2"
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
       });
 
       const stored = await pool.query<{
@@ -20891,7 +20891,7 @@ describeDb("memory repository visibility", () => {
       }
     );
     const structured = {
-      schema_version: "lcm-semantic-summary-v2",
+      schema_version: "lcm-semantic-summary-v1",
       title: "Structured summary",
       summary_text: "Structured summary text. The worker returned strict JSON."
     };
@@ -20903,7 +20903,7 @@ describeDb("memory repository visibility", () => {
       summaryPromptVersion: "lcm-codex-summary-json-v3",
       summaryTokenEstimate: 17,
       summaryStructuredJson: structured,
-      summaryStructuredSchemaVersion: "lcm-semantic-summary-v2"
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
 
     const fetched = await repo.getLcmNodeForSummarization(node.id);
@@ -20916,12 +20916,12 @@ describeDb("memory repository visibility", () => {
     expect(fetched?.summaryText).toBe("Structured summary text");
     expect(fetched?.summaryStructuredJson).toEqual(structured);
     expect(fetched?.summaryStructuredSchemaVersion).toBe(
-      "lcm-semantic-summary-v2"
+      "lcm-semantic-summary-v1"
     );
     expect(visible?.summaryStructuredJson).toEqual(structured);
     expect(graphNode?.summaryStructuredJson).toEqual(structured);
     expect(graphNode?.summaryStructuredSchemaVersion).toBe(
-      "lcm-semantic-summary-v2"
+      "lcm-semantic-summary-v1"
     );
   });
 
@@ -20944,12 +20944,12 @@ describeDb("memory repository visibility", () => {
       summaryPromptVersion: "lcm-codex-summary-json-v3",
       summaryTokenEstimate: 11,
       summaryStructuredJson: {
-        schema_version: "lcm-semantic-summary-v2",
+        schema_version: "lcm-semantic-summary-v1",
         title: "Device credential policy",
         summary_text:
           "Use scoped device credentials; determine the revocation TTL."
       },
-      summaryStructuredSchemaVersion: "lcm-semantic-summary-v2"
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
     const legacyChild = await repo.createMemoryNode(
       { userId: alice.id },
@@ -21023,7 +21023,7 @@ describeDb("memory repository visibility", () => {
     ) as unknown;
 
     expect(childPayload).toEqual({
-      schema_version: "lcm-semantic-summary-v2",
+      schema_version: "lcm-semantic-summary-v1",
       title: "Device credential policy",
       summary_text:
         "Use scoped device credentials; determine the revocation TTL."
@@ -21031,10 +21031,9 @@ describeDb("memory repository visibility", () => {
     expect(
       JSON.parse(candidate?.sourceItems[1]?.text ?? "{}") as unknown
     ).toEqual({
-      schema_version: "lcm-semantic-summary-v2",
-      title: "Legacy child",
-      summary_text:
-        "Legacy summary text.\nPreserve this legacy decision.\nKeep this legacy question open."
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Child memory summary",
+      summary_text: "Legacy summary text."
     });
   });
 

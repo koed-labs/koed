@@ -335,7 +335,7 @@ const getDbState = () =>
         select count(*)
         from marked_nodes
         where summary_structured_json is not null
-          and summary_structured_schema_version = 'lcm-semantic-summary-v2'
+          and summary_structured_schema_version = 'lcm-semantic-summary-v1'
       ),
       'embeddedNodeCount', (
         select count(distinct me.memory_node_id)

@@ -111,7 +111,7 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
   ]);
 });
 
-it("normalizes output produced by the previous bundled LCM override", async () => {
+it("rejects output produced by a superseded LCM override", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-prompts-"));
   tempDirs.push(directory);
   await writeFile(
@@ -121,13 +121,7 @@ it("normalizes output produced by the previous bundled LCM override", async () =
       "id: lcm-summary-leaf",
       "version: lcm-codex-summary-json-v2",
       "---",
-      "You are a private local LCM summarisation worker running under the user's Codex subscription.",
-      "Summarize this captured memory span for a lossless context memory graph.",
-      "",
-      "Requirements:",
-      "- Preserve concrete user requests, decisions, facts, filenames, commands, model names, tool outcomes, errors, and unresolved questions.",
-      "- Put active decisions only in decisions, unresolved or undecided items only in unresolved_questions, stable observations in facts, and durable command/tool results in tool_outcomes.",
-      "- Return only one JSON object matching the required schema; no prose outside JSON."
+      "Summarize this captured memory span using structured detail arrays."
     ].join("\n")
   );
   vi.stubEnv("KOED_PROMPT_DIR", directory);
@@ -143,7 +137,7 @@ it("normalizes output produced by the previous bundled LCM override", async () =
       {
         kind: "memory_event",
         sourceId: "00000000-0000-4000-8000-000000000062",
-        text: "Use scoped device credentials; determine the revocation TTL."
+        text: "Use scoped device credentials."
       }
     ]
   };
@@ -174,25 +168,16 @@ it("normalizes output produced by the previous bundled LCM override", async () =
         schema_version: "lcm-structured-summary-v1",
         title: "Device credential policy",
         summary_text: "Use scoped device credentials.",
-        decisions: ["Use scoped device credentials."],
-        unresolved_questions: ["Determine the revocation TTL."]
+        decisions: ["Use scoped device credentials."]
       }),
       model: "codex-app-server:test"
     })
   });
 
-  expect(result.submittedCount).toBe(1);
-  expect(submissions[0]).toMatchObject({
-    summaryText:
-      "Use scoped device credentials.\nDetermine the revocation TTL.",
-    summaryStructuredJson: {
-      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-      title: "Device credential policy",
-      summary_text:
-        "Use scoped device credentials.\nDetermine the revocation TTL."
-    },
-    summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
-  });
+  expect(result.submittedCount).toBe(0);
+  expect(result.failedCount).toBe(1);
+  expect(result.results[0]?.error).toContain("schema_version");
+  expect(submissions).toHaveLength(0);
 });
 
 describe("LCM summary worker", () => {

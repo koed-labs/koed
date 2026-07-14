@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   normalizeStoredLcmSummary,
-  normalizeStructuredLcmSummary,
   parseStructuredLcmSummary,
   structuredLcmSummarySchema
 } from "./lcm-summary-contract.js";
@@ -18,61 +17,66 @@ describe("LCM summary contract", () => {
     ).toBe(false);
   });
 
-  it("normalizes known legacy fields into canonical summary text", () => {
-    expect(
-      normalizeStructuredLcmSummary({
-        schema_version: "lcm-structured-summary-v1",
-        title: "Credential policy",
-        summary_text: "Use scoped device credentials.",
-        decisions: ["Use scoped device credentials."],
-        unresolved_questions: ["Determine the revocation TTL."],
-        arbitrary_field: ["Do not forward this value."]
-      })
-    ).toEqual({
-      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-      title: "Credential policy",
-      summary_text:
-        "Use scoped device credentials.\nDetermine the revocation TTL."
-    });
-  });
-
-  it("parses fenced legacy worker output into the canonical contract", () => {
+  it("parses fenced semantic summary output", () => {
     const parsed = parseStructuredLcmSummary(
-      '```json\n{"schema_version":"lcm-structured-summary-v1","title":"Projection fix","summary_text":"Projection was fixed.","tool_outcomes":["Tests passed."]}\n```'
+      `\`\`\`json\n{"schema_version":"${LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION}","title":"Projection fix","summary_text":"Projection was fixed."}\n\`\`\``
     );
 
     expect(parsed).toEqual({
       schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
       title: "Projection fix",
-      summary_text: "Projection was fixed.\nTests passed."
+      summary_text: "Projection was fixed."
     });
   });
+
+  it.each(["lcm-structured-summary-v1", "lcm-semantic-summary-v2"])(
+    "rejects superseded %s worker output",
+    (schemaVersion) => {
+      expect(() =>
+        parseStructuredLcmSummary(
+          JSON.stringify({
+            schema_version: schemaVersion,
+            title: "Projection fix",
+            summary_text: "Projection was fixed."
+          })
+        )
+      ).toThrow();
+    }
+  );
 
   it("rejects unknown worker schemas", () => {
     expect(() =>
-      normalizeStructuredLcmSummary({
-        schema_version: "unknown-summary-v9",
-        title: "Unknown",
-        summary_text: "Unknown output"
-      })
+      parseStructuredLcmSummary(
+        '{"schema_version":"unknown-summary-v9","title":"Unknown","summary_text":"Unknown output"}'
+      )
     ).toThrow();
   });
 
-  it("wraps unstructured stored summaries without forwarding unknown JSON", () => {
-    expect(
-      normalizeStoredLcmSummary({
-        summaryText: "Authoritative stored summary.",
-        structuredSummary: {
-          schema_version: "unknown-summary-v9",
-          title: "Untrusted title",
-          summary_text: "Untrusted structured text",
-          secret: "do not forward"
-        }
-      })
-    ).toEqual({
-      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
-      title: "Child memory summary",
-      summary_text: "Authoritative stored summary."
-    });
-  });
+  it.each([
+    {
+      schema_version: "lcm-structured-summary-v1",
+      title: "Legacy title",
+      summary_text: "Legacy structured text",
+      decisions: ["Do not forward this value."]
+    },
+    {
+      schema_version: "lcm-semantic-summary-v2",
+      title: "Superseded semantic title",
+      summary_text: "Superseded semantic text."
+    }
+  ])(
+    "wraps unsupported stored $schema_version summaries without forwarding their JSON",
+    (structuredSummary) => {
+      expect(
+        normalizeStoredLcmSummary({
+          summaryText: "Authoritative stored summary.",
+          structuredSummary
+        })
+      ).toEqual({
+        schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        title: "Child memory summary",
+        summary_text: "Authoritative stored summary."
+      });
+    }
+  );
 });

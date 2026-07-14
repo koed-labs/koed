@@ -6,7 +6,7 @@ judging.
 
 The benchmark builds production LCM prompts from hand-authored pending LCM node
 fixtures, runs the configured Codex app-server model, parses the
-`lcm-semantic-summary-v2` JSON, and scores the result locally. When
+`lcm-semantic-summary-v1` JSON, and scores the result locally. When
 `--semantic-judge` is set, it also runs an advisory Codex app-server evaluation
 pass over valid structured summaries. It does not call the Koed API, submit
 summaries, mutate Memory Nodes, or write database state.
@@ -41,7 +41,7 @@ sh benchmarks/lcm-summary-generation/run.sh --case secret-like-value-redaction
 The v1 benchmark uses deterministic scoring for its pass/fail gate. Hard gates
 cover:
 
-- schema validity for `lcm-semantic-summary-v2`
+- schema validity for `lcm-semantic-summary-v1`
 - required claim coverage
 - forbidden claim absence, including secret-like literal leakage
 

@@ -730,7 +730,7 @@ sequenceDiagram
    child summaries. The prompt requires secret-like literal redaction and, when
    ordered source items or child summaries conflict, prefers later items while
    preserving older conflicts only as superseded context. `@koed/core` owns the
-   schema, parser, and legacy normalizer shared by the DB, MCP Server, and
+   `lcm-semantic-summary-v1` schema and parser shared by the DB, MCP Server, and
    evaluation suites. LCM summaries use a minimal JSON envelope containing a
    title and one canonical `summary_text`.
    That text contains every parent-relevant semantic fact: leaves describe each
@@ -738,11 +738,10 @@ sequenceDiagram
    envelopes into broader themes. Detailed commands, logs, filenames,
    identifiers, provenance, and intermediate steps remain in child summaries
    and source Memory Events for drill-down unless a detail is needed to
-   understand, distinguish, or retrieve the topic.
-   Known semantic fields from older worker output or a stored structured child
-   are folded into canonical `summary_text` so prompt upgrades and stale local
-   overrides do not drop previously retained meaning. Unknown schemas still
-   fail at the worker boundary, and arbitrary stored JSON is not forwarded.
+   understand, distinguish, or retrieve the topic. Stored child payloads that
+   do not match the current semantic-summary contract contribute only their
+   authoritative `summary_text`; unsupported structured JSON is not forwarded.
+   Unsupported worker output fails at the worker boundary.
 6. The LCM worker runs Codex app-server mode locally under the user's Codex
    subscription and parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
