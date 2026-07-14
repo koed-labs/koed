@@ -98,6 +98,35 @@ describe("Codex setup wrapper", () => {
     expect(call!.env?.KOED_SERVER_MANAGED).toBe("1");
   });
 
+  it("persists the token created by bootstrap and redacts it from JSON output", () => {
+    const root = tempDir();
+    writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=old_token\n");
+
+    const result = setupCodex({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_DEPENDENCY_MODE: "external",
+        DATABASE_URL: "postgres://operator/db",
+        EMBEDDING_SERVICE_URL: "http://operator:8000",
+        MEMORY_API_TOKEN: "old_token"
+      },
+      spawnSync: () => {
+        writeFileSync(resolve(root, ".env"), "MEMORY_API_TOKEN=new_token\n");
+        return spawnResult(0, "Created token.\nToken: new_token\nDone.");
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toContain("Token: <redacted>");
+    expect(result.stdout).not.toContain("new_token");
+    expect(
+      JSON.parse(
+        readFileSync(resolve(root, "config/explorer-token.json"), "utf8")
+      )
+    ).toMatchObject({ apiToken: "new_token", source: "repo-env" });
+  });
+
   it("uses active runtime URLs when setup is run without auto-port environment", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "run"), { recursive: true });
@@ -461,6 +490,14 @@ describe("Codex setup wrapper", () => {
     expect(result.stdout).toContain(
       `Wrote Capture Hook config: ${hookConfigPath}`
     );
+    expect(
+      JSON.parse(
+        readFileSync(resolve(root, "run/last-verification.json"), "utf8")
+      )
+    ).toMatchObject({
+      ok: true,
+      checkedAt: "2026-01-01T00:00:00.000Z"
+    });
   });
 
   it("repairs Codex using current configuration when runtime state is stale", () => {

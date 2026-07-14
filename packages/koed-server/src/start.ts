@@ -34,6 +34,7 @@ import {
 import { allocateAndPersistLocalPorts } from "./ports.js";
 import { collectKoedServerStatus } from "./status.js";
 import { stopKoedServer } from "./stop.js";
+import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -684,6 +685,25 @@ export const startKoedServer = async ({
 }: KoedServerStartOptions = {}): Promise<void> => {
   const paths = resolveKoedServerPaths(environment);
   ensureKoedHome(paths);
+  const supervisorLock = acquireKoedServerSupervisorLock(paths);
+  if (!supervisorLock.acquired) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          state: "already_running",
+          koedHome: paths.koedHome,
+          message: "A koed-server supervisor already owns this KOED_HOME.",
+          ...(supervisorLock.ownerPid
+            ? { supervisorPid: supervisorLock.ownerPid }
+            : {})
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
   const appRuntime = resolveKoedAppRuntime(paths, environment);
   assertKoedAppRuntimeAvailable(appRuntime, paths);
   environment = ensurePackagedLocalServiceSecrets(
@@ -869,13 +889,12 @@ export const startKoedServer = async ({
         spawnSync
       });
       Object.assign(refreshedEnv, result.env);
+      startedNativePostgres = result.started;
       if (!result.ok) {
-        startedNativePostgres = result.status.state !== "not_configured";
         throw new Error(
           `Bundled-local native Postgres could not start: ${result.status.message ?? result.status.state}${result.status.action ? ` ${result.status.action}` : ""}`
         );
       }
-      startedNativePostgres = true;
     }
 
     if (useBundledLocalDependencies) {

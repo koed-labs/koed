@@ -795,11 +795,11 @@ export const createKoedServerManager = ({
     );
   };
 
-  const provisionExplorerCredential = () =>
+  const provisionExplorerCredential = (force = false) =>
     new Promise<{ ok: true; apiToken: string } | { ok: false; error: string }>(
       (resolvePromise) => {
         const current = readExplorerCredential(environment);
-        if (current.ok) {
+        if (current.ok && !force) {
           resolvePromise(current);
           return;
         }
@@ -1072,7 +1072,8 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       project_list: () => runJson(["project", "list"], 10_000),
-      explorer_credential: () => provisionExplorerCredential(),
+      explorer_credential: (args) =>
+        provisionExplorerCredential(args?.force === true),
       upstream_connect: connectTeamBackend,
       upstream_disconnect: disconnectTeamBackend,
       start,

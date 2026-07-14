@@ -664,6 +664,37 @@ describe("start supervisor", () => {
     expect(credential.apiToken).toBe("koed_test_token");
   });
 
+  it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "run"), { recursive: true });
+    writeFileSync(
+      resolve(root, "run/koed-server.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        acquiredAt: "2026-01-01T00:00:00.000Z"
+      })
+    );
+    const commands: string[] = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_AUTO_PORTS: "1",
+        KOED_DEPENDENCY_MODE: "bundled-local"
+      },
+      spawnSync: (command) => {
+        commands.push(command);
+        return spawnResult();
+      }
+    });
+
+    expect(commands).toEqual([]);
+    expect(() =>
+      readFileSync(resolve(root, "config/local-ports.json"), "utf8")
+    ).toThrow();
+  });
+
   it("starts packaged app services without workspace pnpm scripts", async () => {
     const root = tempDir();
     createPackagedAppRuntime(root);

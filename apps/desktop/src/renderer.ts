@@ -1529,13 +1529,18 @@ const renderProjectList = (): string => {
   const inactiveProjects = projects.filter(
     (project) => !projectIsActive(project)
   );
+  const projectContent = projectGraphError
+    ? `<div class="empty-card hero-empty error"><strong>Personal Memory is temporarily unavailable</strong><p>${escapeHtml(projectGraphError)}</p><button type="button" class="secondary-button" data-retry-projects>Retry</button></div>`
+    : activeProjects.length
+      ? renderProjectSection("ACTIVE PROJECTS", activeProjects, "active")
+      : `<div class="empty-card hero-empty"><strong>No active Projects yet</strong><p>Use your AI Client in a Project and captured sessions will appear here.</p></div>`;
   return `
     <div class="projects-screen screen-stack" data-view-root tabindex="-1">
       <header class="screen-header">
         <div><p class="eyebrow">Personal Memory</p><h1>Projects</h1><p>Recent local Projects, with every captured session gathered in one place.</p></div>
         <span class="scope-badge"><span></span> On this device</span>
       </header>
-      ${activeProjects.length ? renderProjectSection("ACTIVE PROJECTS", activeProjects, "active") : `<div class="empty-card hero-empty"><strong>No active Projects yet</strong><p>${escapeHtml(projectGraphError || "Use your AI Client in a Project and captured sessions will appear here.")}</p></div>`}
+      ${projectContent}
       ${inactiveProjects.length ? `<button type="button" class="show-inactive" data-toggle-inactive aria-expanded="${showInactiveProjects}">${showInactiveProjects ? "Hide inactive Projects" : `Show inactive Projects · ${inactiveProjects.length}`} <span aria-hidden="true">${showInactiveProjects ? "↑" : "↓"}</span></button>` : ""}
       ${showInactiveProjects && inactiveProjects.length ? renderProjectSection("INACTIVE PROJECTS", inactiveProjects, "inactive") : ""}
     </div>
@@ -2005,15 +2010,24 @@ const refreshProjectGraph = async (): Promise<boolean> => {
     return false;
   }
   try {
-    const response = await fetch(
-      `${status.api.url.replace(/\/$/, "")}/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false`,
-      {
+    const graphUrl = `${status.api.url.replace(/\/$/, "")}/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false`;
+    const requestGraph = (apiToken: string) =>
+      fetch(graphUrl, {
         headers: {
           accept: "application/json",
-          authorization: `Bearer ${explorerApiToken}`
+          authorization: `Bearer ${apiToken}`
         }
+      });
+    let response = await requestGraph(explorerApiToken);
+    if (response.status === 401) {
+      const replacement = await invokeWithTimeout<
+        { ok: true; apiToken: string } | { ok: false; error: string }
+      >("explorer_credential", { force: true }, 130_000);
+      if (replacement.ok) {
+        explorerApiToken = replacement.apiToken;
+        response = await requestGraph(replacement.apiToken);
       }
-    );
+    }
     const payload = (await response.json().catch(() => ({}))) as {
       projects?: DesktopProjectGroup[];
     };
@@ -3085,6 +3099,17 @@ const registerHandlers = () => {
       event.preventDefault();
       showInactiveProjects = !showInactiveProjects;
       syncUI();
+      return;
+    }
+
+    const retryProjects = target.closest<HTMLButtonElement>(
+      "[data-retry-projects]"
+    );
+    if (retryProjects) {
+      event.preventDefault();
+      projectGraphError = "";
+      syncUI();
+      void refreshStatus();
       return;
     }
 

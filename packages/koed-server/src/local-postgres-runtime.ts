@@ -45,6 +45,7 @@ export interface LocalPostgresRuntimeStatus extends KoedServerComponentStatus {
 
 export interface LocalPostgresRuntimeStartResult {
   ok: boolean;
+  started: boolean;
   status: LocalPostgresRuntimeStatus;
   env: NodeJS.ProcessEnv;
 }
@@ -398,11 +399,16 @@ export const startLocalPostgresRuntime = (
   const env = { ...environment, ...localPostgresEnv(runtime) };
   const missing = runtimeMissing(runtime, exists);
   if (missing.length > 0) {
-    return { ok: false, status: missingRuntime(runtime, missing), env };
+    return {
+      ok: false,
+      started: false,
+      status: missingRuntime(runtime, missing),
+      env
+    };
   }
   const versionStatus = validatePostgres17(runtime, env, spawnSync);
   if (versionStatus) {
-    return { ok: false, status: versionStatus, env };
+    return { ok: false, started: false, status: versionStatus, env };
   }
   mkdirSync(runtime.dataDir, { recursive: true, mode: 0o700 });
   mkdirSync(runtime.runDir, { recursive: true, mode: 0o700 });
@@ -420,6 +426,7 @@ export const startLocalPostgresRuntime = (
     if (init.status !== 0) {
       return {
         ok: false,
+        started: false,
         env,
         status: {
           runtime: "native-postgres",
@@ -438,6 +445,7 @@ export const startLocalPostgresRuntime = (
     env,
     spawnSync
   );
+  let startedByCurrentProcess = false;
   if (status.status !== 0) {
     const started = run(
       runtime.pgCtlBin,
@@ -456,6 +464,7 @@ export const startLocalPostgresRuntime = (
     if (started.status !== 0) {
       return {
         ok: false,
+        started: false,
         env,
         status: {
           runtime: "native-postgres",
@@ -466,6 +475,7 @@ export const startLocalPostgresRuntime = (
         }
       };
     }
+    startedByCurrentProcess = true;
   }
   const databaseExists = run(
     runtime.psqlBin,
@@ -487,6 +497,7 @@ export const startLocalPostgresRuntime = (
   if (databaseExists.status !== 0) {
     return {
       ok: false,
+      started: startedByCurrentProcess,
       env,
       status: {
         runtime: "native-postgres",
@@ -523,6 +534,7 @@ export const startLocalPostgresRuntime = (
     if (createDb.status !== 0) {
       return {
         ok: false,
+        started: startedByCurrentProcess,
         env,
         status: {
           runtime: "native-postgres",
@@ -556,6 +568,7 @@ export const startLocalPostgresRuntime = (
   if (extension.status !== 0) {
     return {
       ok: false,
+      started: startedByCurrentProcess,
       env,
       status: {
         runtime: "native-postgres",
@@ -568,6 +581,7 @@ export const startLocalPostgresRuntime = (
   }
   return {
     ok: true,
+    started: startedByCurrentProcess,
     env,
     status: healthyStatus(runtime, "Bundled-local native Postgres is running.")
   };
