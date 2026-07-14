@@ -19,6 +19,7 @@ import {
   type KoedServerPaths
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
+import { isProcessRunning } from "./process-liveness.js";
 import { collectUpstreamRegistryStatus } from "./upstream-registry.js";
 import type {
   KoedServerComponentState,
@@ -67,14 +68,7 @@ const defaultDependencies = (): Required<KoedServerStatusDependencies> => ({
   spawnSync: nodeSpawnSync as SpawnSyncLike,
   existsSync,
   readFileSync,
-  checkPid: (pid: number): boolean => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  },
+  checkPid: isProcessRunning,
   now: () => new Date()
 });
 

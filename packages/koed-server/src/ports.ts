@@ -95,9 +95,10 @@ const writePersistedLocalPorts = (
 
 export const applyPersistedLocalPorts = (
   paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  options: { force?: boolean } = {}
 ): NodeJS.ProcessEnv => {
-  if (environment.KOED_AUTO_PORTS !== "1") return environment;
+  if (!options.force && environment.KOED_AUTO_PORTS !== "1") return environment;
   const persisted = readPersistedLocalPorts(paths);
   return {
     ...environment,

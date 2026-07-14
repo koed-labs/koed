@@ -21,6 +21,7 @@ import {
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
 import { startLocalEmbeddingRuntime } from "./local-embedding-runtime.js";
 import { resolveLocalModelManifest } from "./local-models-runtime.js";
+import { ensurePackagedLocalServiceSecrets } from "./local-service-secrets.js";
 import {
   startLocalPostgresRuntime,
   stopLocalPostgresRuntime
@@ -335,50 +336,6 @@ const bundledLocalDatabaseUrl = (
     repoEnv.POSTGRES_HOST_PORT ??
     "15432";
   return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
-};
-
-const readLocalServiceSecrets = (
-  paths: KoedServerPaths
-): Record<string, string> => {
-  try {
-    return JSON.parse(
-      readFileSync(
-        resolve(paths.configDir, "local-service-secrets.json"),
-        "utf8"
-      )
-    ) as Record<string, string>;
-  } catch {
-    return {};
-  }
-};
-
-const ensurePackagedLocalServiceSecrets = (
-  paths: KoedServerPaths,
-  runtime: KoedAppRuntime,
-  environment: NodeJS.ProcessEnv
-): NodeJS.ProcessEnv => {
-  if (runtime.kind !== "packaged") {
-    return environment;
-  }
-  const secretsPath = resolve(paths.configDir, "local-service-secrets.json");
-  const existing = readLocalServiceSecrets(paths);
-  const secrets = {
-    POSTGRES_PASSWORD:
-      existing.POSTGRES_PASSWORD ?? randomBytes(32).toString("base64url"),
-    API_DATA_ENCRYPTION_KEY:
-      existing.API_DATA_ENCRYPTION_KEY ?? randomBytes(32).toString("base64"),
-    API_TOKEN_PEPPER:
-      existing.API_TOKEN_PEPPER ?? randomBytes(48).toString("base64url"),
-    EMBEDDING_SERVICE_TOKEN:
-      existing.EMBEDDING_SERVICE_TOKEN ?? randomBytes(32).toString("base64url")
-  };
-  writeFileSync(secretsPath, `${JSON.stringify(secrets, null, 2)}\n`, {
-    mode: 0o600
-  });
-  return {
-    ...secrets,
-    ...environment
-  };
 };
 
 const corsOrigins = (
@@ -731,7 +688,7 @@ export const startKoedServer = async ({
   assertKoedAppRuntimeAvailable(appRuntime, paths);
   environment = ensurePackagedLocalServiceSecrets(
     paths,
-    appRuntime,
+    appRuntime.kind === "packaged",
     environment
   );
   mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });

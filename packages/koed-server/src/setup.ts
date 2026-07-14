@@ -15,9 +15,20 @@ import {
   resolveLocalApiToken,
   writeExplorerCredential
 } from "./credentials.js";
+import { resolveKoedServerConfig } from "./config.js";
 import { loadRepoEnv, resolveApiUrl, resolveExplorerUrl } from "./env-file.js";
-import { ensureKoedHome, resolveKoedServerPaths } from "./paths.js";
+import {
+  localPostgresEnv,
+  resolveLocalPostgresRuntimePaths
+} from "./local-postgres-runtime.js";
+import { readLocalServiceSecrets } from "./local-service-secrets.js";
+import {
+  ensureKoedHome,
+  resolveKoedServerPaths,
+  type KoedServerPaths
+} from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
+import { isProcessRunning } from "./process-liveness.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -41,17 +52,73 @@ type SpawnSyncLike = (
   options?: Parameters<typeof nodeSpawnSync>[2]
 ) => SpawnSyncReturns<string>;
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const validHttpUrl = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+};
+
+const validProcessMap = (value: unknown): boolean =>
+  value === undefined ||
+  (isRecord(value) &&
+    Object.values(value).every(
+      (pid) => typeof pid === "number" && Number.isInteger(pid) && pid >= 0
+    ));
+
+const validRuntimeState = (value: unknown): value is KoedServerRuntimeState => {
+  if (!isRecord(value)) return false;
+  const validRuntimeMode =
+    value.runtimeMode === undefined ||
+    value.runtimeMode === "local-personal" ||
+    value.runtimeMode === "external" ||
+    value.runtimeMode === "developer";
+  const validDependencyMode =
+    value.dependencyMode === undefined ||
+    value.dependencyMode === "bundled-local" ||
+    value.dependencyMode === "external";
+  return (
+    typeof value.pid === "number" &&
+    Number.isInteger(value.pid) &&
+    value.pid > 0 &&
+    typeof value.startedAt === "string" &&
+    !Number.isNaN(Date.parse(value.startedAt)) &&
+    typeof value.repoRoot === "string" &&
+    Boolean(value.repoRoot.trim()) &&
+    validHttpUrl(value.apiUrl) &&
+    validHttpUrl(value.explorerUrl) &&
+    Array.isArray(value.services) &&
+    value.services.every((service) => typeof service === "string") &&
+    validRuntimeMode &&
+    validDependencyMode &&
+    validProcessMap(value.processes)
+  );
+};
+
 const readRuntimeState = (
   path: string,
   readFileSync: typeof nodeReadFileSync = nodeReadFileSync
 ): KoedServerRuntimeState | null => {
   try {
-    return JSON.parse(
-      String(readFileSync(path, "utf8"))
-    ) as KoedServerRuntimeState;
+    const parsed: unknown = JSON.parse(String(readFileSync(path, "utf8")));
+    return validRuntimeState(parsed) ? parsed : null;
   } catch {
     return null;
   }
+};
+
+const readActiveRuntimeState = (
+  path: string,
+  readFileSync: typeof nodeReadFileSync,
+  checkPid: (pid: number) => boolean
+): KoedServerRuntimeState | null => {
+  const runtime = readRuntimeState(path, readFileSync);
+  return runtime && checkPid(runtime.pid) ? runtime : null;
 };
 
 const applyActiveRuntimeUrls = (
@@ -74,6 +141,7 @@ export interface KoedServerSetupOptions {
   writeFileSync?: typeof nodeWriteFileSync;
   mkdirSync?: typeof nodeMkdirSync;
   existsSync?: typeof nodeExistsSync;
+  checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
 
@@ -222,6 +290,7 @@ export const repairCodexIntegration = ({
   writeFileSync = nodeWriteFileSync,
   mkdirSync = nodeMkdirSync,
   existsSync = nodeExistsSync,
+  checkPid = isProcessRunning,
   now = () => new Date()
 }: Omit<
   KoedServerSetupOptions,
@@ -231,7 +300,7 @@ export const repairCodexIntegration = ({
   ensureKoedHome(paths);
   environment = applyActiveRuntimeUrls(
     applyPersistedLocalPorts(paths, environment),
-    readRuntimeState(paths.runtimeStatePath)
+    readActiveRuntimeState(paths.runtimeStatePath, readFileSync, checkPid)
   );
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const apiUrl = resolveApiUrl(environment, repoEnv);
@@ -294,112 +363,279 @@ export const repairCodexIntegration = ({
   }
 };
 
-export const setupCodex = ({
-  environment = process.env,
-  spawnSync = nodeSpawnSync as SpawnSyncLike,
-  writeFileSync = nodeWriteFileSync,
-  now = () => new Date()
-}: KoedServerSetupOptions = {}): KoedServerSetupCodexResult => {
-  const paths = resolveKoedServerPaths(environment);
-  ensureKoedHome(paths);
-  environment = applyActiveRuntimeUrls(
-    applyPersistedLocalPorts(paths, environment),
-    readRuntimeState(paths.runtimeStatePath)
+const trimValue = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+};
+
+const setupRuntimeEnvironment = (
+  environment: NodeJS.ProcessEnv,
+  runtime: KoedServerRuntimeState | null
+): NodeJS.ProcessEnv =>
+  applyActiveRuntimeUrls(
+    {
+      ...environment,
+      ...(runtime?.runtimeMode && !trimValue(environment.KOED_RUNTIME_MODE)
+        ? { KOED_RUNTIME_MODE: runtime.runtimeMode }
+        : {}),
+      ...(runtime?.dependencyMode &&
+      !trimValue(environment.KOED_DEPENDENCY_MODE)
+        ? { KOED_DEPENDENCY_MODE: runtime.dependencyMode }
+        : {})
+    },
+    runtime
   );
-  const repoEnv = loadRepoEnv(paths.repoRoot);
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+
+type BundledDatabaseResolution =
+  | { ok: true; environment: NodeJS.ProcessEnv }
+  | { ok: false; error: string; action: string };
+
+const resolveBundledDatabaseEnvironment = (
+  paths: KoedServerPaths,
+  invocationEnvironment: NodeJS.ProcessEnv,
+  environment: NodeJS.ProcessEnv,
+  repoEnv: Record<string, string>,
+  dependencies: Pick<KoedServerSetupOptions, "existsSync" | "readFileSync">
+): BundledDatabaseResolution => {
+  const explicitDatabaseUrl = trimValue(invocationEnvironment.DATABASE_URL);
+  if (explicitDatabaseUrl) {
+    return { ok: true, environment: { DATABASE_URL: explicitDatabaseUrl } };
+  }
+  const explicitPassword =
+    trimValue(invocationEnvironment.POSTGRES_PASSWORD) ??
+    trimValue(invocationEnvironment.KOED_BUNDLED_POSTGRES_PASSWORD);
+  const persisted = explicitPassword
+    ? ({ state: "absent" } as const)
+    : readLocalServiceSecrets(paths, dependencies);
+  if (persisted.state === "invalid") {
+    return {
+      ok: false,
+      error: `Persisted local service secrets at ${persisted.path} are malformed: ${persisted.error}.`,
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup codex --json.`
+    };
+  }
+  if (persisted.state === "valid" && !persisted.secrets.POSTGRES_PASSWORD) {
+    return {
+      ok: false,
+      error: `Persisted local service secrets at ${persisted.path} are missing required POSTGRES_PASSWORD.`,
+      action: `Fix or remove ${persisted.path}, restart packaged Koed Desktop to regenerate local service secrets, then rerun koed-server setup codex --json.`
+    };
+  }
+  const password =
+    explicitPassword ??
+    (persisted.state === "valid"
+      ? persisted.secrets.POSTGRES_PASSWORD
+      : undefined) ??
+    trimValue(repoEnv.POSTGRES_PASSWORD) ??
+    trimValue(repoEnv.KOED_BUNDLED_POSTGRES_PASSWORD);
+  const postgresEnvironment = {
     ...repoEnv,
     ...environment,
-    KOED_SERVER_MANAGED: "1"
+    ...(password ? { POSTGRES_PASSWORD: password } : {})
   };
-  const apiUrl = resolveApiUrl(environment, repoEnv);
-  const explorerUrl = resolveExplorerUrl(environment, repoEnv);
-  const checkedAt = now().toISOString();
-  const apiToken = resolveLocalApiToken(environment, repoEnv);
-  if (apiToken) {
-    writeExplorerCredential(paths, {
-      apiToken: apiToken.token,
-      provisionedAt: checkedAt,
-      source: apiToken.source
-    });
+  return {
+    ok: true,
+    environment: localPostgresEnv(
+      resolveLocalPostgresRuntimePaths(paths, postgresEnvironment)
+    )
+  };
+};
+
+interface SetupCodexBaseContext {
+  paths: KoedServerPaths;
+  environment: NodeJS.ProcessEnv;
+  repoEnv: Record<string, string>;
+  dependencyMode: "bundled-local" | "external";
+  apiUrl: string;
+  explorerUrl: string;
+  checkedAt: string;
+  scriptPath: string;
+}
+
+interface SetupCodexContext extends SetupCodexBaseContext {
+  childEnv: NodeJS.ProcessEnv;
+}
+
+type PreparedSetupCodex =
+  | { ok: true; context: SetupCodexContext }
+  | { ok: false; result: KoedServerSetupCodexResult; paths: KoedServerPaths };
+
+const resolveSetupCodexBase = (
+  invocationEnvironment: NodeJS.ProcessEnv,
+  options: KoedServerSetupOptions
+): SetupCodexBaseContext => {
+  const paths = resolveKoedServerPaths(invocationEnvironment);
+  ensureKoedHome(paths);
+  const runtime = readActiveRuntimeState(
+    paths.runtimeStatePath,
+    options.readFileSync ?? nodeReadFileSync,
+    options.checkPid ?? isProcessRunning
+  );
+  let environment = setupRuntimeEnvironment(invocationEnvironment, runtime);
+  const repoEnv = loadRepoEnv(paths.repoRoot);
+  const config = resolveKoedServerConfig(paths, {
+    ...repoEnv,
+    ...environment
+  });
+  environment = applyPersistedLocalPorts(paths, environment, {
+    force: config.dependencyMode === "bundled-local"
+  });
+  return {
+    paths,
+    environment,
+    repoEnv,
+    dependencyMode: config.dependencyMode,
+    apiUrl: resolveApiUrl(environment, repoEnv),
+    explorerUrl: resolveExplorerUrl(environment, repoEnv),
+    checkedAt: (options.now ?? (() => new Date()))().toISOString(),
+    scriptPath: resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs")
+  };
+};
+
+const prepareSetupCodex = (
+  invocationEnvironment: NodeJS.ProcessEnv,
+  options: KoedServerSetupOptions
+): PreparedSetupCodex => {
+  const base = resolveSetupCodexBase(invocationEnvironment, options);
+  const database =
+    base.dependencyMode === "bundled-local"
+      ? resolveBundledDatabaseEnvironment(
+          base.paths,
+          invocationEnvironment,
+          base.environment,
+          base.repoEnv,
+          options
+        )
+      : { ok: true as const, environment: {} };
+  if (!database.ok) {
+    return {
+      ok: false,
+      paths: base.paths,
+      result: {
+        ok: false,
+        state: "needs_attention",
+        koedHome: base.paths.koedHome,
+        apiUrl: base.apiUrl,
+        explorerUrl: base.explorerUrl,
+        checkedAt: base.checkedAt,
+        command: "resolve bundled-local setup environment",
+        error: database.error,
+        action: database.action
+      }
+    };
   }
-  const scriptPath = resolve(paths.repoRoot, "scripts/clients-bootstrap.mjs");
-  const result = spawnSync(process.execPath, [scriptPath], {
-    cwd: paths.repoRoot,
-    env: childEnv,
+  return {
+    ok: true,
+    context: {
+      ...base,
+      childEnv: {
+        ...process.env,
+        ...base.repoEnv,
+        ...base.environment,
+        ...database.environment,
+        KOED_SERVER_MANAGED: "1"
+      }
+    }
+  };
+};
+
+const persistSetupApiToken = (
+  context: SetupCodexContext,
+  repoEnv: Record<string, string> = context.repoEnv
+): void => {
+  const apiToken = resolveLocalApiToken(context.environment, repoEnv);
+  if (!apiToken) return;
+  writeExplorerCredential(context.paths, {
+    apiToken: apiToken.token,
+    provisionedAt: context.checkedAt,
+    source: apiToken.source
+  });
+};
+
+const runSetupBootstrap = (
+  context: SetupCodexContext,
+  spawnSync: SpawnSyncLike
+): KoedServerSetupCodexResult => {
+  const result = spawnSync(process.execPath, [context.scriptPath], {
+    cwd: context.paths.repoRoot,
+    env: context.childEnv,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 300_000
   });
-
-  const payload: KoedServerSetupCodexResult = result.error
-    ? {
+  const base = {
+    koedHome: context.paths.koedHome,
+    apiUrl: context.apiUrl,
+    explorerUrl: context.explorerUrl,
+    checkedAt: context.checkedAt,
+    command: `node ${context.scriptPath}`
+  };
+  if (result.error) {
+    return {
+      ...base,
+      ok: false,
+      state: "needs_attention",
+      error: result.error.message,
+      action:
+        "Fix the reported setup failure, then rerun koed-server setup codex --json."
+    };
+  }
+  const output = {
+    stdout: result.stdout.trim() || undefined,
+    stderr: result.stderr.trim() || undefined
+  };
+  return result.status === 0
+    ? { ...base, ...output, ok: true, state: "healthy" }
+    : {
+        ...base,
+        ...output,
         ok: false,
         state: "needs_attention",
-        koedHome: paths.koedHome,
-        apiUrl,
-        explorerUrl,
-        checkedAt,
-        command: `node ${scriptPath}`,
-        error: result.error.message,
+        error: `Codex setup failed with exit code ${result.status ?? 1}.`,
         action:
-          "Fix the reported setup failure, then rerun koed-server setup codex --json."
-      }
-    : result.status === 0
-      ? {
-          ok: true,
-          state: "healthy",
-          koedHome: paths.koedHome,
-          apiUrl,
-          explorerUrl,
-          checkedAt,
-          command: `node ${scriptPath}`,
-          stdout: result.stdout.trim() || undefined,
-          stderr: result.stderr.trim() || undefined
-        }
-      : {
-          ok: false,
-          state: "needs_attention",
-          koedHome: paths.koedHome,
-          apiUrl,
-          explorerUrl,
-          checkedAt,
-          command: `node ${scriptPath}`,
-          stdout: result.stdout.trim() || undefined,
-          stderr: result.stderr.trim() || undefined,
-          error: `Codex setup failed with exit code ${result.status ?? 1}.`,
-          action:
-            "Review stdout/stderr, fix the reported setup failure, then rerun koed-server setup codex --json."
-        };
+          "Review stdout/stderr, fix the reported setup failure, then rerun koed-server setup codex --json."
+      };
+};
 
-  if (payload.ok) {
-    const refreshedApiToken = resolveLocalApiToken(
-      environment,
-      loadRepoEnv(paths.repoRoot)
-    );
-    if (refreshedApiToken) {
-      writeExplorerCredential(paths, {
-        apiToken: refreshedApiToken.token,
-        provisionedAt: checkedAt,
-        source: refreshedApiToken.source
-      });
-    }
-  }
-
+const writeSetupVerification = (
+  paths: KoedServerPaths,
+  result: KoedServerSetupCodexResult,
+  writeFileSync: typeof nodeWriteFileSync
+): void => {
   writeFileSync(
     paths.lastVerificationPath,
     `${JSON.stringify(
       {
-        ok: payload.ok,
-        checkedAt,
-        message: payload.ok ? "Codex setup completed." : payload.error
+        ok: result.ok,
+        checkedAt: result.checkedAt,
+        message: result.ok ? "Codex setup completed." : result.error
       },
       null,
       2
     )}\n`,
     { mode: 0o600 }
   );
+};
 
-  return payload;
+export const setupCodex = (
+  options: KoedServerSetupOptions = {}
+): KoedServerSetupCodexResult => {
+  const environment = options.environment ?? process.env;
+  const writeFileSync = options.writeFileSync ?? nodeWriteFileSync;
+  const prepared = prepareSetupCodex(environment, options);
+  if (!prepared.ok) {
+    writeSetupVerification(prepared.paths, prepared.result, writeFileSync);
+    return prepared.result;
+  }
+  const { context } = prepared;
+  persistSetupApiToken(context);
+  const result = runSetupBootstrap(
+    context,
+    options.spawnSync ?? (nodeSpawnSync as SpawnSyncLike)
+  );
+  if (result.ok) {
+    persistSetupApiToken(context, loadRepoEnv(context.paths.repoRoot));
+  }
+  writeSetupVerification(context.paths, result, writeFileSync);
+  return result;
 };
