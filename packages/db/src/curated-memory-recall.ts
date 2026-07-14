@@ -7,7 +7,10 @@ import {
 } from "@koed/core";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
-import { activeCuratedMemoryEvidencePredicate } from "./curated-memory-policy.js";
+import {
+  activeCuratedMemoryEvidencePredicate,
+  curatedMemoryActiveEvidenceRowsSql
+} from "./curated-memory-policy.js";
 import {
   assertionSelect,
   hydrateAssertionRow,
@@ -43,6 +46,14 @@ export const createCuratedMemoryRecallMethods = ({
         ? terms.map((term) => `%${term}%`)
         : [`%${input.query.trim().toLowerCase()}%`];
     const currentOnly = input.currentOnly ?? true;
+    const temporalEvidenceSql = curatedMemoryActiveEvidenceRowsSql(
+      "cma",
+      "temporal"
+    );
+    const scopedEvidenceSql = curatedMemoryActiveEvidenceRowsSql(
+      "cma",
+      "scoped"
+    );
     if (protectedCuratedMemoryPayloadsRequired()) {
       requireEncryptionProvider(envelopeEncryptionProvider);
       const candidates = await pool.query<AssertionRow>(
@@ -60,40 +71,9 @@ export const createCuratedMemoryRecallMethods = ({
               ($6::timestamptz is null and $7::timestamptz is null)
               or exists (
                 select 1
-                from curated_memory_sources temporal_cms
-                left join conversation_items temporal_ci
-                  on temporal_ci.id = temporal_cms.conversation_item_id
-                  and temporal_ci.owner_user_id = cma.owner_user_id
-                  and temporal_ci.visibility = 'personal'
-                  and temporal_ci.personal_deleted_at is null
-                left join memory_events temporal_me
-                  on temporal_me.id = temporal_cms.memory_event_id
-                  and temporal_me.owner_user_id = cma.owner_user_id
-                  and temporal_me.visibility = 'personal'
-                  and temporal_me.invalidated_at is null
-                  and temporal_me.personal_deleted_at is null
-                left join memory_node_sources temporal_mns on temporal_mns.memory_node_id = temporal_cms.lcm_node_id
-                left join memory_events temporal_node_me
-                  on temporal_node_me.id = temporal_mns.memory_event_id
-                  and temporal_node_me.owner_user_id = cma.owner_user_id
-                  and temporal_node_me.visibility = 'personal'
-                  and temporal_node_me.invalidated_at is null
-                  and temporal_node_me.personal_deleted_at is null
-                where temporal_cms.assertion_id = cma.id
-                  and coalesce(
-                    temporal_ci.created_at,
-                    temporal_me.captured_at,
-                    temporal_me.created_at,
-                    temporal_node_me.captured_at,
-                    temporal_node_me.created_at
-                  ) >= coalesce($6::timestamptz, '-infinity'::timestamptz)
-                  and coalesce(
-                    temporal_ci.created_at,
-                    temporal_me.captured_at,
-                    temporal_me.created_at,
-                    temporal_node_me.captured_at,
-                    temporal_node_me.created_at
-                  ) < coalesce($7::timestamptz, 'infinity'::timestamptz)
+                from (${temporalEvidenceSql}) temporal_source
+                where temporal_source.source_event_time >= coalesce($6::timestamptz, '-infinity'::timestamptz)
+                  and temporal_source.source_event_time < coalesce($7::timestamptz, 'infinity'::timestamptz)
               )
             )
             and (
@@ -102,31 +82,24 @@ export const createCuratedMemoryRecallMethods = ({
                 $3::text = 'session'
                 and exists (
                   select 1
-                  from curated_memory_sources cms
-                  left join conversation_items ci on ci.id = cms.conversation_item_id
-                  left join memory_events me on me.id = cms.memory_event_id
-                  left join memory_node_sources mns on mns.memory_node_id = cms.lcm_node_id
-                  left join memory_events node_me on node_me.id = mns.memory_event_id
-                  where cms.assertion_id = cma.id
-                    and coalesce(ci.session_id, me.session_id, node_me.session_id) = $4::uuid
+                  from (${scopedEvidenceSql}) scoped_source
+                  where scoped_source.source_session_id = $4::uuid
                 )
               )
               or (
                 $3::text = 'project'
                 and exists (
                   select 1
-                  from curated_memory_sources cms
-                  left join conversation_items ci on ci.id = cms.conversation_item_id
-                  left join sessions ci_session on ci_session.id = ci.session_id
-                  left join memory_events me on me.id = cms.memory_event_id
-                  left join memory_node_sources mns on mns.memory_node_id = cms.lcm_node_id
-                  left join memory_events node_me on node_me.id = mns.memory_event_id
-                  where cms.assertion_id = cma.id
-                    and (
-                      ci_session.cwd = $5
-                      or me.payload ->> 'workspaceId' = $5
-                      or node_me.payload ->> 'workspaceId' = $5
-                    )
+                  from (${scopedEvidenceSql}) scoped_source
+                  where $5 in (
+                    scoped_source.ci_workspace_id,
+                    scoped_source.ci_stable_workspace_id,
+                    scoped_source.ci_workspace_path,
+                    scoped_source.me_workspace_id,
+                    scoped_source.me_workspace_path,
+                    scoped_source.node_workspace_id,
+                    scoped_source.node_workspace_path
+                  )
                 )
               )
             )
@@ -198,41 +171,9 @@ export const createCuratedMemoryRecallMethods = ({
             ($8::timestamptz is null and $9::timestamptz is null)
             or exists (
               select 1
-              from curated_memory_sources temporal_cms
-              left join conversation_items temporal_ci
-                on temporal_ci.id = temporal_cms.conversation_item_id
-                and temporal_ci.owner_user_id = cma.owner_user_id
-                and temporal_ci.visibility = 'personal'
-                and temporal_ci.personal_deleted_at is null
-              left join memory_events temporal_me
-                on temporal_me.id = temporal_cms.memory_event_id
-                and temporal_me.owner_user_id = cma.owner_user_id
-                and temporal_me.visibility = 'personal'
-                and temporal_me.invalidated_at is null
-                and temporal_me.personal_deleted_at is null
-              left join memory_node_sources temporal_mns
-                on temporal_mns.memory_node_id = temporal_cms.lcm_node_id
-              left join memory_events temporal_node_me
-                on temporal_node_me.id = temporal_mns.memory_event_id
-                and temporal_node_me.owner_user_id = cma.owner_user_id
-                and temporal_node_me.visibility = 'personal'
-                and temporal_node_me.invalidated_at is null
-                and temporal_node_me.personal_deleted_at is null
-              where temporal_cms.assertion_id = cma.id
-                and coalesce(
-                  temporal_ci.created_at,
-                  temporal_me.captured_at,
-                  temporal_me.created_at,
-                  temporal_node_me.captured_at,
-                  temporal_node_me.created_at
-                ) >= coalesce($8::timestamptz, '-infinity'::timestamptz)
-                and coalesce(
-                  temporal_ci.created_at,
-                  temporal_me.captured_at,
-                  temporal_me.created_at,
-                  temporal_node_me.captured_at,
-                  temporal_node_me.created_at
-                ) < coalesce($9::timestamptz, 'infinity'::timestamptz)
+              from (${temporalEvidenceSql}) temporal_source
+              where temporal_source.source_event_time >= coalesce($8::timestamptz, '-infinity'::timestamptz)
+                and temporal_source.source_event_time < coalesce($9::timestamptz, 'infinity'::timestamptz)
             )
           )
           and (
@@ -241,31 +182,24 @@ export const createCuratedMemoryRecallMethods = ({
               $4::text = 'session'
               and exists (
                 select 1
-                from curated_memory_sources cms
-                left join conversation_items ci on ci.id = cms.conversation_item_id
-                left join memory_events me on me.id = cms.memory_event_id
-                left join memory_node_sources mns on mns.memory_node_id = cms.lcm_node_id
-                left join memory_events node_me on node_me.id = mns.memory_event_id
-                where cms.assertion_id = cma.id
-                  and coalesce(ci.session_id, me.session_id, node_me.session_id) = $5::uuid
+                from (${scopedEvidenceSql}) scoped_source
+                where scoped_source.source_session_id = $5::uuid
               )
             )
             or (
               $4::text = 'project'
               and exists (
                 select 1
-                from curated_memory_sources cms
-                left join conversation_items ci on ci.id = cms.conversation_item_id
-                left join sessions ci_session on ci_session.id = ci.session_id
-                left join memory_events me on me.id = cms.memory_event_id
-                left join memory_node_sources mns on mns.memory_node_id = cms.lcm_node_id
-                left join memory_events node_me on node_me.id = mns.memory_event_id
-                where cms.assertion_id = cma.id
-                  and (
-                    ci_session.cwd = $6
-                    or me.payload ->> 'workspaceId' = $6
-                    or node_me.payload ->> 'workspaceId' = $6
-                  )
+                from (${scopedEvidenceSql}) scoped_source
+                where $6 in (
+                  scoped_source.ci_workspace_id,
+                  scoped_source.ci_stable_workspace_id,
+                  scoped_source.ci_workspace_path,
+                  scoped_source.me_workspace_id,
+                  scoped_source.me_workspace_path,
+                  scoped_source.node_workspace_id,
+                  scoped_source.node_workspace_path
+                )
               )
             )
           )
@@ -356,6 +290,8 @@ export const createCuratedMemoryRecallMethods = ({
       ci_metadata: Record<string, unknown> | null;
       ci_session_id: string | null;
       ci_created_at: Date | null;
+      ci_event_time: Date | null;
+      ci_observed_at: Date | null;
       memory_event_id: string | null;
       me_owner_user_id: string | null;
       me_visibility: Visibility | null;
@@ -371,6 +307,7 @@ export const createCuratedMemoryRecallMethods = ({
       } | null;
       me_created_at: Date | null;
       me_captured_at: Date | null;
+      me_source_event_time: Date | null;
       lcm_node_id: string | null;
       lcm_owner_user_id: string | null;
       lcm_summary_text: string | null;
@@ -392,6 +329,8 @@ export const createCuratedMemoryRecallMethods = ({
           ci.metadata as ci_metadata,
           ci.session_id as ci_session_id,
           ci.created_at as ci_created_at,
+          ci.event_time as ci_event_time,
+          ci.observed_at as ci_observed_at,
           cms.memory_event_id,
           me.owner_user_id as me_owner_user_id,
           me.visibility as me_visibility,
@@ -401,6 +340,7 @@ export const createCuratedMemoryRecallMethods = ({
           me.payload as me_payload,
           me.created_at as me_created_at,
           me.captured_at as me_captured_at,
+          me.source_event_time as me_source_event_time,
           cms.lcm_node_id,
           mn.owner_user_id as lcm_owner_user_id,
           mn.summary_text as lcm_summary_text,
@@ -413,6 +353,7 @@ export const createCuratedMemoryRecallMethods = ({
           and ci.owner_user_id = cma.owner_user_id
           and ci.visibility = 'personal'
           and ci.personal_deleted_at is null
+          and ci.memory_excluded_at is null
         left join memory_events me
           on me.id = cms.memory_event_id
           and me.owner_user_id = cma.owner_user_id
@@ -493,7 +434,11 @@ export const createCuratedMemoryRecallMethods = ({
           sourceTable: "conversation_items",
           sourceId: row.conversation_item_id,
           visibility: "personal",
-          createdAt: row.ci_created_at?.toISOString(),
+          createdAt: (
+            row.ci_event_time ??
+            row.ci_observed_at ??
+            row.ci_created_at
+          )?.toISOString(),
           text,
           payload: {
             sourceType: "conversation_item",
@@ -525,7 +470,11 @@ export const createCuratedMemoryRecallMethods = ({
           visibility: "personal",
           ownerUserId: row.ci_owner_user_id,
           createdAt:
-            row.ci_created_at?.toISOString() ?? new Date(0).toISOString()
+            (
+              row.ci_event_time ??
+              row.ci_observed_at ??
+              row.ci_created_at
+            )?.toISOString() ?? new Date(0).toISOString()
         });
       } else if (
         row.source_type === "memory_event" &&
@@ -558,7 +507,11 @@ export const createCuratedMemoryRecallMethods = ({
           visibility: row.me_visibility ?? "personal",
           actor: payload?.actor,
           turnId: row.me_turn_id,
-          createdAt: row.me_captured_at?.toISOString(),
+          createdAt: (
+            row.me_source_event_time ??
+            row.me_captured_at ??
+            row.me_created_at
+          )?.toISOString(),
           text,
           payload: {
             ...payloadWithoutContent,
@@ -588,7 +541,11 @@ export const createCuratedMemoryRecallMethods = ({
           visibility: row.me_visibility ?? "personal",
           ownerUserId: row.me_owner_user_id,
           createdAt:
-            row.me_created_at?.toISOString() ?? new Date(0).toISOString()
+            (
+              row.me_source_event_time ??
+              row.me_captured_at ??
+              row.me_created_at
+            )?.toISOString() ?? new Date(0).toISOString()
         });
       } else if (
         row.source_type === "lcm_summary" &&

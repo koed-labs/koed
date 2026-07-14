@@ -190,7 +190,10 @@ evidence/detail option only when debugging retrieval.
 
 `memory_intake_propose` is also exposed by default for Curated Memory intake. It
 only queues async review of durable source-linked facts; it does not directly
-write canonical Curated Memory. See [Curated Memory](curated-memory.md).
+write canonical Curated Memory. When source IDs or a Captured Session ID are not
+known, the tool sends the exact supporting User statement so the API can bind
+one unambiguous source instead of guessing from the current Project. See
+[Curated Memory](curated-memory.md).
 
 Setup checks should use `pnpm codex:bootstrap` or `pnpm codex:doctor`;
 optional MCP diagnostic tools such as `memory_access_check`, `memory_search`,

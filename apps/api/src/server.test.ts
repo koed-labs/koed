@@ -12562,4 +12562,133 @@ describe("account and access flows", () => {
       }
     });
   });
+
+  it("fails closed when Curated Memory reviewer output weakens proposal policy", async () => {
+    const repository = createFakeRepository();
+    const proposalId = randomUUID();
+    const evidenceId = randomUUID();
+    const now = new Date().toISOString();
+    const decisions: Array<Record<string, unknown>> = [];
+    let proposalPolicy: {
+      sensitivityHint: "normal" | "sensitive" | "review_required" | null;
+      expiresAt: string | null;
+    } = { sensitivityHint: "review_required", expiresAt: null };
+    const proposal = () => ({
+      id: proposalId,
+      ownerUserId: "route-auth-owner",
+      visibility: "personal" as const,
+      proposedClaim: "Policy-bound memory",
+      proposedTopic: null,
+      rationale: null,
+      tags: [],
+      ...proposalPolicy,
+      evidenceConversationItemIds: [evidenceId],
+      evidenceMemoryEventIds: [],
+      operation: "store" as const,
+      targetAssertionId: null,
+      status: "pending" as const,
+      decisionReason: null,
+      assertionId: null,
+      workerResult: null,
+      processingStartedAt: now,
+      processingLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      attemptCount: 1,
+      lastErrorMessage: null,
+      createdByModel: "codex",
+      createdByPromptVersion: "memory-intake-propose-mcp-v1",
+      createdAt: now,
+      updatedAt: now,
+      decidedAt: null
+    });
+    repository.getCuratedMemoryProposal = async () => proposal();
+    repository.processCuratedMemoryProposal = async (_actor, input) => {
+      decisions.push(input as unknown as Record<string, unknown>);
+      return { ...proposal(), status: "skipped" as const };
+    };
+
+    const app = await buildServer({ repository });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: `curated-policy-${randomUUID()}@example.com`,
+        password: "password123"
+      }
+    });
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: cookieHeader(registered) },
+      payload: { name: "Curated policy test" }
+    });
+    const headers = {
+      authorization: `Bearer ${jsonBody<TokenResponse>(tokenResponse).token}`
+    };
+    const acceptedPayload = {
+      outcome: "accepted",
+      operation: "store",
+      target_assertion_id: null,
+      attempt_count: 1,
+      evidence_revisions: [
+        {
+          source_type: "conversation_item",
+          source_id: evidenceId,
+          source_hash: "current"
+        }
+      ],
+      selected_evidence_ids: [evidenceId],
+      candidate_assertion_ids: [],
+      assertion_text: "Policy-bound memory",
+      topic_title: null,
+      tags: [],
+      sensitivity: "normal",
+      confidence: 90,
+      expires_at: null,
+      decision_reason: "Accepted by reviewer",
+      reviewer_model: "test",
+      reviewer_prompt_version: "test"
+    };
+
+    for (const testCase of [
+      {
+        policy: {
+          sensitivityHint: "review_required" as const,
+          expiresAt: null
+        },
+        payload: acceptedPayload
+      },
+      {
+        policy: { sensitivityHint: "sensitive" as const, expiresAt: null },
+        payload: acceptedPayload
+      },
+      {
+        policy: {
+          sensitivityHint: "normal" as const,
+          expiresAt: "2027-01-01T00:00:00.000Z"
+        },
+        payload: {
+          ...acceptedPayload,
+          expires_at: "2028-01-01T00:00:00.000Z"
+        }
+      }
+    ]) {
+      proposalPolicy = testCase.policy;
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/v1/memory/curated/proposals/${proposalId}/review`,
+        headers,
+        payload: testCase.payload
+      });
+      expect(response.statusCode).toBe(200);
+    }
+    await app.close();
+
+    expect(decisions).toHaveLength(3);
+    expect(decisions.every((input) => input.decision === "skip")).toBe(true);
+    expect(decisions.map((input) => input.decisionReason)).toEqual([
+      "Curated Memory requires explicit user review",
+      "Curated Memory reviewer cannot lower proposed sensitivity",
+      "Curated Memory reviewer cannot remove or extend proposed expiry"
+    ]);
+  });
 });

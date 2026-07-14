@@ -129,7 +129,8 @@ const arrayStrings = (value: unknown): string[] =>
 const evidenceCount = (call: CuratedMemoryIntakeToolCall | undefined): number =>
   arrayStrings(call?.arguments.evidence_conversation_item_ids).length +
   arrayStrings(call?.arguments.evidence_memory_event_ids).length +
-  (typeof call?.arguments.source_workspace_id === "string" ? 1 : 0);
+  (typeof call?.arguments.source_session_id === "string" ? 1 : 0) +
+  (typeof call?.arguments.evidence_exact_quote === "string" ? 1 : 0);
 
 const recallHasExpectedHit = (run: CuratedMemoryIntakeRunInput): boolean => {
   const hits = run.recall?.hits ?? [];

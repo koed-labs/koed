@@ -151,6 +151,8 @@ export const RAW_CONVERSATION_LOGICAL_ITEM_MAX_BYTES =
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_BYTES *
   RAW_CONVERSATION_TRANSPORT_CHUNK_MAX_COUNT;
 
+export const CURATED_MEMORY_REVIEW_MAX_EVIDENCE = 12;
+
 export const rawConversationTransportChunkGroupId = (input: {
   sourceKind: string;
   sourceAdapterVersion: string;

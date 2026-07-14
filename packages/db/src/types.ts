@@ -1255,6 +1255,7 @@ export interface MemorySourceRepository
     input: {
       workspaceId?: string;
       sessionId?: string;
+      exactQuote?: string;
     }
   ): Promise<CuratedMemoryResolvedEvidence>;
   claimPendingCuratedMemoryProposals(

@@ -414,6 +414,35 @@ export const createCuratedMemoryProposalTransitionMethods = ({
         return mapProposal(proposal);
       }
       if (
+        input.decision !== "skip" &&
+        input.expectedAttemptCount !== undefined &&
+        input.assertion
+      ) {
+        const sensitivityRank = {
+          normal: 0,
+          sensitive: 1,
+          review_required: 2
+        } as const;
+        const proposedExpiry = proposal.expires_at_hint?.getTime() ?? null;
+        const reviewedExpiry = input.assertion.expiresAt
+          ? Date.parse(input.assertion.expiresAt)
+          : null;
+        if (
+          proposal.sensitivity_hint === "review_required" ||
+          input.assertion.sensitivity === "review_required" ||
+          (proposal.sensitivity_hint !== null &&
+            sensitivityRank[input.assertion.sensitivity ?? "normal"] <
+              sensitivityRank[proposal.sensitivity_hint]) ||
+          (proposedExpiry !== null &&
+            (reviewedExpiry === null || reviewedExpiry > proposedExpiry))
+        ) {
+          throw Object.assign(
+            new Error("Curated Memory review violated proposal policy"),
+            { statusCode: 400 }
+          );
+        }
+      }
+      if (
         input.expectedAttemptCount !== undefined &&
         (proposal.attempt_count !== input.expectedAttemptCount ||
           proposal.processing_lease_until === null ||

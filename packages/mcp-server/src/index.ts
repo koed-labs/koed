@@ -257,7 +257,7 @@ export const memoryAnswerToolDescription = loadPrompt(
 ).body;
 
 export const memoryIntakeProposeToolDescription =
-  "Propose durable Curated Memory when the user provides stable personal or project information such as preferences, corrections, decisions, plans, relationships, or other reusable context. Submit a concise candidate and real source evidence; an asynchronous local review agent receives the complete evidence, decides whether it is supported and durable, rewrites accepted assertions clearly, and handles duplicates or corrections. The proposal call returns immediately. Do not propose public facts, transient task state, guesses, agent-authored claims, or information without source evidence.";
+  "Propose durable Curated Memory when the user provides stable personal or project information such as preferences, corrections, decisions, plans, relationships, or other reusable context. Submit a concise candidate and real source evidence. When source IDs or a backend Captured Session ID are unavailable, include the exact supporting User statement in evidence_exact_quote so Koed can bind the proposal without guessing across sessions. An asynchronous local review agent receives the complete evidence, decides whether it is supported and durable, rewrites accepted assertions clearly, and handles duplicates or corrections. The proposal call returns immediately. Do not propose public facts, transient task state, guesses, agent-authored claims, or information without source evidence.";
 
 export const diagnosticMemoryTools = ["memory_access_check"] as const;
 

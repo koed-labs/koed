@@ -2,7 +2,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readLocalEdgeClientCredentialAuthorization } from "@koed/shared";
+import {
+  CURATED_MEMORY_REVIEW_MAX_EVIDENCE,
+  readLocalEdgeClientCredentialAuthorization
+} from "@koed/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -757,15 +760,23 @@ if (backendToolCapabilities.curatedMemoryIntakeAvailable) {
           ),
         evidence_conversation_item_ids: z
           .array(uuidSchema)
-          .max(50)
+          .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE)
           .default([])
           .describe("Conversation item UUIDs that directly support the claim."),
         evidence_memory_event_ids: z
           .array(uuidSchema)
-          .max(50)
+          .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE)
           .default([])
           .describe(
             "Optional Memory Event UUIDs that directly support the claim."
+          ),
+        evidence_exact_quote: z
+          .string()
+          .min(1)
+          .max(16_000)
+          .optional()
+          .describe(
+            "The exact supporting User statement. Required when evidence IDs and source_session_id are unavailable; ambiguous matches fail closed."
           ),
         operation: z
           .enum(["store", "merge", "supersede", "conflict"])
@@ -793,6 +804,15 @@ if (backendToolCapabilities.curatedMemoryIntakeAvailable) {
       }
     },
     async (input) => {
+      if (
+        input.evidence_conversation_item_ids.length +
+          input.evidence_memory_event_ids.length >
+        CURATED_MEMORY_REVIEW_MAX_EVIDENCE
+      ) {
+        throw new Error(
+          `At most ${CURATED_MEMORY_REVIEW_MAX_EVIDENCE} total evidence sources are allowed`
+        );
+      }
       logger.info(
         {
           evidenceConversationItems:

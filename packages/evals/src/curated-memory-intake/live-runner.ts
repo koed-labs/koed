@@ -339,7 +339,8 @@ const deterministicCalls = (
             proposed_topic:
               benchmarkCase.expected.proposalTopic ?? "Durable memory",
             tags: benchmarkCase.expected.tags ?? [],
-            sensitivity_hint: benchmarkCase.expected.sensitivity ?? "normal"
+            sensitivity_hint: benchmarkCase.expected.sensitivity ?? "normal",
+            evidence_exact_quote: benchmarkCase.prompt
           }
         }
       ]
@@ -447,6 +448,7 @@ const runWorkflowCase = async (
         expires_at: args.expires_at,
         evidence_conversation_item_ids: [],
         evidence_memory_event_ids: [],
+        evidence_exact_quote: args.evidence_exact_quote,
         source_workspace_id: workspaceId,
         created_by_model: "curated-memory-live-eval",
         created_by_prompt_version: "curated-memory-live-eval-v1"

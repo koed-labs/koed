@@ -14,7 +14,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Propose Curated Memory only for stable user-provided facts, preferences, corrections, decisions, plans, or relationships that will be useful later. Do not propose public facts, acknowledgements, one-off requests, task control, transient output, or agent-originated claims. Submit a concise candidate; a separate reviewer will verify and rewrite it from source evidence."
+      "Propose Curated Memory only for stable user-provided facts, preferences, corrections, decisions, plans, or relationships that will be useful later. Do not propose public facts, acknowledgements, one-off requests, task control, transient output, or agent-originated claims. Submit a concise candidate and the exact supporting User statement; a separate reviewer will verify and rewrite it from source evidence."
   }
 );
 
@@ -23,7 +23,7 @@ server.registerTool(
   {
     title: "Propose Curated Memory",
     description:
-      "Propose a durable Curated Memory candidate for asynchronous evidence review. Do not call for public facts, transient task state, acknowledgements, guesses, agent-originated claims, or facts without direct user evidence.",
+      "Propose a durable Curated Memory candidate for asynchronous evidence review. Include the exact supporting User statement in evidence_exact_quote. Do not call for public facts, transient task state, acknowledgements, guesses, agent-originated claims, or facts without direct user evidence.",
     inputSchema: {
       proposed_claim: z.string().min(1).max(4000),
       proposed_topic: z.string().min(1).max(500).optional(),
@@ -32,7 +32,12 @@ server.registerTool(
       sensitivity_hint: z
         .enum(["normal", "sensitive", "review_required"])
         .default("normal"),
-      expires_at: z.string().datetime({ offset: true }).optional()
+      expires_at: z.string().datetime({ offset: true }).optional(),
+      evidence_exact_quote: z
+        .string()
+        .min(1)
+        .max(16_000)
+        .describe("The exact supporting User statement.")
     }
   },
   async (input) => {

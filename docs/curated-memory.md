@@ -15,9 +15,10 @@ capture or `memory_answer`.
    information.
 4. The tool submits a Curated Memory proposal to
    `POST /v1/memory/curated/proposals`. The supported MCP flow sends a concise
-   candidate and current workspace/session scope; the authenticated API resolves
-   the newest current user-authored source. Diagnostic API callers may instead
-   supply explicit evidence IDs.
+   candidate plus either the exact supporting User statement or a known Captured
+   Session ID. The authenticated API requires one unambiguous current
+   user-authored source and fails closed when the same quote appears in multiple
+   sessions. Diagnostic API callers may instead supply explicit evidence IDs.
 5. The API stores the proposal as durable pending work and returns immediately.
    The proposing agent does not wait for review and cannot write a canonical
    assertion.
@@ -34,13 +35,19 @@ capture or `memory_answer`.
 8. The API revalidates the lease, evidence identities and revisions, selected
    evidence, and current target before committing atomically. Changed evidence
    releases the proposal for a fresh review. A typed `expires_at` becomes the
-   assertion expiry. `review_required` proposals fail closed until a User review
-   and decision surface exists.
+   assertion expiry. Server policy prevents a reviewer from lowering sensitivity
+   or removing or extending the proposed expiry. `review_required` proposals
+   fail closed until a User review and decision surface exists.
 9. A deterministic reconciliation path links assertions to derived Memory
    Events and LCM summaries after Projection and LCM catch up.
 
 The proposal tool never writes canonical Curated Memory directly. It only
 persists async local review work.
+
+A proposal may contain at most 12 evidence sources in total. The proposal,
+review lease, accepted result, and terminal rejection contracts share this
+limit, so an oversized proposal cannot become permanently pending between
+different service limits.
 
 Proposal lifecycle is owned by implemented operations: `pending` transitions
 atomically to `stored`, `merged`, `superseded`, `conflicted`, or `skipped`. An
@@ -66,13 +73,14 @@ later creates Memory Events, `POST /v1/memory/curated/reconcile` or the
 periodic backend reconciliation path can attach the derived `memory_event` and
 `lcm_summary` links without AI involvement.
 
-Only active direct evidence keeps an assertion recallable. Derived Memory Event
-or LCM links cannot preserve a fact after its final direct source is deleted.
-Normal Recall and expansion fail closed immediately, and supported source
-deletion paths suppress the orphaned assertion in the same transaction. The
-deterministic reconciliation pass also suppresses any orphan created outside a
-supported deletion path, while retaining its provenance for diagnostics and
-export.
+Only active direct evidence keeps an assertion recallable. Deleted, invalidated,
+or memory-excluded sources cannot satisfy eligibility, Search Domain, temporal
+filters, or evidence expansion. Derived Memory Event or LCM links cannot
+preserve a fact after its final direct source is removed. Normal Recall and
+expansion fail closed immediately, and supported source deletion paths suppress
+the orphaned assertion in the same transaction. The deterministic reconciliation
+pass also suppresses any orphan created outside a supported deletion path, while
+retaining its provenance for diagnostics and export.
 
 ## Retrieval
 
@@ -87,6 +95,12 @@ retrieval adapter. That adapter owns Curated Memory authorization, lifecycle,
 source hydration, and scoring; the shared Recall pipeline only combines its
 candidates with other retrieval stages. Curated candidates do not pretend to
 be embedding rows and carry no fabricated embedding model or dimensions.
+
+Session, Project, and time-bounded Recall all use the same active-source
+relation as global eligibility. Protected Memory Event workspace metadata is
+read from its authenticated encrypted scope. Time bounds use transcript event
+time first, then observation or ingestion time only when no source event time
+exists; LCM-backed evidence derives its time from active source Memory Events.
 
 The database repository composes focused Curated Memory modules: one policy
 module owns source authorization and lifecycle predicates, while record access,
@@ -122,9 +136,10 @@ expansion.
 
 Personal Memory export includes Curated Memory topics, proposals, assertions,
 source links, and lifecycle relationships, including suppressed, superseded,
-conflicting, and expiring records. Hosted export encrypts the complete export
-package after owner-authorized hydration; Curated Memory is never omitted from
-the encrypted portability payload.
+conflicting, and expiring records. The internal export operation collects every
+owned Curated Memory record without a silent row cap. Hosted export encrypts the
+complete export package after owner-authorized hydration; Curated Memory is
+never omitted from the encrypted portability payload.
 
 ## Benchmarking
 

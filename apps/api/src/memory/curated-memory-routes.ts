@@ -42,7 +42,8 @@ export const registerCuratedMemoryRoutes = (
               { userId: user.id },
               {
                 workspaceId: input.source_workspace_id,
-                sessionId: input.source_session_id
+                sessionId: input.source_session_id,
+                exactQuote: input.evidence_exact_quote
               }
             )
           : null;
@@ -149,6 +150,44 @@ export const registerCuratedMemoryRoutes = (
         return reply
           .status(404)
           .send({ error: "Curated Memory proposal not found" });
+      }
+      const sensitivityRank = {
+        normal: 0,
+        sensitive: 1,
+        review_required: 2
+      } as const;
+      const policyRejectionReason =
+        proposalRecord.sensitivityHint === "review_required" ||
+        input.sensitivity === "review_required"
+          ? "Curated Memory requires explicit user review"
+          : proposalRecord.sensitivityHint &&
+              sensitivityRank[input.sensitivity] <
+                sensitivityRank[proposalRecord.sensitivityHint]
+            ? "Curated Memory reviewer cannot lower proposed sensitivity"
+            : proposalRecord.expiresAt &&
+                (!input.expires_at ||
+                  Date.parse(input.expires_at) >
+                    Date.parse(proposalRecord.expiresAt))
+              ? "Curated Memory reviewer cannot remove or extend proposed expiry"
+              : null;
+      if (policyRejectionReason) {
+        const proposal = await repo.processCuratedMemoryProposal(
+          { userId: user.id },
+          {
+            proposalId: params.proposalId,
+            decision: "skip",
+            expectedAttemptCount: input.attempt_count,
+            evidenceRevisions,
+            selectedEvidenceIds: input.selected_evidence_ids,
+            candidateAssertionIds: input.candidate_assertion_ids,
+            decisionReason: policyRejectionReason,
+            workerResult: {
+              ...(input.worker_result ?? {}),
+              policyRejected: true
+            }
+          }
+        );
+        return { proposal };
       }
       const sourceRole: CuratedMemorySourceRole =
         input.operation === "merge"

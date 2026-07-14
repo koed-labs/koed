@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import { queryBooleanSchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 
@@ -15,9 +16,13 @@ export const curatedMemoryProposalSchema = z
     expires_at: z.string().datetime({ offset: true }).optional(),
     evidence_conversation_item_ids: z
       .array(z.string().uuid())
-      .max(50)
+      .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE)
       .default([]),
-    evidence_memory_event_ids: z.array(z.string().uuid()).max(50).default([]),
+    evidence_memory_event_ids: z
+      .array(z.string().uuid())
+      .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE)
+      .default([]),
+    evidence_exact_quote: z.string().trim().min(1).max(16_000).optional(),
     operation: operationSchema.default("store"),
     target_assertion_id: z.string().uuid().optional(),
     source_workspace_id: z.string().trim().min(1).optional(),
@@ -38,6 +43,30 @@ export const curatedMemoryProposalSchema = z
         message: "Evidence IDs or a source workspace/session scope is required"
       });
     }
+    if (
+      input.evidence_conversation_item_ids.length +
+        input.evidence_memory_event_ids.length >
+      CURATED_MEMORY_REVIEW_MAX_EVIDENCE
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evidence_conversation_item_ids"],
+        message: `At most ${CURATED_MEMORY_REVIEW_MAX_EVIDENCE} total evidence sources are allowed`
+      });
+    }
+    if (
+      input.evidence_conversation_item_ids.length === 0 &&
+      input.evidence_memory_event_ids.length === 0 &&
+      !input.source_session_id &&
+      !input.evidence_exact_quote
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evidence_exact_quote"],
+        message:
+          "An exact user quote is required when evidence IDs and source_session_id are omitted"
+      });
+    }
   });
 
 export const curatedMemoryClaimSchema = z.object({
@@ -54,7 +83,10 @@ const evidenceRevisionSchema = z.object({
 
 const reviewLeaseSchema = z.object({
   attempt_count: z.number().int().positive(),
-  evidence_revisions: z.array(evidenceRevisionSchema).max(12).default([]),
+  evidence_revisions: z
+    .array(evidenceRevisionSchema)
+    .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE)
+    .default([]),
   candidate_assertion_ids: z.array(z.string().uuid()).max(20).default([]),
   worker_result: z.record(z.string(), z.unknown()).optional()
 });
@@ -62,7 +94,10 @@ const reviewLeaseSchema = z.object({
 export const curatedMemoryReviewResultSchema = z.discriminatedUnion("outcome", [
   reviewLeaseSchema.extend({
     outcome: z.literal("accepted"),
-    selected_evidence_ids: z.array(z.string().uuid()).min(1).max(12),
+    selected_evidence_ids: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE),
     operation: operationSchema,
     target_assertion_id: z.string().uuid().nullable().optional(),
     assertion_text: z.string().trim().min(1).max(4000),
@@ -77,7 +112,10 @@ export const curatedMemoryReviewResultSchema = z.discriminatedUnion("outcome", [
   }),
   reviewLeaseSchema.extend({
     outcome: z.literal("rejected"),
-    selected_evidence_ids: z.array(z.string().uuid()).max(12).default([]),
+    selected_evidence_ids: z
+      .array(z.string().uuid())
+      .max(CURATED_MEMORY_REVIEW_MAX_EVIDENCE)
+      .default([]),
     decision_reason: z.string().trim().min(1).max(2000)
   }),
   z.object({

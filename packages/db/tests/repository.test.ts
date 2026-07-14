@@ -22368,7 +22368,10 @@ describeDb("memory repository visibility", () => {
     );
     expect(item?.id).toBeTruthy();
     await expect(
-      repo.resolveCuratedMemoryProposalEvidence({ userId: owner.id }, {})
+      repo.resolveCuratedMemoryProposalEvidence(
+        { userId: owner.id },
+        { exactQuote: `Remember my Vietnam flight marker ${sentinel}.` }
+      )
     ).resolves.toEqual({
       evidenceConversationItemIds: [item!.id],
       evidenceMemoryEventIds: []
@@ -22379,7 +22382,7 @@ describeDb("memory repository visibility", () => {
     await expect(
       repo.resolveCuratedMemoryProposalEvidence(
         { userId: evidenceOutsider.id },
-        {}
+        { exactQuote: `Remember my Vietnam flight marker ${sentinel}.` }
       )
     ).rejects.toThrow("No current user evidence");
 
@@ -23399,7 +23402,8 @@ describeDb("memory repository visibility", () => {
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
           {
-            workspaceId: "curated-encrypted"
+            workspaceId: "curated-encrypted",
+            exactQuote: `Evidence for ${sentinel}`
           }
         )
       ).resolves.toEqual({
@@ -23409,7 +23413,10 @@ describeDb("memory repository visibility", () => {
       await expect(
         encryptedRepo.resolveCuratedMemoryProposalEvidence(
           { userId: owner.id },
-          { workspaceId: "curated-encrypted-missing" }
+          {
+            workspaceId: "curated-encrypted-missing",
+            exactQuote: `Evidence for ${sentinel}`
+          }
         )
       ).rejects.toMatchObject({ statusCode: 404 });
       const protectedEvidence =
@@ -23488,6 +23495,16 @@ describeDb("memory repository visibility", () => {
       );
       expect(assertions[0]?.id).toBe(processed.assertionId);
       expect(assertions[0]?.assertionText).toContain(sentinel);
+      await expect(
+        encryptedRepo.searchCuratedMemoryAssertions(
+          { userId: owner.id },
+          {
+            query: sentinel,
+            searchDomain: "project",
+            workspaceId: "curated-encrypted"
+          }
+        )
+      ).resolves.toMatchObject([{ id: processed.assertionId }]);
       mockEmbeddingQuery();
       const recall = await encryptedRepo.searchMemoryNodes(
         { userId: owner.id },
@@ -23694,5 +23711,476 @@ describeDb("memory repository visibility", () => {
         (stage) => stage.name === "curated_memory_search"
       )?.ran
     ).toBe(false);
+  });
+
+  it("suppresses Curated Memory when its final conversation evidence becomes memory-excluded", async () => {
+    const owner = await repo.createUser({
+      email: `curated-excluded-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: owner.id },
+      {
+        externalSessionId: `curated-excluded-${randomUUID()}`,
+        sourceRuntime: "codex",
+        captureMethod: "api"
+      }
+    );
+    const sentinel = `curated-excluded-${randomUUID()}`;
+    const [item] = await repo.createConversationItems(
+      { userId: owner.id },
+      {
+        items: [
+          {
+            sessionId: session.id,
+            sourceKind: "codex",
+            sourceAdapterVersion: "codex-transcript-v1",
+            sourceTransport: "transcript",
+            sourceRecordType: "event_msg",
+            sourceEventType: "user_message",
+            rawJson: { payload: { content: sentinel } },
+            rawText: sentinel,
+            sourceHash: randomUUID(),
+            idempotencyKey: randomUUID(),
+            metadata: { transcriptType: "user_message" }
+          }
+        ]
+      }
+    );
+    const proposal = await repo.createCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposedClaim: sentinel,
+        evidenceConversationItemIds: [item!.id]
+      }
+    );
+    const processed = await repo.processCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposalId: proposal.id,
+        decision: "store",
+        assertion: {
+          assertionText: sentinel,
+          sources: [
+            {
+              sourceType: "conversation_item",
+              sourceRole: "primary_evidence",
+              conversationItemId: item!.id
+            }
+          ]
+        }
+      }
+    );
+
+    await pool.query(
+      "update conversation_items set memory_excluded_at = now() where id = $1",
+      [item!.id]
+    );
+    await expect(
+      repo.searchCuratedMemoryAssertions(
+        { userId: owner.id },
+        { query: sentinel }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repo.reconcileCuratedMemoryLifecycle({ userId: owner.id })
+    ).resolves.toEqual({ assertionsSuppressed: 1 });
+    await expect(
+      repo.getCuratedMemoryAssertion(
+        { userId: owner.id },
+        processed.assertionId!
+      )
+    ).resolves.toMatchObject({ status: "suppressed" });
+  });
+
+  it("cannot satisfy project scope with a deleted source while another source keeps the assertion active", async () => {
+    const owner = await repo.createUser({
+      email: `curated-scope-${randomUUID()}@example.com`
+    });
+    const sentinel = `curated-scope-${randomUUID()}`;
+    const activeOutOfScope = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        workspaceId: "curated-project-active",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: sentinel,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const deletedInScope = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        workspaceId: "curated-project-deleted",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: sentinel,
+        idempotencyKey: randomUUID()
+      }
+    );
+    const proposal = await repo.createCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposedClaim: sentinel,
+        evidenceMemoryEventIds: [activeOutOfScope.id, deletedInScope.id]
+      }
+    );
+    const processed = await repo.processCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposalId: proposal.id,
+        decision: "store",
+        assertion: {
+          assertionText: sentinel,
+          sources: [
+            {
+              sourceType: "memory_event",
+              sourceRole: "primary_evidence",
+              memoryEventId: activeOutOfScope.id
+            },
+            {
+              sourceType: "memory_event",
+              sourceRole: "supporting_evidence",
+              memoryEventId: deletedInScope.id
+            }
+          ]
+        }
+      }
+    );
+    await pool.query(
+      "update memory_events set personal_deleted_at = now() where id = $1",
+      [deletedInScope.id]
+    );
+
+    await expect(
+      repo.searchCuratedMemoryAssertions(
+        { userId: owner.id },
+        {
+          query: sentinel,
+          searchDomain: "project",
+          workspaceId: "curated-project-deleted"
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repo.searchCuratedMemoryAssertions(
+        { userId: owner.id },
+        {
+          query: sentinel,
+          searchDomain: "project",
+          workspaceId: "curated-project-active"
+        }
+      )
+    ).resolves.toMatchObject([{ id: processed.assertionId }]);
+  });
+
+  it("cannot satisfy session scope with excluded evidence while another source keeps the assertion active", async () => {
+    const owner = await repo.createUser({
+      email: `curated-session-scope-${randomUUID()}@example.com`
+    });
+    const sessions = await Promise.all(
+      ["active", "excluded"].map((suffix) =>
+        repo.createCapturedSession(
+          { userId: owner.id },
+          {
+            externalSessionId: `curated-session-scope-${suffix}-${randomUUID()}`,
+            sourceRuntime: "codex",
+            captureMethod: "api"
+          }
+        )
+      )
+    );
+    const sentinel = `curated-session-scope-${randomUUID()}`;
+    const items = await Promise.all(
+      sessions.map(async (session) => {
+        const [item] = await repo.createConversationItems(
+          { userId: owner.id },
+          {
+            items: [
+              {
+                sessionId: session.id,
+                sourceKind: "codex",
+                sourceAdapterVersion: "codex-transcript-v1",
+                sourceTransport: "transcript",
+                sourceRecordType: "event_msg",
+                sourceEventType: "user_message",
+                rawJson: { payload: { content: sentinel } },
+                rawText: sentinel,
+                sourceHash: randomUUID(),
+                idempotencyKey: randomUUID(),
+                metadata: { transcriptType: "user_message" }
+              }
+            ]
+          }
+        );
+        return item!;
+      })
+    );
+    const proposal = await repo.createCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposedClaim: sentinel,
+        evidenceConversationItemIds: items.map((item) => item.id)
+      }
+    );
+    const processed = await repo.processCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposalId: proposal.id,
+        decision: "store",
+        assertion: {
+          assertionText: sentinel,
+          sources: items.map((item, index) => ({
+            sourceType: "conversation_item" as const,
+            sourceRole:
+              index === 0
+                ? ("primary_evidence" as const)
+                : ("supporting_evidence" as const),
+            conversationItemId: item.id
+          }))
+        }
+      }
+    );
+    await pool.query(
+      "update conversation_items set memory_excluded_at = now() where id = $1",
+      [items[1]!.id]
+    );
+
+    await expect(
+      repo.searchCuratedMemoryAssertions(
+        { userId: owner.id },
+        {
+          query: sentinel,
+          searchDomain: "session",
+          sessionId: sessions[1]!.id
+        }
+      )
+    ).resolves.toEqual([]);
+    await expect(
+      repo.searchCuratedMemoryAssertions(
+        { userId: owner.id },
+        {
+          query: sentinel,
+          searchDomain: "session",
+          sessionId: sessions[0]!.id
+        }
+      )
+    ).resolves.toMatchObject([{ id: processed.assertionId }]);
+  });
+
+  it("uses source event time rather than ingestion time for Curated Memory recall", async () => {
+    const owner = await repo.createUser({
+      email: `curated-event-time-${randomUUID()}@example.com`
+    });
+    const sentinel = `curated-event-time-${randomUUID()}`;
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        workspaceId: "curated-event-time",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: sentinel,
+        idempotencyKey: randomUUID()
+      }
+    );
+    await pool.query(
+      "update memory_events set source_event_time = now() - interval '90 days', captured_at = now() where id = $1",
+      [event.id]
+    );
+    const proposal = await repo.createCuratedMemoryProposal(
+      { userId: owner.id },
+      { proposedClaim: sentinel, evidenceMemoryEventIds: [event.id] }
+    );
+    await repo.processCuratedMemoryProposal(
+      { userId: owner.id },
+      {
+        proposalId: proposal.id,
+        decision: "store",
+        assertion: {
+          assertionText: sentinel,
+          sources: [
+            {
+              sourceType: "memory_event",
+              sourceRole: "primary_evidence",
+              memoryEventId: event.id
+            }
+          ]
+        }
+      }
+    );
+
+    await expect(
+      repo.searchCuratedMemoryAssertions(
+        { userId: owner.id },
+        {
+          query: sentinel,
+          sourceAfter: new Date(
+            Date.now() - 7 * 24 * 60 * 60 * 1000
+          ).toISOString()
+        }
+      )
+    ).resolves.toEqual([]);
+  });
+
+  it("fails closed when an exact Curated Memory quote is ambiguous across sessions", async () => {
+    const owner = await repo.createUser({
+      email: `curated-ambiguous-${randomUUID()}@example.com`
+    });
+    const exactQuote = `Same-project statement ${randomUUID()}`;
+    const sessions = await Promise.all(
+      ["one", "two"].map((suffix) =>
+        repo.createCapturedSession(
+          { userId: owner.id },
+          {
+            externalSessionId: `curated-ambiguous-${suffix}-${randomUUID()}`,
+            sourceRuntime: "codex",
+            captureMethod: "api",
+            cwd: "/same/project"
+          }
+        )
+      )
+    );
+    const items = await Promise.all(
+      sessions.map(async (session) => {
+        const [item] = await repo.createConversationItems(
+          { userId: owner.id },
+          {
+            items: [
+              {
+                sessionId: session.id,
+                sourceKind: "codex",
+                sourceAdapterVersion: "codex-transcript-v1",
+                sourceTransport: "transcript",
+                sourceRecordType: "event_msg",
+                sourceEventType: "user_message",
+                rawJson: { payload: { content: exactQuote } },
+                rawText: exactQuote,
+                sourceHash: randomUUID(),
+                idempotencyKey: randomUUID(),
+                metadata: { transcriptType: "user_message" }
+              }
+            ]
+          }
+        );
+        return item!;
+      })
+    );
+
+    await expect(
+      repo.resolveCuratedMemoryProposalEvidence(
+        { userId: owner.id },
+        { workspaceId: "/same/project", exactQuote }
+      )
+    ).rejects.toMatchObject({ statusCode: 409 });
+    await expect(
+      repo.resolveCuratedMemoryProposalEvidence(
+        { userId: owner.id },
+        { sessionId: sessions[0]!.id, exactQuote }
+      )
+    ).resolves.toEqual({
+      evidenceConversationItemIds: [items[0]!.id],
+      evidenceMemoryEventIds: []
+    });
+  });
+
+  it("exports every Curated Memory proposal beyond the former 500-row boundary", async () => {
+    const owner = await repo.createUser({
+      email: `curated-export-complete-${randomUUID()}@example.com`
+    });
+    const event = await repo.createMemoryEvent(
+      { userId: owner.id },
+      {
+        workspaceId: "curated-export",
+        actor: "user",
+        eventType: "captured",
+        rawEventType: "user_message",
+        visibility: "personal",
+        content: "Export evidence",
+        idempotencyKey: randomUUID()
+      }
+    );
+    await pool.query(
+      `
+        insert into curated_memory_proposals (
+          owner_user_id,
+          proposed_claim,
+          evidence_memory_event_ids,
+          created_at,
+          updated_at
+        )
+        select $1, 'Export proposal ' || ordinal::text, array[$2::uuid],
+          now() + ordinal * interval '1 millisecond',
+          now() + ordinal * interval '1 millisecond'
+        from generate_series(1, 501) ordinal
+      `,
+      [owner.id, event.id]
+    );
+    const exported = await repo.exportMemoryRecords({ userId: owner.id });
+    expect(exported.curatedMemory.proposals).toHaveLength(501);
+    expect(exported.curatedMemory.proposals.at(-1)?.proposedClaim).toBe(
+      "Export proposal 501"
+    );
+  });
+
+  it("exports every protected Curated Memory proposal beyond 500 rows", async () => {
+    const previousProfile = process.env.KOED_DEPLOYMENT_PROFILE;
+    process.env.KOED_DEPLOYMENT_PROFILE = "private_vps";
+    try {
+      const protectedRepo = createMemorySourceRepository(pool, {
+        envelopeEncryptionProvider:
+          createLocalTestKeyEnvelopeEncryptionProvider(
+            Buffer.alloc(32, 29).toString("base64")
+          )
+      });
+      const owner = await protectedRepo.createUser({
+        email: `curated-protected-export-${randomUUID()}@example.com`
+      });
+      const event = await protectedRepo.createMemoryEvent(
+        { userId: owner.id },
+        {
+          workspaceId: "curated-protected-export",
+          actor: "user",
+          eventType: "captured",
+          rawEventType: "user_message",
+          visibility: "personal",
+          content: "Protected export evidence",
+          idempotencyKey: randomUUID()
+        }
+      );
+      const batchSize = 25;
+      for (let start = 0; start < 501; start += batchSize) {
+        await Promise.all(
+          Array.from(
+            { length: Math.min(batchSize, 501 - start) },
+            (_, offset) =>
+              protectedRepo.createCuratedMemoryProposal(
+                { userId: owner.id },
+                {
+                  proposedClaim: `Protected export proposal ${start + offset + 1}`,
+                  evidenceMemoryEventIds: [event.id]
+                }
+              )
+          )
+        );
+      }
+      const exported = await protectedRepo.exportMemoryRecords({
+        userId: owner.id
+      });
+      expect(exported.curatedMemory.proposals).toHaveLength(501);
+      expect(exported.curatedMemory.proposals.at(-1)?.proposedClaim).toBe(
+        "Protected export proposal 501"
+      );
+    } finally {
+      if (previousProfile === undefined) {
+        delete process.env.KOED_DEPLOYMENT_PROFILE;
+      } else {
+        process.env.KOED_DEPLOYMENT_PROFILE = previousProfile;
+      }
+    }
   });
 });

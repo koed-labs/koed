@@ -1,3 +1,5 @@
+import { codexIdePromptUserText } from "@koed/core";
+import { CURATED_MEMORY_REVIEW_MAX_EVIDENCE } from "@koed/shared";
 import { decryptAuthorizedEncryptedFieldPayloadWithClient } from "./encrypted-payload-repository.js";
 import type { CuratedMemoryRepository } from "./curated-memory-repository.js";
 import {
@@ -61,6 +63,17 @@ export const createCuratedMemoryRecordMethods = ({
     const evidenceMemoryEventIds = [
       ...new Set(input.evidenceMemoryEventIds ?? [])
     ];
+    if (
+      evidenceConversationItemIds.length + evidenceMemoryEventIds.length >
+      CURATED_MEMORY_REVIEW_MAX_EVIDENCE
+    ) {
+      throw Object.assign(
+        new Error(
+          `Curated Memory proposal accepts at most ${CURATED_MEMORY_REVIEW_MAX_EVIDENCE} evidence sources`
+        ),
+        { statusCode: 400 }
+      );
+    }
     const operation = input.operation ?? "store";
     const targetAssertionId = input.targetAssertionId ?? null;
     if (
@@ -244,11 +257,28 @@ export const createCuratedMemoryRecordMethods = ({
   },
 
   async resolveCuratedMemoryProposalEvidence(actor, input) {
+    const exactQuote = input.exactQuote?.trim() || null;
+    if (!input.sessionId && !exactQuote) {
+      throw Object.assign(
+        new Error(
+          "Curated Memory evidence resolution requires source_session_id or an exact user quote"
+        ),
+        { statusCode: 400 }
+      );
+    }
+    const normalizeEvidenceText = (value: string): string =>
+      codexIdePromptUserText(value).trim().replace(/\r\n/g, "\n");
+    const normalizedQuote = exactQuote
+      ? normalizeEvidenceText(exactQuote)
+      : null;
     const conversationItems = await pool.query<{
       id: string;
+      raw_json: unknown;
+      raw_text: string | null;
+      metadata: Record<string, unknown> | null;
     }>(
       `
-        select ci.id
+        select ci.id, ci.raw_json, ci.raw_text, ci.metadata
         from conversation_items ci
         left join sessions s on s.id = ci.session_id
         where ci.owner_user_id = $1
@@ -260,13 +290,68 @@ export const createCuratedMemoryRecordMethods = ({
           and ($2::uuid is null or ci.session_id = $2)
           and ($3::text is null or s.cwd = $3)
         order by coalesce(ci.event_time, ci.observed_at, ci.created_at) desc, ci.id desc
-        limit 1
+        limit $4
       `,
-      [actor.userId, input.sessionId ?? null, input.workspaceId ?? null]
+      [
+        actor.userId,
+        input.sessionId ?? null,
+        input.workspaceId ?? null,
+        normalizedQuote ? null : 1
+      ]
     );
-    if (conversationItems.rows[0]) {
+    const matchingConversationItemIds: string[] = [];
+    for (const row of conversationItems.rows) {
+      const encryptedColumns = Array.isArray(
+        row.metadata?.encryptedConversationItemColumns
+      )
+        ? row.metadata.encryptedConversationItemColumns.filter(
+            (column): column is string => typeof column === "string"
+          )
+        : [];
+      const decryptColumn = async (sourceColumn: "raw_json" | "raw_text") =>
+        (
+          await decryptAuthorizedEncryptedFieldPayloadWithClient(
+            pool,
+            actor,
+            requireEncryptionProvider(envelopeEncryptionProvider),
+            {
+              sourceTable: "conversation_items",
+              sourceId: row.id,
+              sourceColumn
+            }
+          )
+        )?.plaintext;
+      const rawMarker = recordValue(row.raw_json, null);
+      const rawJson =
+        encryptedColumns.includes("raw_json") ||
+        (rawMarker?.contentEncrypted === true &&
+          rawMarker.encryptedSourceTable === "conversation_items")
+          ? await decryptColumn("raw_json")
+          : row.raw_json;
+      const rawText = encryptedColumns.includes("raw_text")
+        ? await decryptColumn("raw_text")
+        : row.raw_text;
+      const rawRecord = recordValue(rawJson, null);
+      const payload = recordValue(rawRecord?.payload, rawRecord);
+      const text =
+        (typeof rawText === "string" && rawText.trim()) ||
+        (typeof payload?.content === "string" && payload.content.trim()) ||
+        "";
+      if (!normalizedQuote || normalizeEvidenceText(text) === normalizedQuote) {
+        matchingConversationItemIds.push(row.id);
+      }
+    }
+    if (matchingConversationItemIds.length > 1) {
+      throw Object.assign(
+        new Error(
+          "Curated Memory exact quote matched multiple conversation items; source_session_id or explicit evidence IDs are required"
+        ),
+        { statusCode: 409 }
+      );
+    }
+    if (matchingConversationItemIds[0]) {
       return {
-        evidenceConversationItemIds: [conversationItems.rows[0].id],
+        evidenceConversationItemIds: [matchingConversationItemIds[0]],
         evidenceMemoryEventIds: []
       };
     }
@@ -307,12 +392,17 @@ export const createCuratedMemoryRecordMethods = ({
             )
           )
         order by me.captured_at desc, me.id desc
-        limit 1
+        limit $4
       `,
-      [actor.userId, input.sessionId ?? null, input.workspaceId ?? null]
+      [
+        actor.userId,
+        input.sessionId ?? null,
+        input.workspaceId ?? null,
+        normalizedQuote ? null : 1
+      ]
     );
-    const memoryEvent = memoryEvents.rows[0];
-    if (memoryEvent) {
+    const matchingMemoryEventIds: string[] = [];
+    for (const memoryEvent of memoryEvents.rows) {
       let payload = memoryEvent.payload;
       if (payload.contentEncrypted === true) {
         const decrypted =
@@ -337,9 +427,27 @@ export const createCuratedMemoryRecordMethods = ({
           "Curated Memory evidence metadata did not match its authenticated payload"
         );
       }
+      const content =
+        typeof payload.content === "string" ? payload.content : "";
+      if (
+        !normalizedQuote ||
+        normalizeEvidenceText(content) === normalizedQuote
+      ) {
+        matchingMemoryEventIds.push(memoryEvent.id);
+      }
+    }
+    if (matchingMemoryEventIds.length > 1) {
+      throw Object.assign(
+        new Error(
+          "Curated Memory exact quote matched multiple Memory Events; source_session_id or explicit evidence IDs are required"
+        ),
+        { statusCode: 409 }
+      );
+    }
+    if (matchingMemoryEventIds[0]) {
       return {
         evidenceConversationItemIds: [],
-        evidenceMemoryEventIds: [memoryEvent.id]
+        evidenceMemoryEventIds: [matchingMemoryEventIds[0]]
       };
     }
     throw Object.assign(
@@ -678,7 +786,6 @@ export const createCuratedMemoryRecordMethods = ({
           from curated_memory_topics
           where owner_user_id = $1 and visibility = 'personal'
           order by created_at asc, id asc
-          limit 500
         `,
         [actor.userId]
       ),
@@ -689,7 +796,6 @@ export const createCuratedMemoryRecordMethods = ({
           left join curated_memory_topics cmt on cmt.id = cma.topic_id
           where cma.owner_user_id = $1 and cma.visibility = 'personal'
           order by cma.created_at asc, cma.id asc
-          limit 500
         `,
         [actor.userId]
       ),
@@ -699,7 +805,6 @@ export const createCuratedMemoryRecordMethods = ({
           from curated_memory_proposals
           where owner_user_id = $1 and visibility = 'personal'
           order by created_at asc, id asc
-          limit 500
         `,
         [actor.userId]
       )
