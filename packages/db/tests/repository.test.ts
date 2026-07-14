@@ -11242,7 +11242,34 @@ describeDb("memory repository visibility", () => {
 
     expect(thread?.id).toBe(event.id);
     expect(thread?.name).toBe("Untitled conversation");
+    expect(thread?.sourceAiClient).toBeNull();
     expect(events.map((graphEvent) => graphEvent.id)).toEqual([event.id]);
+  });
+
+  it("returns trusted source AI Client for Captured Session graph rows", async () => {
+    const alice = await repo.createUser({
+      email: `alice-source-ai-client-${randomUUID()}@example.com`
+    });
+    const session = await repo.createCapturedSession(
+      { userId: alice.id },
+      {
+        externalSessionId: `source-ai-client-${randomUUID()}`,
+        sourceRuntime: "codex-cli",
+        captureMethod: "hook",
+        metadata: { threadName: "Trusted source label" }
+      }
+    );
+
+    const projects = await repo.listLcmGraphThreads(
+      { userId: alice.id },
+      { threadId: session.externalSessionId ?? undefined, limit: 10 }
+    );
+    const thread = projects.flatMap((project) => project.threads)[0];
+
+    expect(thread).toMatchObject({
+      sessionId: session.id,
+      sourceAiClient: "codex-cli"
+    });
   });
 
   it("seeds explicit projection policy rows while allowing independent display and recall policy", async () => {

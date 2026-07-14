@@ -2,6 +2,7 @@ export type DesktopThreadGroup = {
   id: string;
   name: string;
   sessionId?: string | null;
+  sourceAiClient?: "codex" | "codex-cli" | null;
   projectId: string;
   projectName: string;
   projectPath?: string | null;
@@ -85,6 +86,23 @@ export const projectIsActive = (
   return latestAt
     ? now - Date.parse(latestAt) < ACTIVE_PROJECT_WINDOW_MS
     : false;
+};
+
+export const reconcileSelectedProjectId = (
+  projects: DesktopProject[],
+  selectedProjectId: string | null,
+  preserveEmptySelection: boolean
+): string | null => {
+  if (
+    !projects.length ||
+    (selectedProjectId === null && preserveEmptySelection)
+  ) {
+    return null;
+  }
+  if (projects.some((project) => project.id === selectedProjectId)) {
+    return selectedProjectId;
+  }
+  return projects.find((project) => projectIsActive(project))?.id ?? null;
 };
 
 export const sortProjects = (projects: DesktopProject[]): DesktopProject[] =>

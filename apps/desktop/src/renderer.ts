@@ -17,6 +17,7 @@ import {
   mergeProjectSources,
   projectIdForSession,
   projectIsActive,
+  reconcileSelectedProjectId,
   sessionSelectionId,
   sortProjects,
   type DesktopProject,
@@ -116,6 +117,8 @@ let rendered = false;
 let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
 let explorerApiToken: string | null = null;
+let teamBackendUrlInput = "";
+let selectionClearedByInactiveCollapse = false;
 let activeDesktopView: DesktopView = "projects";
 let showInactiveProjects = false;
 let selectedProjectId: string | null = null;
@@ -503,6 +506,8 @@ const componentLabel = (key: StatusComponentKey): string => {
       return "Codex";
     case "lcmSummaryService":
       return "LCM Summary Service";
+    case "upstreamBackends":
+      return "Team Backend";
     case "lastVerification":
       return "Last verification";
   }
@@ -1241,6 +1246,11 @@ const statusCardMeta = (cardId: StatusCardId): string => {
   if (cardId === "memoryProcessing") {
     return `Last verification ${status.lastVerification.checkedAt ?? "not recorded"}`;
   }
+  if (cardId === "teamBackend") {
+    return status.upstreamBackends.registered
+      ? `${status.upstreamBackends.registered} registered · ${status.upstreamBackends.validated} validated`
+      : "No Team Backend connected";
+  }
   const card = statusCards.find((entry) => entry.id === cardId);
   const healthyCount = card?.componentKeys.filter(
     (key) => statusComponent(key)?.state === "healthy"
@@ -1248,6 +1258,17 @@ const statusCardMeta = (cardId: StatusCardId): string => {
   return card
     ? `${healthyCount ?? 0}/${card.componentKeys.length} dependencies healthy`
     : "";
+};
+
+const firstUpstreamBackendId = (): string | null => {
+  const details = status?.upstreamBackends.details;
+  const backends = Array.isArray(
+    (details as { backends?: unknown } | undefined)?.backends
+  )
+    ? ((details as { backends: Array<{ id?: unknown }> }).backends ?? [])
+    : [];
+  const id = backends[0]?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
 };
 
 const statusCardLiveOutput = (cardId: StatusCardId): string => {
@@ -1390,6 +1411,30 @@ const renderStatusCardActions = (cardId: StatusCardId): string => {
   if (!card) {
     return "";
   }
+  if (cardId === "teamBackend") {
+    const backendId = firstUpstreamBackendId();
+    return `
+      <form class="team-backend-form" data-team-backend-form>
+        <label for="team-backend-url">Team Backend URL</label>
+        <input
+          id="team-backend-url"
+          type="url"
+          data-team-backend-url
+          placeholder="https://team.example.com"
+          value="${escapeHtml(teamBackendUrlInput)}"
+          autocomplete="url"
+          ${busyAction ? "disabled" : ""}
+        />
+        <button type="submit" class="primary" ${busyAction ? "disabled" : ""}>Connect</button>
+        <button
+          type="button"
+          class="secondary"
+          data-team-backend-disconnect
+          ${busyAction || !backendId ? "disabled" : ""}
+        >Disconnect</button>
+      </form>
+    `;
+  }
   const actions = [card.primaryAction, ...card.secondaryActions];
   return actions
     .map(
@@ -1426,9 +1471,13 @@ const reconcileProjectSelection = (): void => {
     selectedSessionId = null;
     return;
   }
-  if (!projects.some((project) => project.id === selectedProjectId)) {
-    selectedProjectId =
-      projects.find((project) => projectIsActive(project))?.id ?? null;
+  const reconciledProjectId = reconcileSelectedProjectId(
+    projects,
+    selectedProjectId,
+    selectionClearedByInactiveCollapse
+  );
+  if (reconciledProjectId !== selectedProjectId) {
+    selectedProjectId = reconciledProjectId;
     selectedSessionId = null;
   }
   const selected = projects.find((project) => project.id === selectedProjectId);
@@ -1438,6 +1487,7 @@ const reconcileProjectSelection = (): void => {
 };
 
 const selectProject = (projectId: string): void => {
+  selectionClearedByInactiveCollapse = false;
   selectedProjectId = projectId;
   selectedSessionId = null;
   if (!projectAssignmentBusy) {
@@ -1462,6 +1512,7 @@ const toggleInactiveProjects = (): void => {
   if (showInactiveProjects && selectedProjectId) {
     const selected = selectedProject();
     if (selected && !projectIsActive(selected)) {
+      selectionClearedByInactiveCollapse = true;
       selectedProjectId = null;
       selectedSessionId = null;
     }
@@ -2749,6 +2800,96 @@ const runStatusCardAction = async (
   }
 };
 
+const runTeamBackendConnect = async (): Promise<void> => {
+  const cardId = "teamBackend" as StatusCardId;
+  const url = teamBackendUrlInput.trim();
+  if (!url) {
+    appendStatusCardLog(cardId, "failed: Team Backend URL is required");
+    syncUI();
+    return;
+  }
+  busyAction = "Connect Team Backend";
+  syncUI();
+  try {
+    const result = await invokeWithTimeout(
+      "upstream_connect",
+      { url },
+      120_000
+    );
+    const error = commandResultError(result);
+    if (error) {
+      appendStatusCardLog(cardId, `failed: ${error}`);
+    } else {
+      const activationUrl =
+        result &&
+        typeof result === "object" &&
+        typeof (result as { activationUrl?: unknown }).activationUrl ===
+          "string"
+          ? (result as { activationUrl: string }).activationUrl
+          : null;
+      const browserOpenRequested =
+        result &&
+        typeof result === "object" &&
+        (result as { browserOpenRequested?: unknown }).browserOpenRequested ===
+          true;
+      appendStatusCardLog(
+        cardId,
+        browserOpenRequested
+          ? "enrollment started; browser open requested"
+          : "enrollment started; open approval URL manually"
+      );
+      if (activationUrl) {
+        appendStatusCardLog(cardId, `approval URL: ${activationUrl}`);
+      }
+    }
+    await refreshStatus();
+  } catch (error) {
+    appendStatusCardLog(
+      cardId,
+      `failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    statusCardCheckedAt[cardId] = new Date().toISOString();
+    busyAction = null;
+    syncUI();
+  }
+};
+
+const runTeamBackendDisconnect = async (): Promise<void> => {
+  const cardId = "teamBackend" as StatusCardId;
+  const backendId = firstUpstreamBackendId();
+  if (!backendId) {
+    appendStatusCardLog(cardId, "failed: no Team Backend is registered");
+    syncUI();
+    return;
+  }
+  busyAction = "Disconnect Team Backend";
+  syncUI();
+  try {
+    const result = await invokeWithTimeout(
+      "upstream_disconnect",
+      { backendId },
+      45_000
+    );
+    const error = commandResultError(result);
+    if (error) {
+      appendStatusCardLog(cardId, `failed: ${error}`);
+    } else {
+      appendStatusCardLog(cardId, "backend disconnected");
+    }
+    await refreshStatus();
+  } catch (error) {
+    appendStatusCardLog(
+      cardId,
+      `failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  } finally {
+    statusCardCheckedAt[cardId] = new Date().toISOString();
+    busyAction = null;
+    syncUI();
+  }
+};
+
 const registerHandlers = () => {
   app.addEventListener("submit", (event) => {
     const form = event.target;
@@ -2763,6 +2904,23 @@ const registerHandlers = () => {
       );
       void updateSessionProject("move", select?.value);
       return;
+    }
+    if (form.matches("[data-team-backend-form]")) {
+      event.preventDefault();
+      teamBackendUrlInput =
+        form.querySelector<HTMLInputElement>("[data-team-backend-url]")
+          ?.value ?? "";
+      void runTeamBackendConnect();
+    }
+  });
+
+  app.addEventListener("input", (event) => {
+    const input = event.target;
+    if (
+      input instanceof HTMLInputElement &&
+      input.matches("[data-team-backend-url]")
+    ) {
+      teamBackendUrlInput = input.value;
     }
   });
 
@@ -2912,6 +3070,16 @@ const registerHandlers = () => {
     if (resetSessionProject) {
       event.preventDefault();
       void updateSessionProject("reset");
+      return;
+    }
+
+    const teamBackendDisconnectButton = target.closest<HTMLButtonElement>(
+      "[data-team-backend-disconnect]"
+    );
+    if (teamBackendDisconnectButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      void runTeamBackendDisconnect();
       return;
     }
 

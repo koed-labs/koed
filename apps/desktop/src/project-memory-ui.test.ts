@@ -6,6 +6,7 @@ import {
   projectIdForSession,
   projectIsActive,
   projectLatestAt,
+  reconcileSelectedProjectId,
   relativeTime,
   sessionSelectionId,
   type DesktopProjectGroup,
@@ -127,6 +128,15 @@ describe("project memory UI view model", () => {
       assignmentTargetProjects(projects).map((project) => project.id)
     ).toEqual(["graph-koed"]);
     expect(assignmentTargetProjects(projects, "graph-koed")).toEqual([]);
+  });
+
+  it("preserves deliberate inactive-collapse clearing but reconciles missing Projects", () => {
+    const active = mergeProjectSources([graphProject()], [metadata()]);
+
+    expect(reconcileSelectedProjectId(active, null, true)).toBeNull();
+    expect(reconcileSelectedProjectId(active, "deleted-project", false)).toBe(
+      "graph-koed"
+    );
   });
 
   it("rejects stale Project graph responses", () => {

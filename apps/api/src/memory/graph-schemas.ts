@@ -2,6 +2,41 @@ import { z } from "zod";
 import { queryBooleanSchema, visibilitySchema } from "./common-schemas.js";
 import { searchDomainSchema } from "./retrieval-schemas.js";
 
+export const sourceAiClientSchema = z.enum(["codex", "codex-cli"]);
+
+export const graphThreadIndexResponseSchema = z.object({
+  projects: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      path: z.string().nullable(),
+      eventCount: z.number(),
+      threads: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          sessionId: z.string().uuid().nullable(),
+          sourceAiClient: sourceAiClientSchema.nullable(),
+          projectId: z.string(),
+          projectName: z.string(),
+          projectPath: z.string().nullable(),
+          projectAssignmentSource: z
+            .enum(["detected", "user_override"])
+            .nullable(),
+          capturedProjectProvenance: z.record(z.string(), z.unknown()),
+          eventCount: z.number(),
+          invalidatedCount: z.number(),
+          latestAt: z.string().datetime({ offset: true }),
+          sample: z.string(),
+          threadKind: z.enum(["conversation", "subagent"]),
+          parentThreadId: z.string().nullable(),
+          parentSessionId: z.string().nullable()
+        })
+      )
+    })
+  )
+});
+
 const rejectDeprecatedTeamScope = <T extends z.ZodRawShape>(
   schema: z.ZodObject<T>
 ) =>

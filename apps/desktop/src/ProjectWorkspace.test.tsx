@@ -32,6 +32,7 @@ const project = (
             id: "thread-1",
             name: "Preview auth and avatar rollout",
             sessionId: "session-1",
+            sourceAiClient: "codex-cli",
             projectId: id,
             projectName: "Koed",
             projectPath: `/Users/jedd/agents/${id}`,
@@ -70,6 +71,24 @@ const defaultProps: ProjectWorkspaceProps = {
   projectAssignmentError: "",
   apiBaseUrl: "http://127.0.0.1:3300",
   apiToken: "desktop-token"
+};
+
+const InactiveCollapseHarness = () => {
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    "inactive"
+  );
+  const [showInactiveProjects, setShowInactiveProjects] = useState(true);
+  return (
+    <ProjectWorkspace
+      {...defaultProps}
+      selectedProjectId={selectedProjectId}
+      showInactiveProjects={showInactiveProjects}
+      onToggleInactive={() => {
+        setShowInactiveProjects(false);
+        setSelectedProjectId(null);
+      }}
+    />
+  );
 };
 
 const WorkspaceSelectionHarness = () => {
@@ -193,6 +212,24 @@ describe("ProjectWorkspace", () => {
     ).not.toBeNull();
   });
 
+  it("clears detail after collapsing selected inactive Project", async () => {
+    await act(async () => root.render(<InactiveCollapseHarness />));
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>("[data-toggle-inactive]")
+        ?.click();
+    });
+
+    expect(container.querySelector("#selected-project-heading")).toBeNull();
+    expect(container.querySelector("#select-project-heading")).not.toBeNull();
+    expect(
+      container
+        .querySelector('[data-project-id="active"]')
+        ?.getAttribute("aria-current")
+    ).toBeNull();
+  });
+
   it("prioritizes useful Captured Session context and demotes technical Project metadata", async () => {
     await renderWorkspace();
 
@@ -201,6 +238,7 @@ describe("ProjectWorkspace", () => {
       "Preview auth and avatar rollout"
     );
     expect(sessionRow?.textContent).toContain("Raw Conversation");
+    expect(sessionRow?.textContent).toContain("Codex CLI");
     expect(sessionRow?.textContent).toContain("76 Memory Events");
     expect(sessionRow?.textContent).toContain(
       "Committed the renderer convergence"
@@ -212,6 +250,27 @@ describe("ProjectWorkspace", () => {
     expect(technicalDetails?.open).toBe(false);
     expect(technicalDetails?.textContent).toContain("codex/desktop-memory-ui");
     expect(technicalDetails?.textContent).toContain("Git remote");
+  });
+
+  it("omits source AI Client for non-session graph rows", async () => {
+    await renderWorkspace({
+      projects: [
+        project("active", "2099-07-13T12:00:00.000Z", {
+          threads: [
+            {
+              ...projects[0]!.threads[0]!,
+              sessionId: null,
+              sourceAiClient: "codex",
+              capturedProjectProvenance: { source: "untrusted metadata" }
+            }
+          ]
+        })
+      ]
+    });
+
+    const row = container.querySelector('[data-session-id="thread-1"]');
+    expect(row?.textContent).not.toContain("Codex");
+    expect(row?.textContent).not.toContain("untrusted metadata");
   });
 
   it("opens the raw Conversation with Project context and secondary assignment controls", async () => {

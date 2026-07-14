@@ -21,7 +21,8 @@
     "package:smoke:mac": "node scripts/smoke-packaged-desktop-app.mjs --build",
     "start": "pnpm build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "test:browser": "pnpm build && electron scripts/validate-project-workspace.mjs"
   },
   "dependencies": {
     "@koed/koed-server": "workspace:*",

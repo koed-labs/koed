@@ -352,6 +352,7 @@ const mapLcmGraphThreadRow = (row: {
   thread_id: string;
   thread_name: string;
   session_id: string | null;
+  source_ai_client: SourceRuntime | null;
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
@@ -381,6 +382,7 @@ const mapLcmGraphThreadRow = (row: {
     id: row.thread_id,
     name,
     sessionId: row.session_id,
+    sourceAiClient: row.source_ai_client,
     projectId: row.project_id,
     projectName: row.project_name,
     projectPath: row.project_path,
@@ -7341,6 +7343,7 @@ export const createMemorySourceRepository = (
             coalesce(me.payload #>> '{metadata,externalSessionId}', s.external_session_id, s.id::text, me.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', me.payload #>> '{metadata,threadName}', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             me.session_id,
+            coalesce(s.source_runtime, me.source_runtime) as source_ai_client,
             case
               when coalesce(me.payload #>> '{metadata,threadKind}', s.metadata ->> 'threadKind') = 'subagent'
                 then 'subagent'
@@ -7436,6 +7439,7 @@ export const createMemorySourceRepository = (
             coalesce(s.metadata ->> 'externalSessionId', s.external_session_id, s.id::text) as thread_id,
             coalesce(s.metadata ->> 'threadName', s.external_session_id, s.id::text, 'Untitled conversation') as thread_name,
             s.id as session_id,
+            s.source_runtime as source_ai_client,
             case
               when s.metadata ->> 'threadKind' = 'subagent' then 'subagent'
               else 'conversation'
@@ -7498,6 +7502,7 @@ export const createMemorySourceRepository = (
             thread_id,
             (array_agg(thread_name order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_name,
             (array_agg(session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null))[1] as session_id,
+            (array_agg(source_ai_client order by order_at desc, source_sequence desc nulls last, id desc) filter (where session_id is not null and source_ai_client is not null))[1] as source_ai_client,
             (array_agg(thread_kind order by order_at desc, source_sequence desc nulls last, id desc))[1] as thread_kind,
             (array_agg(parent_thread_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where parent_thread_id is not null))[1] as parent_thread_id,
             (array_agg(parent_session_id order by order_at desc, source_sequence desc nulls last, id desc) filter (where parent_session_id is not null))[1] as parent_session_id,
@@ -7569,6 +7574,7 @@ export const createMemorySourceRepository = (
           id: thread.id,
           name: thread.name,
           sessionId: thread.sessionId,
+          sourceAiClient: thread.sourceAiClient,
           projectId: thread.projectId,
           projectName: thread.projectName,
           projectPath: thread.projectPath,

@@ -9,6 +9,7 @@ import {
   graphEventParamsSchema,
   graphEventPatchSchema,
   graphEventsQuerySchema,
+  graphThreadIndexResponseSchema,
   graphSessionParamsSchema,
   graphSessionProjectPatchSchema,
   graphSessionTitlePatchSchema,
@@ -195,9 +196,9 @@ export const registerGraphRoutes = (
       const query = graphQuerySchema.parse(request.query);
       const user = await authenticateGraphRead(request, query.teamWorkspaceId);
       if (query.teamWorkspaceId) {
-        return {
+        return graphThreadIndexResponseSchema.parse({
           projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
-        };
+        });
       }
       const cacheKey = `koed:graph:threads:${user.id}:${hashCacheKey(
         JSON.stringify(query)
@@ -208,9 +209,9 @@ export const registerGraphRoutes = (
       if (cached) {
         return cached;
       }
-      const response = {
+      const response = graphThreadIndexResponseSchema.parse({
         projects: await repo.listLcmGraphThreads({ userId: user.id }, query)
-      };
+      });
       await cacheProvider.setJson(cacheKey, response, graphCacheTtlSeconds);
       return response;
     }

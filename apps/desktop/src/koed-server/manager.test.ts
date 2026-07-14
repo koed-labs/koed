@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createKoedEnvironment, createKoedServerManager } from "./manager.js";
 
 type FakeChildProcess = EventEmitter & {
@@ -624,6 +624,39 @@ describe("Koed server desktop manager", () => {
           "Set KOED_SERVER_PACKAGE_SHA256 or KOED_SERVER_PACKAGE_SHA256_FILE."
       }
     });
+  });
+
+  it("rejects Team Backend URLs that could carry credentials or browser state", async () => {
+    const execFile = vi.fn();
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile,
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    for (const url of [
+      "https://token@team.example.test",
+      "https://team.example.test/?token=secret",
+      "https://team.example.test/#approval"
+    ]) {
+      await expect(
+        manager.handlers.upstream_connect!({ url })
+      ).resolves.toMatchObject({
+        ok: false,
+        error:
+          "Team Backend URL cannot include credentials, a query string, or a fragment."
+      });
+    }
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   it("connects a Team Backend by registering, validating, enabling policy, and starting enrollment", async () => {

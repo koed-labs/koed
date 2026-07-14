@@ -537,6 +537,36 @@ const bundledLocalDatabaseUrl = (environment: NodeJS.ProcessEnv): string => {
   return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
 };
 
+const validateTeamBackendUrl = (
+  value: unknown
+): { ok: true; url: string } | { ok: false; error: string } => {
+  if (typeof value !== "string" || !value.trim()) {
+    return { ok: false, error: "Team Backend URL is required." };
+  }
+  try {
+    const url = new URL(value.trim());
+    if (!/^https?:$/.test(url.protocol) || !url.hostname) {
+      return {
+        ok: false,
+        error: "Team Backend URL must be an HTTP(S) origin."
+      };
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      return {
+        ok: false,
+        error:
+          "Team Backend URL cannot include credentials, a query string, or a fragment."
+      };
+    }
+    return { ok: true, url: url.toString().replace(/\/$/, "") };
+  } catch {
+    return {
+      ok: false,
+      error: "Team Backend URL must be a valid HTTP(S) origin."
+    };
+  }
+};
+
 const hasHealthyApi = (value: unknown): boolean => {
   if (typeof value !== "object" || value === null || !("api" in value)) {
     return false;
@@ -928,16 +958,16 @@ export const createKoedServerManager = ({
   };
 
   const connectTeamBackend = async (args?: Record<string, unknown>) => {
-    const url = typeof args?.url === "string" ? args.url.trim() : "";
-    if (!url) {
-      return { ok: false, error: "Team Backend URL is required." };
+    const parsedUrl = validateTeamBackendUrl(args?.url);
+    if (!parsedUrl.ok) {
+      return { ok: false, error: parsedUrl.error };
     }
     const registerResult = await runJson(
       [
         "upstream",
         "register",
         "--url",
-        url,
+        parsedUrl.url,
         "--name",
         "Team Backend",
         "--profile",

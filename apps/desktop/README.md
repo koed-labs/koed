@@ -11,7 +11,7 @@ persistent master-detail workspace: active and disclosed inactive local
 Projects remain in the master list while the detail pane shows the selected
 Project's Captured Sessions or a raw Conversation. Narrow windows deliberately
 switch to list → Project → Conversation drill-down, with breadcrumb controls
-returning to the previous level. Project and Captured Session names, activity,
+returning to the previous level. Project and Captured Session names, source AI Client when available, activity,
 counts, and Conversation previews form the primary scanning hierarchy; local
 paths, Git identity, discovery provenance, and manual assignment controls sit
 in secondary disclosures.
@@ -24,9 +24,14 @@ virtualized timeline contract, so long Conversations retain bounded rendering
 and older-event pagination without coupling their navigation shells. Persisted
 Project discovery metadata is merged with captured Memory activity locally, so
 a discovered Project can remain visible before its first Captured Session.
-The Desktop UI does not expose remote backend enrollment or future Workspace
-and multi-device scopes. Its Projects flow remains Personal Memory-first and
-works without an upstream.
+Desktop Setup includes a Team Backend readiness card. Users paste only a
+plain HTTP(S) Team Backend origin; URLs with credentials, query strings, or
+fragments are rejected before invoking the local bridge. Connect validates
+capabilities, enables local-edge Team route families, starts browser approval,
+and stores reusable credentials only through local secure credential storage.
+Disconnect revokes local credential material and disables Team routing. API
+Tokens remain Personal Memory credentials; they do not authorize Team Workspace
+recall.
 Separate Git worktrees keep distinct local records while sharing a device-local
 Git common-directory signal. Current and historical network remote aliases are
 stored only as future matching evidence; Desktop does not yet combine Personal
@@ -35,9 +40,8 @@ links.
 
 The current client boundary is intentionally local-first. The Desktop selection
 model includes stable Project and Captured Session identity, while backend scope
-and authorization remain API concerns. Future Team Workspace and multi-device
-surfaces should extend that scope contract rather than introduce another
-embedded client or encode credentials in navigation state.
+and authorization remain API concerns. Team Workspace routing remains separate from Desktop Project selection and
+never encodes credentials in navigation state.
 
 ## Run
 

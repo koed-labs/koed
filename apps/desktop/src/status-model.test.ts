@@ -7,9 +7,17 @@ import {
 } from "./status-model.js";
 
 describe("Desktop status model", () => {
-  it("keeps unshipped Team Backend setup out of the Desktop UI", () => {
-    expect(statusCards.map((card) => card.id)).not.toContain("teamBackend");
-    expect(statusComponentKeys).not.toContain("upstreamBackends");
-    expect(componentDefinitions).not.toHaveProperty("upstreamBackends");
+  it("includes Team Backend setup in Desktop readiness", () => {
+    const card = statusCards.find((entry) => entry.id === "teamBackend");
+
+    expect(statusComponentKeys).toContain("upstreamBackends");
+    expect(componentDefinitions.upstreamBackends.label).toBe("Team Backend");
+    expect(card).toMatchObject({
+      componentKeys: ["upstreamBackends"],
+      primaryAction: { command: "connect_team_backend" }
+    });
+    expect(card?.secondaryActions).toContainEqual(
+      expect.objectContaining({ command: "disconnect_team_backend" })
+    );
   });
 });

@@ -40,6 +40,14 @@ const projectAssignmentLabel = (session: DesktopThreadGroup): string => {
 const projectSecondaryLabel = (project: DesktopProject): string =>
   project.remoteDisplay ?? project.path ?? "Project";
 
+const sourceAiClientLabel = (
+  sourceAiClient: DesktopThreadGroup["sourceAiClient"]
+): string | null => {
+  if (sourceAiClient === "codex") return "Codex";
+  if (sourceAiClient === "codex-cli") return "Codex CLI";
+  return null;
+};
+
 type ProjectRowProps = {
   project: DesktopProject;
   selected: boolean;
@@ -252,6 +260,9 @@ const SessionRow = ({
   onSelect?: (sessionId: string) => void;
 }) => {
   const id = sessionSelectionId(session);
+  const sourceAiClient = session.sessionId
+    ? sourceAiClientLabel(session.sourceAiClient)
+    : null;
   return (
     <button
       type="button"
@@ -273,6 +284,7 @@ const SessionRow = ({
         <span className="dense-session-heading">
           <strong>{session.name || "Untitled session"}</strong>
           <span>Raw Conversation</span>
+          {sourceAiClient ? <span>{sourceAiClient}</span> : null}
         </span>
         <small>{session.sample || "Captured Conversation"}</small>
       </span>
