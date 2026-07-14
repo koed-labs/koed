@@ -1649,6 +1649,16 @@ button:disabled {
   padding: 5px 8px;
 }
 
+.assignment-state-announcement {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 .assignment-state.user_override {
   background: #eee8ff;
   color: #6c51d8;

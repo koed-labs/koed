@@ -1,3 +1,5 @@
+import { useLayoutEffect, useRef } from "react";
+
 import { NativeConversationSurface } from "./NativeConversationSurface.js";
 import {
   assignmentTargetProjects,
@@ -21,6 +23,9 @@ export type ProjectWorkspaceProps = {
   projectAssignmentError: string;
   apiBaseUrl: string | null;
   apiToken: string | null;
+  onSelectProject?: (projectId: string) => void;
+  onSelectSession?: (sessionId: string) => void;
+  onToggleInactive?: () => void;
 };
 
 const countLabel = (count: number, singular: string): string =>
@@ -38,9 +43,10 @@ const projectSecondaryLabel = (project: DesktopProject): string =>
 type ProjectRowProps = {
   project: DesktopProject;
   selected: boolean;
+  onSelect?: (projectId: string) => void;
 };
 
-const ProjectRow = ({ project, selected }: ProjectRowProps) => {
+const ProjectRow = ({ project, selected, onSelect }: ProjectRowProps) => {
   const active = projectIsActive(project);
   const activity = relativeTime(projectLatestAt(project));
   return (
@@ -49,6 +55,11 @@ const ProjectRow = ({ project, selected }: ProjectRowProps) => {
       className={`project-master-row${selected ? " selected" : ""}`}
       data-project-id={project.id}
       aria-current={selected ? "true" : undefined}
+      onClick={(event) => {
+        if (!onSelect) return;
+        event.stopPropagation();
+        onSelect(project.id);
+      }}
       aria-label={`${project.name}, ${active ? "active" : "inactive"}, ${countLabel(project.threads.length, "Captured Session")}, ${activity}`}
     >
       <span className="project-row-monogram" aria-hidden="true">
@@ -81,13 +92,17 @@ type ProjectMasterPaneProps = {
   selectedProjectId: string | null;
   showInactiveProjects: boolean;
   projectGraphError: string;
+  onSelectProject?: (projectId: string) => void;
+  onToggleInactive?: () => void;
 };
 
 const ProjectMasterPane = ({
   projects,
   selectedProjectId,
   showInactiveProjects,
-  projectGraphError
+  projectGraphError,
+  onSelectProject,
+  onToggleInactive
 }: ProjectMasterPaneProps) => {
   const activeProjects = projects.filter((project) => projectIsActive(project));
   const inactiveProjects = projects.filter(
@@ -98,7 +113,9 @@ const ProjectMasterPane = ({
       <header className="project-master-header">
         <div>
           <p className="eyebrow">Memory</p>
-          <h1>Projects</h1>
+          <h1 data-route-focus="projects" tabIndex={-1}>
+            Projects
+          </h1>
         </div>
         <span
           className="project-total"
@@ -136,6 +153,7 @@ const ProjectMasterPane = ({
                       key={project.id}
                       project={project}
                       selected={project.id === selectedProjectId}
+                      onSelect={onSelectProject}
                     />
                   ))}
                 </div>
@@ -155,6 +173,11 @@ const ProjectMasterPane = ({
                   className="inactive-disclosure"
                   data-toggle-inactive
                   aria-expanded={showInactiveProjects}
+                  onClick={(event) => {
+                    if (!onToggleInactive) return;
+                    event.stopPropagation();
+                    onToggleInactive();
+                  }}
                 >
                   <span id="inactive-projects-heading">Inactive</span>
                   <span>{inactiveProjects.length}</span>
@@ -169,6 +192,7 @@ const ProjectMasterPane = ({
                         key={project.id}
                         project={project}
                         selected={project.id === selectedProjectId}
+                        onSelect={onSelectProject}
                       />
                     ))}
                   </div>
@@ -220,10 +244,25 @@ const TechnicalProjectDetails = ({ project }: { project: DesktopProject }) => (
   </details>
 );
 
-const SessionRow = ({ session }: { session: DesktopThreadGroup }) => {
+const SessionRow = ({
+  session,
+  onSelect
+}: {
+  session: DesktopThreadGroup;
+  onSelect?: (sessionId: string) => void;
+}) => {
   const id = sessionSelectionId(session);
   return (
-    <button type="button" className="dense-session-row" data-session-id={id}>
+    <button
+      type="button"
+      className="dense-session-row"
+      data-session-id={id}
+      onClick={(event) => {
+        if (!onSelect) return;
+        event.stopPropagation();
+        onSelect(id);
+      }}
+    >
       <span className="session-icon" aria-hidden="true">
         <svg viewBox="0 0 20 20">
           <path d="M5 4.5h10v7H9l-4 3v-10Z" />
@@ -248,7 +287,13 @@ const SessionRow = ({ session }: { session: DesktopThreadGroup }) => {
   );
 };
 
-const ProjectDetailPane = ({ project }: { project: DesktopProject | null }) => {
+const ProjectDetailPane = ({
+  project,
+  onSelectSession
+}: {
+  project: DesktopProject | null;
+  onSelectSession?: (sessionId: string) => void;
+}) => {
   if (!project) {
     return (
       <section
@@ -259,7 +304,13 @@ const ProjectDetailPane = ({ project }: { project: DesktopProject | null }) => {
           <span className="project-empty-icon" aria-hidden="true">
             ◇
           </span>
-          <h2 id="select-project-heading">Select a Project</h2>
+          <h2
+            id="select-project-heading"
+            data-route-focus="projects"
+            tabIndex={-1}
+          >
+            Select a Project
+          </h2>
           <p>
             Choose a Project to inspect its Captured Sessions and raw
             Conversations.
@@ -292,7 +343,13 @@ const ProjectDetailPane = ({ project }: { project: DesktopProject | null }) => {
         </span>
         <div>
           <p className="eyebrow">Project</p>
-          <h2 id="selected-project-heading">{project.name}</h2>
+          <h2
+            id="selected-project-heading"
+            data-route-focus="project"
+            tabIndex={-1}
+          >
+            {project.name}
+          </h2>
           <p>
             {countLabel(project.threads.length, "Captured Session")} ·{" "}
             {countLabel(project.eventCount, "Memory Event")} ·{" "}
@@ -315,7 +372,11 @@ const ProjectDetailPane = ({ project }: { project: DesktopProject | null }) => {
         {sessions.length ? (
           <div className="dense-session-list">
             {sessions.map((session) => (
-              <SessionRow key={sessionSelectionId(session)} session={session} />
+              <SessionRow
+                key={sessionSelectionId(session)}
+                session={session}
+                onSelect={onSelectSession}
+              />
             ))}
           </div>
         ) : (
@@ -374,7 +435,9 @@ const ConversationPane = ({
         <div className="conversation-toolbar">
           <div>
             <p className="eyebrow">Raw Conversation</p>
-            <strong>{session.name || "Untitled session"}</strong>
+            <strong data-route-focus="session" tabIndex={-1}>
+              {session.name || "Untitled session"}
+            </strong>
             <small>
               {countLabel(session.eventCount, "Memory Event")} ·{" "}
               {relativeTime(session.latestAt)} · {project.name}
@@ -386,8 +449,13 @@ const ConversationPane = ({
             Project assignment
             <span
               className={`assignment-state ${session.projectAssignmentSource ?? "unassigned"}`}
+              role="status"
+              aria-live="polite"
             >
-              {projectAssignmentLabel(session)}
+              <span aria-hidden="true">{projectAssignmentLabel(session)}</span>
+              <span className="assignment-state-announcement">
+                {projectAssignmentLabel(session)} · {project.name}
+              </span>
             </span>
           </summary>
           <div className="conversation-assignment">
@@ -469,7 +537,10 @@ export const ProjectWorkspace = ({
   projectAssignmentBusy,
   projectAssignmentError,
   apiBaseUrl,
-  apiToken
+  apiToken,
+  onSelectProject,
+  onSelectSession,
+  onToggleInactive
 }: ProjectWorkspaceProps) => {
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? null;
@@ -477,10 +548,32 @@ export const ProjectWorkspace = ({
     selectedProject?.threads.find(
       (session) => sessionSelectionId(session) === selectedSessionId
     ) ?? null;
-  const effectiveView =
-    view === "session" && !selectedSession ? "project" : view;
+  const effectiveView = !selectedProject
+    ? "projects"
+    : view === "session" && !selectedSession
+      ? "project"
+      : view;
+  const workspaceRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const activeElement = document.activeElement;
+    const preserveMasterFocus =
+      window.matchMedia("(min-width: 1041px)").matches &&
+      activeElement instanceof HTMLElement &&
+      Boolean(activeElement.closest(".project-master-pane"));
+    if (preserveMasterFocus) return;
+    const focusTarget =
+      workspace.querySelector<HTMLElement>(
+        `[data-route-focus="${effectiveView}"]`
+      ) ?? workspace;
+    focusTarget.focus({ preventScroll: true });
+  }, [effectiveView, selectedProjectId, selectedSessionId]);
+
   return (
     <div
+      ref={workspaceRef}
       className={`project-workspace route-${effectiveView}`}
       data-view-root
       data-responsive="master-detail-to-drilldown"
@@ -491,6 +584,8 @@ export const ProjectWorkspace = ({
         selectedProjectId={selectedProjectId}
         showInactiveProjects={showInactiveProjects}
         projectGraphError={projectGraphError}
+        onSelectProject={onSelectProject}
+        onToggleInactive={onToggleInactive}
       />
       <div className="project-detail-column">
         {effectiveView === "session" && selectedProject && selectedSession ? (
@@ -504,7 +599,10 @@ export const ProjectWorkspace = ({
             apiToken={apiToken}
           />
         ) : (
-          <ProjectDetailPane project={selectedProject} />
+          <ProjectDetailPane
+            project={selectedProject}
+            onSelectSession={onSelectSession}
+          />
         )}
       </div>
     </div>

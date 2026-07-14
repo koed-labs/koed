@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -72,6 +72,33 @@ const defaultProps: ProjectWorkspaceProps = {
   apiToken: "desktop-token"
 };
 
+const WorkspaceSelectionHarness = () => {
+  const [view, setView] = useState<ProjectWorkspaceProps["view"]>("projects");
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
+    "active"
+  );
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null
+  );
+  return (
+    <ProjectWorkspace
+      {...defaultProps}
+      view={view}
+      selectedProjectId={selectedProjectId}
+      selectedSessionId={selectedSessionId}
+      onSelectProject={(projectId) => {
+        setSelectedProjectId(projectId);
+        setSelectedSessionId(null);
+        setView("project");
+      }}
+      onSelectSession={(sessionId) => {
+        setSelectedSessionId(sessionId);
+        setView("session");
+      }}
+    />
+  );
+};
+
 describe("ProjectWorkspace", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -85,6 +112,7 @@ describe("ProjectWorkspace", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   async function renderWorkspace(
@@ -110,19 +138,49 @@ describe("ProjectWorkspace", () => {
         .querySelector('[data-project-id="active"]')
         ?.getAttribute("aria-current")
     ).toBe("true");
+    const projectHeading = container.querySelector("#selected-project-heading");
+    expect(projectHeading?.textContent).toBe("Koed");
+    expect(document.activeElement).toBe(projectHeading);
+  });
+
+  it("transitions through Project and Captured Session selections", async () => {
+    await act(async () => root.render(<WorkspaceSelectionHarness />));
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-project-id="active"]')
+        ?.click();
+    });
+    expect(container.querySelector(".project-workspace")?.className).toContain(
+      "route-project"
+    );
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[data-session-id="session-1"]')
+        ?.click();
+    });
+    expect(container.querySelector(".project-workspace")?.className).toContain(
+      "route-session"
+    );
     expect(
-      container.querySelector("#selected-project-heading")?.textContent
-    ).toBe("Koed");
+      container.querySelector('[data-testid="native-conversation"]')
+        ?.textContent
+    ).toContain("thread-1");
   });
 
   it("keeps inactive Projects discoverable behind an explicit disclosure", async () => {
-    await renderWorkspace();
+    const onToggleInactive = vi.fn();
+    await renderWorkspace({ onToggleInactive });
 
     const disclosure = container.querySelector<HTMLButtonElement>(
       "[data-toggle-inactive]"
     );
     expect(disclosure?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelector('[data-project-id="inactive"]')).toBeNull();
+
+    disclosure?.click();
+    expect(onToggleInactive).toHaveBeenCalledOnce();
 
     await renderWorkspace({ showInactiveProjects: true });
     expect(
@@ -176,9 +234,53 @@ describe("ProjectWorkspace", () => {
     );
     expect(assignment?.open).toBe(false);
     expect(assignment?.textContent).toContain("Automatic");
+    const assignmentStatus = assignment?.querySelector('[role="status"]');
+    expect(assignmentStatus?.getAttribute("aria-live")).toBe("polite");
+    expect(
+      assignmentStatus?.querySelector(".assignment-state-announcement")
+        ?.textContent
+    ).toContain("Automatic · Koed");
   });
 
-  it("exposes route classes used for narrow-screen list and detail drill-down", async () => {
+  it("preserves selected master-row focus in wide layouts", async () => {
+    vi.spyOn(window, "matchMedia").mockReturnValue({
+      matches: true,
+      media: "(min-width: 1041px)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    });
+    await renderWorkspace({ view: "projects" });
+    const selectedRow = container.querySelector<HTMLButtonElement>(
+      '[data-project-id="active"]'
+    );
+    selectedRow?.focus();
+
+    await renderWorkspace({ view: "project" });
+
+    expect(document.activeElement).toBe(selectedRow);
+  });
+
+  it("falls back to the Project list when detail selection disappears", async () => {
+    await renderWorkspace({
+      view: "project",
+      selectedProjectId: "missing"
+    });
+
+    expect(
+      container
+        .querySelector(".project-workspace")
+        ?.classList.contains("route-projects")
+    ).toBe(true);
+    expect(
+      container.querySelector('[data-route-focus="projects"]')
+    ).not.toBeNull();
+  });
+
+  it("exposes route classes and focus targets for responsive drill-down", async () => {
     await renderWorkspace({ view: "projects" });
     expect(
       container
@@ -192,6 +294,19 @@ describe("ProjectWorkspace", () => {
         .querySelector(".project-workspace")
         ?.classList.contains("route-project")
     ).toBe(true);
+    expect(
+      container.querySelector('[data-route-focus="project"]')
+    ).not.toBeNull();
+
+    await renderWorkspace({ view: "session", selectedSessionId: "session-1" });
+    expect(
+      container
+        .querySelector(".project-workspace")
+        ?.classList.contains("route-session")
+    ).toBe(true);
+    expect(
+      container.querySelector('[data-route-focus="session"]')
+    ).not.toBeNull();
   });
 
   it("does not imply unavailable device or Team Workspace modes", async () => {

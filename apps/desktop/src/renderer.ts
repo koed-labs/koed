@@ -128,9 +128,10 @@ let projectCatalogFingerprint = "";
 const projectGraphRequestGate = new LatestRequestGate();
 let projectAssignmentBusy = false;
 let projectAssignmentError = "";
+let projectAssignmentSessionId: string | null = null;
+let projectAssignmentRevision = 0;
 let projectWorkspaceRoot: Root | null = null;
 let projectWorkspaceContainer: HTMLElement | null = null;
-let focusedDashboardRoute = "";
 type StartupLogLine = {
   key?: string;
   text: string;
@@ -1427,10 +1428,46 @@ const reconcileProjectSelection = (): void => {
   }
   if (!projects.some((project) => project.id === selectedProjectId)) {
     selectedProjectId =
-      projects.find((project) => projectIsActive(project))?.id ??
-      projects[0]!.id;
+      projects.find((project) => projectIsActive(project))?.id ?? null;
     selectedSessionId = null;
   }
+  const selected = projects.find((project) => project.id === selectedProjectId);
+  if (selected && !projectIsActive(selected)) {
+    showInactiveProjects = true;
+  }
+};
+
+const selectProject = (projectId: string): void => {
+  selectedProjectId = projectId;
+  selectedSessionId = null;
+  if (!projectAssignmentBusy) {
+    projectAssignmentError = "";
+    projectAssignmentSessionId = null;
+  }
+  activeDesktopView = "project";
+  syncUI();
+};
+
+const selectSession = (sessionId: string): void => {
+  selectedSessionId = sessionId;
+  if (!projectAssignmentBusy) {
+    projectAssignmentError = "";
+    projectAssignmentSessionId = null;
+  }
+  activeDesktopView = "session";
+  syncUI();
+};
+
+const toggleInactiveProjects = (): void => {
+  if (showInactiveProjects && selectedProjectId) {
+    const selected = selectedProject();
+    if (selected && !projectIsActive(selected)) {
+      selectedProjectId = null;
+      selectedSessionId = null;
+    }
+  }
+  showInactiveProjects = !showInactiveProjects;
+  syncUI();
 };
 
 const renderProjectWorkspaceHost = (): string =>
@@ -1490,9 +1527,6 @@ const dashboardRenderKey = (): string => {
   }
   return "project-workspace";
 };
-
-const dashboardRouteKey = (): string =>
-  `${activeDesktopView}:${selectedProjectId ?? ""}:${selectedSessionId ?? ""}`;
 
 const renderShell = () => {
   if (rendered) {
@@ -1767,9 +1801,15 @@ const syncProjectDashboard = () => {
         showInactiveProjects,
         projectGraphError,
         projectAssignmentBusy,
-        projectAssignmentError,
+        projectAssignmentError:
+          projectAssignmentSessionId === selectedSessionId
+            ? projectAssignmentError
+            : "",
         apiBaseUrl: status?.api.url ?? null,
-        apiToken: explorerApiToken
+        apiToken: explorerApiToken,
+        onSelectProject: selectProject,
+        onSelectSession: selectSession,
+        onToggleInactive: toggleInactiveProjects
       })
     );
   } else if (projectWorkspaceRoot) {
@@ -1787,12 +1827,6 @@ const syncProjectDashboard = () => {
     if (active) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
-  const nextRoute = dashboardRouteKey();
-  if (dashboard && focusedDashboardRoute !== nextRoute) {
-    focusedDashboardRoute = nextRoute;
-    const viewRoot = dashboard.querySelector<HTMLElement>("[data-view-root]");
-    requestAnimationFrame(() => viewRoot?.focus({ preventScroll: true }));
-  }
 };
 
 const syncUI = () => {
@@ -1838,14 +1872,16 @@ const refreshExplorerCredential = async (): Promise<void> => {
   }
 };
 
-const refreshProjectGraph = async (): Promise<boolean> => {
+type ProjectGraphRefreshResult = "refreshed" | "superseded" | "failed";
+
+const refreshProjectGraph = async (): Promise<ProjectGraphRefreshResult> => {
   const requestRevision = projectGraphRequestGate.begin();
   if (!status?.api.url || !explorerApiToken) {
     if (projectGraph.length) {
       projectGraph = [];
       projectGraphFingerprint = "";
     }
-    return false;
+    return "failed";
   }
   try {
     const graphUrl = `${status.api.url.replace(/\/$/, "")}/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false`;
@@ -1876,7 +1912,9 @@ const refreshProjectGraph = async (): Promise<boolean> => {
           : `Project graph failed with HTTP ${response.status}`
       );
     }
-    if (!projectGraphRequestGate.isCurrent(requestRevision)) return false;
+    if (!projectGraphRequestGate.isCurrent(requestRevision)) {
+      return "superseded";
+    }
     const nextProjects = Array.isArray(payload.projects)
       ? payload.projects
       : [];
@@ -1896,14 +1934,16 @@ const refreshProjectGraph = async (): Promise<boolean> => {
     if (projectGraphError) {
       projectGraphError = "";
     }
-    return true;
+    return "refreshed";
   } catch (error) {
-    if (!projectGraphRequestGate.isCurrent(requestRevision)) return false;
+    if (!projectGraphRequestGate.isCurrent(requestRevision)) {
+      return "superseded";
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (message !== projectGraphError) {
       projectGraphError = message;
     }
-    return false;
+    return "failed";
   }
 };
 
@@ -1972,11 +2012,14 @@ const updateSessionProject = async (
 ): Promise<void> => {
   const session = selectedSession();
   if (!session?.sessionId || !status?.api.url || !explorerApiToken) return;
+  const operationSessionId = sessionSelectionId(session);
+  const operationRevision = ++projectAssignmentRevision;
   const target = targetProjectId
     ? (assignmentTargetProjects(sortedProjects()).find(
         (project) => project.id === targetProjectId
       ) ?? null)
     : null;
+  projectAssignmentSessionId = operationSessionId;
   if (action === "move" && !target) {
     projectAssignmentError = "Select a Project.";
     syncUI();
@@ -1986,7 +2029,7 @@ const updateSessionProject = async (
   projectAssignmentError = "";
   syncUI();
   try {
-    const nextProjectId = await patchSessionProject(
+    await patchSessionProject(
       status.api.url,
       explorerApiToken,
       session.sessionId,
@@ -1994,15 +2037,21 @@ const updateSessionProject = async (
       target
     );
     const refreshed = await refreshProjectGraph();
-    if (!refreshed && selectedProjectId !== nextProjectId) {
+    if (operationRevision !== projectAssignmentRevision) return;
+    if (refreshed === "failed") {
+      projectAssignmentSessionId = operationSessionId;
       projectAssignmentError = PROJECT_ASSIGNMENT_REFRESH_ERROR;
     }
   } catch (error) {
+    if (operationRevision !== projectAssignmentRevision) return;
+    projectAssignmentSessionId = operationSessionId;
     projectAssignmentError =
       error instanceof Error ? error.message : String(error);
   } finally {
-    projectAssignmentBusy = false;
-    syncUI();
+    if (operationRevision === projectAssignmentRevision) {
+      projectAssignmentBusy = false;
+      syncUI();
+    }
   }
 };
 
