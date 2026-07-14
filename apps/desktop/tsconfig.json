@@ -4,9 +4,11 @@
     "composite": true,
     "declaration": true,
     "declarationMap": true,
+    "erasableSyntaxOnly": false,
+    "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "outDir": "dist-types",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

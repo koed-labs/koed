@@ -8,6 +8,7 @@
     { "path": "./packages/core" },
     { "path": "./packages/db" },
     { "path": "./packages/evals" },
+    { "path": "./packages/memory-ui" },
     { "path": "./packages/koed-server" },
     { "path": "./packages/mcp-server" },
     { "path": "./packages/shared" }

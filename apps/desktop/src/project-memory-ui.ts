@@ -163,8 +163,7 @@ export const relativeTime = (
   return `${Math.round(hours / 24)}d ago`;
 };
 
-export const sessionSelectionId = (thread: DesktopThreadGroup): string =>
-  thread.sessionId ?? thread.id;
+export { sessionSelectionId } from "@koed/memory-ui";
 
 export const projectIdForSession = (
   projects: DesktopProjectGroup[],
@@ -202,3 +201,4 @@ export class LatestRequestGate {
     return revision === this.revision;
   }
 }
+import { sessionSelectionId } from "@koed/memory-ui";

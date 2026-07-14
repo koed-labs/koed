@@ -336,7 +336,7 @@ export const repairCodexIntegration = ({
       mkdirSync,
       existsSync
     });
-    return {
+    const repaired: KoedServerRepairCodexResult = {
       ok: true,
       state: "healthy",
       koedHome: paths.koedHome,
@@ -347,9 +347,11 @@ export const repairCodexIntegration = ({
       action:
         "Restart Codex and trust updated hooks if prompted. New sessions will be captured after Codex reloads this config."
     };
+    writeSetupVerification(paths, repaired, writeFileSync);
+    return repaired;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return {
+    const failed: KoedServerRepairCodexResult = {
       ok: false,
       state: "needs_attention",
       koedHome: paths.koedHome,
@@ -360,6 +362,8 @@ export const repairCodexIntegration = ({
       action:
         "Review the reported failure, fix the Codex integration artifacts, then run Fix Codex integration again."
     };
+    writeSetupVerification(paths, failed, writeFileSync);
+    return failed;
   }
 };
 
@@ -541,9 +545,13 @@ const prepareSetupCodex = (
 
 const persistSetupApiToken = (
   context: SetupCodexContext,
-  repoEnv: Record<string, string> = context.repoEnv
+  repoEnv: Record<string, string> = context.repoEnv,
+  preferRepoToken = false
 ): void => {
-  const apiToken = resolveLocalApiToken(context.environment, repoEnv);
+  const apiToken = preferRepoToken
+    ? (resolveLocalApiToken({}, repoEnv) ??
+      resolveLocalApiToken(context.environment, repoEnv))
+    : resolveLocalApiToken(context.environment, repoEnv);
   if (!apiToken) return;
   writeExplorerCredential(context.paths, {
     apiToken: apiToken.token,
@@ -580,9 +588,11 @@ const runSetupBootstrap = (
         "Fix the reported setup failure, then rerun koed-server setup codex --json."
     };
   }
+  const redactApiTokens = (value: string): string =>
+    value.replace(/(^|\n)(Token:\s*)\S+/g, "$1$2<redacted>");
   const output = {
-    stdout: result.stdout.trim() || undefined,
-    stderr: result.stderr.trim() || undefined
+    stdout: redactApiTokens(result.stdout).trim() || undefined,
+    stderr: redactApiTokens(result.stderr).trim() || undefined
   };
   return result.status === 0
     ? { ...base, ...output, ok: true, state: "healthy" }
@@ -599,7 +609,7 @@ const runSetupBootstrap = (
 
 const writeSetupVerification = (
   paths: KoedServerPaths,
-  result: KoedServerSetupCodexResult,
+  result: { ok: boolean; checkedAt: string; error?: string },
   writeFileSync: typeof nodeWriteFileSync
 ): void => {
   writeFileSync(
@@ -634,7 +644,7 @@ export const setupCodex = (
     options.spawnSync ?? (nodeSpawnSync as SpawnSyncLike)
   );
   if (result.ok) {
-    persistSetupApiToken(context, loadRepoEnv(context.paths.repoRoot));
+    persistSetupApiToken(context, loadRepoEnv(context.paths.repoRoot), true);
   }
   writeSetupVerification(context.paths, result, writeFileSync);
   return result;

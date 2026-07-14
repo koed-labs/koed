@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createKoedEnvironment, createKoedServerManager } from "./manager.js";
 
@@ -121,6 +124,43 @@ describe("Koed server desktop manager", () => {
         "--json"
       ]
     });
+  });
+
+  it("replaces an existing Explorer credential when forced after a 401", async () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
+    mkdirSync(resolve(koedHome, "config"), { recursive: true });
+    writeFileSync(
+      resolve(koedHome, "config/explorer-token.json"),
+      JSON.stringify({ apiToken: "stale_token" })
+    );
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: { KOED_HOME: koedHome, KOED_AUTO_PORTS: "1" },
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_HOME: koedHome, KOED_AUTO_PORTS: "1" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, "Created Koed API token.\nToken: fresh_token\n", "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.handlers.explorer_credential!({ force: true })
+    ).resolves.toMatchObject({ ok: true, apiToken: "fresh_token" });
+    expect(calls[0]).toContain("api-token:create");
+    expect(
+      JSON.parse(
+        readFileSync(resolve(koedHome, "config/explorer-token.json"), "utf8")
+      )
+    ).toMatchObject({ apiToken: "fresh_token" });
   });
 
   it("reconciles approved upstream enrollment between ordinary status refreshes", async () => {

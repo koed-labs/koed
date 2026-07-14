@@ -1,5 +1,8 @@
 import koedMarkUrl from "../../explorer/src/koed/assets/koed-mark.svg";
+import { createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import "./styles.css";
+import { NativeConversationSurface } from "./NativeConversationSurface.js";
 import {
   stateLabels,
   statusCards,
@@ -129,6 +132,9 @@ let projectCatalogFingerprint = "";
 const projectGraphRequestGate = new LatestRequestGate();
 let projectAssignmentBusy = false;
 let projectAssignmentError = "";
+let nativeConversationRoot: Root | null = null;
+let nativeConversationContainer: HTMLElement | null = null;
+let focusedDashboardRoute = "";
 type StartupLogLine = {
   key?: string;
   text: string;
@@ -628,22 +634,6 @@ const packageInstallConsentArgs = (
     );
   }
   return { operatorConsented: true };
-};
-
-const explorerEmbedUrl = (rawUrl: string): string => {
-  try {
-    const url = new URL(rawUrl);
-    url.searchParams.set("koedDesktop", "1");
-    if (status?.api.url) {
-      url.searchParams.set("koedApiBaseUrl", status.api.url);
-    }
-    if (explorerApiToken) {
-      url.searchParams.set("koedApiToken", explorerApiToken);
-    }
-    return url.toString();
-  } catch {
-    return rawUrl;
-  }
 };
 
 const currentStartupStep = (): StartupStepId | null =>
@@ -1498,10 +1488,10 @@ const renderProjectAssignmentControls = (
     .join("");
   return `
     <form class="project-assignment-form" data-session-project-form aria-busy="${projectAssignmentBusy}">
-      <label><span>Personal Project</span><select data-session-project-target required ${projectAssignmentBusy || targets.length === 0 ? "disabled" : ""}><option value="" selected disabled>Choose Project…</option>${options}</select></label>
+      <label><span>Move to another Personal Project</span><select data-session-project-target required ${projectAssignmentBusy || targets.length === 0 ? "disabled" : ""}><option value="" selected disabled>${targets.length === 0 ? "No other Projects" : "Select destination…"}</option>${options}</select></label>
       <button type="submit" class="secondary" ${projectAssignmentBusy || targets.length === 0 ? "disabled" : ""}>${projectAssignmentBusy ? "Saving…" : "Move"}</button>
       ${session.projectAssignmentSource === "user_override" ? `<button type="button" class="secondary" data-reset-session-project ${projectAssignmentBusy ? "disabled" : ""}>Reset to automatic</button>` : ""}
-      <span class="assignment-state ${session.projectAssignmentSource ?? "unassigned"}" role="status" aria-live="polite">${projectAssignmentLabel(session)}</span>
+      <span class="assignment-state ${session.projectAssignmentSource ?? "unassigned"}" role="status" aria-live="polite">${projectAssignmentLabel(session)} · ${escapeHtml(session.projectName)}</span>
     </form>
     ${projectAssignmentError ? `<p class="assignment-error" role="alert">${escapeHtml(projectAssignmentError)}</p>` : ""}
   `;
@@ -1517,7 +1507,7 @@ const renderProjectCard = (project: DesktopProject): string => {
         <small>${escapeHtml(projectSecondaryLabel(project))}</small>
         <span>${countLabel(project.threads.length, "session")} · ${countLabel(project.eventCount, "memory event")}${project.branch ? ` · ${escapeHtml(project.branch)}` : ""}</span>
       </span>
-      <span class="project-card-tail"><span class="activity-state ${active ? "active" : "inactive"}">${active ? "Active" : "Inactive"}</span><small>${escapeHtml(relativeTime(projectLatestAt(project)))}</small><span aria-hidden="true">›</span></span>
+      <span class="project-card-tail"><span class="activity-state ${active ? "active" : "inactive"}">${active ? "Active" : "Inactive"}</span><small>${escapeHtml(relativeTime(projectLatestAt(project)))}</small><svg class="row-chevron" aria-hidden="true" viewBox="0 0 20 20"><path d="m7.5 4.5 5 5-5 5" /></svg></span>
     </button>
   `;
 };
@@ -1539,13 +1529,18 @@ const renderProjectList = (): string => {
   const inactiveProjects = projects.filter(
     (project) => !projectIsActive(project)
   );
+  const projectContent = projectGraphError
+    ? `<div class="empty-card hero-empty error"><strong>Personal Memory is temporarily unavailable</strong><p>${escapeHtml(projectGraphError)}</p><button type="button" class="secondary-button" data-retry-projects>Retry</button></div>`
+    : activeProjects.length
+      ? renderProjectSection("ACTIVE PROJECTS", activeProjects, "active")
+      : `<div class="empty-card hero-empty"><strong>No active Projects yet</strong><p>Use your AI Client in a Project and captured sessions will appear here.</p></div>`;
   return `
-    <div class="projects-screen screen-stack">
+    <div class="projects-screen screen-stack" data-view-root tabindex="-1">
       <header class="screen-header">
         <div><p class="eyebrow">Personal Memory</p><h1>Projects</h1><p>Recent local Projects, with every captured session gathered in one place.</p></div>
         <span class="scope-badge"><span></span> On this device</span>
       </header>
-      ${activeProjects.length ? renderProjectSection("ACTIVE PROJECTS", activeProjects, "active") : `<div class="empty-card hero-empty"><strong>No active Projects yet</strong><p>${escapeHtml(projectGraphError || "Use your AI Client in a Project and captured sessions will appear here.")}</p></div>`}
+      ${projectContent}
       ${inactiveProjects.length ? `<button type="button" class="show-inactive" data-toggle-inactive aria-expanded="${showInactiveProjects}">${showInactiveProjects ? "Hide inactive Projects" : `Show inactive Projects · ${inactiveProjects.length}`} <span aria-hidden="true">${showInactiveProjects ? "↑" : "↓"}</span></button>` : ""}
       ${showInactiveProjects && inactiveProjects.length ? renderProjectSection("INACTIVE PROJECTS", inactiveProjects, "inactive") : ""}
     </div>
@@ -1561,7 +1556,7 @@ const renderSessionList = (): string => {
     (left, right) => Date.parse(right.latestAt) - Date.parse(left.latestAt)
   );
   return `
-    <div class="project-detail-screen screen-stack">
+    <div class="project-detail-screen screen-stack" data-view-root tabindex="-1">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><button type="button" data-back-to-projects>Projects</button><span>›</span><strong>${escapeHtml(project.name)}</strong></nav>
       <header class="project-detail-header"><span class="project-monogram" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase() || "P")}</span><div><p class="eyebrow">Local Project</p><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.path ?? "Local path unavailable")}</p></div></header>
       <div class="project-summary-grid"><div><strong>${project.threads.length}</strong><span>Sessions</span></div><div><strong>${project.eventCount}</strong><span>Memory events</span></div><div><strong>${escapeHtml(relativeTime(projectLatestAt(project)))}</strong><span>Last activity</span></div></div>
@@ -1574,7 +1569,7 @@ const renderSessionList = (): string => {
             ? threads
                 .map((thread) => {
                   const id = sessionSelectionId(thread);
-                  return `<button type="button" class="session-row" data-session-id="${escapeHtml(id)}"><span class="session-icon" aria-hidden="true">↳</span><span class="session-row-copy"><strong>${escapeHtml(thread.name || "Untitled session")}</strong><small>${escapeHtml(thread.sample || "Captured conversation")}</small><span>${countLabel(thread.eventCount, "memory event")} · ${escapeHtml(relativeTime(thread.latestAt))}</span></span><span class="session-row-tail" aria-hidden="true">›</span></button>`;
+                  return `<button type="button" class="session-row" data-session-id="${escapeHtml(id)}"><span class="session-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M5 4.5h10v7H9l-4 3v-10Z" /><path d="M8 8h4" /></svg></span><span class="session-row-copy"><strong>${escapeHtml(thread.name || "Untitled session")}</strong><small>${escapeHtml(thread.sample || "Captured Conversation")}</small><span>${countLabel(thread.eventCount, "Memory Event")} · ${escapeHtml(relativeTime(thread.latestAt))}</span></span><svg class="session-row-tail row-chevron" aria-hidden="true" viewBox="0 0 20 20"><path d="m7.5 4.5 5 5-5 5" /></svg></button>`;
                 })
                 .join("")
             : `<div class="empty-card"><strong>No captured sessions yet</strong><p>The Project metadata is ready. Sessions will appear after the Supported Capture Hook records activity here.</p></div>`
@@ -1585,35 +1580,18 @@ const renderSessionList = (): string => {
   `;
 };
 
-const explorerSessionUrl = (): string => {
-  const url = new URL(status?.explorer.url || "http://localhost:5173");
-  url.searchParams.set("koedDesktop", "1");
-  url.searchParams.set("embed", "session");
-  if (status?.api.url) url.searchParams.set("koedApiBaseUrl", status.api.url);
-  if (explorerApiToken) url.searchParams.set("koedApiToken", explorerApiToken);
-  if (selectedSessionId) url.searchParams.set("sessionId", selectedSessionId);
-  const session = selectedSession();
-  if (session) {
-    url.searchParams.set(
-      "selectedThreadId",
-      `${encodeURIComponent(session.projectId)}:${encodeURIComponent(session.id)}`
-    );
-  }
-  return url.toString();
-};
-
 const renderConversationPane = (): string => {
   const session = selectedSession();
   if (!session) {
     return selectedProject() ? renderSessionList() : renderProjectList();
   }
   return `
-    <div class="conversation-screen">
+    <div class="conversation-screen" data-view-root tabindex="-1">
       <nav class="breadcrumbs conversation-breadcrumbs" aria-label="Breadcrumb"><button type="button" data-back-to-projects>Projects</button><span>›</span><button type="button" data-back-to-project>${escapeHtml(selectedProject()?.name ?? session.projectName)}</button><span>›</span><strong>${escapeHtml(session.name || "Untitled session")}</strong></nav>
       <section class="conversation-pane">
-        <div class="conversation-toolbar"><div><p class="eyebrow">Raw conversation</p><strong>${escapeHtml(session.name || "Untitled session")}</strong><small>${countLabel(session.eventCount, "memory event")} · ${escapeHtml(relativeTime(session.latestAt))}</small></div><button type="button" class="secondary" data-open-explorer-session>Open full Explorer ↗</button></div>
+        <div class="conversation-toolbar"><div><p class="eyebrow">Raw Conversation</p><strong>${escapeHtml(session.name || "Untitled session")}</strong><small>${countLabel(session.eventCount, "Memory Event")} · ${escapeHtml(relativeTime(session.latestAt))}</small></div><span class="conversation-local-badge"><span aria-hidden="true"></span> On this device</span></div>
         <div class="conversation-assignment">${renderProjectAssignmentControls(session)}</div>
-        <iframe class="conversation-frame" title="Koed Explorer raw conversation" src="${escapeHtml(explorerSessionUrl())}"></iframe>
+        <div class="native-conversation-host" data-native-conversation-root></div>
       </section>
     </div>
   `;
@@ -1637,8 +1615,8 @@ const statusGroupSummary = (group: (typeof statusGroups)[number]): string => {
 };
 
 const renderSettingsPane = (): string => `
-  <div class="settings-screen screen-stack">
-    <header class="screen-header"><div><p class="eyebrow">This device</p><h1>Settings</h1><p>A compact view of local Personal Memory readiness.</p></div><span class="overall-health ${status?.state ?? "starting"}">${status ? stateLabels[status.state] : "Checking"}</span></header>
+  <div class="settings-screen screen-stack" data-view-root tabindex="-1">
+    <header class="screen-header"><div><p class="eyebrow">This device</p><h1>Settings</h1><p>Local Personal Memory setup, health, and repair actions.</p></div></header>
     <div class="settings-list">
       ${statusGroups
         .map((group) => {
@@ -1665,7 +1643,7 @@ const renderProjectDashboard = (): string => {
 
 const dashboardRenderKey = (): string => {
   if (activeDesktopView === "session") {
-    return `session:${selectedProjectId ?? ""}:${selectedSessionId ?? ""}:${explorerSessionUrl()}:${projectDataRevision}:${projectAssignmentBusy}:${projectAssignmentError}`;
+    return `session:${selectedProjectId ?? ""}:${selectedSessionId ?? ""}:${status?.api.url ?? ""}:${Boolean(explorerApiToken)}:${projectDataRevision}:${projectAssignmentBusy}:${projectAssignmentError}`;
   }
   if (activeDesktopView === "settings") {
     const cardState = statusCards
@@ -1679,6 +1657,9 @@ const dashboardRenderKey = (): string => {
   return `${activeDesktopView}:${selectedProjectId ?? ""}:${showInactiveProjects}:${projectDataRevision}:${projectAssignmentBusy}:${projectAssignmentError}`;
 };
 
+const dashboardRouteKey = (): string =>
+  `${activeDesktopView}:${selectedProjectId ?? ""}:${selectedSessionId ?? ""}`;
+
 const renderShell = () => {
   if (rendered) {
     return;
@@ -1688,7 +1669,7 @@ const renderShell = () => {
     <section class="desktop-shell koed-memory-shell">
       <aside class="desktop-navigation">
         <button type="button" class="memory-brand" data-pane="projects" aria-label="Open Projects"><img class="brand-logo" src="${koedMarkUrl}" alt="" /><span>koed</span></button>
-        <nav class="memory-tabs" aria-label="Koed sections"><button type="button" class="active" data-pane="projects"><span aria-hidden="true">◇</span>Projects</button><button type="button" data-pane="settings"><span aria-hidden="true">⚙</span>Settings</button></nav>
+        <nav class="memory-tabs" aria-label="Koed sections"><button type="button" class="active" data-pane="projects"><span aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3.5 5.5h5l1.5 2h6.5v8h-13v-10Z" /></svg></span>Projects</button><button type="button" data-pane="settings"><span aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.5" /><path d="M10 2.75v2M10 15.25v2M2.75 10h2M15.25 10h2M4.85 4.85l1.4 1.4M13.75 13.75l1.4 1.4M15.15 4.85l-1.4 1.4M6.25 13.75l-1.4 1.4" /></svg></span>Settings</button></nav>
         <div class="navigation-footer"><span class="status-dot starting" data-status-dot title="Overall health: ${stateLabels.starting}" aria-label="Overall health: ${stateLabels.starting}"></span><span><strong>Personal Memory</strong><small>Stored locally</small></span></div>
       </aside>
       <main class="desktop-workspace">
@@ -1794,10 +1775,6 @@ const syncStatusCards = () => {
   );
   const startupPanel = app.querySelector<HTMLElement>("[data-startup-panel]");
   const mainShell = app.querySelector<HTMLElement>("[data-main-shell]");
-  const explorerFrame = app.querySelector<HTMLIFrameElement>(
-    "[data-explorer-frame]"
-  );
-  const explorerEmpty = app.querySelector<HTMLElement>("[data-explorer-empty]");
 
   if (startupPhaseNode) {
     startupPhaseNode.textContent = startupPhase;
@@ -1920,28 +1897,6 @@ const syncStatusCards = () => {
   if (mainShell) {
     mainShell.hidden = false;
   }
-
-  if (explorerFrame && explorerEmpty) {
-    const ready = explorerReady();
-    const loadedUrl = explorerFrame.dataset.loadedExplorerUrl;
-    explorerFrame.classList.toggle("explorer-blurred", !ready);
-
-    if (ready && status?.explorer.url) {
-      const nextUrl = explorerEmbedUrl(status.explorer.url);
-      if (loadedUrl !== nextUrl) {
-        explorerFrame.src = nextUrl;
-        explorerFrame.dataset.loadedExplorerUrl = nextUrl;
-      }
-      explorerFrame.hidden = false;
-      explorerEmpty.hidden = true;
-      explorerEmpty.textContent = "";
-    } else {
-      explorerFrame.hidden = !loadedUrl;
-      explorerEmpty.hidden = false;
-      explorerEmpty.textContent =
-        status?.explorer.message || "Waiting for Explorer to become healthy…";
-    }
-  }
 };
 
 const syncProjectDashboard = () => {
@@ -1951,6 +1906,9 @@ const syncProjectDashboard = () => {
     const diagnosticsOpen =
       dashboard.querySelector<HTMLDetailsElement>(".diagnostic-details")
         ?.open ?? false;
+    nativeConversationRoot?.unmount();
+    nativeConversationRoot = null;
+    nativeConversationContainer = null;
     dashboard.innerHTML = renderProjectDashboard();
     dashboard.dataset.renderKey = nextRenderKey;
     const diagnostics = dashboard.querySelector<HTMLDetailsElement>(
@@ -1958,15 +1916,44 @@ const syncProjectDashboard = () => {
     );
     if (diagnostics) diagnostics.open = diagnosticsOpen;
   }
+  const conversationContainer = dashboard?.querySelector<HTMLElement>(
+    "[data-native-conversation-root]"
+  );
+  const session = selectedSession();
+  if (conversationContainer && session) {
+    if (conversationContainer !== nativeConversationContainer) {
+      nativeConversationRoot?.unmount();
+      nativeConversationContainer = conversationContainer;
+      nativeConversationRoot = createRoot(conversationContainer);
+    }
+    nativeConversationRoot?.render(
+      createElement(NativeConversationSurface, {
+        apiBaseUrl: status?.api.url ?? null,
+        apiToken: explorerApiToken,
+        thread: session
+      })
+    );
+  } else if (nativeConversationRoot) {
+    nativeConversationRoot.unmount();
+    nativeConversationRoot = null;
+    nativeConversationContainer = null;
+  }
   app.querySelectorAll<HTMLButtonElement>("[data-pane]").forEach((button) => {
     const projectsActive =
       button.dataset.pane === "projects" && activeDesktopView !== "settings";
-    button.classList.toggle(
-      "active",
+    const active =
       projectsActive ||
-        (button.dataset.pane === "settings" && activeDesktopView === "settings")
-    );
+      (button.dataset.pane === "settings" && activeDesktopView === "settings");
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   });
+  const nextRoute = dashboardRouteKey();
+  if (dashboard && focusedDashboardRoute !== nextRoute) {
+    focusedDashboardRoute = nextRoute;
+    const viewRoot = dashboard.querySelector<HTMLElement>("[data-view-root]");
+    requestAnimationFrame(() => viewRoot?.focus({ preventScroll: true }));
+  }
 };
 
 const syncUI = () => {
@@ -2023,15 +2010,24 @@ const refreshProjectGraph = async (): Promise<boolean> => {
     return false;
   }
   try {
-    const response = await fetch(
-      `${status.api.url.replace(/\/$/, "")}/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false`,
-      {
+    const graphUrl = `${status.api.url.replace(/\/$/, "")}/v1/memory/graph/threads?limit=500&offset=0&includeInvalidated=false`;
+    const requestGraph = (apiToken: string) =>
+      fetch(graphUrl, {
         headers: {
           accept: "application/json",
-          authorization: `Bearer ${explorerApiToken}`
+          authorization: `Bearer ${apiToken}`
         }
+      });
+    let response = await requestGraph(explorerApiToken);
+    if (response.status === 401) {
+      const replacement = await invokeWithTimeout<
+        { ok: true; apiToken: string } | { ok: false; error: string }
+      >("explorer_credential", { force: true }, 130_000);
+      if (replacement.ok) {
+        explorerApiToken = replacement.apiToken;
+        response = await requestGraph(replacement.apiToken);
       }
-    );
+    }
     const payload = (await response.json().catch(() => ({}))) as {
       projects?: DesktopProjectGroup[];
     };
@@ -3106,6 +3102,17 @@ const registerHandlers = () => {
       return;
     }
 
+    const retryProjects = target.closest<HTMLButtonElement>(
+      "[data-retry-projects]"
+    );
+    if (retryProjects) {
+      event.preventDefault();
+      projectGraphError = "";
+      syncUI();
+      void refreshStatus();
+      return;
+    }
+
     const projectButton =
       target.closest<HTMLButtonElement>("[data-project-id]");
     if (projectButton?.dataset.projectId) {
@@ -3135,15 +3142,6 @@ const registerHandlers = () => {
     if (resetSessionProject) {
       event.preventDefault();
       void updateSessionProject("reset");
-      return;
-    }
-
-    const openExplorerSession = target.closest<HTMLButtonElement>(
-      "[data-open-explorer-session]"
-    );
-    if (openExplorerSession) {
-      event.preventDefault();
-      window.open(explorerSessionUrl(), "_blank", "noopener,noreferrer");
       return;
     }
 

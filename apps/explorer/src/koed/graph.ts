@@ -12,13 +12,9 @@ import {
   type PatchDetails
 } from "./diff";
 import { codexIdePromptUserText } from "./codexIdePrompt";
-import type { GraphEvent, GraphNode, ProjectGroup, ThreadGroup } from "./types";
+import type { GraphEvent, GraphNode, ProjectGroup } from "./types";
 
-export function threadSelectionKey(
-  thread: Pick<ThreadGroup, "projectId" | "id">
-) {
-  return `${encodeURIComponent(thread.projectId)}:${encodeURIComponent(thread.id)}`;
-}
+export { threadSelectionKey } from "@koed/memory-ui";
 
 function projectKey(
   event: Pick<GraphEvent, "projectId" | "projectPath" | "workspaceId">
