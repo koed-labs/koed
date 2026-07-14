@@ -1,7 +1,11 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it } from "vitest";
 
 import {
+  readTeamBackendDisclosureState,
   renderTeamBackendSettings,
+  restoreTeamBackendDisclosureState,
   teamBackendStatusCue
 } from "./team-backend-settings.js";
 
@@ -46,5 +50,69 @@ describe("Team Backend Settings", () => {
     expect(html).not.toMatch(/data-team-backend-disconnect\s+disabled/);
     expect(html).toContain("&quot; onfocus=&quot;");
     expect(html).not.toContain('value="https://team.example.com/" onfocus=');
+  });
+
+  it("restores disclosure state and reveals actionable failures", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderTeamBackendSettings({
+      busy: false,
+      canDisconnect: false,
+      connected: false,
+      detail: "failed: Team Backend URL must not include credentials",
+      status: "Not connected (optional)",
+      urlValue: "https://user@example.com"
+    });
+    const settings = root.querySelector<HTMLDetailsElement>(
+      ".team-backend-settings"
+    )!;
+    const connectionDetails = root.querySelector<HTMLDetailsElement>(
+      ".team-backend-connection-details"
+    )!;
+    settings.open = true;
+    connectionDetails.open = true;
+
+    const openState = readTeamBackendDisclosureState(root);
+    root.innerHTML = renderTeamBackendSettings({
+      busy: true,
+      canDisconnect: false,
+      connected: false,
+      detail: "failed: Team Backend URL must not include credentials",
+      status: "Not connected (optional)",
+      urlValue: "https://user@example.com"
+    });
+    restoreTeamBackendDisclosureState(root, openState);
+
+    expect(
+      root.querySelector<HTMLDetailsElement>(".team-backend-settings")?.open
+    ).toBe(true);
+    expect(
+      root.querySelector<HTMLDetailsElement>(".team-backend-connection-details")
+        ?.open
+    ).toBe(true);
+
+    root.innerHTML = renderTeamBackendSettings({
+      busy: false,
+      canDisconnect: false,
+      connected: false,
+      detail: "failed: Team Backend URL must not include credentials",
+      status: "Not connected (optional)",
+      urlValue: "https://user@example.com"
+    });
+    restoreTeamBackendDisclosureState(
+      root,
+      { connectionDetailsOpen: false, settingsOpen: false },
+      true
+    );
+
+    expect(
+      root.querySelector<HTMLDetailsElement>(".team-backend-settings")?.open
+    ).toBe(true);
+    expect(
+      root.querySelector<HTMLDetailsElement>(".team-backend-connection-details")
+        ?.open
+    ).toBe(true);
+    expect(root.textContent).toContain(
+      "failed: Team Backend URL must not include credentials"
+    );
   });
 });

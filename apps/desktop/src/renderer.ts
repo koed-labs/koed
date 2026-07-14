@@ -27,7 +27,9 @@ import {
   type DesktopView
 } from "./project-memory-ui.js";
 import {
+  readTeamBackendDisclosureState,
   renderTeamBackendSettings,
+  restoreTeamBackendDisclosureState,
   teamBackendStatusCue
 } from "./team-backend-settings.js";
 import type {
@@ -122,6 +124,7 @@ let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
 let explorerApiToken: string | null = null;
 let teamBackendUrlInput = "";
+let revealTeamBackendFailure = false;
 let selectionClearedByInactiveCollapse = false;
 let activeDesktopView: DesktopView = "projects";
 let showInactiveProjects = false;
@@ -1844,6 +1847,8 @@ const syncProjectDashboard = () => {
     const diagnosticsOpen =
       dashboard.querySelector<HTMLDetailsElement>(".diagnostic-details")
         ?.open ?? false;
+    const teamBackendDisclosureState =
+      readTeamBackendDisclosureState(dashboard);
     projectWorkspaceRoot?.unmount();
     projectWorkspaceRoot = null;
     projectWorkspaceContainer = null;
@@ -1853,6 +1858,19 @@ const syncProjectDashboard = () => {
       ".diagnostic-details"
     );
     if (diagnostics) diagnostics.open = diagnosticsOpen;
+    restoreTeamBackendDisclosureState(
+      dashboard,
+      teamBackendDisclosureState,
+      revealTeamBackendFailure
+    );
+  }
+  if (dashboard && revealTeamBackendFailure) {
+    restoreTeamBackendDisclosureState(
+      dashboard,
+      readTeamBackendDisclosureState(dashboard),
+      true
+    );
+    revealTeamBackendFailure = false;
   }
   const workspaceContainer = dashboard?.querySelector<HTMLElement>(
     "[data-project-workspace-root]"
@@ -2825,6 +2843,7 @@ const runTeamBackendConnect = async (): Promise<void> => {
   const url = teamBackendUrlInput.trim();
   if (!url) {
     appendStatusCardLog(cardId, "failed: Team Backend URL is required");
+    revealTeamBackendFailure = true;
     syncUI();
     return;
   }
@@ -2839,6 +2858,7 @@ const runTeamBackendConnect = async (): Promise<void> => {
     const error = commandResultError(result);
     if (error) {
       appendStatusCardLog(cardId, `failed: ${error}`);
+      revealTeamBackendFailure = true;
     } else {
       const activationUrl =
         result &&
@@ -2868,6 +2888,7 @@ const runTeamBackendConnect = async (): Promise<void> => {
       cardId,
       `failed: ${error instanceof Error ? error.message : String(error)}`
     );
+    revealTeamBackendFailure = true;
   } finally {
     statusCardCheckedAt[cardId] = new Date().toISOString();
     busyAction = null;

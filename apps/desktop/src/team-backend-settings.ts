@@ -20,6 +20,39 @@ export type TeamBackendSettingsView = {
   urlValue: string;
 };
 
+export type TeamBackendDisclosureState = {
+  connectionDetailsOpen: boolean;
+  settingsOpen: boolean;
+};
+
+export const readTeamBackendDisclosureState = (
+  root: ParentNode
+): TeamBackendDisclosureState => ({
+  connectionDetailsOpen:
+    root.querySelector<HTMLDetailsElement>(".team-backend-connection-details")
+      ?.open ?? false,
+  settingsOpen:
+    root.querySelector<HTMLDetailsElement>(".team-backend-settings")?.open ??
+    false
+});
+
+export const restoreTeamBackendDisclosureState = (
+  root: ParentNode,
+  state: TeamBackendDisclosureState,
+  revealFailure = false
+): void => {
+  const settings = root.querySelector<HTMLDetailsElement>(
+    ".team-backend-settings"
+  );
+  const connectionDetails = root.querySelector<HTMLDetailsElement>(
+    ".team-backend-connection-details"
+  );
+  if (settings) settings.open = state.settingsOpen || revealFailure;
+  if (connectionDetails) {
+    connectionDetails.open = state.connectionDetailsOpen || revealFailure;
+  }
+};
+
 export const teamBackendStatusCue = ({
   healthy,
   registered,
