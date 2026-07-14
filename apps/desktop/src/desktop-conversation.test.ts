@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   conversationEventText,
   conversationEventsUrl,
+  groupConversationEvents,
   mergeConversationEvents,
   type DesktopConversationEvent
 } from "./desktop-conversation.js";
@@ -65,5 +66,26 @@ describe("native Desktop conversation contract", () => {
     ]);
     expect(merged.map(({ id }) => id)).toEqual(["a", "b"]);
     expect(conversationEventText(merged[1]!)).toBe("expanded");
+  });
+
+  it("groups consecutive tool activity without losing raw Memory Events", () => {
+    const events = [
+      event("user", "2026-07-13T11:00:00.000Z", { actor: "user" }),
+      event("tool-1", "2026-07-13T11:01:00.000Z", { actor: "tool" }),
+      event("tool-2", "2026-07-13T11:02:00.000Z", { actor: "tool" }),
+      event("agent", "2026-07-13T11:03:00.000Z")
+    ];
+
+    const grouped = groupConversationEvents(events);
+
+    expect(grouped.map((item) => item.kind)).toEqual([
+      "event",
+      "tool-group",
+      "event"
+    ]);
+    expect(grouped[1]).toMatchObject({
+      kind: "tool-group",
+      events: [{ id: "tool-1" }, { id: "tool-2" }]
+    });
   });
 });

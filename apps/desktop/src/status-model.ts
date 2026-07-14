@@ -104,6 +104,7 @@ export interface StatusGroupDefinition {
   id: string;
   title: string;
   description: string;
+  healthySummary: string;
   componentKeys: readonly StatusComponentKey[];
   action?: StatusGroupAction;
 }
@@ -369,43 +370,49 @@ export type StatusCardId = (typeof statusCards)[number]["id"];
 
 export const statusGroups = [
   {
-    id: "services",
-    title: "Services",
-    description:
-      "Local services that power capture, recall, Explorer, and storage.",
-    componentKeys: [
-      "api",
-      "explorer",
-      "database",
-      "redis",
-      "workerQueues",
-      "embeddingService"
-    ],
+    id: "capture",
+    title: "Capture",
+    description: "Collect new AI Client Conversations into Personal Memory.",
+    healthySummary: "New Conversations are being captured locally.",
+    componentKeys: ["api", "apiToken", "captureHook", "codex"],
     action: {
-      label: "Refresh stack",
-      command: "start",
-      timeoutMs: 180_000
-    }
-  },
-  {
-    id: "integration",
-    title: "AI Client integration",
-    description:
-      "Credentials and local integration pieces used by the supported AI Client.",
-    componentKeys: ["apiToken", "mcpServer", "captureHook", "codex"],
-    action: {
-      label: "Fix Codex integration",
+      label: "Fix capture",
       command: "repair_codex",
       timeoutMs: 120_000
     }
   },
   {
-    id: "memory",
-    title: "Memory readiness",
-    description: "Background summarization and the latest verification result.",
-    componentKeys: ["lcmSummaryService", "lastVerification"],
+    id: "recall",
+    title: "Recall",
+    description: "Let your AI Client find and use Personal Memory.",
+    healthySummary: "Your AI Client can search Personal Memory.",
+    componentKeys: [
+      "api",
+      "database",
+      "embeddingService",
+      "apiToken",
+      "mcpServer",
+      "codex"
+    ],
     action: {
-      label: "Check system",
+      label: "Fix recall",
+      command: "repair_codex",
+      timeoutMs: 120_000
+    }
+  },
+  {
+    id: "processing",
+    title: "Memory processing",
+    description: "Prepare captured memory for useful summaries and recall.",
+    healthySummary: "Captured memory is processed and ready for recall.",
+    componentKeys: [
+      "redis",
+      "workerQueues",
+      "lcmSummaryService",
+      "lastVerification"
+    ],
+    action: {
+      label: "Run memory check",
       command: "doctor",
       timeoutMs: 90_000
     }

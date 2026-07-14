@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   componentDefinitions,
   statusCards,
-  statusComponentKeys
+  statusComponentKeys,
+  statusGroups
 } from "./status-model.js";
 
 describe("Desktop status model", () => {
@@ -19,5 +20,17 @@ describe("Desktop status model", () => {
     expect(card?.secondaryActions).toContainEqual(
       expect.objectContaining({ command: "disconnect_team_backend" })
     );
+  });
+
+  it("presents local readiness as User outcomes with recovery actions", () => {
+    expect(statusGroups.map((group) => group.title)).toEqual([
+      "Capture",
+      "Recall",
+      "Memory processing"
+    ]);
+    for (const group of statusGroups) {
+      expect(group.healthySummary).toMatch(/captur|AI Client|recall/i);
+      expect(group.action?.label).toBeTruthy();
+    }
   });
 });

@@ -1551,9 +1551,7 @@ const statusGroupSummary = (group: (typeof statusGroups)[number]): string => {
   const unhealthy = group.componentKeys
     .map((key) => statusComponent(key))
     .find((component) => component && component.state !== "healthy");
-  return unhealthy
-    ? componentMessage(unhealthy)
-    : `${group.componentKeys.length}/${group.componentKeys.length} checks healthy`;
+  return unhealthy ? componentMessage(unhealthy) : group.healthySummary;
 };
 
 const renderSettingsPane = (): string => `
@@ -1563,14 +1561,17 @@ const renderSettingsPane = (): string => `
       ${statusGroups
         .map((group) => {
           const state = statusGroupState(group);
-          return `<article class="settings-row ${state}"><span class="settings-state-dot" aria-hidden="true"></span><span><strong>${escapeHtml(group.title)}</strong><small>${escapeHtml(group.description)}</small></span><span class="settings-result"><strong>${escapeHtml(stateLabels[state])}</strong><small>${escapeHtml(statusGroupSummary(group))}</small></span></article>`;
+          const recovery =
+            !["needs_attention", "not_configured"].includes(state) ||
+            !group.action
+              ? ""
+              : `<button type="button" class="secondary settings-recovery" data-startup-action="${escapeHtml(group.action.command)}">${escapeHtml(group.action.label)}</button>`;
+          return `<article class="settings-row ${state}"><span class="settings-state-dot" aria-hidden="true"></span><span><strong>${escapeHtml(group.title)}</strong><small>${escapeHtml(group.description)}</small></span><span class="settings-result"><strong>${escapeHtml(stateLabels[state])}</strong><small>${escapeHtml(statusGroupSummary(group))}</small></span>${recovery}</article>`;
         })
         .join("")}
     </div>
     <div class="settings-actions">
       <button type="button" data-startup-action="refresh-status">Refresh</button>
-      <button type="button" class="secondary" data-startup-action="doctor">Run doctor</button>
-      <button type="button" class="secondary" data-startup-action="setup_codex">Setup AI Client</button>
     </div>
     ${renderTeamBackendSettings({
       busy: Boolean(busyAction),
@@ -1580,7 +1581,7 @@ const renderSettingsPane = (): string => `
       status: statusCardResultCue("teamBackend"),
       urlValue: teamBackendUrlInput
     })}
-    <details class="diagnostic-details"><summary>Advanced diagnostics <span>${statusCards.length} components</span></summary><div class="diagnostic-list">${statusCards.map((card) => `<div class="diagnostic-row"><span>${escapeHtml(card.title)}</span><strong class="${statusCardState(card.id)}">${escapeHtml(statusCardResultCue(card.id))}</strong></div>`).join("")}</div></details>
+    <details class="diagnostic-details"><summary>Advanced diagnostics <span>${statusCards.length} components</span></summary><div class="diagnostic-actions"><button type="button" class="secondary" data-startup-action="doctor">Run doctor</button><button type="button" class="secondary" data-startup-action="setup_codex">Set up AI Client</button></div><div class="diagnostic-list">${statusCards.map((card) => `<div class="diagnostic-row"><span>${escapeHtml(card.title)}</span><strong class="${statusCardState(card.id)}">${escapeHtml(statusCardResultCue(card.id))}</strong></div>`).join("")}</div></details>
   </div>
 `;
 
@@ -3174,6 +3175,11 @@ const registerHandlers = () => {
         case "setup_codex":
           void runAction("Rerun Codex setup", () =>
             invokeWithTimeout("setup_codex", undefined, 300_000)
+          );
+          return;
+        case "repair_codex":
+          void runAction("Repair AI Client integration", () =>
+            invokeWithTimeout("repair_codex", undefined, 120_000)
           );
           return;
         case "runtime_install":

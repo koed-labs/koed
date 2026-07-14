@@ -5,7 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NativeConversationSurface } from "./NativeConversationSurface.js";
-import type { DesktopConversationEvent } from "./desktop-conversation.js";
+import type {
+  DesktopConversationEvent,
+  DesktopConversationTimelineItem
+} from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
 
 vi.mock("@koed/memory-ui", () => ({
@@ -17,10 +20,10 @@ vi.mock("@koed/memory-ui", () => ({
     onLoadOlder,
     renderEvent
   }: {
-    events: DesktopConversationEvent[];
+    events: DesktopConversationTimelineItem[];
     hasOlderEvents: boolean;
     onLoadOlder: () => Promise<void> | void;
-    renderEvent: (event: DesktopConversationEvent) => ReactNode;
+    renderEvent: (event: DesktopConversationTimelineItem) => ReactNode;
   }) => (
     <div data-testid="timeline">
       {events.map((event) => (
@@ -124,6 +127,33 @@ describe("NativeConversationSurface", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe(
       "Bearer desktop-token"
     );
+  });
+
+  it("collapses consecutive tool calls into one expandable activity group", async () => {
+    const tool = (id: string, toolName: string): DesktopConversationEvent => ({
+      ...event(id, `Raw output from ${toolName}`),
+      actor: "tool",
+      metadata: { toolName }
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          jsonResponse([tool("tool-1", "exec"), tool("tool-2", "apply_patch")])
+        )
+    );
+
+    await renderSurface();
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("2 tool calls")
+    );
+
+    const group =
+      container.querySelector<HTMLDetailsElement>(".native-tool-group");
+    expect(group?.open).toBe(false);
+    expect(group?.textContent).toContain("exec, apply_patch");
+    expect(group?.textContent).toContain("Raw output from exec");
   });
 
   it("offers Retry after an actionable HTTP error", async () => {
