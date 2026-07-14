@@ -49,7 +49,7 @@ import {
   getProjectMetadataForCwd,
   listProjectMetadata
 } from "./project-metadata.js";
-import { shareProjectCapturedSession } from "./team-dogfood.js";
+import { shareProjectCapturedSession } from "./team-project-sharing.js";
 import {
   cancelUpstreamEnrollment,
   disconnectUpstreamBackendEnrollment,

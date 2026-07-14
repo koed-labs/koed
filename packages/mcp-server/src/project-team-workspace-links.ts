@@ -36,11 +36,12 @@ const projectMetadataPath = (env: NodeJS.ProcessEnv): string =>
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export const teamMemoryDogfoodEnabled = (
+export const teamWorkspaceAutoResolutionEnabled = (
   env: NodeJS.ProcessEnv = process.env
 ): boolean =>
-  env.KOED_TEAM_MEMORY_DOGFOOD?.trim() === "1" ||
-  env.KOED_TEAM_MEMORY_DOGFOOD?.trim().toLowerCase() === "true";
+  env.KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED?.trim() === "1" ||
+  env.KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED?.trim().toLowerCase() ===
+    "true";
 
 const readProjectMetadataForRoot = (
   projectRoot: string,

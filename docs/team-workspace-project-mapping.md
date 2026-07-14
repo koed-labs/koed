@@ -1,8 +1,8 @@
-# Team Memory Dogfood Project Mapping
+# Team Workspace Project Mapping
 
-This is a rough local dogfood path for sharing one Project's Personal Captured
-Sessions into a Team Workspace and recalling Team-shared Memory from the MCP
-Server. It is not polished Electron UI.
+This CLI-based workflow shares one Project's Personal Captured Sessions into a
+Team Workspace and recalls Team-shared Memory from the MCP Server. Desktop UI
+for this workflow is not currently available.
 
 ## Boundaries
 
@@ -80,7 +80,7 @@ node packages/koed-server/dist/cli.js team workspace remove --project-root "$PWD
 ## Share A Captured Session
 
 The share command needs a browser session cookie for the Team user because Share
-Grant management is session-only in this dogfood path.
+Grant management is session-only in this workflow.
 
 ```bash
 KOED_TEAM_SESSION_COOKIE="cm_session=<local-session-secret>" \
@@ -122,7 +122,7 @@ Explicit Team Workspace recall can be requested through `memory_answer`:
 Project mapping auto-resolution is opt-in:
 
 ```bash
-KOED_TEAM_MEMORY_DOGFOOD=1 koed-mcp
+KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED=true koed-mcp
 ```
 
 With that flag, `memory_answer` resolves the current Project against
@@ -166,6 +166,6 @@ Revoke a Share Grant through the existing Team Workspace API or Team UI:
 curl -X DELETE \
   -H "content-type: application/json" \
   -H "cookie: cm_session=<local-session-secret>" \
-  -d '{"reason":"dogfood cleanup"}' \
+  -d '{"reason":"project mapping cleanup"}' \
   "http://localhost:3300/v1/team-workspaces/<team-workspace-uuid>/session-share-grants/<share-grant-uuid>"
 ```

@@ -40,7 +40,7 @@ import {
 } from "../src/lcm-summary-worker.js";
 import {
   resolveProjectTeamWorkspaceLink,
-  teamMemoryDogfoodEnabled
+  teamWorkspaceAutoResolutionEnabled
 } from "../src/project-team-workspace-links.js";
 
 const servers: http.Server[] = [];
@@ -360,11 +360,12 @@ describe("MCP memory_answer schema wording", () => {
     expect(memoryAnswerToolDescription).toContain(
       "do not repeat after a clear not-found answer"
     );
+    expect(memoryAnswerToolDescription).not.toMatch(/dogfood/i);
     expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);
   });
 });
 
-describe("Project Team Workspace dogfood mapping", () => {
+describe("Project Team Workspace mapping", () => {
   it("resolves Team Workspace mapping only from non-secret local config", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-mcp-ptw-"));
     const configPath = path.join(directory, "project-team-workspaces.json");
@@ -385,10 +386,11 @@ describe("Project Team Workspace dogfood mapping", () => {
     );
 
     expect(
-      teamMemoryDogfoodEnabled({
-        KOED_TEAM_MEMORY_DOGFOOD: "1"
+      teamWorkspaceAutoResolutionEnabled({
+        KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED: "1"
       } as NodeJS.ProcessEnv)
     ).toBe(true);
+    expect(teamWorkspaceAutoResolutionEnabled({})).toBe(false);
     expect(
       resolveProjectTeamWorkspaceLink("/repo/koed", {
         KOED_PROJECT_TEAM_WORKSPACE_LINKS_PATH: configPath

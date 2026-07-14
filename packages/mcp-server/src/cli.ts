@@ -57,7 +57,7 @@ import {
 import { logger } from "./logger.js";
 import {
   resolveProjectTeamWorkspaceLink,
-  teamMemoryDogfoodEnabled
+  teamWorkspaceAutoResolutionEnabled
 } from "./project-team-workspace-links.js";
 
 const parseArgs = (
@@ -424,7 +424,7 @@ server.registerTool(
       team_workspace_id: uuidSchema
         .optional()
         .describe(
-          "Dogfood Team Workspace UUID for Team-shared Memory recall. Requires backend session or scoped device authorization; API Token-only MCP setups fail closed."
+          "Optional Team Workspace UUID for Team-shared Memory recall. Requires backend session or scoped device authorization; API Token-only MCP setups fail closed."
         ),
       recent_days: z
         .number()
@@ -498,7 +498,7 @@ server.registerTool(
       !input.team_workspace_id &&
       input.search_domain === "project" &&
       workspace_id &&
-      teamMemoryDogfoodEnabled(process.env)
+      teamWorkspaceAutoResolutionEnabled(process.env)
         ? resolveProjectTeamWorkspaceLink(workspace_id, process.env)
         : undefined;
     const mappedTeamWorkspaceId = projectTeamWorkspaceLink?.teamWorkspaceId;

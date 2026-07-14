@@ -159,6 +159,12 @@ operation families. Enrollment status, replacement, cancellation, and disconnect
 mutations are serialized per backend across CLI processes; remote requests run
 before lock acquisition, and each mutation rereads current state while locked.
 
+`KOED_TEAM_WORKSPACE_AUTO_RESOLUTION_ENABLED=true` lets the MCP Server resolve
+an explicit local Project-to-Team Workspace mapping when `memory_answer` receives
+a Project-scoped request without a `team_workspace_id`. Personal Memory remains
+the default, and the mapped Team path still requires enrolled local-edge and
+upstream device credentials. See `docs/team-workspace-project-mapping.md`.
+
 ## KOED_HOME Layout
 
 Koed-owned local state lives under `KOED_HOME`:

@@ -3,11 +3,11 @@ import type { KoedServerPaths } from "./paths.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { getProjectTeamWorkspaceLink } from "./project-team-workspace-links.js";
 
-export interface TeamDogfoodFetchDeps {
+export interface TeamProjectSharingFetchDeps {
   fetch?: typeof fetch;
 }
 
-export interface TeamDogfoodShareResult {
+export interface TeamProjectSharingResult {
   ok: boolean;
   state: "shared" | "needs_attention";
   message: string;
@@ -153,8 +153,8 @@ export const shareProjectCapturedSession = async (
   },
   environment: NodeJS.ProcessEnv,
   repoEnv: Record<string, string>,
-  deps: TeamDogfoodFetchDeps = {}
-): Promise<TeamDogfoodShareResult> => {
+  deps: TeamProjectSharingFetchDeps = {}
+): Promise<TeamProjectSharingResult> => {
   const fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
   const projectRoot = resolve(input.projectRoot);
   const linkResult = getProjectTeamWorkspaceLink(paths, projectRoot);
