@@ -397,7 +397,7 @@ describe("LCM summary semantic judge", () => {
       runner: async () => ({
         text: JSON.stringify({
           ...passingOutput(benchmarkCase),
-          facts: ["The API Token was rotated.", "koed_live_secret_abc123"]
+          summary_text: `${passingOutput(benchmarkCase).summary_text} The API Token was rotated. koed_live_secret_abc123`
         }),
         model: "codex-app-server:test"
       })

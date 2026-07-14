@@ -190,17 +190,7 @@ const lcmSummaryJson = (summary_text: string) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
     title: "Captured Memory Summary",
-    summary_text,
-    user_requests: [],
-    decisions: [],
-    facts: [summary_text],
-    files: [],
-    commands: [],
-    model_names: [],
-    tool_outcomes: [],
-    errors: [],
-    unresolved_questions: [],
-    provenance_hints: []
+    summary_text
   });
 
 const createApi = async (handler: http.RequestListener): Promise<string> => {

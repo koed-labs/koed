@@ -22,8 +22,7 @@ import { loadPrompt, type PromptId } from "./prompt-loader.js";
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
-export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION =
-  "lcm-structured-summary-v1";
+export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION = "lcm-semantic-summary-v2";
 
 export interface LcmSummaryWorkerConfig {
   provider: string;
@@ -102,19 +101,9 @@ const structuredLcmSummarySchema = z
   .object({
     schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
     title: z.string().min(1).max(120),
-    summary_text: z.string().min(1),
-    user_requests: z.array(z.string()).default([]),
-    decisions: z.array(z.string()).default([]),
-    facts: z.array(z.string()).default([]),
-    files: z.array(z.string()).default([]),
-    commands: z.array(z.string()).default([]),
-    model_names: z.array(z.string()).default([]),
-    tool_outcomes: z.array(z.string()).default([]),
-    errors: z.array(z.string()).default([]),
-    unresolved_questions: z.array(z.string()).default([]),
-    provenance_hints: z.array(z.string()).default([])
+    summary_text: z.string().min(1)
   })
-  .passthrough();
+  .strict();
 
 export type StructuredLcmSummary = z.infer<typeof structuredLcmSummarySchema>;
 
@@ -304,17 +293,8 @@ const itemText = (item: LcmSourceItem): string => {
 const lcmSummaryJsonShape = () => ({
   schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   title: "Short human-readable conversation title.",
-  summary_text: "Compact information-dense summary for retrieval.",
-  user_requests: ["durable user request or preference"],
-  decisions: ["decision and rationale when present"],
-  facts: ["stable fact captured from the sources"],
-  files: ["file path, package, service, or component when present"],
-  commands: ["command or tool action when semantically important"],
-  model_names: ["model name when present"],
-  tool_outcomes: ["important tool result or observed outcome"],
-  errors: ["error, failure, or regression when present"],
-  unresolved_questions: ["open issue, blocker, or pending decision"],
-  provenance_hints: ["node/source/turn/chunk ids that help trace claims"]
+  summary_text:
+    "Complete compact semantic summary for retrieval, parent summaries, and drill-down."
 });
 
 const buildVersionedLcmSummaryPrompt = (
@@ -752,7 +732,7 @@ const reduceShardSummaries = async (
       kind: "lcm_child",
       nodeId: `${node.id}:shard-${index}`,
       visibility: node.visibility,
-      text: summary.text,
+      text: JSON.stringify(summary.structuredSummary),
       payload: {
         shardIndex: index,
         shardCount: shardSummaries.length,

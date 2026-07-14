@@ -729,10 +729,17 @@ sequenceDiagram
 5. The local LCM worker builds token-bounded prompts from exact source items or
    child summaries. The prompt requires secret-like literal redaction and, when
    ordered source items or child summaries conflict, prefers later items while
-   preserving older conflicts only as superseded context. It also asks the AI
-   Client to keep active decisions, stable facts, unresolved questions, and tool
-   outcomes in their matching structured fields while compressing repetitive
-   logs and lifecycle noise into durable findings.
+   preserving older conflicts only as superseded context. LCM summaries use a
+   minimal JSON envelope containing a title and one canonical `summary_text`.
+   That text contains every parent-relevant semantic fact: leaves describe each
+   distinct topic briefly, while rollups compress complete child summary
+   envelopes into broader themes. Detailed commands, logs, filenames,
+   identifiers, provenance, and intermediate steps remain in child summaries
+   and source Memory Events for drill-down unless a detail is needed to
+   understand, distinguish, or retrieve the topic.
+   Known semantic fields from an older structured child are folded into that
+   child's canonical rollup input so forward-only prompt upgrades do not drop
+   previously retained meaning.
 6. The LCM worker runs Codex app-server mode locally under the user's Codex
    subscription and parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
@@ -745,6 +752,10 @@ sequenceDiagram
    encrypted companions.
 10. The Worker embeds the updated Memory Node so retrieval can use the
     completed summary.
+
+LCM prompt versions are forward-only. A new prompt version applies to newly
+created placeholders and nodes that are naturally invalidated and rebuilt; it
+does not automatically regenerate already completed summaries.
 
 ```mermaid
 sequenceDiagram

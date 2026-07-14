@@ -487,6 +487,10 @@ Koed relies on the connected AI Client for Synthesis; backend LLM provider confi
 The MCP-local memory processing service is enabled by default in this build. It generates captured-session titles and LCM summaries through local Codex app-server mode. Failures are reported as diagnostics and pending summaries remain searchable as degraded evidence.
 MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempt settings can be edited in the Explorer Settings panel. The API stores those user settings and the local MCP/bridge reads them at execution time. `.env` values are bootstrap defaults only; precedence is API user setting, then `.env`, then code default.
 
+LCM summary prompt-version changes are forward-only. Existing completed
+summaries are not automatically regenerated; new prompts apply to new or
+naturally invalidated LCM nodes.
+
 Manual Memory Question settings selected in the Explorer composer are stored on the question row so retry and background catch-up use the same model, reasoning effort, timeout, and attempts. If Codex app-server cannot be started, local Synthesis fails visibly instead of falling back to a backend LLM path.
 
 Capture Policy state `ask` currently blocks automatic capture. It is reserved
