@@ -16,7 +16,9 @@ Related planning and foundations:
 - KOE-219: privacy-conscious Project metadata discovery and matching signals.
 - KOE-257: revocable device credentials.
 - KOE-259: local-edge routing.
-- KOE-264: Cross-Identity Sync and Offload persistence.
+- KOE-264: Cross-Identity Sync and Offload persistence design.
+- KOE-338 and PR #290: implemented directed hosted Cross-Identity Sync
+  baseline.
 - KOE-269: headless setup and remote pairing.
 - KOE-317: bounded historical AI-client session import.
 
@@ -132,6 +134,39 @@ The authority:
 - never grants or evaluates Team Membership, Workspace Access, Share Grants, or
   Team retention.
 
+The authority is a verifier, countersigner, and availability service, not the
+sole membership or deletion authority. Group creation establishes a
+user-controlled group governance signing root on the first trusted device and
+produces offline recovery material. The private governance root and group
+decryption keys never enter the authority or relay. The recovery material must
+be stored separately from ordinary device credentials and must not be available
+to Koed support or an infrastructure operator.
+
+Every membership or lifecycle transition is a signed, monotonically sequenced
+statement in an append-only hash-chained group log:
+
+- adding a device requires browser authentication, proof of possession of the
+  new device key, and approval signed by an existing active device or the
+  user-held recovery root;
+- revoking a device, rotating a key epoch, authorizing recovery, and issuing a
+  personal-deletion tombstone likewise require an active-device or recovery-root
+  signature;
+- the authority verifies that authorization, checks the previous log head, and
+  countersigns the resulting bounded statement, but cannot create a valid
+  transition by itself;
+- active devices compare signed log heads during synchronization. Conflicting
+  statements at the same sequence or a broken hash chain are treated as
+  authority equivocation and fail closed;
+- epoch keys are delivered only as recipient-specific encrypted envelopes.
+  The authority may retain and relay those envelopes but cannot unwrap them or
+  add a recipient that was not authorized by the group log.
+
+The first-device ceremony must require the User to verify and retain recovery
+material before enabling synchronization. A replacement device is admitted by
+an existing active device or that recovery material. There is no operator,
+support, email-only, or authority-only bypass in V1. Losing every active device
+and the recovery material permanently loses control of the group.
+
 If the authority is unavailable, local capture and recall continue. New
 enrollment, revocation, recovery, and key-epoch changes fail closed. Existing
 package exchange may continue only while a cached signed membership statement
@@ -222,6 +257,26 @@ is a source-owned artifact, bound to the hash of its complete source closure.
 A receiving device applies it only when that closure hash matches; otherwise it
 fails closed and requests a compatible package.
 
+The package format separates source provenance from transport encryption. The
+origin signs an immutable content manifest containing the logical source id,
+source-closure hash, format version, and source sequence. Recipient and key-epoch
+information lives in a separate signed transport envelope. An authorized replica
+may re-encrypt the unchanged origin-signed content for a newly admitted device
+and sign the new transport envelope as the serving replica. It cannot alter the
+content manifest or claim to be the origin. A receiver verifies the original
+origin signature, closure hash, serving replica membership, key epoch, and
+transport-envelope signature before materialization.
+
+Every materialized replica retains the origin-signed source package, protected
+by local application-layer encryption, for as long as the corresponding Memory
+is retained. This retained package may be re-served to an authorized replacement
+device even after relay expiry. Relay retention is therefore an availability
+aid rather than the only recovery path. Recovery is possible only while at
+least one authorized replica or an unexpired relay copy still holds the package.
+If the origin, relay copy, and every replica are lost, the source data is not
+recoverable; governance recovery material restores group control, not missing
+Memory bytes.
+
 A package must not contain:
 
 - raw local paths or transcript paths;
@@ -243,8 +298,9 @@ Koed should use eventual consistency with per-origin ordering rather than a
 global total order.
 
 - Every origin device has a monotonic source sequence.
-- Logical Memory and package ids include stable origin deployment identity and
-  source object identity.
+- Package ids include stable origin deployment identity, source sequence, and
+  source-closure hash. Logical source identity is group-stable where the source
+  exposes a stable source-native identifier.
 - Package and chunk replay is idempotent.
 - Devices exchange per-origin high-water marks or an equivalent anti-entropy
   summary.
@@ -261,6 +317,43 @@ global total order.
 This avoids general CRDT or multi-primary relational-database semantics for V1.
 A future shared mutable object would need a separate conflict-resolution
 decision.
+
+Independent origins can observe the same underlying AI-client Session, so
+origin-local ids are insufficient for logical convergence. Before publication,
+each origin derives a **group-stable source fingerprint** from the canonical
+source type and stable source-native Session identifier using a dedicated,
+group-private source-identity key. This key is distinct from transport epoch
+keys and Project matching keys. The fingerprint and source-closure hash remain
+inside the encrypted package boundary. They are never derived from a local
+database id, raw path, checkout path, device id, or unsalted public hash.
+
+Receiving devices apply these rules:
+
+- equal fingerprints and equal source-closure hashes converge on one logical
+  Memory identity while preserving every observing origin in provenance;
+- equal fingerprints with different closures are quarantined as a source
+  conflict. Neither package silently replaces or merges with the other.
+  Synchronized representations of that logical identity are excluded from
+  cross-device Projection and Recall on every receiver until a group-signed
+  resolution selects a closure or records them as intentionally distinct;
+- sources without a trustworthy stable source-native identifier do not
+  auto-converge across origins. They remain distinct and may be presented as
+  duplicate candidates for explicit resolution;
+- a fingerprint collision, invalid source identity, or incompatible package
+  format fails closed and is recorded without projecting or embedding the
+  conflicting package;
+- deletion and invalidation apply to the converged logical identity while the
+  audit trail retains all origin observations and package provenance.
+
+The source-identity key remains stable for the Personal Device Group lifespan
+and is re-enveloped only to authorized devices. Revocation cannot erase key
+material already received by a formerly trusted device; transport authorization
+and new transport epochs prevent that device receiving later packages. A
+suspected source-identity-key compromise requires an explicit identity-migration
+protocol that preserves old-to-new mappings; implementations must not silently
+change existing logical ids. Validation must cover two devices independently
+importing the same Session, exchanging equal packages in both orders,
+conflicting source closures, cloned profiles, and deletion after convergence.
 
 ## Relay Boundary
 
@@ -370,17 +463,18 @@ encrypting new packages to revoked members. Historical package re-encryption,
 retention, and purge need explicit policy and cannot be inferred from credential
 revocation.
 
-An authenticated User deletion request creates a group-authority-signed,
-monotonic tombstone. A tombstone supersedes older content packages, is retained
-until every active device acknowledges it plus any required retention period,
-and remains locally recorded to prevent stale relay or backup replay from
-resurrecting deleted Personal Memory. The Personal Device Group Authority also
-retains an opaque compact deletion floor for the logical Memory identity until
-the entire group is irreversibly purged. A restored device must reconcile that
-signed deletion ledger before materializing restored packages; backup restore
-cannot lower its lifecycle high-water mark. The origin may publish content
-invalidations, but permanent origin loss cannot block a User-authorized personal
-deletion.
+An authenticated User deletion request creates an active-device- or
+recovery-root-authorized, authority-countersigned monotonic tombstone. A
+tombstone supersedes older content packages, is retained until every active
+device acknowledges it plus any required retention period, and remains locally
+recorded to prevent stale relay or backup replay from resurrecting deleted
+Personal Memory. The Personal Device Group Authority also retains an opaque
+compact deletion floor for the logical Memory identity until the entire group
+is irreversibly purged. A restored device must reconcile that signed deletion
+ledger before materializing restored packages; backup restore cannot lower its
+lifecycle high-water mark. The authority cannot issue a valid deletion by
+itself. The origin may publish content invalidations, but permanent origin loss
+cannot block a properly authorized personal deletion.
 
 If an origin device is permanently lost, already replicated closed Sessions
 remain available. Unsynchronized source material is lost with that device.
@@ -402,7 +496,9 @@ and origin-device provenance. Import alone does not grant synchronization
 consent or upload source data. When synchronization policy permits, imported
 Sessions use the same package and idempotency path as live-captured Sessions.
 Hook/import overlap must deduplicate before replication so it cannot create two
-logical Memory lifespans.
+logical Memory lifespans on one origin. Cross-origin duplicate observations use
+the group-stable fingerprint and convergence rules from the consistency model;
+local deduplication is not a substitute for that group-level boundary.
 
 ## Alternative: Designated Personal Hub
 
@@ -451,7 +547,8 @@ Benefits:
 - no permanent privileged personal device;
 - local capture and recall remain available on every device;
 - replacement devices can recover already replicated closed Sessions without
-  transferring Hub authority;
+  transferring Hub authority while an authorized replica or retained relay copy
+  remains available;
 - replicas can converge after offline work;
 - transport deployment is separable from Memory ownership;
 - Project matching can span trusted devices without affecting Team security.
@@ -492,21 +589,26 @@ Acceptance should create or amend implementation work for:
 
 1. stable deployment/device identity and cloned-`KOED_HOME` handling;
 2. secure Desktop and headless credential storage;
-3. one-Local-Personal-Identity Personal Device Association, group membership,
-   Remote Account Links, and key epochs;
-4. versioned Captured Session package closure;
-5. target-decryptable package encryption and source signatures;
+3. one-Local-Personal-Identity Personal Device Association, group governance
+   signing root, auditable membership log, Remote Account Links, and key epochs;
+4. versioned Captured Session package closure and group-stable source
+   fingerprints;
+5. target-decryptable package encryption, immutable source signatures,
+   recipient rewrapping, and replacement-device recovery;
 6. resumable source outbox, relay mailbox, and target inbox;
-7. idempotent local materialization and read-only replica provenance;
-8. anti-entropy cursors and lifecycle records;
+7. idempotent local materialization, cross-origin convergence, conflict
+   quarantine, and read-only replica provenance;
+8. anti-entropy cursors and governance-authorized lifecycle records;
 9. privacy-preserving cross-device Project association;
 10. Desktop device, freshness, processing, and revocation UX;
 11. historical-import integration without implicit upload consent;
-12. two-device and N-device migration, outage, replay, and security validation.
+12. two-device and N-device migration, duplicate import, authority compromise,
+    recovery loss, outage, replay, and security validation.
 
-KOE-264 remains a directed-hosted persistence foundation. Personal Device Sync
-must generalize only proven shared primitives to multiple device replicas and
-per-device cursors; it must not inherit directed hosted identity, recipient-key,
+KOE-264 remains the directed-hosted design foundation, and KOE-338 / PR #290 is
+the implemented directed-hosted baseline. Personal Device Sync must generalize
+only proven shared primitives to multiple device replicas and per-device
+cursors; it must not inherit directed hosted identity, recipient-key,
 package-closure, or deletion semantics unchanged. KOE-269 should own supported
 headless pairing, Remote Account Link enrollment, and recovery surfaces.
 KOE-317 and its children should preserve origin deployment/device provenance and
@@ -520,12 +622,16 @@ Reviewers should explicitly decide:
 - whether V1 requires a relay or may begin with explicitly reachable peers;
 - whether full eligible-session replication to every associated device is
   acceptable for storage, privacy, and bandwidth;
-- how group encryption and matching keys are recovered and distributed without
-  giving the Personal Device Group Authority decryption capability;
+- whether the active-device/user-held-recovery-root governance ceremony and
+  absence of an operator recovery bypass are acceptable product constraints;
+- whether replica re-serving plus bounded relay retention provides sufficient
+  replacement-device recovery without server-side key escrow;
 - how long an encrypted relay retains undelivered packages and acknowledged
   tombstones;
 - which Project alias ambiguities always require confirmation;
 - what mixed-version window is supported during rolling device upgrades;
+- whether conflicting closures for one group-stable source fingerprint should
+  remain quarantined until explicit resolution in V1;
 - how one Local Personal Identity, its device-specific implementation subjects,
   and its explicitly linked remote Users are represented without local
   multi-user setup or automatic account merging.

@@ -168,33 +168,9 @@ _Avoid_: Memory Event, Captured Session, attachment
 
 **Cross-Identity Sync**:
 A policy-controlled sync relationship that keeps one logical memory lifespan
-available across identities or deployments. It includes directed hosted sync and
-Personal Device Sync; those modes have separate identity, key, package, and
-lifecycle contracts.
+available across identities or deployments, such as a personal Koed identity
+and a Team-side personal identity.
 _Avoid_: Fork, import, copy, ownership transfer
-
-**Local Personal Identity**:
-One user-facing Personal Memory profile across a Personal Device Group. Each
-device may implement it with its own local User subject and device key; those
-implementation identities are not locally selectable product Users.
-_Avoid_: Local user account, shared device key, global identity claim
-
-**Personal Device Group**:
-An explicitly approved group of devices representing one Local Personal
-Identity for Personal Device Sync. It is separate from a Team and from remote
-account links.
-_Avoid_: Team, cloud account, device fleet
-
-**Personal Device Sync**:
-Symmetric synchronization of eligible Personal Memory between devices in one
-Personal Device Group.
-_Avoid_: Hosted offload, Team sharing, database replication
-
-**Remote Account Link**:
-An explicit mapping from one Local Personal Identity to one User at one remote
-deployment. Each linked device enrolls its own credential. A link does not
-prove real-world identity equality or grant sync, Team access, or sharing.
-_Avoid_: Automatic account merge, Team Membership, API Token
 
 **Fork/Import**:
 An explicit operation that creates a separate memory lifespan from an existing
@@ -286,13 +262,6 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 - A **Project** may resolve to one **Workspace**
 - **Cross-Identity Sync** keeps one logical memory lifespan available across
   identities or deployments without creating a fork
-- A **Personal Device Group** represents one **Local Personal Identity** across
-  devices; every device keeps its own local subject and device key
-- A **Local Personal Identity** may have zero or more **Remote Account Links**
-- A **Remote Account Link** neither synchronizes Memory nor grants **Team
-  Membership**, **Workspace Access**, or a **Share Grant**
-- **Personal Device Sync** replicates eligible Personal Memory only among
-  devices in one **Personal Device Group**
 - **Fork/Import** creates a separate memory lifespan only when explicitly
   requested
 - **Offload** changes where storage or processing happens; it does not by itself
@@ -369,12 +338,6 @@ _Avoid_: Share revocation, Access Suspension, Project removal
 > **Dev:** "If I share personal memory into my Team identity, is that a fork?"
 > **Domain expert:** "No — use **Cross-Identity Sync** when the same logical memory lifespan should continue across identities."
 
-> **Dev:** "Does linking a remote cloud account merge it with my local identity or share my Memory?"
-> **Domain expert:** "No — a **Remote Account Link** is explicit routing and identity context. Sync and Team visibility require their own policies and grants."
-
-> **Dev:** "If I add a second personal device, does it become another local User?"
-> **Domain expert:** "No — it joins the **Personal Device Group** for one **Local Personal Identity**, while keeping its own device key and local implementation subject."
-
 > **Dev:** "If a Team stops paying, do we delete its memories?"
 > **Domain expert:** "No — use **Access Suspension** or ingestion gating. Retained **Memory** is not deleted."
 
@@ -396,12 +359,6 @@ _Avoid_: Share revocation, Access Suspension, Project removal
   **Share Grant** changes recall authorization, **Cross-Identity Sync** keeps one
   logical memory lifespan available across identities, and **Fork/Import**
   creates a separate memory lifespan.
-- "one local identity" can sound like a copied database User or shared device
-  key; resolved: **Local Personal Identity** is user-facing, while each device
-  retains a distinct local implementation subject and device key.
-- "linking a cloud account" can sound like account merging or sharing; resolved:
-  a **Remote Account Link** is explicit and creates neither **Personal Device
-  Sync** nor Team authority.
 - "Memory Inbox" can sound like a second memory ownership model; resolved:
   **Memory Inbox** adds external **Content Objects** and **Knowledge
   Collections**, while access still flows through grants and policy.
