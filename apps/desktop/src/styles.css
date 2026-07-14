@@ -2252,6 +2252,121 @@ button:disabled {
   margin: -10px 0 0;
 }
 
+.team-backend-settings {
+  background: var(--memory-card);
+  border: 1px solid var(--memory-border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.team-backend-settings > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  list-style: none;
+  padding: 14px 16px;
+}
+
+.team-backend-settings > summary::-webkit-details-marker {
+  display: none;
+}
+
+.team-backend-settings > summary > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.team-backend-settings > summary strong {
+  font-size: 12px;
+}
+
+.team-backend-settings > summary small,
+.team-backend-settings-body > p {
+  color: var(--memory-muted);
+  font-size: 11px;
+}
+
+.team-backend-settings-state {
+  background: #efede8;
+  border-radius: 999px;
+  color: #716c61;
+  font-size: 10px;
+  font-weight: 750;
+  padding: 4px 8px;
+}
+
+.team-backend-settings-state.connected {
+  background: #e8f7ec;
+  color: #27824a;
+}
+
+.team-backend-settings-body {
+  border-top: 1px solid var(--memory-border);
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+
+.team-backend-settings-body > p {
+  line-height: 1.5;
+  margin: 0;
+}
+
+.team-backend-form {
+  display: grid;
+  gap: 7px;
+}
+
+.team-backend-form label {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.team-backend-form-controls {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+}
+
+.team-backend-form input {
+  background: #fff;
+  border: 1px solid var(--memory-border);
+  border-radius: 9px;
+  color: var(--memory-ink);
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.team-backend-connection-details > summary {
+  color: var(--memory-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.team-backend-connection-details pre {
+  background: #f5f2ea;
+  border-radius: 9px;
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 8px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.team-backend-settings > summary:focus-visible,
+.team-backend-connection-details > summary:focus-visible,
+.team-backend-form input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--memory-violet) 65%, white);
+  outline-offset: 1px;
+}
+
 .diagnostic-details {
   background: var(--memory-card);
   border: 1px solid var(--memory-border);
@@ -2435,6 +2550,10 @@ button:disabled {
   .conversation-toolbar {
     align-items: flex-start;
     gap: 8px;
+  }
+
+  .team-backend-form-controls {
+    grid-template-columns: 1fr;
   }
 }
 

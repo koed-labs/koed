@@ -24,11 +24,12 @@ virtualized timeline contract, so long Conversations retain bounded rendering
 and older-event pagination without coupling their navigation shells. Persisted
 Project discovery metadata is merged with captured Memory activity locally, so
 a discovered Project can remain visible before its first Captured Session.
-Desktop Setup includes a Team Backend readiness card. Users paste only a
-plain HTTP(S) Team Backend origin; URLs with credentials, query strings, or
-fragments are rejected before invoking the local bridge. Connect validates
-capabilities, enables local-edge Team route families, starts browser approval,
-and stores reusable credentials only through local secure credential storage.
+Settings includes a collapsed, optional Team Backend setup/readiness
+disclosure. Users paste only a plain HTTP(S) Team Backend origin; URLs with
+credentials, query strings, or fragments are rejected before invoking the
+local bridge. Connect validates capabilities, enables local-edge Team route
+families, starts browser approval, and stores reusable credentials only through
+local secure credential storage.
 Disconnect revokes local credential material and disables Team routing. API
 Tokens remain Personal Memory credentials; they do not authorize Team Workspace
 recall.
@@ -40,8 +41,9 @@ links.
 
 The current client boundary is intentionally local-first. The Desktop selection
 model includes stable Project and Captured Session identity, while backend scope
-and authorization remain API concerns. Team Workspace routing remains separate from Desktop Project selection and
-never encodes credentials in navigation state.
+and authorization remain API concerns. Team Workspace routing remains separate
+from Desktop Project selection and never encodes credentials in navigation
+state.
 
 ## Run
 

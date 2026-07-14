@@ -26,6 +26,10 @@ import {
   type DesktopThreadGroup,
   type DesktopView
 } from "./project-memory-ui.js";
+import {
+  renderTeamBackendSettings,
+  teamBackendStatusCue
+} from "./team-backend-settings.js";
 import type {
   ComponentState,
   ComponentStatus,
@@ -1193,6 +1197,14 @@ const statusCardResultCue = (cardId: StatusCardId): string => {
     return "Waiting for first status";
   }
   const state = statusCardState(cardId);
+  if (cardId === "teamBackend") {
+    const cue = teamBackendStatusCue({
+      healthy: state === "healthy",
+      registered: status.upstreamBackends.registered,
+      validated: status.upstreamBackends.validated
+    });
+    if (cue) return cue;
+  }
   if (
     cardId === "serverPackage" &&
     status.serverPackage?.source === "bundled-fallback"
@@ -1557,6 +1569,14 @@ const renderSettingsPane = (): string => `
       <button type="button" class="secondary" data-startup-action="doctor">Run doctor</button>
       <button type="button" class="secondary" data-startup-action="setup_codex">Setup AI Client</button>
     </div>
+    ${renderTeamBackendSettings({
+      busy: Boolean(busyAction),
+      canDisconnect: Boolean(firstUpstreamBackendId()),
+      connected: (status?.upstreamBackends.registered ?? 0) > 0,
+      detail: statusCardLiveOutput("teamBackend"),
+      status: statusCardResultCue("teamBackend"),
+      urlValue: teamBackendUrlInput
+    })}
     <details class="diagnostic-details"><summary>Advanced diagnostics <span>${statusCards.length} components</span></summary><div class="diagnostic-list">${statusCards.map((card) => `<div class="diagnostic-row"><span>${escapeHtml(card.title)}</span><strong class="${statusCardState(card.id)}">${escapeHtml(statusCardResultCue(card.id))}</strong></div>`).join("")}</div></details>
   </div>
 `;
@@ -1574,7 +1594,7 @@ const dashboardRenderKey = (): string => {
           `${card.id}:${statusCardState(card.id)}:${statusCardResultCue(card.id)}`
       )
       .join("|");
-    return `settings:${status?.state ?? "starting"}:${busyAction ?? ""}:${cardState}`;
+    return `settings:${status?.state ?? "starting"}:${busyAction ?? ""}:${status?.upstreamBackends.registered ?? 0}:${status?.upstreamBackends.validated ?? 0}:${firstUpstreamBackendId() ?? ""}:${cardState}`;
   }
   return "project-workspace";
 };
