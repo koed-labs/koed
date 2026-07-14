@@ -93,6 +93,7 @@ import type {
   LcmNodeForSummarization,
   MemorySourceRepository,
   SemanticMemoryRebuildResult,
+  SourceAiClient,
   SourceRuntime,
   TeamSessionShareGrantRecord,
   Visibility
@@ -352,7 +353,7 @@ const mapLcmGraphThreadRow = (row: {
   thread_id: string;
   thread_name: string;
   session_id: string | null;
-  source_ai_client: SourceRuntime | null;
+  source_ai_client: SourceAiClient | null;
   event_count: string | number;
   invalidated_count: string | number;
   latest_at: Date;
