@@ -2,6 +2,19 @@ import { getEncoding, type Tiktoken } from "js-tiktoken";
 import { z } from "zod";
 
 export {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  LEGACY_LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  normalizeStoredLcmSummary,
+  normalizeStructuredLcmSummary,
+  parseStructuredLcmSummary,
+  structuredLcmSummarySchema
+} from "./lcm-summary-contract.js";
+export type {
+  StoredLcmSummaryInput,
+  StructuredLcmSummary
+} from "./lcm-summary-contract.js";
+
+export {
   assessTeamVisibleSourceBoundary,
   requireAuthorizedTeamVisibleSourceBoundary,
   teamVisibleSourceItemSessionId

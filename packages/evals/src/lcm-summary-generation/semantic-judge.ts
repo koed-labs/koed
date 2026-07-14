@@ -1,11 +1,11 @@
 import { performance } from "node:perf_hooks";
+import type { StructuredLcmSummary } from "@koed/core";
 import {
   loadPrompt,
   renderPrompt,
   runCodexAppServerJsonTask,
   type CodexAppServerRunResult,
-  type LcmSummaryNode,
-  type StructuredLcmSummary
+  type LcmSummaryNode
 } from "@koed/mcp-server";
 import { z } from "zod";
 import { runWithAttempts } from "./attempts.js";

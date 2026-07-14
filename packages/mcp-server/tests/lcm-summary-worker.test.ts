@@ -111,6 +111,90 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
   ]);
 });
 
+it("normalizes output produced by the previous bundled LCM override", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-prompts-"));
+  tempDirs.push(directory);
+  await writeFile(
+    path.join(directory, "lcm-summary-leaf.md"),
+    [
+      "---",
+      "id: lcm-summary-leaf",
+      "version: lcm-codex-summary-json-v2",
+      "---",
+      "You are a private local LCM summarisation worker running under the user's Codex subscription.",
+      "Summarize this captured memory span for a lossless context memory graph.",
+      "",
+      "Requirements:",
+      "- Preserve concrete user requests, decisions, facts, filenames, commands, model names, tool outcomes, errors, and unresolved questions.",
+      "- Put active decisions only in decisions, unresolved or undecided items only in unresolved_questions, stable observations in facts, and durable command/tool results in tool_outcomes.",
+      "- Return only one JSON object matching the required schema; no prose outside JSON."
+    ].join("\n")
+  );
+  vi.stubEnv("KOED_PROMPT_DIR", directory);
+
+  const node: LcmSummaryNode = {
+    id: "00000000-0000-4000-8000-000000000061",
+    visibility: "personal",
+    kind: "leaf",
+    depth: 0,
+    summaryText: "placeholder",
+    sourceTokenEstimate: 20,
+    sourceItems: [
+      {
+        kind: "memory_event",
+        sourceId: "00000000-0000-4000-8000-000000000062",
+        text: "Use scoped device credentials; determine the revocation TTL."
+      }
+    ]
+  };
+  const submissions: Record<string, unknown>[] = [];
+  let listed = false;
+  const client = {
+    async listPendingLcmSummaries() {
+      if (listed) {
+        return { nodes: [] };
+      }
+      listed = true;
+      return { nodes: [node] };
+    },
+    async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+      submissions.push(input);
+      return {};
+    }
+  } as unknown as Parameters<typeof summarizePendingLcmNodes>[0];
+
+  const result = await summarizePendingLcmNodes(client, {
+    limit: 1,
+    config: resolveLcmSummaryWorkerConfig(
+      { MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath() },
+      { maxAttempts: 1, retryDelayMs: 0, timeoutMs: 1_000 }
+    ),
+    runner: async () => ({
+      text: JSON.stringify({
+        schema_version: "lcm-structured-summary-v1",
+        title: "Device credential policy",
+        summary_text: "Use scoped device credentials.",
+        decisions: ["Use scoped device credentials."],
+        unresolved_questions: ["Determine the revocation TTL."]
+      }),
+      model: "codex-app-server:test"
+    })
+  });
+
+  expect(result.submittedCount).toBe(1);
+  expect(submissions[0]).toMatchObject({
+    summaryText:
+      "Use scoped device credentials.\nDetermine the revocation TTL.",
+    summaryStructuredJson: {
+      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+      title: "Device credential policy",
+      summary_text:
+        "Use scoped device credentials.\nDetermine the revocation TTL."
+    },
+    summaryStructuredSchemaVersion: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+  });
+});
+
 describe("LCM summary worker", () => {
   it("uses the structured summary contract for leaf, rollup, partial, and reduce prompts", () => {
     const node: LcmSummaryNode = {

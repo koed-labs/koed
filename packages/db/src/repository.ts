@@ -53,6 +53,7 @@ import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 import {
   codexIdePromptUserText,
   estimateTokens,
+  normalizeStoredLcmSummary,
   resolveTeamWorkspaceAuthorization,
   type LcmSourceItem
 } from "@koed/core";
@@ -3797,51 +3798,17 @@ const mapLcmNodeForSummarization = async (
       provider,
       children.rows
     );
-    const legacySemanticFields = [
-      "user_requests",
-      "decisions",
-      "facts",
-      "files",
-      "commands",
-      "model_names",
-      "tool_outcomes",
-      "errors",
-      "unresolved_questions",
-      "provenance_hints"
-    ] as const;
     const childSummaries = new Map(
       hydratedChildren.map((child) => {
-        const structured = child.summary_structured_json;
-        const title =
-          structured && typeof structured.title === "string"
-            ? structured.title
-            : "Child memory summary";
-        const semanticParts = [child.summary_text];
-        for (const field of legacySemanticFields) {
-          const values = structured?.[field];
-          if (!Array.isArray(values)) {
-            continue;
-          }
-          for (const value of values) {
-            if (
-              typeof value === "string" &&
-              value.trim() &&
-              !semanticParts.includes(value)
-            ) {
-              semanticParts.push(value);
-            }
-          }
-        }
+        const structured = normalizeStoredLcmSummary({
+          summaryText: child.summary_text,
+          structuredSummary: child.summary_structured_json
+        });
         return [
           child.id,
           {
             depth: child.depth,
-            summaryText: JSON.stringify({
-              schema_version:
-                child.summary_structured_schema_version ?? "legacy-lcm-summary",
-              title,
-              summary_text: semanticParts.join("\n")
-            })
+            summaryText: JSON.stringify(structured)
           }
         ] as const;
       })

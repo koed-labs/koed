@@ -2,8 +2,13 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chunkTextForModel, countTokensForModel } from "@koed/core";
-import { z } from "zod";
+import {
+  chunkTextForModel,
+  countTokensForModel,
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  parseStructuredLcmSummary,
+  type StructuredLcmSummary
+} from "@koed/core";
 import {
   CodexAppServerTurnError,
   koedAppServerWorkerDeveloperInstructions,
@@ -22,7 +27,11 @@ import { loadPrompt, type PromptId } from "./prompt-loader.js";
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
-export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION = "lcm-semantic-summary-v2";
+export {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  parseStructuredLcmSummary,
+  type StructuredLcmSummary
+} from "@koed/core";
 
 export interface LcmSummaryWorkerConfig {
   provider: string;
@@ -96,16 +105,6 @@ interface BuiltLcmSummaryPrompt {
   text: string;
   version: string;
 }
-
-const structuredLcmSummarySchema = z
-  .object({
-    schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
-    title: z.string().min(1).max(120),
-    summary_text: z.string().min(1)
-  })
-  .strict();
-
-export type StructuredLcmSummary = z.infer<typeof structuredLcmSummarySchema>;
 
 export type CodexLcmSummaryRunner = (
   prompt: string,
@@ -351,20 +350,6 @@ export const buildLcmSummaryPrompt = (
 
 const promptTokens = (prompt: string, config: LcmSummaryWorkerConfig): number =>
   countTokensForModel(prompt, { model: config.model }).tokens;
-
-const stripJsonFence = (text: string): string => {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  const unfenced = fenced ? (fenced[1] ?? "").trim() : trimmed;
-  const firstBrace = unfenced.indexOf("{");
-  const lastBrace = unfenced.lastIndexOf("}");
-  return firstBrace >= 0 && lastBrace > firstBrace
-    ? unfenced.slice(firstBrace, lastBrace + 1)
-    : unfenced;
-};
-
-export const parseStructuredLcmSummary = (text: string): StructuredLcmSummary =>
-  structuredLcmSummarySchema.parse(JSON.parse(stripJsonFence(text)));
 
 const objectPayload = (payload: unknown): Record<string, unknown> =>
   payload && typeof payload === "object" && !Array.isArray(payload)

@@ -1,4 +1,7 @@
-import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/mcp-server";
+import {
+  parseStructuredLcmSummary,
+  type StructuredLcmSummary
+} from "@koed/core";
 import { z } from "zod";
 
 const memoryStatusSchema = z.enum([
@@ -20,14 +23,6 @@ const memoryAnswerSchema = z
     missing_evidence: z.array(z.string()).default([])
   })
   .passthrough();
-
-const lcmSummarySchema = z
-  .object({
-    schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
-    title: z.string().min(1),
-    summary_text: z.string().min(1)
-  })
-  .strict();
 
 export type WorkerKind = "memory_answer" | "lcm_summary";
 
@@ -209,8 +204,10 @@ export const scoreWorkerJsonRun = (
       details.push(scoreSubstring(answer.answer_markdown, substring));
     }
   } else {
-    const parsedSummary = lcmSummarySchema.safeParse(parsed);
-    if (!parsedSummary.success) {
+    let summary: StructuredLcmSummary;
+    try {
+      summary = parseStructuredLcmSummary(JSON.stringify(parsed));
+    } catch (error) {
       return {
         caseId: run.caseId,
         runIndex: run.runIndex,
@@ -223,12 +220,11 @@ export const scoreWorkerJsonRun = (
             name: "schema",
             score: 0,
             maxScore: 1,
-            reason: parsedSummary.error.message
+            reason: error instanceof Error ? error.message : String(error)
           }
         ]
       };
     }
-    const summary = parsedSummary.data;
     details.push({
       name: "schema",
       score: 3,

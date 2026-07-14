@@ -417,7 +417,10 @@ These values are copied into the AI Client configuration and are not consumed au
   template placeholders fail loudly. Prompt overrides can adjust wording and
   add optional content, but code still owns required placeholders, JSON schemas,
   parser validation, source serialization, authorization, redaction, and
-  retrieval boundaries. MCP builds carry the bundled defaults inside the
+  retrieval boundaries. Output following the previous bundled
+  `lcm-structured-summary-v1` contract is accepted at the LCM worker boundary
+  and immediately normalized to the current minimal semantic-summary contract;
+  unknown output contracts still fail validation. MCP builds carry the bundled defaults inside the
   deployed runtime. `pnpm codex:bootstrap` resolves relative override paths
   against the Koed checkout and writes an absolute directory into the persistent
   MCP environment, so opening Codex from a different Project does not change

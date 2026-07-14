@@ -2,7 +2,7 @@ import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   parseStructuredLcmSummary,
   type StructuredLcmSummary
-} from "@koed/mcp-server";
+} from "@koed/core";
 import type {
   LcmSummaryBenchmarkCase,
   LcmSummaryForbiddenClaim,

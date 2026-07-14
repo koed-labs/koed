@@ -1,4 +1,4 @@
-import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/mcp-server";
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
 import { describe, expect, it } from "vitest";
 import { workerJsonCases } from "./cases.js";
 import {
@@ -60,6 +60,26 @@ describe("worker JSON benchmark scoring", () => {
 
     expect(score.validJson).toBe(true);
     expect(score.score).toBe(score.maxScore);
+  });
+
+  it("uses the production title length constraint", () => {
+    const score = scoreWorkerJsonRun(
+      mustCase("lcm-leaf-preserves-semantic-outcomes"),
+      {
+        caseId: "lcm-leaf-preserves-semantic-outcomes",
+        runIndex: 0,
+        worker: "lcm_summary",
+        output: {
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: "x".repeat(121),
+          summary_text:
+            "The user requested a local Docker rebuild while a UI regression remained unresolved."
+        }
+      }
+    );
+
+    expect(score.validJson).toBe(false);
+    expect(score.score).toBe(0);
   });
 
   it("rejects prose-only output", () => {

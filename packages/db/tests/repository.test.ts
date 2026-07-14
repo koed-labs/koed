@@ -21031,7 +21031,7 @@ describeDb("memory repository visibility", () => {
     expect(
       JSON.parse(candidate?.sourceItems[1]?.text ?? "{}") as unknown
     ).toEqual({
-      schema_version: "lcm-structured-summary-v1",
+      schema_version: "lcm-semantic-summary-v2",
       title: "Legacy child",
       summary_text:
         "Legacy summary text.\nPreserve this legacy decision.\nKeep this legacy question open."
