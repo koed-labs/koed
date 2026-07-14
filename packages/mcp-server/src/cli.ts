@@ -424,7 +424,7 @@ server.registerTool(
       team_workspace_id: uuidSchema
         .optional()
         .describe(
-          "Dogfood Team Workspace UUID for Team-shared Memory recall. Requires backend session or scoped device authorization; API Token-only MCP setups fail closed."
+          "Optional Team Workspace UUID for Team-shared Memory recall. Requires backend session or scoped device authorization; API Token-only MCP setups fail closed."
         ),
       recent_days: z
         .number()

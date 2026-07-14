@@ -360,6 +360,7 @@ describe("MCP memory_answer schema wording", () => {
     expect(memoryAnswerToolDescription).toContain(
       "do not repeat after a clear not-found answer"
     );
+    expect(memoryAnswerToolDescription).not.toMatch(/dogfood/i);
     expect(memoryAnswerToolDescription.length).toBeLessThan(1_000);
   });
 });
