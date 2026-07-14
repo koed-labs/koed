@@ -6,19 +6,26 @@ It wraps the same local `koed-server` command surface, shows service status,
 runs the first-time Codex setup and health checks automatically, and provides
 the local Project, Captured Session, and raw Conversation UI in one window.
 
-The main Desktop experience is Project-first: active local Projects appear
-first, inactive Projects remain available behind an explicit disclosure, and
-opening a Project reveals its Captured Sessions. Opening a Captured Session
-loads its Memory Events directly from the local API and renders the raw
-Conversation inside the Desktop process. Desktop owns the selected Project and
-Captured Session; it does not pass selection or API Token credentials through
-an Explorer URL. Desktop and Explorer share the virtualized timeline contract,
-so long Conversations retain bounded rendering and older-event pagination
-without coupling their navigation shells. Persisted Project discovery metadata
-is merged with captured Memory
-activity locally, so a discovered Project can remain visible before its first
-captured session. Team Backend enrollment stays in setup/readiness; the main
-Projects flow remains Personal Memory-first and works without an upstream.
+The main Desktop experience is Project-first. On wide windows it uses a
+persistent master-detail workspace: active and disclosed inactive local
+Projects remain in the master list while the detail pane shows the selected
+Project's Captured Sessions or a raw Conversation. Narrow windows deliberately
+switch to list → Project → Conversation drill-down, with breadcrumb controls
+returning to the previous level. Project and Captured Session names, activity,
+counts, and Conversation previews form the primary scanning hierarchy; local
+paths, Git identity, discovery provenance, and manual assignment controls sit
+in secondary disclosures.
+
+Opening a Captured Session loads its Memory Events directly from the local API
+and renders the raw Conversation inside the Desktop process. Desktop owns the
+selected Project and Captured Session; it does not pass selection or API Token
+credentials through an Explorer URL. Desktop and Explorer share the
+virtualized timeline contract, so long Conversations retain bounded rendering
+and older-event pagination without coupling their navigation shells. Persisted
+Project discovery metadata is merged with captured Memory activity locally, so
+a discovered Project can remain visible before its first Captured Session.
+Team Backend enrollment stays in setup/readiness; the main Projects flow
+remains Personal Memory-first and works without an upstream.
 Separate Git worktrees keep distinct local records while sharing a device-local
 Git common-directory signal. Current and historical network remote aliases are
 stored only as future matching evidence; Desktop does not yet combine Personal
