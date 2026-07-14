@@ -1,4 +1,4 @@
-import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/mcp-server";
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
 import { describe, expect, it } from "vitest";
 import {
   scoreLcmSummaryRun,
@@ -167,6 +167,18 @@ describe("LCM summary generation scoring", () => {
       )
     ).toMatchObject({ score: 6 });
     expect(score.criticalFailure).toBe(false);
+  });
+
+  it("rejects a conflict summary that drops the explicit-enable condition", () => {
+    const output = {
+      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+      title: "Diagnostic tools",
+      summary_text: "Diagnostic low-level memory tools are hidden."
+    };
+
+    const score = scoreOutput("rollup-conflict-latest-wins", output);
+    expect(score.criticalFailure).toBe(true);
+    expect(score.passed).toBe(false);
   });
 
   it("allows an initial proposal when the later state supersedes it", () => {

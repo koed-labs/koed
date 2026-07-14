@@ -544,7 +544,17 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           id: "diagnostic-hidden",
           label: "diagnostic low-level memory tools stay hidden unless enabled",
           match: {
-            allTerms: ["diagnostic low-level memory tools", "hidden"]
+            allTerms: ["diagnostic low-level memory tools", "hidden"],
+            phraseGroups: [
+              [
+                "unless explicitly enabled",
+                "unless enabled explicitly",
+                "when explicitly enabled",
+                "when enabled explicitly",
+                "if explicitly enabled",
+                "if enabled explicitly"
+              ]
+            ]
           },
           critical: true
         }
