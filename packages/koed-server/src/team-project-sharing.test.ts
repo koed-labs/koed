@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { KoedServerPaths } from "./paths.js";
 import { linkProjectTeamWorkspace } from "./project-team-workspace-links.js";
-import { shareProjectCapturedSession } from "./team-dogfood.js";
+import { shareProjectCapturedSession } from "./team-project-sharing.js";
 
 const pathsFor = (directory: string): KoedServerPaths =>
   ({
@@ -17,7 +17,7 @@ const pathsFor = (directory: string): KoedServerPaths =>
     )
   }) as KoedServerPaths;
 
-describe("Team dogfood sharing", () => {
+describe("Team Project sharing", () => {
   it("fails closed without a Team session cookie", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "koed-share-"));
     const paths = pathsFor(directory);
