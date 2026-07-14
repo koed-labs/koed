@@ -846,6 +846,39 @@ Fork/Import operation is introduced.
    encrypted object storage; package manifests, queue metadata, logs, and
    status surfaces must not contain raw Memory, source payloads, credentials,
    raw DEKs, wrapped DEK ciphertext, or plaintext-equivalent vectors.
+   Upload-session creation validates the exact object class, protocol format
+   and version, package digest, recipient key ID and version, and bounded record
+   count before accepting bytes; incomplete, unknown, unsafe, or out-of-bounds
+   manifest fields fail closed.
+10. In the implemented Captured Session path, a local-personal source writes a
+    durable coalesced outbox signal when canonical Memory changes. It packages
+    only changes after the acknowledged source cursor and encrypts each bounded
+    chunk to the target deployment's active recipient key.
+11. A private VPS, Team Self-Hosted, or Koed-managed cloud target verifies the
+    encrypted upload and queues durable inbox processing. Authorization,
+    deployment identity, target User, policy, consent, version, size, ordering,
+    hash, and replay checks run before content is decrypted or made visible.
+12. Target apply is atomic and idempotent. The target preserves canonical
+    provenance and timestamps, then uses its existing embedding, indexing, LCM,
+    evidence, graph, and invalidation paths. Source vectors and LCM nodes are
+    never trusted or copied as searchable state.
+13. Processing and partially available replicas are excluded from Recall. A
+    target replica becomes recallable only after target processing reaches the
+    package cursor and marks it ready. An overdue `stale_after` deadline removes
+    it from Recall until a later successful sync makes it ready again.
+    The source does not acknowledge the package cursor while the target remains
+    in processing; it polls durable target state without spending transport
+    retry attempts and becomes ready only after target completion.
+14. Sync revocation stops future transfer but leaves existing Share Grant and
+    retention semantics independent. Share Grant revocation removes Team
+    visibility without deleting the synchronized target replica.
+15. Multiple enrolled devices may map to the same User and create their own
+    sync relationships. Re-verification may rotate the recorded proof for the
+    same local/external principal mapping, but every relationship remains bound
+    to the exact device credential that created it. V1 does not replicate one
+    device's local Personal Memory database onto another device; authorized
+    devices recall the hosted replica, while any future pull protocol must
+    define cursor, conflict, deletion, key, retention, and offline behavior.
 
 ## Future Memory Inbox
 

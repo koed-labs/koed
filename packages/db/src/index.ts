@@ -21,6 +21,7 @@ export {
   type CrossIdentitySyncRelationshipRecord,
   type CrossIdentitySyncRepository,
   type DeploymentIdentityRecord,
+  type ExternalSyncUserIdentityRecord,
   type DeploymentProfile,
   type LogicalMemoryRecord,
   type MemoryReplicaRecord,
@@ -31,8 +32,11 @@ export {
   type SyncQueueEntryRecord,
   type SyncQueueEntryState,
   type SyncRelationshipState,
+  type SyncRelationshipSide,
   type SyncReplicaRole,
-  type SyncSourceBoundary
+  type SyncSourceBoundary,
+  SyncIdempotencyConflictError,
+  SyncStateConflictError
 } from "./cross-identity-sync-repository.js";
 export { createDeviceCredentialRepository } from "./device-credential-repository.js";
 export {

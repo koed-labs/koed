@@ -50,6 +50,7 @@ export interface ApiServerConfig {
     updateDebounceMs: number;
     memoryEventUpdateDebounceMs: number;
   };
+  crossIdentitySyncStaleAfterSeconds: number;
   embeddingModel?: string;
   rerankerKey?: string;
   workos: {
@@ -259,6 +260,11 @@ export const resolveApiServerConfig = (
         Math.min(graphUpdateDebounceMs, 100)
       )
     },
+    crossIdentitySyncStaleAfterSeconds: positiveIntEnv(
+      environment,
+      "CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS",
+      86_400
+    ),
     embeddingModel: optionalEnv(environment.EMBEDDING_MODEL),
     rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment)),
     workos: {

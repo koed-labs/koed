@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startKoedServer } from "./start.js";
+import { startKoedServer, stopChildProcess } from "./start.js";
 import type { KoedServerStatus } from "./types.js";
 
 const temps: string[] = [];
@@ -120,6 +120,21 @@ const listen = (port: number): Promise<Server> =>
     server.listen(port, "127.0.0.1", () => resolveListen(server));
   });
 
+const occupyPort = async (port: number): Promise<Server | null> => {
+  try {
+    return await listen(port);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "EADDRINUSE"
+    ) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 const closeServer = (server: Server): Promise<void> =>
   new Promise((resolveClose) => server.close(() => resolveClose()));
 
@@ -130,6 +145,32 @@ afterEach(() => {
 });
 
 describe("start supervisor", () => {
+  it("awaits native child exit without blocking the event loop", async () => {
+    const signals: NodeJS.Signals[] = [];
+    const value = new EventEmitter() as EventEmitter & {
+      pid: number;
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+      kill: (signal?: NodeJS.Signals) => boolean;
+    };
+    value.pid = 123;
+    value.exitCode = null;
+    value.signalCode = null;
+    value.kill = (signal = "SIGTERM") => {
+      signals.push(signal);
+      setImmediate(() => {
+        value.signalCode = signal;
+        value.emit("exit", null, signal);
+      });
+      return true;
+    };
+
+    await expect(
+      stopChildProcess(value as never, 100)
+    ).resolves.toBeUndefined();
+    expect(signals).toEqual(["SIGTERM"]);
+  });
+
   it("requires explicit external service URLs without localhost fallbacks", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];
@@ -226,7 +267,13 @@ describe("start supervisor", () => {
     ).toContain("0.0.0.0");
     expect(
       spawned
-        .filter((entry) => entry.args.includes("start"))
+        .filter((entry) =>
+          entry.args.some(
+            (arg) =>
+              arg.endsWith("apps/api/dist/index.js") ||
+              arg.endsWith("apps/worker/dist/index.js")
+          )
+        )
         .map((entry) => entry.env?.EMBEDDING_SERVICE_TOKEN)
     ).toEqual(["operator-token", "operator-token"]);
   });
@@ -318,7 +365,7 @@ describe("start supervisor", () => {
       resolve(root, "models", "Qwen3-Embedding-0.6B-Q8_0.gguf")
     );
     expect(spawned.map((entry) => entry.args.join(" "))).toContain(
-      "--filter @koed/worker start"
+      resolve(root, "apps/worker/dist/index.js")
     );
     const runtime = JSON.parse(
       readFileSync(resolve(root, "run/koed-server.json"), "utf8")
@@ -539,14 +586,14 @@ describe("start supervisor", () => {
     });
 
     expect(spawned.map((entry) => entry.args.join(" "))).toContain(
-      "--filter @koed/worker start"
+      resolve(root, "apps/worker/dist/index.js")
     );
   });
 
   it("allocates and persists free local ports for Desktop bundled-local startup", async () => {
     const root = tempDir();
     createNativeResources(root);
-    const occupiedApi = await listen(43300);
+    const occupiedApi = await occupyPort(43300);
     const spawned: Array<{ env?: NodeJS.ProcessEnv }> = [];
 
     try {
@@ -589,7 +636,9 @@ describe("start supervisor", () => {
         collectStatus: async () => healthyStatus(root)
       });
     } finally {
-      await closeServer(occupiedApi);
+      if (occupiedApi) {
+        await closeServer(occupiedApi);
+      }
     }
 
     const ports = JSON.parse(
@@ -709,9 +758,9 @@ describe("start supervisor", () => {
       false
     );
     expect(spawned.map((entry) => entry.args.join(" "))).toEqual([
-      "--filter @koed/api start",
-      "--filter @koed/worker start",
-      "--filter @koed/explorer exec vite preview --host 127.0.0.1 --port 5174"
+      resolve(root, "apps/api/dist/index.js"),
+      resolve(root, "apps/worker/dist/index.js"),
+      `${resolve(root, "node_modules/vite/bin/vite.js")} preview --host 127.0.0.1 --port 5174`
     ]);
   });
 });

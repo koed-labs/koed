@@ -817,7 +817,6 @@ const admin = new Client({
   connectionString: withDatabase(databaseUrl, adminDatabase)
 });
 const targetUrl = withDatabase(databaseUrl, targetDatabase);
-
 await admin.connect();
 
 try {
@@ -842,6 +841,7 @@ try {
       throw unexpectedPoolError;
     }
   };
+  let syncUpgradeFixture;
 
   try {
     const preAppServerMigrationFolder =
@@ -854,8 +854,31 @@ try {
         migrationsFolder: preAppServerMigrationFolder
       });
       const fixture = await seedPopulatedPreAppServerFixture(pool, provider);
+      const legacyUser = await pool.query(
+        "insert into users (email,display_name) values ($1,'Migration fixture') returning id",
+        [`migration-${process.pid}@example.test`]
+      );
+      await pool.query(
+        "insert into deployment_identities (owner_user_id,deployment_key,profile) values ($1,'legacy-local','local_personal')",
+        [legacyUser.rows[0].id]
+      );
       await runDbMigrations(pool);
       await verifyPopulatedAppServerUpgrade(pool, provider, fixture);
+      const upgradeResult = await pool.query(
+        `select
+           (select count(*)::int from users where id=$1) as preserved_users,
+           (select count(*)::int from deployment_identities) as legacy_sync_rows`,
+        [legacyUser.rows[0].id]
+      );
+      if (
+        upgradeResult.rows[0]?.preserved_users !== 1 ||
+        upgradeResult.rows[0]?.legacy_sync_rows !== 0
+      ) {
+        throw new Error(
+          "Cross-Identity Sync migration did not replace legacy sync identity rows safely"
+        );
+      }
+      syncUpgradeFixture = upgradeResult.rows[0];
     } finally {
       await rm(preAppServerMigrationFolder, { recursive: true, force: true });
     }
@@ -898,14 +921,17 @@ try {
         "Migration smoke test did not create drizzle.__drizzle_migrations"
       );
     }
-
     console.log(
       JSON.stringify(
         {
           database: targetDatabase,
           latestMigration: actualLatestMigrationTimestamp.toString(),
           usersTable: tables.users_table,
-          migrationsTable: tables.migrations_table
+          migrationsTable: tables.migrations_table,
+          upgradeFixture: {
+            preservedUsers: syncUpgradeFixture?.preserved_users,
+            legacySyncRows: syncUpgradeFixture?.legacy_sync_rows
+          }
         },
         null,
         2

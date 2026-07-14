@@ -1057,6 +1057,12 @@ const loadAndValidateConversationItemSession = async (input: {
       code: "conversation_session_not_found"
     });
   }
+  if (session.metadata?.syncReplica === true) {
+    throw Object.assign(new Error("Synchronized replica is read-only"), {
+      statusCode: 409,
+      code: "synchronized_replica_read_only"
+    });
+  }
 
   const expectedThreadIds = new Set(
     [session.external_thread_id, session.external_session_id].filter(

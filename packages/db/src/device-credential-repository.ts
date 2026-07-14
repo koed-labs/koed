@@ -20,6 +20,9 @@ const mapChallengeRecord = (row: {
   id: string;
   upstreamBackendId: string;
   deviceInstanceId: string | null;
+  rotationLineageId: string | null;
+  rotationOwnerUserId: string | null;
+  rotationCredentialId: string | null;
   deviceLabel: string | null;
   requestedOperationFamilies: string[];
   metadata: Record<string, unknown>;
@@ -32,6 +35,9 @@ const mapChallengeRecord = (row: {
   id: row.id,
   upstreamBackendId: row.upstreamBackendId,
   deviceInstanceId: row.deviceInstanceId,
+  rotationLineageId: row.rotationLineageId,
+  rotationOwnerUserId: row.rotationOwnerUserId,
+  rotationCredentialId: row.rotationCredentialId,
   deviceLabel: row.deviceLabel,
   requestedOperationFamilies: row.requestedOperationFamilies,
   metadata: row.metadata,
@@ -49,6 +55,7 @@ const mapDeviceCredentialRecord = (row: {
   credentialKeyId: string;
   upstreamBackendId: string;
   deviceInstanceId: string;
+  lineageId: string;
   deviceLabel: string | null;
   credentialVersion: number;
   verifierKind: "secret_hash" | "public_key_jwk";
@@ -69,6 +76,7 @@ const mapDeviceCredentialRecord = (row: {
   credentialKeyId: row.credentialKeyId,
   upstreamBackendId: row.upstreamBackendId,
   deviceInstanceId: row.deviceInstanceId,
+  lineageId: row.lineageId,
   deviceLabel: row.deviceLabel,
   credentialVersion: row.credentialVersion,
   verifierKind: row.verifierKind,
@@ -136,6 +144,9 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
     challengeHash: string;
     upstreamBackendId: string;
     deviceInstanceId?: string | null;
+    rotationLineageId?: string | null;
+    rotationOwnerUserId?: string | null;
+    rotationCredentialId?: string | null;
     deviceLabel?: string | null;
     requestedOperationFamilies?: string[];
     metadata?: Record<string, unknown>;
@@ -147,6 +158,9 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         challengeHash: input.challengeHash,
         upstreamBackendId: input.upstreamBackendId,
         deviceInstanceId: input.deviceInstanceId ?? null,
+        rotationLineageId: input.rotationLineageId ?? null,
+        rotationOwnerUserId: input.rotationOwnerUserId ?? null,
+        rotationCredentialId: input.rotationCredentialId ?? null,
         deviceLabel: input.deviceLabel ?? null,
         requestedOperationFamilies: input.requestedOperationFamilies ?? [],
         metadata: input.metadata ?? {},
@@ -193,6 +207,10 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .where(
           and(
             eq(deviceEnrollmentChallenges.challengeHash, input.challengeHash),
+            or(
+              isNull(deviceEnrollmentChallenges.rotationOwnerUserId),
+              eq(deviceEnrollmentChallenges.rotationOwnerUserId, actor.userId)
+            ),
             isNull(deviceEnrollmentChallenges.redeemedAt),
             gt(deviceEnrollmentChallenges.expiresAt, sql`now()`)
           )
@@ -213,6 +231,35 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`${actor.userId}:${challenge.upstreamBackendId}:${deviceInstanceId}`}, 0))`
       );
+      const activeRows = await tx
+        .select({
+          id: deviceCredentials.id,
+          lineageId: deviceCredentials.lineageId
+        })
+        .from(deviceCredentials)
+        .where(
+          and(
+            eq(deviceCredentials.ownerUserId, actor.userId),
+            eq(
+              deviceCredentials.upstreamBackendId,
+              challenge.upstreamBackendId
+            ),
+            eq(deviceCredentials.deviceInstanceId, deviceInstanceId),
+            isNull(deviceCredentials.revokedAt)
+          )
+        );
+      if (
+        challenge.rotationLineageId
+          ? activeRows.length !== 1 ||
+            activeRows[0]?.lineageId !== challenge.rotationLineageId ||
+            activeRows[0]?.id !== challenge.rotationCredentialId
+          : activeRows.length > 0
+      ) {
+        throw Object.assign(
+          new Error("Active device credential requires authenticated rotation"),
+          { statusCode: 409 }
+        );
+      }
       const supersededRows = await tx
         .update(deviceCredentials)
         .set({
@@ -229,6 +276,12 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
               challenge.upstreamBackendId
             ),
             eq(deviceCredentials.deviceInstanceId, deviceInstanceId),
+            ...(challenge.rotationLineageId
+              ? [
+                  eq(deviceCredentials.lineageId, challenge.rotationLineageId),
+                  eq(deviceCredentials.id, challenge.rotationCredentialId!)
+                ]
+              : []),
             isNull(deviceCredentials.revokedAt)
           )
         )
@@ -242,6 +295,9 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
           credentialKeyId,
           upstreamBackendId: challenge.upstreamBackendId,
           deviceInstanceId,
+          ...(challenge.rotationLineageId
+            ? { lineageId: challenge.rotationLineageId }
+            : {}),
           deviceLabel: challenge.deviceLabel,
           verifierKind: input.verifierKind,
           verifierHash:
@@ -320,6 +376,10 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .where(
           and(
             eq(deviceEnrollmentChallenges.id, challengeId),
+            or(
+              isNull(deviceEnrollmentChallenges.rotationOwnerUserId),
+              eq(deviceEnrollmentChallenges.rotationOwnerUserId, actor.userId)
+            ),
             isNull(deviceEnrollmentChallenges.redeemedAt),
             gt(deviceEnrollmentChallenges.expiresAt, sql`now()`)
           )
@@ -340,6 +400,35 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`${actor.userId}:${challenge.upstreamBackendId}:${deviceInstanceId}`}, 0))`
       );
+      const activeRows = await tx
+        .select({
+          id: deviceCredentials.id,
+          lineageId: deviceCredentials.lineageId
+        })
+        .from(deviceCredentials)
+        .where(
+          and(
+            eq(deviceCredentials.ownerUserId, actor.userId),
+            eq(
+              deviceCredentials.upstreamBackendId,
+              challenge.upstreamBackendId
+            ),
+            eq(deviceCredentials.deviceInstanceId, deviceInstanceId),
+            isNull(deviceCredentials.revokedAt)
+          )
+        );
+      if (
+        challenge.rotationLineageId
+          ? activeRows.length !== 1 ||
+            activeRows[0]?.lineageId !== challenge.rotationLineageId ||
+            activeRows[0]?.id !== challenge.rotationCredentialId
+          : activeRows.length > 0
+      ) {
+        throw Object.assign(
+          new Error("Active device credential requires authenticated rotation"),
+          { statusCode: 409 }
+        );
+      }
       const supersededRows = await tx
         .update(deviceCredentials)
         .set({
@@ -356,6 +445,12 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
               challenge.upstreamBackendId
             ),
             eq(deviceCredentials.deviceInstanceId, deviceInstanceId),
+            ...(challenge.rotationLineageId
+              ? [
+                  eq(deviceCredentials.lineageId, challenge.rotationLineageId),
+                  eq(deviceCredentials.id, challenge.rotationCredentialId!)
+                ]
+              : []),
             isNull(deviceCredentials.revokedAt)
           )
         )
@@ -369,6 +464,9 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
           credentialKeyId,
           upstreamBackendId: challenge.upstreamBackendId,
           deviceInstanceId,
+          ...(challenge.rotationLineageId
+            ? { lineageId: challenge.rotationLineageId }
+            : {}),
           deviceLabel: challenge.deviceLabel,
           verifierKind: input.verifierKind,
           verifierHash:
@@ -434,6 +532,10 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .where(
           and(
             eq(deviceEnrollmentChallenges.id, challengeId),
+            or(
+              isNull(deviceEnrollmentChallenges.rotationOwnerUserId),
+              eq(deviceEnrollmentChallenges.rotationOwnerUserId, actor.userId)
+            ),
             isNull(deviceEnrollmentChallenges.redeemedAt),
             gt(deviceEnrollmentChallenges.expiresAt, sql`now()`)
           )
@@ -458,6 +560,10 @@ export const createDeviceCredentialRepository = (db: KoedDb) => ({
         .where(
           and(
             eq(deviceEnrollmentChallenges.id, challengeId),
+            or(
+              isNull(deviceEnrollmentChallenges.rotationOwnerUserId),
+              eq(deviceEnrollmentChallenges.rotationOwnerUserId, actor.userId)
+            ),
             isNull(deviceEnrollmentChallenges.redeemedAt)
           )
         )

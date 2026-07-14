@@ -111,6 +111,14 @@ export const syncReplicaRole = pgEnum("sync_replica_role", [
   "source",
   "target"
 ]);
+export const syncDeploymentLocality = pgEnum("sync_deployment_locality", [
+  "local",
+  "remote"
+]);
+export const syncRelationshipSide = pgEnum("sync_relationship_side", [
+  "source",
+  "target"
+]);
 export const syncMode = pgEnum("sync_mode", ["live", "offload"]);
 export const syncRelationshipState = pgEnum("sync_relationship_state", [
   "created",
@@ -121,6 +129,7 @@ export const syncRelationshipState = pgEnum("sync_relationship_state", [
   "partially_available",
   "ready",
   "stale",
+  "paused",
   "failed",
   "revoked",
   "purge_pending"
@@ -140,6 +149,10 @@ export const syncQueueEntryState = pgEnum("sync_queue_entry_state", [
   "completed",
   "failed",
   "cancelled"
+]);
+export const syncChangeOperation = pgEnum("sync_change_operation", [
+  "upsert",
+  "delete"
 ]);
 
 export const users = pgTable("users", {
@@ -1429,6 +1442,15 @@ export const deviceEnrollmentChallenges = pgTable(
     challengeHash: text("challenge_hash").notNull().unique(),
     upstreamBackendId: text("upstream_backend_id").notNull(),
     deviceInstanceId: text("device_instance_id"),
+    rotationLineageId: uuid("rotation_lineage_id"),
+    rotationOwnerUserId: uuid("rotation_owner_user_id").references(
+      () => users.id,
+      { onDelete: "cascade" }
+    ),
+    rotationCredentialId: uuid("rotation_credential_id").references(
+      (): AnyPgColumn => deviceCredentials.id,
+      { onDelete: "cascade" }
+    ),
     deviceLabel: text("device_label"),
     requestedOperationFamilies: text("requested_operation_families")
       .array()
@@ -1471,6 +1493,7 @@ export const deviceCredentials = pgTable(
     credentialKeyId: text("credential_key_id").notNull().unique(),
     upstreamBackendId: text("upstream_backend_id").notNull(),
     deviceInstanceId: text("device_instance_id").notNull(),
+    lineageId: uuid("lineage_id").notNull().defaultRandom(),
     deviceLabel: text("device_label"),
     credentialVersion: integer("credential_version").notNull().default(1),
     verifierKind: deviceCredentialVerifierKind("verifier_kind").notNull(),
@@ -1501,6 +1524,9 @@ export const deviceCredentials = pgTable(
       .where(sql`${table.revokedAt} is null`),
     index("device_credentials_owner_upstream_idx")
       .on(table.ownerUserId, table.upstreamBackendId, table.createdAt.desc())
+      .where(sql`${table.revokedAt} is null`),
+    index("device_credentials_active_lineage_idx")
+      .on(table.ownerUserId, table.upstreamBackendId, table.lineageId)
       .where(sql`${table.revokedAt} is null`),
     uniqueIndex("device_credentials_active_device_unique")
       .on(table.ownerUserId, table.upstreamBackendId, table.deviceInstanceId)
@@ -1956,10 +1982,8 @@ export const deploymentIdentities = pgTable(
   "deployment_identities",
   {
     id: id(),
-    ownerUserId: uuid("owner_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    deploymentKey: text("deployment_key").notNull(),
+    protocolDeploymentId: uuid("protocol_deployment_id").notNull(),
+    locality: syncDeploymentLocality("locality").notNull(),
     profile: deploymentProfile("profile").notNull(),
     displayName: text("display_name"),
     baseUrl: text("base_url"),
@@ -1974,18 +1998,87 @@ export const deploymentIdentities = pgTable(
     disabledReason: text("disabled_reason")
   },
   (table) => [
-    unique("deployment_identities_owner_key_unique").on(
-      table.ownerUserId,
-      table.deploymentKey
+    unique("deployment_identities_protocol_id_unique").on(
+      table.protocolDeploymentId
     ),
-    index("deployment_identities_owner_profile_idx").on(
-      table.ownerUserId,
+    uniqueIndex("deployment_identities_one_local_unique")
+      .on(table.locality)
+      .where(sql`${table.locality} = 'local'`),
+    index("deployment_identities_profile_idx").on(
       table.profile,
       table.createdAt.desc()
+    )
+  ]
+);
+
+export const syncExternalUserIdentities = pgTable(
+  "sync_external_user_identities",
+  {
+    id: id(),
+    deploymentIdentityId: uuid("deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, { onDelete: "cascade" }),
+    externalSubjectId: text("external_subject_id").notNull(),
+    status: text("status").notNull().default("active"),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("sync_external_user_identity_subject_unique").on(
+      table.deploymentIdentityId,
+      table.externalSubjectId
+    ),
+    unique("sync_external_user_identity_id_deployment_unique").on(
+      table.id,
+      table.deploymentIdentityId
     ),
     check(
-      "deployment_identities_deployment_key_not_empty_check",
-      sql`length(trim(${table.deploymentKey})) > 0`
+      "sync_external_user_identity_subject_not_empty_check",
+      sql`length(trim(${table.externalSubjectId})) > 0`
+    ),
+    check(
+      "sync_external_user_identity_status_check",
+      sql`${table.status} in ('active', 'revoked')`
+    )
+  ]
+);
+
+export const syncPrincipalLinks = pgTable(
+  "sync_principal_links",
+  {
+    id: id(),
+    localUserId: uuid("local_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    externalUserIdentityId: uuid("external_user_identity_id")
+      .notNull()
+      .references(() => syncExternalUserIdentities.id, {
+        onDelete: "cascade"
+      }),
+    proofKind: text("proof_kind").notNull(),
+    proofReference: text("proof_reference").notNull(),
+    createdAt: now(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("sync_principal_links_external_unique").on(
+      table.externalUserIdentityId
+    ),
+    unique("sync_principal_links_local_external_unique").on(
+      table.localUserId,
+      table.externalUserIdentityId
+    ),
+    unique("sync_principal_links_proof_unique").on(
+      table.proofKind,
+      table.proofReference
+    ),
+    check(
+      "sync_principal_links_proof_not_empty_check",
+      sql`length(trim(${table.proofKind})) > 0 and length(trim(${table.proofReference})) > 0`
     )
   ]
 );
@@ -1997,9 +2090,13 @@ export const logicalMemories = pgTable(
     ownerUserId: uuid("owner_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    originDeploymentIdentityId: uuid("origin_deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
-    sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
-      onDelete: "cascade"
+    originSourceId: text("origin_source_id").notNull(),
+    localSessionId: uuid("local_session_id").references(() => sessions.id, {
+      onDelete: "set null"
     }),
     logicalKey: text("logical_key").notNull(),
     lineage: jsonb("lineage")
@@ -2020,9 +2117,14 @@ export const logicalMemories = pgTable(
       table.ownerUserId,
       table.logicalKey
     ),
+    unique("logical_memories_origin_unique").on(
+      table.originDeploymentIdentityId,
+      table.sourceBoundary,
+      table.originSourceId
+    ),
     uniqueIndex("logical_memories_owner_session_unique")
-      .on(table.ownerUserId, table.sourceSessionId)
-      .where(sql`${table.sourceSessionId} is not null`),
+      .on(table.ownerUserId, table.localSessionId)
+      .where(sql`${table.localSessionId} is not null`),
     index("logical_memories_owner_boundary_idx").on(
       table.ownerUserId,
       table.sourceBoundary,
@@ -2030,7 +2132,7 @@ export const logicalMemories = pgTable(
     ),
     check(
       "logical_memories_captured_session_source_check",
-      sql`${table.sourceBoundary} <> 'captured_session' or ${table.sourceSessionId} is not null`
+      sql`${table.sourceBoundary} <> 'captured_session' or length(trim(${table.originSourceId})) > 0`
     ),
     check(
       "logical_memories_logical_key_not_empty_check",
@@ -2054,15 +2156,11 @@ export const memoryReplicas = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     replicaRole: syncReplicaRole("replica_role").notNull(),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
-    sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
-      onDelete: "cascade"
+    localSessionId: uuid("local_session_id").references(() => sessions.id, {
+      onDelete: "set null"
     }),
     externalReplicaId: text("external_replica_id"),
     freshnessStatus: text("freshness_status").notNull().default("unknown"),
-    cursorManifest: jsonb("cursor_manifest")
-      .$type<Record<string, unknown>>()
-      .notNull()
-      .default(sql`'{}'::jsonb`),
     policyManifest: jsonb("policy_manifest")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -2080,6 +2178,11 @@ export const memoryReplicas = pgTable(
       table.deploymentIdentityId,
       table.replicaRole
     ),
+    unique("memory_replicas_identity_consistency_unique").on(
+      table.id,
+      table.logicalMemoryId,
+      table.ownerUserId
+    ),
     uniqueIndex("memory_replicas_external_replica_unique")
       .on(table.deploymentIdentityId, table.externalReplicaId)
       .where(sql`${table.externalReplicaId} is not null`),
@@ -2090,7 +2193,7 @@ export const memoryReplicas = pgTable(
     ),
     check(
       "memory_replicas_captured_session_source_check",
-      sql`${table.sourceBoundary} <> 'captured_session' or ${table.sourceSessionId} is not null`
+      sql`${table.sourceBoundary} <> 'captured_session' or ${table.localSessionId} is not null`
     ),
     check(
       "memory_replicas_freshness_status_check",
@@ -2106,34 +2209,25 @@ export const crossIdentitySyncRelationships = pgTable(
     logicalMemoryId: uuid("logical_memory_id")
       .notNull()
       .references(() => logicalMemories.id, { onDelete: "cascade" }),
-    sourceReplicaId: uuid("source_replica_id")
+    side: syncRelationshipSide("side").notNull(),
+    localReplicaId: uuid("local_replica_id").notNull(),
+    localUserId: uuid("local_user_id")
       .notNull()
-      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
-    targetReplicaId: uuid("target_replica_id")
-      .notNull()
-      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
-    sourceDeploymentIdentityId: uuid("source_deployment_identity_id")
+      .references(() => users.id, { onDelete: "restrict" }),
+    deviceCredentialId: uuid("device_credential_id").references(
+      () => deviceCredentials.id,
+      { onDelete: "restrict" }
+    ),
+    remoteDeploymentIdentityId: uuid("remote_deployment_identity_id")
       .notNull()
       .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
-    targetDeploymentIdentityId: uuid("target_deployment_identity_id")
-      .notNull()
-      .references(() => deploymentIdentities.id, { onDelete: "restrict" }),
-    sourceOwnerUserId: uuid("source_owner_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    targetUserId: uuid("target_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    targetTeamId: uuid("target_team_id").references(() => teams.id, {
-      onDelete: "set null"
-    }),
+    remoteUserIdentityId: uuid("remote_user_identity_id").notNull(),
+    remoteReplicaId: uuid("remote_replica_id"),
     sourceBoundary: syncSourceBoundary("source_boundary").notNull(),
-    sourceSessionId: uuid("source_session_id").references(() => sessions.id, {
-      onDelete: "cascade"
-    }),
     syncMode: syncMode("sync_mode").notNull().default("live"),
     state: syncRelationshipState("state").notNull().default("created"),
     idempotencyKey: text("idempotency_key").notNull(),
+    creationRequestHash: text("creation_request_hash").notNull(),
     policyManifest: jsonb("policy_manifest")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -2142,50 +2236,136 @@ export const crossIdentitySyncRelationships = pgTable(
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
-    cursorManifest: jsonb("cursor_manifest")
-      .$type<Record<string, unknown>>()
+    sourceCursor: bigint("source_cursor", { mode: "number" })
       .notNull()
-      .default(sql`'{}'::jsonb`),
+      .default(0),
+    targetProcessingCursor: bigint("target_processing_cursor", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    packageSequence: bigint("package_sequence", { mode: "number" })
+      .notNull()
+      .default(0),
+    staleAfter: timestamp("stale_after", { withTimezone: true }),
     createdAt: now(),
     updatedAt: updatedNow(),
     lastPackageId: uuid("last_package_id"),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     failedAt: timestamp("failed_at", { withTimezone: true }),
-    lastErrorMessage: text("last_error_message"),
+    lastErrorClass: text("last_error_class"),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
       onDelete: "set null"
     }),
-    revocationReason: text("revocation_reason")
+    revocationReason: text("revocation_reason"),
+    revocationId: uuid("revocation_id"),
+    revocationSequence: bigint("revocation_sequence", { mode: "number" }),
+    revocationOrigin: syncRelationshipSide("revocation_origin")
   },
   (table) => [
-    unique("cross_identity_sync_relationships_owner_idempotency_unique").on(
-      table.sourceOwnerUserId,
+    unique("cross_identity_sync_relationships_local_idempotency_unique").on(
+      table.localUserId,
+      table.remoteDeploymentIdentityId,
       table.idempotencyKey
     ),
-    uniqueIndex("cross_identity_sync_relationships_active_replicas_unique")
-      .on(table.sourceReplicaId, table.targetReplicaId, table.syncMode)
+    uniqueIndex("cross_identity_sync_relationships_active_replica_unique")
+      .on(
+        table.localReplicaId,
+        table.remoteDeploymentIdentityId,
+        table.syncMode
+      )
       .where(sql`${table.revokedAt} is null`),
-    index("cross_identity_sync_relationships_source_owner_idx").on(
-      table.sourceOwnerUserId,
-      table.updatedAt.desc()
-    ),
-    index("cross_identity_sync_relationships_target_user_idx").on(
-      table.targetUserId,
+    index("cross_identity_sync_relationships_local_user_idx").on(
+      table.localUserId,
       table.updatedAt.desc()
     ),
     index("cross_identity_sync_relationships_state_idx").on(
       table.state,
       table.updatedAt.desc()
     ),
+    index("cross_identity_sync_relationships_device_credential_idx")
+      .on(table.deviceCredentialId, table.updatedAt.desc())
+      .where(sql`${table.deviceCredentialId} is not null`),
     check(
       "cross_identity_sync_relationships_captured_session_source_check",
-      sql`${table.sourceBoundary} <> 'captured_session' or ${table.sourceSessionId} is not null`
+      sql`${table.sourceBoundary} = 'captured_session'`
     ),
     check(
       "cross_identity_sync_relationships_idempotency_key_not_empty_check",
       sql`length(trim(${table.idempotencyKey})) > 0`
-    )
+    ),
+    check(
+      "cross_identity_sync_relationships_request_hash_check",
+      sql`length(${table.creationRequestHash}) = 64`
+    ),
+    check(
+      "cross_identity_sync_relationships_cursor_check",
+      sql`${table.sourceCursor} >= 0 and ${table.targetProcessingCursor} >= 0 and ${table.packageSequence} >= 0`
+    ),
+    check(
+      "cross_identity_sync_relationships_credential_side_check",
+      sql`(${table.side} = 'source' and ${table.deviceCredentialId} is null) or (${table.side} = 'target' and ${table.deviceCredentialId} is not null)`
+    ),
+    foreignKey({
+      columns: [table.localReplicaId, table.logicalMemoryId, table.localUserId],
+      foreignColumns: [
+        memoryReplicas.id,
+        memoryReplicas.logicalMemoryId,
+        memoryReplicas.ownerUserId
+      ],
+      name: "cross_identity_sync_relationships_local_replica_fk"
+    }),
+    foreignKey({
+      columns: [table.remoteUserIdentityId, table.remoteDeploymentIdentityId],
+      foreignColumns: [
+        syncExternalUserIdentities.id,
+        syncExternalUserIdentities.deploymentIdentityId
+      ],
+      name: "cross_identity_sync_relationships_remote_user_fk"
+    })
+  ]
+);
+
+export const syncServiceHeartbeats = pgTable("sync_service_heartbeats", {
+  serviceName: text("service_name").primaryKey(),
+  instanceId: uuid("instance_id").notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: updatedNow()
+});
+
+export const syncRecipientKeys = pgTable(
+  "sync_recipient_keys",
+  {
+    id: id(),
+    deploymentIdentityId: uuid("deployment_identity_id")
+      .notNull()
+      .references(() => deploymentIdentities.id, { onDelete: "cascade" }),
+    keyId: text("key_id").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    algorithm: text("algorithm").notNull(),
+    publicJwk: jsonb("public_jwk").$type<Record<string, unknown>>().notNull(),
+    encryptedPrivateKey: jsonb("encrypted_private_key")
+      .$type<EncryptedPayloadEnvelope>()
+      .notNull(),
+    createdAt: now(),
+    activatedAt: timestamp("activated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    retiredAt: timestamp("retired_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("sync_recipient_keys_key_version_unique").on(
+      table.deploymentIdentityId,
+      table.keyId,
+      table.keyVersion
+    ),
+    uniqueIndex("sync_recipient_keys_active_unique")
+      .on(table.deploymentIdentityId)
+      .where(sql`${table.retiredAt} is null`),
+    check("sync_recipient_keys_version_check", sql`${table.keyVersion} > 0`)
   ]
 );
 
@@ -2198,27 +2378,24 @@ export const syncPackageUploadSessions = pgTable(
       .references(() => crossIdentitySyncRelationships.id, {
         onDelete: "cascade"
       }),
-    logicalMemoryId: uuid("logical_memory_id")
-      .notNull()
-      .references(() => logicalMemories.id, { onDelete: "cascade" }),
-    sourceReplicaId: uuid("source_replica_id")
-      .notNull()
-      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
-    targetReplicaId: uuid("target_replica_id")
-      .notNull()
-      .references(() => memoryReplicas.id, { onDelete: "cascade" }),
+    protocolPackageId: uuid("protocol_package_id").notNull(),
     state: syncPackageState("state").notNull().default("created"),
     packageFormatVersion: integer("package_format_version")
       .notNull()
       .default(1),
+    requestHash: text("request_hash").notNull(),
     packageManifest: jsonb("package_manifest")
       .$type<Record<string, unknown>>()
       .notNull(),
     packageChecksum: text("package_checksum").notNull(),
+    sourceSequence: bigint("source_sequence", { mode: "number" }).notNull(),
+    fromCursor: bigint("from_cursor", { mode: "number" }).notNull(),
+    toCursor: bigint("to_cursor", { mode: "number" }).notNull(),
     totalBytes: bigint("total_bytes", { mode: "number" }).notNull().default(0),
     uploadedBytes: bigint("uploaded_bytes", { mode: "number" })
       .notNull()
       .default(0),
+    expectedChunkCount: integer("expected_chunk_count").notNull(),
     chunkCount: integer("chunk_count").notNull().default(0),
     verifiedChunkCount: integer("verified_chunk_count").notNull().default(0),
     idempotencyKey: text("idempotency_key").notNull(),
@@ -2234,6 +2411,17 @@ export const syncPackageUploadSessions = pgTable(
     unique("sync_package_upload_sessions_idempotency_unique").on(
       table.syncRelationshipId,
       table.idempotencyKey
+    ),
+    unique("sync_package_upload_sessions_protocol_package_unique").on(
+      table.protocolPackageId
+    ),
+    unique("sync_package_upload_sessions_relationship_sequence_unique").on(
+      table.syncRelationshipId,
+      table.sourceSequence
+    ),
+    unique("sync_package_upload_sessions_id_relationship_unique").on(
+      table.id,
+      table.syncRelationshipId
     ),
     index("sync_package_upload_sessions_state_idx").on(
       table.state,
@@ -2253,7 +2441,12 @@ export const syncPackageUploadSessions = pgTable(
         and ${table.totalBytes} >= 0
         and ${table.uploadedBytes} >= 0
         and ${table.uploadedBytes} <= ${table.totalBytes}
+        and ${table.sourceSequence} > 0
+        and ${table.fromCursor} >= 0
+        and ${table.toCursor} >= ${table.fromCursor}
+        and ${table.expectedChunkCount} > 0
         and ${table.chunkCount} >= 0
+        and ${table.chunkCount} <= ${table.expectedChunkCount}
         and ${table.verifiedChunkCount} >= 0
         and ${table.verifiedChunkCount} <= ${table.chunkCount}`
     )
@@ -2270,7 +2463,9 @@ export const syncPackageChunks = pgTable(
     chunkIndex: integer("chunk_index").notNull(),
     chunkChecksum: text("chunk_checksum").notNull(),
     byteCount: integer("byte_count").notNull(),
-    storageRef: text("storage_ref"),
+    encryptedPayload: jsonb("encrypted_payload")
+      .$type<Record<string, unknown>>()
+      .notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true })
       .notNull()
       .defaultNow()
@@ -2304,16 +2499,19 @@ export const syncOutboxEntries = pgTable(
     ),
     state: syncQueueEntryState("state").notNull().default("pending"),
     idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
     payloadManifest: jsonb("payload_manifest")
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
     attemptCount: integer("attempt_count").notNull().default(0),
-    maxAttempts: integer("max_attempts").notNull().default(5),
+    maxAttempts: integer("max_attempts").notNull().default(8),
     availableAt: timestamp("available_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
     lockedAt: timestamp("locked_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     lastErrorMessage: text("last_error_message"),
     createdAt: now(),
@@ -2332,7 +2530,15 @@ export const syncOutboxEntries = pgTable(
     check(
       "sync_outbox_entries_idempotency_key_not_empty_check",
       sql`length(trim(${table.idempotencyKey})) > 0`
-    )
+    ),
+    foreignKey({
+      columns: [table.uploadSessionId, table.syncRelationshipId],
+      foreignColumns: [
+        syncPackageUploadSessions.id,
+        syncPackageUploadSessions.syncRelationshipId
+      ],
+      name: "sync_outbox_upload_relationship_fk"
+    })
   ]
 );
 
@@ -2351,16 +2557,19 @@ export const syncInboxEntries = pgTable(
     ),
     state: syncQueueEntryState("state").notNull().default("pending"),
     idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
     payloadManifest: jsonb("payload_manifest")
       .$type<Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
     attemptCount: integer("attempt_count").notNull().default(0),
-    maxAttempts: integer("max_attempts").notNull().default(5),
+    maxAttempts: integer("max_attempts").notNull().default(8),
     availableAt: timestamp("available_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
     lockedAt: timestamp("locked_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     processedAt: timestamp("processed_at", { withTimezone: true }),
     lastErrorMessage: text("last_error_message"),
     createdAt: now(),
@@ -2379,6 +2588,78 @@ export const syncInboxEntries = pgTable(
     check(
       "sync_inbox_entries_idempotency_key_not_empty_check",
       sql`length(trim(${table.idempotencyKey})) > 0`
+    ),
+    foreignKey({
+      columns: [table.uploadSessionId, table.syncRelationshipId],
+      foreignColumns: [
+        syncPackageUploadSessions.id,
+        syncPackageUploadSessions.syncRelationshipId
+      ],
+      name: "sync_inbox_upload_relationship_fk"
+    })
+  ]
+);
+
+export const syncSemanticChanges = pgTable(
+  "sync_semantic_changes",
+  {
+    cursor: bigserial("cursor", { mode: "number" }).primaryKey(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    memoryEventId: uuid("memory_event_id").references(() => memoryEvents.id, {
+      onDelete: "set null"
+    }),
+    originEventId: uuid("origin_event_id").notNull(),
+    operation: syncChangeOperation("operation").notNull(),
+    revisionHash: text("revision_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    index("sync_semantic_changes_session_cursor_idx").on(
+      table.sessionId,
+      table.cursor
+    ),
+    check(
+      "sync_semantic_changes_revision_hash_check",
+      sql`length(${table.revisionHash}) = 64`
+    )
+  ]
+);
+
+export const syncEventMappings = pgTable(
+  "sync_event_mappings",
+  {
+    id: id(),
+    syncRelationshipId: uuid("sync_relationship_id")
+      .notNull()
+      .references(() => crossIdentitySyncRelationships.id, {
+        onDelete: "cascade"
+      }),
+    originEventId: uuid("origin_event_id").notNull(),
+    revisionHash: text("revision_hash").notNull(),
+    localMemoryEventId: uuid("local_memory_event_id").references(
+      () => memoryEvents.id,
+      { onDelete: "set null" }
+    ),
+    sourceCursor: bigint("source_cursor", { mode: "number" }).notNull(),
+    active: boolean("active").notNull().default(true),
+    createdAt: now(),
+    updatedAt: updatedNow(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("sync_event_mappings_revision_unique").on(
+      table.syncRelationshipId,
+      table.originEventId,
+      table.revisionHash
+    ),
+    uniqueIndex("sync_event_mappings_active_origin_unique")
+      .on(table.syncRelationshipId, table.originEventId)
+      .where(sql`${table.active} = true`),
+    index("sync_event_mappings_cursor_idx").on(
+      table.syncRelationshipId,
+      table.sourceCursor
     )
   ]
 );

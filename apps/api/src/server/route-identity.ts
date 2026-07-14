@@ -136,6 +136,13 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/cross-identity-sync/relationships/{relationshipId}/retry",
+    "session_or_device_credential",
+    "future_remote",
+    "Retry a failed durable Cross-Identity Sync queue entry without changing its cursor or identity."
+  ),
+  route(
+    "POST",
     "/ops/test-alert",
     "session",
     "operations",
@@ -741,6 +748,91 @@ export const routeIdentityContracts = [
     "team_memory",
     "Share an owned Captured Session into a Team Workspace.",
     "request_time_team_workspace",
+    "implemented",
+    teamDeploymentModes
+  ),
+
+  route(
+    "POST",
+    "/v1/cross-identity-sync/relationships",
+    "session",
+    "future_remote",
+    "Create an explicit Captured Session Cross-Identity Sync relationship.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/cross-identity-sync/intake/relationships",
+    "device_credential",
+    "future_remote",
+    "Create the target side of a device-authorized sync relationship.",
+    "future_request_time",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/cross-identity-sync/relationships/{relationshipId}",
+    "session_or_device_credential",
+    "future_remote",
+    "Read redacted Cross-Identity Sync state."
+  ),
+  route(
+    "POST",
+    "/v1/cross-identity-sync/relationships/{relationshipId}/revoke",
+    "session_or_device_credential",
+    "future_remote",
+    "Revoke future Cross-Identity Sync transfer without deleting retained memory."
+  ),
+  route(
+    "POST",
+    "/v1/cross-identity-sync/intake/relationships/{relationshipId}/revoke",
+    "device_credential",
+    "future_remote",
+    "Apply an authenticated remote sync revocation without creating a revocation loop.",
+    "future_request_time",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/cross-identity-sync/relationships/{relationshipId}/upload-sessions",
+    "device_credential",
+    "future_remote",
+    "Create an encrypted resumable sync upload session.",
+    "future_request_time",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "PUT",
+    "/v1/cross-identity-sync/upload-sessions/{uploadSessionId}/chunks/{chunkIndex}",
+    "device_credential",
+    "future_remote",
+    "Upload one recipient-encrypted sync chunk.",
+    "future_request_time",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/cross-identity-sync/upload-sessions/{uploadSessionId}",
+    "device_credential",
+    "future_remote",
+    "Resume an authorized encrypted sync upload.",
+    "future_request_time",
+    "implemented",
+    teamDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/cross-identity-sync/upload-sessions/{uploadSessionId}/complete",
+    "device_credential",
+    "future_remote",
+    "Verify and commit an encrypted sync upload.",
+    "future_request_time",
     "implemented",
     teamDeploymentModes
   ),

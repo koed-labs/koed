@@ -1,18 +1,32 @@
 import {
+  constants,
   createCipheriv,
   createDecipheriv,
   createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPair,
+  privateDecrypt,
+  publicEncrypt,
   randomBytes,
   randomUUID,
-  timingSafeEqual
+  timingSafeEqual,
+  type KeyObject
 } from "node:crypto";
+import { canonicalJsonStringify } from "./canonical-json.js";
 
-export type EnvelopeEncryptionProviderMode =
+export type EnvelopeEncryptionRootProviderMode =
   | "local_test_key"
   | "managed_kms"
   | "operator_kms"
   | "byok"
   | "cmek";
+
+export type EnvelopeEncryptionProviderMode =
+  | EnvelopeEncryptionRootProviderMode
+  | typeof RECIPIENT_PUBLIC_KEY_PROVIDER_MODE;
+
+export const RECIPIENT_PUBLIC_KEY_PROVIDER_MODE = "recipient_public_key";
 
 export const envelopeEncryptionProviderModes = [
   "local_test_key",
@@ -20,7 +34,7 @@ export const envelopeEncryptionProviderModes = [
   "operator_kms",
   "byok",
   "cmek"
-] as const satisfies readonly EnvelopeEncryptionProviderMode[];
+] as const satisfies readonly EnvelopeEncryptionRootProviderMode[];
 
 export const ENCRYPTED_PAYLOAD_ENVELOPE_VERSION = 1;
 export const ENCRYPTED_PAYLOAD_ALGORITHM = "aes-256-gcm";
@@ -28,10 +42,14 @@ export const ENCRYPTED_PAYLOAD_KEY_WRAP_ALGORITHM = "aes-256-gcm";
 export const ENCRYPTED_PAYLOAD_KMS_KEY_WRAP_ALGORITHM = "kms-wrapped-dek-v1";
 export const ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM =
   ENCRYPTED_PAYLOAD_KMS_KEY_WRAP_ALGORITHM;
+export const ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM = "RSA-OAEP-SHA256";
+export const RECIPIENT_RSA_KEY_BITS = 3072;
+export const RECIPIENT_RSA_JWK_ALGORITHM = "RSA-OAEP-256";
 const LOCAL_TEST_KEY_VERSION = 1;
 const LOCAL_TEST_KEY_ID_PREFIX = "local_test_key";
 const AES_256_KEY_BYTES = 32;
 const GCM_NONCE_BYTES = 12;
+const GCM_TAG_BYTES = 16;
 export const API_DATA_ENCRYPTION_KEY_ENV = "API_DATA_ENCRYPTION_KEY";
 export const DATA_ENCRYPTION_KEY_ENV_ALIAS = "DATA_ENCRYPTION_KEY";
 
@@ -57,7 +75,8 @@ export interface WrappedDataEncryptionKey {
   version: number;
   algorithm:
     | typeof ENCRYPTED_PAYLOAD_KEY_WRAP_ALGORITHM
-    | typeof ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM;
+    | typeof ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM
+    | typeof ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM;
   ciphertext: string;
   nonce: string;
   tag: string;
@@ -87,6 +106,49 @@ export interface EncryptPayloadInput {
   provenance: EncryptedPayloadProvenance;
   ciphertextLocation: string;
   aad?: Record<string, string | number | boolean | null | undefined>;
+  now?: Date;
+}
+
+export interface RecipientPublicKeyMaterial {
+  algorithm: typeof ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM;
+  keyId: string;
+  keyVersion: number;
+  publicJwk: RecipientPublicJwk;
+}
+
+export interface RecipientPublicJwk extends JsonWebKey {
+  alg: typeof RECIPIENT_RSA_JWK_ALGORITHM;
+  ext: true;
+  key_ops: ["encrypt"];
+  kid: string;
+  kty: "RSA";
+  use: "enc";
+  e: string;
+  n: string;
+}
+
+interface RecipientPrivateJwk extends JsonWebKey {
+  alg: typeof RECIPIENT_RSA_JWK_ALGORITHM;
+  ext: true;
+  key_ops: ["decrypt"];
+  kid: string;
+  kty: "RSA";
+  use: "enc";
+  d: string;
+  e: string;
+  n: string;
+}
+
+export interface RecipientKeyMaterial extends RecipientPublicKeyMaterial {
+  encryptedPrivateKey: EncryptedPayloadEnvelope;
+}
+
+export interface GenerateRecipientKeyMaterialInput {
+  keyId: string;
+  keyVersion: number;
+  scope?: EncryptedPayloadScope;
+  provenance?: EncryptedPayloadProvenance;
+  ciphertextLocation?: string;
   now?: Date;
 }
 
@@ -188,6 +250,13 @@ export class ManagedKmsProviderError extends EnvelopeEncryptionError {
   }
 }
 
+export class RecipientKeyTransportError extends EnvelopeEncryptionError {
+  constructor(message: string) {
+    super(message);
+    this.name = "RecipientKeyTransportError";
+  }
+}
+
 const optionalEnvValue = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -212,7 +281,7 @@ export const requireApiDataEncryptionKey = (
 };
 
 export const createUnsupportedEnvelopeEncryptionProvider = (
-  mode: Exclude<EnvelopeEncryptionProviderMode, "local_test_key">
+  mode: Exclude<EnvelopeEncryptionRootProviderMode, "local_test_key">
 ): EnvelopeEncryptionProvider => ({
   mode,
   keyId: `${mode}:unconfigured`,
@@ -227,17 +296,17 @@ export const createUnsupportedEnvelopeEncryptionProvider = (
 
 const providerModeFromString = (
   value: string | undefined
-): EnvelopeEncryptionProviderMode | undefined => {
+): EnvelopeEncryptionRootProviderMode | undefined => {
   const normalized = optionalEnvValue(value)?.toLowerCase();
   if (!normalized) {
     return undefined;
   }
   if (
     envelopeEncryptionProviderModes.includes(
-      normalized as EnvelopeEncryptionProviderMode
+      normalized as EnvelopeEncryptionRootProviderMode
     )
   ) {
-    return normalized as EnvelopeEncryptionProviderMode;
+    return normalized as EnvelopeEncryptionRootProviderMode;
   }
   throw new EnvelopeEncryptionError(
     `Unsupported API_ENVELOPE_ENCRYPTION_PROVIDER: ${value}`
@@ -258,7 +327,7 @@ const normalizedEnv = (
   fallback = ""
 ): string => (environment[name]?.trim() || fallback).toLowerCase();
 
-const kmsBackedProviderModes = new Set<EnvelopeEncryptionProviderMode>([
+const kmsBackedProviderModes = new Set<EnvelopeEncryptionRootProviderMode>([
   "managed_kms",
   "byok",
   "cmek"
@@ -336,24 +405,6 @@ const normalizeAad = (
   );
 };
 
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries
-      .map(
-        ([key, entryValue]) =>
-          `${JSON.stringify(key)}:${canonicalJson(entryValue)}`
-      )
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-};
-
 const payloadAad = (envelope: {
   version: number;
   scope: EncryptedPayloadScope;
@@ -364,7 +415,7 @@ const payloadAad = (envelope: {
   createdAt: string;
 }): Buffer =>
   Buffer.from(
-    canonicalJson({
+    canonicalJsonStringify({
       version: envelope.version,
       scope: envelope.scope,
       provenance: envelope.provenance,
@@ -382,7 +433,7 @@ const wrappedDekAad = (input: {
   keyVersion: number;
   wrappedDekId: string;
   wrappedDekVersion: number;
-}): Buffer => Buffer.from(canonicalJson(input), "utf8");
+}): Buffer => Buffer.from(canonicalJsonStringify(input), "utf8");
 
 const encryptAesGcm = (
   key: Uint8Array,
@@ -404,8 +455,25 @@ const decryptAesGcm = (
   tag: Uint8Array,
   aad: Uint8Array
 ): Buffer => {
+  if (key.byteLength !== AES_256_KEY_BYTES) {
+    throw new InvalidEncryptedPayloadEnvelopeError(
+      "Encrypted payload key must be 32 bytes"
+    );
+  }
+  if (nonce.byteLength !== GCM_NONCE_BYTES) {
+    throw new InvalidEncryptedPayloadEnvelopeError(
+      "Encrypted payload nonce must be 12 bytes"
+    );
+  }
+  if (tag.byteLength !== GCM_TAG_BYTES) {
+    throw new InvalidEncryptedPayloadEnvelopeError(
+      "Encrypted payload authentication tag must be 16 bytes"
+    );
+  }
   try {
-    const decipher = createDecipheriv(ENCRYPTED_PAYLOAD_ALGORITHM, key, nonce);
+    const decipher = createDecipheriv(ENCRYPTED_PAYLOAD_ALGORITHM, key, nonce, {
+      authTagLength: GCM_TAG_BYTES
+    });
     decipher.setAAD(aad);
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
@@ -454,7 +522,8 @@ const validateEnvelope = (envelope: EncryptedPayloadEnvelope): void => {
   if (
     envelope.wrappedDek.algorithm !== ENCRYPTED_PAYLOAD_KEY_WRAP_ALGORITHM &&
     envelope.wrappedDek.algorithm !==
-      ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM
+      ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM &&
+    envelope.wrappedDek.algorithm !== ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM
   ) {
     throw new InvalidEncryptedPayloadEnvelopeError(
       `Unsupported wrapped DEK algorithm: ${envelope.wrappedDek.algorithm}`
@@ -622,6 +691,437 @@ export const createLocalTestKeyEnvelopeEncryptionProvider = (
       };
     }
   };
+};
+
+const recipientKeyMetadataAad = (material: RecipientPublicKeyMaterial) => ({
+  recipientKeyAlgorithm: material.algorithm,
+  recipientKeyId: material.keyId,
+  recipientKeyVersion: material.keyVersion,
+  recipientPublicKeyFingerprint: createHash("sha256")
+    .update(
+      canonicalJsonStringify({
+        kty: material.publicJwk.kty,
+        n: material.publicJwk.n,
+        e: material.publicJwk.e
+      })
+    )
+    .digest("base64url")
+});
+
+const recipientWrappedDekAad = (input: {
+  keyId: string;
+  keyVersion: number;
+  wrappedDekId: string;
+  wrappedDekVersion: number;
+}): Buffer =>
+  Buffer.from(
+    canonicalJsonStringify({
+      providerMode: RECIPIENT_PUBLIC_KEY_PROVIDER_MODE,
+      keyId: input.keyId,
+      keyVersion: input.keyVersion,
+      wrappedDekId: input.wrappedDekId,
+      wrappedDekVersion: input.wrappedDekVersion,
+      algorithm: ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM
+    }),
+    "utf8"
+  );
+
+const assertRecipientKeyMetadata = (
+  material: Pick<
+    RecipientPublicKeyMaterial,
+    "algorithm" | "keyId" | "keyVersion"
+  >
+): void => {
+  if (material.algorithm !== ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM) {
+    throw new RecipientKeyTransportError(
+      `Unsupported recipient key algorithm: ${material.algorithm}`
+    );
+  }
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,254}$/.test(material.keyId) ||
+    material.keyId.trim() !== material.keyId
+  ) {
+    throw new RecipientKeyTransportError(
+      "Recipient keyId must be 1-255 safe identifier characters"
+    );
+  }
+  if (!Number.isSafeInteger(material.keyVersion) || material.keyVersion <= 0) {
+    throw new RecipientKeyTransportError(
+      "Recipient keyVersion must be a positive safe integer"
+    );
+  }
+};
+
+const recipientPublicKeyObject = (
+  material: RecipientPublicKeyMaterial
+): KeyObject => {
+  assertRecipientKeyMetadata(material);
+  const jwk = material.publicJwk;
+  if (
+    jwk.kty !== "RSA" ||
+    jwk.alg !== RECIPIENT_RSA_JWK_ALGORITHM ||
+    jwk.use !== "enc" ||
+    jwk.ext !== true ||
+    jwk.kid !== material.keyId ||
+    !jwk.key_ops?.includes("encrypt") ||
+    !jwk.n ||
+    !jwk.e ||
+    jwk.d !== undefined
+  ) {
+    throw new RecipientKeyTransportError(
+      "Recipient public JWK must be an encrypt-only RSA-OAEP-256 key matching keyId"
+    );
+  }
+  let publicKey: KeyObject;
+  try {
+    publicKey = createPublicKey({ key: jwk, format: "jwk" });
+  } catch {
+    throw new RecipientKeyTransportError("Recipient public JWK is invalid");
+  }
+  if (
+    publicKey.asymmetricKeyType !== "rsa" ||
+    publicKey.asymmetricKeyDetails?.modulusLength !== RECIPIENT_RSA_KEY_BITS
+  ) {
+    throw new RecipientKeyTransportError(
+      `Recipient public JWK must use RSA ${RECIPIENT_RSA_KEY_BITS}`
+    );
+  }
+  return publicKey;
+};
+
+const clonePublicJwk = (jwk: RecipientPublicJwk): RecipientPublicJwk => ({
+  ...jwk,
+  ...(jwk.key_ops ? { key_ops: [...jwk.key_ops] } : {})
+});
+
+export const toRecipientPublicKeyMaterial = (
+  material: RecipientKeyMaterial
+): RecipientPublicKeyMaterial => {
+  recipientPublicKeyObject(material);
+  return {
+    algorithm: material.algorithm,
+    keyId: material.keyId,
+    keyVersion: material.keyVersion,
+    publicJwk: clonePublicJwk(material.publicJwk)
+  };
+};
+
+const generateRecipientRsaKeyPair = (): Promise<{
+  publicKey: KeyObject;
+  privateKey: KeyObject;
+}> =>
+  new Promise((resolve, reject) => {
+    generateKeyPair(
+      "rsa",
+      { modulusLength: RECIPIENT_RSA_KEY_BITS, publicExponent: 0x10001 },
+      (error, publicKey, privateKey) => {
+        if (error) {
+          reject(
+            new RecipientKeyTransportError(
+              "Recipient RSA key generation failed"
+            )
+          );
+          return;
+        }
+        resolve({ publicKey, privateKey });
+      }
+    );
+  });
+
+export const generateRecipientKeyMaterial = async (
+  rootProvider: EnvelopeEncryptionProvider,
+  input: GenerateRecipientKeyMaterialInput
+): Promise<RecipientKeyMaterial> => {
+  if (
+    !envelopeEncryptionProviderModes.includes(
+      rootProvider.mode as EnvelopeEncryptionRootProviderMode
+    )
+  ) {
+    throw new RecipientKeyTransportError(
+      "Recipient private key material requires a root envelope encryption provider"
+    );
+  }
+  const metadata = {
+    algorithm: ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM,
+    keyId: input.keyId,
+    keyVersion: input.keyVersion
+  } as const;
+  assertRecipientKeyMetadata(metadata);
+
+  const { publicKey, privateKey } = await generateRecipientRsaKeyPair();
+  const publicJwk = {
+    ...publicKey.export({ format: "jwk" }),
+    alg: RECIPIENT_RSA_JWK_ALGORITHM,
+    ext: true,
+    key_ops: ["encrypt"],
+    kid: input.keyId,
+    use: "enc"
+  } as RecipientPublicJwk;
+  const privateJwk = {
+    ...privateKey.export({ format: "jwk" }),
+    alg: RECIPIENT_RSA_JWK_ALGORITHM,
+    ext: true,
+    key_ops: ["decrypt"],
+    kid: input.keyId,
+    use: "enc"
+  } as RecipientPrivateJwk;
+  const publicMaterial: RecipientPublicKeyMaterial = {
+    ...metadata,
+    publicJwk
+  };
+  recipientPublicKeyObject(publicMaterial);
+  const encryptedPrivateKey = await rootProvider.encrypt({
+    plaintext: JSON.stringify(privateJwk),
+    scope: {
+      ...input.scope,
+      objectClass: input.scope?.objectClass ?? "recipient_key_material"
+    },
+    provenance: input.provenance ?? { rowFamily: "recipient_key_material" },
+    ciphertextLocation:
+      input.ciphertextLocation ??
+      "recipient_key_material.encrypted_private_key",
+    aad: recipientKeyMetadataAad(publicMaterial),
+    ...(input.now ? { now: input.now } : {})
+  });
+
+  return { ...publicMaterial, encryptedPrivateKey };
+};
+
+const createRecipientProvider = (
+  material: RecipientPublicKeyMaterial,
+  privateKey?: KeyObject
+): EnvelopeEncryptionProvider => {
+  const publicKey = recipientPublicKeyObject(material);
+  const provider = {
+    mode: RECIPIENT_PUBLIC_KEY_PROVIDER_MODE,
+    keyId: material.keyId,
+    keyVersion: material.keyVersion
+  } as const;
+
+  return {
+    ...provider,
+    encrypt(input): EncryptedPayloadEnvelope {
+      const plaintext =
+        typeof input.plaintext === "string"
+          ? Buffer.from(input.plaintext, "utf8")
+          : Buffer.from(input.plaintext);
+      const createdAt = (input.now ?? new Date()).toISOString();
+      const wrappedDekId = randomUUID();
+      const wrappedDekVersion = 1;
+      const dek = randomBytes(AES_256_KEY_BYTES);
+      const wrappedDekMetadata = {
+        id: wrappedDekId,
+        version: wrappedDekVersion,
+        algorithm: ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM
+      } as const;
+      const envelopeMetadata = {
+        version: ENCRYPTED_PAYLOAD_ENVELOPE_VERSION,
+        providerMode: provider.mode,
+        keyId: provider.keyId,
+        keyVersion: provider.keyVersion,
+        scope: input.scope,
+        provenance: input.provenance,
+        algorithm: ENCRYPTED_PAYLOAD_ALGORITHM,
+        wrappedDek: wrappedDekMetadata,
+        ciphertextLocation: input.ciphertextLocation,
+        aad: normalizeAad(input.aad),
+        createdAt,
+        reencryptedAt: null
+      } as const;
+      const payload = encryptAesGcm(
+        dek,
+        plaintext,
+        payloadAad(envelopeMetadata)
+      );
+      const wrappedDek = publicEncrypt(
+        {
+          key: publicKey,
+          padding: constants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: "sha256",
+          oaepLabel: recipientWrappedDekAad({
+            keyId: provider.keyId,
+            keyVersion: provider.keyVersion,
+            wrappedDekId,
+            wrappedDekVersion
+          })
+        },
+        dek
+      );
+
+      return {
+        ...envelopeMetadata,
+        ciphertext: base64Encode(payload.ciphertext),
+        nonce: base64Encode(payload.nonce),
+        tag: base64Encode(payload.tag),
+        wrappedDek: {
+          ...wrappedDekMetadata,
+          ciphertext: base64Encode(wrappedDek),
+          nonce: "",
+          tag: ""
+        }
+      };
+    },
+    decrypt(envelope): Uint8Array {
+      if (!privateKey) {
+        throw new RecipientKeyTransportError(
+          "Recipient public-key provider is encrypt-only"
+        );
+      }
+      validateEnvelope(envelope);
+      assertSameProvider(envelope, provider);
+      if (
+        envelope.wrappedDek.algorithm !==
+        ENCRYPTED_PAYLOAD_RSA_KEY_WRAP_ALGORITHM
+      ) {
+        throw new InvalidEncryptedPayloadEnvelopeError(
+          `Unsupported recipient wrapped DEK algorithm: ${envelope.wrappedDek.algorithm}`
+        );
+      }
+      let dek: Buffer;
+      try {
+        dek = privateDecrypt(
+          {
+            key: privateKey,
+            padding: constants.RSA_PKCS1_OAEP_PADDING,
+            oaepHash: "sha256",
+            oaepLabel: recipientWrappedDekAad({
+              keyId: provider.keyId,
+              keyVersion: envelope.keyVersion,
+              wrappedDekId: envelope.wrappedDek.id,
+              wrappedDekVersion: envelope.wrappedDek.version
+            })
+          },
+          base64Decode(envelope.wrappedDek.ciphertext, "wrappedDek.ciphertext")
+        );
+      } catch (error) {
+        if (error instanceof EnvelopeEncryptionError) {
+          throw error;
+        }
+        throw new InvalidEncryptedPayloadEnvelopeError(
+          "Recipient wrapped DEK authentication failed"
+        );
+      }
+      if (dek.length !== AES_256_KEY_BYTES) {
+        throw new InvalidEncryptedPayloadEnvelopeError(
+          "Recipient wrapped DEK has an invalid length"
+        );
+      }
+      return decryptAesGcm(
+        dek,
+        base64Decode(envelope.ciphertext, "ciphertext"),
+        base64Decode(envelope.nonce, "nonce"),
+        base64Decode(envelope.tag, "tag"),
+        payloadAad(envelope)
+      );
+    },
+    status() {
+      return {
+        ...provider,
+        status: "available" as const,
+        details: { decryptCapable: privateKey !== undefined }
+      };
+    }
+  };
+};
+
+export const createRecipientPublicKeyEnvelopeEncryptionProvider = (
+  material: RecipientPublicKeyMaterial
+): EnvelopeEncryptionProvider => createRecipientProvider(material);
+
+const recipientPrivateKeyObject = (
+  privateJwk: RecipientPrivateJwk,
+  publicMaterial: RecipientPublicKeyMaterial
+): KeyObject => {
+  if (
+    privateJwk.kty !== "RSA" ||
+    privateJwk.alg !== RECIPIENT_RSA_JWK_ALGORITHM ||
+    privateJwk.use !== "enc" ||
+    privateJwk.ext !== true ||
+    privateJwk.kid !== publicMaterial.keyId ||
+    !privateJwk.key_ops?.includes("decrypt") ||
+    !privateJwk.n ||
+    !privateJwk.e ||
+    !privateJwk.d
+  ) {
+    throw new RecipientKeyTransportError(
+      "Decrypted recipient private JWK is invalid or does not match key metadata"
+    );
+  }
+  let privateKey: KeyObject;
+  try {
+    privateKey = createPrivateKey({ key: privateJwk, format: "jwk" });
+  } catch {
+    throw new RecipientKeyTransportError(
+      "Decrypted recipient private JWK is invalid"
+    );
+  }
+  if (
+    privateKey.asymmetricKeyType !== "rsa" ||
+    privateKey.asymmetricKeyDetails?.modulusLength !== RECIPIENT_RSA_KEY_BITS
+  ) {
+    throw new RecipientKeyTransportError(
+      `Decrypted recipient private JWK must use RSA ${RECIPIENT_RSA_KEY_BITS}`
+    );
+  }
+  const derivedPublicJwk = createPublicKey(privateKey).export({
+    format: "jwk"
+  });
+  if (
+    derivedPublicJwk.n !== publicMaterial.publicJwk.n ||
+    derivedPublicJwk.e !== publicMaterial.publicJwk.e
+  ) {
+    throw new RecipientKeyTransportError(
+      "Decrypted recipient private JWK does not match the public JWK"
+    );
+  }
+  return privateKey;
+};
+
+export const createRecipientPrivateKeyEnvelopeEncryptionProvider = async (
+  rootProvider: EnvelopeEncryptionProvider,
+  material: RecipientKeyMaterial
+): Promise<EnvelopeEncryptionProvider> => {
+  if (
+    !envelopeEncryptionProviderModes.includes(
+      rootProvider.mode as EnvelopeEncryptionRootProviderMode
+    )
+  ) {
+    throw new RecipientKeyTransportError(
+      "Recipient private key material requires a root envelope encryption provider"
+    );
+  }
+  const publicMaterial = toRecipientPublicKeyMaterial(material);
+  const expectedAad = normalizeAad(recipientKeyMetadataAad(publicMaterial));
+  if (
+    canonicalJsonStringify(material.encryptedPrivateKey.aad) !==
+    canonicalJsonStringify(expectedAad)
+  ) {
+    throw new RecipientKeyTransportError(
+      "Encrypted recipient private key metadata does not match the public key"
+    );
+  }
+  let parsed: unknown;
+  try {
+    const plaintext = await rootProvider.decrypt(material.encryptedPrivateKey);
+    parsed = JSON.parse(Buffer.from(plaintext).toString("utf8")) as unknown;
+  } catch (error) {
+    if (error instanceof EnvelopeEncryptionError) {
+      throw error;
+    }
+    throw new RecipientKeyTransportError(
+      "Recipient private key envelope could not be decrypted"
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new RecipientKeyTransportError(
+      "Decrypted recipient private key material is invalid"
+    );
+  }
+  const privateKey = recipientPrivateKeyObject(
+    parsed as RecipientPrivateJwk,
+    publicMaterial
+  );
+  return createRecipientProvider(publicMaterial, privateKey);
 };
 
 const assertManagedKmsProviderEnvelope = (
