@@ -28,6 +28,7 @@ import {
   type KoedServerPaths
 } from "./paths.js";
 import { applyPersistedLocalPorts } from "./ports.js";
+import { isProcessRunning } from "./process-liveness.js";
 import { resolveKoedAppRuntime } from "./app-runtime.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
@@ -111,6 +112,15 @@ const readRuntimeState = (
   }
 };
 
+const readActiveRuntimeState = (
+  path: string,
+  readFileSync: typeof nodeReadFileSync,
+  checkPid: (pid: number) => boolean
+): KoedServerRuntimeState | null => {
+  const runtime = readRuntimeState(path, readFileSync);
+  return runtime && checkPid(runtime.pid) ? runtime : null;
+};
+
 const applyActiveRuntimeUrls = (
   environment: NodeJS.ProcessEnv,
   runtime: KoedServerRuntimeState | null
@@ -131,6 +141,7 @@ export interface KoedServerSetupOptions {
   writeFileSync?: typeof nodeWriteFileSync;
   mkdirSync?: typeof nodeMkdirSync;
   existsSync?: typeof nodeExistsSync;
+  checkPid?: (pid: number) => boolean;
   now?: () => Date;
 }
 
@@ -279,6 +290,7 @@ export const repairCodexIntegration = ({
   writeFileSync = nodeWriteFileSync,
   mkdirSync = nodeMkdirSync,
   existsSync = nodeExistsSync,
+  checkPid = isProcessRunning,
   now = () => new Date()
 }: Omit<
   KoedServerSetupOptions,
@@ -288,7 +300,7 @@ export const repairCodexIntegration = ({
   ensureKoedHome(paths);
   environment = applyActiveRuntimeUrls(
     applyPersistedLocalPorts(paths, environment),
-    readRuntimeState(paths.runtimeStatePath, readFileSync)
+    readActiveRuntimeState(paths.runtimeStatePath, readFileSync, checkPid)
   );
   const repoEnv = loadRepoEnv(paths.repoRoot);
   const apiUrl = resolveApiUrl(environment, repoEnv);
@@ -454,9 +466,10 @@ const resolveSetupCodexBase = (
 ): SetupCodexBaseContext => {
   const paths = resolveKoedServerPaths(invocationEnvironment);
   ensureKoedHome(paths);
-  const runtime = readRuntimeState(
+  const runtime = readActiveRuntimeState(
     paths.runtimeStatePath,
-    options.readFileSync ?? nodeReadFileSync
+    options.readFileSync ?? nodeReadFileSync,
+    options.checkPid ?? isProcessRunning
   );
   let environment = setupRuntimeEnvironment(invocationEnvironment, runtime);
   const repoEnv = loadRepoEnv(paths.repoRoot);

@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,13 +22,14 @@ const spawnResult = (status = 0, stdout = "ok", stderr = "") =>
 
 const writeRuntimeState = (
   root: string,
-  dependencyMode: "bundled-local" | "external" = "bundled-local"
+  dependencyMode: "bundled-local" | "external" = "bundled-local",
+  pid = process.pid
 ): void => {
   mkdirSync(resolve(root, "run"), { recursive: true });
   writeFileSync(
     resolve(root, "run/koed-server.json"),
     JSON.stringify({
-      pid: 123,
+      pid,
       startedAt: "2026-01-01T00:00:00.000Z",
       repoRoot: root,
       apiUrl: "http://localhost:43300",
@@ -97,7 +104,7 @@ describe("Codex setup wrapper", () => {
     writeFileSync(
       resolve(root, "run/koed-server.json"),
       JSON.stringify({
-        pid: 123,
+        pid: process.pid,
         startedAt: "2026-01-01T00:00:00.000Z",
         repoRoot: root,
         apiUrl: "http://localhost:43300",
@@ -351,6 +358,54 @@ describe("Codex setup wrapper", () => {
     expect(result.ok).toBe(true);
     expect(calls[0]?.env?.KOED_DEPENDENCY_MODE).toBeUndefined();
     expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://operator/external");
+  });
+
+  it("ignores valid bundled-local runtime state when its PID is dead", () => {
+    const root = tempDir();
+    writeRuntimeState(root, "bundled-local", 424_242);
+    writeLocalPorts(root);
+    writeLocalSecrets(root, { POSTGRES_PASSWORD: "old-bundled-password" });
+    writeFileSync(
+      resolve(root, ".env"),
+      [
+        "MEMORY_API_URL=https://repo-api.example.test",
+        "EXPLORER_WEB_HOST_PORT=15174",
+        "DATABASE_URL=postgres://repository/external",
+        "POSTGRES_HOST_PORT=15432",
+        "POSTGRES_PASSWORD=repository-password"
+      ].join("\n")
+    );
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({ runtimeMode: "external", dependencyMode: "external" })
+    );
+    const runtimeStatePath = resolve(root, "run/koed-server.json");
+    const staleRuntimeState = readFileSync(runtimeStatePath, "utf8");
+    const checkedPids: number[] = [];
+    const calls: Array<{ env?: NodeJS.ProcessEnv }> = [];
+
+    const result = setupCodex({
+      environment: { KOED_HOME: root, KOED_REPO_ROOT: root },
+      checkPid: (pid) => {
+        checkedPids.push(pid);
+        return false;
+      },
+      spawnSync: (_command, _args, options) => {
+        calls.push({ env: options?.env });
+        return spawnResult();
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(checkedPids).toEqual([424_242]);
+    expect(result.apiUrl).toBe("https://repo-api.example.test");
+    expect(result.explorerUrl).toBe("http://localhost:15174");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.env?.DATABASE_URL).toBe("postgres://repository/external");
+    expect(calls[0]?.env?.POSTGRES_HOST_PORT).toBe("15432");
+    expect(calls[0]?.env?.POSTGRES_PASSWORD).toBe("repository-password");
+    expect(calls[0]?.env?.MEMORY_API_URL).toBe("https://repo-api.example.test");
+    expect(readFileSync(runtimeStatePath, "utf8")).toBe(staleRuntimeState);
   });
 
   it("returns actionable failure JSON on bootstrap error", () => {
