@@ -27,6 +27,7 @@ import {
 } from "./queue.js";
 import { createWorkerLogger } from "./logging.js";
 import { createRawProjectionService } from "./raw-projection-service.js";
+import { createCrossIdentitySyncService } from "./cross-identity-sync-service.js";
 
 loadWorkerEnv();
 
@@ -43,10 +44,11 @@ const pool = workerEnv.databaseUrl
 if (pool) {
   await waitForCurrentDbMigrations(pool);
 }
+const envelopeEncryptionProvider =
+  createEnvelopeEncryptionProviderFromEnvironment();
 const repository = pool
   ? createMemorySourceRepository(pool, {
-      envelopeEncryptionProvider:
-        createEnvelopeEncryptionProviderFromEnvironment()
+      envelopeEncryptionProvider
     })
   : null;
 const requireRepository = (): MemorySourceRepository => {
@@ -155,6 +157,20 @@ const rawProjectionService = repository
   : null;
 rawProjectionService?.start();
 
+const crossIdentitySyncService =
+  repository && envelopeEncryptionProvider
+    ? createCrossIdentitySyncService({
+        repository,
+        rootEncryptionProvider: envelopeEncryptionProvider,
+        embeddingWorkflow,
+        koedHome: workerEnv.koedHome,
+        intervalMs: workerEnv.crossIdentitySyncIntervalMs,
+        staleAfterSeconds: workerEnv.crossIdentitySyncStaleAfterSeconds,
+        logger
+      })
+    : null;
+crossIdentitySyncService?.start();
+
 const shutdown = async () => {
   logger.info(
     {
@@ -166,6 +182,7 @@ const shutdown = async () => {
     "worker shutting down"
   );
   rawProjectionService?.stop();
+  crossIdentitySyncService?.stop();
   await Promise.all([
     queueRuntime.close(),
     memoryEmbedQueue.close(),

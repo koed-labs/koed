@@ -50,6 +50,16 @@ is redacted and raw payload bytes remain encrypted. Future support bundles and
 object payloads must use the same package envelope before they can carry raw
 customer content.
 
+Cross-Identity Sync encrypts each bounded package chunk to the target
+deployment's versioned RSA-OAEP recipient key in addition to transport TLS. The
+target recipient private key is itself wrapped by the configured root envelope
+provider. The source, browser, MCP Server, Capture Hook, database, queue rows,
+logs, and diagnostics never receive a plaintext DEK or target private key. The
+target authenticates the scoped `sync` device credential and binds deployment,
+User, relationship, replica, consent, policy, cursor, version, size, and digest
+metadata before decrypting. A missing key, wrong version, provider outage,
+tampered envelope, unauthorized target, or unsupported package fails closed.
+
 Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.
 
 The commercial/team target posture is application-layer envelope encryption for

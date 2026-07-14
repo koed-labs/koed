@@ -22,6 +22,7 @@ import {
   type SemanticBundleSealReason
 } from "./conversation-semantic-projection.js";
 import { createConversationItemRepository } from "./conversation-item-repository.js";
+import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
 import { createCrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import { createDeviceCredentialRepository } from "./device-credential-repository.js";
 import {
@@ -2153,6 +2154,7 @@ const managedCloudPlaintextMemoryPayloadsDisabled = (): boolean => {
 
 const ENCRYPTED_MESSAGE_CONTENT = "[koed encrypted message]";
 const ENCRYPTED_MEMORY_NODE_TEXT = "[koed encrypted memory node]";
+const ENCRYPTED_MEMORY_EVENT_TEXT = "[koed encrypted memory event]";
 const ENCRYPTED_EMBEDDING_SOURCE_TEXT = "[koed encrypted embedding source]";
 
 const encryptedDisplayPayloadMarker = (
@@ -2461,8 +2463,13 @@ const hydrateMemoryNodeRows = async <T extends HydratableMemoryNodeRow>(
   pool: pg.Pool | pg.PoolClient,
   provider: EnvelopeEncryptionProvider | undefined,
   rows: T[]
-): Promise<T[]> =>
-  Promise.all(rows.map((row) => hydrateMemoryNodeRow(pool, provider, row)));
+): Promise<T[]> => {
+  const hydrated: T[] = [];
+  for (const row of rows) {
+    hydrated.push(await hydrateMemoryNodeRow(pool, provider, row));
+  }
+  return hydrated;
+};
 
 const persistEncryptedMemoryNodeField = async (
   client: pg.Pool | pg.PoolClient,
@@ -3052,67 +3059,6 @@ const linkMemoryEventSources = async (
       ]
     );
   }
-};
-
-const invalidateDerivedMemoryForMemoryEvents = async (
-  pool: pg.Pool | pg.PoolClient,
-  memoryEventIds: string[],
-  reason = "source_event_deleted"
-): Promise<void> => {
-  const uniqueEventIds = uniqueOrderedStrings(memoryEventIds);
-  if (uniqueEventIds.length === 0) {
-    return;
-  }
-
-  await pool.query(
-    `
-      update memory_embeddings
-      set invalidated_at = now(), invalidation_reason = $2
-      where memory_event_id = any($1::uuid[])
-        and invalidated_at is null
-    `,
-    [uniqueEventIds, reason]
-  );
-
-  const affectedNodes = await pool.query<{ id: string }>(
-    `
-      with recursive affected_nodes as (
-        select distinct mns.memory_node_id as id
-        from memory_node_sources mns
-        where mns.memory_event_id = any($1::uuid[])
-
-        union
-
-        select mnc.parent_memory_node_id as id
-        from memory_node_children mnc
-        join affected_nodes affected
-          on affected.id = mnc.child_memory_node_id
-      )
-      update memory_nodes mn
-      set
-        invalidated_at = coalesce(mn.invalidated_at, now()),
-        invalidation_reason = coalesce(mn.invalidation_reason, $2),
-        updated_at = now()
-      where mn.id in (select id from affected_nodes)
-        and mn.invalidated_at is null and mn.personal_deleted_at is null
-      returning mn.id
-    `,
-    [uniqueEventIds, reason]
-  );
-
-  const nodeIds = affectedNodes.rows.map((row) => row.id);
-  if (nodeIds.length === 0) {
-    return;
-  }
-  await pool.query(
-    `
-      update memory_embeddings
-      set invalidated_at = now(), invalidation_reason = $2
-      where memory_node_id = any($1::uuid[])
-        and invalidated_at is null
-    `,
-    [nodeIds, reason]
-  );
 };
 
 const scheduleSemanticMemoryRebuilds = async (
@@ -3908,7 +3854,9 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider,
       resolveCapturePolicy: settingsRepository.getEffectiveCapturePolicy
     }),
-    ...createCrossIdentitySyncRepository(pool),
+    ...createCrossIdentitySyncRepository(pool, {
+      envelopeEncryptionProvider: options.envelopeEncryptionProvider
+    }),
     ...encryptedPayloadRepository,
     ...createLocalEmbeddingStatusRepository(),
     ...createMemoryNodeRepository(pool, {
@@ -3947,6 +3895,21 @@ export const createMemorySourceRepository = (
             and visibility = 'personal'
             and invalidated_at is null
             and personal_deleted_at is null
+            and not exists (
+              select 1
+              from memory_replicas sync_replica
+              where sync_replica.local_session_id = sessions.id
+                and sync_replica.replica_role = 'target'
+                and not exists (
+                  select 1
+                  from cross_identity_sync_relationships sync_relationship
+                  where sync_relationship.local_replica_id = sync_replica.id
+                    and sync_relationship.side = 'target'
+                    and sync_relationship.state = 'ready'
+                    and sync_relationship.revoked_at is null
+                    and sync_replica.freshness_status = 'fresh'
+                )
+            )
           limit 1
           for update
         `,
@@ -6322,7 +6285,7 @@ export const createMemorySourceRepository = (
                     where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
                       and auth_grant.team_workspace_id = $9::uuid
                       and auth_grant.team_id = $10::uuid
-                      and auth_grant.revoked_at is null
+                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                   )
               )
             )
@@ -6579,7 +6542,7 @@ export const createMemorySourceRepository = (
                         where cursor_grant.session_id = me.session_id
                           and cursor_grant.team_workspace_id = $12::uuid
                           and cursor_grant.team_id = $13::uuid
-                          and cursor_grant.revoked_at is null
+                      and cursor_grant.revoked_at is null and sync_session_recall_ready(cursor_grant.session_id)
                       )
                     )
                   )
@@ -6603,7 +6566,7 @@ export const createMemorySourceRepository = (
                         where cursor_grant.session_id = msg.session_id
                           and cursor_grant.team_workspace_id = $12::uuid
                           and cursor_grant.team_id = $13::uuid
-                          and cursor_grant.revoked_at is null
+                          and cursor_grant.revoked_at is null and sync_session_recall_ready(cursor_grant.session_id)
                       )
                     )
                   )
@@ -6627,7 +6590,7 @@ export const createMemorySourceRepository = (
                         where cursor_grant.session_id = te.session_id
                           and cursor_grant.team_workspace_id = $12::uuid
                           and cursor_grant.team_id = $13::uuid
-                          and cursor_grant.revoked_at is null
+                          and cursor_grant.revoked_at is null and sync_session_recall_ready(cursor_grant.session_id)
                       )
                     )
                   )
@@ -6779,7 +6742,7 @@ export const createMemorySourceRepository = (
                   where auth_grant.session_id = me.session_id
                     and auth_grant.team_workspace_id = $12::uuid
                     and auth_grant.team_id = $13::uuid
-                    and auth_grant.revoked_at is null
+                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                 )
               )
             )
@@ -6931,7 +6894,7 @@ export const createMemorySourceRepository = (
                   where auth_grant.session_id = msg.session_id
                     and auth_grant.team_workspace_id = $12::uuid
                     and auth_grant.team_id = $13::uuid
-                    and auth_grant.revoked_at is null
+                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                 )
               )
             )
@@ -7103,7 +7066,7 @@ export const createMemorySourceRepository = (
                   where auth_grant.session_id = te.session_id
                     and auth_grant.team_workspace_id = $12::uuid
                     and auth_grant.team_id = $13::uuid
-                    and auth_grant.revoked_at is null
+                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                 )
               )
             )
@@ -7253,7 +7216,7 @@ export const createMemorySourceRepository = (
           }
           if (
             row.metadata?.sourceTable !== "memory_events" ||
-            row.content ||
+            (row.content && row.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
             !options.envelopeEncryptionProvider
           ) {
             return row;
@@ -7426,7 +7389,7 @@ export const createMemorySourceRepository = (
                   where auth_grant.session_id = me.session_id
                     and auth_grant.team_workspace_id = $9::uuid
                     and auth_grant.team_id = $10::uuid
-                    and auth_grant.revoked_at is null
+                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                 )
               )
             )
@@ -7505,7 +7468,7 @@ export const createMemorySourceRepository = (
                   where auth_grant.session_id = s.id
                     and auth_grant.team_workspace_id = $9::uuid
                     and auth_grant.team_id = $10::uuid
-                    and auth_grant.revoked_at is null
+                    and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                 )
               )
             )
@@ -7940,7 +7903,7 @@ export const createMemorySourceRepository = (
           }
           if (
             row.source_type !== "memory_event" ||
-            row.text ||
+            (row.text && row.text !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
             !options.envelopeEncryptionProvider
           ) {
             return row;
@@ -8106,7 +8069,7 @@ export const createMemorySourceRepository = (
               })()
             }
           : rawRow?.source_type === "memory_event" &&
-              !rawRow.text &&
+              (!rawRow.text || rawRow.text === ENCRYPTED_MEMORY_EVENT_TEXT) &&
               options.envelopeEncryptionProvider
             ? {
                 ...rawRow,
@@ -8135,6 +8098,43 @@ export const createMemorySourceRepository = (
               sourceHash(row.source_type, row.source_id, row.text)
           }
         : null;
+    },
+
+    async getCurrentSourceEmbeddingChunkCount(input) {
+      const embeddingTable = embeddingTableForDimensions(input.dimensions);
+      const result = await pool.query<{ chunk_count: number }>(
+        `
+        select min(me.source_chunk_count)::integer as chunk_count
+        from memory_embeddings me
+        inner join ${embeddingTable} vectors
+          on vectors.memory_embedding_id = me.id
+        where me.invalidated_at is null
+          and me.personal_deleted_at is null
+          and me.embedding_model = $1
+          and me.embedding_dimensions = $2
+          and me.embedding_version = $3
+          and me.source_hash = $4
+          and (
+            ($5 = 'memory_node' and me.memory_node_id = $6::uuid)
+            or ($5 = 'memory_event' and me.memory_event_id = $6::uuid)
+            or ($5 = 'message' and me.message_id = $6::uuid)
+          )
+        having min(me.source_chunk_count) = max(me.source_chunk_count)
+          and count(*) = min(me.source_chunk_count)
+          and count(distinct me.source_chunk_index) = min(me.source_chunk_count)
+          and min(me.source_chunk_index) = 0
+          and max(me.source_chunk_index) = min(me.source_chunk_count) - 1
+      `,
+        [
+          input.model,
+          input.dimensions,
+          input.version,
+          input.source.sourceHash,
+          input.source.sourceType,
+          input.source.sourceId
+        ]
+      );
+      return result.rows[0]?.chunk_count ?? null;
     },
 
     async getLcmNodeForSummarization(nodeId) {
@@ -8785,12 +8785,15 @@ export const createMemorySourceRepository = (
             and s.personal_deleted_at is null
             and s.visibility = 'personal'
             and s.owner_user_id = $1
+            and coalesce((s.metadata->>'syncReplica')::boolean, false) = false
           limit 1
         `,
           [actor.userId, input.sessionId]
         );
         if (visibleSession.rowCount === 0) {
-          throw new Error("Session not found or not visible");
+          throw new Error(
+            "Session not found or not visible; synchronized replica is read-only"
+          );
         }
       }
 
@@ -9474,7 +9477,7 @@ export const createMemorySourceRepository = (
                               where parent_grant.session_id = coalesce(parent_ev.session_id, parent_msg.session_id)
                                 and parent_grant.team_workspace_id = $13::uuid
                                 and parent_grant.team_id = $14::uuid
-                                and parent_grant.revoked_at is null
+                      and parent_grant.revoked_at is null and sync_session_recall_ready(parent_grant.session_id)
                             )
                         )
                       )
@@ -9581,6 +9584,14 @@ export const createMemorySourceRepository = (
             ) filtered_sources on true
             where mn.invalidated_at is null and mn.personal_deleted_at is null
               and mn.visibility = 'personal'
+              and not exists (
+                select 1
+                from memory_node_sources ready_mns
+                left join memory_events ready_ev on ready_ev.id = ready_mns.memory_event_id
+                left join messages ready_msg on ready_msg.id = ready_mns.message_id
+                where ready_mns.memory_node_id = mn.id
+                  and not sync_session_recall_ready(coalesce(ready_ev.session_id, ready_msg.session_id))
+              )
               and (
                 ($13::uuid is null and mn.owner_user_id = $1)
                 or (
@@ -9602,7 +9613,7 @@ export const createMemorySourceRepository = (
                         where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
                           and auth_grant.team_workspace_id = $13::uuid
                           and auth_grant.team_id = $14::uuid
-                          and auth_grant.revoked_at is null
+                          and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                       )
                   )
                 )
@@ -9645,6 +9656,7 @@ export const createMemorySourceRepository = (
             left join sessions me_session on me_session.id = me.session_id
             where me.invalidated_at is null
               and me.visibility = 'personal'
+              and sync_session_recall_ready(me.session_id)
               and (
                 ($13::uuid is null and me.owner_user_id = $1 and me.personal_deleted_at is null)
                 or (
@@ -9655,7 +9667,7 @@ export const createMemorySourceRepository = (
                     where auth_grant.session_id = me.session_id
                       and auth_grant.team_workspace_id = $13::uuid
                       and auth_grant.team_id = $14::uuid
-                      and auth_grant.revoked_at is null
+                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                   )
                 )
               )
@@ -9714,6 +9726,7 @@ export const createMemorySourceRepository = (
             where msg.invalidated_at is null
               and msg.recall_eligible = true
               and msg.visibility = 'personal'
+              and sync_session_recall_ready(msg.session_id)
               and (
                 ($13::uuid is null and msg.owner_user_id = $1)
                 or (
@@ -9724,7 +9737,7 @@ export const createMemorySourceRepository = (
                     where auth_grant.session_id = msg.session_id
                       and auth_grant.team_workspace_id = $13::uuid
                       and auth_grant.team_id = $14::uuid
-                      and auth_grant.revoked_at is null
+                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                   )
                 )
               )
@@ -10044,7 +10057,7 @@ export const createMemorySourceRepository = (
                                   where parent_grant.session_id = coalesce(parent_ev.session_id, parent_msg.session_id)
                                     and parent_grant.team_workspace_id = $15::uuid
                                     and parent_grant.team_id = $16::uuid
-                                    and parent_grant.revoked_at is null
+                                    and parent_grant.revoked_at is null and sync_session_recall_ready(parent_grant.session_id)
                                 )
                             )
                           )
@@ -10206,7 +10219,7 @@ export const createMemorySourceRepository = (
                                 where rerank_grant.session_id = coalesce(rerank_ev.session_id, rerank_msg.session_id)
                                   and rerank_grant.team_workspace_id = $15::uuid
                                   and rerank_grant.team_id = $16::uuid
-                                  and rerank_grant.revoked_at is null
+                      and rerank_grant.revoked_at is null and sync_session_recall_ready(rerank_grant.session_id)
                               )
                           )
                         )
@@ -10272,7 +10285,7 @@ export const createMemorySourceRepository = (
                             where auth_grant.session_id = ev.session_id
                               and auth_grant.team_workspace_id = $15::uuid
                               and auth_grant.team_id = $16::uuid
-                              and auth_grant.revoked_at is null
+                              and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                           )
                         )
                       )
@@ -10280,6 +10293,19 @@ export const createMemorySourceRepository = (
                     or (me.message_id is not null and msg.id is not null)
                   )
                   and me.visibility = 'personal'
+                  and (me.memory_event_id is null or sync_session_recall_ready(ev.session_id))
+                  and (me.message_id is null or sync_session_recall_ready(msg.session_id))
+                  and (
+                    me.memory_node_id is null
+                    or not exists (
+                      select 1
+                      from memory_node_sources ready_mns
+                      left join memory_events ready_ev on ready_ev.id = ready_mns.memory_event_id
+                      left join messages ready_msg on ready_msg.id = ready_mns.message_id
+                      where ready_mns.memory_node_id = me.memory_node_id
+                        and not sync_session_recall_ready(coalesce(ready_ev.session_id, ready_msg.session_id))
+                    )
+                  )
                   and (
                     ($15::uuid is null and me.owner_user_id = $1)
                     or (
@@ -10304,7 +10330,7 @@ export const createMemorySourceRepository = (
                                 where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
                                   and auth_grant.team_workspace_id = $15::uuid
                                   and auth_grant.team_id = $16::uuid
-                                  and auth_grant.revoked_at is null
+                                  and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                               )
                           )
                         )
@@ -10316,7 +10342,7 @@ export const createMemorySourceRepository = (
                             where auth_grant.session_id = ev.session_id
                               and auth_grant.team_workspace_id = $15::uuid
                               and auth_grant.team_id = $16::uuid
-                              and auth_grant.revoked_at is null
+                              and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                           )
                         )
                         or (
@@ -10327,7 +10353,7 @@ export const createMemorySourceRepository = (
                             where auth_grant.session_id = msg.session_id
                               and auth_grant.team_workspace_id = $15::uuid
                               and auth_grant.team_id = $16::uuid
-                              and auth_grant.revoked_at is null
+                              and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                           )
                         )
                       )
@@ -10512,7 +10538,7 @@ export const createMemorySourceRepository = (
                                     where scoped_parent_grant.session_id = coalesce(scoped_parent_ev.session_id, scoped_parent_msg.session_id)
                                       and scoped_parent_grant.team_workspace_id = $15::uuid
                                       and scoped_parent_grant.team_id = $16::uuid
-                                      and scoped_parent_grant.revoked_at is null
+                      and scoped_parent_grant.revoked_at is null and sync_session_recall_ready(scoped_parent_grant.session_id)
                                   )
                               )
                             )
@@ -11055,7 +11081,8 @@ export const createMemorySourceRepository = (
         const hydratedEventRows = await Promise.all(
           eventRows.rows.map(async (event) => {
             if (
-              event.payload.content ||
+              (event.payload.content &&
+                event.payload.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
               !options.envelopeEncryptionProvider ||
               event.payload.contentEncrypted !== true
             ) {
@@ -11586,7 +11613,7 @@ export const createMemorySourceRepository = (
                     where auth_grant.session_id = coalesce(auth_ev.session_id, auth_msg.session_id)
                       and auth_grant.team_workspace_id = $3::uuid
                       and auth_grant.team_id = $4::uuid
-                      and auth_grant.revoked_at is null
+                      and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
                   )
               )
             )
@@ -11646,7 +11673,7 @@ export const createMemorySourceRepository = (
                 where auth_grant.session_id = me.session_id
                   and auth_grant.team_workspace_id = $8::uuid
                   and auth_grant.team_id = $9::uuid
-                  and auth_grant.revoked_at is null
+                  and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
               )
             )
           )
@@ -11691,7 +11718,8 @@ export const createMemorySourceRepository = (
       const hydratedSources = await Promise.all(
         sources.rows.map(async (source) => {
           if (
-            source.payload.content ||
+            (source.payload.content &&
+              source.payload.content !== ENCRYPTED_MEMORY_EVENT_TEXT) ||
             !options.envelopeEncryptionProvider ||
             source.payload.contentEncrypted !== true
           ) {
@@ -11752,7 +11780,7 @@ export const createMemorySourceRepository = (
 	                      where auth_grant.session_id = ci.session_id
 	                        and auth_grant.team_workspace_id = $4::uuid
 	                        and auth_grant.team_id = $5::uuid
-	                        and auth_grant.revoked_at is null
+	                        and auth_grant.revoked_at is null and sync_session_recall_ready(auth_grant.session_id)
 	                    )
 	                  )
 	                )

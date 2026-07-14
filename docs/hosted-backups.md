@@ -132,6 +132,17 @@ include that volume in the infrastructure backup plan or document why it is
 rebuildable. Koed logs, local caches, queue scratch data, and temporary
 plaintext restore files are not backup sources.
 
+Cross-Identity Sync restore proof must include deployment identities, logical
+memories, memory replicas, relationships, semantic change cursors, event
+mappings, encrypted recipient-key material, upload sessions/chunks, and durable
+inbox/outbox entries. A restore smoke must verify that an interrupted encrypted
+upload resumes from its stored chunks, an already applied package does not
+duplicate canonical rows or derived memory, and source/target cursors never
+regress. Restored stale or partially processed replicas remain excluded from
+Recall until normal processing marks them ready. Recipient private keys and
+field DEKs remain wrapped by the configured envelope provider; restoring the
+database without valid provider access must fail closed.
+
 ## Retention And Deletion
 
 Backups may contain retained Team-visible knowledge, Personal Memory, audit

@@ -32,6 +32,11 @@ import {
 } from "./capabilities.js";
 import { openApiDocument } from "./openapi.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
+import {
+  readLocalEdgeUpstreamRegistry,
+  resolveLocalEdgeRouteDecision,
+  upstreamAdvertisesCapability
+} from "../local-edge/upstream-routing.js";
 
 interface OperationalRouteOptions {
   dbPool?: DbPool | null;
@@ -498,6 +503,49 @@ export const registerOperationalRoutes = (
   options: OperationalRouteOptions
 ) => {
   const { config, requireRepository, auth } = context;
+  const readCrossIdentitySyncStatus = async () => {
+    try {
+      return await requireRepository().getCrossIdentitySyncOperationalStatus();
+    } catch {
+      return null;
+    }
+  };
+  const crossIdentitySyncCapability = async () => {
+    if (
+      applicationLayerEncryptionCapability(
+        options.envelopeEncryptionProvider
+      ) === "unavailable"
+    ) {
+      return "unavailable" as const;
+    }
+    if (!["developer", "local_personal"].includes(config.deploymentProfile)) {
+      try {
+        return (await requireRepository().isCrossIdentitySyncWorkerReady())
+          ? ("available" as const)
+          : ("unavailable" as const);
+      } catch {
+        return "unavailable" as const;
+      }
+    }
+    const registry = readLocalEdgeUpstreamRegistry(
+      context.localEdge.upstreamBackendsPath
+    );
+    return registry.backends.some((backend) => {
+      const authorization =
+        context.localEdge.resolveUpstreamAuthorization(backend);
+      return (
+        upstreamAdvertisesCapability(backend, "memory.crossIdentitySync") &&
+        resolveLocalEdgeRouteDecision({
+          operationFamily: "sync",
+          upstreamBackend: backend,
+          upstreamBackendId: backend.id,
+          upstreamCredentialAvailable: Boolean(authorization)
+        }).action === "queued_sync_handoff"
+      );
+    })
+      ? ("available" as const)
+      : ("unavailable" as const);
+  };
   const {
     dbPool,
     repository,
@@ -643,7 +691,7 @@ export const registerOperationalRoutes = (
 
   app.get("/openapi.json", () => openApiDocument);
 
-  app.get("/v1/capabilities", () =>
+  app.get("/v1/capabilities", async () =>
     buildCapabilitiesResponse(
       {
         deploymentProfile: config.deploymentProfile,
@@ -652,7 +700,8 @@ export const registerOperationalRoutes = (
         workosAuthKitEnabled: config.workos.authkitEnabled,
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
-        )
+        ),
+        crossIdentitySync: await crossIdentitySyncCapability()
       },
       "public"
     )
@@ -697,7 +746,8 @@ export const registerOperationalRoutes = (
         workosAuthKitEnabled: config.workos.authkitEnabled,
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
-        )
+        ),
+        crossIdentitySync: await crossIdentitySyncCapability()
       },
       "authenticated",
       entitlement,
@@ -706,7 +756,7 @@ export const registerOperationalRoutes = (
   });
 
   app.get("/health/details", async (request) => {
-    await auth.authenticateSession(request);
+    await assertOpsOperatorSession(request, context);
     const checks = [createHealth("api")];
 
     if (config.databaseUrl) {
@@ -737,17 +787,21 @@ export const registerOperationalRoutes = (
       }
     }
 
+    const crossIdentitySync = await readCrossIdentitySyncStatus();
     return {
       status: checks.every((check) => check.status === "ok")
         ? "ok"
         : "degraded",
-      checks
+      checks,
+      crossIdentitySync
     };
   });
 
   app.get("/self-host/status", async (request) => {
     const repo = requireRepository();
-    const user = await auth.authenticateSession(request).catch(() => null);
+    const user = await assertOpsOperatorSession(request, context).catch(
+      () => null
+    );
     if (!user) {
       const ready = await repo.health().catch(() => false);
       return {
@@ -767,8 +821,8 @@ export const registerOperationalRoutes = (
         redacted: true
       };
     }
-    const [ready, embedding, embeddingJobs, compactionJobs] = await Promise.all(
-      [
+    const [ready, embedding, embeddingJobs, compactionJobs, crossIdentitySync] =
+      await Promise.all([
         repo.health().catch(() => false),
         repo.getLocalEmbeddingStatus().catch(() => ({
           enabled: true,
@@ -782,9 +836,9 @@ export const registerOperationalRoutes = (
           .catch(() => ({ status: "unavailable" })),
         compactionQueue
           ?.getJobCounts("waiting", "active", "delayed", "failed")
-          .catch(() => ({ status: "unavailable" }))
-      ]
-    );
+          .catch(() => ({ status: "unavailable" })),
+        readCrossIdentitySyncStatus()
+      ]);
 
     return {
       status: ready ? "ok" : "error",
@@ -799,7 +853,8 @@ export const registerOperationalRoutes = (
           backend: config.queueBackend,
           embedding: embeddingJobs ?? { status: "not_configured" },
           compaction: compactionJobs ?? { status: "not_configured" }
-        }
+        },
+        crossIdentitySync
       },
       configuration: {
         supportedClients: ["codex"],
@@ -952,6 +1007,20 @@ export const registerOperationalRoutes = (
       config.ops.alertWebhookUrl,
       Boolean(config.ops.alertWebhookToken)
     );
+    try {
+      const sync = await repo.getCrossIdentitySyncOperationalStatus();
+      components.crossIdentitySync = {
+        status:
+          sync.outbox.failed > 0 ||
+          sync.inbox.failed > 0 ||
+          sync.relationships.failed > 0
+            ? "degraded"
+            : "ok",
+        details: { ...sync }
+      };
+    } catch {
+      components.crossIdentitySync = { status: "error" };
+    }
 
     const status = opsOverallStatus(components);
     return {

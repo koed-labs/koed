@@ -1,6 +1,6 @@
 # Self-Hosted To Hosted Sync
 
-Status: Accepted direction for the Team SaaS launch plan.
+Status: Implemented for explicitly selected Captured Sessions.
 
 This document defines the V1.0 direction for moving selected memory from a
 self-hosted Koed deployment into a hosted Team-personal identity without
@@ -10,6 +10,10 @@ migration paths.
 ## Product Decision
 
 The default path is Cross-Identity Live Sync, not one-time import.
+
+V1 is a directed local-personal-to-hosted flow. It is not symmetric Personal
+Device Sync, a peer replication protocol, or a mechanism for downloading one
+device's Personal Memory into another device's local database.
 
 Cross-Identity Live Sync means the selected memory keeps one logical lifespan
 while becoming available across identities or deployments. A self-hosted source
@@ -55,8 +59,10 @@ Required V1.0 decisions:
 - Mutability: the Team-personal replica is read-only for memory evolution.
 - Sharing: Team Workspace grants can expose only synchronized and processed
   memory already present on the hosted side.
-- Offline behavior: hosted recall can use the last synchronized state with a
-  stale marker.
+- Offline behavior: local Personal Memory remains available while transfer is
+  unavailable. The target may retain the last synchronized state, but stale or
+  partially processed replicas are excluded from Recall until they are ready
+  again.
 - Revocation: sync revocation stops future propagation; it does not
   automatically revoke existing Workspace shares or hard-delete retained data.
 - Forking: any independently evolving target memory must be created through a
@@ -65,9 +71,9 @@ Required V1.0 decisions:
   date-range, explicit Memory Node, and all-Personal-Memory sync are later
   expansions because they need separate closure, consent, and retention rules.
 - Freshness: synchronized memory becomes stale when the sync relationship's
-  `stale_after` timestamp has passed. Hosted recall may still use the last
-  synchronized state, but API/UI surfaces must expose the stale state rather
-  than pretending the source is current.
+  `stale_after` timestamp has passed. Stale replicas remain retained but cannot
+  influence Recall, ranking, graph expansion, citations, reranking, or Evidence
+  Bundles until a successful package makes them ready again.
 - Hosted processing outputs: the hosted side validates package provenance and
   may reuse source projection metadata, but hosted indexing owns the target
   processing cursor and rebuilds or verifies derived search artifacts under the
@@ -112,65 +118,72 @@ ciphertext, or object-storage credentials. If the envelope provider cannot
 encrypt or decrypt the package, package creation, intake, and restore must fail
 closed.
 
-Minimum package contents:
+Before accepting package bytes, the target validates a strict upload-manifest
+contract containing only the `sync_package` object class, protocol format and
+format version, package digest, recipient key ID and version, and bounded
+canonical record count. Missing or unknown fields, unsafe metadata, unsupported
+versions, and counts outside protocol bounds are rejected before an upload
+session is created. The authenticated record count is checked again after
+decrypting the package.
+
+The V1 Captured Session package contains:
 
 - Package manifest:
   - package format version.
   - source deployment ID.
   - source identity ID.
   - target identity ID.
-  - export job ID.
+  - stable package and sync relationship IDs.
   - created-at timestamp.
   - source software version.
   - package checksum.
+  - authenticated canonical record count, verified again after target decrypt.
 - Consent record:
   - consenting user.
   - selected memory boundary.
   - target Team-personal identity.
-  - target Team, where known.
   - retention and revocation acknowledgement.
   - timestamp.
 - Logical memory identity:
   - source logical memory ID.
   - target replica ID.
   - sync relationship ID.
-  - parent/source lineage.
+  - source and target replica IDs.
 - Source data:
-  - Captured Sessions.
-  - Memory Events.
-  - Memory Nodes and source links only when they are filtered or rebuilt from
-    the selected source closure.
-  - raw conversation/projection metadata required to rebuild derived memory.
-  - Project metadata as local context only.
+  - selected Captured Session metadata.
+  - canonical Memory Events and their permitted whole-item contributors.
   - source timestamps and ordering cursors.
 - Processing data:
-  - projection versions.
-  - embedding model metadata, if reused.
-  - LCM Summary metadata, if synchronized.
-  - invalidation and personal deletion markers.
+  - canonical event revision hashes and invalidation/delete operations.
+  - metadata needed to preserve semantic item type and LCM eligibility.
 - Sync cursors:
-  - high-water marks per source table or source stream.
+  - one monotonic semantic-change high-water mark for the selected session.
+  - cursors may contain global sequence gaps and are not used as record counts.
   - idempotency keys.
   - last exported source sequence.
 - Integrity data:
   - chunk checksums.
   - total byte count.
   - content hashes for deduplication.
-  - manifest signature or future signing hook.
+
+Source embeddings, Memory Nodes, LCM Summaries, raw transcripts, and unrelated
+Project or Personal Memory data are not synchronized. The target rebuilds
+queryable vectors, indexing, LCM nodes, evidence links, and graph state through
+the existing target processing paths.
 
 ## State Machine
 
 Recommended sync states:
 
-- `created`: sync relationship exists but no package has been uploaded.
+- `pending`: sync relationship exists but no package has been uploaded.
 - `uploading`: the source is transferring chunks.
 - `uploaded`: all bytes are present and checksum verification can run.
 - `verified`: package integrity has passed.
 - `processing`: hosted jobs are validating, transforming, projecting, and
   indexing.
-- `partially_available`: the package has been fully uploaded and verified, and
-  some synchronized memory can be recalled while later hosted processing jobs
-  continue.
+- `partially_available`: canonical records are applied but target embedding,
+  indexing, LCM, or derived-memory invalidation work is still running. This
+  state is not recallable.
 - `ready`: hosted replica is current to the latest processed cursor.
 - `stale`: source has not synced within the expected freshness window.
 - `failed`: processing failed and requires retry or user intervention.
@@ -183,6 +196,12 @@ projection job must not duplicate memory or create another logical lifespan.
 Hosted processing cursors belong in hosted upload-session and sync-relationship
 persistence. The source package carries source cursors only, so target-side
 resume state cannot be advanced or rewound by package payload data.
+
+Relationship creation uses a two-phase handshake. The source first retrieves
+the authenticated target deployment, User, replica, and recipient-key context;
+then persists a paused local relationship; then creates the target relationship
+idempotently; and only then activates its durable outbox. Package transport
+cannot begin from a remote-only relationship.
 
 The persistence model is intentionally explicit:
 
@@ -217,9 +236,11 @@ Recommended flow:
 6. The hosted API acknowledges receipt and moves the job to asynchronous
    processing.
 7. Hosted workers validate, transform, project, embed, index, and load.
-8. The Team-personal identity shows `partially_available` or `ready`.
-9. Team Workspace sharing can expose only synchronized memory with an active
-   Share Grant and a recallable processing state.
+8. The Team-personal identity shows `partially_available` while processing and
+   `ready` only after the atomic visibility boundary is complete.
+9. A Share Grant can be created only for a ready synchronized session. Recall
+   also rechecks readiness, freshness, membership, Workspace Access, lifecycle,
+   and entitlement state on every request.
 
 This keeps the user experience bounded by network transfer for large packages
 while allowing cloud processing to continue in the background.
@@ -240,6 +261,57 @@ The sync contract must distinguish all of these identifiers:
 
 Mapping must be explicit and auditable. A package should not be accepted merely
 because two email addresses match.
+
+Target intake authorizes the receiving User, enrolled device lineage, external
+principal mapping, package tenant binding, and sync policy. It does not apply a
+Team entitlement before decrypt because the replica is still Team-personal and
+has no Team or Workspace scope. Team entitlement, Membership, Workspace Access,
+and Share Grants are separate request-time checks when that ready replica is
+later shared or recalled through a Team Workspace.
+
+On the target, each sync relationship is bound to the exact enrolled source
+device lineage that created it. A credential for another device owned by the
+same User does not inherit access to that relationship. A replacement
+credential may continue it only through an authenticated rotation request that
+proves the active credential being replaced. Reusing the client-supplied device
+instance identifier does not prove lineage. The target assigns the opaque
+lineage identifier, and the first relationship permanently binds that lineage
+to one source deployment identity; later requests cannot use it to claim
+another source deployment. Every target intake mutation rechecks the presented
+credential's owner, expiry, revocation state, and `sync` operation family inside
+the same database transaction that changes sync state.
+
+The same mapped User may verify another enrolled device and create a separate
+sync relationship from that device. Re-verification rotates the principal's
+recorded proof reference only when the local and external principal mapping is
+unchanged; a proof already associated with that principal cannot be reused to
+claim a different external principal. Each relationship still retains its own
+exact device-credential binding and revocation lifecycle.
+
+This is multi-device source participation, not bidirectional local database
+replication. Each device keeps its own local Personal Memory and may push
+explicitly selected Captured Sessions to the target. The hosted replica can be
+recalled from authorized devices, but V1 does not automatically download one
+device's local Memory Events into another device's local database. A future
+pull protocol would need explicit cursor, conflict, deletion, key, retention,
+and offline semantics before it could add that behavior.
+
+Queue claims use a unique claim token plus a bounded lease. Completion, retry,
+failure, and lease renewal require the current token, so an expired worker
+cannot overwrite a replacement worker's result. If a worker disappears on its
+final allowed attempt, lease recovery first reconciles an already-committed
+source acknowledgement or target-ready package. Otherwise it fails ordinary
+work through the same relationship and upload failure path instead of
+stranding it in processing. Revocation delivery is reset and reclaimed because
+it must continue retrying until acknowledged. Relationship or credential
+revocation prevents new target mutations; relationship revocation also cancels
+active queue claims and fails unfinished uploads.
+
+Ready relationships use authenticated durable heartbeat outbox entries when no
+semantic changes are pending. A heartbeat may refresh freshness only when its
+acknowledged source cursor, target processing cursor, package sequence,
+relationship, principal, and enrolled credential lineage still match. It
+cannot carry Memory or advance processing state.
 
 ## Consent And Privacy
 
@@ -286,41 +358,49 @@ Deferred from the V1.0 implementation unless explicitly prioritized:
 - Explicit Fork/Import.
 - Full hard-purge automation across source and hosted deployments.
 
-## Follow-Up Implementation Tickets
+## Operation
 
-Backend/API:
+### Upgrade from the foundation scaffold
 
-- Add hosted sync package intake endpoints.
-- Add sync package validation, idempotency, and manifest versioning.
-- Add processing jobs for transform, Projection, embedding, and indexing.
+The production Cross-Identity Sync protocol replaces the earlier metadata-only
+foundation schema. Its migration resets only the old sync identity, replica,
+relationship, queue, upload, and chunk rows because those rows lack the
+recipient-key and cursor bindings required to prove a valid encrypted transfer.
+Users, Captured Sessions, Memory Events, and Team Share Grants are retained.
+Existing sync relationships must be enrolled again after the upgrade.
 
-Self-hosted source:
+Cross-Identity Sync runs as durable source outbox and target inbox work. A
+source signal coalesces changes for one relationship, packages only canonical
+changes after the acknowledged cursor, encrypts bounded chunks to the target's
+active recipient key, and resumes against the target upload status. The target
+verifies the complete encrypted upload before queuing intake, decrypts only
+after authorization and identity binding, applies canonical changes atomically,
+and runs existing embedding and LCM paths before marking the replica ready.
+The source remains `processing` and polls redacted target state without
+consuming transport retry attempts; it advances its acknowledged cursor and
+becomes `ready` only when the target relationship is `ready` (or subsequently
+`stale`) and its processing cursor covers the package cursor. Upload
+`completed` means canonical apply finished; it is not evidence that target
+embedding, indexing, and LCM readiness finished.
 
-- Add export package creation for selected memory boundaries.
-- Add chunked/resumable upload support.
-- Add checksum and manifest generation.
-- Add local progress and retry status.
+Permanent policy, authorization, schema, identity, or payload failures fail the
+relationship closed. Network, rate-limit, and server availability failures use
+bounded retry with backoff and jitter. New source changes reset a terminally
+consumed coalescing signal and continue from the durable acknowledged cursor.
+Target retries reuse an existing embedding only when its source hash, model,
+dimensions, version, vector rows, and complete chunk set match the current
+canonical source. Partial or stale embeddings are regenerated.
 
-Electron/CLI:
+Operational status exposes queue depth and age, retries, redacted failure
+class, ready/stale/failed/revoked counts, bytes and records completed in the
+last hour, and source/target record lag. It never exposes package content,
+customer identifiers, credentials, or key material.
 
-- Add consent UX.
-- Add source-to-target identity connection flow.
-- Add transfer progress, stale status, retry, and revocation controls.
-- Show that Team-personal replicas are read-only from a memory-evolution
-  perspective.
-
-Hosted Team:
-
-- Show sync state and provenance on Team-personal memory.
-- Allow Team Workspace sharing only for synchronized and processed memory.
-- Surface stale/partially available/ready states in recall and UI.
-
-Docs/support:
-
-- Explain Cross-Identity Sync vs Fork/Import.
-- Explain offline/stale behavior.
-- Explain revocation and retention boundaries.
-- Explain that unsupported one-time database migration is not the product path.
+Capability discovery reports Cross-Identity Sync as available only while the
+target worker has a recent database heartbeat and application-layer encryption
+is available. A local source additionally requires a fresh cached upstream
+capability descriptor that explicitly advertises `memory.crossIdentitySync` as
+available; a fresh cache timestamp alone is insufficient.
 
 ## Launch Decisions
 
@@ -330,6 +410,8 @@ Docs/support:
   `stale_after`, not by inference from UI activity.
 - Target-side processing cursors are authoritative for hosted projection,
   embedding, indexing, and retry state.
+- Stale, failed, paused, processing, and partially available replicas do not
+  influence Recall.
 - Chunked upload sessions are the API contract. Object storage can back large
   uploads, but clients should not depend on a specific storage provider.
 - Failed sync diagnostics are redacted operational metadata unless a separate

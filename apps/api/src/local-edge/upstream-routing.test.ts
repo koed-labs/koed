@@ -8,6 +8,7 @@ import {
   readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
+  upstreamAdvertisesCapability,
   type LocalEdgeUpstreamBackend
 } from "./upstream-routing.js";
 
@@ -51,6 +52,7 @@ const credential = (
   deviceInstanceId: "device-1",
   deviceLabel: "Desktop",
   credentialVersion: 1,
+  lineageId: "credential-lineage-id",
   verifierKind: "secret_hash",
   operationFamilies,
   metadata: {},
@@ -65,6 +67,27 @@ const credential = (
 });
 
 describe("local edge upstream routing", () => {
+  it("requires the cached upstream to advertise the exact capability", () => {
+    expect(
+      upstreamAdvertisesCapability(backend(), "memory.crossIdentitySync")
+    ).toBe(false);
+    expect(
+      upstreamAdvertisesCapability(
+        backend({
+          capabilities: {
+            state: "validated",
+            expiresAt: "2099-01-01T00:15:00.000Z",
+            payload: {
+              capabilities: {
+                "memory.crossIdentitySync": { availability: "available" }
+              }
+            }
+          }
+        }),
+        "memory.crossIdentitySync"
+      )
+    ).toBe(true);
+  });
   it("keeps Personal Memory local unless an upstream is explicit", () => {
     expect(
       resolveLocalEdgeRouteDecision({
@@ -213,11 +236,43 @@ describe("local edge upstream routing", () => {
         operationFamily: "sync",
         upstreamBackendId: "team-vps",
         upstreamBackend: backend(),
-        deviceCredential: credential(["sync"])
+        upstreamCredentialAvailable: true
       })
     ).toMatchObject({
       action: "queued_sync_handoff",
       reason: "queued_sync_handoff"
+    });
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "sync",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend(),
+        deviceCredential: credential(["sync"]),
+        upstreamCredentialAvailable: false
+      })
+    ).toMatchObject({ action: "deny_fail_closed", reason: "missing" });
+  });
+
+  it("does not authorize capture writes from a relay credential alone", () => {
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "capture_writes",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend({ routePolicy: { captureWrites: "enabled" } }),
+        upstreamCredentialAvailable: true,
+        capturePolicy: {
+          captureState: "enabled",
+          visibility: "personal",
+          paused: false,
+          pauseUntil: null,
+          source: "default",
+          policy: null
+        }
+      })
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "missing",
+      credentialState: "missing"
     });
   });
 

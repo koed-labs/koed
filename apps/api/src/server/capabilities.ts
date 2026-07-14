@@ -72,6 +72,7 @@ export interface CapabilitiesConfig {
   dependencyMode: RuntimeDependencyMode;
   workosAuthKitEnabled?: boolean;
   applicationLayerEncryption?: CapabilityAvailability;
+  crossIdentitySync?: CapabilityAvailability;
 }
 
 export interface CapabilityDescriptor {
@@ -469,7 +470,11 @@ export const buildCapabilitiesResponse = (
     shareGrants: teamFoundation
       ? ("partial" as const)
       : ("unavailable" as const),
-    crossIdentitySync: "unavailable" as const,
+    crossIdentitySync:
+      config.crossIdentitySync ??
+      (config.applicationLayerEncryption === "unavailable"
+        ? ("unavailable" as const)
+        : ("available" as const)),
     memoryInbox: "unavailable" as const
   };
   const commercial = {

@@ -58,6 +58,7 @@ import {
   resolveSupportedEmbeddingModelConfig
 } from "@koed/shared";
 import { registerTeamRoutes } from "../team/index.js";
+import { registerCrossIdentitySyncRoutes } from "../cross-identity-sync/index.js";
 import { resolveApiServerConfig } from "./config.js";
 import {
   apiLogSchemaVersion,
@@ -498,6 +499,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerApiTokenRoutes(app, routeContext);
   registerTeamRoutes(app, routeContext);
   registerLocalEdgeRoutes(app, routeContext);
+  registerCrossIdentitySyncRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerRawConversationRoutes(app, routeContext);
   registerRecallRoutes(app, routeContext);

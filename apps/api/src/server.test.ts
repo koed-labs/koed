@@ -1902,6 +1902,9 @@ const createFakeRepository = () => {
         challengeHash: input.challengeHash,
         upstreamBackendId: input.upstreamBackendId,
         deviceInstanceId: input.deviceInstanceId ?? null,
+        rotationLineageId: input.rotationLineageId ?? null,
+        rotationOwnerUserId: input.rotationOwnerUserId ?? null,
+        rotationCredentialId: input.rotationCredentialId ?? null,
         deviceLabel: input.deviceLabel ?? null,
         requestedOperationFamilies: input.requestedOperationFamilies ?? [],
         metadata: input.metadata ?? {},
@@ -1926,7 +1929,9 @@ const createFakeRepository = () => {
       if (
         !challenge ||
         challenge.redeemedAt ||
-        Date.parse(challenge.expiresAt) <= Date.now()
+        Date.parse(challenge.expiresAt) <= Date.now() ||
+        (challenge.rotationOwnerUserId !== null &&
+          challenge.rotationOwnerUserId !== actor.userId)
       ) {
         return null;
       }
@@ -1946,6 +1951,37 @@ const createFakeRepository = () => {
       challenge.boundByUserId = actor.userId;
       challenge.boundAt = now;
       challenge.redeemedAt = now;
+      const lineageId = challenge.rotationLineageId ?? randomUUID();
+      if (challenge.rotationLineageId) {
+        const activePredecessors = [...deviceCredentials.values()].filter(
+          (existing) =>
+            existing.ownerUserId === actor.userId &&
+            existing.upstreamBackendId === challenge.upstreamBackendId &&
+            existing.deviceInstanceId === challenge.deviceInstanceId &&
+            existing.lineageId === challenge.rotationLineageId &&
+            existing.id === challenge.rotationCredentialId &&
+            !existing.revokedAt
+        );
+        if (activePredecessors.length !== 1) {
+          throw Object.assign(
+            new Error(
+              "Active device credential requires authenticated rotation"
+            ),
+            { statusCode: 409 }
+          );
+        }
+        for (const existing of deviceCredentials.values()) {
+          if (
+            existing.ownerUserId === actor.userId &&
+            existing.lineageId === challenge.rotationLineageId &&
+            !existing.revokedAt
+          ) {
+            existing.revokedAt = now;
+            existing.revokedByUserId = actor.userId;
+            existing.revocationReason = "rotated";
+          }
+        }
+      }
       const credential = {
         id: randomUUID(),
         ownerUserId: actor.userId,
@@ -1954,6 +1990,7 @@ const createFakeRepository = () => {
         upstreamBackendId: challenge.upstreamBackendId,
         deviceInstanceId:
           challenge.deviceInstanceId ?? `device-${challenge.id}`,
+        lineageId,
         deviceLabel: challenge.deviceLabel,
         credentialVersion: 1,
         verifierKind: input.verifierKind,
@@ -1999,7 +2036,9 @@ const createFakeRepository = () => {
       if (
         !challenge ||
         challenge.redeemedAt ||
-        Date.parse(challenge.expiresAt) <= Date.now()
+        Date.parse(challenge.expiresAt) <= Date.now() ||
+        (challenge.rotationOwnerUserId !== null &&
+          challenge.rotationOwnerUserId !== actor.userId)
       ) {
         return null;
       }
@@ -2019,6 +2058,37 @@ const createFakeRepository = () => {
       challenge.boundByUserId = actor.userId;
       challenge.boundAt = now;
       challenge.redeemedAt = now;
+      const lineageId = challenge.rotationLineageId ?? randomUUID();
+      if (challenge.rotationLineageId) {
+        const activePredecessors = [...deviceCredentials.values()].filter(
+          (existing) =>
+            existing.ownerUserId === actor.userId &&
+            existing.upstreamBackendId === challenge.upstreamBackendId &&
+            existing.deviceInstanceId === challenge.deviceInstanceId &&
+            existing.lineageId === challenge.rotationLineageId &&
+            existing.id === challenge.rotationCredentialId &&
+            !existing.revokedAt
+        );
+        if (activePredecessors.length !== 1) {
+          throw Object.assign(
+            new Error(
+              "Active device credential requires authenticated rotation"
+            ),
+            { statusCode: 409 }
+          );
+        }
+        for (const existing of deviceCredentials.values()) {
+          if (
+            existing.ownerUserId === actor.userId &&
+            existing.lineageId === challenge.rotationLineageId &&
+            !existing.revokedAt
+          ) {
+            existing.revokedAt = now;
+            existing.revokedByUserId = actor.userId;
+            existing.revocationReason = "rotated";
+          }
+        }
+      }
       const credential = {
         id: randomUUID(),
         ownerUserId: actor.userId,
@@ -2027,6 +2097,7 @@ const createFakeRepository = () => {
         upstreamBackendId: challenge.upstreamBackendId,
         deviceInstanceId:
           challenge.deviceInstanceId ?? `device-${challenge.id}`,
+        lineageId,
         deviceLabel: challenge.deviceLabel,
         credentialVersion: 1,
         verifierKind: input.verifierKind,
@@ -2056,7 +2127,9 @@ const createFakeRepository = () => {
       if (
         !challenge ||
         challenge.redeemedAt ||
-        Date.parse(challenge.expiresAt) <= Date.now()
+        Date.parse(challenge.expiresAt) <= Date.now() ||
+        (challenge.rotationOwnerUserId !== null &&
+          challenge.rotationOwnerUserId !== actor.userId)
       ) {
         return null;
       }
@@ -6349,6 +6422,173 @@ describe("account and access flows", () => {
     expect(apiTokenStillWorks.statusCode).toBe(200);
   });
 
+  it("inherits the authenticated device identity when rotating a credential", async () => {
+    const app = await buildServer({ repository: createFakeRepository() });
+    const registered = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "device-rotation-owner@example.com",
+        password: "password123"
+      }
+    });
+    const cookie = cookieHeader(registered);
+    const otherUser = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "device-rotation-other@example.com",
+        password: "password123"
+      }
+    });
+    const otherCookie = cookieHeader(otherUser);
+    const initialChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const initialKeyId = `device-key-${randomUUID()}`;
+    const initialSecret = `device-secret-${randomUUID()}`;
+    await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: { cookie },
+      payload: {
+        challenge_hash: initialChallengeHash,
+        upstream_backend_id: "team-vps",
+        device_instance_id: "desktop-rotation-1",
+        requested_operation_families: ["sync"]
+      }
+    });
+    const initialRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: initialChallengeHash,
+        credential_key_id: initialKeyId,
+        verifier_kind: "secret_hash",
+        verifier_secret: initialSecret
+      }
+    });
+    const initialCredential = jsonBody<{
+      credential: { id: string };
+    }>(initialRedeem).credential;
+    const rotationChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const rotationChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: {
+        authorization: `Koed-Device ${initialKeyId}:${initialSecret}`
+      },
+      payload: {
+        challenge_hash: rotationChallengeHash,
+        upstream_backend_id: "team-vps",
+        rotate_credential_id: initialCredential.id,
+        requested_operation_families: ["sync"]
+      }
+    });
+    const rotationChallengeRecord = jsonBody<{
+      challenge: { id: string };
+    }>(rotationChallenge).challenge;
+    const siblingRotationChallengeHash = `challenge-${randomUUID()}-${randomUUID()}`;
+    const siblingRotationChallenge = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/challenges",
+      headers: {
+        authorization: `Koed-Device ${initialKeyId}:${initialSecret}`
+      },
+      payload: {
+        challenge_hash: siblingRotationChallengeHash,
+        upstream_backend_id: "team-vps",
+        rotate_credential_id: initialCredential.id,
+        requested_operation_families: ["sync"]
+      }
+    });
+    const crossUserDenial = await app.inject({
+      method: "POST",
+      url: `/v1/local-edge/device-enrollments/challenges/${rotationChallengeRecord.id}/approval`,
+      headers: { cookie: otherCookie },
+      payload: { decision: "deny" }
+    });
+    const rotatedKeyId = `device-key-${randomUUID()}`;
+    const rotatedSecret = `device-secret-${randomUUID()}`;
+    const crossUserRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie: otherCookie },
+      payload: {
+        challenge_hash: rotationChallengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "secret_hash",
+        verifier_secret: `device-secret-${randomUUID()}`
+      }
+    });
+    const rotatedRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: rotationChallengeHash,
+        credential_key_id: rotatedKeyId,
+        verifier_kind: "secret_hash",
+        verifier_secret: rotatedSecret
+      }
+    });
+    const staleSiblingRedeem = await app.inject({
+      method: "POST",
+      url: "/v1/local-edge/device-enrollments/credentials",
+      headers: { cookie },
+      payload: {
+        challenge_hash: siblingRotationChallengeHash,
+        credential_key_id: `device-key-${randomUUID()}`,
+        verifier_kind: "secret_hash",
+        verifier_secret: `device-secret-${randomUUID()}`
+      }
+    });
+    const rotatedCredential = jsonBody<{
+      credential: {
+        deviceInstanceId: string;
+      };
+    }>(rotatedRedeem).credential;
+    const oldStatus = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: {
+        authorization: `Koed-Device ${initialKeyId}:${initialSecret}`
+      }
+    });
+    const newStatus = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials/status",
+      headers: {
+        authorization: `Koed-Device ${rotatedKeyId}:${rotatedSecret}`
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/local-edge/device-credentials?upstream_backend_id=team-vps",
+      headers: { cookie }
+    });
+    await app.close();
+
+    expect(initialRedeem.statusCode).toBe(200);
+    expect(rotationChallenge.statusCode).toBe(200);
+    expect(siblingRotationChallenge.statusCode).toBe(200);
+    expect(crossUserDenial.statusCode).toBe(200);
+    expect(
+      jsonBody<{ challenge: { status: string } }>(crossUserDenial).challenge
+        .status
+    ).toBe("pending");
+    expect(crossUserRedeem.statusCode).toBe(404);
+    expect(rotatedRedeem.statusCode).toBe(200);
+    expect(staleSiblingRedeem.statusCode).toBe(409);
+    expect(rotatedCredential).toMatchObject({
+      deviceInstanceId: "desktop-rotation-1"
+    });
+    expect(oldStatus.statusCode).toBe(401);
+    expect(newStatus.statusCode).toBe(200);
+    expect(
+      jsonBody<{ credentials: unknown[] }>(listed).credentials
+    ).toHaveLength(1);
+  });
+
   it("approves and denies browser-visible device enrollment challenges without exposing verifier material", async () => {
     const app = await buildServer({ repository: createFakeRepository() });
     const registered = await app.inject({
@@ -8287,6 +8527,151 @@ describe("account and access flows", () => {
         "Bearer API token required"
       );
     }
+  });
+
+  it("keeps hosted sync operations invisible to non-operator sessions", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    process.env.KOED_OPS_OPERATOR_EMAILS = "sync-operator@example.com";
+    const app = await buildServer({ repository: createFakeRepository() });
+    const member = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "sync-member@example.com", password: "password123" }
+    });
+    const operator = await app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "sync-operator@example.com", password: "password123" }
+    });
+
+    const memberDetails = await app.inject({
+      method: "GET",
+      url: "/health/details",
+      headers: { cookie: cookieHeader(member) }
+    });
+    const memberStatus = await app.inject({
+      method: "GET",
+      url: "/self-host/status",
+      headers: { cookie: cookieHeader(member) }
+    });
+    const operatorDetails = await app.inject({
+      method: "GET",
+      url: "/health/details",
+      headers: { cookie: cookieHeader(operator) }
+    });
+    await app.close();
+
+    expect(memberDetails.statusCode).toBe(403);
+    expect(memberStatus.statusCode).toBe(200);
+    expect(jsonBody<{ redacted: boolean }>(memberStatus).redacted).toBe(true);
+    expect(memberStatus.body).not.toContain("crossIdentitySync");
+    expect(operatorDetails.statusCode).toBe(200);
+    expect(operatorDetails.body).toContain("crossIdentitySync");
+  });
+
+  it("keeps Cross-Identity Sync behind profile and scoped device boundaries", async () => {
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const targetApp = await buildServer({ repository: createFakeRepository() });
+    const registered = await targetApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "sync-boundary@example.com", password: "password123" }
+    });
+    const cookie = cookieHeader(registered);
+    const createdToken = await targetApp.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie },
+      payload: { name: "Sync boundary API Token" }
+    });
+    const token = jsonBody<TokenResponse>(createdToken).token;
+    const relationshipId = randomUUID();
+    const bearerTargetRequests = await Promise.all([
+      targetApp.inject({
+        method: "POST",
+        url: "/v1/cross-identity-sync/intake/relationships",
+        headers: { authorization: `Bearer ${token}` },
+        payload: {}
+      }),
+      targetApp.inject({
+        method: "POST",
+        url: `/v1/cross-identity-sync/relationships/${relationshipId}/upload-sessions`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: {}
+      }),
+      targetApp.inject({
+        method: "GET",
+        url: `/v1/cross-identity-sync/relationships/${relationshipId}`,
+        headers: { authorization: `Bearer ${token}` }
+      }),
+      targetApp.inject({
+        method: "POST",
+        url: `/v1/cross-identity-sync/relationships/${relationshipId}/retry`,
+        headers: { authorization: `Bearer ${token}` }
+      })
+    ]);
+    expect(bearerTargetRequests.map((response) => response.statusCode)).toEqual(
+      [401, 401, 403, 403]
+    );
+
+    const readOnlyDevice = await enrollDeviceCredentialForTest(
+      targetApp,
+      cookie,
+      ["team_workspace_read"]
+    );
+    const rejectedScope = await targetApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/relationships",
+      headers: { authorization: readOnlyDevice.authorization },
+      payload: {}
+    });
+    expect(rejectedScope.statusCode).toBe(403);
+
+    const syncDevice = await enrollDeviceCredentialForTest(targetApp, cookie, [
+      "sync"
+    ]);
+    const malformedAfterAuth = await targetApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/relationships",
+      headers: { authorization: syncDevice.authorization },
+      payload: {}
+    });
+    expect(malformedAfterAuth.statusCode).toBe(400);
+    await targetApp.close();
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "developer";
+    const sourceApp = await buildServer({ repository: createFakeRepository() });
+    const sourceRegistered = await sourceApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "sync-source-boundary@example.com",
+        password: "password123"
+      }
+    });
+    const sourceCookie = cookieHeader(sourceRegistered);
+    const sourceTokenResponse = await sourceApp.inject({
+      method: "POST",
+      url: "/api-tokens",
+      headers: { cookie: sourceCookie },
+      payload: { name: "Source boundary API Token" }
+    });
+    const sourceToken = jsonBody<TokenResponse>(sourceTokenResponse).token;
+    const rejectedSourceToken = await sourceApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/relationships",
+      headers: { authorization: `Bearer ${sourceToken}` },
+      payload: {}
+    });
+    const rejectedLocalIntake = await sourceApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/relationships",
+      headers: { cookie: sourceCookie },
+      payload: {}
+    });
+    expect(rejectedSourceToken.statusCode).toBe(401);
+    expect(rejectedLocalIntake.statusCode).toBe(404);
+    await sourceApp.close();
   });
 
   it.skipIf(!process.env.DATABASE_URL)(

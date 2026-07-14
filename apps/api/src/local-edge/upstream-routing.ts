@@ -47,6 +47,12 @@ export interface LocalEdgeUpstreamBackend {
   capabilities?: {
     state?: "validated" | "stale" | "failed" | "not_checked";
     expiresAt?: string | null;
+    payload?: {
+      capabilities?: Record<
+        string,
+        { availability?: "available" | "partial" | "unavailable" }
+      >;
+    };
   };
 }
 
@@ -143,6 +149,13 @@ export const upstreamBackendById = (
   upstreamBackendId: string
 ): LocalEdgeUpstreamBackend | null =>
   registry.backends.find((backend) => backend.id === upstreamBackendId) ?? null;
+
+export const upstreamAdvertisesCapability = (
+  backend: LocalEdgeUpstreamBackend,
+  capability: string
+): boolean =>
+  backend.capabilities?.payload?.capabilities?.[capability]?.availability ===
+  "available";
 
 export const resolveLocalEdgeRouteDecision = (input: {
   operationFamily: LocalEdgeOperationFamily;
@@ -447,7 +460,13 @@ const credentialState = (input: {
     DeviceCredentialRecord,
     "upstreamBackendId" | "operationFamilies"
   > | null;
+  upstreamCredentialAvailable?: boolean;
+  requestedMode?: LocalEdgeRouteMode;
 }): LocalEdgeRouteDecision["credentialState"] => {
+  const mode = input.requestedMode ?? defaultRouteMode[input.operationFamily];
+  if (mode === "queued_sync_handoff" && input.operationFamily === "sync") {
+    return input.upstreamCredentialAvailable ? "configured" : "missing";
+  }
   const credential = input.deviceCredential;
   if (!credential) {
     return "missing";

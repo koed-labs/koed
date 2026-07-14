@@ -8,6 +8,8 @@ import {
   createHttpManagedKmsKeyring,
   createLocalTestKeyEnvelopeEncryptionProvider,
   createManagedKmsEnvelopeEncryptionProvider,
+  createRecipientPrivateKeyEnvelopeEncryptionProvider,
+  createRecipientPublicKeyEnvelopeEncryptionProvider,
   createUnsupportedEnvelopeEncryptionProvider,
   decryptEncryptedJsonPackage,
   decryptEnvelopeToUtf8,
@@ -17,8 +19,10 @@ import {
   ENCRYPTED_PAYLOAD_KMS_KEY_WRAP_ALGORITHM,
   ENCRYPTED_PAYLOAD_MANAGED_KMS_KEY_WRAP_ALGORITHM,
   EnvelopeEncryptionError,
+  generateRecipientKeyMaterial,
   InvalidEncryptedPayloadEnvelopeError,
   ManagedKmsProviderError,
+  RecipientKeyTransportError,
   redactEnvelopeEncryptionProviderStatus,
   requireApiDataEncryptionKey,
   resolveApiDataEncryptionKeyFromEnv,
@@ -204,6 +208,22 @@ describe("createLocalTestKeyEnvelopeEncryptionProvider", () => {
     };
 
     expect(() => provider.decrypt(tampered)).toThrow();
+  });
+
+  it("rejects truncated authentication tags and invalid nonce lengths", async () => {
+    const { provider, envelope } = await encryptFixture();
+    const truncatedTag = Buffer.from(envelope.tag, "base64").subarray(0, 4);
+    const truncatedNonce = Buffer.from(envelope.nonce, "base64").subarray(0, 8);
+
+    expect(() =>
+      provider.decrypt({ ...envelope, tag: truncatedTag.toString("base64") })
+    ).toThrow("authentication tag must be 16 bytes");
+    expect(() =>
+      provider.decrypt({
+        ...envelope,
+        nonce: truncatedNonce.toString("base64")
+      })
+    ).toThrow("nonce must be 12 bytes");
   });
 
   it("rewraps DEKs without changing payload bytes", async () => {
@@ -802,5 +822,93 @@ describe("resolveApiDataEncryptionKeyFromEnv", () => {
     expect(() => requireApiDataEncryptionKey({})).toThrow(
       "API_DATA_ENCRYPTION_KEY (or DATA_ENCRYPTION_KEY)"
     );
+  });
+});
+
+describe("recipient public-key transport encryption", () => {
+  it("keeps the recipient private key encrypted by the target root provider", async () => {
+    const root =
+      createLocalTestKeyEnvelopeEncryptionProvider(generatedRootKey());
+    const material = await generateRecipientKeyMaterial(root, {
+      keyId: "sync-recipient:test",
+      keyVersion: 1,
+      scope: { deploymentId: "target-deployment" }
+    });
+    const serialized = JSON.stringify(material);
+
+    expect(material.publicJwk.d).toBeUndefined();
+    expect(serialized).not.toContain('"d":');
+    expect(material.encryptedPrivateKey.providerMode).toBe("local_test_key");
+  });
+
+  it("encrypts at the source and decrypts only with the target private key", async () => {
+    const root =
+      createLocalTestKeyEnvelopeEncryptionProvider(generatedRootKey());
+    const material = await generateRecipientKeyMaterial(root, {
+      keyId: "sync-recipient:roundtrip",
+      keyVersion: 2
+    });
+    const source = createRecipientPublicKeyEnvelopeEncryptionProvider(material);
+    const target = await createRecipientPrivateKeyEnvelopeEncryptionProvider(
+      root,
+      material
+    );
+    const envelope = await source.encrypt({
+      plaintext: "cross-instance payload",
+      scope: { objectClass: "sync_package" },
+      provenance: { rowFamily: "sync_package", sourceId: "package-1" },
+      ciphertextLocation: "sync_package.chunk",
+      aad: { relationshipId: "relationship-1", chunkIndex: 0 }
+    });
+
+    expect(() => source.decrypt(envelope)).toThrow(RecipientKeyTransportError);
+    await expect(decryptEnvelopeToUtf8(target, envelope)).resolves.toBe(
+      "cross-instance payload"
+    );
+  });
+
+  it("fails closed for a wrong recipient key and tampered payload", async () => {
+    const root =
+      createLocalTestKeyEnvelopeEncryptionProvider(generatedRootKey());
+    const [first, second] = await Promise.all([
+      generateRecipientKeyMaterial(root, {
+        keyId: "sync-recipient:first",
+        keyVersion: 1
+      }),
+      generateRecipientKeyMaterial(root, {
+        keyId: "sync-recipient:second",
+        keyVersion: 1
+      })
+    ]);
+    const source = createRecipientPublicKeyEnvelopeEncryptionProvider(first);
+    const target = await createRecipientPrivateKeyEnvelopeEncryptionProvider(
+      root,
+      first
+    );
+    const wrongTarget =
+      await createRecipientPrivateKeyEnvelopeEncryptionProvider(root, second);
+    const envelope = await source.encrypt({
+      plaintext: "protected",
+      scope: { objectClass: "sync_package" },
+      provenance: { rowFamily: "sync_package" },
+      ciphertextLocation: "sync_package.chunk"
+    });
+
+    expect(() => wrongTarget.decrypt(envelope)).toThrow(
+      InvalidEncryptedPayloadEnvelopeError
+    );
+    expect(() =>
+      target.decrypt({ ...envelope, ciphertext: `${envelope.ciphertext}AA` })
+    ).toThrow(InvalidEncryptedPayloadEnvelopeError);
+  });
+
+  it("does not allow recipient transport mode as a configured root provider", () => {
+    expect(() =>
+      createEnvelopeEncryptionProviderFromEnvironment({
+        environment: {
+          API_ENVELOPE_ENCRYPTION_PROVIDER: "recipient_public_key"
+        }
+      })
+    ).toThrow("Unsupported API_ENVELOPE_ENCRYPTION_PROVIDER");
   });
 });
