@@ -4444,6 +4444,60 @@ describeDb("memory repository visibility", () => {
       }
     );
     expect(replay?.relationship.id).toBe(created?.relationship.id);
+    const replayWithNewRequestKey =
+      await encryptedRepo.createSourceSyncRelationship(
+        { userId: owner.id },
+        {
+          ...ids,
+          sessionId: session.id,
+          localDeploymentIdentityId: localDeployment.id,
+          remoteDeploymentIdentityId: remoteDeployment.id,
+          remoteUserIdentityId: remoteUser.id,
+          idempotencyKey: "sync-source-retry-request",
+          creationRequestHash: "a".repeat(64),
+          policyManifest: { sourceBoundary: "captured_session" },
+          consentManifest: { consented: true }
+        }
+      );
+    expect(replayWithNewRequestKey?.relationship.id).toBe(
+      created?.relationship.id
+    );
+    await expect(
+      pool.query(
+        "select count(*)::int as count from sync_outbox_entries where sync_relationship_id=$1",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(
+      encryptedRepo.activateSourceSyncRelationship({
+        relationshipId: ids.relationshipId,
+        localUserId: owner.id
+      })
+    ).resolves.toMatchObject({ state: "created" });
+    const incompleteUploadId = randomUUID();
+    await pool.query(
+      "insert into sync_package_upload_sessions (id,sync_relationship_id,protocol_package_id,state,request_hash,package_manifest,package_checksum,source_sequence,from_cursor,to_cursor,total_bytes,expected_chunk_count,chunk_count,idempotency_key) values ($1,$2,$3,'uploading',$4,'{}',$5,1,0,1,2,2,1,'interrupted-source-package')",
+      [
+        incompleteUploadId,
+        ids.relationshipId,
+        randomUUID(),
+        "b".repeat(64),
+        "c".repeat(64)
+      ]
+    );
+    await pool.query(
+      "insert into sync_package_chunks (upload_session_id,chunk_index,chunk_checksum,byte_count,encrypted_payload) values ($1,0,$2,1,'{}')",
+      [incompleteUploadId, "d".repeat(64)]
+    );
+    await expect(
+      encryptedRepo.deleteIncompleteSourceSyncPackage({
+        relationshipId: ids.relationshipId,
+        uploadSessionId: incompleteUploadId
+      })
+    ).resolves.toBe(true);
+    await expect(
+      encryptedRepo.getSyncPackageForService(incompleteUploadId)
+    ).resolves.toBeNull();
     await expect(
       encryptedRepo.applyRemoteSyncRevocation(
         { userId: owner.id },
@@ -4696,6 +4750,30 @@ describeDb("memory repository visibility", () => {
     ).resolves.toMatchObject({
       rows: [{ state: "ready", last_error_class: null }]
     });
+    await pool.query(
+      "update cross_identity_sync_relationships set state='stale',stale_after=now()-interval '1 second' where id=$1",
+      [ids.relationshipId]
+    );
+    await expect(
+      encryptedRepo.listDueSourceSyncHeartbeats({ dueWithinSeconds: 30 })
+    ).resolves.toContainEqual(
+      expect.objectContaining({ relationshipId: ids.relationshipId })
+    );
+    await expect(
+      encryptedRepo.refreshSourceSyncHeartbeat({
+        relationshipId: ids.relationshipId,
+        sourceCursor: delta!.changes[0]!.cursor,
+        targetProcessingCursor: delta!.changes[1]!.cursor,
+        packageSequence: 1,
+        staleAfterSeconds: 3_600
+      })
+    ).resolves.toBe(true);
+    await expect(
+      pool.query(
+        "select state,stale_after>now() as fresh from cross_identity_sync_relationships where id=$1",
+        [ids.relationshipId]
+      )
+    ).resolves.toMatchObject({ rows: [{ state: "ready", fresh: true }] });
     await expect(
       encryptedRepo.revokeCrossIdentitySyncRelationship(
         { userId: owner.id },
@@ -5318,6 +5396,54 @@ describeDb("memory repository visibility", () => {
       packageId,
       staleAfterSeconds: 3_600
     });
+    await expect(
+      encryptedRepo.acceptTargetSyncHeartbeat(
+        { userId: owner.id, deviceCredentialId: rotatedCredential!.id },
+        {
+          relationshipId,
+          sourceCursor: 2,
+          targetProcessingCursor: 1,
+          packageSequence: 1,
+          staleAfterSeconds: 3_600
+        }
+      )
+    ).resolves.toBe(false);
+    await expect(
+      encryptedRepo.acceptTargetSyncHeartbeat(
+        { userId: owner.id, deviceCredentialId: rotatedCredential!.id },
+        {
+          relationshipId,
+          sourceCursor: 1,
+          targetProcessingCursor: 1,
+          packageSequence: 1,
+          staleAfterSeconds: 3_600
+        }
+      )
+    ).resolves.toBe(true);
+    await expect(
+      encryptedRepo.authorizeTargetSyncProcessing({
+        relationshipId,
+        uploadSessionId: uploadId
+      })
+    ).resolves.toBe(true);
+    await pool.query("update users set disabled_at=now() where id=$1", [
+      owner.id
+    ]);
+    await expect(
+      encryptedRepo.authorizeTargetSyncProcessing({
+        relationshipId,
+        uploadSessionId: uploadId
+      })
+    ).resolves.toBe(false);
+    await pool.query("update users set disabled_at=null where id=$1", [
+      owner.id
+    ]);
+    await expect(
+      encryptedRepo.authorizeTargetSyncProcessing({
+        relationshipId,
+        uploadSessionId: uploadId
+      })
+    ).resolves.toBe(true);
     await pool.query(
       "update sync_inbox_entries set state='completed',processed_at=now() where sync_relationship_id=$1",
       [relationshipId]

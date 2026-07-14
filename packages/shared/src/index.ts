@@ -5,7 +5,8 @@ export {
   fetchBoundedJsonObject,
   readBoundedJsonObject,
   RemoteRequestTimeoutError,
-  RemoteResponseLimitError
+  RemoteResponseLimitError,
+  upstreamApiUrl
 } from "./bounded-http.js";
 export {
   API_DATA_ENCRYPTION_KEY_ENV,

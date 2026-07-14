@@ -2327,6 +2327,15 @@ export const crossIdentitySyncRelationships = pgTable(
   ]
 );
 
+export const syncServiceHeartbeats = pgTable("sync_service_heartbeats", {
+  serviceName: text("service_name").primaryKey(),
+  instanceId: uuid("instance_id").notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: updatedNow()
+});
+
 export const syncRecipientKeys = pgTable(
   "sync_recipient_keys",
   {

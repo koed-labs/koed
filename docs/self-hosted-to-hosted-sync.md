@@ -11,6 +11,10 @@ migration paths.
 
 The default path is Cross-Identity Live Sync, not one-time import.
 
+V1 is a directed local-personal-to-hosted flow. It is not symmetric Personal
+Device Sync, a peer replication protocol, or a mechanism for downloading one
+device's Personal Memory into another device's local database.
+
 Cross-Identity Live Sync means the selected memory keeps one logical lifespan
 while becoming available across identities or deployments. A self-hosted source
 can synchronize selected memory to a Team-personal target so the hosted side can
@@ -193,6 +197,12 @@ Hosted processing cursors belong in hosted upload-session and sync-relationship
 persistence. The source package carries source cursors only, so target-side
 resume state cannot be advanced or rewound by package payload data.
 
+Relationship creation uses a two-phase handshake. The source first retrieves
+the authenticated target deployment, User, replica, and recipient-key context;
+then persists a paused local relationship; then creates the target relationship
+idempotently; and only then activates its durable outbox. Package transport
+cannot begin from a remote-only relationship.
+
 The persistence model is intentionally explicit:
 
 - `deployment_identities` identify source and target Koed deployments.
@@ -252,6 +262,13 @@ The sync contract must distinguish all of these identifiers:
 Mapping must be explicit and auditable. A package should not be accepted merely
 because two email addresses match.
 
+Target intake authorizes the receiving User, enrolled device lineage, external
+principal mapping, package tenant binding, and sync policy. It does not apply a
+Team entitlement before decrypt because the replica is still Team-personal and
+has no Team or Workspace scope. Team entitlement, Membership, Workspace Access,
+and Share Grants are separate request-time checks when that ready replica is
+later shared or recalled through a Team Workspace.
+
 On the target, each sync relationship is bound to the exact enrolled source
 device lineage that created it. A credential for another device owned by the
 same User does not inherit access to that relationship. A replacement
@@ -289,6 +306,12 @@ stranding it in processing. Revocation delivery is reset and reclaimed because
 it must continue retrying until acknowledged. Relationship or credential
 revocation prevents new target mutations; relationship revocation also cancels
 active queue claims and fails unfinished uploads.
+
+Ready relationships use authenticated durable heartbeat outbox entries when no
+semantic changes are pending. A heartbeat may refresh freshness only when its
+acknowledged source cursor, target processing cursor, package sequence,
+relationship, principal, and enrolled credential lineage still match. It
+cannot carry Memory or advance processing state.
 
 ## Consent And Privacy
 
@@ -372,6 +395,12 @@ Operational status exposes queue depth and age, retries, redacted failure
 class, ready/stale/failed/revoked counts, bytes and records completed in the
 last hour, and source/target record lag. It never exposes package content,
 customer identifiers, credentials, or key material.
+
+Capability discovery reports Cross-Identity Sync as available only while the
+target worker has a recent database heartbeat and application-layer encryption
+is available. A local source additionally requires a fresh cached upstream
+capability descriptor that explicitly advertises `memory.crossIdentitySync` as
+available; a fresh cache timestamp alone is insufficient.
 
 ## Launch Decisions
 

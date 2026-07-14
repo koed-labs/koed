@@ -874,7 +874,9 @@ try {
         upgradeResult.rows[0]?.preserved_users !== 1 ||
         upgradeResult.rows[0]?.legacy_sync_rows !== 0
       ) {
-        throw new Error("Cross-Identity Sync migration did not replace legacy sync identity rows safely");
+        throw new Error(
+          "Cross-Identity Sync migration did not replace legacy sync identity rows safely"
+        );
       }
       syncUpgradeFixture = upgradeResult.rows[0];
     } finally {

@@ -34,7 +34,8 @@ import { openApiDocument } from "./openapi.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
 import {
   readLocalEdgeUpstreamRegistry,
-  resolveLocalEdgeRouteDecision
+  resolveLocalEdgeRouteDecision,
+  upstreamAdvertisesCapability
 } from "../local-edge/upstream-routing.js";
 
 interface OperationalRouteOptions {
@@ -509,7 +510,7 @@ export const registerOperationalRoutes = (
       return null;
     }
   };
-  const crossIdentitySyncCapability = () => {
+  const crossIdentitySyncCapability = async () => {
     if (
       applicationLayerEncryptionCapability(
         options.envelopeEncryptionProvider
@@ -518,7 +519,13 @@ export const registerOperationalRoutes = (
       return "unavailable" as const;
     }
     if (!["developer", "local_personal"].includes(config.deploymentProfile)) {
-      return "available" as const;
+      try {
+        return (await requireRepository().isCrossIdentitySyncWorkerReady())
+          ? ("available" as const)
+          : ("unavailable" as const);
+      } catch {
+        return "unavailable" as const;
+      }
     }
     const registry = readLocalEdgeUpstreamRegistry(
       context.localEdge.upstreamBackendsPath
@@ -527,6 +534,7 @@ export const registerOperationalRoutes = (
       const authorization =
         context.localEdge.resolveUpstreamAuthorization(backend);
       return (
+        upstreamAdvertisesCapability(backend, "memory.crossIdentitySync") &&
         resolveLocalEdgeRouteDecision({
           operationFamily: "sync",
           upstreamBackend: backend,
@@ -683,7 +691,7 @@ export const registerOperationalRoutes = (
 
   app.get("/openapi.json", () => openApiDocument);
 
-  app.get("/v1/capabilities", () =>
+  app.get("/v1/capabilities", async () =>
     buildCapabilitiesResponse(
       {
         deploymentProfile: config.deploymentProfile,
@@ -693,7 +701,7 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability()
       },
       "public"
     )
@@ -739,7 +747,7 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability()
       },
       "authenticated",
       entitlement,

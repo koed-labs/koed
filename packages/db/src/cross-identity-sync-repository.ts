@@ -256,6 +256,10 @@ export interface CrossIdentitySyncRepository {
     logicalMemory: LogicalMemoryRecord;
     localReplica: MemoryReplicaRecord;
   } | null>;
+  activateSourceSyncRelationship(input: {
+    relationshipId: string;
+    localUserId: string;
+  }): Promise<CrossIdentitySyncRelationshipRecord | null>;
   createTargetSyncRelationship(
     actor: SyncActorContext,
     input: {
@@ -299,6 +303,10 @@ export interface CrossIdentitySyncRepository {
     remoteCredentialReference: string | null;
     remoteSubjectId: string;
   } | null>;
+  authorizeTargetSyncProcessing(input: {
+    relationshipId: string;
+    uploadSessionId: string;
+  }): Promise<boolean>;
   ensureSyncRecipientKey(input: {
     deploymentIdentityId: string;
     material: RecipientKeyMaterial;
@@ -368,6 +376,10 @@ export interface CrossIdentitySyncRepository {
     upload: SyncPackageUploadSessionRecord;
     chunks: SyncPackageChunkRecord[];
   } | null>;
+  deleteIncompleteSourceSyncPackage(input: {
+    relationshipId: string;
+    uploadSessionId: string;
+  }): Promise<boolean>;
   verifySyncPackageUpload(
     actor: SyncActorContext,
     uploadSessionId: string,
@@ -389,6 +401,35 @@ export interface CrossIdentitySyncRepository {
     payloadManifest?: Record<string, unknown>;
     maxAttempts?: number;
   }): Promise<SyncQueueEntryRecord>;
+  listDueSourceSyncHeartbeats(input: {
+    dueWithinSeconds: number;
+    limit?: number;
+  }): Promise<
+    Array<{
+      relationshipId: string;
+      sourceCursor: number;
+      targetProcessingCursor: number;
+      packageSequence: number;
+      staleAfter: string;
+    }>
+  >;
+  refreshSourceSyncHeartbeat(input: {
+    relationshipId: string;
+    sourceCursor: number;
+    targetProcessingCursor: number;
+    packageSequence: number;
+    staleAfterSeconds: number;
+  }): Promise<boolean>;
+  acceptTargetSyncHeartbeat(
+    actor: SyncActorContext,
+    input: {
+      relationshipId: string;
+      sourceCursor: number;
+      targetProcessingCursor: number;
+      packageSequence: number;
+      staleAfterSeconds: number;
+    }
+  ): Promise<boolean>;
   claimSyncQueueEntry(input: {
     queue: "outbox" | "inbox";
     leaseMs: number;
@@ -450,6 +491,8 @@ export interface CrossIdentitySyncRepository {
     staleAfterSeconds: number;
   }): Promise<void>;
   markOverdueSyncRelationshipsStale(): Promise<number>;
+  recordCrossIdentitySyncWorkerHeartbeat(instanceId: string): Promise<void>;
+  isCrossIdentitySyncWorkerReady(maxAgeSeconds?: number): Promise<boolean>;
   retryCrossIdentitySyncRelationship(
     actor: SyncActorContext,
     syncRelationshipId: string
@@ -809,8 +852,8 @@ export const createCrossIdentitySyncRepository = (
         captureMethod: String(session.capture_method),
         capturedAt: iso(session.captured_at)!,
         title:
-          typeof objectValue(session.metadata).title === "string"
-            ? String(objectValue(session.metadata).title)
+          typeof objectValue(session.metadata).threadName === "string"
+            ? String(objectValue(session.metadata).threadName)
             : null,
         sourceAdapterVersion: optionalString(session.source_adapter_version)
       };
@@ -899,7 +942,7 @@ export const createCrossIdentitySyncRepository = (
           return null;
         }
         const logicalResult = await client.query(
-          "insert into logical_memories (id,owner_user_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$3,'captured_session',$4::uuid::text,$4::uuid,$5) on conflict (origin_deployment_identity_id,source_boundary,origin_source_id) do update set updated_at=now() where logical_memories.id=excluded.id returning *",
+          "insert into logical_memories (id,owner_user_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$3,'captured_session',$4::uuid::text,$4::uuid,$5) on conflict (origin_deployment_identity_id,source_boundary,origin_source_id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id returning *",
           [
             input.logicalMemoryId,
             actor.userId,
@@ -908,6 +951,7 @@ export const createCrossIdentitySyncRepository = (
             `captured-session:${input.sessionId}`
           ]
         );
+        if (!logicalResult.rows[0]) throw new SyncIdempotencyConflictError();
         const logical = mapLogical(logicalResult.rows[0] as Row);
         const replicaResult = await client.query(
           "insert into memory_replicas (id,logical_memory_id,deployment_identity_id,owner_user_id,replica_role,source_boundary,local_session_id,freshness_status) values ($1,$2,$3,$4,'source','captured_session',$5,'fresh') on conflict (logical_memory_id,deployment_identity_id,replica_role) do update set updated_at=now() where memory_replicas.id=excluded.id returning *",
@@ -921,7 +965,7 @@ export const createCrossIdentitySyncRepository = (
         );
         const replica = mapReplica(replicaResult.rows[0] as Row);
         const relationshipResult = await client.query(
-          "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'source',$3,$4,$5,$6,$7,'captured_session',$8,$9,$10::jsonb,$11::jsonb) on conflict (local_user_id,remote_deployment_identity_id,idempotency_key) do update set updated_at=cross_identity_sync_relationships.updated_at returning *",
+          "insert into cross_identity_sync_relationships (id,logical_memory_id,side,local_replica_id,local_user_id,remote_deployment_identity_id,remote_user_identity_id,remote_replica_id,source_boundary,state,idempotency_key,creation_request_hash,policy_manifest,consent_manifest) values ($1,$2,'source',$3,$4,$5,$6,$7,'captured_session','paused',$8,$9,$10::jsonb,$11::jsonb) on conflict (id) do update set updated_at=cross_identity_sync_relationships.updated_at where cross_identity_sync_relationships.local_user_id=excluded.local_user_id and cross_identity_sync_relationships.remote_deployment_identity_id=excluded.remote_deployment_identity_id and cross_identity_sync_relationships.remote_user_identity_id=excluded.remote_user_identity_id and cross_identity_sync_relationships.creation_request_hash=excluded.creation_request_hash returning *",
           [
             input.relationshipId,
             logical.id,
@@ -973,16 +1017,6 @@ export const createCrossIdentitySyncRepository = (
           `,
           [input.sessionId]
         );
-        await client.query(
-          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest) values ($1,'changes',$2,'{}') on conflict (sync_relationship_id,idempotency_key) do update set state='pending',attempt_count=0,available_at=now(),request_hash=excluded.request_hash,payload_manifest=excluded.payload_manifest,processed_at=null,claim_token=null,lease_expires_at=null,last_error_message=null,updated_at=now()",
-          [
-            relationship.id,
-            crossIdentitySyncDigest({
-              relationshipId: relationship.id,
-              initial: true
-            })
-          ]
-        );
         await recordSyncAuditEventWithClient(client, {
           actorUserId: actor.userId,
           ownerUserId: actor.userId,
@@ -998,6 +1032,45 @@ export const createCrossIdentitySyncRepository = (
         });
         await client.query("commit");
         return { relationship, logicalMemory: logical, localReplica: replica };
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async activateSourceSyncRelationship(input) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const result = await client.query<Row>(
+          `update cross_identity_sync_relationships
+              set state=case when state='paused' then 'created' else state end,
+                  updated_at=now()
+            where id=$1
+              and local_user_id=$2
+              and side='source'
+              and state in ('paused','created','ready','stale')
+              and revoked_at is null
+            returning *`,
+          [input.relationshipId, input.localUserId]
+        );
+        if (!result.rows[0]) {
+          await client.query("rollback");
+          return null;
+        }
+        await client.query(
+          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest) values ($1,'changes',$2,'{}') on conflict (sync_relationship_id,idempotency_key) do update set state=case when sync_outbox_entries.state in ('failed','cancelled') then 'pending'::sync_queue_entry_state else sync_outbox_entries.state end,attempt_count=case when sync_outbox_entries.state in ('failed','cancelled') then 0 else sync_outbox_entries.attempt_count end,available_at=case when sync_outbox_entries.state in ('failed','cancelled') then now() else sync_outbox_entries.available_at end,processed_at=case when sync_outbox_entries.state in ('failed','cancelled') then null else sync_outbox_entries.processed_at end,claim_token=null,lease_expires_at=null,last_error_message=case when sync_outbox_entries.state in ('failed','cancelled') then null else sync_outbox_entries.last_error_message end,updated_at=now()",
+          [
+            input.relationshipId,
+            crossIdentitySyncDigest({
+              relationshipId: input.relationshipId,
+              initial: true
+            })
+          ]
+        );
+        await client.query("commit");
+        return mapRelationship(result.rows[0]);
       } catch (error) {
         await client.query("rollback");
         throw error;
@@ -1049,7 +1122,7 @@ export const createCrossIdentitySyncRepository = (
           ? String(existingDeviceBinding.rows[0].device_credential_id)
           : actor.deviceCredentialId;
         const sessionResult = await client.query(
-          "insert into sessions (owner_user_id,visibility,external_session_id,source_runtime,capture_method,idempotency_key,source_kind,source_adapter_version,metadata,captured_at) values ($1,'personal',$2,$3,'api',$4,'koed_sync',$5,$6::jsonb,$7) on conflict (idempotency_key) where idempotency_key is not null do update set updated_at=now() returning *",
+          "insert into sessions (owner_user_id,visibility,external_session_id,source_runtime,capture_method,idempotency_key,source_kind,source_adapter_version,metadata,captured_at) values ($1,'personal',$2,$3,'api',$4,'koed_sync',$5,$6::jsonb,$7) on conflict (owner_user_id,visibility,idempotency_key) where idempotency_key is not null do update set updated_at=now() returning *",
           [
             actor.userId,
             input.session.externalSessionId,
@@ -1058,11 +1131,15 @@ export const createCrossIdentitySyncRepository = (
             input.session.sourceAdapterVersion,
             JSON.stringify({
               syncReplica: true,
-              originSessionId: input.originSessionId
+              originSessionId: input.originSessionId,
+              ...(input.session.title
+                ? { threadName: input.session.title }
+                : {})
             }),
             input.session.capturedAt
           ]
         );
+        if (!sessionResult.rows[0]) throw new SyncIdempotencyConflictError();
         const sessionId = String((sessionResult.rows[0] as Row).id);
         const logicalResult = await client.query(
           "insert into logical_memories (id,owner_user_id,origin_deployment_identity_id,source_boundary,origin_source_id,local_session_id,logical_key) values ($1,$2,$3,'captured_session',$4,$5,$6) on conflict (id) do update set updated_at=now() where logical_memories.owner_user_id=excluded.owner_user_id and logical_memories.origin_deployment_identity_id=excluded.origin_deployment_identity_id and logical_memories.origin_source_id=excluded.origin_source_id returning *",
@@ -1209,6 +1286,35 @@ export const createCrossIdentitySyncRepository = (
             remoteSubjectId: String(row.remote_subject_id)
           }
         : null;
+    },
+    async authorizeTargetSyncProcessing(input) {
+      const result = await pool.query(
+        `select 1
+           from cross_identity_sync_relationships relationship
+           join users owner on owner.id=relationship.local_user_id
+           join device_credentials bound_credential on bound_credential.id=relationship.device_credential_id
+           join device_credentials credential
+             on credential.owner_user_id=bound_credential.owner_user_id
+            and credential.upstream_backend_id=bound_credential.upstream_backend_id
+            and credential.lineage_id=bound_credential.lineage_id
+           join sync_external_user_identities remote_user on remote_user.id=relationship.remote_user_identity_id
+           join sync_package_upload_sessions upload on upload.sync_relationship_id=relationship.id
+          where relationship.id=$1
+            and upload.id=$2
+            and relationship.side='target'
+            and relationship.revoked_at is null
+            and owner.disabled_at is null
+            and owner.deleted_at is null
+            and credential.owner_user_id=relationship.local_user_id
+            and credential.revoked_at is null
+            and (credential.expires_at is null or credential.expires_at>now())
+            and ('sync'=any(credential.operation_families) or '*'=any(credential.operation_families))
+            and remote_user.status='active'
+            and remote_user.revoked_at is null
+          limit 1`,
+        [input.relationshipId, input.uploadSessionId]
+      );
+      return Boolean(result.rows[0]);
     },
     async ensureSyncRecipientKey(input) {
       const result = await pool.query(
@@ -1445,8 +1551,8 @@ export const createCrossIdentitySyncRepository = (
           captureMethod: String(session.capture_method),
           capturedAt: iso(session.captured_at)!,
           title:
-            typeof objectValue(session.metadata).title === "string"
-              ? String(objectValue(session.metadata).title)
+            typeof objectValue(session.metadata).threadName === "string"
+              ? String(objectValue(session.metadata).threadName)
               : null,
           sourceAdapterVersion: optionalString(session.source_adapter_version)
         },
@@ -1690,6 +1796,21 @@ export const createCrossIdentitySyncRepository = (
         ? this.getSyncPackageForService(String(result.rows[0].id))
         : null;
     },
+    async deleteIncompleteSourceSyncPackage(input) {
+      const result = await pool.query(
+        `delete from sync_package_upload_sessions upload
+          using cross_identity_sync_relationships relationship
+          where upload.id=$1
+            and upload.sync_relationship_id=$2
+            and relationship.id=upload.sync_relationship_id
+            and relationship.side='source'
+            and upload.state in ('created','uploading')
+            and upload.chunk_count < upload.expected_chunk_count
+          returning upload.id`,
+        [input.uploadSessionId, input.relationshipId]
+      );
+      return Boolean(result.rows[0]);
+    },
     async verifySyncPackageUpload(actor, uploadSessionId, relationshipSide) {
       const client = await pool.connect();
       try {
@@ -1788,6 +1909,96 @@ export const createCrossIdentitySyncRepository = (
     },
     enqueueSyncInboxEntry(input) {
       return queueInsert("sync_inbox_entries", input);
+    },
+    async listDueSourceSyncHeartbeats(input) {
+      const result = await pool.query<Row>(
+        `select id,source_cursor,target_processing_cursor,package_sequence,stale_after
+           from cross_identity_sync_relationships
+          where side='source'
+            and state in ('ready','stale')
+            and revoked_at is null
+            and stale_after is not null
+            and stale_after<=now()+($1::int*interval '1 second')
+          order by stale_after
+          limit $2`,
+        [Math.max(input.dueWithinSeconds, 1), Math.min(input.limit ?? 100, 500)]
+      );
+      return result.rows.map((row) => ({
+        relationshipId: String(row.id),
+        sourceCursor: numberValue(row.source_cursor),
+        targetProcessingCursor: numberValue(row.target_processing_cursor),
+        packageSequence: numberValue(row.package_sequence),
+        staleAfter: iso(row.stale_after)!
+      }));
+    },
+    async refreshSourceSyncHeartbeat(input) {
+      const result = await pool.query(
+        `update cross_identity_sync_relationships
+            set state='ready',
+                last_synced_at=now(),
+                stale_after=now()+($5::int*interval '1 second'),
+                updated_at=now()
+          where id=$1
+            and side='source'
+            and state in ('ready','stale')
+            and revoked_at is null
+            and source_cursor=$2
+            and target_processing_cursor=$3
+            and package_sequence=$4
+          returning id`,
+        [
+          input.relationshipId,
+          input.sourceCursor,
+          input.targetProcessingCursor,
+          input.packageSequence,
+          input.staleAfterSeconds
+        ]
+      );
+      return result.rowCount === 1;
+    },
+    async acceptTargetSyncHeartbeat(actor, input) {
+      const result = await pool.query(
+        `update cross_identity_sync_relationships relationship
+            set state='ready',
+                source_cursor=$4,
+                last_synced_at=now(),
+                stale_after=now()+($7::int*interval '1 second'),
+                updated_at=now()
+           from users owner,
+                device_credentials credential,
+                sync_external_user_identities remote_user
+          where relationship.id=$1
+            and relationship.side='target'
+            and relationship.local_user_id=$2
+            and ${relationshipCredentialClause("relationship", 3)}
+            and relationship.revoked_at is null
+            and relationship.source_cursor<=$4
+            and relationship.target_processing_cursor=$5
+            and $4=$5
+            and relationship.package_sequence=$6
+            and owner.id=relationship.local_user_id
+            and owner.disabled_at is null
+            and owner.deleted_at is null
+            and credential.id=$3
+            and credential.owner_user_id=relationship.local_user_id
+            and credential.revoked_at is null
+            and (credential.expires_at is null or credential.expires_at>now())
+            and ('sync'=any(credential.operation_families) or '*'=any(credential.operation_families))
+            and remote_user.id=relationship.remote_user_identity_id
+            and remote_user.status='active'
+            and remote_user.revoked_at is null
+          returning relationship.id`,
+        [
+          input.relationshipId,
+          actor.userId,
+          actor.deviceCredentialId,
+          input.sourceCursor,
+          input.targetProcessingCursor,
+          input.packageSequence,
+          input.staleAfterSeconds
+        ]
+      );
+      return result.rowCount === 1;
     },
     async claimSyncQueueEntry(input) {
       const table =
@@ -2092,8 +2303,30 @@ export const createCrossIdentitySyncRepository = (
       try {
         await client.query("begin");
         const relationshipResult = await client.query(
-          "select * from cross_identity_sync_relationships where id=$1 and side='target' for update",
-          [input.relationshipId]
+          `select relationship.*
+             from cross_identity_sync_relationships relationship
+             join users owner on owner.id=relationship.local_user_id
+             join device_credentials bound_credential on bound_credential.id=relationship.device_credential_id
+             join device_credentials credential
+               on credential.owner_user_id=bound_credential.owner_user_id
+              and credential.upstream_backend_id=bound_credential.upstream_backend_id
+              and credential.lineage_id=bound_credential.lineage_id
+             join sync_external_user_identities remote_user on remote_user.id=relationship.remote_user_identity_id
+             join sync_package_upload_sessions upload
+               on upload.id=$2 and upload.sync_relationship_id=relationship.id
+            where relationship.id=$1
+              and relationship.side='target'
+              and relationship.revoked_at is null
+              and owner.disabled_at is null
+              and owner.deleted_at is null
+              and credential.owner_user_id=relationship.local_user_id
+              and credential.revoked_at is null
+              and (credential.expires_at is null or credential.expires_at>now())
+              and ('sync'=any(credential.operation_families) or '*'=any(credential.operation_families))
+              and remote_user.status='active'
+              and remote_user.revoked_at is null
+            for update of relationship`,
+          [input.relationshipId, input.uploadSessionId]
         );
         const relationshipRow = relationshipResult.rows[0] as Row | undefined;
         if (!relationshipRow || relationshipRow.revoked_at) {
@@ -2494,6 +2727,25 @@ export const createCrossIdentitySyncRepository = (
         client.release();
       }
     },
+    async recordCrossIdentitySyncWorkerHeartbeat(instanceId) {
+      await pool.query(
+        `insert into sync_service_heartbeats (service_name,instance_id,last_seen_at)
+         values ('cross_identity_sync_worker',$1,now())
+         on conflict (service_name) do update
+         set instance_id=excluded.instance_id,last_seen_at=now(),updated_at=now()`,
+        [instanceId]
+      );
+    },
+    async isCrossIdentitySyncWorkerReady(maxAgeSeconds = 30) {
+      const result = await pool.query(
+        `select 1 from sync_service_heartbeats
+          where service_name='cross_identity_sync_worker'
+            and last_seen_at>now()-($1::int*interval '1 second')
+          limit 1`,
+        [Math.max(maxAgeSeconds, 1)]
+      );
+      return Boolean(result.rows[0]);
+    },
     async retryCrossIdentitySyncRelationship(actor, syncRelationshipId) {
       const client = await pool.connect();
       try {
@@ -2616,24 +2868,26 @@ export const createCrossIdentitySyncRepository = (
           "update sync_package_upload_sessions set state='failed',failed_at=coalesce(failed_at,now()),last_error_message='SyncRelationshipRevoked',updated_at=now() where sync_relationship_id=$1 and state not in ('completed','failed')",
           [input.syncRelationshipId]
         );
-        await client.query(
-          "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest,max_attempts) values ($1,$2,$3,$4::jsonb,12) on conflict do nothing",
-          [
-            input.syncRelationshipId,
-            `revocation:${revocationId}`,
-            crossIdentitySyncDigest({
-              relationshipId: input.syncRelationshipId,
-              revocationId
-            }),
-            JSON.stringify({
-              kind: "revocation",
-              revocationId,
-              revocationSequence: numberValue(
-                (result.rows[0] as Row).revocation_sequence
-              )
-            })
-          ]
-        );
+        if (String((result.rows[0] as Row).side) === "source") {
+          await client.query(
+            "insert into sync_outbox_entries (sync_relationship_id,idempotency_key,request_hash,payload_manifest,max_attempts) values ($1,$2,$3,$4::jsonb,12) on conflict do nothing",
+            [
+              input.syncRelationshipId,
+              `revocation:${revocationId}`,
+              crossIdentitySyncDigest({
+                relationshipId: input.syncRelationshipId,
+                revocationId
+              }),
+              JSON.stringify({
+                kind: "revocation",
+                revocationId,
+                revocationSequence: numberValue(
+                  (result.rows[0] as Row).revocation_sequence
+                )
+              })
+            ]
+          );
+        }
         await recordSyncAuditEventWithClient(client, {
           actorUserId: actor.userId,
           ownerUserId: actor.userId,
@@ -2730,7 +2984,7 @@ export const createCrossIdentitySyncRepository = (
           (select count(*) from cross_identity_sync_relationships where state='stale')::int as relationships_stale,
           (select count(*) from cross_identity_sync_relationships where state='failed')::int as relationships_failed,
           (select count(*) from cross_identity_sync_relationships where state='revoked')::int as relationships_revoked,
-          ((select coalesce(sum(attempt_count-1),0) from sync_outbox_entries)+(select coalesce(sum(attempt_count-1),0) from sync_inbox_entries))::int as retries,
+          ((select coalesce(sum(greatest(attempt_count-1,0)),0) from sync_outbox_entries)+(select coalesce(sum(greatest(attempt_count-1,0)),0) from sync_inbox_entries))::int as retries,
           coalesce((select sum(total_bytes) from sync_package_upload_sessions where completed_at>=now()-interval '1 hour'),0)::bigint as completed_bytes_last_hour,
           coalesce((select sum(case when jsonb_typeof(package_manifest->'recordCount')='number' then (package_manifest->>'recordCount')::bigint else 0 end) from sync_package_upload_sessions where completed_at>=now()-interval '1 hour'),0)::bigint as completed_records_last_hour,
           coalesce((select sum((select count(*) from sync_semantic_changes change where change.session_id=replica.local_session_id and change.cursor>relationship.source_cursor)) from cross_identity_sync_relationships relationship join memory_replicas replica on replica.id=relationship.local_replica_id where relationship.side='source' and relationship.revoked_at is null),0)::bigint as source_lag_records,

@@ -4,10 +4,19 @@ import {
   fetchBoundedJsonObject,
   readBoundedJsonObject,
   RemoteRequestTimeoutError,
-  RemoteResponseLimitError
+  RemoteResponseLimitError,
+  upstreamApiUrl
 } from "./bounded-http.js";
 
 describe("bounded HTTP helpers", () => {
+  it("preserves an upstream deployment base path", () => {
+    expect(
+      upstreamApiUrl(
+        "https://example.com/koed/",
+        "/v1/cross-identity-sync/intake/context"
+      ).toString()
+    ).toBe("https://example.com/koed/v1/cross-identity-sync/intake/context");
+  });
   it("aborts stalled requests at the configured deadline", async () => {
     vi.useFakeTimers();
     try {

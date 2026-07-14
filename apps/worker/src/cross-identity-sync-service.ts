@@ -22,6 +22,7 @@ import {
   isCapturedSessionSyncChunkV1,
   isCapturedSessionSyncPackageV1,
   readUpstreamCredentialAuthorization,
+  upstreamApiUrl,
   type CapturedSessionSyncChangeV1,
   type CapturedSessionSyncChunkV1,
   type CapturedSessionSyncPackageV1,
@@ -51,6 +52,15 @@ class SyncQueueClaimLostError extends Error {
   constructor() {
     super("Cross-Identity Sync queue claim is no longer active");
     this.name = "SyncQueueClaimLostError";
+  }
+}
+
+class SyncAuthorizationRevokedError extends Error {
+  readonly transient = false;
+
+  constructor() {
+    super("Cross-Identity Sync authorization is no longer active");
+    this.name = "SyncAuthorizationRevokedError";
   }
 }
 
@@ -159,7 +169,7 @@ const retryDelayMs = (attempt: number): number => {
   return Math.floor(exponential * (0.75 + Math.random() * 0.5));
 };
 
-const withLeaseHeartbeat = async <T>(input: {
+export const withLeaseHeartbeat = async <T>(input: {
   leaseMs: number;
   renew: () => Promise<void>;
   operation: () => Promise<T>;
@@ -208,9 +218,15 @@ export const createCrossIdentitySyncService = (options: {
 }): CrossIdentitySyncService => {
   const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
   const intervalMs = Math.max(options.intervalMs ?? 1_000, 250);
+  const freshnessScanIntervalMs = Math.max(
+    1_000,
+    Math.min(60_000, Math.floor((options.staleAfterSeconds * 1_000) / 4))
+  );
+  const workerInstanceId = randomUUID();
   let running = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastCleanupAt = 0;
+  let lastHeartbeatScanAt = 0;
   let lastStaleCheckAt = 0;
 
   const sourceAuthorization = (input: {
@@ -245,7 +261,24 @@ export const createCrossIdentitySyncService = (options: {
       relationshipId,
       sourceSequence: sequence
     });
-    if (existing) return { transport, ...existing };
+    if (existing) {
+      if (
+        existing.chunks.length === existing.upload.expectedChunkCount &&
+        existing.chunks.every((chunk, index) => chunk.chunkIndex === index)
+      ) {
+        return { transport, ...existing };
+      }
+      const removed =
+        await options.repository.deleteIncompleteSourceSyncPackage({
+          relationshipId,
+          uploadSessionId: existing.upload.id
+        });
+      if (!removed) {
+        throw new InvalidSyncPackageError(
+          "Persisted source sync package is incomplete"
+        );
+      }
+    }
 
     const recipient = delta.relationship.policyManifest.recipientKey as
       | RecipientPublicKeyMaterial
@@ -442,11 +475,53 @@ export const createCrossIdentitySyncService = (options: {
         entry.syncRelationshipId
       );
       if (!transport || transport.relationship.side !== "source") {
-        throw new SyncQueueClaimLostError();
+        throw new SyncAuthorizationRevokedError();
       }
       return transport;
     };
     try {
+      if (entry.payloadManifest.kind === "heartbeat") {
+        const transport = await requireActiveTransport();
+        const payload = {
+          source_cursor: Number(entry.payloadManifest.sourceCursor),
+          target_processing_cursor: Number(
+            entry.payloadManifest.targetProcessingCursor
+          ),
+          package_sequence: Number(entry.payloadManifest.packageSequence)
+        };
+        const authorization = sourceAuthorization({
+          backendId: transport.remoteUpstreamBackendId,
+          reference: transport.remoteCredentialReference
+        });
+        await jsonRequest(
+          fetchFn,
+          upstreamApiUrl(
+            transport.remoteBaseUrl!,
+            `/v1/cross-identity-sync/intake/relationships/${entry.syncRelationshipId}/heartbeat`
+          ),
+          authorization,
+          "POST",
+          payload
+        );
+        const refreshed = await options.repository.refreshSourceSyncHeartbeat({
+          relationshipId: entry.syncRelationshipId,
+          sourceCursor: payload.source_cursor,
+          targetProcessingCursor: payload.target_processing_cursor,
+          packageSequence: payload.package_sequence,
+          staleAfterSeconds: options.staleAfterSeconds
+        });
+        if (!refreshed) throw new SyncAuthorizationRevokedError();
+        if (
+          !(await options.repository.completeSyncQueueEntry({
+            queue: "outbox",
+            id: entry.id,
+            claimToken: entry.claimToken
+          }))
+        ) {
+          throw new SyncQueueClaimLostError();
+        }
+        return true;
+      }
       if (entry.payloadManifest.kind === "revocation") {
         const transport = await options.repository.getSyncTransportContext(
           entry.syncRelationshipId,
@@ -460,9 +535,9 @@ export const createCrossIdentitySyncService = (options: {
         });
         await jsonRequest(
           fetchFn,
-          new URL(
-            `/v1/cross-identity-sync/intake/relationships/${entry.syncRelationshipId}/revoke`,
-            `${transport.remoteBaseUrl}/`
+          upstreamApiUrl(
+            transport.remoteBaseUrl!,
+            `/v1/cross-identity-sync/intake/relationships/${entry.syncRelationshipId}/revoke`
           ),
           authorization,
           "POST",
@@ -508,16 +583,16 @@ export const createCrossIdentitySyncService = (options: {
         backendId: transport.remoteUpstreamBackendId,
         reference: transport.remoteCredentialReference
       });
-      const baseUrl = `${transport.remoteBaseUrl}/`;
+      const baseUrl = transport.remoteBaseUrl!;
       const uploadCommitted = ["uploaded", "verified", "completed"].includes(
         upload.state
       );
       if (!uploadCommitted) {
         const remoteCreate = await jsonRequest(
           fetchFn,
-          new URL(
-            `/v1/cross-identity-sync/relationships/${upload.syncRelationshipId}/upload-sessions`,
-            baseUrl
+          upstreamApiUrl(
+            baseUrl,
+            `/v1/cross-identity-sync/relationships/${upload.syncRelationshipId}/upload-sessions`
           ),
           authorization,
           "POST",
@@ -542,9 +617,9 @@ export const createCrossIdentitySyncService = (options: {
         if (!remoteUploadId) throw new Error("Remote upload id is missing");
         const remoteStatus = await jsonRequest(
           fetchFn,
-          new URL(
-            `/v1/cross-identity-sync/upload-sessions/${remoteUploadId}`,
-            baseUrl
+          upstreamApiUrl(
+            baseUrl,
+            `/v1/cross-identity-sync/upload-sessions/${remoteUploadId}`
           ),
           authorization,
           "GET"
@@ -559,9 +634,9 @@ export const createCrossIdentitySyncService = (options: {
           await requireActiveTransport();
           await jsonRequest(
             fetchFn,
-            new URL(
-              `/v1/cross-identity-sync/upload-sessions/${remoteUploadId}/chunks/${chunk.chunkIndex}`,
-              baseUrl
+            upstreamApiUrl(
+              baseUrl,
+              `/v1/cross-identity-sync/upload-sessions/${remoteUploadId}/chunks/${chunk.chunkIndex}`
             ),
             authorization,
             "PUT",
@@ -575,9 +650,9 @@ export const createCrossIdentitySyncService = (options: {
         await requireActiveTransport();
         const remoteCommit = await jsonRequest(
           fetchFn,
-          new URL(
-            `/v1/cross-identity-sync/upload-sessions/${remoteUploadId}/complete`,
-            baseUrl
+          upstreamApiUrl(
+            baseUrl,
+            `/v1/cross-identity-sync/upload-sessions/${remoteUploadId}/complete`
           ),
           authorization,
           "POST",
@@ -606,9 +681,9 @@ export const createCrossIdentitySyncService = (options: {
       await requireActiveTransport();
       const remoteRelationship = await jsonRequest(
         fetchFn,
-        new URL(
-          `/v1/cross-identity-sync/relationships/${upload.syncRelationshipId}`,
-          baseUrl
+        upstreamApiUrl(
+          baseUrl,
+          `/v1/cross-identity-sync/relationships/${upload.syncRelationshipId}`
         ),
         authorization,
         "GET"
@@ -737,6 +812,14 @@ export const createCrossIdentitySyncService = (options: {
       if (!transport || transport.relationship.side !== "target") {
         throw new Error("Target sync relationship is missing");
       }
+      if (
+        !(await options.repository.authorizeTargetSyncProcessing({
+          relationshipId: entry.syncRelationshipId,
+          uploadSessionId: entry.uploadSessionId
+        }))
+      ) {
+        throw new SyncAuthorizationRevokedError();
+      }
       const recipientKeyId =
         typeof persisted.upload.packageManifest.recipientKeyId === "string"
           ? persisted.upload.packageManifest.recipientKeyId
@@ -842,10 +925,24 @@ export const createCrossIdentitySyncService = (options: {
           "Sync package identity binding failed"
         );
       }
-      const applied = await options.repository.applyCapturedSessionSyncPackage({
-        relationshipId: entry.syncRelationshipId,
-        uploadSessionId: entry.uploadSessionId,
-        package: merged
+      const applied = await withLeaseHeartbeat({
+        leaseMs,
+        renew: renewClaim,
+        operation: async () => {
+          if (
+            !(await options.repository.authorizeTargetSyncProcessing({
+              relationshipId: entry.syncRelationshipId,
+              uploadSessionId: entry.uploadSessionId!
+            }))
+          ) {
+            throw new SyncAuthorizationRevokedError();
+          }
+          return options.repository.applyCapturedSessionSyncPackage({
+            relationshipId: entry.syncRelationshipId,
+            uploadSessionId: entry.uploadSessionId!,
+            package: merged
+          });
+        }
       });
       await renewClaim();
       await withLeaseHeartbeat({
@@ -931,7 +1028,30 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const processOnce = async () => {
-    if (Date.now() - lastStaleCheckAt >= 60_000) {
+    await options.repository.recordCrossIdentitySyncWorkerHeartbeat(
+      workerInstanceId
+    );
+    if (Date.now() - lastHeartbeatScanAt >= freshnessScanIntervalMs) {
+      const due = await options.repository.listDueSourceSyncHeartbeats({
+        dueWithinSeconds: Math.max(1, Math.floor(options.staleAfterSeconds / 2))
+      });
+      for (const heartbeat of due) {
+        const payloadManifest = {
+          kind: "heartbeat",
+          sourceCursor: heartbeat.sourceCursor,
+          targetProcessingCursor: heartbeat.targetProcessingCursor,
+          packageSequence: heartbeat.packageSequence
+        };
+        await options.repository.enqueueSyncOutboxEntry({
+          syncRelationshipId: heartbeat.relationshipId,
+          idempotencyKey: `heartbeat:${heartbeat.staleAfter}`,
+          requestHash: crossIdentitySyncDigest(payloadManifest),
+          payloadManifest
+        });
+      }
+      lastHeartbeatScanAt = Date.now();
+    }
+    if (Date.now() - lastStaleCheckAt >= freshnessScanIntervalMs) {
       await options.repository.markOverdueSyncRelationshipsStale();
       lastStaleCheckAt = Date.now();
     }

@@ -322,8 +322,10 @@ policy, or full URLs containing customer content.
   Sync outbox/inbox processing. Default `1000`; values below `250` are clamped.
 - `CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS`: freshness duration applied after a
   successful source acknowledgement or target processing completion. Default
-  `86400`. Overdue ready replicas become stale and are excluded from Recall
-  until a later successful sync.
+  `86400`. API and Worker processes for one deployment must use the same value.
+  Authenticated durable heartbeats refresh inactive ready relationships;
+  overdue replicas become stale and are excluded from Recall until a later
+  successful package or valid heartbeat.
 - `EMBEDDING_SERVICE_HOST_PORT`: host port mapped to the Embedding Service dependency container when using the Docker Compose starter. Default `3800`.
 - `EMBEDDING_SERVICE_URL`: explicit Embedding Service URL consumed by `koed-server`, API, and Worker in external dependency mode. For the Docker Compose starter, use `http://localhost:${EMBEDDING_SERVICE_HOST_PORT}`.
 - `KOED_MODELS_DIR`: optional shared model directory for bundled-local model install and Docker Compose model mounts. Defaults to `KOED_HOME/models`.

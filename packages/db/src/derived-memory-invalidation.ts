@@ -2,7 +2,8 @@ import type pg from "pg";
 
 export const invalidateDerivedMemoryForMemoryEvents = async (
   pool: pg.Pool | pg.PoolClient,
-  memoryEventIds: string[]
+  memoryEventIds: string[],
+  reason = "source_event_deleted"
 ): Promise<void> => {
   const uniqueEventIds = [...new Set(memoryEventIds.filter(Boolean))];
   if (uniqueEventIds.length === 0) return;
@@ -10,11 +11,11 @@ export const invalidateDerivedMemoryForMemoryEvents = async (
   await pool.query(
     `
       update memory_embeddings
-      set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+      set invalidated_at = now(), invalidation_reason = $2
       where memory_event_id = any($1::uuid[])
         and invalidated_at is null
     `,
-    [uniqueEventIds]
+    [uniqueEventIds, reason]
   );
 
   const affectedNodes = await pool.query<{ id: string }>(
@@ -34,14 +35,14 @@ export const invalidateDerivedMemoryForMemoryEvents = async (
       update memory_nodes mn
       set
         invalidated_at = coalesce(mn.invalidated_at, now()),
-        invalidation_reason = coalesce(mn.invalidation_reason, 'source_event_deleted'),
+        invalidation_reason = coalesce(mn.invalidation_reason, $2),
         updated_at = now()
       where mn.id in (select id from affected_nodes)
         and mn.invalidated_at is null
         and mn.personal_deleted_at is null
       returning mn.id
     `,
-    [uniqueEventIds]
+    [uniqueEventIds, reason]
   );
 
   const nodeIds = affectedNodes.rows.map((row) => row.id);
@@ -49,10 +50,10 @@ export const invalidateDerivedMemoryForMemoryEvents = async (
   await pool.query(
     `
       update memory_embeddings
-      set invalidated_at = now(), invalidation_reason = 'source_event_deleted'
+      set invalidated_at = now(), invalidation_reason = $2
       where memory_node_id = any($1::uuid[])
         and invalidated_at is null
     `,
-    [nodeIds]
+    [nodeIds, reason]
   );
 };

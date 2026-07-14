@@ -95,13 +95,13 @@ describe("embedding workflow", () => {
       })
     );
     expect(String(fetchFn.mock.calls[0]?.[1]?.body)).not.toContain("Instruct:");
-    expect(replaceSourceEmbeddings).toHaveBeenCalledWith(
     expect(getCurrentSourceEmbeddingChunkCount).toHaveBeenCalledWith({
       source,
       model: "test-embedding-model",
       dimensions: 3,
       version: "test-embedding-model"
     });
+    expect(replaceSourceEmbeddings).toHaveBeenCalledWith(
       expect.objectContaining({
         source,
         model: "test-embedding-model",
@@ -146,7 +146,7 @@ describe("embedding workflow", () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(source),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi.fn()
+      replaceSourceEmbeddings: vi.fn()
     } as unknown as MemorySourceRepository;
     const workflow = createEmbeddingWorkflow({
       env: workerEnv,
@@ -172,14 +172,14 @@ describe("embedding workflow", () => {
     await expect(
       workflow.embedSource("memory_event", "event-1")
     ).rejects.toThrow("embedding service returned an invalid 3-dim response");
-    expect(repository.upsertSourceEmbedding).not.toHaveBeenCalled();
+    expect(repository.replaceSourceEmbeddings).not.toHaveBeenCalled();
   });
 
   it("reuses a complete current embedding without calling the service", async () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(source),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(2),
-      upsertSourceEmbedding: vi.fn()
+      replaceSourceEmbeddings: vi.fn()
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn();
     const workflow = createEmbeddingWorkflow({
@@ -196,7 +196,7 @@ describe("embedding workflow", () => {
       chunks: 2
     });
     expect(fetchFn).not.toHaveBeenCalled();
-    expect(repository.upsertSourceEmbedding).not.toHaveBeenCalled();
+    expect(repository.replaceSourceEmbeddings).not.toHaveBeenCalled();
   });
 
   it("embeds missing sources in bounded batches while preserving source identity", async () => {
@@ -213,9 +213,9 @@ describe("embedding workflow", () => {
           Promise.resolve(sourceId === source.sourceId ? source : secondSource)
         ),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi
+      replaceSourceEmbeddings: vi
         .fn()
-        .mockResolvedValue({ id: "embedding", inserted: true })
+        .mockResolvedValue({ ids: ["embedding"], inserted: true })
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn().mockResolvedValue(
       jsonResponse({
@@ -263,13 +263,19 @@ describe("embedding workflow", () => {
         })
       })
     );
-    expect(repository.upsertSourceEmbedding).toHaveBeenNthCalledWith(
+    expect(repository.replaceSourceEmbeddings).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ source, vector: [1, 2, 3] })
+      expect.objectContaining({
+        source,
+        chunks: [expect.objectContaining({ vector: [1, 2, 3] })]
+      })
     );
-    expect(repository.upsertSourceEmbedding).toHaveBeenNthCalledWith(
+    expect(repository.replaceSourceEmbeddings).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ source: secondSource, vector: [4, 5, 6] })
+      expect.objectContaining({
+        source: secondSource,
+        chunks: [expect.objectContaining({ vector: [4, 5, 6] })]
+      })
     );
   });
 
@@ -293,7 +299,7 @@ describe("embedding workflow", () => {
     const repository = {
       getEmbeddableSource,
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(1),
-      upsertSourceEmbedding: vi.fn()
+      replaceSourceEmbeddings: vi.fn()
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn();
     const workflow = createEmbeddingWorkflow({
@@ -318,7 +324,7 @@ describe("embedding workflow", () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(source),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi.fn()
+      replaceSourceEmbeddings: vi.fn()
     } as unknown as MemorySourceRepository;
     const workflow = createEmbeddingWorkflow({
       env: workerEnv,
@@ -344,16 +350,17 @@ describe("embedding workflow", () => {
     await expect(
       workflow.embedSource("memory_event", source.sourceId)
     ).rejects.toThrow("embedding service returned an invalid 3-dim response");
-    expect(repository.upsertSourceEmbedding).not.toHaveBeenCalled();
+    expect(repository.replaceSourceEmbeddings).not.toHaveBeenCalled();
   });
 
   it("accepts complete multi-chunk output for one oversized source", async () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(source),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi
-        .fn()
-        .mockResolvedValue({ id: "embedding", inserted: true })
+      replaceSourceEmbeddings: vi.fn().mockResolvedValue({
+        ids: ["embedding-1", "embedding-2"],
+        inserted: true
+      })
     } as unknown as MemorySourceRepository;
     const workflow = createEmbeddingWorkflow({
       env: workerEnv,
@@ -389,7 +396,15 @@ describe("embedding workflow", () => {
     await expect(
       workflow.embedSource("memory_event", source.sourceId)
     ).resolves.toEqual({ dimensions: 3, inserted: true, chunks: 2 });
-    expect(repository.upsertSourceEmbedding).toHaveBeenCalledTimes(2);
+    expect(repository.replaceSourceEmbeddings).toHaveBeenCalledTimes(1);
+    expect(repository.replaceSourceEmbeddings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chunks: [
+          expect.objectContaining({ chunkIndex: 0, chunkCount: 2 }),
+          expect.objectContaining({ chunkIndex: 1, chunkCount: 2 })
+        ]
+      })
+    );
   });
 
   it("renews caller state before every bounded embedding batch", async () => {
@@ -400,9 +415,9 @@ describe("embedding workflow", () => {
         .mockResolvedValueOnce(source)
         .mockResolvedValueOnce(secondSource),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi
+      replaceSourceEmbeddings: vi
         .fn()
-        .mockResolvedValue({ id: "embedding", inserted: true })
+        .mockResolvedValue({ ids: ["embedding"], inserted: true })
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn().mockImplementation(() =>
       Promise.resolve(
@@ -454,9 +469,9 @@ describe("embedding workflow", () => {
         .mockResolvedValueOnce(sources[1])
         .mockResolvedValueOnce(sources[2]),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi
+      replaceSourceEmbeddings: vi
         .fn()
-        .mockResolvedValue({ id: "embedding", inserted: true })
+        .mockResolvedValue({ ids: ["embedding"], inserted: true })
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn().mockImplementation((_url, init: RequestInit) => {
       const texts = (JSON.parse(String(init.body)) as { texts: string[] })
@@ -507,9 +522,10 @@ describe("embedding workflow", () => {
     const repository = {
       getEmbeddableSource: vi.fn().mockResolvedValue(oversizedSource),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi
-        .fn()
-        .mockResolvedValue({ id: "embedding", inserted: true })
+      replaceSourceEmbeddings: vi.fn().mockResolvedValue({
+        ids: ["embedding-1", "embedding-2", "embedding-3"],
+        inserted: true
+      })
     } as unknown as MemorySourceRepository;
     const submittedTexts: string[][] = [];
     const fetchFn = vi.fn().mockImplementation((_url, init: RequestInit) => {
@@ -557,15 +573,21 @@ describe("embedding workflow", () => {
           texts.reduce((total, text) => total + text.length, 0) <= 8
       )
     ).toBe(true);
-    expect(repository.upsertSourceEmbedding).toHaveBeenCalledTimes(3);
+    expect(repository.replaceSourceEmbeddings).toHaveBeenCalledTimes(1);
     expect(
       (
-        repository.upsertSourceEmbedding as ReturnType<typeof vi.fn>
-      ).mock.calls.map(([input]) => ({
-        chunkIndex: input.chunkIndex,
-        chunkCount: input.chunkCount,
-        sourceText: input.sourceText
-      }))
+        repository.replaceSourceEmbeddings as ReturnType<typeof vi.fn>
+      ).mock.calls[0]?.[0].chunks.map(
+        (input: {
+          chunkIndex: number;
+          chunkCount: number;
+          sourceText: string;
+        }) => ({
+          chunkIndex: input.chunkIndex,
+          chunkCount: input.chunkCount,
+          sourceText: input.sourceText
+        })
+      )
     ).toEqual([
       { chunkIndex: 0, chunkCount: 3, sourceText: "abcd" },
       { chunkIndex: 1, chunkCount: 3, sourceText: "😀efg" },
@@ -594,9 +616,9 @@ describe("embedding workflow", () => {
         .mockResolvedValueOnce(nodes[0])
         .mockResolvedValueOnce(nodes[1]),
       getCurrentSourceEmbeddingChunkCount: vi.fn().mockResolvedValue(null),
-      upsertSourceEmbedding: vi
+      replaceSourceEmbeddings: vi
         .fn()
-        .mockResolvedValue({ id: "embedding", inserted: true })
+        .mockResolvedValue({ ids: ["embedding"], inserted: true })
     } as unknown as MemorySourceRepository;
     const fetchFn = vi.fn().mockImplementation((_url, init: RequestInit) => {
       const texts = (JSON.parse(String(init.body)) as { texts: string[] })

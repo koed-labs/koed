@@ -1045,7 +1045,6 @@ const loadAndValidateConversationItemSession = async (input: {
         and visibility = $3::visibility_scope
         and invalidated_at is null
         and personal_deleted_at is null
-        and coalesce((metadata->>'syncReplica')::boolean, false) = false
       limit 1
       for update
     `,
@@ -1056,6 +1055,12 @@ const loadAndValidateConversationItemSession = async (input: {
     throw Object.assign(new Error("Session not found or not visible"), {
       statusCode: 404,
       code: "conversation_session_not_found"
+    });
+  }
+  if (session.metadata?.syncReplica === true) {
+    throw Object.assign(new Error("Synchronized replica is read-only"), {
+      statusCode: 409,
+      code: "synchronized_replica_read_only"
     });
   }
 

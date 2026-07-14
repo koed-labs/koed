@@ -8,6 +8,7 @@ import {
   readLocalEdgeUpstreamRegistry,
   resolveLocalEdgeRouteDecision,
   safeUpstreamProxyUrl,
+  upstreamAdvertisesCapability,
   type LocalEdgeUpstreamBackend
 } from "./upstream-routing.js";
 
@@ -66,6 +67,27 @@ const credential = (
 });
 
 describe("local edge upstream routing", () => {
+  it("requires the cached upstream to advertise the exact capability", () => {
+    expect(
+      upstreamAdvertisesCapability(backend(), "memory.crossIdentitySync")
+    ).toBe(false);
+    expect(
+      upstreamAdvertisesCapability(
+        backend({
+          capabilities: {
+            state: "validated",
+            expiresAt: "2099-01-01T00:15:00.000Z",
+            payload: {
+              capabilities: {
+                "memory.crossIdentitySync": { availability: "available" }
+              }
+            }
+          }
+        }),
+        "memory.crossIdentitySync"
+      )
+    ).toBe(true);
+  });
   it("keeps Personal Memory local unless an upstream is explicit", () => {
     expect(
       resolveLocalEdgeRouteDecision({

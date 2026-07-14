@@ -47,6 +47,12 @@ export interface LocalEdgeUpstreamBackend {
   capabilities?: {
     state?: "validated" | "stale" | "failed" | "not_checked";
     expiresAt?: string | null;
+    payload?: {
+      capabilities?: Record<
+        string,
+        { availability?: "available" | "partial" | "unavailable" }
+      >;
+    };
   };
 }
 
@@ -143,6 +149,13 @@ export const upstreamBackendById = (
   upstreamBackendId: string
 ): LocalEdgeUpstreamBackend | null =>
   registry.backends.find((backend) => backend.id === upstreamBackendId) ?? null;
+
+export const upstreamAdvertisesCapability = (
+  backend: LocalEdgeUpstreamBackend,
+  capability: string
+): boolean =>
+  backend.capabilities?.payload?.capabilities?.[capability]?.availability ===
+  "available";
 
 export const resolveLocalEdgeRouteDecision = (input: {
   operationFamily: LocalEdgeOperationFamily;

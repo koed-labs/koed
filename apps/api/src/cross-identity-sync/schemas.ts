@@ -192,6 +192,18 @@ export const applyRemoteSyncRevocationSchema = z
   })
   .strict();
 
+export const syncHeartbeatSchema = z
+  .object({
+    source_cursor: safeIntegerSchema.nonnegative(),
+    target_processing_cursor: safeIntegerSchema.nonnegative(),
+    package_sequence: safeIntegerSchema.nonnegative()
+  })
+  .strict()
+  .refine((input) => input.source_cursor === input.target_processing_cursor, {
+    message: "heartbeat cursors must match",
+    path: ["target_processing_cursor"]
+  });
+
 export const createTargetSyncRelationshipSchema = z
   .object({
     relationship_id: uuidSchema,
@@ -275,9 +287,10 @@ export const uploadChunkSchema = z
   })
   .strict();
 
-export const targetSyncRelationshipResponseSchema = z
+export const targetSyncContextRequestSchema = z.object({}).strict();
+
+export const targetSyncContextResponseSchema = z
   .object({
-    relationship: z.object({ id: uuidSchema }).passthrough(),
     target_deployment_id: uuidSchema,
     target_deployment_profile: z.enum([
       "private_vps",
@@ -285,7 +298,6 @@ export const targetSyncRelationshipResponseSchema = z
       "koed_managed_cloud"
     ]),
     target_user_id: z.string().trim().min(1).max(240),
-    target_replica_id: uuidSchema,
     recipient_key: z
       .object({
         algorithm: z.literal("RSA-OAEP-SHA256"),
@@ -307,3 +319,9 @@ export const targetSyncRelationshipResponseSchema = z
       .strict()
   })
   .strict();
+
+export const targetSyncRelationshipResponseSchema =
+  targetSyncContextResponseSchema.extend({
+    relationship: z.object({ id: uuidSchema }).passthrough(),
+    target_replica_id: uuidSchema
+  });

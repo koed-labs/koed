@@ -16,6 +16,14 @@ export class RemoteResponseLimitError extends Error {
   }
 }
 
+export const upstreamApiUrl = (baseUrl: string, path: string): URL => {
+  const base = new URL(baseUrl);
+  base.pathname = `${base.pathname.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+  base.search = "";
+  base.hash = "";
+  return base;
+};
+
 export const fetchWithTimeout = async (
   fetchFn: typeof fetch,
   input: URL | RequestInfo,

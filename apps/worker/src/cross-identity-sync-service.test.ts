@@ -20,14 +20,59 @@ import {
   type EnvelopeEncryptionProvider
 } from "@koed/shared";
 import type { EmbeddingWorkflow } from "./embedding-workflow.js";
-import { createCrossIdentitySyncService } from "./cross-identity-sync-service.js";
+import {
+  createCrossIdentitySyncService,
+  withLeaseHeartbeat
+} from "./cross-identity-sync-service.js";
 
 const temporaryHomes: string[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const home of temporaryHomes.splice(0)) {
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+describe("Cross-Identity Sync queue leases", () => {
+  it("renews a lease while a slow operation is still running", async () => {
+    vi.useFakeTimers();
+    let finish: ((value: string) => void) | undefined;
+    const operation = new Promise<string>((resolve) => {
+      finish = resolve;
+    });
+    const renew = vi.fn().mockResolvedValue(undefined);
+
+    const result = withLeaseHeartbeat({
+      leaseMs: 300,
+      renew,
+      operation: () => operation
+    });
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(renew).toHaveBeenCalledTimes(2);
+    finish?.("complete");
+    await expect(result).resolves.toBe("complete");
+  });
+
+  it("fails the operation when a lease heartbeat is lost", async () => {
+    vi.useFakeTimers();
+    let finish: (() => void) | undefined;
+    const operation = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const renew = vi.fn().mockRejectedValue(new Error("lease lost"));
+
+    const result = withLeaseHeartbeat({
+      leaseMs: 300,
+      renew,
+      operation: () => operation
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    finish?.();
+    await expect(result).rejects.toThrow("lease lost");
+  });
 });
 
 const queueEntry = (): SyncQueueEntryRecord => ({
@@ -64,6 +109,10 @@ const createFixture = (
   const entry = queueEntry();
   const failSyncQueueEntry = vi.fn().mockResolvedValue(undefined);
   const repository = {
+    recordCrossIdentitySyncWorkerHeartbeat: vi
+      .fn()
+      .mockResolvedValue(undefined),
+    listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
     markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
     cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({
       chunksDeleted: 0,
@@ -231,6 +280,10 @@ const createProcessingHandshakeFixture = (input: {
   const completeSyncQueueEntry = vi.fn().mockResolvedValue(true);
   const markSourceSyncUploadCommitted = vi.fn().mockResolvedValue(undefined);
   const repository = {
+    recordCrossIdentitySyncWorkerHeartbeat: vi
+      .fn()
+      .mockResolvedValue(undefined),
+    listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
     markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
     cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({
       chunksDeleted: 0,
@@ -395,6 +448,316 @@ describe("Cross-Identity Sync processing handshake", () => {
     expect(fixture.completeSyncQueueEntry).toHaveBeenCalledOnce();
     expect(fixture.deferSyncQueueEntry).not.toHaveBeenCalled();
   });
+
+  it("discards an interrupted source package and regenerates the same sequence", async () => {
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-recovery-"));
+    temporaryHomes.push(koedHome);
+    const backendId = "team-backend";
+    const { reference } = storeUpstreamCredentialSecret(koedHome, {
+      backendId,
+      credentialKeyId: "credential-key",
+      secret: "device-secret"
+    });
+    const root = createLocalTestKeyEnvelopeEncryptionProvider(
+      randomBytes(32).toString("base64")
+    );
+    const recipient = await generateRecipientKeyMaterial(root, {
+      keyId: "sync-recipient:recovery",
+      keyVersion: 1
+    });
+    const relationshipId = queueEntry().syncRelationshipId;
+    const entry: SyncQueueEntryRecord = {
+      ...queueEntry(),
+      payloadManifest: { kind: "changes" }
+    };
+    const incompleteUpload = {
+      id: "66666666-6666-4666-8666-666666666666",
+      syncRelationshipId: relationshipId,
+      protocolPackageId: "77777777-7777-4777-8777-777777777777",
+      state: "uploading",
+      requestHash: "b".repeat(64),
+      packageManifest: {},
+      packageChecksum: "c".repeat(64),
+      sourceSequence: 1,
+      fromCursor: 0,
+      toCursor: 1,
+      totalBytes: 2,
+      expectedChunkCount: 2
+    };
+    const deleteIncompleteSourceSyncPackage = vi.fn().mockResolvedValue(true);
+    let persisted:
+      | {
+          upload: Record<string, unknown>;
+          chunks: Record<string, unknown>[];
+        }
+      | undefined;
+    const createSyncPackageUploadSession = vi
+      .fn()
+      .mockImplementation((_actor, input) => {
+        persisted = {
+          upload: {
+            id: "88888888-8888-4888-8888-888888888888",
+            ...input,
+            state: "created"
+          },
+          chunks: []
+        };
+        return Promise.resolve(persisted.upload);
+      });
+    const recordSyncPackageChunk = vi
+      .fn()
+      .mockImplementation((_actor, input) => {
+        persisted?.chunks.push({
+          chunkIndex: input.chunkIndex,
+          chunkChecksum: input.chunkChecksum,
+          byteCount: input.byteCount,
+          encryptedPayload: input.encryptedPayload
+        });
+        return Promise.resolve(input);
+      });
+    const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
+      markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry: vi
+        .fn()
+        .mockImplementation(({ queue }) =>
+          Promise.resolve(queue === "outbox" ? entry : null)
+        ),
+      renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      readCapturedSessionSyncDelta: vi.fn().mockResolvedValue({
+        relationship: {
+          packageSequence: 0,
+          logicalMemoryId: "99999999-9999-4999-8999-999999999999",
+          localUserId: "source-user",
+          localReplicaId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          remoteReplicaId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          policyManifest: {
+            sourceBoundary: "captured_session",
+            recipientKey: recipient
+          },
+          consentManifest: { consented: true }
+        },
+        fromCursor: 0,
+        session: {
+          originSessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          externalSessionId: "thread-recovery",
+          sourceRuntime: "codex",
+          captureMethod: "hook",
+          capturedAt: "2026-07-13T00:00:00.000Z",
+          title: "Recovery test",
+          sourceAdapterVersion: "1"
+        },
+        changes: [
+          {
+            cursor: 1,
+            operation: "delete",
+            originEventId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            revisionHash: "e".repeat(64),
+            event: null
+          }
+        ]
+      }),
+      getSyncTransportContext: vi.fn().mockResolvedValue({
+        relationship: { side: "source" },
+        localProtocolDeploymentId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        remoteProtocolDeploymentId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        remoteBaseUrl: "https://team.example.com",
+        remoteUpstreamBackendId: backendId,
+        remoteCredentialReference: reference,
+        remoteSubjectId: "target-user"
+      }),
+      getSyncPackageBySequence: vi.fn().mockResolvedValue({
+        upload: incompleteUpload,
+        chunks: [
+          {
+            chunkIndex: 0,
+            chunkChecksum: "f".repeat(64),
+            byteCount: 1,
+            encryptedPayload: {}
+          }
+        ]
+      }),
+      deleteIncompleteSourceSyncPackage,
+      createSyncPackageUploadSession,
+      recordSyncPackageChunk,
+      getSyncPackageForService: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(persisted)),
+      markSourceSyncUploadCommitted: vi.fn().mockResolvedValue(undefined),
+      acknowledgeSourceSyncPackage: vi.fn().mockResolvedValue(undefined),
+      completeSyncQueueEntry: vi.fn().mockResolvedValue(true),
+      failSyncQueueEntry: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const fetchFn = vi.fn().mockImplementation((url: URL, request) => {
+      const path = url.pathname;
+      const body = path.endsWith("/upload-sessions")
+        ? { upload: { id: "12121212-1212-4212-8212-121212121212" } }
+        : request.method === "GET" && path.includes("/upload-sessions/")
+          ? { acceptedChunkIndexes: [] }
+          : path.endsWith("/complete")
+            ? { upload: { state: "completed" } }
+            : path.includes("/relationships/")
+              ? { relationship: { state: "ready", targetProcessingCursor: 1 } }
+              : {};
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      );
+    });
+    const service = createCrossIdentitySyncService({
+      repository,
+      rootEncryptionProvider: root,
+      embeddingWorkflow: {} as EmbeddingWorkflow,
+      koedHome,
+      fetch: fetchFn,
+      staleAfterSeconds: 3_600,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await service.processOnce();
+
+    expect(deleteIncompleteSourceSyncPackage).toHaveBeenCalledWith({
+      relationshipId,
+      uploadSessionId: incompleteUpload.id
+    });
+    expect(createSyncPackageUploadSession).toHaveBeenCalledWith(
+      { userId: "source-user" },
+      expect.objectContaining({
+        syncRelationshipId: relationshipId,
+        sourceSequence: 1,
+        fromCursor: 0,
+        toCursor: 1
+      })
+    );
+    expect(recordSyncPackageChunk).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Cross-Identity Sync freshness heartbeat", () => {
+  it("delivers an acknowledged-cursor heartbeat without creating a package", async () => {
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-heartbeat-"));
+    temporaryHomes.push(koedHome);
+    const backendId = "team-backend";
+    const { reference } = storeUpstreamCredentialSecret(koedHome, {
+      backendId,
+      credentialKeyId: "credential-key",
+      secret: "device-secret"
+    });
+    const entry: SyncQueueEntryRecord = {
+      ...queueEntry(),
+      idempotencyKey: "heartbeat:2026-07-13T00:00:00.000Z",
+      payloadManifest: {
+        kind: "heartbeat",
+        sourceCursor: 7,
+        targetProcessingCursor: 7,
+        packageSequence: 2
+      }
+    };
+    const refreshSourceSyncHeartbeat = vi.fn().mockResolvedValue(true);
+    const completeSyncQueueEntry = vi.fn().mockResolvedValue(true);
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ accepted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
+      markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry: vi
+        .fn()
+        .mockImplementation(({ queue }) =>
+          Promise.resolve(queue === "outbox" ? entry : null)
+        ),
+      renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      getSyncTransportContext: vi.fn().mockResolvedValue({
+        relationship: { side: "source" },
+        remoteBaseUrl: "https://team.example.com/koed",
+        remoteUpstreamBackendId: backendId,
+        remoteCredentialReference: reference
+      }),
+      refreshSourceSyncHeartbeat,
+      completeSyncQueueEntry,
+      failSyncQueueEntry: vi.fn()
+    } as unknown as MemorySourceRepository;
+    const service = createCrossIdentitySyncService({
+      repository,
+      rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      embeddingWorkflow: {} as EmbeddingWorkflow,
+      koedHome,
+      fetch: fetchFn,
+      staleAfterSeconds: 3_600,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await expect(service.processOnce()).resolves.toEqual({
+      outbox: true,
+      inbox: false
+    });
+    expect(fetchFn).toHaveBeenCalledWith(
+      new URL(
+        `https://team.example.com/koed/v1/cross-identity-sync/intake/relationships/${entry.syncRelationshipId}/heartbeat`
+      ),
+      expect.objectContaining({
+        body: JSON.stringify({
+          source_cursor: 7,
+          target_processing_cursor: 7,
+          package_sequence: 2
+        })
+      })
+    );
+    expect(refreshSourceSyncHeartbeat).toHaveBeenCalledWith(
+      expect.objectContaining({ relationshipId: entry.syncRelationshipId })
+    );
+    expect(completeSyncQueueEntry).toHaveBeenCalledOnce();
+  });
+
+  it("scans often enough for a short configured freshness window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T00:00:00.000Z"));
+    const listDueSourceSyncHeartbeats = vi.fn().mockResolvedValue([]);
+    const markOverdueSyncRelationshipsStale = vi.fn().mockResolvedValue(0);
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-short-freshness-"));
+    temporaryHomes.push(koedHome);
+    const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats,
+      markOverdueSyncRelationshipsStale,
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry: vi.fn().mockResolvedValue(null)
+    } as unknown as MemorySourceRepository;
+    const service = createCrossIdentitySyncService({
+      repository,
+      rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      embeddingWorkflow: {} as EmbeddingWorkflow,
+      koedHome,
+      staleAfterSeconds: 8,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await service.processOnce();
+    await vi.advanceTimersByTimeAsync(1_999);
+    await service.processOnce();
+    expect(listDueSourceSyncHeartbeats).toHaveBeenCalledOnce();
+    expect(markOverdueSyncRelationshipsStale).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await service.processOnce();
+    expect(listDueSourceSyncHeartbeats).toHaveBeenCalledTimes(2);
+    expect(markOverdueSyncRelationshipsStale).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Cross-Identity Sync inbox binding", () => {
@@ -496,6 +859,10 @@ describe("Cross-Identity Sync inbox binding", () => {
     const applyCapturedSessionSyncPackage = vi.fn();
     const failSyncQueueEntry = vi.fn().mockResolvedValue(true);
     const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      listDueSourceSyncHeartbeats: vi.fn().mockResolvedValue([]),
       markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
       cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({
         chunksDeleted: 0,
@@ -552,6 +919,7 @@ describe("Cross-Identity Sync inbox binding", () => {
         remoteProtocolDeploymentId: sourceDeploymentId,
         remoteSubjectId: "source-user"
       }),
+      authorizeTargetSyncProcessing: vi.fn().mockResolvedValue(true),
       getSyncRecipientKey: vi.fn().mockResolvedValue(material),
       applyCapturedSessionSyncPackage,
       failSyncQueueEntry
@@ -567,6 +935,20 @@ describe("Cross-Identity Sync inbox binding", () => {
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     });
 
+    vi.mocked(repository.authorizeTargetSyncProcessing).mockResolvedValueOnce(
+      false
+    );
+    await service.processOnce();
+    expect(repository.getSyncRecipientKey).not.toHaveBeenCalled();
+    expect(failSyncQueueEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queue: "inbox",
+        errorClass: "SyncAuthorizationRevokedError",
+        terminal: true
+      })
+    );
+
+    failSyncQueueEntry.mockClear();
     await service.processOnce();
 
     expect(applyCapturedSessionSyncPackage).not.toHaveBeenCalled();
