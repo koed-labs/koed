@@ -43,11 +43,11 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
       "---",
       "id: lcm-summary-leaf",
       "version: operator-leaf-v9",
+      `output_schema: ${LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION}`,
       "---",
       "Summarize this leaf using the required JSON schema."
     ].join("\n")
   );
-  vi.stubEnv("KOED_PROMPT_DIR", directory);
 
   const node: LcmSummaryNode = {
     id: "00000000-0000-4000-8000-000000000051",
@@ -84,6 +84,7 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
     limit: 1,
     config: resolveLcmSummaryWorkerConfig(
       {
+        KOED_PROMPT_DIR: directory,
         MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
       },
       {
@@ -111,7 +112,7 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
   ]);
 });
 
-it("rejects output produced by a superseded LCM override", async () => {
+it("fails before listing work when an LCM override omits its output schema", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-prompts-"));
   tempDirs.push(directory);
   await writeFile(
@@ -124,60 +125,32 @@ it("rejects output produced by a superseded LCM override", async () => {
       "Summarize this captured memory span using structured detail arrays."
     ].join("\n")
   );
-  vi.stubEnv("KOED_PROMPT_DIR", directory);
 
-  const node: LcmSummaryNode = {
-    id: "00000000-0000-4000-8000-000000000061",
-    visibility: "personal",
-    kind: "leaf",
-    depth: 0,
-    summaryText: "placeholder",
-    sourceTokenEstimate: 20,
-    sourceItems: [
+  const listPendingLcmSummaries = vi.fn();
+  const runner = vi.fn();
+
+  await expect(
+    summarizePendingLcmNodes(
+      { listPendingLcmSummaries } as unknown as Parameters<
+        typeof summarizePendingLcmNodes
+      >[0],
       {
-        kind: "memory_event",
-        sourceId: "00000000-0000-4000-8000-000000000062",
-        text: "Use scoped device credentials."
+        limit: 1,
+        config: resolveLcmSummaryWorkerConfig(
+          {
+            KOED_PROMPT_DIR: directory,
+            MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+          },
+          { maxAttempts: 1, retryDelayMs: 0, timeoutMs: 1_000 }
+        ),
+        runner
       }
-    ]
-  };
-  const submissions: Record<string, unknown>[] = [];
-  let listed = false;
-  const client = {
-    async listPendingLcmSummaries() {
-      if (listed) {
-        return { nodes: [] };
-      }
-      listed = true;
-      return { nodes: [node] };
-    },
-    async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
-      submissions.push(input);
-      return {};
-    }
-  } as unknown as Parameters<typeof summarizePendingLcmNodes>[0];
-
-  const result = await summarizePendingLcmNodes(client, {
-    limit: 1,
-    config: resolveLcmSummaryWorkerConfig(
-      { MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath() },
-      { maxAttempts: 1, retryDelayMs: 0, timeoutMs: 1_000 }
-    ),
-    runner: async () => ({
-      text: JSON.stringify({
-        schema_version: "lcm-structured-summary-v1",
-        title: "Device credential policy",
-        summary_text: "Use scoped device credentials.",
-        decisions: ["Use scoped device credentials."]
-      }),
-      model: "codex-app-server:test"
-    })
-  });
-
-  expect(result.submittedCount).toBe(0);
-  expect(result.failedCount).toBe(1);
-  expect(result.results[0]?.error).toContain("schema_version");
-  expect(submissions).toHaveLength(0);
+    )
+  ).rejects.toThrow(
+    /output_schema <missing>.*Update or remove the incompatible KOED_PROMPT_DIR override/
+  );
+  expect(listPendingLcmSummaries).not.toHaveBeenCalled();
+  expect(runner).not.toHaveBeenCalled();
 });
 
 describe("LCM summary worker", () => {

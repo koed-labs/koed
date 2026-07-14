@@ -417,11 +417,13 @@ These values are copied into the AI Client configuration and are not consumed au
   template placeholders fail loudly. Prompt overrides can adjust wording and
   add optional content, but code still owns required placeholders, JSON schemas,
   parser validation, source serialization, authorization, redaction, and
-  retrieval boundaries. LCM overrides must produce the current
-  `lcm-semantic-summary-v1` contract. Overrides copied from an earlier build
-  that produce `lcm-structured-summary-v1` output must be updated or removed;
-  unsupported output contracts fail validation. MCP builds carry the bundled
-  defaults inside the deployed runtime. `pnpm codex:bootstrap` resolves relative override paths
+  retrieval boundaries. LCM overrides must declare
+  `output_schema: lcm-semantic-summary-v1` in frontmatter and produce that
+  contract. The LCM Summary Service validates all four LCM prompt contracts
+  before listing pending work or calling Codex. Overrides copied from an earlier
+  build that produce `lcm-structured-summary-v1` output must be updated or
+  removed; incompatible overrides fail with an actionable error. MCP builds
+  carry the bundled defaults inside the deployed runtime. `pnpm codex:bootstrap` resolves relative override paths
   against the Koed checkout and writes an absolute directory into the persistent
   MCP environment, so opening Codex from a different Project does not change
   which prompts are loaded. LCM summaries, Memory Answer, and generated session

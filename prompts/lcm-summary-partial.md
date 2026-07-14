@@ -1,6 +1,7 @@
 ---
 id: lcm-summary-partial
 version: lcm-codex-summary-json-v3
+output_schema: lcm-semantic-summary-v1
 ---
 You are a private local LCM summarisation worker running under the user's Codex subscription.
 Summarize this token-bounded shard of one larger LCM node.

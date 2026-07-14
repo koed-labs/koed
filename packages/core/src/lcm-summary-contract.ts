@@ -5,8 +5,8 @@ export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION = "lcm-semantic-summary-v1";
 export const structuredLcmSummarySchema = z
   .object({
     schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
-    title: z.string().min(1).max(120),
-    summary_text: z.string().min(1)
+    title: z.string().trim().min(1).max(120),
+    summary_text: z.string().trim().min(1)
   })
   .strict();
 

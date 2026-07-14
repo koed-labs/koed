@@ -747,7 +747,9 @@ sequenceDiagram
 7. App-server workflow telemetry is persisted as raw-only conversation items,
    and provider token usage is recorded for attribution.
 8. The LCM worker submits the completed LCM Summary to
-   `POST /v1/memory/lcm/summaries/{nodeId}`.
+   `POST /v1/memory/lcm/summaries/{nodeId}`. The API requires the shared
+   semantic-summary schema, matching schema-version metadata, and canonical
+   `summaryText` consistent with structured `summary_text`.
 9. The API updates the Memory Node summary fields and enqueues Memory Node
    embedding. In paid Koed-managed cloud, the stored summary/body/structured
    JSON fields remain redacted and the submitted LCM Summary is written to

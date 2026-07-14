@@ -1,6 +1,7 @@
 ---
 id: lcm-summary-leaf
 version: lcm-codex-summary-json-v3
+output_schema: lcm-semantic-summary-v1
 ---
 You are a private local LCM summarisation worker running under the user's Codex subscription.
 Create a compact semantic index of this captured memory span for future retrieval.

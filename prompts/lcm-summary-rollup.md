@@ -1,6 +1,7 @@
 ---
 id: lcm-summary-rollup
 version: lcm-codex-summary-json-v3
+output_schema: lcm-semantic-summary-v1
 ---
 You are a private local LCM summarisation worker running under the user's Codex subscription.
 Roll up these child LCM summaries into a compact higher-level semantic index.

@@ -22,7 +22,11 @@ import {
   persistRawConversationItems,
   projectRawConversationItems
 } from "./raw-conversation-items.js";
-import { loadPrompt, type PromptId } from "./prompt-loader.js";
+import {
+  lcmSummaryPromptIds,
+  loadPrompt,
+  type PromptId
+} from "./prompt-loader.js";
 
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
@@ -298,7 +302,8 @@ const lcmSummaryJsonShape = () => ({
 
 const buildVersionedLcmSummaryPrompt = (
   node: LcmSummaryNode,
-  mode: "summary" | "partial" | "reduce" = "summary"
+  mode: "summary" | "partial" | "reduce" = "summary",
+  env: NodeJS.ProcessEnv = process.env
 ): BuiltLcmSummaryPrompt => {
   const isRollup =
     node.kind === "rollup" ||
@@ -321,7 +326,7 @@ const buildVersionedLcmSummaryPrompt = (
           ""
         ];
 
-  const loadedPrompt = loadPrompt(promptId);
+  const loadedPrompt = loadPrompt(promptId, { env });
   return {
     version: loadedPrompt.version,
     text: [
@@ -345,8 +350,9 @@ const buildVersionedLcmSummaryPrompt = (
 
 export const buildLcmSummaryPrompt = (
   node: LcmSummaryNode,
-  mode: "summary" | "partial" | "reduce" = "summary"
-): string => buildVersionedLcmSummaryPrompt(node, mode).text;
+  mode: "summary" | "partial" | "reduce" = "summary",
+  env: NodeJS.ProcessEnv = process.env
+): string => buildVersionedLcmSummaryPrompt(node, mode, env).text;
 
 const promptTokens = (prompt: string, config: LcmSummaryWorkerConfig): number =>
   countTokensForModel(prompt, { model: config.model }).tokens;
@@ -407,7 +413,8 @@ const buildTokenBoundedPrompts = (
       const candidateItems = [...currentItems, item];
       const candidatePrompt = buildVersionedLcmSummaryPrompt(
         nodeWithItems(node, candidateItems),
-        mode
+        mode,
+        config.env
       );
       if (promptTokens(candidatePrompt.text, config) <= maxPromptTokens) {
         currentItems = candidateItems;
@@ -418,13 +425,15 @@ const buildTokenBoundedPrompts = (
         prompts.push(
           buildVersionedLcmSummaryPrompt(
             nodeWithItems(node, currentItems),
-            mode
+            mode,
+            config.env
           )
         );
         currentItems = [item];
         const singlePrompt = buildVersionedLcmSummaryPrompt(
           nodeWithItems(node, currentItems),
-          mode
+          mode,
+          config.env
         );
         if (promptTokens(singlePrompt.text, config) > maxPromptTokens) {
           oversizedSinglePrompt = true;
@@ -442,7 +451,8 @@ const buildTokenBoundedPrompts = (
         prompts.push(
           buildVersionedLcmSummaryPrompt(
             nodeWithItems(node, currentItems),
-            mode
+            mode,
+            config.env
           )
         );
       }
@@ -472,7 +482,7 @@ const buildSummaryPrompts = (
   promptVersion: string;
   mode: "summary" | "partial" | "reduce";
 }> => {
-  const prompt = buildVersionedLcmSummaryPrompt(node);
+  const prompt = buildVersionedLcmSummaryPrompt(node, "summary", config.env);
   if (promptTokens(prompt.text, config) <= config.maxPromptTokens) {
     return [
       {
@@ -503,7 +513,9 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-lcm-summary-worker",
-      baseInstructions: loadPrompt("app-server-lcm-summary-base").body,
+      baseInstructions: loadPrompt("app-server-lcm-summary-base", {
+        env: config.env
+      }).body,
       developerInstructions: koedAppServerWorkerDeveloperInstructions
     },
     timeoutMs
@@ -890,6 +902,9 @@ export const summarizePendingLcmNodes = async (
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
   const runner = options.runner ?? runCodexAppServerLcmSummary;
   const requestedLimit = options.limit ?? 10;
+  for (const promptId of lcmSummaryPromptIds) {
+    loadPrompt(promptId, { env: config.env });
+  }
   const releaseLock = acquireLocalSummaryLock(
     config.env,
     Math.max(config.timeoutMs * config.maxAttempts * requestedLimit, 1_800_000)

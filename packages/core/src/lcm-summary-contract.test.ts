@@ -17,6 +17,20 @@ describe("LCM summary contract", () => {
     ).toBe(false);
   });
 
+  it("normalizes outer whitespace in canonical text fields", () => {
+    expect(
+      structuredLcmSummarySchema.parse({
+        schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+        title: "  Projection fix  ",
+        summary_text: "  Projection was fixed.  "
+      })
+    ).toEqual({
+      schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+      title: "Projection fix",
+      summary_text: "Projection was fixed."
+    });
+  });
+
   it("parses fenced semantic summary output", () => {
     const parsed = parseStructuredLcmSummary(
       `\`\`\`json\n{"schema_version":"${LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION}","title":"Projection fix","summary_text":"Projection was fixed."}\n\`\`\``
