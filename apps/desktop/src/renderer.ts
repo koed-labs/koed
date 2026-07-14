@@ -116,7 +116,6 @@ let rendered = false;
 let sidebarCollapsed = true;
 let refreshInFlight: Promise<void> | null = null;
 let explorerApiToken: string | null = null;
-let teamBackendUrlInput = "";
 let activeDesktopView: DesktopView = "projects";
 let showInactiveProjects = false;
 let selectedProjectId: string | null = null;
@@ -503,8 +502,6 @@ const componentLabel = (key: StatusComponentKey): string => {
       return "Codex";
     case "lcmSummaryService":
       return "LCM Summary Service";
-    case "upstreamBackends":
-      return "Team Backend";
     case "lastVerification":
       return "Last verification";
   }
@@ -1243,11 +1240,6 @@ const statusCardMeta = (cardId: StatusCardId): string => {
   if (cardId === "memoryProcessing") {
     return `Last verification ${status.lastVerification.checkedAt ?? "not recorded"}`;
   }
-  if (cardId === "teamBackend") {
-    return status.upstreamBackends.registered
-      ? `${status.upstreamBackends.registered} registered · ${status.upstreamBackends.validated} validated`
-      : "No Team Backend connected";
-  }
   const card = statusCards.find((entry) => entry.id === cardId);
   const healthyCount = card?.componentKeys.filter(
     (key) => statusComponent(key)?.state === "healthy"
@@ -1255,17 +1247,6 @@ const statusCardMeta = (cardId: StatusCardId): string => {
   return card
     ? `${healthyCount ?? 0}/${card.componentKeys.length} dependencies healthy`
     : "";
-};
-
-const firstUpstreamBackendId = (): string | null => {
-  const details = status?.upstreamBackends.details;
-  const backends = Array.isArray(
-    (details as { backends?: unknown } | undefined)?.backends
-  )
-    ? ((details as { backends: Array<{ id?: unknown }> }).backends ?? [])
-    : [];
-  const id = backends[0]?.id;
-  return typeof id === "string" && id.trim() ? id.trim() : null;
 };
 
 const statusCardLiveOutput = (cardId: StatusCardId): string => {
@@ -1408,27 +1389,6 @@ const renderStatusCardActions = (cardId: StatusCardId): string => {
   if (!card) {
     return "";
   }
-  if (cardId === "teamBackend") {
-    const backendId = firstUpstreamBackendId();
-    return `
-      <form class="team-backend-form" data-team-backend-form>
-        <input
-          type="url"
-          data-team-backend-url
-          placeholder="https://team.example.com"
-          value="${escapeHtml(teamBackendUrlInput)}"
-          ${busyAction ? "disabled" : ""}
-        />
-        <button type="submit" class="primary" ${busyAction ? "disabled" : ""}>Connect</button>
-        <button
-          type="button"
-          class="secondary"
-          data-team-backend-disconnect
-          ${busyAction || !backendId ? "disabled" : ""}
-        >Disconnect</button>
-      </form>
-    `;
-  }
   const actions = [card.primaryAction, ...card.secondaryActions];
   return actions
     .map(
@@ -1495,7 +1455,7 @@ const statusGroupSummary = (group: (typeof statusGroups)[number]): string => {
 
 const renderSettingsPane = (): string => `
   <div class="settings-screen screen-stack" data-view-root tabindex="-1">
-    <header class="screen-header"><div><p class="eyebrow">This device</p><h1>Settings</h1><p>Local Personal Memory setup, health, and repair actions.</p></div></header>
+    <header class="screen-header"><div><p class="eyebrow">Koed</p><h1>Settings</h1><p>Capture, recall, and local service health.</p></div></header>
     <div class="settings-list">
       ${statusGroups
         .map((group) => {
@@ -1544,10 +1504,9 @@ const renderShell = () => {
       <aside class="desktop-navigation">
         <button type="button" class="memory-brand" data-pane="projects" aria-label="Open Projects"><img class="brand-logo" src="${koedMarkUrl}" alt="" /><span>koed</span></button>
         <nav class="memory-tabs" aria-label="Koed sections"><button type="button" class="active" data-pane="projects"><span aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3.5 5.5h5l1.5 2h6.5v8h-13v-10Z" /></svg></span>Projects</button><button type="button" data-pane="settings"><span aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.5" /><path d="M10 2.75v2M10 15.25v2M2.75 10h2M15.25 10h2M4.85 4.85l1.4 1.4M13.75 13.75l1.4 1.4M15.15 4.85l-1.4 1.4M6.25 13.75l-1.4 1.4" /></svg></span>Settings</button></nav>
-        <div class="navigation-footer"><span class="status-dot starting" data-status-dot title="Overall health: ${stateLabels.starting}" aria-label="Overall health: ${stateLabels.starting}"></span><span><strong>Personal Memory</strong><small>Stored locally</small></span></div>
+        <div class="navigation-footer"><span class="status-dot starting" data-status-dot title="Overall health: ${stateLabels.starting}" aria-label="Overall health: ${stateLabels.starting}"></span><span><strong>Koed status</strong><small data-navigation-status>${stateLabels.starting}</small></span></div>
       </aside>
       <main class="desktop-workspace">
-        <header class="workspace-bar"><span>Personal</span><span class="status-pill starting" data-status-pill>${stateLabels.starting}</span></header>
         <div class="project-dashboard" data-project-dashboard data-render-key="${escapeHtml(dashboardRenderKey())}">${renderProjectDashboard()}</div>
       </main>
     </section>
@@ -1638,8 +1597,10 @@ const syncStartupSteps = () => {
 };
 
 const syncStatusCards = () => {
-  const statusPill = app.querySelector<HTMLElement>("[data-status-pill]");
   const statusDot = app.querySelector<HTMLElement>("[data-status-dot]");
+  const navigationStatus = app.querySelector<HTMLElement>(
+    "[data-navigation-status]"
+  );
   const hintStartup = app.querySelector<HTMLElement>("[data-startup-hint]");
   const startupPhaseNode = app.querySelector<HTMLElement>(
     "[data-startup-phase]"
@@ -1657,18 +1618,15 @@ const syncStatusCards = () => {
     startupDetailNode.textContent = startupDetail;
   }
 
-  if (statusPill) {
-    const state = status?.state ?? "starting";
-    statusPill.className = `status-pill ${state}`;
-    statusPill.textContent = stateLabels[state];
-    statusPill.title = `Overall health: ${stateLabels[state]}`;
-  }
   if (statusDot) {
     const state = status?.state ?? "starting";
     const label = `Overall health: ${stateLabels[state]}`;
     statusDot.className = `status-dot ${state}`;
     statusDot.title = label;
     statusDot.setAttribute("aria-label", label);
+  }
+  if (navigationStatus) {
+    navigationStatus.textContent = stateLabels[status?.state ?? "starting"];
   }
 
   if (hintStartup) {
@@ -1970,7 +1928,7 @@ const patchSessionProject = async (
   target: DesktopProject | null
 ): Promise<string> => {
   if (action === "move" && !target) {
-    throw new Error("Personal Project target is required.");
+    throw new Error("Project target is required.");
   }
   const project = target
     ? { id: target.id, name: target.name, path: target.path }
@@ -2020,7 +1978,7 @@ const updateSessionProject = async (
       ) ?? null)
     : null;
   if (action === "move" && !target) {
-    projectAssignmentError = "Select a Personal Project.";
+    projectAssignmentError = "Select a Project.";
     syncUI();
     return;
   }
@@ -2742,96 +2700,6 @@ const runStatusCardAction = async (
   }
 };
 
-const runTeamBackendConnect = async (): Promise<void> => {
-  const cardId = "teamBackend" as StatusCardId;
-  const url = teamBackendUrlInput.trim();
-  if (!url) {
-    appendStatusCardLog(cardId, "failed: Team Backend URL is required");
-    syncUI();
-    return;
-  }
-  busyAction = "Connect Team Backend";
-  syncUI();
-  try {
-    const result = await invokeWithTimeout(
-      "upstream_connect",
-      { url },
-      120_000
-    );
-    const error = commandResultError(result);
-    if (error) {
-      appendStatusCardLog(cardId, `failed: ${error}`);
-    } else {
-      const activationUrl =
-        result &&
-        typeof result === "object" &&
-        typeof (result as { activationUrl?: unknown }).activationUrl ===
-          "string"
-          ? (result as { activationUrl: string }).activationUrl
-          : null;
-      const browserOpenRequested =
-        result &&
-        typeof result === "object" &&
-        (result as { browserOpenRequested?: unknown }).browserOpenRequested ===
-          true;
-      appendStatusCardLog(
-        cardId,
-        browserOpenRequested
-          ? "enrollment started; browser open requested"
-          : "enrollment started; open the approval URL manually"
-      );
-      if (activationUrl) {
-        appendStatusCardLog(cardId, `approval URL: ${activationUrl}`);
-      }
-    }
-    await refreshStatus();
-  } catch (error) {
-    appendStatusCardLog(
-      cardId,
-      `failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  } finally {
-    statusCardCheckedAt[cardId] = new Date().toISOString();
-    busyAction = null;
-    syncUI();
-  }
-};
-
-const runTeamBackendDisconnect = async (): Promise<void> => {
-  const cardId = "teamBackend" as StatusCardId;
-  const backendId = firstUpstreamBackendId();
-  if (!backendId) {
-    appendStatusCardLog(cardId, "failed: no Team Backend is registered");
-    syncUI();
-    return;
-  }
-  busyAction = "Disconnect Team Backend";
-  syncUI();
-  try {
-    const result = await invokeWithTimeout(
-      "upstream_disconnect",
-      { backendId },
-      45_000
-    );
-    const error = commandResultError(result);
-    if (error) {
-      appendStatusCardLog(cardId, `failed: ${error}`);
-    } else {
-      appendStatusCardLog(cardId, "backend disconnected");
-    }
-    await refreshStatus();
-  } catch (error) {
-    appendStatusCardLog(
-      cardId,
-      `failed: ${error instanceof Error ? error.message : String(error)}`
-    );
-  } finally {
-    statusCardCheckedAt[cardId] = new Date().toISOString();
-    busyAction = null;
-    syncUI();
-  }
-};
-
 const registerHandlers = () => {
   app.addEventListener("submit", (event) => {
     const form = event.target;
@@ -2846,25 +2714,6 @@ const registerHandlers = () => {
       );
       void updateSessionProject("move", select?.value);
       return;
-    }
-    if (form.matches("[data-team-backend-form]")) {
-      event.preventDefault();
-      event.stopPropagation();
-      const input = form.querySelector<HTMLInputElement>(
-        "[data-team-backend-url]"
-      );
-      teamBackendUrlInput = input?.value ?? "";
-      void runTeamBackendConnect();
-    }
-  });
-
-  app.addEventListener("input", (event) => {
-    const input = event.target;
-    if (!(input instanceof HTMLInputElement)) {
-      return;
-    }
-    if (input.matches("[data-team-backend-url]")) {
-      teamBackendUrlInput = input.value;
     }
   });
 
@@ -3014,16 +2863,6 @@ const registerHandlers = () => {
     if (resetSessionProject) {
       event.preventDefault();
       void updateSessionProject("reset");
-      return;
-    }
-
-    const teamBackendDisconnectButton = target.closest<HTMLButtonElement>(
-      "[data-team-backend-disconnect]"
-    );
-    if (teamBackendDisconnectButton) {
-      event.preventDefault();
-      event.stopPropagation();
-      void runTeamBackendDisconnect();
       return;
     }
 

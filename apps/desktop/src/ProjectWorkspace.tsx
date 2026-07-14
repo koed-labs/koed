@@ -33,7 +33,7 @@ const projectAssignmentLabel = (session: DesktopThreadGroup): string => {
 };
 
 const projectSecondaryLabel = (project: DesktopProject): string =>
-  project.remoteDisplay ?? project.path ?? "Local Project";
+  project.remoteDisplay ?? project.path ?? "Project";
 
 type ProjectRowProps = {
   project: DesktopProject;
@@ -97,7 +97,7 @@ const ProjectMasterPane = ({
     <aside className="project-master-pane" aria-label="Projects">
       <header className="project-master-header">
         <div>
-          <p className="eyebrow">Personal Memory</p>
+          <p className="eyebrow">Memory</p>
           <h1>Projects</h1>
         </div>
         <span
@@ -178,10 +178,6 @@ const ProjectMasterPane = ({
           </>
         )}
       </div>
-      <footer className="project-master-footer">
-        <span className="project-activity-dot active" aria-hidden="true" />
-        On this device
-      </footer>
     </aside>
   );
 };
@@ -295,7 +291,7 @@ const ProjectDetailPane = ({ project }: { project: DesktopProject | null }) => {
           {project.name.slice(0, 1).toUpperCase() || "P"}
         </span>
         <div>
-          <p className="eyebrow">Local Project</p>
+          <p className="eyebrow">Project</p>
           <h2 id="selected-project-heading">{project.name}</h2>
           <p>
             {countLabel(project.threads.length, "Captured Session")} ·{" "}
@@ -384,9 +380,6 @@ const ConversationPane = ({
               {relativeTime(session.latestAt)} · {project.name}
             </small>
           </div>
-          <span className="conversation-local-badge">
-            <span aria-hidden="true" /> On this device
-          </span>
         </div>
         <details className="conversation-assignment-details">
           <summary>
@@ -405,7 +398,7 @@ const ConversationPane = ({
                 aria-busy={projectAssignmentBusy}
               >
                 <label>
-                  <span>Move to another Personal Project</span>
+                  <span>Move to another Project</span>
                   <select
                     data-session-project-target
                     required

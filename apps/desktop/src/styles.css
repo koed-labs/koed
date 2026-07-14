@@ -713,25 +713,6 @@ button:disabled {
   color: #17211b;
 }
 
-.team-backend-form {
-  align-items: center;
-  display: grid;
-  gap: 6px;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
-  width: 100%;
-}
-
-.team-backend-form input {
-  background: #fffdf6;
-  border: 1px solid #dedbd0;
-  border-radius: 8px;
-  color: #17211b;
-  font: inherit;
-  font-size: 11px;
-  min-width: 0;
-  padding: 6px 8px;
-}
-
 .status-group-body {
   border-top: 1px solid #ece8dc;
   display: grid;
@@ -977,27 +958,9 @@ button:disabled {
 
 .desktop-workspace {
   display: grid;
-  grid-template-rows: 50px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
-}
-
-.workspace-bar {
-  align-items: center;
-  border-bottom: 1px solid var(--memory-border);
-  color: var(--memory-muted);
-  display: flex;
-  font-size: 12px;
-  justify-content: space-between;
-  padding: 0 28px;
-}
-
-.workspace-bar > span:first-child {
-  background: #ebe6d9;
-  border-radius: 999px;
-  color: #6e685c;
-  font-weight: 700;
-  padding: 5px 10px;
 }
 
 .project-dashboard {
@@ -1456,26 +1419,6 @@ button:disabled {
   color: var(--memory-ink);
 }
 
-.conversation-local-badge {
-  align-items: center;
-  border: 1px solid var(--memory-border);
-  border-radius: 999px;
-  color: var(--memory-muted);
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 700;
-  gap: 6px;
-  padding: 6px 9px;
-}
-
-.conversation-local-badge > span {
-  background: #3fb96b;
-  border-radius: 999px;
-  height: 7px;
-  width: 7px;
-}
-
 .native-conversation-content {
   height: 100%;
   min-height: 0;
@@ -1750,7 +1693,7 @@ button:disabled {
   background: #f7f4ec;
   border-right: 1px solid var(--memory-border);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
   min-width: 0;
 }
@@ -1951,16 +1894,6 @@ button:disabled {
 .project-master-error p {
   font-size: 10px;
   line-height: 1.45;
-}
-
-.project-master-footer {
-  align-items: center;
-  border-top: 1px solid var(--memory-border);
-  color: var(--memory-muted);
-  display: flex;
-  font-size: 10px;
-  gap: 7px;
-  padding: 13px 20px;
 }
 
 .project-detail-column {
@@ -2395,8 +2328,7 @@ button:disabled {
     display: none;
   }
 
-  .navigation-footer,
-  .workspace-bar {
+  .navigation-footer {
     display: none;
   }
 
@@ -2493,11 +2425,6 @@ button:disabled {
   .conversation-toolbar {
     align-items: flex-start;
     gap: 8px;
-  }
-
-  .conversation-local-badge {
-    font-size: 0;
-    padding: 7px;
   }
 }
 

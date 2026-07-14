@@ -193,4 +193,17 @@ describe("ProjectWorkspace", () => {
         ?.classList.contains("route-project")
     ).toBe(true);
   });
+
+  it("does not imply unavailable device or Team Workspace modes", async () => {
+    await renderWorkspace();
+    expect(
+      container.querySelector(".dense-project-header .eyebrow")?.textContent
+    ).toBe("Project");
+
+    await renderWorkspace({ view: "session", selectedSessionId: "session-1" });
+
+    expect(container.textContent).not.toContain("On this device");
+    expect(container.textContent).not.toContain("Personal Project");
+    expect(container.textContent).not.toContain("Team");
+  });
 });

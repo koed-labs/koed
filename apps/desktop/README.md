@@ -24,8 +24,9 @@ virtualized timeline contract, so long Conversations retain bounded rendering
 and older-event pagination without coupling their navigation shells. Persisted
 Project discovery metadata is merged with captured Memory activity locally, so
 a discovered Project can remain visible before its first Captured Session.
-Team Backend enrollment stays in setup/readiness; the main Projects flow
-remains Personal Memory-first and works without an upstream.
+The Desktop UI does not expose remote backend enrollment or future Workspace
+and multi-device scopes. Its Projects flow remains Personal Memory-first and
+works without an upstream.
 Separate Git worktrees keep distinct local records while sharing a device-local
 Git common-directory signal. Current and historical network remote aliases are
 stored only as future matching evidence; Desktop does not yet combine Personal
