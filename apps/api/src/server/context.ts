@@ -61,6 +61,7 @@ export interface ApiRouteContext {
   };
   localEdge: {
     upstreamBackendsPath: string;
+    remoteOperationsAllowed(): boolean;
     fetch: typeof fetch;
     resolveUpstreamAuthorization(backend: {
       id: string;

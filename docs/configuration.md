@@ -83,6 +83,48 @@ Embedding Service reports the expected model and dimensions. Doctor repair
 actions point to migrations, pgvector setup, dependency URLs, queue backend, or
 model/runtime mismatch.
 
+## Clone-Safe Local Device Identity
+
+On first local control-plane use, `koed-server` creates opaque stable
+`deploymentId` and `deviceInstanceId` values. Ordinary identity state lives at
+`KOED_HOME/config/device-identity.json`; it contains IDs, a host-proof reference,
+a public fingerprint, and non-secret status metadata only. It never contains raw
+proof material.
+
+Raw host proof is stored outside `KOED_HOME` by the platform proof-store
+implementation: `~/Library/Application Support/Koed/device-proof` on macOS,
+`$XDG_STATE_HOME/koed/device-proof` (or `~/.local/state/koed/device-proof`) on
+Linux/WSL, and `%LOCALAPPDATA%/Koed/device-proof` on Windows. Set
+`KOED_DEVICE_PROOF_DIR` only to select another user-private directory outside
+`KOED_HOME`, such as isolated test state. This file-backed store is not an OS
+keychain and is distinct from API Tokens, upstream credentials, Local-Edge
+Client Credentials, and Personal Device Group governance material.
+
+On POSIX, Koed requires owner-only proof directories/files and identity-state
+files (no group/other permission bits; current-user ownership; no symlinks).
+Unsafe, missing, malformed, or mismatched proof/state never regenerates or
+rotates identity automatically. A copied `KOED_HOME` without matching host proof
+therefore enters clone quarantine: local capture, Personal Memory, and Recall
+continue, while enrollment, sync, Team, and remote local-edge work fail closed.
+Windows path selection uses user-local application state, but Node cannot verify
+all ACL inheritance and ownership guarantees with this implementation; status
+reports `platformProtection: "limited"` there. Operators should enforce
+user-only ACLs and avoid shared profiles.
+
+Inspect or explicitly repair identity with machine-readable output:
+
+```bash
+koed-server identity status --json
+koed-server identity rotate --json
+```
+
+`identity rotate` creates fresh deployment/device IDs and proof, preserves local
+Memory, disables local upstream route policies, revokes/removes locally stored
+enrollment references where possible, and requires fresh enrollment. It does
+not delete remote credentials or Memory from a remote deployment; revoke those
+through that deployment when needed. Status redacts proof material and proof
+references.
+
 ## Local Edge Upstream Registry
 
 Local edge `koed-server` stores remote/private/cloud upstream backend metadata
@@ -107,7 +149,9 @@ The registry may record a sanitized credential `reference`, but the reusable
 secret must live in the encrypted local credential store or deployment secret
 storage. Browser-mediated upstream enrollment writes a `keychain://koed-upstream/...`
 reference into the registry and stores the reusable device secret separately
-under `KOED_HOME/secrets` with owner-only file permissions. At runtime the API
+under `KOED_HOME/secrets` with owner-only file permissions. That reference is an
+opaque compatibility identifier for Koed's encrypted file store; current shared
+credential storage is not an OS keychain. At runtime the API
 resolves that reference from the local credential store; when no reference is
 configured it falls back to `KOED_UPSTREAM_CREDENTIAL_<BACKEND_ID>`, where the
 backend id is uppercased and non-alphanumeric characters become `_`. The value
@@ -173,17 +217,18 @@ upstream device credentials. See `docs/team-workspace-project-mapping.md`.
 Koed-owned local state lives under `KOED_HOME`:
 
 - `config/` for `server.json`, `local-ports.json`, `explorer-token.json`,
-  local Project metadata in `projects.json`, and Project-to-Team Workspace
-  mappings in `project-team-workspaces.json`
-- `run/` for `koed-server.json`, `last-verification.json`, upstream enrollment
-  orchestration state, and native runtime state
+  non-secret `device-identity.json`, local Project metadata in `projects.json`,
+  and Project-to-Team Workspace mappings in `project-team-workspaces.json`
+- `run/` for `koed-server.json`, `last-verification.json`, identity bootstrap
+  marker/lock state, upstream enrollment orchestration state, and native runtime
+  state
 - `logs/` for service logs, including `postgres.log`
 - `data/` for native database files, including `data/postgres`
 - `models/` for embedding and reranker model files
 - `cache/` for installer metadata and downloaded artifact cache
 - `runtime/` for bundled or packaged native runtime binaries
 
-Packaged Desktop, headless local-personal startup, and repair commands all read and write this same layout.
+Packaged Desktop, headless local-personal startup, and repair commands all read and write this same layout. Host proof is deliberately excluded from this layout so copying it alone cannot copy usable device identity.
 
 ## Platform Expectations
 

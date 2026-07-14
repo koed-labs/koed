@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
 import { resolveActiveIntegrationApiToken } from "./credentials.js";
 import { getProjectTeamWorkspaceLink } from "./project-team-workspace-links.js";
+import { ensureDeviceIdentity } from "./device-identity.js";
 
 export interface TeamProjectSharingFetchDeps {
   fetch?: typeof fetch;
@@ -156,7 +157,18 @@ export const shareProjectCapturedSession = async (
   deps: TeamProjectSharingFetchDeps = {}
 ): Promise<TeamProjectSharingResult> => {
   const fetchImpl = deps.fetch ?? globalThis.fetch.bind(globalThis);
+  const identity = await ensureDeviceIdentity(paths, { environment });
   const projectRoot = resolve(input.projectRoot);
+  if (!identity.remoteOperationsAllowed) {
+    const message = `Local device identity is ${identity.health}; Team sharing is blocked until explicit identity rotation.`;
+    return {
+      ok: false,
+      state: "needs_attention",
+      projectRoot,
+      message,
+      error: message
+    };
+  }
   const linkResult = getProjectTeamWorkspaceLink(paths, projectRoot);
   if (!linkResult.link) {
     return {

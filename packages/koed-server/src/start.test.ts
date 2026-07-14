@@ -55,6 +55,14 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   codexTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
+  deviceIdentity: {
+    state: "healthy",
+    health: "healthy",
+    deploymentId: "11111111-1111-4111-8111-111111111111",
+    deviceInstanceId: "22222222-2222-4222-8222-222222222222",
+    remoteOperationsAllowed: true,
+    platformProtection: "verified"
+  },
   upstreamBackends: {
     state: "healthy",
     registered: 0,

@@ -43,6 +43,14 @@ const status: KoedServerStatus = {
   codexTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
+  deviceIdentity: {
+    state: "healthy",
+    health: "healthy",
+    deploymentId: "11111111-1111-4111-8111-111111111111",
+    deviceInstanceId: "22222222-2222-4222-8222-222222222222",
+    remoteOperationsAllowed: true,
+    platformProtection: "verified"
+  },
   upstreamBackends: {
     state: "healthy",
     registered: 0,
@@ -1241,6 +1249,34 @@ describe("JSON command output", () => {
     expect(JSON.parse(stdout.text())).toMatchObject({
       ok: false,
       summary: "API is not ready"
+    });
+  });
+
+  it("prints redacted device identity JSON", async () => {
+    const stdout = writer();
+
+    const exitCode = await runKoedServerCli(["identity", "status", "--json"], {
+      stdout: stdout.stream,
+      resolvePaths: () => ({ koedHome: "/tmp/koed" }) as never,
+      inspectDeviceIdentity: async () =>
+        ({
+          health: "healthy",
+          deploymentId: "11111111-1111-4111-8111-111111111111",
+          deviceInstanceId: "22222222-2222-4222-8222-222222222222",
+          remoteOperationsAllowed: true,
+          platformProtection: "verified",
+          message: "Device identity proof is verified.",
+          initialized: false,
+          rotated: false
+        }) as never
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout.text()).not.toContain("host-proof://");
+    expect(stdout.text()).not.toContain("raw-proof");
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      health: "healthy",
+      remoteOperationsAllowed: true
     });
   });
 

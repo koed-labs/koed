@@ -167,6 +167,7 @@ export const resolveLocalEdgeRouteDecision = (input: {
     "upstreamBackendId" | "operationFamilies"
   > | null;
   upstreamCredentialAvailable?: boolean;
+  identityRemoteOperationsAllowed?: boolean;
   capturePolicy?: CapturePolicy | null;
   now?: Date;
 }): LocalEdgeRouteDecision => {
@@ -225,6 +226,19 @@ export const resolveLocalEdgeRouteDecision = (input: {
       operationFamily: input.operationFamily,
       upstreamBackendId,
       reason: "upstream_not_registered",
+      routePolicy: "not_applicable",
+      capabilityState: "missing",
+      credentialState: "missing",
+      relayCredentialState: "missing"
+    });
+  }
+
+  if (input.identityRemoteOperationsAllowed === false) {
+    return decision({
+      action: "deny_fail_closed",
+      operationFamily: input.operationFamily,
+      upstreamBackendId,
+      reason: "device_identity_unhealthy",
       routePolicy: "not_applicable",
       capabilityState: "missing",
       credentialState: "missing",

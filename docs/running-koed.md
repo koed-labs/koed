@@ -39,12 +39,16 @@ shell:
 ```bash
 node packages/koed-server/dist/cli.js status --json
 node packages/koed-server/dist/cli.js doctor --json
+node packages/koed-server/dist/cli.js identity status --json
+node packages/koed-server/dist/cli.js identity rotate --json
 node packages/koed-server/dist/cli.js start --daemon --json
 node packages/koed-server/dist/cli.js stop --json
 node packages/koed-server/dist/cli.js restart --json
 ```
 
 `start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. One live supervisor owns each `KOED_HOME`: startup acquires an atomic lock before allocating automatic ports or starting dependencies, and a concurrent start reuses the live supervisor instead of rewriting `config/local-ports.json`. Stale locks are reclaimed after their owning process exits. Bundled-local cleanup stops native Postgres only when the current startup actually started it, so a failed concurrent or recovery attempt cannot stop another live supervisor's database.
+
+Startup and `status --json` also inspect clone-safe local identity without blocking local services. JSON includes redacted `deviceIdentity` with opaque deployment/device IDs, health, remote-operation gate, and platform-protection level; it never contains raw host proof, proof references, API Tokens, or upstream credentials. Missing, malformed, mismatched, or unsafe proof/state leaves local capture and Recall available but blocks upstream enrollment, Cross-Identity Sync, Team local-edge proxying, and other remote work. Use `identity rotate --json` only for explicit repair/replacement: it creates a new identity/proof, preserves local Memory, disables local routes, and invalidates local enrollment references where possible. Re-enroll upstreams after rotation.
 
 `stop` is idempotent. Missing/stale process IDs are reported in JSON but do not fail the command. After managed services stop, the CLI verifies the runtime PID against the supervisor lock and writes an identity-bound stop request containing the PID and supervisor start time. The matching supervisor consumes that request and exits itself; the stop path never sends signals to a supervisor based only on a recorded PID. Runtime state is removed only when its identity is unchanged. `restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs. Stop order is Transcript Watcher, Explorer, Worker, API, then native Embedding Service and native Postgres via `pg_ctl stop -D <dataDir> -m fast` in bundled-local mode. It does not stop Docker Compose. External dependency mode does not stop Operator-managed Postgres, Redis, or Embedding Service.
 
@@ -149,8 +153,11 @@ package rows as an operational workflow.
 `koed-server` keeps local state under `KOED_HOME`:
 
 - `config/` for `server.json`, `local-ports.json`, `explorer-token.json`,
-  local Project metadata, and Project-to-Team Workspace mappings
-- `run/` for `koed-server.json`, `last-verification.json`, content-free Transcript Watcher wake state, upstream enrollment orchestration state, and supervisor state
+  non-secret `device-identity.json`, local Project metadata, and Project-to-Team
+  Workspace mappings
+- `run/` for `koed-server.json`, `last-verification.json`, content-free
+  Transcript Watcher wake state, identity bootstrap/lock state, upstream
+  enrollment orchestration state, and supervisor state
 - `status/` for aggregate diagnostic-only Transcript Watcher status
 - `state/` for content-free Transcript Watcher activation state
 - `logs/` for service logs, including `postgres.log`
@@ -159,7 +166,7 @@ package rows as an operational workflow.
 - `cache/` for installer metadata and downloaded artifact cache
 - `runtime/` for bundled or packaged native runtime binaries
 
-Packaged Desktop and headless local-personal flows both use this layout.
+Packaged Desktop and headless local-personal flows both use this layout. Raw host proof stays in user-private platform state outside `KOED_HOME`; copying this layout alone intentionally cannot clone usable device identity. See [configuration](configuration.md#clone-safe-local-device-identity) for paths, POSIX permission checks, and Windows ACL limits.
 
 Run Codex setup through the same surface after `koed-server start` has made the
 API ready:

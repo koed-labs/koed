@@ -25,7 +25,15 @@ A server or private VPS deployment should run:
 
 `koed-server` owns the application boundary: migrations, readiness, route
 registration, configuration validation, health/status reporting, supervised app
-processes, and local setup commands. Dependencies may be native services,
+processes, local clone-safe device identity, and local setup commands. Device
+identity keeps opaque deployment/device IDs plus non-secret metadata in
+`KOED_HOME`, while raw host proof stays in user-private platform state outside
+`KOED_HOME`. API, Worker, Explorer, MCP Server, Capture Hook, ordinary config,
+and diagnostics never receive raw proof. Local capture and Recall do not depend
+on proof health; local-edge remote, Team, enrollment, and sync paths evaluate
+identity health and fail closed. Explicit `koed-server identity rotate --json`
+creates a replacement identity, preserves local Memory, and disables local
+upstream enrollment references for re-enrollment. Dependencies may be native services,
 managed infrastructure, systemd units, containers, or Docker Compose examples,
 but they remain dependencies of the server deployment.
 

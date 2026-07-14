@@ -61,8 +61,13 @@ import {
   cancelUpstreamEnrollment,
   disconnectUpstreamBackendEnrollment,
   getUpstreamEnrollmentStatus,
+  invalidateUpstreamEnrollmentReferences,
   startUpstreamEnrollment
 } from "./upstream-enrollment.js";
+import {
+  ensureDeviceIdentity,
+  rotateDeviceIdentity
+} from "./device-identity.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -73,6 +78,8 @@ Commands:
   restart --json         Restart supervised local Koed services
   status --json          Print machine-readable local service state
   doctor --json          Print actionable setup/dependency diagnostics
+  identity status --json Print clone-safe deployment/device identity state
+  identity rotate --json Create fresh device identity and invalidate local enrollment references
   setup codex --json     Configure the supported Codex integration
   repair codex --json    Rewrite Codex integration for the active local API
   models status --json   Print bundled local model install state
@@ -120,6 +127,9 @@ Environment:
 export interface KoedServerCliDependencies {
   collectStatus?: typeof collectKoedServerStatus;
   collectDoctor?: typeof collectKoedServerDoctor;
+  inspectDeviceIdentity?: typeof ensureDeviceIdentity;
+  rotateDeviceIdentity?: typeof rotateDeviceIdentity;
+  invalidateUpstreamEnrollmentReferences?: typeof invalidateUpstreamEnrollmentReferences;
   start?: typeof startKoedServer;
   startDaemon?: typeof startKoedServerDaemon;
   stop?: typeof stopKoedServer;
@@ -376,6 +386,10 @@ export const runKoedServerCli = async (
   {
     collectStatus = collectKoedServerStatus,
     collectDoctor = collectKoedServerDoctor,
+    inspectDeviceIdentity = ensureDeviceIdentity,
+    rotateDeviceIdentity: rotateIdentity = rotateDeviceIdentity,
+    invalidateUpstreamEnrollmentReferences:
+      invalidateEnrollmentReferences = invalidateUpstreamEnrollmentReferences,
     start = startKoedServer,
     startDaemon = startKoedServerDaemon,
     stop = stopKoedServer,
@@ -454,6 +468,28 @@ export const runKoedServerCli = async (
         stdout.write(`${doctor.summary}\n`);
       }
       return doctor.ok ? 0 : 1;
+    }
+
+    if (command === "identity") {
+      const paths = resolvePaths();
+      const identity =
+        subcommand === "status"
+          ? await inspectDeviceIdentity(paths)
+          : subcommand === "rotate"
+            ? await rotateIdentity(paths, {
+                invalidateRemoteReferences: () =>
+                  invalidateEnrollmentReferences(paths)
+              })
+            : null;
+      if (!identity) {
+        throw new Error("identity command must be status or rotate.");
+      }
+      if (wantsJson) {
+        printJson(stdout, identity);
+      } else {
+        stdout.write(`${identity.health}\n`);
+      }
+      return identity.remoteOperationsAllowed ? 0 : 1;
     }
 
     if (command === "start") {

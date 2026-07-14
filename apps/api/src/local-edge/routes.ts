@@ -275,6 +275,7 @@ export const registerLocalEdgeRoutes = (
     capture: { resolveCapturePolicyForRequest },
     localEdge: {
       upstreamBackendsPath,
+      remoteOperationsAllowed,
       fetch: upstreamFetch,
       resolveUpstreamAuthorization
     }
@@ -597,6 +598,7 @@ export const registerLocalEdgeRoutes = (
         upstreamCredentialAvailable: upstreamBackend
           ? Boolean(resolveUpstreamAuthorization(upstreamBackend))
           : false,
+        identityRemoteOperationsAllowed: remoteOperationsAllowed(),
         capturePolicy
       });
 
@@ -693,6 +695,7 @@ export const registerLocalEdgeRoutes = (
         upstreamCredentialAvailable: upstreamBackend
           ? Boolean(resolveUpstreamAuthorization(upstreamBackend))
           : false,
+        identityRemoteOperationsAllowed: remoteOperationsAllowed(),
         capturePolicy
       });
       assertLiveProxyDecision(decision);

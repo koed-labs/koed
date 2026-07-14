@@ -11,6 +11,7 @@ import {
   storeUpstreamCredentialSecret
 } from "@koed/shared";
 import type { KoedServerPaths } from "./paths.js";
+import { ensureDeviceIdentity } from "./device-identity.js";
 import { withUpstreamEnrollmentLock } from "./upstream-enrollment-lock.js";
 import {
   collectUpstreamRegistryStatus,
@@ -627,6 +628,14 @@ export const startUpstreamEnrollment = async (
 ): Promise<UpstreamEnrollmentResult> => {
   const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
+  const identity = await ensureDeviceIdentity(paths);
+  if (!identity.remoteOperationsAllowed) {
+    return {
+      ok: false,
+      state: "failed",
+      message: `Local device identity is ${identity.health}; upstream enrollment is blocked until explicit identity rotation.`
+    };
+  }
   const now = resolvedDeps.now();
   const nowIso = now.toISOString();
   const { backend, parseError } = backendById(paths, backendId, resolvedDeps);
@@ -1116,6 +1125,80 @@ export const cancelUpstreamEnrollment = async (
       message: `Canceled upstream enrollment for ${backendId}.`
     };
   });
+};
+
+export const invalidateUpstreamEnrollmentReferences = async (
+  paths: KoedServerPaths,
+  deps: UpstreamEnrollmentDeps = {}
+): Promise<void> => {
+  const resolvedDeps = depsWithDefaults(deps);
+  const registry = collectUpstreamRegistryStatus(paths, {
+    existsSync: resolvedDeps.existsSync,
+    readFileSync: resolvedDeps.readFileSync,
+    now: resolvedDeps.now
+  });
+  if (registry.parseError) {
+    throw new Error("Upstream backend registry is malformed.");
+  }
+  for (const backend of registry.backends) {
+    await withUpstreamEnrollmentLock(paths, backend.id, () => {
+      const now = resolvedDeps.now().toISOString();
+      const current = backendById(paths, backend.id, resolvedDeps).backend;
+      if (!current) return;
+      updateUpstreamBackendRoutePolicy(
+        paths,
+        backend.id,
+        {
+          personalMemoryRead: "disabled",
+          teamWorkspaceRead: "disabled",
+          shareGrantManagement: "disabled",
+          captureWrites: "disabled",
+          sync: "disabled",
+          admin: "disabled"
+        },
+        {
+          existsSync: resolvedDeps.existsSync,
+          readFileSync: resolvedDeps.readFileSync,
+          writeFileSync: resolvedDeps.writeFileSync,
+          renameSync: resolvedDeps.renameSync,
+          now: resolvedDeps.now
+        }
+      );
+      updateUpstreamBackendCredential(
+        paths,
+        backend.id,
+        { status: "revoked", reference: current.credential.reference },
+        {
+          existsSync: resolvedDeps.existsSync,
+          readFileSync: resolvedDeps.readFileSync,
+          writeFileSync: resolvedDeps.writeFileSync,
+          renameSync: resolvedDeps.renameSync,
+          now: resolvedDeps.now
+        }
+      );
+      deleteUpstreamCredentialSecret(
+        paths.koedHome,
+        current.credential.reference
+      );
+      deleteLocalEdgeClientCredential(paths.koedHome, backend.id);
+      const store = readStore(paths, resolvedDeps);
+      store.enrollments = store.enrollments.map((record) =>
+        record.backendId === backend.id
+          ? {
+              ...record,
+              state: "revoked",
+              updatedAt: now,
+              credential: {
+                status: "revoked",
+                reference: record.credentialReference
+              }
+            }
+          : record
+      );
+      store.updatedAt = now;
+      writeStore(paths, store, resolvedDeps);
+    });
+  }
 };
 
 export const disconnectUpstreamBackendEnrollment = async (

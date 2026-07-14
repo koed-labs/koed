@@ -212,7 +212,9 @@ export const registerCrossIdentitySyncRoutes = (
         operationFamily: "sync",
         upstreamBackend: backend,
         upstreamBackendId: input.upstream_backend_id,
-        upstreamCredentialAvailable: Boolean(authorization)
+        upstreamCredentialAvailable: Boolean(authorization),
+        identityRemoteOperationsAllowed:
+          context.localEdge.remoteOperationsAllowed()
       });
       if (
         decision.action !== "queued_sync_handoff" ||

@@ -8,6 +8,8 @@ import { shareProjectCapturedSession } from "./team-project-sharing.js";
 
 const pathsFor = (directory: string): KoedServerPaths =>
   ({
+    koedHome: directory,
+    runDir: path.join(directory, "run"),
     configDir: path.join(directory, "config"),
     explorerTokenPath: path.join(directory, "config", "explorer-token.json"),
     projectTeamWorkspaceLinksPath: path.join(

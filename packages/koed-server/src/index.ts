@@ -53,6 +53,11 @@ export {
   removeUpstreamBackend
 } from "./upstream-registry.js";
 export { resolveKoedHome, resolveKoedServerPaths } from "./paths.js";
+export {
+  deviceIdentityLockTarget,
+  ensureDeviceIdentity,
+  rotateDeviceIdentity
+} from "./device-identity.js";
 export type {
   KoedDependencyMode,
   KoedServerConfig,
@@ -112,6 +117,10 @@ export type {
   UpstreamRegistryResult,
   UpstreamRoutePolicy
 } from "./upstream-registry.js";
+export type {
+  DeviceIdentityDependencies,
+  DeviceIdentityResult
+} from "./device-identity.js";
 export type {
   KoedServerComponentState,
   KoedServerComponentStatus,

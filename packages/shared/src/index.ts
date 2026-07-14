@@ -54,6 +54,24 @@ export {
   isLoopbackHostname
 } from "./http-transport-security.js";
 export {
+  createPlatformHostProofStore,
+  deviceIdentitySchemaVersion,
+  deviceIdentityStatePathFor,
+  deviceProofFingerprint,
+  hostProofReferenceFor,
+  inspectDeviceIdentity,
+  inspectDeviceIdentityAtKoedHome,
+  parseDeviceIdentityState,
+  serializeHostProof
+} from "./device-identity.js";
+export type {
+  DeviceIdentityHealth,
+  DeviceIdentityInspection,
+  DeviceIdentityState,
+  HostProofReadResult,
+  HostProofStore
+} from "./device-identity.js";
+export {
   deriveLocalProjectId,
   hmacProjectValue,
   isPortableGitRemote,

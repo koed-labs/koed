@@ -100,6 +100,28 @@ describe("local edge upstream routing", () => {
     });
   });
 
+  it("keeps local Personal Memory available but blocks remote routing when identity is unhealthy", () => {
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "personal_memory_read",
+        identityRemoteOperationsAllowed: false
+      })
+    ).toMatchObject({ action: "local_only", reason: "local_personal_default" });
+    expect(
+      resolveLocalEdgeRouteDecision({
+        operationFamily: "team_workspace_read",
+        upstreamBackendId: "team-vps",
+        upstreamBackend: backend(),
+        deviceCredential: credential(),
+        upstreamCredentialAvailable: true,
+        identityRemoteOperationsAllowed: false
+      })
+    ).toMatchObject({
+      action: "deny_fail_closed",
+      reason: "device_identity_unhealthy"
+    });
+  });
+
   it("fails closed for stale upstream capabilities and asks for refresh first", () => {
     expect(
       resolveLocalEdgeRouteDecision({
