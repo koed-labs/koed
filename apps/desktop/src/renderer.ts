@@ -30,6 +30,7 @@ import {
   type DesktopView
 } from "./project-memory-ui.js";
 import {
+  personalSyncSettingsViewFrom,
   renderPersonalSyncSettings,
   type PersonalSyncSettingsView
 } from "./personal-sync-settings.js";
@@ -2186,60 +2187,11 @@ const updateSessionProject = async (
   }
 };
 
-const personalSyncViewFrom = (value: unknown): PersonalSyncSettingsView => {
-  if (!value || typeof value !== "object") {
-    return {
-      ...personalSync,
-      status: "unavailable",
-      detail: "Personal Sync status is unavailable."
-    };
-  }
-  const payload = value as Record<string, unknown>;
-  const status = payload.state;
-  const devices = Array.isArray(payload.devices)
-    ? payload.devices.flatMap((device) => {
-        if (!device || typeof device !== "object") return [];
-        const item = device as Record<string, unknown>;
-        return typeof item.id === "string" && typeof item.state === "string"
-          ? [
-              {
-                id: item.id,
-                label: typeof item.label === "string" ? item.label : "Device",
-                state: item.state
-              }
-            ]
-          : [];
-      })
-    : [];
-  const replica = payload.replica;
-  const freshness =
-    replica && typeof replica === "object" && "lastSuccessfulSyncAt" in replica
-      ? String(
-          (replica as { lastSuccessfulSyncAt?: unknown })
-            .lastSuccessfulSyncAt ?? "No synchronized replica yet"
-        )
-      : "No synchronized replica yet";
-  return {
-    busy: Boolean(busyAction),
-    detail:
-      typeof payload.message === "string"
-        ? payload.message
-        : "No Personal Sync details available.",
-    status:
-      status === "disabled" || status === "enabled" || status === "paused"
-        ? status
-        : status === "not_configured"
-          ? "not_configured"
-          : "unavailable",
-    devices,
-    freshness
-  };
-};
-
 const refreshPersonalSync = async (): Promise<void> => {
   try {
-    personalSync = personalSyncViewFrom(
-      await invokeWithTimeout("personal_sync_status", undefined, 10_000)
+    personalSync = personalSyncSettingsViewFrom(
+      await invokeWithTimeout("personal_sync_status", undefined, 10_000),
+      { ...personalSync, busy: Boolean(busyAction) }
     );
   } catch (error) {
     personalSync = {
@@ -3040,7 +2992,14 @@ const runTeamBackendDisconnect = async (): Promise<void> => {
 };
 
 const runPersonalSyncAction = async (
-  action: "setup" | "pair" | "pause" | "resume" | "retry" | "revoke",
+  action:
+    | "setup"
+    | "pair"
+    | "pause"
+    | "resume"
+    | "retry"
+    | "restart"
+    | "revoke",
   deviceId?: string
 ): Promise<void> => {
   const command =
@@ -3276,7 +3235,8 @@ const registerHandlers = () => {
         action === "pair" ||
         action === "pause" ||
         action === "resume" ||
-        action === "retry"
+        action === "retry" ||
+        action === "restart"
       ) {
         void runPersonalSyncAction(action);
       }

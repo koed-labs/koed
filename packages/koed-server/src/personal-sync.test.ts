@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   closeSync,
   mkdtempSync,
   openSync,
@@ -166,5 +167,169 @@ describe("Personal Sync recovery kit", () => {
         env
       )
     ).rejects.toThrow("password arguments are forbidden");
+  });
+
+  it("fails closed for unsupported providers and unsafe kit permissions", async () => {
+    const directory = root();
+    const recoveryKit = resolve(directory, "recovery-kit.json");
+    const fd = passwordFd(directory);
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          [
+            "group",
+            "bootstrap",
+            "--secret-ref",
+            "operator://pds/unavailable",
+            "--recovery-kit",
+            recoveryKit,
+            "--password-fd",
+            String(fd)
+          ],
+          pathsFor(directory),
+          { PDS_SECRET_PROVIDER: "desktop" }
+        )
+      ).rejects.toThrow("Desktop secure runtime");
+    } finally {
+      closeSync(fd);
+    }
+
+    const provider = secretProvider();
+    const setupFd = passwordFd(directory);
+    try {
+      await runPersonalSyncCommand(
+        [
+          "group",
+          "bootstrap",
+          "--secret-ref",
+          "operator://pds/permissions",
+          "--recovery-kit",
+          recoveryKit,
+          "--password-fd",
+          String(setupFd)
+        ],
+        pathsFor(directory),
+        env,
+        { spawnSync: provider.spawnSync }
+      );
+    } finally {
+      closeSync(setupFd);
+    }
+    chmodSync(recoveryKit, 0o644);
+    const verifyFd = passwordFd(directory);
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          [
+            "recovery-kit",
+            "verify",
+            "--recovery-kit",
+            recoveryKit,
+            "--password-fd",
+            String(verifyFd)
+          ],
+          pathsFor(directory),
+          env,
+          { spawnSync: provider.spawnSync }
+        )
+      ).rejects.toThrow("permissions are unsafe");
+    } finally {
+      closeSync(verifyFd);
+    }
+  });
+
+  it("requires recovery-kit password for recovery approval and reports lifecycle", async () => {
+    const directory = root();
+    const provider = secretProvider();
+    const recoveryKit = resolve(directory, "recovery-kit.json");
+    const bootstrapFd = passwordFd(directory);
+    try {
+      await runPersonalSyncCommand(
+        [
+          "group",
+          "bootstrap",
+          "--secret-ref",
+          "operator://pds/lifecycle",
+          "--recovery-kit",
+          recoveryKit,
+          "--password-fd",
+          String(bootstrapFd)
+        ],
+        pathsFor(directory),
+        env,
+        { spawnSync: provider.spawnSync }
+      );
+    } finally {
+      closeSync(bootstrapFd);
+    }
+    const request = await runPersonalSyncCommand(
+      ["join", "request"],
+      pathsFor(directory),
+      env,
+      { spawnSync: provider.spawnSync }
+    );
+    const requestId = (request.request as { id: string }).id;
+    await expect(
+      runPersonalSyncCommand(
+        [
+          "recovery",
+          "approve",
+          "--request-id",
+          requestId,
+          "--device-id",
+          "device_replacement"
+        ],
+        pathsFor(directory),
+        env,
+        { spawnSync: provider.spawnSync }
+      )
+    ).rejects.toThrow("Use exactly one of --password-stdin or --password-fd");
+
+    const approvalFd = passwordFd(directory);
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          [
+            "recovery",
+            "approve",
+            "--request-id",
+            requestId,
+            "--device-id",
+            "device_replacement",
+            "--recovery-kit",
+            recoveryKit,
+            "--password-fd",
+            String(approvalFd)
+          ],
+          pathsFor(directory),
+          env,
+          { spawnSync: provider.spawnSync }
+        )
+      ).resolves.toMatchObject({ state: "approved", epoch: "2" });
+    } finally {
+      closeSync(approvalFd);
+    }
+    const revoked = await runPersonalSyncCommand(
+      ["device", "revoke", "--device-id", "device_replacement"],
+      pathsFor(directory),
+      env,
+      { spawnSync: provider.spawnSync }
+    );
+    expect(revoked.message).toContain(
+      "cannot erase plaintext already downloaded"
+    );
+    const status = await runPersonalSyncCommand(
+      ["status"],
+      pathsFor(directory),
+      env,
+      { spawnSync: provider.spawnSync }
+    );
+    expect(status).toMatchObject({
+      group: { genesis: { state: "finalized" } },
+      devices: [
+        { state: "active" },
+        { id: "device_replacement", state: "revoked" }
+      ]
+    });
   });
 });
