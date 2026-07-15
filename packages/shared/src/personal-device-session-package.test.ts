@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { signPdsRecord } from "./personal-device-sync.js";
@@ -43,13 +43,16 @@ const sessionPackageVector = (
 ).sessionPackageV1;
 
 type RawKeyPair = {
-  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"];
+  privateKey: KeyObject;
   publicKey: string;
   privateSeed: string;
 };
 
 const rawPair = (type: "ed25519" | "x25519"): RawKeyPair => {
-  const pair = generateKeyPairSync(type);
+  const pair =
+    type === "ed25519"
+      ? generateKeyPairSync("ed25519")
+      : generateKeyPairSync("x25519");
   const publicJwk = pair.publicKey.export({ format: "jwk" }) as unknown as {
     x?: unknown;
   };

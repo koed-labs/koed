@@ -183,6 +183,12 @@ const fixture = JSON.parse(
   )
 ) as Fixture;
 
+const signedRecord = (name: string): SignedRecord => {
+  const record = fixture.signedRecords[name];
+  if (!record) throw new Error(`Missing signed PDS fixture record: ${name}`);
+  return record;
+};
+
 const hex = (value: string): Buffer => Buffer.from(value, "hex");
 const base64url = (value: Buffer): string => value.toString("base64url");
 const sha256 = (value: string | Buffer): Buffer =>
@@ -462,7 +468,7 @@ describe("Personal Device Sync V1 fixed fixture", () => {
 
   it("binds versioned Key Bundle recipients, commitments, and envelope context", () => {
     const bundle = parseCanonicalPdsJson(
-      fixture.signedRecords.keyBundle.canonicalPayloadUtf8
+      signedRecord("keyBundle").canonicalPayloadUtf8
     ) as {
       draft: {
         epoch: string;
@@ -514,8 +520,9 @@ describe("Personal Device Sync V1 fixed fixture", () => {
   });
 
   it("uses exact two-stage group draft and finalized-statement hash", () => {
+    const groupStatement = signedRecord("groupStatement");
     const group = parseCanonicalPdsJson(
-      fixture.signedRecords.groupStatement.canonicalPayloadUtf8
+      groupStatement.canonicalPayloadUtf8
     ) as {
       draft: Record<string, unknown>;
       authorization: unknown;
@@ -536,10 +543,8 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     ).toBe(true);
     expect(group.authorization).toBeDefined();
     expect(group.authority).toBeDefined();
-    expect(fixture.signedRecords.groupStatement.recordHash).toBe(
-      base64url(
-        sha256(fixture.signedRecords.groupStatement.canonicalPayloadUtf8)
-      )
+    expect(groupStatement.recordHash).toBe(
+      base64url(sha256(groupStatement.canonicalPayloadUtf8))
     );
   });
 
