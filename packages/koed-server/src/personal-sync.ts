@@ -744,10 +744,10 @@ const verifyKit = (
   deps: PersonalSyncDependencies
 ): PersonalSyncResult => {
   const state = requireState(paths, deps);
-  const password = passwordFrom(args);
   const path = requiredFlag(args, "--recovery-kit");
   if (!secureFile(path))
     fail("Recovery kit permissions are unsafe; require 0600.");
+  const password = passwordFrom(args);
   try {
     const kit = JSON.parse(readFileSync(path, "utf8")) as RecoveryKit;
     const plaintext = decryptRecoveryKit(kit, password);
@@ -795,9 +795,9 @@ const createKit = (
   deps: PersonalSyncDependencies
 ): PersonalSyncResult => {
   const state = requireState(paths, deps);
-  const password = passwordFrom(args);
   const output = requiredFlag(args, "--output");
   const secret = getSecret(state, environment, deps);
+  const password = passwordFrom(args);
   try {
     const plaintext = recoveryPlaintext(state, secret);
     const kit = encryptRecoveryKit(plaintext, password);

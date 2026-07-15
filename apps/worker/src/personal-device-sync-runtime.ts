@@ -54,7 +54,12 @@ const resolveHeadlessSecret = (
   if (environment.PDS_SECRET_PROVIDER?.trim() !== "headless") return null;
   const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
   const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
-  if (!reference || !command || /[\r\n\0]/.test(reference + command))
+  if (
+    !reference ||
+    !command ||
+    !/^[^\s\r\n\0]+$/.test(command) ||
+    /[\r\n\0]/.test(reference)
+  )
     return null;
   try {
     const result = spawnSync(command, ["get", reference], {

@@ -2,25 +2,59 @@
   "version": 1,
   "suite": "koed/pds/v1/control-fixture",
   "mode": "ci-safe-control-and-crypto",
-  "dbRequired": [
-    "receiver Projection and Recall seams",
-    "Authority and relay transaction races",
-    "retained replica materialization"
-  ],
-  "scenarios": [
-    "two-device-offline-concurrent-capture",
-    "two-order-convergence",
-    "n-device-conflict-quarantine-and-resolution",
-    "relay-replay-chunk-reorder-drop-and-duplicate",
-    "relay-and-authority-outage",
-    "membership-expiry",
-    "key-rotation-and-revoked-member",
-    "delayed-join-and-replacement-from-retained-replica",
-    "lost-origin-and-recovery-loss",
-    "tombstone-before-after-and-old-backup-restore",
-    "perfect-clone-warning",
-    "unknown-version-downgrade-tamper-and-cross-group",
-    "no-team-api-token-path-vector-or-plaintext-leak"
+  "realCrypto": {
+    "sharedFixture": "packages/shared/src/personal-device-sync-v1-fixture.test.ts",
+    "controlsFixture": "packages/koed-server/src/personal-sync.test.ts"
+  },
+  "coverageBoundary": {
+    "executed": [
+      "recovery-kit AES-256-GCM/scrypt round trip",
+      "genesis Ed25519 two-stage signature validation",
+      "future-only policy gate",
+      "recovery password/permission/provider failures",
+      "join, recovery approval, revocation, and redacted lifecycle status"
+    ],
+    "dbRequired": [
+      "receiver Projection and Recall seams",
+      "Authority and relay transaction races",
+      "retained replica materialization"
+    ]
+  },
+  "scenarioMatrix": [
+    {
+      "id": "two-device-offline-concurrent-capture",
+      "coverage": "db-required"
+    },
+    { "id": "two-order-convergence", "coverage": "db-required" },
+    {
+      "id": "n-device-conflict-quarantine-and-resolution",
+      "coverage": "db-required"
+    },
+    {
+      "id": "relay-replay-chunk-reorder-drop-and-duplicate",
+      "coverage": "shared-crypto"
+    },
+    { "id": "relay-and-authority-outage", "coverage": "control-status" },
+    { "id": "membership-expiry", "coverage": "shared-crypto" },
+    { "id": "key-rotation-and-revoked-member", "coverage": "shared-crypto" },
+    {
+      "id": "delayed-join-and-replacement-from-retained-replica",
+      "coverage": "db-required"
+    },
+    { "id": "lost-origin-and-recovery-loss", "coverage": "control-status" },
+    {
+      "id": "tombstone-before-after-and-old-backup-restore",
+      "coverage": "shared-crypto"
+    },
+    { "id": "perfect-clone-warning", "coverage": "control-status" },
+    {
+      "id": "unknown-version-downgrade-tamper-and-cross-group",
+      "coverage": "shared-crypto"
+    },
+    {
+      "id": "no-team-api-token-path-vector-or-plaintext-leak",
+      "coverage": "control-status"
+    }
   ],
   "truth": {
     "associationSyncsNothing": true,

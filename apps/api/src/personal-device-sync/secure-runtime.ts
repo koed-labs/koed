@@ -37,7 +37,11 @@ const operatorSecretResolver =
   (environment: NodeJS.ProcessEnv): PdsSecretResolver =>
   (reference) => {
     const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
-    if (!command || /[\r\n\0]/.test(`${command}${reference}`))
+    if (
+      !command ||
+      !/^[^\s\r\n\0]+$/.test(command) ||
+      /[\r\n\0]/.test(reference)
+    )
       return Promise.resolve(null);
     const result = spawnSync(command, ["get", reference], {
       encoding: "utf8",

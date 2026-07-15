@@ -110,7 +110,9 @@ paths, or key references.
 ### Personal Sync control commands
 
 `koed-server` owns machine-readable Personal Sync controls; Desktop consumes
-these JSON results and never receives private keys or recovery-kit bytes.
+redacted JSON results, can pause/resume/retry/revoke or restart local services,
+and never receives private keys, secret-provider output, recovery-kit bytes, or
+passwords.
 
 ```bash
 node packages/koed-server/dist/cli.js personal-sync status --json
@@ -120,6 +122,9 @@ node packages/koed-server/dist/cli.js personal-sync group bootstrap \
 node packages/koed-server/dist/cli.js personal-sync recovery-kit verify \
   --recovery-kit "$HOME/koed-recovery-kit.json" --password-stdin --json
 node packages/koed-server/dist/cli.js personal-sync policy enable --json
+node packages/koed-server/dist/cli.js personal-sync recovery approve \
+  --request-id "join_request_id" --device-id "replacement_device_id" \
+  --recovery-kit "$HOME/koed-recovery-kit.json" --password-fd 3 --json
 node packages/koed-server/dist/cli.js personal-sync policy pause --json
 node packages/koed-server/dist/cli.js personal-sync policy resume --json
 node packages/koed-server/dist/cli.js personal-sync device list --json
@@ -131,17 +136,20 @@ never put recovery passwords in arguments, environment, logs, or config. Group
 bootstrap creates role-separated Ed25519/X25519 material through Node crypto,
 stores private material only through configured secure provider, and writes an
 explicit 0600 scrypt/AES-256-GCM recovery kit. User must decrypt kit and verify
-shown fingerprint before policy enable. Enable replicates only future closed
-Captured Sessions; historical backfill is unavailable. `join request`, `join
-challenge`, `active-device approve`, `recovery approve`, `device revoke`,
+shown fingerprint; that verification then creates and validates a real
+Ed25519 recovery-authorized, Authority-countersigned genesis statement before
+policy enable. Enable replicates only future closed Captured Sessions;
+historical backfill is unavailable. `join request`, `join challenge`,
+`active-device approve`, `recovery approve` (which requires encrypted kit and
+password stdin/FD), `device revoke`,
 `credential status`, `key-epoch status`, `retry`, `replica remove`, `conflict
 resolve`, and `recovery guidance` all emit redacted JSON. Association and
 Remote Account Links alone synchronize nothing.
 
-Run `pnpm pds-fixture:validate` for committed deterministic control/crypto
-truth. It labels DB-required Authority/relay/materialization and
-Projection/Recall coverage rather than claiming that CI-safe fixture executes
-those external seams.
+Run `pnpm pds-fixture:validate` for deterministic shared-protocol crypto
+vectors plus control/recovery lifecycle tests. Fixture matrix explicitly labels
+DB-required Authority/relay/materialization and Projection/Recall cases rather
+than claiming in-process coverage for those seams.
 
 ## Project metadata discovery
 
