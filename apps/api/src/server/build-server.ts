@@ -66,6 +66,7 @@ import { registerTeamRoutes } from "../team/index.js";
 import { registerCrossIdentitySyncRoutes } from "../cross-identity-sync/index.js";
 import {
   registerPersonalDeviceSyncRoutes,
+  registerPersonalDeviceSyncRelayRoutes,
   type PdsAuthoritySigner,
   type PdsRemoteAccountLinkVerifier
 } from "../personal-device-sync/index.js";
@@ -289,9 +290,27 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     (cacheRedis ? new RedisCacheProvider(cacheRedis) : new NoopCacheProvider());
   let graphStreamService: { registerRoutes(): void; close(): void } | null =
     null;
+  const relayCleanup = (
+    repository as
+      | (MemorySourceRepository & {
+          cleanupPdsRelay?: () => Promise<unknown>;
+        })
+      | null
+  )?.cleanupPdsRelay;
+  const relayCleanupTimer = relayCleanup
+    ? setInterval(
+        () => {
+          void relayCleanup().catch(() => undefined);
+        },
+        60 * 60 * 1_000
+      )
+    : null;
+  relayCleanupTimer?.unref();
+  if (relayCleanup) void relayCleanup().catch(() => undefined);
   const hashSecret = createHashSecret(config.apiTokenPepper);
   app.addHook("onClose", async () => {
     graphStreamService?.close();
+    if (relayCleanupTimer) clearInterval(relayCleanupTimer);
     await Promise.all([
       embeddingQueue?.close(),
       compactionQueue?.close(),
@@ -560,6 +579,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerLocalEdgeRoutes(app, routeContext);
   registerCrossIdentitySyncRoutes(app, routeContext);
   registerPersonalDeviceSyncRoutes(app, routeContext);
+  registerPersonalDeviceSyncRelayRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerCuratedMemoryRoutes(app, routeContext);
   registerHistoricalImportRoutes(app, routeContext);

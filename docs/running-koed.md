@@ -163,10 +163,14 @@ acknowledges its bound encrypted bundle. Remote Account Link accepts opaque
 proof token only and fails closed without server verifier. Tombstone and conflict
 resolution remain unavailable pending exact lifecycle persistence.
 
-Control plane is separate from directed hosted Cross-Identity Sync and its RSA
-envelopes. PDS remains `koed/pds/v1` only. Relay/package delivery,
-materialization, and Desktop flows remain unimplemented; policy defaults off
-and covers only future closed Captured Sessions.
+Control plane and relay are separate from directed hosted Cross-Identity Sync
+and its RSA envelopes. PDS remains `koed/pds/v1` only. Relay endpoints accept
+only certificate-plus-request-proof device authentication, initialize a signed
+transport, accept resumable encrypted chunks, commit checksums/digest without
+decrypting, serve recipient mailbox/chunks, accept signed ACKs, and maintain
+per-recipient/per-origin anti-entropy cursors. Policy defaults off and covers
+only future closed Captured Sessions. Materialization, Projection, embedding,
+and Recall remain device-local.
 
 ## KOED_HOME layout
 

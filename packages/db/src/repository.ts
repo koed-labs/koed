@@ -40,6 +40,7 @@ import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-r
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
+import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 import {
@@ -3884,6 +3885,7 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createPersonalDeviceSyncRepository(pool),
+    ...createPersonalDeviceSyncRelayRepository(pool),
     ...curatedMemoryRepository,
     ...encryptedPayloadRepository,
     ...createLocalEmbeddingStatusRepository(),

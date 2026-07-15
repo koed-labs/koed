@@ -1,5 +1,5 @@
 {
-  "id": "4acb589f-9bec-40c2-9340-c6c5fe3ef14c",
+  "id": "9b9466f0-91a3-49cf-8235-98e124641a5b",
   "prevId": "971958da-47ff-4e5b-a08b-1b67b5fff9e2",
   "version": "7",
   "dialect": "postgresql",
@@ -15065,6 +15065,616 @@
         "workspaces_personal_owner_check": {
           "name": "workspaces_personal_owner_check",
           "value": "\"workspaces\".\"visibility\" = 'personal' and \"workspaces\".\"owner_user_id\" is not null"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_relay_chunks": {
+      "name": "pds_relay_chunks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "transport_id": {
+          "name": "transport_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chunk_index": {
+          "name": "chunk_index",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chunk_hash": {
+          "name": "chunk_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ciphertext": {
+          "name": "ciphertext",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ciphertext_bytes": {
+          "name": "ciphertext_bytes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_relay_chunks_transport_id_pds_relay_transports_id_fk": {
+          "name": "pds_relay_chunks_transport_id_pds_relay_transports_id_fk",
+          "tableFrom": "pds_relay_chunks",
+          "tableTo": "pds_relay_transports",
+          "columnsFrom": [
+            "transport_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_relay_chunk_unique": {
+          "name": "pds_relay_chunk_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "transport_id",
+            "chunk_index"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_relay_chunk_index_check": {
+          "name": "pds_relay_chunk_index_check",
+          "value": "\"pds_relay_chunks\".\"chunk_index\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_chunks\".\"ciphertext_bytes\" ~ '^(0|[1-9][0-9]*)$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_relay_cursors": {
+      "name": "pds_relay_cursors",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient_device_id": {
+          "name": "recipient_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin_device_id": {
+          "name": "origin_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_relay_cursors_group_id_personal_device_groups_id_fk": {
+          "name": "pds_relay_cursors_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_relay_cursors",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_relay_cursor_unique": {
+          "name": "pds_relay_cursor_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "recipient_device_id",
+            "origin_device_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_relay_cursor_sequence_check": {
+          "name": "pds_relay_cursor_sequence_check",
+          "value": "\"pds_relay_cursors\".\"sequence\" ~ '^(0|[1-9][0-9]*)$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_relay_recipients": {
+      "name": "pds_relay_recipients",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "transport_id": {
+          "name": "transport_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient_device_id": {
+          "name": "recipient_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ack_hash": {
+          "name": "ack_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acked_at": {
+          "name": "acked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "waiver_hash": {
+          "name": "waiver_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "waived_at": {
+          "name": "waived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_relay_recipient_mailbox_idx": {
+          "name": "pds_relay_recipient_mailbox_idx",
+          "columns": [
+            {
+              "expression": "recipient_device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "acked_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_relay_recipients_transport_id_pds_relay_transports_id_fk": {
+          "name": "pds_relay_recipients_transport_id_pds_relay_transports_id_fk",
+          "tableFrom": "pds_relay_recipients",
+          "tableTo": "pds_relay_transports",
+          "columnsFrom": [
+            "transport_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_relay_recipient_unique": {
+          "name": "pds_relay_recipient_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "transport_id",
+            "recipient_device_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pds_relay_request_nonces": {
+      "name": "pds_relay_request_nonces",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce_digest": {
+          "name": "nonce_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_relay_nonce_expiry_idx": {
+          "name": "pds_relay_nonce_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_relay_request_nonces_group_id_personal_device_groups_id_fk": {
+          "name": "pds_relay_request_nonces_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_relay_request_nonces",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_relay_nonce_unique": {
+          "name": "pds_relay_nonce_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "device_id",
+            "nonce_digest"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.pds_relay_transports": {
+      "name": "pds_relay_transports",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transport_id": {
+          "name": "transport_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sender_device_id": {
+          "name": "sender_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin_device_id": {
+          "name": "origin_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "package_id": {
+          "name": "package_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_manifest_hash": {
+          "name": "source_manifest_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_epoch": {
+          "name": "content_epoch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient_epoch": {
+          "name": "recipient_epoch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_head": {
+          "name": "authority_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_nonce": {
+          "name": "payload_nonce",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_ciphertext_hash": {
+          "name": "payload_ciphertext_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload_tag": {
+          "name": "payload_tag",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plaintext_byte_count": {
+          "name": "plaintext_byte_count",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chunk_count": {
+          "name": "chunk_count",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ciphertext_bytes": {
+          "name": "ciphertext_bytes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_header": {
+          "name": "canonical_header",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_envelopes": {
+          "name": "canonical_envelopes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "package_digest": {
+          "name": "package_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'uploading'"
+        },
+        "committed_at": {
+          "name": "committed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cleanup_after": {
+          "name": "cleanup_after",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expired_at": {
+          "name": "expired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_relay_transport_mailbox_idx": {
+          "name": "pds_relay_transport_mailbox_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_relay_transports_group_id_personal_device_groups_id_fk": {
+          "name": "pds_relay_transports_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_relay_transports",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_relay_transport_sender_unique": {
+          "name": "pds_relay_transport_sender_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "sender_device_id",
+            "transport_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_relay_transport_state_check": {
+          "name": "pds_relay_transport_state_check",
+          "value": "\"pds_relay_transports\".\"state\" in ('uploading','committed','expired','quarantined')"
+        },
+        "pds_relay_transport_count_check": {
+          "name": "pds_relay_transport_count_check",
+          "value": "\"pds_relay_transports\".\"chunk_count\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_transports\".\"plaintext_byte_count\" ~ '^(0|[1-9][0-9]*)$' and \"pds_relay_transports\".\"ciphertext_bytes\" ~ '^(0|[1-9][0-9]*)$'"
         }
       },
       "isRLSEnabled": false

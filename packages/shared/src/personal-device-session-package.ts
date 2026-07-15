@@ -1473,6 +1473,77 @@ const validatePackageChunks = (
   return chunks;
 };
 
+export interface PdsRelayTransportRuntime {
+  groupId: string;
+  authorityHead: string;
+  epoch: string;
+  senderDeviceId: string;
+  senderSigningKeyId: string;
+  senderSigningPublicKey: string | Buffer;
+  recipientDeviceIds: string[];
+  now?: Date;
+}
+
+/** Validates relay-visible signed transport bytes without decrypting content. */
+export const validatePdsRelayTransport = (
+  value: unknown,
+  runtime: PdsRelayTransportRuntime
+): {
+  header: PdsSessionPackageHeader;
+  envelopes: PdsSessionRecipientEnvelope[];
+} => {
+  const transport = own(value, "relay transport");
+  exact(transport, ["header", "envelopes"], "relay transport");
+  const header = validateHeader(transport.header);
+  if (
+    header.groupId !== runtime.groupId ||
+    header.authorityHead !== runtime.authorityHead ||
+    header.recipientEpoch !== runtime.epoch ||
+    header.servingDeviceId !== runtime.senderDeviceId ||
+    header.servingSigningKeyId !== runtime.senderSigningKeyId ||
+    canonicalizePdsJson(header.intendedRecipientSnapshot) !==
+      canonicalizePdsJson(runtime.recipientDeviceIds)
+  ) {
+    throw new TypeError("PDS relay transport authority binding is invalid");
+  }
+  const now = runtime.now ?? new Date();
+  if (Date.parse(header.expiresAt) <= now.getTime()) {
+    throw new TypeError("PDS relay transport has expired");
+  }
+  verifyRecord(
+    "transport-envelope",
+    without(header, "servingSignature"),
+    header.servingSignature,
+    runtime.senderSigningPublicKey
+  );
+  const envelopes = validatePackageEnvelopes(transport.envelopes, header);
+  for (const envelope of envelopes) {
+    verifyRecord(
+      "transport-envelope",
+      without(envelope, "servingSignature"),
+      envelope.servingSignature,
+      runtime.senderSigningPublicKey
+    );
+  }
+  return { header, envelopes };
+};
+
+/** Validates one resumable relay chunk against accepted transport metadata. */
+export const validatePdsSessionPackageChunk = (
+  value: unknown,
+  header: PdsSessionPackageHeader
+): PdsSessionPackageChunk => {
+  const record = own(value, "package chunk");
+  if (typeof record.chunkIndex !== "string") {
+    throw new TypeError("PDS package chunk index is invalid");
+  }
+  const index = Number(parsePdsUint64(record.chunkIndex));
+  if (!Number.isSafeInteger(index) || index >= Number(header.chunkCount)) {
+    throw new TypeError("PDS package chunk index is invalid");
+  }
+  return validateChunk(record, index, header);
+};
+
 export const validatePdsSessionPackage = (
   value: unknown
 ): PdsSessionPackage => {

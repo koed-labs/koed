@@ -154,6 +154,16 @@ export {
   pdsUint64be
 } from "./personal-device-sync-jcs.js";
 export {
+  PDS_RELAY_REQUEST_CLOCK_SKEW_MS,
+  PDS_RELAY_REQUEST_NONCE_BYTES,
+  parsePdsRelayRequestProof,
+  pdsRelayBodyDigest,
+  pdsRelayNonceDigest,
+  pdsRelayRequestSigningBytes,
+  verifyPdsRelayRequestProof
+} from "./personal-device-sync-relay.js";
+export type { PdsRelayRequestProof } from "./personal-device-sync-relay.js";
+export {
   PDS_SESSION_PACKAGE_VERSION,
   PDS_SESSION_PACKAGE_MAX_BYTES,
   PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
@@ -171,6 +181,8 @@ export {
   pdsProjectAliasToken,
   pdsSourceFingerprint,
   rewrapPdsSessionPackage,
+  validatePdsRelayTransport,
+  validatePdsSessionPackageChunk,
   verifyAndDecryptPdsSessionPackage
 } from "./personal-device-session-package.js";
 export type {
@@ -187,6 +199,7 @@ export type {
   PdsSessionPackageReplayEntry,
   PdsSessionPackageReplayResult,
   PdsSessionPackageHeader,
+  PdsRelayTransportRuntime,
   PdsSessionPackageRuntimeContext,
   PdsSessionRecipient,
   PdsSessionRecipientEnvelope,

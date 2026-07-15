@@ -989,8 +989,15 @@ transition advances log head but leaves its epoch pending. Every active
 post-transition device must submit its signed ACK, bound to bundle, recipient
 KEM key commitment, and epoch, before authority activates epoch or issues
 membership certificates. Invalid, stale, missing, or revoked-device ACKs never
-activate an epoch. Relay, package transport, package lifecycle, and materialized
-sync remain later work.
+activate an epoch. Relay authenticates each request with active membership
+certificate and Ed25519 proof, validates signed transport metadata/current
+recipient snapshot, stores only encrypted package bytes, verifies complete
+chunk/digest commit without decrypting, delivers mailbox chunks, validates
+signed package ACKs, and tracks independent recipient/origin high-water cursors.
+All-recipient ACK cleanup waits seven days; unacked package retention expires
+after thirty days; finalized post-acceptance revocation can waive only its
+snapshot recipient. Tombstones remain reserved for KOE-352. Materialization
+stays device-local.
 
 PDS protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 Any future eligible closed Captured Session sequence remains separate: source

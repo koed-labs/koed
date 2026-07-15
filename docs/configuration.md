@@ -148,11 +148,18 @@ responses. Missing or malformed signer reports PDS capability unavailable and
 all PDS governance routes fail closed. No local/test signer fallback exists in
 managed deployments.
 
-This control plane stores only public keys, signed statements, encrypted
-recipient envelopes, and redacted audit metadata. It does not implement relay,
-package transport, materialization, or Desktop flows. API Tokens, device
-credentials, Cross-Identity Sync configuration, and RSA envelope settings do
-not authorize or enable PDS governance.
+PDS relay capability additionally requires usable Authority state and migrated
+relay repository. Relay requests authenticate only with an unexpired
+Authority-signed `pds_relay` membership certificate plus a domain-separated
+Ed25519 request proof; API Tokens, browser sessions, and `Koed-Device` do not
+authorize relay traffic. Authority may be temporarily unreachable while a valid
+certificate remains unexpired; stale, expired, revoked, wrong-head, and
+wrong-epoch certificates fail closed.
+
+Relay stores canonical encrypted transport/package bytes and bounded opaque
+metadata only. It does not decrypt, project, embed, recall, inspect Project
+aliases, or access Team state. API Tokens, device credentials, Cross-Identity
+Sync configuration, and RSA envelope settings do not authorize PDS relay.
 
 ## Local Edge Upstream Registry
 

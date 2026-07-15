@@ -10,6 +10,7 @@ import type { CrossIdentitySyncRepository } from "./cross-identity-sync-reposito
 import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import type { PersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
+import type { PersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
@@ -1425,6 +1426,7 @@ export interface MemorySourceRepository
     EncryptedPayloadRepository,
     LocalEmbeddingStatusRepository,
     PersonalDeviceSyncRepository,
+    PersonalDeviceSyncRelayRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
     WorkflowTokenUsageRepository {

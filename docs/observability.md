@@ -97,11 +97,13 @@ Source lag counts unsynchronized canonical changes for each selected session;
 target lag counts authenticated package records beyond the processing cursor.
 
 PDS control plane exposes capability availability and browser-authenticated
-redacted group state/head/epoch. Audit stores transition kind, opaque group/head,
-actor key id, outcome, and timestamp. It excludes Memory, raw source IDs,
-fingerprints, Project aliases, keys, recovery-kit data, signatures, nonces,
-ciphertext, credentials, browser identity, and signed record bodies. Relay/ACK
-metrics do not exist yet. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+redacted group state/head/epoch. Relay exposes bounded-cardinality package/chunk
+counts, byte totals, delivery state, ACK lag, expiry/retry class, quota state,
+and per-origin cursor state only. Audit stores transition kind, opaque group/head,
+actor key id, outcome, and timestamp. Relay logs/metrics/audit exclude Memory,
+raw source IDs, fingerprints, Project aliases, keys, recovery-kit data,
+signatures, nonces, ciphertext, credentials, browser identity, and signed record
+bodies. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
 Current durable audit action names:
 

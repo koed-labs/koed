@@ -412,7 +412,7 @@ const buildCapabilities = (input: {
   ),
   "memory.personalDeviceSync": descriptor(
     input.memory.personalDeviceSync,
-    "Personal Device Group governance control plane. Authority absence fails closed; no relay or package transport is exposed.",
+    "Personal Device Group authority and device-authenticated encrypted relay. Authority or relay-state absence fails closed.",
     {
       endpoints:
         input.memory.personalDeviceSync === "available"
@@ -424,7 +424,10 @@ const buildCapabilities = (input: {
               "/v1/personal-device-sync/groups/{groupId}/epoch-acks",
               "/v1/personal-device-sync/groups/{groupId}/key-bundles/{epoch}",
               "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}",
-              "/v1/personal-device-sync/groups/{groupId}/status"
+              "/v1/personal-device-sync/groups/{groupId}/status",
+              "/v1/personal-device-sync/relay/transports",
+              "/v1/personal-device-sync/relay/mailbox",
+              "/v1/personal-device-sync/relay/acks"
             ]
           : undefined,
       requiresAuthentication: true

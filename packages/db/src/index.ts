@@ -67,6 +67,10 @@ export {
 export { createMemoryNodeRepository } from "./memory-node-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {
+  createPersonalDeviceSyncRelayRepository,
+  type PersonalDeviceSyncRelayRepository
+} from "./personal-device-sync-relay-repository.js";
+export {
   createPersonalDeviceSyncRepository,
   type PersonalDeviceGroupRecord,
   type PersonalDeviceMemberRecord,

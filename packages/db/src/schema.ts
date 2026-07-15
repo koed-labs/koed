@@ -4083,3 +4083,5 @@ export const personalDeviceGroupAuditEvents = pgTable(
     )
   ]
 );
+
+export * from "./personal-device-sync-relay-schema.js";
