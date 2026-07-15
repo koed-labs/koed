@@ -158,6 +158,61 @@ describe("Koed server desktop manager", () => {
     ]);
   });
 
+  it("runs redacted Personal Sync controls through main-process CLI", async () => {
+    const calls: string[][] = [];
+    const manager = createKoedServerManager({
+      repoRoot: "/repo",
+      cliPath: "/repo/cli.js",
+      environment: {},
+      createCliInvocation: (args) => ({
+        command: "/node",
+        args: ["/repo/cli.js", ...args],
+        env: { KOED_REPO_ROOT: "/repo" }
+      }),
+      existsSync: () => true,
+      execFile: (_command, args, _options, callback) => {
+        calls.push(args);
+        callback(null, JSON.stringify({ ok: true, state: "paused" }), "");
+      },
+      spawn: () => childProcess() as never,
+      openExternal: async () => undefined
+    });
+
+    await expect(
+      manager.handlers.personal_sync_status!()
+    ).resolves.toMatchObject({
+      ok: true,
+      state: "paused"
+    });
+    await manager.handlers.personal_sync_pause!();
+    await manager.handlers.personal_sync_resume!();
+    await manager.handlers.personal_sync_retry!();
+    await manager.handlers.personal_sync_restart!();
+    await manager.handlers.personal_sync_join_request!();
+    await manager.handlers.personal_sync_revoke!({ deviceId: "device_one" });
+    expect(calls).toEqual([
+      ["/repo/cli.js", "personal-sync", "status", "--json"],
+      ["/repo/cli.js", "personal-sync", "policy", "pause", "--json"],
+      ["/repo/cli.js", "personal-sync", "policy", "resume", "--json"],
+      ["/repo/cli.js", "personal-sync", "retry", "--json"],
+      ["/repo/cli.js", "restart", "--json"],
+      ["/repo/cli.js", "personal-sync", "join", "request", "--json"],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "device",
+        "revoke",
+        "--device-id",
+        "device_one",
+        "--json"
+      ]
+    ]);
+    expect(manager.handlers.personal_sync_revoke!({})).toEqual({
+      ok: false,
+      error: "deviceId is required."
+    });
+  });
+
   it("replaces an existing Explorer credential when forced after a 401", async () => {
     const koedHome = mkdtempSync(resolve(tmpdir(), "koed-desktop-manager-"));
     mkdirSync(resolve(koedHome, "config"), { recursive: true });

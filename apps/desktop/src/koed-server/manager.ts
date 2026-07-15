@@ -1108,6 +1108,7 @@ export const createKoedServerManager = ({
       personal_sync_resume: () =>
         runJson(["personal-sync", "policy", "resume"], 20_000),
       personal_sync_retry: () => runJson(["personal-sync", "retry"], 20_000),
+      personal_sync_restart: () => runJson(["restart"], 45_000),
       personal_sync_join_request: () =>
         runJson(["personal-sync", "join", "request"], 20_000),
       personal_sync_recovery_guidance: () =>
