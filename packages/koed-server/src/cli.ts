@@ -10,6 +10,7 @@ import {
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadRepoEnv } from "./env-file.js";
+import { capSupervisorLog } from "./supervisor-log.js";
 import { repairCodexIntegration, setupCodex } from "./setup.js";
 import { collectKoedServerDoctor, collectKoedServerStatus } from "./status.js";
 import { restartKoedServer } from "./restart.js";
@@ -286,6 +287,7 @@ export const startKoedServerDaemon = ({
   let stderrFd: number | undefined;
   try {
     mkdirSync(paths.logsDir, { recursive: true, mode: 0o700 });
+    capSupervisorLog(logPath);
     appendFileSync(
       logPath,
       `\n[${new Date().toISOString()}] Starting koed-server supervisor.\n`,
@@ -296,7 +298,7 @@ export const startKoedServerDaemon = ({
     const child = spawn(command, args, {
       cwd: environment.KOED_REPO_ROOT ?? process.cwd(),
       detached: true,
-      env: environment,
+      env: { ...environment, KOED_SERVER_SUPERVISOR_LOG_PATH: logPath },
       stdio: ["ignore", stdoutFd, stderrFd]
     }) as ChildProcess;
     if (!child.pid) {
@@ -895,8 +897,20 @@ export const isKoedServerCliEntrypoint = (
   return normalize(fileURLToPath(metaUrl)) === normalize(argvPath);
 };
 
+export const shouldExitPackagedSupervisor = (
+  args: string[],
+  environment: NodeJS.ProcessEnv = process.env
+): boolean =>
+  environment.KOED_PACKAGED_DESKTOP === "1" &&
+  args[0] === "start" &&
+  !args.includes("--daemon");
+
 if (isKoedServerCliEntrypoint(import.meta.url, process.argv[1])) {
-  void runKoedServerCli(process.argv.slice(2)).then((exitCode) => {
+  const entrypointArgs = process.argv.slice(2);
+  void runKoedServerCli(entrypointArgs).then((exitCode) => {
+    if (shouldExitPackagedSupervisor(entrypointArgs)) {
+      process.exit(exitCode);
+    }
     process.exitCode = exitCode;
   });
 }

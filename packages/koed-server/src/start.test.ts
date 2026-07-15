@@ -11,7 +11,11 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startKoedServer, stopChildProcess } from "./start.js";
+import {
+  startKoedServer,
+  stopChildProcess,
+  waitForManagedProcessExits
+} from "./start.js";
 import type { KoedServerStatus } from "./types.js";
 
 const temps: string[] = [];
@@ -169,6 +173,30 @@ describe("start supervisor", () => {
       stopChildProcess(value as never, 100)
     ).resolves.toBeUndefined();
     expect(signals).toEqual(["SIGTERM"]);
+  });
+
+  it("recognizes managed processes that exited before listeners attach", async () => {
+    const alreadyExited = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+    };
+    alreadyExited.exitCode = 0;
+    alreadyExited.signalCode = null;
+    const live = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+    };
+    live.exitCode = null;
+    live.signalCode = null;
+
+    const waiting = waitForManagedProcessExits({
+      alreadyExited: alreadyExited as never,
+      live: live as never
+    });
+    live.exitCode = 0;
+    live.emit("exit", 0, null);
+
+    await expect(waiting).resolves.toBeUndefined();
   });
 
   it("requires explicit external service URLs without localhost fallbacks", async () => {

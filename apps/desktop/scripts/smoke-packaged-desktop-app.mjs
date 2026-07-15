@@ -15,6 +15,10 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import {
+  createOwnedDiagnosticsDir,
+  writeDiagnosticTail
+} from "./smoke-diagnostics.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const sourceCheckoutRoot = resolve(desktopRoot, "..", "..");
@@ -87,7 +91,7 @@ Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
   --missing-assets          Expect packaged native runtime assets to be missing
-  --diagnostics-dir <path>  Preserve curated failure diagnostics at this path
+  --diagnostics-dir <path>  Create a curated diagnostics child under this path
   --timeout-ms <number>     Max wait for healthy status (default 180000)
   --poll-interval-ms <num>  Poll interval (default 2000)
   --help, -h                Show this help
@@ -268,26 +272,31 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
   const postgresLog = resolve(koedHome, "logs", "postgres.log");
   const runtimeState = resolve(koedHome, "run", "koed-server.json");
   const localPorts = resolve(koedHome, "config", "local-ports.json");
-  if (diagnosticsDir) {
-    rmSync(diagnosticsDir, { recursive: true, force: true });
-    mkdirSync(diagnosticsDir, { recursive: true, mode: 0o700 });
+  const ownedDiagnosticsDir = diagnosticsDir
+    ? createOwnedDiagnosticsDir(diagnosticsDir)
+    : undefined;
+  if (ownedDiagnosticsDir) {
     writeFileSync(
-      resolve(diagnosticsDir, "status.json"),
+      resolve(ownedDiagnosticsDir, "status.json"),
       status.stdout || "{}",
       {
         mode: 0o600
       }
     );
-    for (const [source, relativePath] of [
-      [supervisorLog, "logs/supervisor.log"],
-      [postgresLog, "logs/postgres.log"],
-      [runtimeState, "run/koed-server.json"],
-      [localPorts, "config/local-ports.json"]
+    for (const [source, relativePath, tailOnly] of [
+      [supervisorLog, "logs/supervisor.log", true],
+      [postgresLog, "logs/postgres.log", true],
+      [runtimeState, "run/koed-server.json", false],
+      [localPorts, "config/local-ports.json", false]
     ]) {
       if (!existsSync(source)) continue;
-      const target = resolve(diagnosticsDir, relativePath);
+      const target = resolve(ownedDiagnosticsDir, relativePath);
       mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
-      cpSync(source, target);
+      if (tailOnly) {
+        writeDiagnosticTail(source, target);
+      } else {
+        cpSync(source, target);
+      }
     }
   }
   return [
@@ -295,7 +304,9 @@ const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
     readableDiagnostic("Postgres log", postgresLog),
     readableDiagnostic("Runtime state", runtimeState),
     `Last status:\n${status.stdout || status.stderr || "not available"}`,
-    ...(diagnosticsDir ? [`Preserved diagnostics: ${diagnosticsDir}`] : [])
+    ...(ownedDiagnosticsDir
+      ? [`Preserved diagnostics: ${ownedDiagnosticsDir}`]
+      : [])
   ].join("\n\n");
 };
 

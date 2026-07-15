@@ -19,6 +19,13 @@ const writeRuntime = (koedHome: string, runtime: KoedServerRuntimeState) => {
   );
 };
 
+const writeSupervisorLock = (koedHome: string, pid: number) => {
+  writeFileSync(
+    resolve(koedHome, "run", "koed-server.lock"),
+    JSON.stringify({ pid, acquiredAt: "2026-01-01T00:00:00.000Z" })
+  );
+};
+
 const runtime = (
   overrides: Partial<KoedServerRuntimeState> = {}
 ): KoedServerRuntimeState => ({
@@ -71,6 +78,7 @@ describe("stopKoedServer", () => {
   it("waits for the supervisor to exit before completing stop", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime());
+    writeSupervisorLock(koedHome, 100);
     const running = new Set([100, 10, 11, 12]);
     const signals: Array<[number, NodeJS.Signals]> = [];
 
@@ -96,6 +104,79 @@ describe("stopKoedServer", () => {
     ]);
     expect(result.stoppedPids).toEqual([12, 11, 10, 100]);
     expect(result.stoppedServices).toContain("supervisor");
+  });
+
+  it("does not signal a supervisor when runtime state and lock disagree", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 999);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContainEqual({
+      target: "supervisor (100)",
+      error: "Runtime state does not match the active supervisor lock"
+    });
+    expect(signals).toEqual([]);
+    expect(
+      readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+    ).toBeTruthy();
+  });
+
+  it("does not signal a supervisor that fails to exit naturally", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      kill: (pid, signal) => signals.push([pid, signal]),
+      checkPid: (pid) => pid === 100,
+      waitForExitMs: 1,
+      pollIntervalMs: 1,
+      sleepSync: () => undefined
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors?.[0]?.error).toContain("exit naturally");
+    expect(signals).toEqual([]);
+  });
+
+  it("does not remove runtime state replaced while stop is in progress", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100);
+    let supervisorRunning = true;
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      checkPid: (pid) => pid === 100 && supervisorRunning,
+      sleepSync: () => {
+        supervisorRunning = false;
+        writeRuntime(
+          koedHome,
+          runtime({ pid: 200, startedAt: "2026-01-02T00:00:00.000Z" })
+        );
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContainEqual({
+      target: "runtime-state",
+      error: "Runtime state changed while stop was in progress"
+    });
+    expect(
+      JSON.parse(
+        readFileSync(resolve(koedHome, "run", "koed-server.json"), "utf8")
+      )
+    ).toMatchObject({ pid: 200 });
   });
 
   it("escalates lingering app PIDs before removing runtime state", () => {

@@ -35,6 +35,8 @@ import { allocateAndPersistLocalPorts } from "./ports.js";
 import { collectKoedServerStatus } from "./status.js";
 import { stopKoedServer } from "./stop.js";
 import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import { maintainSupervisorLog } from "./supervisor-log.js";
+import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -675,6 +677,27 @@ export const stopChildProcess = async (
   }
 };
 
+export const waitForManagedProcessExits = async (
+  children: Record<string, ChildProcess>
+): Promise<void> =>
+  new Promise<void>((resolvePromise, rejectPromise) => {
+    const entries = Object.entries(children);
+    const exits = new Set<string>();
+    const recordExit = (name: string) => {
+      exits.add(name);
+      if (exits.size === entries.length) resolvePromise();
+    };
+    for (const [name, child] of entries) {
+      if (child.exitCode != null || child.signalCode != null) {
+        recordExit(name);
+        continue;
+      }
+      child.once("exit", () => recordExit(name));
+      child.once("error", rejectPromise);
+    }
+    if (entries.length === 0) resolvePromise();
+  });
+
 export const startKoedServer = async ({
   environment = process.env,
   pollIntervalMs = 2_000,
@@ -704,6 +727,7 @@ export const startKoedServer = async ({
     );
     return;
   }
+  const supervisorStartedAt = new Date().toISOString();
   const appRuntime = resolveKoedAppRuntime(paths, environment);
   assertKoedAppRuntimeAvailable(appRuntime, paths);
   environment = ensurePackagedLocalServiceSecrets(
@@ -776,6 +800,7 @@ export const startKoedServer = async ({
 
   let startedNativePostgres = false;
   let nativeEmbeddingProcess: ChildProcess | undefined;
+  let stopSupervisorExitMonitor: () => void = () => undefined;
   const runtimeStateOwnedByCurrentProcess = (): boolean => {
     try {
       const runtime = JSON.parse(
@@ -827,6 +852,7 @@ export const startKoedServer = async ({
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
   try {
     if (config.dependencyMode === "external") {
       const queueBackend = resolveWorkQueueBackend(
@@ -1010,7 +1036,7 @@ export const startKoedServer = async ({
 
     const runtime: KoedServerRuntimeState = {
       pid: process.pid,
-      startedAt: new Date().toISOString(),
+      startedAt: supervisorStartedAt,
       repoRoot: paths.repoRoot,
       apiUrl,
       explorerUrl,
@@ -1033,6 +1059,10 @@ export const startKoedServer = async ({
         mode: 0o600
       }
     );
+    stopSupervisorExitMonitor = monitorSupervisorExitRequest(paths, {
+      pid: process.pid,
+      startedAt: supervisorStartedAt
+    });
 
     console.log(
       JSON.stringify(
@@ -1089,18 +1119,7 @@ export const startKoedServer = async ({
       "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
     );
 
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      const exits = new Set<string>();
-      for (const [name, child] of Object.entries(children)) {
-        child.on("exit", () => {
-          exits.add(name);
-          if (exits.size === Object.keys(children).length) {
-            resolvePromise();
-          }
-        });
-        child.on("error", rejectPromise);
-      }
-    });
+    await waitForManagedProcessExits(children);
   } catch (error) {
     try {
       await cleanupStartedResources();
@@ -1112,6 +1131,8 @@ export const startKoedServer = async ({
     }
     throw error;
   } finally {
+    stopSupervisorExitMonitor();
+    stopSupervisorLogMaintenance();
     process.off("SIGINT", shutdown);
     process.off("SIGTERM", shutdown);
   }

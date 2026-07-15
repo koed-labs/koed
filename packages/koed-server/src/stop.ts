@@ -8,8 +8,11 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
+import { resolve } from "node:path";
 import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { readSupervisorLock } from "./supervisor-lock.js";
+import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 type SpawnSyncLike = (
@@ -41,6 +44,7 @@ export interface KoedServerStopOptions {
   waitForExitMs?: number;
   pollIntervalMs?: number;
   sleepSync?: (ms: number) => void;
+  readSupervisorLock?: typeof readSupervisorLock;
 }
 
 const APP_PROCESS_ORDER = ["explorer", "worker", "api"] as const;
@@ -162,7 +166,8 @@ export const stopKoedServer = ({
   checkPid = defaultCheckPid,
   waitForExitMs = 5_000,
   pollIntervalMs = 100,
-  sleepSync = defaultSleepSync
+  sleepSync = defaultSleepSync,
+  readSupervisorLock: readLock = readSupervisorLock
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
   const runtime = readRuntimeState(paths.runtimeStatePath, {
@@ -253,37 +258,53 @@ export const stopKoedServer = ({
   }
 
   if (runtime.pid > 0 && runtime.pid !== process.pid && checkPid(runtime.pid)) {
-    if (
-      waitForPidExit(runtime.pid, {
-        checkPid,
-        waitForExitMs,
-        pollIntervalMs,
-        sleepSync
-      })
-    ) {
-      stoppedPids.push(runtime.pid);
-      stoppedServices.push("supervisor");
-    } else {
-      const stopped = stopPid("supervisor", runtime.pid, {
-        kill,
-        checkPid,
-        waitForExitMs,
-        pollIntervalMs,
-        sleepSync
+    const lock = readLock(resolve(paths.runDir, "koed-server.lock"));
+    if (lock?.pid !== runtime.pid) {
+      errors.push({
+        target: `supervisor (${runtime.pid})`,
+        error: "Runtime state does not match the active supervisor lock"
       });
-      stoppedPids.push(...stopped.stoppedPids);
-      missingPids.push(...stopped.missingPids);
-      errors.push(...stopped.errors);
-      if (stopped.missingPids.length > 0) {
-        missingServices.push("supervisor");
-      } else if (stopped.stoppedPids.length > 0) {
+    } else {
+      requestSupervisorExit(paths, {
+        pid: runtime.pid,
+        startedAt: runtime.startedAt
+      });
+      if (
+        waitForPidExit(runtime.pid, {
+          checkPid,
+          waitForExitMs,
+          pollIntervalMs,
+          sleepSync
+        })
+      ) {
+        stoppedPids.push(runtime.pid);
         stoppedServices.push("supervisor");
+      } else {
+        errors.push({
+          target: `supervisor (${runtime.pid})`,
+          error: "Timed out waiting for the supervisor to exit naturally"
+        });
       }
     }
   }
 
   if (errors.length === 0) {
-    remove(paths.runtimeStatePath as PathLike, { force: true });
+    const currentRuntime = readRuntimeState(paths.runtimeStatePath, {
+      existsSync: pathExists,
+      readFileSync: readFile
+    });
+    if (
+      currentRuntime &&
+      (currentRuntime.pid !== runtime.pid ||
+        currentRuntime.startedAt !== runtime.startedAt)
+    ) {
+      errors.push({
+        target: "runtime-state",
+        error: "Runtime state changed while stop was in progress"
+      });
+    } else {
+      remove(paths.runtimeStatePath as PathLike, { force: true });
+    }
   }
 
   return {

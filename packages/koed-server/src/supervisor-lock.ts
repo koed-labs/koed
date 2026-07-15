@@ -9,7 +9,7 @@ import {
 import { resolve } from "node:path";
 import type { KoedServerPaths } from "./paths.js";
 
-interface SupervisorLockRecord {
+export interface SupervisorLockRecord {
   pid: number;
   acquiredAt: string;
 }
@@ -30,7 +30,9 @@ const processIsRunning = (pid: number): boolean => {
   }
 };
 
-const readLock = (lockPath: string): SupervisorLockRecord | null => {
+export const readSupervisorLock = (
+  lockPath: string
+): SupervisorLockRecord | null => {
   try {
     const value = JSON.parse(
       readFileSync(lockPath, "utf8")
@@ -73,7 +75,7 @@ export const acquireKoedServerSupervisorLock = (
       return { acquired: true, lockPath, ownerPid: pid };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const owner = readLock(lockPath);
+      const owner = readSupervisorLock(lockPath);
       if (owner && isRunning(owner.pid)) {
         return { acquired: false, lockPath, ownerPid: owner.pid };
       }
@@ -81,7 +83,7 @@ export const acquireKoedServerSupervisorLock = (
     }
   }
 
-  const owner = readLock(lockPath);
+  const owner = readSupervisorLock(lockPath);
   return {
     acquired: false,
     lockPath,

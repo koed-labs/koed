@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import {
   isKoedServerCliEntrypoint,
   runKoedServerCli,
+  shouldExitPackagedSupervisor,
   startKoedServerDaemon
 } from "./cli.js";
 import type { KoedServerDoctorResult, KoedServerStatus } from "./types.js";
@@ -95,6 +96,19 @@ describe("koed-server CLI entrypoint detection", () => {
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
     ).toBe(true);
   });
+
+  it("explicitly exits only the packaged long-running supervisor", () => {
+    const environment = { KOED_PACKAGED_DESKTOP: "1" };
+
+    expect(shouldExitPackagedSupervisor(["start"], environment)).toBe(true);
+    expect(
+      shouldExitPackagedSupervisor(["start", "--daemon"], environment)
+    ).toBe(false);
+    expect(
+      shouldExitPackagedSupervisor(["status", "--json"], environment)
+    ).toBe(false);
+    expect(shouldExitPackagedSupervisor(["start"], {})).toBe(false);
+  });
 });
 
 describe("koed-server detached supervisor", () => {
@@ -110,9 +124,12 @@ describe("koed-server detached supervisor", () => {
         spawn: ((
           _command: string,
           _args: readonly string[],
-          options: { stdio?: unknown }
+          options: { stdio?: unknown; env?: NodeJS.ProcessEnv }
         ) => {
           const stdio = options?.stdio as [string, number, number];
+          expect(options.env?.KOED_SERVER_SUPERVISOR_LOG_PATH).toBe(
+            resolve(logsDir, "supervisor.log")
+          );
           writeSync(stdio[1], "supervisor stdout\n");
           writeSync(stdio[2], "supervisor stderr\n");
           return {
