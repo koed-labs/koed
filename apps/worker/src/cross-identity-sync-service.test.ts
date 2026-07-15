@@ -155,12 +155,64 @@ const createFixture = (
     rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
     embeddingWorkflow: {} as EmbeddingWorkflow,
     koedHome,
+    isSourceIdentityHealthy: () => true,
     fetch: fetchFn,
     staleAfterSeconds: 3_600,
     logger
   });
   return { entry, failSyncQueueEntry, fetchFn, logger, service };
 };
+
+describe("Cross-Identity Sync device identity gate", () => {
+  it("blocks missing-proof source work without claiming outbox and keeps inbox processing", async () => {
+    const koedHome = mkdtempSync(join(tmpdir(), "koed-sync-missing-proof-"));
+    temporaryHomes.push(koedHome);
+    const inboxEntry: SyncQueueEntryRecord = {
+      ...queueEntry(),
+      uploadSessionId: "66666666-6666-4666-8666-666666666666"
+    };
+    const claimSyncQueueEntry = vi
+      .fn()
+      .mockImplementation(({ queue }: { queue: "outbox" | "inbox" }) => {
+        if (queue === "outbox") throw new Error("outbox must not be claimed");
+        return Promise.resolve(inboxEntry);
+      });
+    const failSyncQueueEntry = vi.fn().mockResolvedValue(undefined);
+    const fetchFn = vi.fn();
+    const repository = {
+      recordCrossIdentitySyncWorkerHeartbeat: vi
+        .fn()
+        .mockResolvedValue(undefined),
+      markOverdueSyncRelationshipsStale: vi.fn().mockResolvedValue(0),
+      cleanupCrossIdentitySyncState: vi.fn().mockResolvedValue({}),
+      claimSyncQueueEntry,
+      renewSyncQueueLease: vi.fn().mockResolvedValue(true),
+      failSyncQueueEntry
+    } as unknown as MemorySourceRepository;
+    const service = createCrossIdentitySyncService({
+      repository,
+      rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
+      embeddingWorkflow: {} as EmbeddingWorkflow,
+      koedHome,
+      fetch: fetchFn,
+      staleAfterSeconds: 3_600,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    });
+
+    await expect(service.processOnce()).resolves.toEqual({
+      outbox: false,
+      inbox: true
+    });
+    expect(claimSyncQueueEntry).toHaveBeenCalledWith({
+      queue: "inbox",
+      leaseMs: 300_000
+    });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(failSyncQueueEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ queue: "inbox" })
+    );
+  });
+});
 
 describe("Cross-Identity Sync service failures", () => {
   it("fails permanent remote authorization errors without retrying or logging response content", async () => {
@@ -352,6 +404,7 @@ const createProcessingHandshakeFixture = (input: {
     rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
     embeddingWorkflow: {} as EmbeddingWorkflow,
     koedHome,
+    isSourceIdentityHealthy: () => true,
     fetch: fetchFn,
     staleAfterSeconds: 3_600,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
@@ -615,6 +668,7 @@ describe("Cross-Identity Sync processing handshake", () => {
       rootEncryptionProvider: root,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
+      isSourceIdentityHealthy: () => true,
       fetch: fetchFn,
       staleAfterSeconds: 3_600,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
@@ -695,6 +749,7 @@ describe("Cross-Identity Sync freshness heartbeat", () => {
       rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
+      isSourceIdentityHealthy: () => true,
       fetch: fetchFn,
       staleAfterSeconds: 3_600,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
@@ -743,6 +798,7 @@ describe("Cross-Identity Sync freshness heartbeat", () => {
       rootEncryptionProvider: {} as EnvelopeEncryptionProvider,
       embeddingWorkflow: {} as EmbeddingWorkflow,
       koedHome,
+      isSourceIdentityHealthy: () => true,
       staleAfterSeconds: 8,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     });

@@ -214,7 +214,7 @@ export interface CrossIdentitySyncRepository {
   ): Promise<CapturedSessionSyncPackageV1["session"] | null>;
   ensureLocalSyncDeployment(input: {
     profile: DeploymentProfile;
-    protocolDeploymentId?: string;
+    protocolDeploymentId: string;
   }): Promise<DeploymentIdentityRecord>;
   upsertRemoteSyncDeployment(input: {
     protocolDeploymentId: string;
@@ -859,15 +859,48 @@ export const createCrossIdentitySyncRepository = (
       };
     },
     async ensureLocalSyncDeployment(input) {
+      const protocolDeploymentId = nonEmpty(
+        input.protocolDeploymentId,
+        "protocolDeploymentId"
+      );
       const existing = await pool.query<Row>(
         "select * from deployment_identities where locality='local' limit 1"
       );
-      if (existing.rows[0]) return mapDeployment(existing.rows[0] as Row);
-      const result = await pool.query(
-        "insert into deployment_identities (protocol_deployment_id,locality,profile) values ($1,'local',$2) returning *",
-        [input.protocolDeploymentId ?? randomUUID(), input.profile]
-      );
-      return mapDeployment(result.rows[0] as Row);
+      if (existing.rows[0]) {
+        const deployment = mapDeployment(existing.rows[0] as Row);
+        if (deployment.protocolDeploymentId !== protocolDeploymentId) {
+          throw new SyncStateConflictError(
+            "Local deployment protocol identity does not match verified identity"
+          );
+        }
+        return deployment;
+      }
+      try {
+        const result = await pool.query(
+          "insert into deployment_identities (protocol_deployment_id,locality,profile) values ($1,'local',$2) returning *",
+          [protocolDeploymentId, input.profile]
+        );
+        return mapDeployment(result.rows[0] as Row);
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          error.code !== "23505"
+        ) {
+          throw error;
+        }
+        const concurrent = await pool.query<Row>(
+          "select * from deployment_identities where locality='local' limit 1"
+        );
+        if (!concurrent.rows[0]) throw error;
+        const deployment = mapDeployment(concurrent.rows[0] as Row);
+        if (deployment.protocolDeploymentId !== protocolDeploymentId) {
+          throw new SyncStateConflictError(
+            "Local deployment protocol identity does not match verified identity"
+          );
+        }
+        return deployment;
+      }
     },
     async upsertRemoteSyncDeployment(input) {
       const result = await pool.query(

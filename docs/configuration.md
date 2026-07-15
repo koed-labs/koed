@@ -103,13 +103,22 @@ Client Credentials, and Personal Device Group governance material.
 On POSIX, Koed requires owner-only proof directories/files and identity-state
 files (no group/other permission bits; current-user ownership; no symlinks).
 Unsafe, missing, malformed, or mismatched proof/state never regenerates or
-rotates identity automatically. A copied `KOED_HOME` without matching host proof
-therefore enters clone quarantine: local capture, Personal Memory, and Recall
-continue, while enrollment, sync, Team, and remote local-edge work fail closed.
+rotates identity automatically. First boot writes a durable bootstrap journal in
+`KOED_HOME/config`, not disposable `KOED_HOME/run`, before proof or state
+mutation. A copied `KOED_HOME` without matching host proof therefore enters
+clone quarantine: local capture, Personal Memory, and Recall continue, while
+enrollment, sync, Team, and remote local-edge work fail closed. Copying to a
+new path on same host also fails because proof binds keyed canonical
+`KOED_HOME`; proof, paths, and fingerprints never appear in status.
+
 Windows path selection uses user-local application state, but Node cannot verify
-all ACL inheritance and ownership guarantees with this implementation; status
-reports `platformProtection: "limited"` there. Operators should enforce
-user-only ACLs and avoid shared profiles.
+all ACL inheritance and ownership guarantees with this implementation. Windows
+therefore reports `platformProtection: "limited"` and fails remote operations
+closed. Operators should enforce user-only ACLs and avoid shared profiles.
+
+No local proof can distinguish a perfect full-machine clone or restored image at
+the same canonical path. Remote service collision detection and explicit
+re-enrollment remain required for that case.
 
 Inspect or explicitly repair identity with machine-readable output:
 
@@ -118,12 +127,15 @@ koed-server identity status --json
 koed-server identity rotate --json
 ```
 
-`identity rotate` creates fresh deployment/device IDs and proof, preserves local
-Memory, disables local upstream route policies, revokes/removes locally stored
-enrollment references where possible, and requires fresh enrollment. It does
-not delete remote credentials or Memory from a remote deployment; revoke those
-through that deployment when needed. Status redacts proof material and proof
-references.
+`identity rotate` preserves verified deployment ID, creates a fresh device ID
+and proof, preserves local Memory, and disables local upstream route policies.
+It revokes/removes locally stored enrollment references where possible. Koed
+never self-revokes remote credentials without upstream authority: if one may
+remain active, rotation stays `repair_required` with redacted
+`pendingRemoteRevocation: true`; it does not report healthy. Revoke upstream
+credential through authorized remote flow, run `identity rotate` again as
+Operator acknowledgement, then explicitly re-enroll. Status redacts proof
+material, proof references, paths, and fingerprints.
 
 ## Local Edge Upstream Registry
 

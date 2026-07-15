@@ -9,6 +9,7 @@ import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
   embeddingDispatchKey,
+  inspectDeviceIdentityAtKoedHome,
   lcmCompactQueueName,
   lcmEmbedQueueName,
   memoryEmbedQueueName,
@@ -196,6 +197,11 @@ const crossIdentitySyncService =
         rootEncryptionProvider: envelopeEncryptionProvider,
         embeddingWorkflow,
         koedHome: workerEnv.koedHome,
+        isSourceIdentityHealthy: () =>
+          inspectDeviceIdentityAtKoedHome({
+            koedHome: workerEnv.koedHome,
+            environment: process.env
+          }).remoteOperationsAllowed,
         intervalMs: workerEnv.crossIdentitySyncIntervalMs,
         staleAfterSeconds: workerEnv.crossIdentitySyncStaleAfterSeconds,
         logger

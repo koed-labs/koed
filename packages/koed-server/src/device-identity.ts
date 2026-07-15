@@ -1,7 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync
@@ -35,6 +37,8 @@ export interface DeviceIdentityDependencies {
   now?: () => Date;
   randomId?: () => string;
   randomProof?: () => string;
+  /** Test-only fault injection after durable mutation phases. */
+  onPhase?: (phase: "tombstone" | "proof" | "state") => void;
 }
 
 const defaultProof = (): string => randomBytes(32).toString("base64url");
@@ -60,15 +64,16 @@ const dependencies = (
       }),
     now: deps.now ?? (() => new Date()),
     randomId: deps.randomId ?? randomUUID,
-    randomProof: deps.randomProof ?? defaultProof
+    randomProof: deps.randomProof ?? defaultProof,
+    onPhase: deps.onPhase ?? (() => undefined)
   };
 };
 
 const lockTarget = (paths: KoedServerPaths): string =>
   resolve(paths.runDir, "device-identity");
 
-const initializedMarkerPath = (paths: KoedServerPaths): string =>
-  resolve(paths.runDir, "device-identity-initialized.json");
+const bootstrapTombstonePath = (paths: KoedServerPaths): string =>
+  resolve(paths.configDir, "device-identity-bootstrap.json");
 
 const withDeviceIdentityLock = async <T>(
   paths: KoedServerPaths,
@@ -108,19 +113,31 @@ const writeState = (statePath: string, state: DeviceIdentityState): void => {
   }
 };
 
-const writeInitializedMarker = (
-  paths: KoedServerPaths,
-  state: DeviceIdentityState
-): void => {
-  const markerPath = initializedMarkerPath(paths);
-  const temporary = `${markerPath}.${randomUUID()}.tmp`;
+const prepareIdentityStorage = (paths: KoedServerPaths): string => {
+  mkdirSync(paths.koedHome, { recursive: true, mode: 0o700 });
+  if (lstatSync(paths.koedHome).isSymbolicLink()) {
+    throw new Error("KOED_HOME must not be a symbolic link.");
+  }
+  mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  if (lstatSync(paths.configDir).isSymbolicLink()) {
+    throw new Error(
+      "Device identity config directory must not be a symbolic link."
+    );
+  }
+  return realpathSync(paths.koedHome);
+};
+
+const writeBootstrapTombstone = (paths: KoedServerPaths, now: Date): void => {
+  const tombstonePath = bootstrapTombstonePath(paths);
+  if (existsSync(tombstonePath)) return;
+  const temporary = `${tombstonePath}.${randomUUID()}.tmp`;
   try {
     writeFileSync(
       temporary,
-      `${JSON.stringify({ schemaVersion: 1, initializedAt: state.updatedAt })}\n`,
+      `${JSON.stringify({ schemaVersion: 1, initializedAt: now.toISOString() })}\n`,
       { mode: 0o600, flag: "wx" }
     );
-    renameSync(temporary, markerPath);
+    renameSync(temporary, tombstonePath);
   } finally {
     rmSync(temporary, { force: true });
   }
@@ -130,9 +147,10 @@ const newIdentityState = (
   now: Date,
   randomId: () => string,
   randomProof: () => string,
-  remoteOperations: DeviceIdentityState["remoteOperations"]
+  remoteOperations: DeviceIdentityState["remoteOperations"],
+  deploymentId = randomId(),
+  pendingRemoteRevocation = false
 ): { state: DeviceIdentityState; proof: string } => {
-  const deploymentId = randomId();
   const deviceInstanceId = randomId();
   const proof = randomProof();
   const timestamp = now.toISOString();
@@ -146,6 +164,7 @@ const newIdentityState = (
         fingerprint: deviceProofFingerprint(proof)
       },
       remoteOperations,
+      ...(pendingRemoteRevocation ? { pendingRemoteRevocation: true } : {}),
       createdAt: timestamp,
       updatedAt: timestamp
     },
@@ -188,27 +207,37 @@ export const ensureDeviceIdentity = async (
 ): Promise<DeviceIdentityResult> => {
   const resolved = dependencies(paths, deps);
   return withDeviceIdentityLock(paths, () => {
-    const current = inspect(paths, resolved.proofStore);
-    if (current.health !== "missing_state") return result(current);
-    if (existsSync(initializedMarkerPath(paths))) return result(current);
-
-    const next = newIdentityState(
-      resolved.now(),
-      resolved.randomId,
-      resolved.randomProof,
-      "enabled"
-    );
     try {
+      const canonicalKoedHome = prepareIdentityStorage(paths);
+      const current = inspect(paths, resolved.proofStore);
+      if (current.health !== "missing_state") return result(current);
+      if (existsSync(bootstrapTombstonePath(paths))) return result(current);
+
+      writeBootstrapTombstone(paths, resolved.now());
+      resolved.onPhase("tombstone");
+      const next = newIdentityState(
+        resolved.now(),
+        resolved.randomId,
+        resolved.randomProof,
+        "repair_required"
+      );
       resolved.proofStore.write(
         next.state.proof.reference,
         serializeHostProof({
           deploymentId: next.state.deploymentId,
           deviceInstanceId: next.state.deviceInstanceId,
-          proof: next.proof
+          proof: next.proof,
+          canonicalKoedHome
         })
       );
+      resolved.onPhase("proof");
       writeState(deviceIdentityStatePathFor(paths.koedHome), next.state);
-      writeInitializedMarker(paths, next.state);
+      resolved.onPhase("state");
+      writeState(deviceIdentityStatePathFor(paths.koedHome), {
+        ...next.state,
+        remoteOperations: "enabled",
+        updatedAt: resolved.now().toISOString()
+      });
       return result(inspect(paths, resolved.proofStore), { initialized: true });
     } catch {
       return result(inspect(paths, resolved.proofStore));
@@ -219,12 +248,21 @@ export const ensureDeviceIdentity = async (
 export const rotateDeviceIdentity = async (
   paths: KoedServerPaths,
   options: {
-    invalidateRemoteReferences: () => Promise<void> | void;
+    invalidateRemoteReferences: () =>
+      | Promise<{ pendingRemoteRevocation?: boolean } | void>
+      | { pendingRemoteRevocation?: boolean }
+      | void;
     dependencies?: DeviceIdentityDependencies;
   }
 ): Promise<DeviceIdentityResult> => {
   const resolved = dependencies(paths, options.dependencies ?? {});
   return withDeviceIdentityLock(paths, async () => {
+    let canonicalKoedHome: string;
+    try {
+      canonicalKoedHome = prepareIdentityStorage(paths);
+    } catch {
+      return result(inspect(paths, resolved.proofStore), { rotated: false });
+    }
     const previous = inspect(paths, resolved.proofStore);
     const previousReference = previous.deviceInstanceId
       ? hostProofReferenceFor(previous.deviceInstanceId)
@@ -233,25 +271,34 @@ export const rotateDeviceIdentity = async (
       resolved.now(),
       resolved.randomId,
       resolved.randomProof,
-      "repair_required"
+      "repair_required",
+      previous.deploymentId ?? undefined,
+      true
     );
     try {
+      writeBootstrapTombstone(paths, resolved.now());
       resolved.proofStore.write(
         next.state.proof.reference,
         serializeHostProof({
           deploymentId: next.state.deploymentId,
           deviceInstanceId: next.state.deviceInstanceId,
-          proof: next.proof
+          proof: next.proof,
+          canonicalKoedHome
         })
       );
       writeState(deviceIdentityStatePathFor(paths.koedHome), next.state);
-      writeInitializedMarker(paths, next.state);
     } catch {
       return result(inspect(paths, resolved.proofStore), { rotated: false });
     }
 
     try {
-      await options.invalidateRemoteReferences();
+      const invalidation = await options.invalidateRemoteReferences();
+      if (invalidation?.pendingRemoteRevocation) {
+        return result(inspect(paths, resolved.proofStore), {
+          rotated: true,
+          referencesInvalidated: false
+        });
+      }
     } catch {
       return result(inspect(paths, resolved.proofStore), {
         rotated: true,
@@ -264,6 +311,7 @@ export const rotateDeviceIdentity = async (
       remoteOperations: "enabled",
       updatedAt: resolved.now().toISOString()
     };
+    delete completed.pendingRemoteRevocation;
     try {
       writeState(deviceIdentityStatePathFor(paths.koedHome), completed);
       if (

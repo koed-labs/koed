@@ -34,6 +34,7 @@ export interface KoedServerStatus {
     deploymentId: string | null;
     deviceInstanceId: string | null;
     remoteOperationsAllowed: boolean;
+    pendingRemoteRevocation?: true;
     platformProtection: "verified" | "limited";
   };
   upstreamBackends: KoedServerComponentStatus & {

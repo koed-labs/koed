@@ -22,6 +22,7 @@ import {
   createDbPool,
   createMemorySourceRepository,
   runDbMigrations,
+  SyncStateConflictError,
   type ConversationItemInput,
   type MemorySourceRepository
 } from "../src/index.js";
@@ -259,6 +260,36 @@ describeDb("memory repository visibility", () => {
     pool = createDbPool({ connectionString: databaseUrl });
     repo = createMemorySourceRepository(pool);
     await runDbMigrations(pool);
+  });
+
+  it("binds local sync deployment to verified protocol identity without replacement", async () => {
+    const verifiedDeploymentId = randomUUID();
+    const local = await repo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: verifiedDeploymentId
+    });
+    const restarted = await repo.ensureLocalSyncDeployment({
+      profile: "local_personal",
+      protocolDeploymentId: verifiedDeploymentId
+    });
+
+    await expect(
+      repo.ensureLocalSyncDeployment({
+        profile: "local_personal",
+        protocolDeploymentId: randomUUID()
+      })
+    ).rejects.toBeInstanceOf(SyncStateConflictError);
+    await expect(
+      pool.query(
+        "select protocol_deployment_id from deployment_identities where locality='local'"
+      )
+    ).resolves.toMatchObject({
+      rows: [{ protocol_deployment_id: verifiedDeploymentId }]
+    });
+    expect(restarted).toMatchObject({
+      id: local.id,
+      protocolDeploymentId: verifiedDeploymentId
+    });
   });
 
   it("requeues a completed deterministic local job", async () => {
@@ -4356,7 +4387,8 @@ describeDb("memory repository visibility", () => {
       }
     );
     const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
-      profile: "local_personal"
+      profile: "local_personal",
+      protocolDeploymentId: randomUUID()
     });
     const remoteDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
       protocolDeploymentId: randomUUID(),
@@ -4937,7 +4969,8 @@ describeDb("memory repository visibility", () => {
       }
     );
     const localDeployment = await encryptedRepo.ensureLocalSyncDeployment({
-      profile: "team_self_hosted"
+      profile: "team_self_hosted",
+      protocolDeploymentId: randomUUID()
     });
     const sourceDeployment = await encryptedRepo.upsertRemoteSyncDeployment({
       protocolDeploymentId: randomUUID(),

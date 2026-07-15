@@ -76,6 +76,21 @@ const authenticateSyncActor = async (
   };
 };
 
+const verifiedLocalDeploymentId = (context: ApiRouteContext): string => {
+  const identity = context.deploymentIdentity.inspect();
+  if (
+    identity.health !== "healthy" ||
+    !identity.remoteOperationsAllowed ||
+    !identity.deploymentId
+  ) {
+    throw Object.assign(
+      new Error("Local deployment identity is not verified"),
+      { statusCode: 424 }
+    );
+  }
+  return identity.deploymentId;
+};
+
 const checkedJson = (response: Response, payload: Record<string, unknown>) => {
   if (!response.ok) {
     throw Object.assign(new Error("Remote sync operation failed"), {
@@ -129,6 +144,7 @@ export const registerCrossIdentitySyncRoutes = (
     }
   };
   const resolveTargetContext = async () => {
+    const protocolDeploymentId = verifiedLocalDeploymentId(context);
     const rootProvider = context.encryption.envelopeEncryptionProvider;
     if (
       !rootProvider?.status ||
@@ -141,7 +157,8 @@ export const registerCrossIdentitySyncRoutes = (
     }
     const repository = repo();
     const localDeployment = await repository.ensureLocalSyncDeployment({
-      profile: context.config.deploymentProfile
+      profile: context.config.deploymentProfile,
+      protocolDeploymentId
     });
     let recipient = await repository.getActiveSyncRecipientKey(
       localDeployment.id
@@ -201,6 +218,7 @@ export const registerCrossIdentitySyncRoutes = (
       }
       const user = await context.auth.authenticateSession(request);
       const input = createSourceSyncRelationshipSchema.parse(request.body);
+      const protocolDeploymentId = verifiedLocalDeploymentId(context);
       const registry = readLocalEdgeUpstreamRegistry(
         context.localEdge.upstreamBackendsPath
       );
@@ -227,7 +245,8 @@ export const registerCrossIdentitySyncRoutes = (
 
       const repository = repo();
       const localDeployment = await repository.ensureLocalSyncDeployment({
-        profile: context.config.deploymentProfile
+        profile: context.config.deploymentProfile,
+        protocolDeploymentId
       });
       const protocolIdentity = {
         protocol: "koed.captured-session-sync/v1",

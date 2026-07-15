@@ -1,13 +1,17 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import { homedir, platform as nodePlatform } from "node:os";
@@ -36,6 +40,8 @@ export interface DeviceIdentityState {
     fingerprint: string;
   };
   remoteOperations: "enabled" | "repair_required";
+  /** Remote credential may remain active until Operator revokes it upstream. */
+  pendingRemoteRevocation?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +53,8 @@ export interface DeviceIdentityInspection {
   remoteOperationsAllowed: boolean;
   message: string;
   action?: string;
+  /** Redacted repair state; no upstream IDs, proof data, or paths. */
+  pendingRemoteRevocation?: true;
   platformProtection: "verified" | "limited";
 }
 
@@ -79,22 +87,35 @@ const isPosix = (platform: NodeJS.Platform): boolean => platform !== "win32";
 const isUnsafe = (
   path: string,
   platform: NodeJS.Platform,
-  lstat: typeof lstatSync = lstatSync,
-  stat: typeof statSync = statSync
+  lstat: typeof lstatSync = lstatSync
 ): boolean => {
   if (!isPosix(platform)) return false;
   try {
-    const link = lstat(path);
-    if (link.isSymbolicLink()) return true;
-    const metadata = stat(path);
+    const metadata = lstat(path);
     const getuid = process.getuid;
     return (
+      metadata.isSymbolicLink() ||
       (!metadata.isFile() && !metadata.isDirectory()) ||
       (metadata.mode & 0o077) !== 0 ||
       (typeof getuid === "function" && metadata.uid !== getuid())
     );
   } catch {
     return true;
+  }
+};
+
+const readNoFollow = (path: string): string => {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+  );
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new Error("Device identity file is not a regular file.");
+    }
+    return readFileSync(descriptor, "utf8");
+  } finally {
+    closeSync(descriptor);
   }
 };
 
@@ -105,6 +126,18 @@ const isPathInside = (path: string, parent: string): boolean => {
     (!relativePath.startsWith("..") && !relativePath.includes("../"))
   );
 };
+
+const canonicalPath = (path: string): string => realpathSync(path);
+
+const canonicalHomeForState = (statePath: string): string =>
+  canonicalPath(resolve(statePath, "../.."));
+
+/** HMAC only binds canonical KOED_HOME; raw path never enters identity state. */
+export const hostProofHomeBinding = (
+  proof: string,
+  canonicalKoedHome: string
+): string =>
+  createHmac("sha256", proof).update(canonicalKoedHome).digest("base64url");
 
 const proofFileName = (reference: string): string =>
   `${createHash("sha256").update(reference).digest("hex")}.json`;
@@ -151,8 +184,35 @@ export const createPlatformHostProofStore = (input: {
 }): HostProofStore => {
   const environment = input.environment ?? process.env;
   const platform = input.platform ?? nodePlatform();
+  const configuredProofDirectory = Boolean(
+    environment.KOED_DEVICE_PROOF_DIR?.trim()
+  );
   const proofDirectory = defaultProofDirectory(environment, platform);
-  const unsafeStorage = () => isPathInside(proofDirectory, input.koedHome);
+  const unsafeStorage = () => {
+    try {
+      const canonicalHome = canonicalPath(input.koedHome);
+      const proofParent = dirname(proofDirectory);
+      if (isPathInside(proofDirectory, canonicalHome)) return true;
+      if (existsSync(proofParent) && lstatSync(proofParent).isSymbolicLink()) {
+        return true;
+      }
+      if (
+        configuredProofDirectory &&
+        existsSync(proofParent) &&
+        isUnsafe(proofParent, platform)
+      ) {
+        return true;
+      }
+      if (!existsSync(proofDirectory)) return false;
+      const canonicalProofDirectory = canonicalPath(proofDirectory);
+      return (
+        lstatSync(proofDirectory).isSymbolicLink() ||
+        isPathInside(canonicalProofDirectory, canonicalHome)
+      );
+    } catch {
+      return true;
+    }
+  };
   const pathFor = (reference: string): string => {
     if (!validReference(reference)) {
       throw new Error("Device proof reference is malformed.");
@@ -180,7 +240,7 @@ export const createPlatformHostProofStore = (input: {
       if (!existsSync(path)) return { state: "missing" };
       if (isUnsafe(path, platform)) return { state: "unsafe_permissions" };
       try {
-        return { state: "present", value: readFileSync(path, "utf8") };
+        return { state: "present", value: readNoFollow(path) };
       } catch {
         return { state: "malformed" };
       }
@@ -237,9 +297,16 @@ export const parseDeviceIdentityState = (
     "schemaVersion",
     "updatedAt"
   ];
+  const expectedWithPendingRevocation = [
+    ...expected,
+    "pendingRemoteRevocation"
+  ].sort();
   if (
-    keys.length !== expected.length ||
-    keys.some((key, index) => key !== expected[index]) ||
+    ![expected, expectedWithPendingRevocation].some(
+      (candidate) =>
+        keys.length === candidate.length &&
+        keys.every((key, index) => key === candidate[index])
+    ) ||
     state.schemaVersion !== deviceIdentitySchemaVersion ||
     !uuidPattern.test(state.deploymentId ?? "") ||
     !uuidPattern.test(state.deviceInstanceId ?? "") ||
@@ -252,6 +319,8 @@ export const parseDeviceIdentityState = (
     !fingerprintPattern.test(state.proof.fingerprint ?? "") ||
     (state.remoteOperations !== "enabled" &&
       state.remoteOperations !== "repair_required") ||
+    (state.pendingRemoteRevocation !== undefined &&
+      state.pendingRemoteRevocation !== true) ||
     !isFiniteIsoDate(state.createdAt) ||
     !isFiniteIsoDate(state.updatedAt)
   ) {
@@ -265,26 +334,34 @@ const isFiniteIsoDate = (value: unknown): value is string =>
 
 const parseProof = (
   value: string
-): { deploymentId: string; deviceInstanceId: string; proof: string } | null => {
+): {
+  deploymentId: string;
+  deviceInstanceId: string;
+  proof: string;
+  homeBinding: string;
+} | null => {
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     if (
       Object.keys(parsed).sort().join(",") !==
-        "deploymentId,deviceInstanceId,proof,schemaVersion" ||
+        "deploymentId,deviceInstanceId,homeBinding,proof,schemaVersion" ||
       parsed.schemaVersion !== deviceIdentitySchemaVersion ||
       typeof parsed.deploymentId !== "string" ||
       !uuidPattern.test(parsed.deploymentId) ||
       typeof parsed.deviceInstanceId !== "string" ||
       !uuidPattern.test(parsed.deviceInstanceId) ||
       typeof parsed.proof !== "string" ||
-      !proofPattern.test(parsed.proof)
+      !proofPattern.test(parsed.proof) ||
+      typeof parsed.homeBinding !== "string" ||
+      !proofPattern.test(parsed.homeBinding)
     ) {
       return null;
     }
     return {
       deploymentId: parsed.deploymentId,
       deviceInstanceId: parsed.deviceInstanceId,
-      proof: parsed.proof
+      proof: parsed.proof,
+      homeBinding: parsed.homeBinding
     };
   } catch {
     return null;
@@ -293,7 +370,8 @@ const parseProof = (
 
 const inspection = (
   health: DeviceIdentityHealth,
-  state?: DeviceIdentityState
+  state?: DeviceIdentityState,
+  platform: NodeJS.Platform = nodePlatform()
 ): DeviceIdentityInspection => {
   const healthy = health === "healthy";
   const messages: Record<DeviceIdentityHealth, string> = {
@@ -316,15 +394,18 @@ const inspection = (
     health,
     deploymentId: state?.deploymentId ?? null,
     deviceInstanceId: state?.deviceInstanceId ?? null,
-    remoteOperationsAllowed: healthy,
+    remoteOperationsAllowed: healthy && platform !== "win32",
     message: messages[health],
+    ...(state?.pendingRemoteRevocation
+      ? { pendingRemoteRevocation: true as const }
+      : {}),
     ...(healthy
       ? {}
       : {
           action:
             "Run koed-server identity rotate --json to create a new local device identity."
         }),
-    platformProtection: isPosix(nodePlatform()) ? "verified" : "limited"
+    platformProtection: isPosix(platform) ? "verified" : "limited"
   };
 };
 
@@ -334,22 +415,24 @@ export const inspectDeviceIdentity = (input: {
   platform?: NodeJS.Platform;
 }): DeviceIdentityInspection => {
   const platform = input.platform ?? nodePlatform();
-  if (!existsSync(input.statePath)) return inspection("missing_state");
+  if (!existsSync(input.statePath)) {
+    return inspection("missing_state", undefined, platform);
+  }
+  const koedHome = resolve(input.statePath, "../..");
   if (
+    isUnsafe(koedHome, platform) ||
     isUnsafe(dirname(input.statePath), platform) ||
     isUnsafe(input.statePath, platform)
   ) {
-    return inspection("unsafe_state_permissions");
+    return inspection("unsafe_state_permissions", undefined, platform);
   }
   let state: DeviceIdentityState | null;
   try {
-    state = parseDeviceIdentityState(
-      JSON.parse(readFileSync(input.statePath, "utf8"))
-    );
+    state = parseDeviceIdentityState(JSON.parse(readNoFollow(input.statePath)));
   } catch {
     state = null;
   }
-  if (!state) return inspection("malformed_state");
+  if (!state) return inspection("malformed_state", undefined, platform);
 
   let stored: HostProofReadResult;
   try {
@@ -359,26 +442,39 @@ export const inspectDeviceIdentity = (input: {
       error instanceof Error && error.message.includes("outside KOED_HOME")
         ? "unsafe_proof_storage"
         : "unsafe_proof_permissions",
-      state
+      state,
+      platform
     );
   }
-  if (stored.state === "missing") return inspection("missing_proof", state);
-  if (stored.state === "malformed") return inspection("malformed_proof", state);
+  if (stored.state === "missing")
+    return inspection("missing_proof", state, platform);
+  if (stored.state === "malformed")
+    return inspection("malformed_proof", state, platform);
   if (stored.state === "unsafe_permissions" || !stored.value) {
-    return inspection("unsafe_proof_permissions", state);
+    return inspection("unsafe_proof_permissions", state, platform);
   }
   const proof = parseProof(stored.value);
-  if (!proof) return inspection("malformed_proof", state);
+  if (!proof) return inspection("malformed_proof", state, platform);
+  let canonicalKoedHome: string;
+  try {
+    canonicalKoedHome = canonicalHomeForState(input.statePath);
+  } catch {
+    return inspection("unsafe_state_permissions", state, platform);
+  }
   if (
     proof.deploymentId !== state.deploymentId ||
     proof.deviceInstanceId !== state.deviceInstanceId ||
-    deviceProofFingerprint(proof.proof) !== state.proof.fingerprint
+    deviceProofFingerprint(proof.proof) !== state.proof.fingerprint ||
+    proof.homeBinding !== hostProofHomeBinding(proof.proof, canonicalKoedHome)
   ) {
-    return inspection("proof_mismatch", state);
+    return inspection("proof_mismatch", state, platform);
   }
   return inspection(
-    state.remoteOperations === "enabled" ? "healthy" : "repair_required",
-    state
+    state.remoteOperations === "enabled" && !state.pendingRemoteRevocation
+      ? "healthy"
+      : "repair_required",
+    state,
+    platform
   );
 };
 
@@ -399,8 +495,15 @@ export const serializeHostProof = (input: {
   deploymentId: string;
   deviceInstanceId: string;
   proof: string;
+  canonicalKoedHome: string;
 }): string =>
-  `${JSON.stringify({ schemaVersion: deviceIdentitySchemaVersion, ...input })}\n`;
+  `${JSON.stringify({
+    schemaVersion: deviceIdentitySchemaVersion,
+    deploymentId: input.deploymentId,
+    deviceInstanceId: input.deviceInstanceId,
+    proof: input.proof,
+    homeBinding: hostProofHomeBinding(input.proof, input.canonicalKoedHome)
+  })}\n`;
 
 export const deviceIdentityStatePathFor = (koedHome: string): string =>
   resolve(koedHome, "config", "device-identity.json");

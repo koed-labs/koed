@@ -388,6 +388,7 @@ const createUpstreamChallenge = async (
     operationFamilies: string[];
     requestId: string;
     expiresAt: string | null;
+    deviceInstanceId: string;
   },
   deps: Required<UpstreamEnrollmentDeps>
 ): Promise<{ challengeId: string; activationUrl: string }> => {
@@ -402,7 +403,7 @@ const createUpstreamChallenge = async (
       body: JSON.stringify({
         challenge_hash: input.challengeHash,
         upstream_backend_id: input.backendId,
-        device_instance_id: "koed-local-edge",
+        device_instance_id: input.deviceInstanceId,
         device_label: "Koed local edge",
         requested_operation_families: input.operationFamilies,
         pending_credential: {
@@ -446,6 +447,7 @@ const createUpstreamChallenge = async (
 const readUpstreamChallengeStatus = async (
   backend: UpstreamBackendSummary,
   challengeId: string,
+  deviceInstanceId: string,
   deps: Required<UpstreamEnrollmentDeps>
 ): Promise<"pending" | "approved" | "denied" | "expired" | "unknown"> => {
   const result = await jsonFetch(
@@ -456,7 +458,10 @@ const readUpstreamChallengeStatus = async (
       )}`,
       `${backend.baseUrl}/`
     ),
-    { method: "GET" }
+    {
+      method: "GET",
+      headers: { "x-koed-device-instance-id": deviceInstanceId }
+    }
   );
   if (!result.ok) {
     return "unknown";
@@ -728,7 +733,8 @@ export const startUpstreamEnrollment = async (
         verifierSecret,
         operationFamilies,
         requestId,
-        expiresAt
+        expiresAt,
+        deviceInstanceId: identity.deviceInstanceId!
       },
       resolvedDeps
     );
@@ -840,6 +846,14 @@ export const getUpstreamEnrollmentStatus = async (
 ): Promise<UpstreamEnrollmentResult> => {
   const resolvedDeps = depsWithDefaults(deps);
   const backendId = validateBackendId(id);
+  const identity = await ensureDeviceIdentity(paths);
+  if (!identity.remoteOperationsAllowed || !identity.deviceInstanceId) {
+    return {
+      ok: false,
+      state: "failed",
+      message: `Local device identity is ${identity.health}; upstream enrollment is blocked until explicit identity rotation.`
+    };
+  }
   const now = resolvedDeps.now();
   const { backend } = backendById(paths, backendId, resolvedDeps);
   const store = readStore(paths, resolvedDeps);
@@ -883,6 +897,7 @@ export const getUpstreamEnrollmentStatus = async (
       upstreamStatus = await readUpstreamChallengeStatus(
         backend,
         materialized.challengeId,
+        identity.deviceInstanceId,
         resolvedDeps
       );
     }
@@ -1130,7 +1145,7 @@ export const cancelUpstreamEnrollment = async (
 export const invalidateUpstreamEnrollmentReferences = async (
   paths: KoedServerPaths,
   deps: UpstreamEnrollmentDeps = {}
-): Promise<void> => {
+): Promise<{ pendingRemoteRevocation: boolean }> => {
   const resolvedDeps = depsWithDefaults(deps);
   const registry = collectUpstreamRegistryStatus(paths, {
     existsSync: resolvedDeps.existsSync,
@@ -1140,11 +1155,19 @@ export const invalidateUpstreamEnrollmentReferences = async (
   if (registry.parseError) {
     throw new Error("Upstream backend registry is malformed.");
   }
+  let pendingRemoteRevocation = false;
   for (const backend of registry.backends) {
     await withUpstreamEnrollmentLock(paths, backend.id, () => {
       const now = resolvedDeps.now().toISOString();
       const current = backendById(paths, backend.id, resolvedDeps).backend;
       if (!current) return;
+      if (
+        current.credential.reference &&
+        current.credential.status !== "revoked" &&
+        current.credential.status !== "not_configured"
+      ) {
+        pendingRemoteRevocation = true;
+      }
       updateUpstreamBackendRoutePolicy(
         paths,
         backend.id,
@@ -1199,6 +1222,7 @@ export const invalidateUpstreamEnrollmentReferences = async (
       writeStore(paths, store, resolvedDeps);
     });
   }
+  return { pendingRemoteRevocation };
 };
 
 export const disconnectUpstreamBackendEnrollment = async (

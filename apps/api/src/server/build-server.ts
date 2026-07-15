@@ -55,6 +55,7 @@ import {
   inspectDeviceIdentityAtKoedHome,
   embeddingDispatchKey,
   readUpstreamCredentialAuthorization,
+  type DeviceIdentityInspection,
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
   memoryEmbedQueueName,
@@ -92,6 +93,7 @@ interface BuildServerOptions {
   fetch?: typeof fetch;
   resolveUpstreamAuthorization?: ApiRouteContext["localEdge"]["resolveUpstreamAuthorization"];
   remoteOperationsAllowed?: ApiRouteContext["localEdge"]["remoteOperationsAllowed"];
+  inspectDeploymentIdentity?: () => DeviceIdentityInspection;
   workosClient?: WorkosAuthKitClient;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
 }
@@ -406,6 +408,15 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       scheduleProjectedMemoryEventProcessing,
       resolveCapturePolicyForRequest,
       rejectUnsupportedCapturePolicy
+    },
+    deploymentIdentity: {
+      inspect:
+        options.inspectDeploymentIdentity ??
+        (() =>
+          inspectDeviceIdentityAtKoedHome({
+            koedHome: config.koedHome,
+            environment: process.env
+          }))
     },
     localEdge: {
       upstreamBackendsPath:

@@ -9137,6 +9137,81 @@ describe("account and access flows", () => {
     await sourceApp.close();
   });
 
+  it("requires verified deployment identity before source and target sync initialization", async () => {
+    const unhealthyIdentity = () => ({
+      health: "missing_proof" as const,
+      deploymentId: "00000000-0000-4000-8000-000000000001",
+      deviceInstanceId: "00000000-0000-4000-8000-000000000002",
+      remoteOperationsAllowed: false,
+      message: "Device identity proof is missing.",
+      action: "Rotate identity.",
+      platformProtection: "verified" as const
+    });
+    const sourceApp = await buildServer({
+      repository: createFakeRepository(),
+      inspectDeploymentIdentity: unhealthyIdentity
+    });
+    const sourceRegistered = await sourceApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "sync-unverified-source@example.com",
+        password: "password123"
+      }
+    });
+    const source = await sourceApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/relationships",
+      headers: { cookie: cookieHeader(sourceRegistered) },
+      payload: {
+        session_id: randomUUID(),
+        upstream_backend_id: "team-vps",
+        idempotency_key: `sync-${randomUUID()}`,
+        consent: {
+          consented_at: new Date().toISOString(),
+          policy_version: 1,
+          source_boundary: "captured_session"
+        }
+      }
+    });
+    await sourceApp.close();
+
+    process.env.KOED_DEPLOYMENT_PROFILE = "team_self_hosted";
+    const targetApp = await buildServer({
+      repository: createFakeRepository(),
+      inspectDeploymentIdentity: unhealthyIdentity
+    });
+    const targetRegistered = await targetApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: {
+        email: "sync-unverified-target@example.com",
+        password: "password123"
+      }
+    });
+    const targetCredential = await enrollDeviceCredentialForTest(
+      targetApp,
+      cookieHeader(targetRegistered),
+      ["sync"]
+    );
+    const target = await targetApp.inject({
+      method: "POST",
+      url: "/v1/cross-identity-sync/intake/context",
+      headers: { authorization: targetCredential.authorization },
+      payload: {}
+    });
+    await targetApp.close();
+
+    expect(source.statusCode).toBe(424);
+    expect(target.statusCode).toBe(424);
+    expect(jsonBody<{ error: string }>(source).error).toBe(
+      "Local deployment identity is not verified"
+    );
+    expect(jsonBody<{ error: string }>(target).error).toBe(
+      "Local deployment identity is not verified"
+    );
+  });
+
   it.skipIf(!process.env.DATABASE_URL)(
     "writes encrypted Memory Event companions through the real API repository wiring",
     async () => {

@@ -21,6 +21,7 @@ import {
   fetchBoundedJsonObject,
   isCapturedSessionSyncChunkV1,
   isCapturedSessionSyncPackageV1,
+  inspectDeviceIdentityAtKoedHome,
   readUpstreamCredentialAuthorization,
   upstreamApiUrl,
   type CapturedSessionSyncChangeV1,
@@ -213,6 +214,7 @@ export const createCrossIdentitySyncService = (options: {
   koedHome: string;
   fetch?: typeof fetch;
   intervalMs?: number;
+  isSourceIdentityHealthy?: () => boolean;
   staleAfterSeconds: number;
   logger: SyncLogger;
 }): CrossIdentitySyncService => {
@@ -228,6 +230,27 @@ export const createCrossIdentitySyncService = (options: {
   let lastCleanupAt = 0;
   let lastHeartbeatScanAt = 0;
   let lastStaleCheckAt = 0;
+
+  const isSourceIdentityHealthy = (): boolean => {
+    try {
+      return (
+        options.isSourceIdentityHealthy?.() ??
+        inspectDeviceIdentityAtKoedHome({ koedHome: options.koedHome })
+          .remoteOperationsAllowed
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const sourceJsonRequest = async (
+    ...input: Parameters<typeof jsonRequest>
+  ): Promise<Record<string, unknown>> => {
+    if (!isSourceIdentityHealthy()) {
+      throw new SyncAuthorizationRevokedError();
+    }
+    return jsonRequest(...input);
+  };
 
   const sourceAuthorization = (input: {
     backendId: string | null;
@@ -453,6 +476,7 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const processOutbox = async (): Promise<boolean> => {
+    if (!isSourceIdentityHealthy()) return false;
     const leaseMs = 120_000;
     const entry = await options.repository.claimSyncQueueEntry({
       queue: "outbox",
@@ -470,6 +494,9 @@ export const createCrossIdentitySyncService = (options: {
       if (!renewed) throw new SyncQueueClaimLostError();
     };
     const requireActiveTransport = async () => {
+      if (!isSourceIdentityHealthy()) {
+        throw new SyncAuthorizationRevokedError();
+      }
       await renewClaim();
       const transport = await options.repository.getSyncTransportContext(
         entry.syncRelationshipId
@@ -493,7 +520,7 @@ export const createCrossIdentitySyncService = (options: {
           backendId: transport.remoteUpstreamBackendId,
           reference: transport.remoteCredentialReference
         });
-        await jsonRequest(
+        await sourceJsonRequest(
           fetchFn,
           upstreamApiUrl(
             transport.remoteBaseUrl!,
@@ -533,7 +560,7 @@ export const createCrossIdentitySyncService = (options: {
           backendId: transport.remoteUpstreamBackendId,
           reference: transport.remoteCredentialReference
         });
-        await jsonRequest(
+        await sourceJsonRequest(
           fetchFn,
           upstreamApiUrl(
             transport.remoteBaseUrl!,
@@ -588,7 +615,7 @@ export const createCrossIdentitySyncService = (options: {
         upload.state
       );
       if (!uploadCommitted) {
-        const remoteCreate = await jsonRequest(
+        const remoteCreate = await sourceJsonRequest(
           fetchFn,
           upstreamApiUrl(
             baseUrl,
@@ -615,7 +642,7 @@ export const createCrossIdentitySyncService = (options: {
         const remoteUploadId =
           typeof remoteUpload?.id === "string" ? remoteUpload.id : "";
         if (!remoteUploadId) throw new Error("Remote upload id is missing");
-        const remoteStatus = await jsonRequest(
+        const remoteStatus = await sourceJsonRequest(
           fetchFn,
           upstreamApiUrl(
             baseUrl,
@@ -632,7 +659,7 @@ export const createCrossIdentitySyncService = (options: {
         for (const chunk of chunks) {
           if (accepted.has(chunk.chunkIndex)) continue;
           await requireActiveTransport();
-          await jsonRequest(
+          await sourceJsonRequest(
             fetchFn,
             upstreamApiUrl(
               baseUrl,
@@ -648,7 +675,7 @@ export const createCrossIdentitySyncService = (options: {
           );
         }
         await requireActiveTransport();
-        const remoteCommit = await jsonRequest(
+        const remoteCommit = await sourceJsonRequest(
           fetchFn,
           upstreamApiUrl(
             baseUrl,
@@ -679,7 +706,7 @@ export const createCrossIdentitySyncService = (options: {
         });
       }
       await requireActiveTransport();
-      const remoteRelationship = await jsonRequest(
+      const remoteRelationship = await sourceJsonRequest(
         fetchFn,
         upstreamApiUrl(
           baseUrl,
@@ -1028,10 +1055,14 @@ export const createCrossIdentitySyncService = (options: {
   };
 
   const processOnce = async () => {
+    const sourceIdentityHealthy = isSourceIdentityHealthy();
     await options.repository.recordCrossIdentitySyncWorkerHeartbeat(
       workerInstanceId
     );
-    if (Date.now() - lastHeartbeatScanAt >= freshnessScanIntervalMs) {
+    if (
+      sourceIdentityHealthy &&
+      Date.now() - lastHeartbeatScanAt >= freshnessScanIntervalMs
+    ) {
       const due = await options.repository.listDueSourceSyncHeartbeats({
         dueWithinSeconds: Math.max(1, Math.floor(options.staleAfterSeconds / 2))
       });

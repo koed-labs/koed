@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   utimesSync,
   writeFileSync
@@ -93,6 +94,17 @@ describe("clone-safe device identity", () => {
     });
     expect(stateText).not.toContain(rawProof);
     expect(stateText).not.toContain('"proof": "');
+    expect(
+      inspectDeviceIdentity({
+        statePath: deviceIdentityStatePathFor(paths.koedHome),
+        proofStore,
+        platform: "win32"
+      })
+    ).toMatchObject({
+      health: "healthy",
+      remoteOperationsAllowed: false,
+      platformProtection: "limited"
+    });
   });
 
   it("reports redacted machine-readable identity status", async () => {
@@ -133,8 +145,14 @@ describe("clone-safe device identity", () => {
       health: "healthy",
       remoteOperationsAllowed: true
     });
-    expect(JSON.stringify(status)).not.toContain(rawProof);
-    expect(JSON.stringify(status)).not.toContain("host-proof://");
+    expect(JSON.stringify(status.deviceIdentity)).not.toContain(rawProof);
+    expect(JSON.stringify(status.deviceIdentity)).not.toContain(
+      "host-proof://"
+    );
+    expect(JSON.stringify(status.deviceIdentity)).not.toContain(
+      readState(paths.koedHome).proof.fingerprint
+    );
+    expect(JSON.stringify(status.deviceIdentity)).not.toContain(paths.koedHome);
   });
 
   it("fails closed when copied KOED_HOME lacks host proof", async () => {
@@ -150,11 +168,6 @@ describe("clone-safe device identity", () => {
     copyFileSync(
       deviceIdentityStatePathFor(source.paths.koedHome),
       resolve(clonedHome, "config", "device-identity.json")
-    );
-    mkdirSync(resolve(clonedHome, "run"), { recursive: true });
-    copyFileSync(
-      resolve(source.paths.runDir, "device-identity-initialized.json"),
-      resolve(clonedHome, "run", "device-identity-initialized.json")
     );
     const paths = resolveKoedServerPaths({
       KOED_HOME: clonedHome,
@@ -173,6 +186,61 @@ describe("clone-safe device identity", () => {
       health: "missing_proof",
       remoteOperationsAllowed: false
     });
+  });
+
+  it("fails closed when same-host clone retains proof but changes canonical KOED_HOME", async () => {
+    const source = fixture();
+    await ensureDeviceIdentity(source.paths, { proofStore: source.proofStore });
+    const destinationRoot = mkdtempSync(
+      resolve(tmpdir(), "koed-device-same-host-clone-")
+    );
+    temporaryPaths.push(destinationRoot);
+    const clonedHome = resolve(destinationRoot, "home");
+    mkdirSync(resolve(clonedHome, "config"), { recursive: true, mode: 0o700 });
+    copyFileSync(
+      deviceIdentityStatePathFor(source.paths.koedHome),
+      resolve(clonedHome, "config", "device-identity.json")
+    );
+    const clonedPaths = resolveKoedServerPaths({
+      KOED_HOME: clonedHome,
+      KOED_REPO_ROOT: destinationRoot
+    });
+    const sameHostProofStore = createPlatformHostProofStore({
+      koedHome: clonedHome,
+      environment: { KOED_DEVICE_PROOF_DIR: source.proofDirectory }
+    });
+
+    await expect(
+      ensureDeviceIdentity(clonedPaths, { proofStore: sameHostProofStore })
+    ).resolves.toMatchObject({
+      health: "proof_mismatch",
+      remoteOperationsAllowed: false
+    });
+  });
+
+  it("keeps durable bootstrap journal after faults and never regenerates identity", async () => {
+    for (const phase of ["tombstone", "proof", "state"] as const) {
+      const { paths, proofStore } = fixture();
+      const failed = await ensureDeviceIdentity(paths, {
+        proofStore,
+        onPhase: (currentPhase) => {
+          if (currentPhase === phase) throw new Error("simulated crash");
+        }
+      });
+      const retried = await ensureDeviceIdentity(paths, { proofStore });
+
+      expect(failed.remoteOperationsAllowed).toBe(false);
+      expect(retried).toMatchObject({
+        initialized: false,
+        remoteOperationsAllowed: false
+      });
+      expect(
+        readFileSync(
+          resolve(paths.configDir, "device-identity-bootstrap.json"),
+          "utf8"
+        )
+      ).toContain('"schemaVersion":1');
+    }
   });
 
   it("does not regenerate missing or malformed state/proof", async () => {
@@ -220,7 +288,8 @@ describe("clone-safe device identity", () => {
         schemaVersion: 1,
         deploymentId: mismatchState.deploymentId,
         deviceInstanceId: mismatchState.deviceInstanceId,
-        proof: "A".repeat(43)
+        proof: "A".repeat(43),
+        homeBinding: "A".repeat(43)
       })
     );
     await expect(
@@ -252,9 +321,28 @@ describe("clone-safe device identity", () => {
       remoteOperationsAllowed: true
     });
     expect(result.deviceInstanceId).not.toBe(before.deviceInstanceId);
-    expect(result.deploymentId).not.toBe(before.deploymentId);
+    expect(result.deploymentId).toBe(before.deploymentId);
     expect(invalidated).toBe(true);
     expect(readFileSync(memoryMarker, "utf8")).toBe("preserved");
+  });
+
+  it("keeps rotation in repair when remote revocation remains pending", async () => {
+    const { paths, proofStore } = fixture();
+    const before = await ensureDeviceIdentity(paths, { proofStore });
+
+    const result = await rotateDeviceIdentity(paths, {
+      invalidateRemoteReferences: () => ({ pendingRemoteRevocation: true }),
+      dependencies: { proofStore }
+    });
+
+    expect(result).toMatchObject({
+      health: "repair_required",
+      rotated: true,
+      referencesInvalidated: false,
+      remoteOperationsAllowed: false,
+      pendingRemoteRevocation: true,
+      deploymentId: before.deploymentId
+    });
   });
 
   it("serializes concurrent initialization and reclaims a stale lock", async () => {
@@ -276,7 +364,7 @@ describe("clone-safe device identity", () => {
     expect(readdirSync(proofDirectory)).toHaveLength(1);
   });
 
-  it("fails closed for unsafe state or proof permissions and redacts diagnostics", async () => {
+  it("fails closed for symlinked or unsafe proof ancestors and redacts diagnostics", async () => {
     const unsafeState = fixture();
     await ensureDeviceIdentity(unsafeState.paths, {
       proofStore: unsafeState.proofStore
@@ -297,17 +385,55 @@ describe("clone-safe device identity", () => {
       readdirSync(unsafeProof.proofDirectory)[0]!
     );
     const rawProof = rawProofFrom(readFileSync(proofFile, "utf8"));
-    chmodSync(proofFile, 0o644);
-    const inspection = inspectDeviceIdentity({
+    const replacement = resolve(
+      unsafeProof.paths.repoRoot,
+      "replacement-proof"
+    );
+    writeFileSync(replacement, readFileSync(proofFile, "utf8"), {
+      mode: 0o600
+    });
+    unlinkSync(proofFile);
+    symlinkSync(replacement, proofFile);
+    const symlinkInspection = inspectDeviceIdentity({
       statePath: deviceIdentityStatePathFor(unsafeProof.paths.koedHome),
       proofStore: unsafeProof.proofStore
     });
 
-    expect(inspection).toMatchObject({
+    expect(symlinkInspection).toMatchObject({
       health: "unsafe_proof_permissions",
       remoteOperationsAllowed: false
     });
-    expect(JSON.stringify(inspection)).not.toContain(rawProof);
+    expect(JSON.stringify(symlinkInspection)).not.toContain(rawProof);
     expect(JSON.stringify(healthy)).not.toContain("host-proof://");
+
+    const symlinkedHome = fixture();
+    await ensureDeviceIdentity(symlinkedHome.paths, {
+      proofStore: symlinkedHome.proofStore
+    });
+    const linkedHome = resolve(symlinkedHome.paths.repoRoot, "linked-home");
+    symlinkSync(symlinkedHome.paths.koedHome, linkedHome);
+    const linkedPaths = resolveKoedServerPaths({
+      KOED_HOME: linkedHome,
+      KOED_REPO_ROOT: symlinkedHome.paths.repoRoot
+    });
+    await expect(
+      ensureDeviceIdentity(linkedPaths, {
+        proofStore: createPlatformHostProofStore({
+          koedHome: linkedHome,
+          environment: { KOED_DEVICE_PROOF_DIR: symlinkedHome.proofDirectory }
+        })
+      })
+    ).resolves.toMatchObject({ health: "unsafe_state_permissions" });
+
+    const unsafeAncestor = fixture();
+    await ensureDeviceIdentity(unsafeAncestor.paths, {
+      proofStore: unsafeAncestor.proofStore
+    });
+    chmodSync(unsafeAncestor.paths.repoRoot, 0o755);
+    await expect(
+      ensureDeviceIdentity(unsafeAncestor.paths, {
+        proofStore: unsafeAncestor.proofStore
+      })
+    ).resolves.toMatchObject({ health: "unsafe_proof_permissions" });
   });
 });
