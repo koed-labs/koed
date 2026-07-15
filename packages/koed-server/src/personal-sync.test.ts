@@ -169,6 +169,32 @@ describe("Personal Sync recovery kit", () => {
     ).rejects.toThrow("password arguments are forbidden");
   });
 
+  it("bounds password input before writing recovery material", async () => {
+    const directory = root();
+    const fd = passwordFd(directory, "a".repeat(4_097));
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          [
+            "group",
+            "bootstrap",
+            "--secret-ref",
+            "operator://pds/too-long",
+            "--recovery-kit",
+            resolve(directory, "recovery-kit.json"),
+            "--password-fd",
+            String(fd)
+          ],
+          pathsFor(directory),
+          env,
+          { spawnSync: secretProvider().spawnSync }
+        )
+      ).rejects.toThrow("Recovery password length is invalid.");
+    } finally {
+      closeSync(fd);
+    }
+  });
+
   it("fails closed for unsupported providers and unsafe kit permissions", async () => {
     const directory = root();
     const recoveryKit = resolve(directory, "recovery-kit.json");

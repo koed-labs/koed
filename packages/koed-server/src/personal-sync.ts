@@ -14,6 +14,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   statSync,
   writeFileSync
@@ -421,10 +422,29 @@ const passwordFrom = (args: string[]): Buffer => {
   const descriptor = stdin ? 0 : Number.parseInt(fd!, 10);
   if (!Number.isInteger(descriptor) || descriptor < 0)
     fail("--password-fd must be a non-negative file descriptor.");
-  const value = readFileSync(descriptor).subarray(0, MAX_PASSWORD_BYTES + 1);
-  if (!value.length || value.length > MAX_PASSWORD_BYTES)
+  const input = Buffer.allocUnsafe(MAX_PASSWORD_BYTES + 2);
+  let bytesRead = 0;
+  while (bytesRead < input.length) {
+    const count = readSync(
+      descriptor,
+      input,
+      bytesRead,
+      input.length - bytesRead,
+      null
+    );
+    if (count === 0) break;
+    bytesRead += count;
+  }
+  let length = bytesRead;
+  if (input[length - 1] === 0x0a) length -= 1;
+  if (input[length - 1] === 0x0d) length -= 1;
+  const password = Buffer.from(input.subarray(0, length));
+  input.fill(0);
+  if (!password.length || password.length > MAX_PASSWORD_BYTES) {
+    password.fill(0);
     fail("Recovery password length is invalid.");
-  return Buffer.from(value.toString("utf8").replace(/\r?\n$/, ""), "utf8");
+  }
+  return password;
 };
 
 const recoveryPlaintext = (

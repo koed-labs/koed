@@ -131,8 +131,9 @@ node packages/koed-server/dist/cli.js personal-sync device list --json
 node packages/koed-server/dist/cli.js personal-sync replica status --json
 ```
 
-`--password` is rejected. Use interactive stdin or a supplied file descriptor;
-never put recovery passwords in arguments, environment, logs, or config. Group
+`--password` is rejected. Pipe password bytes through stdin or supply a file
+descriptor; never put recovery passwords in arguments, environment, logs, or
+config. Group
 bootstrap creates role-separated Ed25519/X25519 material through Node crypto,
 stores private material only through configured secure provider, and writes an
 explicit 0600 scrypt/AES-256-GCM recovery kit. User must decrypt kit and verify
