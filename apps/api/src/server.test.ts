@@ -1,4 +1,9 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID
+} from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -13834,5 +13839,34 @@ describe("account and access flows", () => {
       "Curated Memory reviewer cannot lower proposed sensitivity",
       "Curated Memory reviewer cannot remove or extend proposed expiry"
     ]);
+  });
+
+  it("denies API Tokens and device credentials for PDS governance", async () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const publicJwk = publicKey.export({ format: "jwk" }) as JsonWebKey;
+    const app = await buildServer({
+      repository: createFakeRepository(),
+      pdsAuthoritySigner: {
+        keyId: "test-authority",
+        publicKey: publicJwk.x!,
+        privateKey
+      }
+    });
+    for (const authorization of [
+      "Bearer personal-api-token",
+      "Koed-Device device:credential"
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/personal-device-sync/challenges",
+        headers: { authorization },
+        payload: {}
+      });
+      expect(response.statusCode).toBe(403);
+      expect(jsonBody<{ error: string }>(response).error).toContain(
+        "browser session"
+      );
+    }
+    await app.close();
   });
 });

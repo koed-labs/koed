@@ -67,6 +67,13 @@ export {
 export { createMemoryNodeRepository } from "./memory-node-repository.js";
 export { createMemoryQuestionRepository } from "./memory-question-repository.js";
 export {
+  createPersonalDeviceSyncRepository,
+  type PersonalDeviceGroupRecord,
+  type PersonalDeviceMemberRecord,
+  type PersonalDeviceSyncRepository,
+  type PdsTransitionResult
+} from "./personal-device-sync-repository.js";
+export {
   getLatestMigrationTimestamp,
   runDbMigrations,
   waitForCurrentDbMigrations,

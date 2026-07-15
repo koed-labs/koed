@@ -59,10 +59,15 @@ import {
   type EnvelopeEncryptionProvider,
   lcmCompactQueueName,
   memoryEmbedQueueName,
-  resolveSupportedEmbeddingModelConfig
+  resolveSupportedEmbeddingModelConfig,
+  pdsEd25519PrivateKey
 } from "@koed/shared";
 import { registerTeamRoutes } from "../team/index.js";
 import { registerCrossIdentitySyncRoutes } from "../cross-identity-sync/index.js";
+import {
+  registerPersonalDeviceSyncRoutes,
+  type PdsAuthoritySigner
+} from "../personal-device-sync/index.js";
 import { resolveApiServerConfig } from "./config.js";
 import {
   apiLogSchemaVersion,
@@ -96,6 +101,8 @@ interface BuildServerOptions {
   inspectDeploymentIdentity?: () => DeviceIdentityInspection;
   workosClient?: WorkosAuthKitClient;
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
+  /** Test-only injection. Production obtains PDS signer only from secret config. */
+  pdsAuthoritySigner?: PdsAuthoritySigner | null;
 }
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
@@ -140,6 +147,26 @@ const normalizeUpstreamAuthorization = (
     return trimmed;
   }
   return `Koed-Device ${trimmed}`;
+};
+
+const resolvePdsAuthoritySigner = (
+  config: ReturnType<typeof resolveApiServerConfig>
+): PdsAuthoritySigner | null => {
+  const authority = config.personalDeviceSyncAuthority;
+  if (!authority.keyId || !authority.publicKey || !authority.secretSeed)
+    return null;
+  try {
+    return {
+      keyId: authority.keyId,
+      publicKey: authority.publicKey,
+      privateKey: pdsEd25519PrivateKey(
+        authority.secretSeed,
+        authority.publicKey
+      )
+    };
+  } catch {
+    return null;
+  }
 };
 
 const createDefaultResolveUpstreamAuthorization =
@@ -439,6 +466,10 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
       client:
         options.workosClient ??
         createWorkosAuthKitClient(config.workos, options.fetch)
+    },
+    personalDeviceSync: {
+      authoritySigner:
+        options.pdsAuthoritySigner ?? resolvePdsAuthoritySigner(config)
     }
   };
   graphStreamService = await createGraphStreamService({
@@ -524,6 +555,7 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
   registerTeamRoutes(app, routeContext);
   registerLocalEdgeRoutes(app, routeContext);
   registerCrossIdentitySyncRoutes(app, routeContext);
+  registerPersonalDeviceSyncRoutes(app, routeContext);
   registerCaptureRoutes(app, routeContext);
   registerCuratedMemoryRoutes(app, routeContext);
   registerHistoricalImportRoutes(app, routeContext);

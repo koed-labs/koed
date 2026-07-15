@@ -729,7 +729,10 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: await crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability(),
+        personalDeviceSync: context.personalDeviceSync.authoritySigner
+          ? "available"
+          : "unavailable"
       },
       "public"
     )
@@ -775,7 +778,10 @@ export const registerOperationalRoutes = (
         applicationLayerEncryption: applicationLayerEncryptionCapability(
           options.envelopeEncryptionProvider
         ),
-        crossIdentitySync: await crossIdentitySyncCapability()
+        crossIdentitySync: await crossIdentitySyncCapability(),
+        personalDeviceSync: context.personalDeviceSync.authoritySigner
+          ? "available"
+          : "unavailable"
       },
       "authenticated",
       entitlement,

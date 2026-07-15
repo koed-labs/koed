@@ -9,6 +9,7 @@ import type { ConversationItemRepository } from "./conversation-item-repository.
 import type { CrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.js";
 import type { LocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
+import type { PersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import type { MemoryNodeRepository } from "./memory-node-repository.js";
 import type { MemoryQuestionRepository } from "./memory-question-repository.js";
 import type { WorkflowTokenUsageRepository } from "./workflow-token-usage-repository.js";
@@ -1423,6 +1424,7 @@ export interface MemorySourceRepository
     CrossIdentitySyncRepository,
     EncryptedPayloadRepository,
     LocalEmbeddingStatusRepository,
+    PersonalDeviceSyncRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,
     WorkflowTokenUsageRepository {

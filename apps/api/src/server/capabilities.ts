@@ -73,6 +73,7 @@ export interface CapabilitiesConfig {
   workosAuthKitEnabled?: boolean;
   applicationLayerEncryption?: CapabilityAvailability;
   crossIdentitySync?: CapabilityAvailability;
+  personalDeviceSync?: CapabilityAvailability;
 }
 
 export interface CapabilityDescriptor {
@@ -118,6 +119,7 @@ export interface CapabilitiesResponse {
     teamWorkspaces: CapabilityAvailability;
     shareGrants: CapabilityAvailability;
     crossIdentitySync: CapabilityAvailability;
+    personalDeviceSync: CapabilityAvailability;
     memoryInbox: CapabilityAvailability;
   };
   commercial: {
@@ -408,6 +410,17 @@ const buildCapabilities = (input: {
     input.memory.crossIdentitySync,
     "Policy-aware Cross-Identity Sync preserving logical memory identity."
   ),
+  "memory.personalDeviceSync": descriptor(
+    input.memory.personalDeviceSync,
+    "Personal Device Group governance control plane. Authority absence fails closed; no relay or package transport is exposed.",
+    {
+      endpoints:
+        input.memory.personalDeviceSync === "available"
+          ? ["/v1/personal-device-sync/groups"]
+          : undefined,
+      requiresAuthentication: true
+    }
+  ),
   "memory.memoryInbox": descriptor(
     input.memory.memoryInbox,
     "Memory Inbox content ingestion and governed recall."
@@ -480,6 +493,7 @@ export const buildCapabilitiesResponse = (
       (config.applicationLayerEncryption === "unavailable"
         ? ("unavailable" as const)
         : ("available" as const)),
+    personalDeviceSync: config.personalDeviceSync ?? ("unavailable" as const),
     memoryInbox: "unavailable" as const
   };
   const commercial = {

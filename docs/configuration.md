@@ -137,18 +137,22 @@ credential through authorized remote flow, run `identity rotate` again as
 Operator acknowledgement, then explicitly re-enroll. Status redacts proof
 material, proof references, paths, and fingerprints.
 
-## Personal Device Sync V1 configuration status
+## Personal Device Sync V1 authority configuration
 
-Personal Device Sync V1 is accepted protocol design, not shipped configuration.
-No current environment variable, `server.json` field, API Token, upstream
-credential, Cross-Identity Sync setting, canonical JSON helper, or RSA envelope
-setting enables it. Future implementation must add explicit secure storage and
-machine-readable configuration only after conforming to
-[Personal Device Sync Protocol V1](personal-device-sync-protocol.md). It must
-keep device signing/KEM, recovery, Authority, epoch, source-fingerprint,
-tombstone, and Project keys separate; ordinary `KOED_HOME` config must never
-contain any PDS private or symmetric key. Clone quarantine and full-machine
-clone collision/re-enrollment rules above remain mandatory prerequisites.
+PDS control-plane routes require all three deployment-secret values:
+`PDS_AUTHORITY_KEY_ID`, `PDS_AUTHORITY_ED25519_PUBLIC_KEY`, and
+`PDS_AUTHORITY_ED25519_SECRET_SEED`. Public key and seed are unpadded base64url
+raw 32-byte Ed25519 material. Keep seed only in deployment secret provider;
+never put it in `server.json`, `KOED_HOME`, browser config, logs, database, or
+responses. Missing or malformed signer reports PDS capability unavailable and
+all PDS governance routes fail closed. No local/test signer fallback exists in
+managed deployments.
+
+This control plane stores only public keys, signed statements, encrypted
+recipient envelopes, and redacted audit metadata. It does not implement relay,
+package transport, materialization, or Desktop flows. API Tokens, device
+credentials, Cross-Identity Sync configuration, and RSA envelope settings do
+not authorize or enable PDS governance.
 
 ## Local Edge Upstream Registry
 

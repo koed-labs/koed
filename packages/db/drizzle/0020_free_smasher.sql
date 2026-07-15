@@ -1,0 +1,187 @@
+CREATE TYPE "public"."personal_device_group_state" AS ENUM('active', 'equivocation_freeze', 'quarantine');--> statement-breakpoint
+CREATE TYPE "public"."personal_device_member_status" AS ENUM('active', 'revoked');--> statement-breakpoint
+CREATE TABLE "local_personal_identities" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"owner_user_id" uuid NOT NULL,
+	"opaque_identity_id" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "local_personal_identities_opaque_identity_id_unique" UNIQUE("opaque_identity_id"),
+	CONSTRAINT "local_personal_identities_owner_unique" UNIQUE("owner_user_id"),
+	CONSTRAINT "local_personal_identities_opaque_id_check" CHECK (length(trim("local_personal_identities"."opaque_identity_id")) > 0)
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_enrollment_challenges" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" uuid NOT NULL,
+	"group_id" text,
+	"challenge_hash" text NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"used_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_enrollment_challenges_challenge_hash_unique" UNIQUE("challenge_hash"),
+	CONSTRAINT "personal_device_enrollment_challenge_hash_check" CHECK (length("personal_device_enrollment_challenges"."challenge_hash") = 64)
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_group_audit_events" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid,
+	"transition_kind" text NOT NULL,
+	"actor_key_id" text,
+	"outcome" text NOT NULL,
+	"head_sequence" text,
+	"head_hash" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_group_audit_outcome_check" CHECK ("personal_device_group_audit_events"."outcome" in ('accepted', 'rejected', 'conflict', 'frozen'))
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_group_key_bundles" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"bundle_hash" text NOT NULL,
+	"epoch" text NOT NULL,
+	"transition_kind" text NOT NULL,
+	"recipient_snapshot" text[] NOT NULL,
+	"canonical_bundle" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_group_key_bundle_hash_unique" UNIQUE("group_id","bundle_hash"),
+	CONSTRAINT "personal_device_group_key_bundle_epoch_unique" UNIQUE("group_id","epoch"),
+	CONSTRAINT "personal_device_group_key_bundle_epoch_check" CHECK ("personal_device_group_key_bundles"."epoch" ~ '^(0|[1-9][0-9]*)$')
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_group_members" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"user_subject_id" uuid,
+	"device_id" text NOT NULL,
+	"signing_key_id" text NOT NULL,
+	"signing_public_key" text NOT NULL,
+	"kem_key_id" text NOT NULL,
+	"kem_public_key" text NOT NULL,
+	"operation_families" text[] NOT NULL,
+	"status" "personal_device_member_status" DEFAULT 'active' NOT NULL,
+	"admitted_sequence" text NOT NULL,
+	"revoked_sequence" text,
+	"revoked_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_group_member_device_unique" UNIQUE("group_id","device_id"),
+	CONSTRAINT "personal_device_group_member_signing_key_unique" UNIQUE("group_id","signing_key_id"),
+	CONSTRAINT "personal_device_group_member_kem_key_unique" UNIQUE("group_id","kem_key_id"),
+	CONSTRAINT "personal_device_group_member_signing_public_unique" UNIQUE("group_id","signing_public_key"),
+	CONSTRAINT "personal_device_group_member_kem_public_unique" UNIQUE("group_id","kem_public_key"),
+	CONSTRAINT "personal_device_group_member_operation_check" CHECK ("personal_device_group_members"."operation_families" = ARRAY['pds_relay']::text[])
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_group_statements" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"sequence" text NOT NULL,
+	"previous_hash" text,
+	"statement_hash" text NOT NULL,
+	"kind" text NOT NULL,
+	"canonical_statement" text NOT NULL,
+	"redacted_metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_group_statement_sequence_unique" UNIQUE("group_id","sequence"),
+	CONSTRAINT "personal_device_group_statement_hash_unique" UNIQUE("group_id","statement_hash"),
+	CONSTRAINT "personal_device_group_statement_sequence_check" CHECK ("personal_device_group_statements"."sequence" ~ '^(0|[1-9][0-9]*)$')
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_group_user_subjects" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"user_id" uuid NOT NULL,
+	"subject_id" text NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"revoked_at" timestamp with time zone,
+	CONSTRAINT "personal_device_group_subject_unique" UNIQUE("group_id","user_id"),
+	CONSTRAINT "personal_device_group_subject_not_empty_check" CHECK (length(trim("personal_device_group_user_subjects"."subject_id")) > 0)
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_groups" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"local_personal_identity_id" uuid NOT NULL,
+	"group_id" text NOT NULL,
+	"authority_key_id" text NOT NULL,
+	"authority_public_key" text NOT NULL,
+	"recovery_signing_key_id" text NOT NULL,
+	"recovery_signing_public_key" text NOT NULL,
+	"recovery_kem_key_id" text NOT NULL,
+	"recovery_kem_public_key" text NOT NULL,
+	"recovery_kit_hash" text NOT NULL,
+	"current_epoch" text NOT NULL,
+	"head_sequence" text NOT NULL,
+	"head_hash" text NOT NULL,
+	"state" "personal_device_group_state" DEFAULT 'active' NOT NULL,
+	"state_reason" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_groups_group_id_unique" UNIQUE("group_id"),
+	CONSTRAINT "personal_device_groups_identity_unique" UNIQUE("local_personal_identity_id"),
+	CONSTRAINT "personal_device_groups_epoch_check" CHECK ("personal_device_groups"."current_epoch" ~ '^(0|[1-9][0-9]*)$'),
+	CONSTRAINT "personal_device_groups_sequence_check" CHECK ("personal_device_groups"."head_sequence" ~ '^(0|[1-9][0-9]*)$')
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_membership_certificates" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"member_id" uuid NOT NULL,
+	"epoch" text NOT NULL,
+	"statement_sequence" text NOT NULL,
+	"statement_hash" text NOT NULL,
+	"authority_key_id" text NOT NULL,
+	"canonical_certificate" text NOT NULL,
+	"issued_at" timestamp with time zone NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"revoked_at" timestamp with time zone,
+	CONSTRAINT "personal_device_membership_certificate_epoch_unique" UNIQUE("group_id","member_id","epoch"),
+	CONSTRAINT "personal_device_membership_certificate_epoch_check" CHECK ("personal_device_membership_certificates"."epoch" ~ '^(0|[1-9][0-9]*)$')
+);
+--> statement-breakpoint
+CREATE TABLE "personal_sync_policies" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"enabled" boolean DEFAULT false NOT NULL,
+	"future_closed_sessions_only" boolean DEFAULT true NOT NULL,
+	"historical_backfill_enabled" boolean DEFAULT false NOT NULL,
+	"updated_by_user_id" uuid NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_sync_policies_group_unique" UNIQUE("group_id"),
+	CONSTRAINT "personal_sync_policies_closed_only_check" CHECK ("personal_sync_policies"."future_closed_sessions_only" and not "personal_sync_policies"."historical_backfill_enabled")
+);
+--> statement-breakpoint
+CREATE TABLE "remote_account_links" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"local_personal_identity_id" uuid NOT NULL,
+	"remote_deployment_id" text NOT NULL,
+	"remote_subject_id" text NOT NULL,
+	"remote_proof_reference" text NOT NULL,
+	"sync_enabled" boolean DEFAULT false NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"revoked_at" timestamp with time zone,
+	CONSTRAINT "remote_account_links_identity_remote_unique" UNIQUE("local_personal_identity_id","remote_deployment_id","remote_subject_id"),
+	CONSTRAINT "remote_account_links_proof_check" CHECK (length(trim("remote_account_links"."remote_proof_reference")) > 0),
+	CONSTRAINT "remote_account_links_no_implicit_sync_check" CHECK (not "remote_account_links"."sync_enabled")
+);
+--> statement-breakpoint
+ALTER TABLE "local_personal_identities" ADD CONSTRAINT "local_personal_identities_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_enrollment_challenges" ADD CONSTRAINT "personal_device_enrollment_challenges_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_audit_events" ADD CONSTRAINT "personal_device_group_audit_events_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_key_bundles" ADD CONSTRAINT "personal_device_group_key_bundles_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_members" ADD CONSTRAINT "personal_device_group_members_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_members" ADD CONSTRAINT "personal_device_group_members_user_subject_id_personal_device_group_user_subjects_id_fk" FOREIGN KEY ("user_subject_id") REFERENCES "public"."personal_device_group_user_subjects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_statements" ADD CONSTRAINT "personal_device_group_statements_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_user_subjects" ADD CONSTRAINT "personal_device_group_user_subjects_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_user_subjects" ADD CONSTRAINT "personal_device_group_user_subjects_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_groups" ADD CONSTRAINT "personal_device_groups_local_personal_identity_id_local_personal_identities_id_fk" FOREIGN KEY ("local_personal_identity_id") REFERENCES "public"."local_personal_identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_membership_certificates" ADD CONSTRAINT "personal_device_membership_certificates_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_membership_certificates" ADD CONSTRAINT "personal_device_membership_certificates_member_id_personal_device_group_members_id_fk" FOREIGN KEY ("member_id") REFERENCES "public"."personal_device_group_members"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_sync_policies" ADD CONSTRAINT "personal_sync_policies_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_sync_policies" ADD CONSTRAINT "personal_sync_policies_updated_by_user_id_users_id_fk" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "remote_account_links" ADD CONSTRAINT "remote_account_links_local_personal_identity_id_local_personal_identities_id_fk" FOREIGN KEY ("local_personal_identity_id") REFERENCES "public"."local_personal_identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "personal_device_enrollment_challenge_active_idx" ON "personal_device_enrollment_challenges" USING btree ("user_id","expires_at") WHERE "personal_device_enrollment_challenges"."used_at" is null;--> statement-breakpoint
+CREATE INDEX "personal_device_group_members_active_idx" ON "personal_device_group_members" USING btree ("group_id","status");--> statement-breakpoint
+CREATE INDEX "personal_device_membership_certificate_active_idx" ON "personal_device_membership_certificates" USING btree ("group_id","expires_at") WHERE "personal_device_membership_certificates"."revoked_at" is null;

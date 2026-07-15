@@ -51,6 +51,11 @@ export interface ApiServerConfig {
     memoryEventUpdateDebounceMs: number;
   };
   crossIdentitySyncStaleAfterSeconds: number;
+  personalDeviceSyncAuthority: {
+    keyId?: string;
+    publicKey?: string;
+    secretSeed?: string;
+  };
   embeddingModel?: string;
   rerankerKey?: string;
   workos: {
@@ -265,6 +270,11 @@ export const resolveApiServerConfig = (
       "CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS",
       86_400
     ),
+    personalDeviceSyncAuthority: {
+      keyId: optionalEnv(environment.PDS_AUTHORITY_KEY_ID),
+      publicKey: optionalEnv(environment.PDS_AUTHORITY_ED25519_PUBLIC_KEY),
+      secretSeed: optionalEnv(environment.PDS_AUTHORITY_ED25519_SECRET_SEED)
+    },
     embeddingModel: optionalEnv(environment.EMBEDDING_MODEL),
     rerankerKey: optionalEnv(resolveRerankerKeyFromEnv(environment)),
     workos: {

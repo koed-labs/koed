@@ -96,14 +96,12 @@ distance because monotonic source cursors may contain gaps between sessions.
 Source lag counts unsynchronized canonical changes for each selected session;
 target lag counts authenticated package records beyond the processing cursor.
 
-Personal Device Sync V1 is not yet an operational service. When implemented,
-its redacted metrics may include opaque group state, log-head sequence,
-certificate/ACK age, package/chunk counts and bytes, retry class, epoch,
-quarantine count, deletion-floor state, and quota state. Logs, metrics, audit
-metadata, support views, and status must exclude Memory, raw source IDs,
+PDS control plane exposes capability availability and browser-authenticated
+redacted group state/head/epoch. Audit stores transition kind, opaque group/head,
+actor key id, outcome, and timestamp. It excludes Memory, raw source IDs,
 fingerprints, Project aliases, keys, recovery-kit data, signatures, nonces,
-ciphertext, credentials, and signed record bodies. See
-[Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+ciphertext, credentials, browser identity, and signed record bodies. Relay/ACK
+metrics do not exist yet. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
 Current durable audit action names:
 

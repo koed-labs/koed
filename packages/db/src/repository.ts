@@ -39,6 +39,7 @@ import { createExternalAuthRepository } from "./external-auth-repository.js";
 import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
+import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
 import {
@@ -3882,6 +3883,7 @@ export const createMemorySourceRepository = (
     ...createCrossIdentitySyncRepository(pool, {
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
+    ...createPersonalDeviceSyncRepository(pool),
     ...curatedMemoryRepository,
     ...encryptedPayloadRepository,
     ...createLocalEmbeddingStatusRepository(),

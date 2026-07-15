@@ -121,6 +121,36 @@ export type {
   EncryptedPackageObjectClass
 } from "./encrypted-package.js";
 export {
+  PDS_PROTOCOL,
+  PDS_CERTIFICATE_CLOCK_SKEW_MS,
+  PDS_CERTIFICATE_MAX_LIFETIME_MS,
+  assertEpochAdvance,
+  certificateIsPdsValid,
+  decodePdsBase64url,
+  pdsEd25519PrivateKey,
+  pdsEd25519PublicKey,
+  pdsFinalizedStatementHash,
+  pdsSha256,
+  signPdsGroupDraft,
+  signPdsGroupFinal,
+  signPdsRecord,
+  signPdsTwoStageFinal,
+  validatePdsGroupStatement,
+  validatePdsKeyBundle,
+  validatePdsKeyBundleMetadata,
+  verifyPdsEnrollmentProof
+} from "./personal-device-sync.js";
+export type {
+  PdsGroupStatement,
+  PdsSignature
+} from "./personal-device-sync.js";
+export {
+  canonicalizePdsJson,
+  parseCanonicalPdsJson,
+  parsePdsUint64,
+  pdsUint64be
+} from "./personal-device-sync-jcs.js";
+export {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHANGES,
