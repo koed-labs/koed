@@ -1,5 +1,3 @@
-import type { KeyObject } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import {
   createPdsSessionManifest,
   createPdsSessionPackage,
@@ -16,99 +14,91 @@ export type PdsSecretResolver = (reference: string) => Promise<string | null>;
 
 let desktopSecretResolver: PdsSecretResolver | null = null;
 
-/** Desktop main process installs Keychain adapter. Renderer/config never receives secret bytes. */
+/** Main-process-only installer. Resolver closure owns bytes; renderer receives no reference or secret. */
 export const installPdsDesktopSecretResolver = (
   resolver: PdsSecretResolver
 ): void => {
   desktopSecretResolver = resolver;
 };
 
-const providerEnvironment = (
-  environment: NodeJS.ProcessEnv
-): NodeJS.ProcessEnv => ({
-  PATH: environment.PATH,
-  HOME: environment.HOME,
-  USER: environment.USER,
-  LANG: environment.LANG,
-  LC_ALL: environment.LC_ALL
-});
-
-const operatorSecretResolver =
-  (environment: NodeJS.ProcessEnv): PdsSecretResolver =>
-  (reference) => {
-    const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
-    if (
-      !command ||
-      !/^[^\s\r\n\0]+$/.test(command) ||
-      /[\r\n\0]/.test(reference)
-    )
-      return Promise.resolve(null);
-    const result = spawnSync(command, ["get", reference], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      env: providerEnvironment(environment)
-    });
-    return Promise.resolve(
-      result.status === 0 && typeof result.stdout === "string"
-        ? result.stdout.trim() || null
-        : null
-    );
-  };
-
-const runtimeSecretResolver = (
-  environment: NodeJS.ProcessEnv
-): PdsSecretResolver | null => {
-  const mode = environment.PDS_SECRET_PROVIDER?.trim();
-  if (mode === "desktop") return desktopSecretResolver;
-  if (mode === "headless") return operatorSecretResolver(environment);
-  return null;
-};
-
+/** Shared API/Worker private runtime schema. Authority private material is forbidden. */
 type PdsRuntimeSecret = {
+  version: 1;
+  userId: string;
+  relayUrl: string;
   groupId: string;
-  originDeploymentId: string;
-  authority: { keyId: string; publicKey: string; secretSeed: string };
-  authorityHead: string;
-  epoch: string;
-  servingCertificate: string;
-  recipientCertificate: string;
+  device: {
+    id: string;
+    originDeploymentId: string;
+    signingKeyId: string;
+    signingPrivateSeed: string;
+    kemKeyId: string;
+    kemPrivateSeed: string;
+  };
+  authority: { keyId: string; publicKey: string; head: string };
+  certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
-  deviceSigningPrivateSeed: string;
-  deviceKemPrivateSeed: string;
-  sourceFingerprintKey: string;
-  tombstoneFloorKey: string;
+  groupSecrets: {
+    currentEpoch: string;
+    contentKey: string;
+    sourceFingerprintKey: string;
+    tombstoneFloorKey: string;
+    projectAliasKey: string;
+  };
 };
+
+const strictString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.length <= 1_048_576;
 
 const parseSecret = (value: string): PdsRuntimeSecret | null => {
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
-    const strings = [
-      "groupId",
-      "originDeploymentId",
-      "authorityHead",
-      "epoch",
-      "servingCertificate",
-      "recipientCertificate",
-      "deviceSigningPrivateSeed",
-      "deviceKemPrivateSeed",
-      "sourceFingerprintKey",
-      "tombstoneFloorKey"
-    ];
-    if (strings.some((key) => typeof parsed[key] !== "string")) return null;
+    const device = parsed.device as Record<string, unknown> | undefined;
     const authority = parsed.authority as Record<string, unknown> | undefined;
+    const groupSecrets = parsed.groupSecrets as
+      | Record<string, unknown>
+      | undefined;
     if (
+      (Object.keys(parsed).sort().join(",") !==
+        "authority,certificate,device,groupId,groupSecrets,historicalOriginCertificates,recipientCertificates,relayUrl,userId,version" &&
+        Object.keys(parsed).sort().join(",") !==
+          "authority,certificate,device,groupId,groupSecrets,recipientCertificates,relayUrl,userId,version") ||
+      parsed.version !== 1 ||
+      ![
+        parsed.userId,
+        parsed.relayUrl,
+        parsed.groupId,
+        parsed.certificate
+      ].every(strictString) ||
+      !device ||
       !authority ||
-      typeof authority.keyId !== "string" ||
-      typeof authority.publicKey !== "string" ||
-      typeof authority.secretSeed !== "string" ||
+      !groupSecrets ||
+      ![
+        "id",
+        "originDeploymentId",
+        "signingKeyId",
+        "signingPrivateSeed",
+        "kemKeyId",
+        "kemPrivateSeed"
+      ].every((key) => strictString(device[key])) ||
+      !["keyId", "publicKey", "head"].every((key) =>
+        strictString(authority[key])
+      ) ||
+      ![
+        "currentEpoch",
+        "contentKey",
+        "sourceFingerprintKey",
+        "tombstoneFloorKey",
+        "projectAliasKey"
+      ].every((key) => strictString(groupSecrets[key])) ||
       !Array.isArray(parsed.recipientCertificates) ||
-      !(parsed.recipientCertificates as unknown[]).every(
-        (certificate) => typeof certificate === "string"
-      )
-    ) {
+      !parsed.recipientCertificates.every(strictString) ||
+      (parsed.historicalOriginCertificates !== undefined &&
+        (!Array.isArray(parsed.historicalOriginCertificates) ||
+          !parsed.historicalOriginCertificates.every(strictString)))
+    )
       return null;
-    }
     return parsed as unknown as PdsRuntimeSecret;
   } catch {
     return null;
@@ -119,10 +109,10 @@ const runtimeFor = (secret: PdsRuntimeSecret) =>
   createPdsSessionPackageRuntimeContext({
     authorityPublicKey: secret.authority.publicKey,
     groupId: secret.groupId,
-    authorityHead: secret.authorityHead,
-    currentEpoch: secret.epoch,
-    servingCertificate: secret.servingCertificate,
-    recipientCertificate: secret.recipientCertificate,
+    authorityHead: secret.authority.head,
+    currentEpoch: secret.groupSecrets.currentEpoch,
+    servingCertificate: secret.certificate,
+    recipientCertificate: secret.certificate,
     recipientCertificates: secret.recipientCertificates,
     historicalOriginCertificates: secret.historicalOriginCertificates
   });
@@ -130,23 +120,22 @@ const runtimeFor = (secret: PdsRuntimeSecret) =>
 const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
   const runtime = runtimeFor(secret);
   const signingKey = pdsEd25519PrivateKey(
-    secret.deviceSigningPrivateSeed,
+    secret.device.signingPrivateSeed,
     runtime.serving.signingPublicKey
   );
   return {
-    // References are intentionally opaque to route code; values remain closure-local.
-    deviceSigningPrivateKeyRef: "runtime-secret",
-    deviceKemPrivateKeyRef: "runtime-secret",
-    groupSecretSetRef: "runtime-secret",
-    originDeploymentId: secret.originDeploymentId,
-    originDeviceId: runtime.serving.deviceId,
+    deviceSigningPrivateKeyRef: "desktop-secure-runtime",
+    deviceKemPrivateKeyRef: "desktop-secure-runtime",
+    groupSecretSetRef: "desktop-secure-runtime",
+    originDeploymentId: secret.device.originDeploymentId,
+    originDeviceId: secret.device.id,
     buildClosedSessionPackage(input) {
       const manifest = createPdsSessionManifest({
         runtime,
-        originDeploymentId: secret.originDeploymentId,
+        originDeploymentId: secret.device.originDeploymentId,
         sourceSequence: input.sourceSequence,
         sourceNativeSessionId: input.source.externalSessionId,
-        contentEpoch: secret.epoch,
+        contentEpoch: secret.groupSecrets.currentEpoch,
         closedSession: {
           closed: true,
           sourceAdapter: input.source.sourceAdapter,
@@ -158,8 +147,8 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         },
         terminalCursor: String(input.items.length),
         items: input.items,
-        sourceFingerprintKey: secret.sourceFingerprintKey,
-        tombstoneFloorKey: secret.tombstoneFloorKey,
+        sourceFingerprintKey: secret.groupSecrets.sourceFingerprintKey,
+        tombstoneFloorKey: secret.groupSecrets.tombstoneFloorKey,
         originSigningPrivateKey: signingKey
       });
       const pkg = createPdsSessionPackage({
@@ -186,34 +175,27 @@ export const createPdsSecureRuntimeFromEnvironment = async (
   authoritySigner: PdsAuthoritySigner | null;
   secureKeyProvider: PdsSecureKeyProvider | null;
 }> => {
-  const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
-  const resolver = runtimeSecretResolver(environment);
-  if (!reference || !resolver) {
+  // Authority signer belongs only to configured backend service, injected through BuildServerOptions.
+  if (environment.PDS_SECRET_PROVIDER?.trim() !== "desktop")
     return { authoritySigner: null, secureKeyProvider: null };
-  }
-  const secret = parseSecret((await resolver(reference)) ?? "");
+  const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
+  if (!reference || !desktopSecretResolver || /[\r\n\0]/.test(reference))
+    return { authoritySigner: null, secureKeyProvider: null };
+  const secret = parseSecret((await desktopSecretResolver(reference)) ?? "");
   if (!secret) return { authoritySigner: null, secureKeyProvider: null };
-  let authorityPrivateKey: KeyObject;
   try {
-    authorityPrivateKey = pdsEd25519PrivateKey(
-      secret.authority.secretSeed,
-      secret.authority.publicKey
-    );
     runtimeFor(secret);
   } catch {
     return { authoritySigner: null, secureKeyProvider: null };
   }
   return {
-    authoritySigner: {
-      keyId: secret.authority.keyId,
-      publicKey: secret.authority.publicKey,
-      privateKey: authorityPrivateKey
-    },
+    authoritySigner: null,
     secureKeyProvider: {
       getSourceContext(input) {
-        void input.userId;
         return Promise.resolve(
-          input.groupId === secret.groupId ? sourceContext(secret) : null
+          input.userId === secret.userId && input.groupId === secret.groupId
+            ? sourceContext(secret)
+            : null
         );
       }
     }

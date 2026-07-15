@@ -1,11 +1,8 @@
 import {
-  chmodSync,
   closeSync,
   mkdtempSync,
   openSync,
-  readFileSync,
   rmSync,
-  statSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,339 +20,149 @@ const root = () => {
   roots.push(value);
   return value;
 };
+afterEach(() =>
+  roots
+    .splice(0)
+    .forEach((directory) => rmSync(directory, { recursive: true, force: true }))
+);
 
-afterEach(() => {
-  for (const directory of roots.splice(0))
-    rmSync(directory, { recursive: true, force: true });
-});
-
-const passwordFd = (
-  directory: string,
-  password = "correct horse battery staple"
-) => {
-  const path = resolve(directory, "password");
-  writeFileSync(path, `${password}\n`, { mode: 0o600 });
+const fdFor = (directory: string, name: string, value: string) => {
+  const path = resolve(directory, name);
+  writeFileSync(path, value, { mode: 0o600 });
   return openSync(path, "r");
 };
-
-const secretProvider = () => {
-  const values = new Map<string, string>();
-  return {
-    values,
-    spawnSync: ((
-      _command: string,
-      args: string[],
-      options: { input?: string }
-    ) => {
-      const [operation, reference] = args;
-      if (operation === "put" && options.input) {
-        values.set(reference!, options.input);
-        return { status: 0, stdout: "", stderr: "" };
-      }
-      return { status: 0, stdout: values.get(reference!) ?? "", stderr: "" };
-    }) as never
-  };
-};
-
 const pathsFor = (directory: string) =>
-  ({
-    configDir: resolve(directory, "config")
-  }) as never;
+  ({ configDir: resolve(directory, "config") }) as never;
 
-const env = {
-  PDS_SECRET_PROVIDER: "headless",
-  PDS_SECRET_PROVIDER_COMMAND: "/usr/local/bin/operator-secret"
-};
+const response = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
 
-describe("Personal Sync recovery kit", () => {
-  it("uses versioned scrypt and AES-GCM format", () => {
+const controlEnv = (fd: number) => ({
+  PDS_CONTROL_URL: "https://pds.test",
+  PDS_BROWSER_SESSION_FD: String(fd)
+});
+
+describe("Personal Sync control client", () => {
+  it("uses versioned scrypt/AES-GCM with metadata AAD", () => {
     const password = Buffer.from("correct horse battery staple");
     const kit = encryptRecoveryKit('{"groupId":"pds_test"}', password);
-    expect(kit).toMatchObject({
-      format: "koed/pds-recovery-kit/v1",
-      version: 1,
-      kdf: { name: "scrypt", N: 32768, r: 8, p: 1 },
-      cipher: { name: "aes-256-gcm" }
-    });
     expect(decryptRecoveryKit(kit, password)).toBe('{"groupId":"pds_test"}');
-    expect(() => decryptRecoveryKit(kit, Buffer.from("wrong"))).toThrow(
-      "Recovery kit password or authentication tag is invalid."
+    const invalidParameters = JSON.parse(JSON.stringify(kit)) as typeof kit;
+    (invalidParameters.kdf as { p: number }).p = 2;
+    expect(() => decryptRecoveryKit(invalidParameters, password)).toThrow(
+      "Recovery kit format is invalid."
     );
+    expect(() =>
+      decryptRecoveryKit(
+        {
+          ...kit,
+          cipher: {
+            ...kit.cipher,
+            nonce: `${kit.cipher.nonce[0] === "A" ? "B" : "A"}${kit.cipher.nonce.slice(1)}`
+          }
+        },
+        password
+      )
+    ).toThrow("Recovery kit password or authentication tag is invalid.");
   });
 
-  it("requires recovery verification before future-only enable and redacts status", async () => {
-    const directory = root();
-    const provider = secretProvider();
-    const fd = passwordFd(directory);
-    const recoveryKit = resolve(directory, "recovery-kit.json");
-    try {
-      const bootstrapped = await runPersonalSyncCommand(
-        [
-          "group",
-          "bootstrap",
-          "--secret-ref",
-          "operator://pds/one",
-          "--recovery-kit",
-          recoveryKit,
-          "--password-fd",
-          String(fd)
-        ],
-        pathsFor(directory),
-        env,
-        { spawnSync: provider.spawnSync }
-      );
-      expect(bootstrapped.state).toBe("recovery_verification_required");
-      expect(readFileSync(recoveryKit, "utf8")).not.toContain(
-        "deviceSigningSeed"
-      );
-      expect(readFileSync(recoveryKit, "utf8")).not.toContain("correct horse");
-      await expect(
-        runPersonalSyncCommand(["policy", "enable"], pathsFor(directory), env, {
-          spawnSync: provider.spawnSync
-        })
-      ).rejects.toThrow("Recovery kit verification and finalized genesis");
-    } finally {
-      closeSync(fd);
-    }
+  it("fails closed without browser-session FD and never reports local policy", async () => {
+    await expect(
+      runPersonalSyncCommand(["status"], pathsFor(root()), {
+        PDS_CONTROL_URL: "https://pds.test"
+      })
+    ).rejects.toThrow("browser session FD");
+  });
 
-    const verificationFd = passwordFd(directory);
-    try {
-      const verified = await runPersonalSyncCommand(
-        [
-          "recovery-kit",
-          "verify",
-          "--recovery-kit",
-          recoveryKit,
-          "--password-fd",
-          String(verificationFd)
-        ],
-        pathsFor(directory),
-        env,
-        { spawnSync: provider.spawnSync }
+  it("reports backend status through bounded session-authenticated control API", async () => {
+    const directory = root();
+    const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+    const fetch = async (url: string | URL, options?: RequestInit) => {
+      expect(String(url)).toBe(
+        "https://pds.test/v1/personal-device-sync/groups"
       );
-      expect(verified).toMatchObject({
-        state: "verified",
-        genesis: { state: "finalized" }
+      expect(options?.headers).toMatchObject({
+        cookie: "cm_session=browser-only"
+      });
+      return response({ groups: [{ group_id: "pds_one", state: "active" }] });
+    };
+    try {
+      await expect(
+        runPersonalSyncCommand(
+          ["status"],
+          pathsFor(directory),
+          controlEnv(sessionFd),
+          { fetch: fetch as never }
+        )
+      ).resolves.toMatchObject({
+        state: "backend",
+        groups: [{ group_id: "pds_one" }]
       });
     } finally {
-      closeSync(verificationFd);
+      closeSync(sessionFd);
     }
-    const enabled = await runPersonalSyncCommand(
-      ["policy", "enable"],
-      pathsFor(directory),
-      env,
-      { spawnSync: provider.spawnSync }
-    );
-    expect(enabled.message).toContain("future closed Sessions only");
-    expect(statSync(recoveryKit).mode & 0o777).toBe(0o600);
-    const status = await runPersonalSyncCommand(
-      ["status"],
-      pathsFor(directory),
-      env,
-      { spawnSync: provider.spawnSync }
-    );
-    expect(JSON.stringify(status)).not.toContain("deviceSigningSeed");
-    expect(JSON.stringify(status)).not.toContain("sourceFingerprintKey");
-    expect(JSON.stringify(status)).not.toContain("operator://pds/one");
   });
 
-  it("rejects password arguments", async () => {
-    await expect(
-      runPersonalSyncCommand(
-        ["status", "--password", "leak"],
-        pathsFor(root()),
-        env
-      )
-    ).rejects.toThrow("password arguments are forbidden");
-  });
-
-  it("bounds password input before writing recovery material", async () => {
+  it("persists only redacted backend pairing request IDs", async () => {
     const directory = root();
-    const fd = passwordFd(directory, "a".repeat(4_097));
-    try {
-      await expect(
-        runPersonalSyncCommand(
-          [
-            "group",
-            "bootstrap",
-            "--secret-ref",
-            "operator://pds/too-long",
-            "--recovery-kit",
-            resolve(directory, "recovery-kit.json"),
-            "--password-fd",
-            String(fd)
-          ],
-          pathsFor(directory),
-          env,
-          { spawnSync: secretProvider().spawnSync }
-        )
-      ).rejects.toThrow("Recovery password length is invalid.");
-    } finally {
-      closeSync(fd);
-    }
-  });
-
-  it("fails closed for unsupported providers and unsafe kit permissions", async () => {
-    const directory = root();
-    const recoveryKit = resolve(directory, "recovery-kit.json");
-    const fd = passwordFd(directory);
-    try {
-      await expect(
-        runPersonalSyncCommand(
-          [
-            "group",
-            "bootstrap",
-            "--secret-ref",
-            "operator://pds/unavailable",
-            "--recovery-kit",
-            recoveryKit,
-            "--password-fd",
-            String(fd)
-          ],
-          pathsFor(directory),
-          { PDS_SECRET_PROVIDER: "desktop" }
-        )
-      ).rejects.toThrow("Desktop secure runtime");
-    } finally {
-      closeSync(fd);
-    }
-
-    const provider = secretProvider();
-    const setupFd = passwordFd(directory);
+    const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
+    const fetch = async () =>
+      response({
+        challenge: {
+          id: "d3d89391-d05a-4d4e-b33f-4d7859a1ce45",
+          short_code: "D3D89391",
+          expires_at: "2026-07-15T13:00:00.000Z"
+        }
+      });
     try {
       await runPersonalSyncCommand(
-        [
-          "group",
-          "bootstrap",
-          "--secret-ref",
-          "operator://pds/permissions",
-          "--recovery-kit",
-          recoveryKit,
-          "--password-fd",
-          String(setupFd)
-        ],
+        ["join", "request", "--group-id", "pds_one"],
         pathsFor(directory),
-        env,
-        { spawnSync: provider.spawnSync }
+        controlEnv(sessionFd),
+        { fetch: fetch as never }
       );
+      const result = await runPersonalSyncCommand(
+        ["join", "challenge"],
+        pathsFor(directory),
+        controlEnv(sessionFd),
+        { fetch: fetch as never }
+      );
+      expect(result).toMatchObject({
+        requests: [
+          {
+            requestId: "d3d89391-d05a-4d4e-b33f-4d7859a1ce45",
+            groupId: "pds_one"
+          }
+        ]
+      });
     } finally {
-      closeSync(setupFd);
-    }
-    chmodSync(recoveryKit, 0o644);
-    const verifyFd = passwordFd(directory);
-    try {
-      await expect(
-        runPersonalSyncCommand(
-          [
-            "recovery-kit",
-            "verify",
-            "--recovery-kit",
-            recoveryKit,
-            "--password-fd",
-            String(verifyFd)
-          ],
-          pathsFor(directory),
-          env,
-          { spawnSync: provider.spawnSync }
-        )
-      ).rejects.toThrow("permissions are unsafe");
-    } finally {
-      closeSync(verifyFd);
+      closeSync(sessionFd);
     }
   });
 
-  it("requires recovery-kit password for recovery approval and reports lifecycle", async () => {
+  it("requires signed transition payload from protected FDs; arbitrary device IDs cannot succeed", async () => {
     const directory = root();
-    const provider = secretProvider();
-    const recoveryKit = resolve(directory, "recovery-kit.json");
-    const bootstrapFd = passwordFd(directory);
-    try {
-      await runPersonalSyncCommand(
-        [
-          "group",
-          "bootstrap",
-          "--secret-ref",
-          "operator://pds/lifecycle",
-          "--recovery-kit",
-          recoveryKit,
-          "--password-fd",
-          String(bootstrapFd)
-        ],
-        pathsFor(directory),
-        env,
-        { spawnSync: provider.spawnSync }
-      );
-    } finally {
-      closeSync(bootstrapFd);
-    }
-    const request = await runPersonalSyncCommand(
-      ["join", "request"],
-      pathsFor(directory),
-      env,
-      { spawnSync: provider.spawnSync }
-    );
-    const requestId = (request.request as { id: string }).id;
-    await expect(
-      runPersonalSyncCommand(
-        [
-          "recovery",
-          "approve",
-          "--request-id",
-          requestId,
-          "--device-id",
-          "device_replacement"
-        ],
-        pathsFor(directory),
-        env,
-        { spawnSync: provider.spawnSync }
-      )
-    ).rejects.toThrow("--recovery-kit is required.");
-
-    const approvalFd = passwordFd(directory);
+    const sessionFd = fdFor(directory, "session", "cm_session=browser-only");
     try {
       await expect(
         runPersonalSyncCommand(
           [
-            "recovery",
-            "approve",
-            "--request-id",
-            requestId,
+            "device",
+            "revoke",
+            "--group-id",
+            "pds_one",
             "--device-id",
-            "device_replacement",
-            "--recovery-kit",
-            recoveryKit,
-            "--password-fd",
-            String(approvalFd)
+            "arbitrary"
           ],
           pathsFor(directory),
-          env,
-          { spawnSync: provider.spawnSync }
+          controlEnv(sessionFd)
         )
-      ).resolves.toMatchObject({ state: "approved", epoch: "2" });
+      ).rejects.toThrow("--statement-fd is required.");
     } finally {
-      closeSync(approvalFd);
+      closeSync(sessionFd);
     }
-    const revoked = await runPersonalSyncCommand(
-      ["device", "revoke", "--device-id", "device_replacement"],
-      pathsFor(directory),
-      env,
-      { spawnSync: provider.spawnSync }
-    );
-    expect(revoked.message).toContain(
-      "cannot erase plaintext already downloaded"
-    );
-    const status = await runPersonalSyncCommand(
-      ["status"],
-      pathsFor(directory),
-      env,
-      { spawnSync: provider.spawnSync }
-    );
-    expect(status).toMatchObject({
-      group: { genesis: { state: "finalized" } },
-      devices: [
-        { state: "active" },
-        { id: "device_replacement", state: "revoked" }
-      ]
-    });
   });
 });

@@ -2,125 +2,30 @@ import {
   createCipheriv,
   createDecipheriv,
   createHash,
-  generateKeyPairSync,
   randomBytes,
-  scryptSync,
-  timingSafeEqual
+  scryptSync
 } from "node:crypto";
 import {
-  chmodSync,
   closeSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readSync,
   renameSync,
-  statSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
-import {
-  PDS_PROTOCOL,
-  pdsEd25519PrivateKey,
-  pdsFinalizedStatementHash,
-  signPdsGroupDraft,
-  signPdsGroupFinal,
-  validatePdsGroupStatement
-} from "@koed/shared";
 import type { KoedServerPaths } from "./paths.js";
 
 const KIT_FORMAT = "koed/pds-recovery-kit/v1";
-const STATE_VERSION = 1;
+const PENDING_VERSION = 1;
 const MAX_PASSWORD_BYTES = 4_096;
-const SECRET_PROVIDER_COMMAND = /^[^\s\r\n\0]+$/;
-
-type ProviderState = "available" | "unavailable";
-type PolicyState = "disabled" | "enabled" | "paused";
-type DeviceState = "active" | "revoked" | "pending";
-
-export interface PersonalSyncDevice {
-  id: string;
-  label: string;
-  state: DeviceState;
-  addedAt: string;
-  revokedAt?: string;
-}
-
-export interface PersonalSyncState {
-  version: number;
-  groupId: string;
-  device: {
-    id: string;
-    signingKeyId: string;
-    signingPublicKey: string;
-    kemKeyId: string;
-    kemPublicKey: string;
-  };
-  recovery: {
-    signingKeyId: string;
-    signingPublicKey: string;
-    kemKeyId: string;
-    kemPublicKey: string;
-    kitFingerprint: string;
-    kitHash: string;
-    kitVerified: boolean;
-  };
-  authorityFingerprint: string;
-  authority: {
-    signingKeyId: string;
-    signingPublicKey: string;
-  };
-  genesis: {
-    state: "pending_recovery_verification" | "finalized";
-    hash: string | null;
-  };
-  secretRef: string;
-  createdAt: string;
-  policy: PolicyState;
-  policyEnabledAt: string | null;
-  epoch: string;
-  devices: PersonalSyncDevice[];
-  joins: Array<{
-    id: string;
-    challenge: string;
-    createdAt: string;
-    state: "pending" | "approved";
-  }>;
-  conflicts: Array<{
-    id: string;
-    candidates: string[];
-    state: "quarantined" | "resolved";
-  }>;
-  replica: {
-    localOrigin: number;
-    synchronizedReady: number;
-    processing: number;
-    stale: number;
-    unavailable: number;
-    failed: number;
-    conflicted: number;
-    revoked: number;
-    tombstoned: number;
-    lastSuccessfulSyncAt: string | null;
-  };
-}
-
-type SecretPayload = {
-  version: 1;
-  groupId: string;
-  authorityFingerprint: string;
-  deviceSigningSeed: string;
-  deviceKemSeed: string;
-  recoverySigningSeed: string;
-  recoveryKemSeed: string;
-  authoritySigningSeed: string;
-  epochKey: string;
-  sourceFingerprintKey: string;
-  tombstoneFloorKey: string;
-  projectAliasKey: string;
-};
+const MAX_CONTROL_RESPONSE_BYTES = 1_048_576;
+const MAX_PENDING_REQUESTS = 32;
 
 type RecoveryKit = {
   format: typeof KIT_FORMAT;
@@ -135,6 +40,9 @@ type RecoveryKit = {
   fingerprint: string;
 };
 
+type PendingRequest = { requestId: string; groupId: string; createdAt: string };
+type PendingState = { version: 1; pending: PendingRequest[] };
+
 export interface PersonalSyncResult {
   ok: boolean;
   state: string;
@@ -144,193 +52,107 @@ export interface PersonalSyncResult {
 
 export interface PersonalSyncDependencies {
   now?: () => Date;
-  readFileSync?: typeof readFileSync;
-  writeFileSync?: typeof writeFileSync;
-  existsSync?: typeof existsSync;
-  spawnSync?: typeof spawnSync;
+  fetch?: typeof globalThis.fetch;
 }
-
-const now = (deps: PersonalSyncDependencies): string =>
-  (deps.now ?? (() => new Date()))().toISOString();
-
-const statePath = (paths: KoedServerPaths): string =>
-  resolve(paths.configDir, "personal-sync.json");
 
 const fail = (message: string): never => {
   throw new Error(message);
 };
-
-const base64url = (value: Buffer): string => value.toString("base64url");
-const fingerprint = (value: string | Buffer): string =>
-  createHash("sha256").update(value).digest("base64url").slice(0, 26);
-const digest = (value: string | Buffer): string =>
+const b64 = (value: Buffer): string => value.toString("base64url");
+const hash = (value: string | Buffer): string =>
   createHash("sha256").update(value).digest("base64url");
-const opaqueId = (prefix: string): string =>
-  `${prefix}_${base64url(randomBytes(16))}`;
+const fingerprint = (value: string): string => hash(value).slice(0, 26);
+const now = (deps: PersonalSyncDependencies): string =>
+  (deps.now ?? (() => new Date()))().toISOString();
+const pendingPath = (paths: KoedServerPaths): string =>
+  resolve(paths.configDir, "personal-sync-pending.json");
 
-const assertRef = (value: string | undefined): string => {
-  const ref = value?.trim();
-  if (!ref || ref.length > 512 || /[\r\n\0]/.test(ref)) {
-    fail("--secret-ref must be an opaque Operator secret reference.");
-  }
-  return ref!;
-};
-
-const parseFlag = (args: string[], name: string): string | undefined => {
-  const index = args.indexOf(name);
-  return index < 0 ? undefined : args[index + 1];
-};
-
-const requiredFlag = (args: string[], name: string): string => {
-  const value = parseFlag(args, name);
-  return value?.trim() || fail(`${name} is required.`);
-};
-
-const rejectPasswordArguments = (args: string[]): void => {
-  if (
-    args.some((arg) => arg === "--password" || arg.startsWith("--password="))
-  ) {
-    fail(
-      "Recovery passwords must use --password-stdin or --password-fd; password arguments are forbidden."
-    );
-  }
-};
-
-const secureFile = (path: string): boolean => {
-  try {
-    return (statSync(path).mode & 0o077) === 0;
-  } catch {
-    return false;
-  }
-};
-
-const writeState = (paths: KoedServerPaths, state: PersonalSyncState): void => {
-  const path = statePath(paths);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.${base64url(randomBytes(8))}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
-    mode: 0o600,
-    flag: "wx"
-  });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, path);
-  chmodSync(path, 0o600);
-};
-
-const readState = (
-  paths: KoedServerPaths,
-  deps: PersonalSyncDependencies = {}
-): PersonalSyncState | null => {
-  const path = statePath(paths);
-  const fileExists = deps.existsSync ?? existsSync;
-  if (!fileExists(path)) return null;
-  if (!secureFile(path)) fail("Personal Sync state permissions are unsafe.");
-  try {
-    const parsed = JSON.parse(
-      (deps.readFileSync ?? readFileSync)(path, "utf8") as string
-    ) as PersonalSyncState;
-    if (
-      parsed.version !== STATE_VERSION ||
-      !parsed.groupId ||
-      !parsed.secretRef ||
-      !parsed.genesis ||
-      (parsed.genesis.state !== "pending_recovery_verification" &&
-        parsed.genesis.state !== "finalized")
-    ) {
-      fail("Personal Sync state is invalid.");
-    }
-    return parsed;
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "Personal Sync state is invalid."
-    )
-      throw error;
-    return fail("Personal Sync state is unreadable.");
-  }
-};
-
-const requireState = (
-  paths: KoedServerPaths,
-  deps?: PersonalSyncDependencies
-) => readState(paths, deps) ?? fail("Personal Sync group is not configured.");
-
-const providerCommand = (environment: NodeJS.ProcessEnv): string | null => {
-  if (environment.PDS_SECRET_PROVIDER?.trim() !== "headless") return null;
-  const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
-  return command && SECRET_PROVIDER_COMMAND.test(command) ? command : null;
-};
-
-const secretProviderStatus = (
-  environment: NodeJS.ProcessEnv
-): { state: ProviderState; message: string } => {
-  if (environment.PDS_SECRET_PROVIDER?.trim() === "desktop") {
-    return {
-      state: "unavailable",
-      message:
-        "Desktop secure runtime must install its platform secret provider before Personal Sync setup."
-    };
-  }
-  if (providerCommand(environment)) {
-    return {
-      state: "available",
-      message: "Operator secret provider reference is configured."
-    };
-  }
-  return {
-    state: "unavailable",
-    message:
-      "Personal Sync requires PDS_SECRET_PROVIDER=headless and PDS_SECRET_PROVIDER_COMMAND; raw environment secrets are not accepted."
-  };
-};
-
-const providerEnvironment = (
-  environment: NodeJS.ProcessEnv
-): NodeJS.ProcessEnv => ({
-  PATH: environment.PATH,
-  HOME: environment.HOME,
-  USER: environment.USER,
-  LANG: environment.LANG,
-  LC_ALL: environment.LC_ALL
-});
-
-const invokeSecretProvider = (
-  environment: NodeJS.ProcessEnv,
-  operation: "put" | "get",
-  reference: string,
-  payload?: string,
-  deps: PersonalSyncDependencies = {}
-): string | null => {
-  const command = providerCommand(environment);
-  if (!command) return fail(secretProviderStatus(environment).message);
-  const result = (deps.spawnSync ?? spawnSync)(
-    command,
-    [operation, reference],
-    {
-      input: payload,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-      env: providerEnvironment(environment)
-    }
+const exactKeys = (value: Record<string, unknown>, keys: string[]): boolean => {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, i) => key === expected[i])
   );
-  if (result.status !== 0)
-    fail("Operator secret provider did not complete Personal Sync operation.");
-  const output = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return operation === "get" ? output || null : null;
 };
 
-const rawKeyPair = (type: "ed25519" | "x25519") => {
-  const pair =
-    type === "ed25519"
-      ? generateKeyPairSync("ed25519")
-      : generateKeyPairSync("x25519");
-  const publicJwk = pair.publicKey.export({ format: "jwk" }) as { x?: string };
-  const privateJwk = pair.privateKey.export({ format: "jwk" }) as {
-    d?: string;
-  };
-  if (!publicJwk.x || !privateJwk.d)
-    return fail("Node crypto could not export PDS raw key material.");
-  return { publicKey: publicJwk.x, privateSeed: privateJwk.d };
+const strictBase64url = (value: unknown, bytes: number): Buffer => {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value))
+    fail("Recovery kit encoding is invalid.");
+  const encoded = value as string;
+  const decoded = Buffer.from(encoded, "base64url");
+  if (decoded.length !== bytes || decoded.toString("base64url") !== encoded)
+    fail("Recovery kit encoding is invalid.");
+  return decoded;
+};
+
+// Fixed member order is canonical for closed recovery-kit descriptor schema.
+const recoveryKitMetadata = (kit: RecoveryKit): string =>
+  JSON.stringify({
+    cipher: { name: kit.cipher.name, nonce: kit.cipher.nonce },
+    format: kit.format,
+    kdf: {
+      N: kit.kdf.N,
+      name: kit.kdf.name,
+      p: kit.kdf.p,
+      r: kit.kdf.r,
+      salt: kit.kdf.salt
+    },
+    version: kit.version
+  });
+
+const validateRecoveryKit = (kit: unknown): RecoveryKit => {
+  if (!kit || typeof kit !== "object" || Array.isArray(kit))
+    fail("Recovery kit format is invalid.");
+  const value = kit as Record<string, unknown>;
+  if (!exactKeys(value, ["format", "version", "kdf", "cipher", "fingerprint"]))
+    fail("Recovery kit format is invalid.");
+  const kdf = value.kdf;
+  const cipher = value.cipher;
+  if (
+    value.format !== KIT_FORMAT ||
+    value.version !== 1 ||
+    typeof value.fingerprint !== "string" ||
+    value.fingerprint.length !== 26 ||
+    !kdf ||
+    typeof kdf !== "object" ||
+    Array.isArray(kdf) ||
+    !cipher ||
+    typeof cipher !== "object" ||
+    Array.isArray(cipher) ||
+    !exactKeys(kdf as Record<string, unknown>, [
+      "name",
+      "N",
+      "r",
+      "p",
+      "salt"
+    ]) ||
+    !exactKeys(cipher as Record<string, unknown>, [
+      "name",
+      "nonce",
+      "ciphertext",
+      "tag"
+    ]) ||
+    (kdf as Record<string, unknown>).name !== "scrypt" ||
+    (kdf as Record<string, unknown>).N !== 32768 ||
+    (kdf as Record<string, unknown>).r !== 8 ||
+    (kdf as Record<string, unknown>).p !== 1 ||
+    (cipher as Record<string, unknown>).name !== "aes-256-gcm"
+  )
+    fail("Recovery kit format is invalid.");
+  const parsed = value as unknown as RecoveryKit;
+  strictBase64url(parsed.kdf.salt, 16);
+  strictBase64url(parsed.cipher.nonce, 12);
+  strictBase64url(parsed.cipher.tag, 16);
+  const ciphertext = Buffer.from(parsed.cipher.ciphertext, "base64url");
+  if (
+    !/^[A-Za-z0-9_-]+$/.test(parsed.cipher.ciphertext) ||
+    ciphertext.length < 1 ||
+    ciphertext.length > MAX_CONTROL_RESPONSE_BYTES ||
+    ciphertext.toString("base64url") !== parsed.cipher.ciphertext
+  )
+    fail("Recovery kit encoding is invalid.");
+  return parsed;
 };
 
 const deriveKey = (password: Buffer, salt: Buffer): Buffer =>
@@ -341,66 +163,57 @@ const deriveKey = (password: Buffer, salt: Buffer): Buffer =>
     maxmem: 64 * 1024 * 1024
   });
 
-const kitFingerprint = (plaintext: string): string => fingerprint(plaintext);
-const kitHash = (plaintext: string): string => digest(plaintext);
-
 export const encryptRecoveryKit = (
   plaintext: string,
   password: Buffer
 ): RecoveryKit => {
   if (!password.length || password.length > MAX_PASSWORD_BYTES)
     fail("Recovery password length is invalid.");
-  const salt = randomBytes(16);
-  const nonce = randomBytes(12);
-  const key = deriveKey(password, salt);
-  const cipher = createCipheriv("aes-256-gcm", key, nonce);
-  const ciphertext = Buffer.concat([
-    cipher.update(plaintext, "utf8"),
-    cipher.final()
-  ]);
-  return {
+  const kit: RecoveryKit = {
     format: KIT_FORMAT,
     version: 1,
-    kdf: { name: "scrypt", N: 32768, r: 8, p: 1, salt: base64url(salt) },
+    kdf: { name: "scrypt", N: 32768, r: 8, p: 1, salt: b64(randomBytes(16)) },
     cipher: {
       name: "aes-256-gcm",
-      nonce: base64url(nonce),
-      ciphertext: base64url(ciphertext),
-      tag: base64url(cipher.getAuthTag())
+      nonce: b64(randomBytes(12)),
+      ciphertext: "",
+      tag: ""
     },
-    fingerprint: kitFingerprint(plaintext)
+    fingerprint: fingerprint(plaintext)
   };
+  const cipher = createCipheriv(
+    "aes-256-gcm",
+    deriveKey(password, strictBase64url(kit.kdf.salt, 16)),
+    strictBase64url(kit.cipher.nonce, 12)
+  );
+  cipher.setAAD(Buffer.from(recoveryKitMetadata(kit), "utf8"));
+  kit.cipher.ciphertext = b64(
+    Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()])
+  );
+  kit.cipher.tag = b64(cipher.getAuthTag());
+  return kit;
 };
 
 export const decryptRecoveryKit = (
-  kit: RecoveryKit,
+  input: RecoveryKit,
   password: Buffer
 ): string => {
-  if (
-    kit.format !== KIT_FORMAT ||
-    kit.version !== 1 ||
-    kit.kdf.name !== "scrypt" ||
-    kit.kdf.N !== 32768 ||
-    kit.kdf.r !== 8 ||
-    kit.kdf.p !== 1 ||
-    !password.length ||
-    password.length > MAX_PASSWORD_BYTES
-  ) {
-    fail("Recovery kit format is invalid.");
-  }
+  const kit = validateRecoveryKit(input);
+  if (!password.length || password.length > MAX_PASSWORD_BYTES)
+    fail("Recovery password length is invalid.");
   try {
-    const key = deriveKey(password, Buffer.from(kit.kdf.salt, "base64url"));
     const decipher = createDecipheriv(
       "aes-256-gcm",
-      key,
-      Buffer.from(kit.cipher.nonce, "base64url")
+      deriveKey(password, strictBase64url(kit.kdf.salt, 16)),
+      strictBase64url(kit.cipher.nonce, 12)
     );
-    decipher.setAuthTag(Buffer.from(kit.cipher.tag, "base64url"));
+    decipher.setAAD(Buffer.from(recoveryKitMetadata(kit), "utf8"));
+    decipher.setAuthTag(strictBase64url(kit.cipher.tag, 16));
     const plaintext = Buffer.concat([
       decipher.update(Buffer.from(kit.cipher.ciphertext, "base64url")),
       decipher.final()
     ]).toString("utf8");
-    if (kitFingerprint(plaintext) !== kit.fingerprint)
+    if (fingerprint(plaintext) !== kit.fingerprint)
       fail("Recovery kit fingerprint is invalid.");
     return plaintext;
   } catch (error) {
@@ -413,33 +226,52 @@ export const decryptRecoveryKit = (
   }
 };
 
+const rejectPasswordArguments = (args: string[]): void => {
+  if (args.some((arg) => arg === "--password" || arg.startsWith("--password=")))
+    fail(
+      "Recovery passwords must use --password-stdin or --password-fd; password arguments are forbidden."
+    );
+};
+
+const flag = (args: string[], name: string): string | undefined => {
+  const index = args.indexOf(name);
+  return index < 0 ? undefined : args[index + 1];
+};
+const requiredFlag = (args: string[], name: string): string =>
+  flag(args, name)?.trim() || fail(`${name} is required.`);
+
+const readBoundedFd = (
+  raw: string | undefined,
+  label: string,
+  maximum = MAX_CONTROL_RESPONSE_BYTES
+): Buffer => {
+  const fd = Number.parseInt(raw ?? "", 10);
+  if (!Number.isInteger(fd) || fd < 0)
+    fail(`${label} must be a non-negative file descriptor.`);
+  const buffer = Buffer.allocUnsafe(maximum + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const count = readSync(fd, buffer, offset, buffer.length - offset, null);
+    if (count === 0) break;
+    offset += count;
+  }
+  if (offset > maximum) fail(`${label} exceeds maximum size.`);
+  return Buffer.from(buffer.subarray(0, offset));
+};
+
 const passwordFrom = (args: string[]): Buffer => {
   rejectPasswordArguments(args);
-  const fd = parseFlag(args, "--password-fd");
+  const fd = flag(args, "--password-fd");
   const stdin = args.includes("--password-stdin");
   if (Boolean(fd) === stdin)
     fail("Use exactly one of --password-stdin or --password-fd.");
-  const descriptor = stdin ? 0 : Number.parseInt(fd!, 10);
-  if (!Number.isInteger(descriptor) || descriptor < 0)
-    fail("--password-fd must be a non-negative file descriptor.");
-  const input = Buffer.allocUnsafe(MAX_PASSWORD_BYTES + 2);
-  let bytesRead = 0;
-  while (bytesRead < input.length) {
-    const count = readSync(
-      descriptor,
-      input,
-      bytesRead,
-      input.length - bytesRead,
-      null
-    );
-    if (count === 0) break;
-    bytesRead += count;
-  }
-  let length = bytesRead;
-  if (input[length - 1] === 0x0a) length -= 1;
-  if (input[length - 1] === 0x0d) length -= 1;
-  const password = Buffer.from(input.subarray(0, length));
-  input.fill(0);
+  const raw = readBoundedFd(
+    stdin ? "0" : fd,
+    "--password-fd",
+    MAX_PASSWORD_BYTES
+  );
+  const password = Buffer.from(raw.toString("utf8").replace(/\r?\n$/, ""));
+  raw.fill(0);
   if (!password.length || password.length > MAX_PASSWORD_BYTES) {
     password.fill(0);
     fail("Recovery password length is invalid.");
@@ -447,543 +279,322 @@ const passwordFrom = (args: string[]): Buffer => {
   return password;
 };
 
-const recoveryPlaintext = (
-  state: PersonalSyncState,
-  secret: SecretPayload
-): string =>
-  JSON.stringify({
-    version: 1,
-    groupId: state.groupId,
-    authorityFingerprint: state.authorityFingerprint,
-    device: state.device,
-    recovery: {
-      signingKeyId: state.recovery.signingKeyId,
-      signingPublicKey: state.recovery.signingPublicKey,
-      kemKeyId: state.recovery.kemKeyId,
-      kemPublicKey: state.recovery.kemPublicKey
-    },
-    secret
-  });
+const secureRegularFile = (path: string): boolean => {
+  try {
+    const stat = lstatSync(path);
+    return stat.isFile() && !stat.isSymbolicLink() && (stat.mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+};
 
-const finalizeGenesis = (
-  state: PersonalSyncState,
-  secret: SecretPayload
-): string => {
-  const recoveryKey = pdsEd25519PrivateKey(
-    secret.recoverySigningSeed,
-    state.recovery.signingPublicKey
-  );
-  const authorityKey = pdsEd25519PrivateKey(
-    secret.authoritySigningSeed,
-    state.authority.signingPublicKey
-  );
-  const draft = {
-    protocol: PDS_PROTOCOL,
-    kind: "genesis",
-    groupId: state.groupId,
-    sequence: "0",
-    previousHash: null,
-    body: {
-      authorityKeyId: state.authority.signingKeyId,
-      authorityPublicKey: state.authority.signingPublicKey,
-      recoverySigningKeyId: state.recovery.signingKeyId,
-      recoverySigningPublicKey: state.recovery.signingPublicKey,
-      recoveryKemKeyId: state.recovery.kemKeyId,
-      recoveryKemPublicKey: state.recovery.kemPublicKey,
-      recoveryKitHash: state.recovery.kitHash,
-      recoveryKitVerified: true,
-      initialEpoch: state.epoch,
-      initialKeyCommitment: digest(Buffer.from(secret.epochKey, "base64url"))
-    }
-  };
-  const authorization = {
-    signerKeyId: state.recovery.signingKeyId,
-    signature: signPdsGroupDraft(draft, recoveryKey)
-  };
-  const statement = {
-    draft,
-    authorization,
-    authority: {
-      keyId: state.authority.signingKeyId,
-      signature: signPdsGroupFinal({ draft, authorization }, authorityKey)
-    }
-  };
-  const validated = validatePdsGroupStatement(statement, {
-    authorizationPublicKey: state.recovery.signingPublicKey,
-    authorityPublicKey: state.authority.signingPublicKey,
-    expectedGroupId: state.groupId,
-    expectedPreviousHash: null,
-    expectedSequence: "0",
-    expectedAuthorizationKeyId: state.recovery.signingKeyId,
-    expectedAuthorityKeyId: state.authority.signingKeyId
-  });
-  return pdsFinalizedStatementHash(validated);
+const fsyncDirectory = (path: string): void => {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 };
 
 const writeRecoveryKit = (path: string, kit: RecoveryKit): void => {
   const output = resolve(path);
-  mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
-  const fd = openSync(output, "wx", 0o600);
+  const directory = dirname(output);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (existsSync(output)) fail("Recovery kit destination already exists.");
+  const temporary = `${output}.${process.pid}.${b64(randomBytes(8))}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
   try {
-    writeFileSync(fd, `${JSON.stringify(kit, null, 2)}\n`, {
-      encoding: "utf8"
-    });
+    writeFileSync(fd, `${JSON.stringify(kit, null, 2)}\n`, "utf8");
+    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
-  chmodSync(output, 0o600);
-};
-
-const isSecretPayload = (
-  value: unknown,
-  groupId: string
-): value is SecretPayload => {
-  if (!value || typeof value !== "object") return false;
-  const secret = value as Record<string, unknown>;
-  const required = [
-    "authorityFingerprint",
-    "deviceSigningSeed",
-    "deviceKemSeed",
-    "recoverySigningSeed",
-    "recoveryKemSeed",
-    "authoritySigningSeed",
-    "epochKey",
-    "sourceFingerprintKey",
-    "tombstoneFloorKey",
-    "projectAliasKey"
-  ];
-  return (
-    secret.version === 1 &&
-    secret.groupId === groupId &&
-    required.every((key) => typeof secret[key] === "string" && secret[key])
-  );
-};
-
-const getSecret = (
-  state: PersonalSyncState,
-  environment: NodeJS.ProcessEnv,
-  deps?: PersonalSyncDependencies
-): SecretPayload => {
-  const raw = invokeSecretProvider(
-    environment,
-    "get",
-    state.secretRef,
-    undefined,
-    deps
-  );
-  if (!raw)
-    return fail(
-      "Operator secret provider has no Personal Sync material for this reference."
-    );
   try {
-    const secret = JSON.parse(raw) as unknown;
-    if (!isSecretPayload(secret, state.groupId))
-      fail("Operator secret provider returned invalid Personal Sync material.");
-    return secret as SecretPayload;
+    renameSync(temporary, output);
+    fsyncDirectory(directory);
   } catch (error) {
-    if (error instanceof Error && error.message.includes("Personal Sync"))
-      throw error;
+    try {
+      unlinkSync(temporary);
+    } catch {
+      /* cleanup only */
+    }
+    throw error;
+  }
+  if (!secureRegularFile(output))
+    fail("Recovery kit permissions are unsafe; require 0600.");
+};
+
+const readPending = (paths: KoedServerPaths): PendingState => {
+  const path = pendingPath(paths);
+  if (!existsSync(path)) return { version: PENDING_VERSION, pending: [] };
+  if (!secureRegularFile(path))
+    fail("Personal Sync pending state permissions are unsafe.");
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (value.version !== PENDING_VERSION || !Array.isArray(value.pending))
+      throw new Error();
+    const pending = value.pending.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const request = entry as Record<string, unknown>;
+      return typeof request.requestId === "string" &&
+        typeof request.groupId === "string" &&
+        typeof request.createdAt === "string"
+        ? [
+            {
+              requestId: request.requestId,
+              groupId: request.groupId,
+              createdAt: request.createdAt
+            }
+          ]
+        : [];
+    });
+    if (
+      pending.length !== value.pending.length ||
+      pending.length > MAX_PENDING_REQUESTS
+    )
+      throw new Error();
+    return { version: PENDING_VERSION, pending };
+  } catch {
+    return fail("Personal Sync pending state is unreadable.");
+  }
+};
+
+const writePending = (paths: KoedServerPaths, state: PendingState): void => {
+  const path = pendingPath(paths);
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.${b64(randomBytes(8))}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(state)}\n`, "utf8");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temporary, path);
+  fsyncDirectory(directory);
+};
+
+const controlOrigin = (environment: NodeJS.ProcessEnv): string => {
+  const configured = environment.PDS_CONTROL_URL?.trim();
+  const origin =
+    configured ??
+    fail("Personal Sync control API is not configured (PDS_CONTROL_URL). ");
+  try {
+    const url = new URL(origin);
+    if (
+      !/^https?:$/.test(url.protocol) ||
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      throw new Error();
+    return url.toString().replace(/\/$/, "");
+  } catch {
     return fail(
-      "Operator secret provider returned invalid Personal Sync material."
+      "PDS_CONTROL_URL must be an HTTP(S) origin without credentials."
     );
   }
 };
 
-const equalSecrets = (left: SecretPayload, right: SecretPayload): boolean => {
-  const leftBytes = Buffer.from(JSON.stringify(left));
-  const rightBytes = Buffer.from(JSON.stringify(right));
-  return (
-    leftBytes.length === rightBytes.length &&
-    timingSafeEqual(leftBytes, rightBytes)
+const browserSession = (environment: NodeJS.ProcessEnv): string => {
+  const raw = environment.PDS_BROWSER_SESSION_FD;
+  if (raw === undefined)
+    fail(
+      "PDS browser session FD is required; API Tokens and legacy credentials are rejected."
+    );
+  const bytes = readBoundedFd(raw, "PDS_BROWSER_SESSION_FD", 16_384);
+  const value = bytes.toString("utf8").trim();
+  bytes.fill(0);
+  if (!value || /[\r\n\0]/.test(value))
+    fail("PDS browser session FD is invalid.");
+  return value;
+};
+
+const strictResponse = async (
+  response: Response
+): Promise<Record<string, unknown>> => {
+  const length = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(length) && length > MAX_CONTROL_RESPONSE_BYTES)
+    fail("PDS control response exceeds maximum size.");
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > MAX_CONTROL_RESPONSE_BYTES)
+    fail("PDS control response exceeds maximum size.");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    fail("PDS control response is invalid.");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail("PDS control response is invalid.");
+  if (!response.ok) {
+    const message = (value as Record<string, unknown>).message;
+    fail(
+      typeof message === "string"
+        ? `PDS control API rejected request: ${message}`
+        : `PDS control API rejected request (${response.status}).`
+    );
+  }
+  return value as Record<string, unknown>;
+};
+
+const control = async (input: {
+  environment: NodeJS.ProcessEnv;
+  deps: PersonalSyncDependencies;
+  method: "GET" | "POST" | "PUT";
+  path: string;
+  body?: Record<string, unknown>;
+}): Promise<Record<string, unknown>> => {
+  const fetcher = input.deps.fetch ?? globalThis.fetch;
+  if (!fetcher) fail("PDS control API is unavailable.");
+  const timeout = AbortSignal.timeout(10_000);
+  const response = await fetcher(
+    `${controlOrigin(input.environment)}${input.path}`,
+    {
+      method: input.method,
+      headers: {
+        accept: "application/json",
+        cookie: browserSession(input.environment),
+        ...(input.body ? { "content-type": "application/json" } : {})
+      },
+      ...(input.body ? { body: JSON.stringify(input.body) } : {}),
+      signal: timeout
+    }
   );
+  return strictResponse(response);
 };
 
-const redactedStatus = (
-  state: PersonalSyncState,
-  environment: NodeJS.ProcessEnv
-): PersonalSyncResult => ({
-  ok: true,
-  state: state.policy,
-  message:
-    state.policy === "enabled"
-      ? "Personal Sync replicates eligible future closed Sessions."
-      : "Personal Sync is not publishing Sessions.",
-  capability: secretProviderStatus(environment),
-  group: {
-    id: state.groupId,
-    createdAt: state.createdAt,
-    recoveryKitVerified: state.recovery.kitVerified,
-    authorityFingerprint: state.authorityFingerprint,
-    policy: {
-      state: state.policy,
-      futureClosedSessionsOnly: true,
-      historicalBackfillEnabled: false
-    },
-    epoch: state.epoch,
-    genesis: state.genesis
-  },
-  devices: state.devices.map(
-    ({ id, label, state: deviceState, addedAt, revokedAt }) => ({
-      id,
-      label,
-      state: deviceState,
-      addedAt,
-      ...(revokedAt ? { revokedAt } : {})
-    })
-  ),
-  replica: state.replica,
-  conflicts: state.conflicts.map(
-    ({ id, candidates, state: conflictState }) => ({
-      id,
-      candidateCount: candidates.length,
-      state: conflictState
-    })
-  )
-});
+const groupIdFrom = (args: string[]): string => {
+  const groupId = requiredFlag(args, "--group-id");
+  if (!/^[\x21-\x7e]{1,240}$/.test(groupId)) fail("--group-id is invalid.");
+  return groupId;
+};
 
-const bootstrap = (
-  args: string[],
-  paths: KoedServerPaths,
+const object = (value: unknown, field: string): Record<string, unknown> => {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    fail(`PDS control response ${field} is invalid.`);
+  return value as Record<string, unknown>;
+};
+
+const status = async (
   environment: NodeJS.ProcessEnv,
   deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  if (readState(paths, deps)) fail("Personal Sync group already exists.");
-  const ref = assertRef(requiredFlag(args, "--secret-ref"));
-  const kitPath = requiredFlag(args, "--recovery-kit");
-  const capability = secretProviderStatus(environment);
-  if (capability.state !== "available") fail(capability.message);
-  const password = passwordFrom(args);
-  const deviceSigning = rawKeyPair("ed25519");
-  const deviceKem = rawKeyPair("x25519");
-  const recoverySigning = rawKeyPair("ed25519");
-  const recoveryKem = rawKeyPair("x25519");
-  const authoritySigning = rawKeyPair("ed25519");
-  const groupId = opaqueId("pds");
-  const authorityFingerprint = fingerprint(authoritySigning.publicKey);
-  const createdAt = now(deps);
-  const state: PersonalSyncState = {
-    version: STATE_VERSION,
-    groupId,
-    createdAt,
-    authorityFingerprint,
-    authority: {
-      signingKeyId: opaqueId("authority-ed25519"),
-      signingPublicKey: authoritySigning.publicKey
-    },
-    genesis: { state: "pending_recovery_verification", hash: null },
-    secretRef: ref,
-    device: {
-      id: opaqueId("device"),
-      signingKeyId: opaqueId("ed25519"),
-      signingPublicKey: deviceSigning.publicKey,
-      kemKeyId: opaqueId("x25519"),
-      kemPublicKey: deviceKem.publicKey
-    },
-    recovery: {
-      signingKeyId: opaqueId("recovery-ed25519"),
-      signingPublicKey: recoverySigning.publicKey,
-      kemKeyId: opaqueId("recovery-x25519"),
-      kemPublicKey: recoveryKem.publicKey,
-      kitFingerprint: "",
-      kitHash: "",
-      kitVerified: false
-    },
-    policy: "disabled",
-    policyEnabledAt: null,
-    epoch: "1",
-    devices: [],
-    joins: [],
-    conflicts: [],
-    replica: {
-      localOrigin: 0,
-      synchronizedReady: 0,
-      processing: 0,
-      stale: 0,
-      unavailable: 0,
-      failed: 0,
-      conflicted: 0,
-      revoked: 0,
-      tombstoned: 0,
-      lastSuccessfulSyncAt: null
-    }
-  };
-  state.devices.push({
-    id: state.device.id,
-    label: "This device",
-    state: "active",
-    addedAt: createdAt
+): Promise<PersonalSyncResult> => {
+  const response = await control({
+    environment,
+    deps,
+    method: "GET",
+    path: "/v1/personal-device-sync/groups"
   });
-  const secret: SecretPayload = {
-    version: 1,
-    groupId,
-    authorityFingerprint,
-    deviceSigningSeed: deviceSigning.privateSeed,
-    deviceKemSeed: deviceKem.privateSeed,
-    recoverySigningSeed: recoverySigning.privateSeed,
-    recoveryKemSeed: recoveryKem.privateSeed,
-    authoritySigningSeed: authoritySigning.privateSeed,
-    epochKey: base64url(randomBytes(32)),
-    sourceFingerprintKey: base64url(randomBytes(32)),
-    tombstoneFloorKey: base64url(randomBytes(32)),
-    projectAliasKey: base64url(randomBytes(32))
-  };
-  const plaintext = recoveryPlaintext(state, secret);
-  state.recovery.kitFingerprint = kitFingerprint(plaintext);
-  state.recovery.kitHash = kitHash(plaintext);
-  const kit = encryptRecoveryKit(plaintext, password);
-  try {
-    if (decryptRecoveryKit(kit, password) !== plaintext)
-      fail("Recovery kit round-trip verification failed.");
-    writeRecoveryKit(kitPath, kit);
-    invokeSecretProvider(environment, "put", ref, JSON.stringify(secret), deps);
-    const stored = getSecret(state, environment, deps);
-    if (!equalSecrets(secret, stored))
-      fail("Operator secret provider did not preserve Personal Sync material.");
-    writeState(paths, state);
-  } finally {
-    password.fill(0);
-  }
+  const groups = response.groups;
+  if (!Array.isArray(groups)) fail("PDS control response groups is invalid.");
   return {
     ok: true,
-    state: "recovery_verification_required",
-    message:
-      "Recovery kit round-trip verified. Re-open it and verify its fingerprint before genesis and future-only Personal Sync.",
-    groupId,
-    recoveryKit: {
-      fingerprint: kit.fingerprint,
-      permissions: "0600",
-      roundTripVerified: true
-    }
+    state: "backend",
+    message: "Personal Sync status is Authority-owned.",
+    groups
   };
 };
 
-const verifyKit = (
+const createJoinChallenge = async (
   args: string[],
   paths: KoedServerPaths,
   environment: NodeJS.ProcessEnv,
   deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  const state = requireState(paths, deps);
-  const path = requiredFlag(args, "--recovery-kit");
-  if (!secureFile(path))
-    fail("Recovery kit permissions are unsafe; require 0600.");
-  const password = passwordFrom(args);
-  try {
-    const kit = JSON.parse(readFileSync(path, "utf8")) as RecoveryKit;
-    const plaintext = decryptRecoveryKit(kit, password);
-    const parsed = JSON.parse(plaintext) as {
-      groupId?: string;
-      authorityFingerprint?: string;
-      secret?: unknown;
-    };
-    if (
-      parsed.groupId !== state.groupId ||
-      parsed.authorityFingerprint !== state.authorityFingerprint ||
-      !isSecretPayload(parsed.secret, state.groupId) ||
-      kit.fingerprint !== state.recovery.kitFingerprint ||
-      kitHash(plaintext) !== state.recovery.kitHash
-    ) {
-      fail("Recovery kit does not match this Personal Device Group.");
-    }
-    const kitSecret = parsed.secret as SecretPayload;
-    const providerSecret = getSecret(state, environment, deps);
-    if (!equalSecrets(kitSecret, providerSecret))
-      fail("Recovery kit does not match Operator secret provider material.");
-    state.recovery.kitVerified = true;
-    state.genesis = {
-      state: "finalized",
-      hash: finalizeGenesis(state, kitSecret)
-    };
-    writeState(paths, state);
-    return {
-      ok: true,
-      state: "verified",
-      message:
-        "Recovery kit decrypted and fingerprint verified. Genesis is finalized; you may enable future-only Personal Sync.",
-      fingerprint: kit.fingerprint,
-      genesis: { state: state.genesis.state, hash: state.genesis.hash }
-    };
-  } finally {
-    password.fill(0);
-  }
-};
-
-const createKit = (
-  args: string[],
-  paths: KoedServerPaths,
-  environment: NodeJS.ProcessEnv,
-  deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  const state = requireState(paths, deps);
-  const output = requiredFlag(args, "--output");
-  const secret = getSecret(state, environment, deps);
-  const password = passwordFrom(args);
-  try {
-    const plaintext = recoveryPlaintext(state, secret);
-    const kit = encryptRecoveryKit(plaintext, password);
-    if (decryptRecoveryKit(kit, password) !== plaintext)
-      fail("Recovery kit round-trip verification failed.");
-    writeRecoveryKit(output, kit);
-    return {
-      ok: true,
-      state: "created",
-      message:
-        "Recovery kit round-trip verified and written. Re-open and verify its fingerprint before relying on it.",
-      recoveryKit: {
-        fingerprint: kit.fingerprint,
-        permissions: "0600",
-        roundTripVerified: true
-      }
-    };
-  } finally {
-    password.fill(0);
-  }
-};
-
-const updatePolicy = (
-  state: PersonalSyncState,
-  action: "enable" | "pause" | "resume",
-  deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  if (action === "enable") {
-    if (!state.recovery.kitVerified || state.genesis.state !== "finalized")
-      fail(
-        "Recovery kit verification and finalized genesis are required before sync enable."
-      );
-    state.policy = "enabled";
-    state.policyEnabledAt = now(deps);
-    return {
-      ok: true,
-      state: "enabled",
-      message:
-        "Personal Sync enabled for eligible future closed Sessions only; no historical Memory is uploaded."
-    };
-  }
-  if (action === "pause") {
-    state.policy = "paused";
-    return {
-      ok: true,
-      state: "paused",
-      message:
-        "Personal Sync publication paused. Local capture and Recall continue."
-    };
-  }
-  if (state.policy !== "paused") fail("Personal Sync is not paused.");
-  state.policy = "enabled";
-  return {
-    ok: true,
-    state: "enabled",
-    message: "Personal Sync resumed for eligible future closed Sessions only."
-  };
-};
-
-const joinRequest = (
-  state: PersonalSyncState,
-  deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  const request = {
-    id: opaqueId("join"),
-    challenge: base64url(randomBytes(32)),
-    createdAt: now(deps),
-    state: "pending" as const
-  };
-  state.joins.push(request);
+): Promise<PersonalSyncResult> => {
+  const groupId = groupIdFrom(args);
+  const response = await control({
+    environment,
+    deps,
+    method: "POST",
+    path: "/v1/personal-device-sync/challenges",
+    body: { group_id: groupId }
+  });
+  const challenge = object(response.challenge, "challenge");
+  const requestId = challenge.id;
+  const shortCode = challenge.short_code;
+  if (typeof requestId !== "string" || typeof shortCode !== "string")
+    fail("PDS control response challenge is invalid.");
+  const safeRequestId = requestId as string;
+  const safeShortCode = shortCode as string;
+  const pending = readPending(paths);
+  const next = pending.pending.filter(
+    (entry) => entry.requestId !== safeRequestId
+  );
+  next.push({ requestId: safeRequestId, groupId, createdAt: now(deps) });
+  writePending(paths, {
+    version: PENDING_VERSION,
+    pending: next.slice(-MAX_PENDING_REQUESTS)
+  });
   return {
     ok: true,
     state: "pending",
-    message:
-      "Join request created. An active device or recovery kit must approve it; browser, email, support, and API Token cannot approve.",
-    request
+    message: "Pairing request is pending backend approval.",
+    pairing: {
+      challengeId: safeRequestId,
+      shortCode: safeShortCode,
+      url: typeof challenge.url === "string" ? challenge.url : undefined
+    }
   };
 };
 
-const approveDevice = (
-  state: PersonalSyncState,
+const readJsonFd = (args: string[], name: string): Record<string, unknown> => {
+  const raw = readBoundedFd(requiredFlag(args, name), name);
+  try {
+    const parsed = JSON.parse(raw.toString("utf8")) as unknown;
+    return object(parsed, name);
+  } finally {
+    raw.fill(0);
+  }
+};
+
+const submitTransition = async (
   args: string[],
-  by: "active_device" | "recovery",
+  environment: NodeJS.ProcessEnv,
   deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  const requestId = requiredFlag(args, "--request-id");
-  const request = state.joins.find(
-    (candidate) => candidate.id === requestId && candidate.state === "pending"
-  );
-  if (!request) return fail("Pending join request was not found.");
-  const deviceId = requiredFlag(args, "--device-id");
-  if (state.devices.some((device) => device.id === deviceId))
-    fail("Device already exists.");
-  request.state = "approved";
-  state.devices.push({
-    id: deviceId,
-    label: parseFlag(args, "--label") ?? "Paired device",
-    state: "active",
-    addedAt: now(deps)
+): Promise<PersonalSyncResult> => {
+  const groupId = groupIdFrom(args);
+  const body: Record<string, unknown> = {
+    statement:
+      requiredFlag(args, "--statement-fd") &&
+      readJsonFd(args, "--statement-fd").statement,
+    key_bundle: flag(args, "--key-bundle-fd")
+      ? readJsonFd(args, "--key-bundle-fd").key_bundle
+      : undefined,
+    proof: flag(args, "--proof-fd")
+      ? readJsonFd(args, "--proof-fd").proof
+      : undefined
+  };
+  if (typeof body.statement !== "string")
+    fail("--statement-fd must contain a statement field.");
+  if (body.key_bundle !== undefined && typeof body.key_bundle !== "string")
+    fail("--key-bundle-fd must contain a key_bundle field.");
+  if (
+    body.proof !== undefined &&
+    (!body.proof || typeof body.proof !== "object" || Array.isArray(body.proof))
+  )
+    fail("--proof-fd must contain a proof object.");
+  const response = await control({
+    environment,
+    deps,
+    method: "POST",
+    path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/transitions`,
+    body
   });
-  state.epoch = (BigInt(state.epoch) + 1n).toString();
   return {
     ok: true,
-    state: "approved",
-    message: `Join approved by ${by === "active_device" ? "active device" : "recovery kit"}; key epoch advanced.`,
-    epoch: state.epoch
+    state: response.group ? "pending_activation" : "backend",
+    message: "Authority accepted transition; poll backend durable status.",
+    ...response
   };
 };
-
-const revokeDevice = (
-  state: PersonalSyncState,
-  args: string[],
-  deps: PersonalSyncDependencies
-): PersonalSyncResult => {
-  const id = requiredFlag(args, "--device-id");
-  if (id === state.device.id)
-    fail("Current device cannot revoke itself through this command.");
-  const device = state.devices.find(
-    (candidate) => candidate.id === id && candidate.state === "active"
-  );
-  if (!device) return fail("Active device was not found.");
-  device.state = "revoked";
-  device.revokedAt = now(deps);
-  state.epoch = (BigInt(state.epoch) + 1n).toString();
-  return {
-    ok: true,
-    state: "revoked",
-    message:
-      "Device revoked. It receives no future packages or keys; revocation cannot erase plaintext already downloaded.",
-    epoch: state.epoch
-  };
-};
-
-const resolveConflict = (
-  state: PersonalSyncState,
-  args: string[]
-): PersonalSyncResult => {
-  const id = requiredFlag(args, "--conflict-id");
-  const selected = requiredFlag(args, "--candidate");
-  const conflict = state.conflicts.find(
-    (candidate) => candidate.id === id && candidate.state === "quarantined"
-  );
-  if (!conflict || !conflict.candidates.includes(selected))
-    return fail("Exact conflict candidate was not found.");
-  conflict.state = "resolved";
-  state.replica.conflicted = Math.max(0, state.replica.conflicted - 1);
-  return {
-    ok: true,
-    state: "resolved",
-    message: "Conflict resolution recorded for exact selected candidate.",
-    conflictId: id,
-    candidate: selected
-  };
-};
-
-const guidance = (): PersonalSyncResult => ({
-  ok: true,
-  state: "guidance",
-  message:
-    "Keep encrypted recovery kit offline and separate. Losing every active device and every kit permanently loses group control; recovery cannot recreate unreplicated source bytes.",
-  steps: [
-    "Use an active device to approve replacement when possible.",
-    "Otherwise decrypt recovery kit locally and use recovery approval.",
-    "Do not send kit, password, API Token, or private keys to support, Operator, email, or browser."
-  ]
-});
 
 export const runPersonalSyncCommand = async (
   args: string[],
@@ -991,118 +602,151 @@ export const runPersonalSyncCommand = async (
   environment: NodeJS.ProcessEnv = process.env,
   deps: PersonalSyncDependencies = {}
 ): Promise<PersonalSyncResult> => {
-  // Preserve async control-plane shape while all local state transitions stay atomic.
-  await Promise.resolve();
   rejectPasswordArguments(args);
   const [area, action] = args;
-  if (area === "status") {
-    const state = readState(paths, deps);
-    return state
-      ? redactedStatus(state, environment)
-      : {
-          ok: true,
-          state: "not_configured",
-          message:
-            "Personal Sync is not configured. Association and Remote Account Links alone synchronize nothing.",
-          capability: secretProviderStatus(environment)
-        };
-  }
-  if (area === "group" && action === "bootstrap")
-    return bootstrap(args.slice(2), paths, environment, deps);
-  if (area === "recovery-kit" && action === "create")
-    return createKit(args.slice(2), paths, environment, deps);
-  if (area === "recovery-kit" && action === "verify")
-    return verifyKit(args.slice(2), paths, environment, deps);
-  let state = requireState(paths, deps);
-  let result: PersonalSyncResult;
+  if (area === "status") return status(environment, deps);
   if (area === "join" && action === "request")
-    result = joinRequest(state, deps);
-  else if (area === "join" && action === "challenge")
-    result = {
+    return createJoinChallenge(args.slice(2), paths, environment, deps);
+  if (area === "join" && action === "challenge")
+    return {
       ok: true,
       state: "pending",
-      message: "Pending join challenges are redacted until approval.",
-      requests: state.joins
-        .filter((join) => join.state === "pending")
-        .map(({ id, createdAt }) => ({ id, createdAt }))
+      message: "Pending pairing artifacts are local redacted request IDs only.",
+      requests: readPending(paths).pending
     };
-  else if (area === "active-device" && action === "approve") {
-    getSecret(state, environment, deps);
-    result = approveDevice(state, args.slice(2), "active_device", deps);
-  } else if (area === "recovery" && action === "approve") {
-    verifyKit(args.slice(2), paths, environment, deps);
-    state = requireState(paths, deps);
-    result = approveDevice(state, args.slice(2), "recovery", deps);
-  } else if (
+  if ((area === "active-device" || area === "recovery") && action === "approve")
+    return submitTransition(args.slice(2), environment, deps);
+  if (area === "device" && action === "list") {
+    const groupId = groupIdFrom(args.slice(2));
+    const response = await control({
+      environment,
+      deps,
+      method: "GET",
+      path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}`
+    });
+    const group = object(response.group, "group");
+    return {
+      ok: true,
+      state: "backend",
+      message: "Devices are Authority-owned.",
+      devices: group.members ?? []
+    };
+  }
+  if (area === "device" && action === "revoke")
+    return submitTransition(args.slice(2), environment, deps);
+  if (
     area === "policy" &&
     ["enable", "pause", "resume"].includes(action ?? "")
-  )
-    result = updatePolicy(state, action as "enable" | "pause" | "resume", deps);
-  else if (
-    (area === "start" && action === "future") ||
-    (area === "start" && args.includes("--future-only"))
-  )
-    result = updatePolicy(state, "enable", deps);
-  else if (area === "device" && action === "list")
-    result = {
-      ok: true,
-      state: "listed",
-      message: "Personal Device Group devices listed.",
-      devices: state.devices
-    };
-  else if (area === "device" && action === "revoke")
-    result = revokeDevice(state, args.slice(2), deps);
-  else if (area === "credential" && action === "status")
-    result = {
-      ok: true,
-      state: "redacted",
-      message: "Credential status is redacted.",
-      currentDevice: {
-        id: state.device.id,
-        state:
-          state.devices.find((device) => device.id === state.device.id)
-            ?.state ?? "unknown"
-      },
-      secureProvider: secretProviderStatus(environment)
-    };
-  else if (area === "key-epoch" && action === "status")
-    result = {
-      ok: true,
-      state: "current",
-      message: "Key epoch status is current.",
-      epoch: state.epoch,
-      activeDevices: state.devices.filter((device) => device.state === "active")
-        .length
-    };
-  else if (area === "replica" && action === "status")
-    result = {
-      ok: true,
-      state: "ready",
-      message: "Replica status contains redacted counters only.",
-      replica: state.replica
-    };
-  else if (
-    (area === "replica" || area === "local-replica") &&
-    action === "remove"
   ) {
-    state.replica.synchronizedReady = 0;
-    result = {
+    const groupId = groupIdFrom(args.slice(2));
+    const enabled = action === "enable" || action === "resume";
+    const response =
+      action === "pause" || action === "resume"
+        ? await control({
+            environment,
+            deps,
+            method: "PUT",
+            path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/pause`,
+            body: { paused: !enabled }
+          })
+        : await control({
+            environment,
+            deps,
+            method: "PUT",
+            path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/policy`,
+            body: {
+              enabled,
+              future_closed_sessions_only: true,
+              historical_backfill_enabled: false
+            }
+          });
+    return {
       ok: true,
-      state: "removed",
+      state: "backend",
       message:
-        "Local synchronized replica removed. Local origin capture and ready Recall remain."
+        "Policy result is backend-owned; poll status for durable outcome.",
+      ...response
     };
-  } else if (area === "retry")
-    result = {
+  }
+  if (area === "retry") {
+    const groupId = groupIdFrom(args.slice(1));
+    const response = await control({
+      environment,
+      deps,
+      method: "POST",
+      path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/retry`
+    });
+    return {
       ok: true,
-      state: "queued",
-      message:
-        "Personal Sync retry queued; local capture and Recall remain available while relay is unavailable."
+      state: "backend",
+      message: "Retry submitted to backend.",
+      ...response
     };
-  else if (area === "conflict" && action === "resolve")
-    result = resolveConflict(state, args.slice(2));
-  else if (area === "recovery" && action === "guidance") result = guidance();
-  else return fail("personal-sync command is invalid.");
-  writeState(paths, state);
-  return result;
+  }
+  if (area === "replica" && action === "status") {
+    const groupId = groupIdFrom(args.slice(2));
+    const response = await control({
+      environment,
+      deps,
+      method: "GET",
+      path: `/v1/personal-device-sync/groups/${encodeURIComponent(groupId)}/local-status`
+    });
+    return {
+      ok: true,
+      state: "backend",
+      message: "Replica status is backend-owned.",
+      ...response
+    };
+  }
+  if (area === "recovery" && action === "guidance")
+    return {
+      ok: true,
+      state: "guidance",
+      message:
+        "Use active-device signed transition when possible. Otherwise use recovery signer through protected FD. Browser sessions only bind requests; API Tokens and legacy credentials are rejected."
+    };
+  if (area === "recovery-kit" && action === "verify") {
+    const kitPath = requiredFlag(args.slice(2), "--recovery-kit");
+    if (!secureRegularFile(kitPath))
+      fail("Recovery kit permissions are unsafe; require 0600.");
+    const password = passwordFrom(args.slice(2));
+    try {
+      const plaintext = decryptRecoveryKit(
+        JSON.parse(readFileSync(kitPath, "utf8")) as RecoveryKit,
+        password
+      );
+      return {
+        ok: true,
+        state: "verified",
+        message:
+          "Recovery kit cryptographically verified. Backend transition remains required.",
+        fingerprint: fingerprint(plaintext)
+      };
+    } finally {
+      password.fill(0);
+    }
+  }
+  if (area === "recovery-kit" && action === "create") {
+    const output = requiredFlag(args.slice(2), "--output");
+    const payload = readJsonFd(args.slice(2), "--payload-fd");
+    const password = passwordFrom(args.slice(2));
+    try {
+      const plaintext = JSON.stringify(payload);
+      const kit = encryptRecoveryKit(plaintext, password);
+      if (decryptRecoveryKit(kit, password) !== plaintext)
+        fail("Recovery kit round-trip verification failed.");
+      writeRecoveryKit(output, kit);
+      return {
+        ok: true,
+        state: "created",
+        message: "Recovery kit encrypted and verified.",
+        fingerprint: kit.fingerprint
+      };
+    } finally {
+      password.fill(0);
+    }
+  }
+  return fail(
+    "personal-sync command is invalid or requires backend signed transition input."
+  );
 };

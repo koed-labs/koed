@@ -23,19 +23,31 @@ import {
 } from "@koed/shared";
 import type { PdsWorkerSecureRuntime } from "./personal-device-sync-service.js";
 
+/** Must remain byte-for-byte schema-compatible with API secure runtime. */
 type RuntimeSecret = {
+  version: 1;
   userId: string;
-  groupId: string;
   relayUrl: string;
-  authority: { publicKey: string };
-  authorityHead: string;
-  epoch: string;
-  servingCertificate: string;
-  recipientCertificate: string;
+  groupId: string;
+  device: {
+    id: string;
+    originDeploymentId: string;
+    signingKeyId: string;
+    signingPrivateSeed: string;
+    kemKeyId: string;
+    kemPrivateSeed: string;
+  };
+  authority: { keyId: string; publicKey: string; head: string };
+  certificate: string;
   recipientCertificates: string[];
   historicalOriginCertificates?: string[];
-  deviceSigningPrivateSeed: string;
-  deviceKemPrivateSeed: string;
+  groupSecrets: {
+    currentEpoch: string;
+    contentKey: string;
+    sourceFingerprintKey: string;
+    tombstoneFloorKey: string;
+    projectAliasKey: string;
+  };
 };
 
 const providerEnvironment = (
@@ -73,18 +85,41 @@ const resolveHeadlessSecret = (
       typeof value.userId !== "string" ||
       typeof value.groupId !== "string" ||
       typeof value.relayUrl !== "string" ||
-      typeof value.authorityHead !== "string" ||
-      typeof value.epoch !== "string" ||
-      typeof value.servingCertificate !== "string" ||
-      typeof value.recipientCertificate !== "string" ||
-      typeof value.deviceSigningPrivateSeed !== "string" ||
-      typeof value.deviceKemPrivateSeed !== "string" ||
+      value.version !== 1 ||
+      !value.device ||
+      !value.authority ||
+      !value.groupSecrets ||
       !Array.isArray(value.recipientCertificates) ||
       !(value.recipientCertificates as unknown[]).every(
         (entry) => typeof entry === "string"
       ) ||
-      !value.authority ||
-      typeof (value.authority as Record<string, unknown>).publicKey !== "string"
+      ![
+        "id",
+        "originDeploymentId",
+        "signingKeyId",
+        "signingPrivateSeed",
+        "kemKeyId",
+        "kemPrivateSeed"
+      ].every(
+        (key) =>
+          typeof (value.device as Record<string, unknown>)[key] === "string"
+      ) ||
+      !["keyId", "publicKey", "head"].every(
+        (key) =>
+          typeof (value.authority as Record<string, unknown>)[key] === "string"
+      ) ||
+      ![
+        "currentEpoch",
+        "contentKey",
+        "sourceFingerprintKey",
+        "tombstoneFloorKey",
+        "projectAliasKey"
+      ].every(
+        (key) =>
+          typeof (value.groupSecrets as Record<string, unknown>)[key] ===
+          "string"
+      ) ||
+      typeof value.certificate !== "string"
     )
       return null;
     return value as unknown as RuntimeSecret;
@@ -112,15 +147,15 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
     const runtime = createPdsSessionPackageRuntimeContext({
       authorityPublicKey: secret.authority.publicKey,
       groupId: secret.groupId,
-      authorityHead: secret.authorityHead,
-      currentEpoch: secret.epoch,
-      servingCertificate: secret.servingCertificate,
-      recipientCertificate: secret.recipientCertificate,
+      authorityHead: secret.authority.head,
+      currentEpoch: secret.groupSecrets.currentEpoch,
+      servingCertificate: secret.certificate,
+      recipientCertificate: secret.certificate,
       recipientCertificates: secret.recipientCertificates,
       historicalOriginCertificates: secret.historicalOriginCertificates
     });
     const signingKey = pdsEd25519PrivateKey(
-      secret.deviceSigningPrivateSeed,
+      secret.device.signingPrivateSeed,
       runtime.recipient.signingPublicKey
     );
     const runtimeForServing = (servingDeviceId: string) => {
@@ -140,10 +175,10 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
       return createPdsSessionPackageRuntimeContext({
         authorityPublicKey: secret.authority.publicKey,
         groupId: secret.groupId,
-        authorityHead: secret.authorityHead,
-        currentEpoch: secret.epoch,
+        authorityHead: secret.authority.head,
+        currentEpoch: secret.groupSecrets.currentEpoch,
         servingCertificate,
-        recipientCertificate: secret.recipientCertificate,
+        recipientCertificate: secret.certificate,
         recipientCertificates: secret.recipientCertificates,
         historicalOriginCertificates: secret.historicalOriginCertificates
       });
@@ -153,11 +188,11 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
       deviceId: runtime.recipient.deviceId,
       signingKeyId: runtime.recipient.signingKeyId,
       signingPublicKey: runtime.recipient.signingPublicKey,
-      signingPrivateSeed: secret.deviceSigningPrivateSeed
+      signingPrivateSeed: secret.device.signingPrivateSeed
     });
     let relay = new PdsRelayClient({
       baseUrl: secret.relayUrl,
-      identity: relayIdentity(secret.recipientCertificate)
+      identity: relayIdentity(secret.certificate)
     });
     const downloaded = new Map<
       string,
@@ -468,7 +503,7 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
           canonicalizePdsJson(pkg),
           {
             runtime: runtimeForServing(pkg.header.servingDeviceId),
-            recipientKemPrivateKey: secret.deviceKemPrivateSeed,
+            recipientKemPrivateKey: secret.device.kemPrivateSeed,
             deletionFloors
           }
         );

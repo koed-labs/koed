@@ -138,7 +138,9 @@ let personalSync: PersonalSyncSettingsView = {
   detail: "Checking secure Personal Sync capability.",
   status: "not_configured",
   devices: [],
-  freshness: "Not available"
+  freshness: "Not available",
+  groupId: null,
+  pairing: null
 };
 let selectionClearedByInactiveCollapse = false;
 let activeDesktopView: DesktopView = "projects";
@@ -3015,11 +3017,15 @@ const runPersonalSyncAction = async (
   try {
     const result = await invokeWithTimeout(
       command,
-      action === "revoke" ? { deviceId } : undefined,
+      action === "setup" || action === "restart"
+        ? undefined
+        : action === "revoke"
+          ? { deviceId, groupId: personalSync.groupId }
+          : { groupId: personalSync.groupId },
       30_000
     );
     const error = commandResultError(result);
-    personalSync = {
+    personalSync = personalSyncSettingsViewFrom(result, {
       ...personalSync,
       busy: false,
       detail:
@@ -3029,7 +3035,7 @@ const runPersonalSyncAction = async (
         typeof (result as { message?: unknown }).message === "string"
           ? (result as { message: string }).message
           : "Personal Sync action completed.")
-    };
+    });
     await refreshPersonalSync();
   } catch (error) {
     personalSync = {

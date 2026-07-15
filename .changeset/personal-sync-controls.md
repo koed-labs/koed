@@ -3,4 +3,4 @@
 "@koed/desktop": minor
 ---
 
-Ship opt-in Personal Device Sync controls, encrypted recovery-kit ceremony, redacted lifecycle status, and Desktop Personal Memory sync settings.
+Ship backend-orchestrated Personal Device Sync controls, strict encrypted recovery-kit verification, redacted backend pairing status, and macOS Desktop secure-runtime plumbing. Windows/Linux Desktop provider fails closed; Authority, relay, activation, and worker state remain backend-owned.

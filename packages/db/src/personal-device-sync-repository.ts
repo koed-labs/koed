@@ -206,6 +206,29 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     }
   },
 
+  async listPersonalDeviceGroups(
+    userId: string
+  ): Promise<PersonalDeviceGroupRecord[]> {
+    const client = await pool.connect();
+    try {
+      const groups = await client.query<{ group_id: string }>(
+        `select g.group_id from personal_device_groups g
+        join local_personal_identities i on i.id = g.local_personal_identity_id
+        where i.owner_user_id = $1 order by g.created_at`,
+        [userId]
+      );
+      return (
+        await Promise.all(
+          groups.rows.map(async (row) =>
+            selectGroup(client, userId, row.group_id)
+          )
+        )
+      ).flatMap((group) => (group ? [group] : []));
+    } finally {
+      client.release();
+    }
+  },
+
   async listPersonalDeviceGroupStatements(
     userId: string,
     groupId: string

@@ -109,43 +109,40 @@ paths, or key references.
 
 ### Personal Sync control commands
 
-`koed-server` owns machine-readable Personal Sync controls; Desktop consumes
-redacted JSON results, can pause/resume/retry/revoke or restart local services,
-and never receives private keys, secret-provider output, recovery-kit bytes, or
-passwords.
+`koed-server personal-sync` is bounded browser-session control-plane client;
+Authority owns group, policy, membership, current head, activation, relay, and
+worker outcome. Commands never report local enable/revoke success. Set only
+`PDS_CONTROL_URL` plus `PDS_BROWSER_SESSION_FD` (FD number, not session value).
+API Tokens and legacy credentials are rejected.
 
 ```bash
 node packages/koed-server/dist/cli.js personal-sync status --json
-node packages/koed-server/dist/cli.js personal-sync group bootstrap \
-  --secret-ref 'operator://koed/pds/laptop' \
-  --recovery-kit "$HOME/koed-recovery-kit.json" --password-stdin --json
+node packages/koed-server/dist/cli.js personal-sync join request \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync policy pause \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync policy resume \
+  --group-id "pds_group_id" --json
+node packages/koed-server/dist/cli.js personal-sync replica status \
+  --group-id "pds_group_id" --json
 node packages/koed-server/dist/cli.js personal-sync recovery-kit verify \
-  --recovery-kit "$HOME/koed-recovery-kit.json" --password-stdin --json
-node packages/koed-server/dist/cli.js personal-sync policy enable --json
-node packages/koed-server/dist/cli.js personal-sync recovery approve \
-  --request-id "join_request_id" --device-id "replacement_device_id" \
   --recovery-kit "$HOME/koed-recovery-kit.json" --password-fd 3 --json
-node packages/koed-server/dist/cli.js personal-sync policy pause --json
-node packages/koed-server/dist/cli.js personal-sync policy resume --json
-node packages/koed-server/dist/cli.js personal-sync device list --json
-node packages/koed-server/dist/cli.js personal-sync replica status --json
 ```
+
+Pairing stores only redacted backend request IDs locally and shows challenge ID
+and short code. It is never discarded. Active-device, recovery, revoke, and
+conflict actions require exact pre-built signed transition data through
+protected FDs; Authority validates CAS/current head, countersigns, and exposes
+durable pending activation status. Arbitrary device IDs cannot succeed.
 
 `--password` is rejected. Pipe password bytes through stdin or supply a file
 descriptor; never put recovery passwords in arguments, environment, logs, or
-config. Group
-bootstrap creates role-separated Ed25519/X25519 material through Node crypto,
-stores private material only through configured secure provider, and writes an
-explicit 0600 scrypt/AES-256-GCM recovery kit. User must decrypt kit and verify
-shown fingerprint; that verification then creates and validates a real
-Ed25519 recovery-authorized, Authority-countersigned genesis statement before
-policy enable. Enable replicates only future closed Captured Sessions;
-historical backfill is unavailable. `join request`, `join challenge`,
-`active-device approve`, `recovery approve` (which requires encrypted kit and
-password stdin/FD), `device revoke`,
-`credential status`, `key-epoch status`, `retry`, `replica remove`, `conflict
-resolve`, and `recovery guidance` all emit redacted JSON. Association and
-Remote Account Links alone synchronize nothing.
+config. Recovery-kit descriptor is strict scrypt/AES-256-GCM with canonical
+metadata AAD, fixed salt/nonce/tag lengths, 0600 atomic fsync write, and
+symlink refusal. macOS Desktop uses Electron `safeStorage` closure only.
+Windows/Linux Desktop PDS provider currently fails closed; use headless secure
+provider support when available. Association and Remote Account Links alone
+synchronize nothing.
 
 Run `pnpm pds-fixture:validate` for deterministic shared-protocol crypto
 vectors plus control/recovery lifecycle tests. Fixture matrix explicitly labels

@@ -1103,22 +1103,63 @@ export const createKoedServerManager = ({
       package_install: (args) => runPackageInstallJson(args),
       project_list: () => runJson(["project", "list"], 10_000),
       personal_sync_status: () => runJson(["personal-sync", "status"], 10_000),
-      personal_sync_pause: () =>
-        runJson(["personal-sync", "policy", "pause"], 20_000),
-      personal_sync_resume: () =>
-        runJson(["personal-sync", "policy", "resume"], 20_000),
-      personal_sync_retry: () => runJson(["personal-sync", "retry"], 20_000),
+      personal_sync_pause: (args) =>
+        runJson(
+          [
+            "personal-sync",
+            "policy",
+            "pause",
+            "--group-id",
+            String(args?.groupId ?? "")
+          ],
+          20_000
+        ),
+      personal_sync_resume: (args) =>
+        runJson(
+          [
+            "personal-sync",
+            "policy",
+            "resume",
+            "--group-id",
+            String(args?.groupId ?? "")
+          ],
+          20_000
+        ),
+      personal_sync_retry: (args) =>
+        runJson(
+          ["personal-sync", "retry", "--group-id", String(args?.groupId ?? "")],
+          20_000
+        ),
       personal_sync_restart: () => runJson(["restart"], 45_000),
-      personal_sync_join_request: () =>
-        runJson(["personal-sync", "join", "request"], 20_000),
+      personal_sync_join_request: (args) =>
+        runJson(
+          [
+            "personal-sync",
+            "join",
+            "request",
+            "--group-id",
+            String(args?.groupId ?? "")
+          ],
+          20_000
+        ),
       personal_sync_recovery_guidance: () =>
         runJson(["personal-sync", "recovery", "guidance"], 10_000),
       personal_sync_revoke: (args) => {
         const deviceId =
           typeof args?.deviceId === "string" ? args.deviceId : "";
         if (!deviceId) return { ok: false, error: "deviceId is required." };
+        const groupId = typeof args?.groupId === "string" ? args.groupId : "";
+        if (!groupId) return { ok: false, error: "groupId is required." };
         return runJson(
-          ["personal-sync", "device", "revoke", "--device-id", deviceId],
+          [
+            "personal-sync",
+            "device",
+            "revoke",
+            "--group-id",
+            groupId,
+            "--device-id",
+            deviceId
+          ],
           20_000
         );
       },

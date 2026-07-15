@@ -5,53 +5,60 @@ import {
   renderPersonalSyncSettings
 } from "./personal-sync-settings.js";
 
+const previous = {
+  busy: false,
+  detail: "old",
+  status: "enabled" as const,
+  devices: [],
+  freshness: "old",
+  groupId: null,
+  pairing: null
+};
+
 describe("Personal Sync settings", () => {
-  it("discloses full replication and revocation boundary without secrets", () => {
+  it("discloses replication boundary without secrets", () => {
     const html = renderPersonalSyncSettings({
-      busy: false,
+      ...previous,
       detail: "redacted status",
-      status: "enabled",
       devices: [{ id: "device_one", label: "Laptop", state: "active" }],
-      freshness: "2026-07-15T00:00:00.000Z"
+      freshness: "2026-07-15T00:00:00.000Z",
+      groupId: "group_one",
+      pairing: { challengeId: "challenge_one", shortCode: "12345678" }
     });
     expect(personalSyncStatusLabel("enabled")).toBe("Syncing future Sessions");
     expect(html).toContain(
       "Every selected device receives decryptable Personal Memory"
     );
     expect(html).toContain("cannot erase plaintext already downloaded");
-    expect(html).toContain("future closed Sessions");
     expect(html).toContain('data-personal-sync-revoke="device_one"');
-    expect(html).toContain('aria-label="Revoke Laptop"');
+    expect(html).toContain("12345678");
     expect(html).not.toContain("API Token copy");
     expect(html).not.toContain("window.localStorage");
   });
 
-  it("maps only redacted status fields and preserves busy state", () => {
+  it("maps backend group and preserves safe pairing artifact", () => {
     const view = personalSyncSettingsViewFrom(
       {
-        state: "paused",
-        message: "Publication paused",
-        devices: [
-          { id: "device_one", label: "Laptop", state: "active" },
-          { id: 42, state: "active" }
+        state: "backend",
+        message: "Authority-owned status",
+        groups: [
+          {
+            group_id: "group_one",
+            policy: { enabled: true },
+            members: [{ device_id: "device_one", state: "active" }]
+          }
         ],
-        replica: { lastSuccessfulSyncAt: "2026-07-15T00:00:00.000Z" },
+        pairing: { challengeId: "challenge_one", shortCode: "12345678" },
         secretRef: "must-not-be-rendered"
       },
-      {
-        busy: true,
-        detail: "old",
-        status: "enabled",
-        devices: [],
-        freshness: "old"
-      }
+      { ...previous, busy: true }
     );
-    expect(view).toEqual({
+    expect(view).toMatchObject({
       busy: true,
-      detail: "Publication paused",
-      status: "paused",
-      devices: [{ id: "device_one", label: "Laptop", state: "active" }],
-      freshness: "2026-07-15T00:00:00.000Z"
+      status: "enabled",
+      groupId: "group_one",
+      devices: [{ id: "device_one", state: "active" }],
+      pairing: { challengeId: "challenge_one", shortCode: "12345678" }
     });
     expect(renderPersonalSyncSettings(view)).not.toContain(
       "must-not-be-rendered"

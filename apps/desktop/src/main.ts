@@ -11,6 +11,7 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installPdsDesktopSecretResolver } from "@koed/api/personal-device-sync/secure-runtime";
 import { registerDesktopCommandHandlers } from "./ipc/commands.js";
 import {
   createKoedEnvironment,
@@ -24,6 +25,7 @@ import {
   KOED_APP_SCHEME,
   resolveAppProtocolRequest
 } from "./window/app-protocol.js";
+import { createPdsDesktopSecretResolver } from "./pds-secure-provider.js";
 import { resolveDevServerUrl } from "./window/dev-server-url.js";
 import { createMainWindowOptions } from "./window/window-manager.js";
 
@@ -125,6 +127,11 @@ const createWindow = async () => {
 
 const bootstrap = async () => {
   await app.whenReady();
+  const pdsResolver = createPdsDesktopSecretResolver({
+    userDataPath: app.getPath("userData"),
+    platform: process.platform
+  });
+  if (pdsResolver) installPdsDesktopSecretResolver(pdsResolver);
   const desktopIcon = getDesktopIcon();
   if (desktopIcon && process.platform === "darwin") {
     app.dock?.setIcon(desktopIcon);

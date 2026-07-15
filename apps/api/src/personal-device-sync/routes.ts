@@ -366,15 +366,35 @@ export const registerPersonalDeviceSyncRoutes = (
       const user = await sessionUser(request);
       const input = pdsChallengeSchema.parse(request.body);
       const challenge = randomBytes(32).toString("base64url");
+      const created = await repo().createPersonalDeviceEnrollmentChallenge({
+        userId: user.id,
+        groupId: input.group_id,
+        browserSubjectId: user.id,
+        browserDeploymentId: browserDeploymentId(context),
+        challenge,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1_000)
+      });
+      // Browser-safe pairing artifact. Raw proof challenge is never reflected.
       return {
-        challenge: await repo().createPersonalDeviceEnrollmentChallenge({
-          userId: user.id,
-          groupId: input.group_id,
-          browserSubjectId: user.id,
-          browserDeploymentId: browserDeploymentId(context),
-          challenge,
-          expiresAt: new Date(Date.now() + 10 * 60 * 1_000)
-        })
+        challenge: {
+          id: created.id,
+          short_code: created.id.replace(/-/g, "").slice(0, 8).toUpperCase(),
+          expires_at: created.expiresAt
+        }
+      };
+    }
+  );
+
+  app.get(
+    "/v1/personal-device-sync/groups",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      pdsAuthority(context);
+      const user = await sessionUser(request);
+      return {
+        groups: (await repo().listPersonalDeviceGroups(user.id)).map(
+          publicGroup
+        )
       };
     }
   );

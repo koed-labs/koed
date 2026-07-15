@@ -131,7 +131,10 @@ describe("Koed server desktop manager", () => {
       ok: true
     });
     await expect(
-      manager.handlers.personal_sync_revoke!({ deviceId: "device_redacted" })
+      manager.handlers.personal_sync_revoke!({
+        deviceId: "device_redacted",
+        groupId: "group_redacted"
+      })
     ).resolves.toMatchObject({ ok: true });
     expect(calls.slice(2)).toEqual([
       {
@@ -150,6 +153,8 @@ describe("Koed server desktop manager", () => {
           "personal-sync",
           "device",
           "revoke",
+          "--group-id",
+          "group_redacted",
           "--device-id",
           "device_redacted",
           "--json"
@@ -184,24 +189,62 @@ describe("Koed server desktop manager", () => {
       ok: true,
       state: "paused"
     });
-    await manager.handlers.personal_sync_pause!();
-    await manager.handlers.personal_sync_resume!();
-    await manager.handlers.personal_sync_retry!();
+    await manager.handlers.personal_sync_pause!({ groupId: "group_one" });
+    await manager.handlers.personal_sync_resume!({ groupId: "group_one" });
+    await manager.handlers.personal_sync_retry!({ groupId: "group_one" });
     await manager.handlers.personal_sync_restart!();
-    await manager.handlers.personal_sync_join_request!();
-    await manager.handlers.personal_sync_revoke!({ deviceId: "device_one" });
+    await manager.handlers.personal_sync_join_request!({
+      groupId: "group_one"
+    });
+    await manager.handlers.personal_sync_revoke!({
+      deviceId: "device_one",
+      groupId: "group_one"
+    });
     expect(calls).toEqual([
       ["/repo/cli.js", "personal-sync", "status", "--json"],
-      ["/repo/cli.js", "personal-sync", "policy", "pause", "--json"],
-      ["/repo/cli.js", "personal-sync", "policy", "resume", "--json"],
-      ["/repo/cli.js", "personal-sync", "retry", "--json"],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "policy",
+        "pause",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "policy",
+        "resume",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "retry",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
       ["/repo/cli.js", "restart", "--json"],
-      ["/repo/cli.js", "personal-sync", "join", "request", "--json"],
+      [
+        "/repo/cli.js",
+        "personal-sync",
+        "join",
+        "request",
+        "--group-id",
+        "group_one",
+        "--json"
+      ],
       [
         "/repo/cli.js",
         "personal-sync",
         "device",
         "revoke",
+        "--group-id",
+        "group_one",
         "--device-id",
         "device_one",
         "--json"

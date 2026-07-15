@@ -90,6 +90,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@koed/api':
+        specifier: workspace:*
+        version: link:../api
       '@koed/koed-server':
         specifier: workspace:*
         version: link:../../packages/koed-server
