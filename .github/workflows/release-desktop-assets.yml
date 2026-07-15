@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing GitHub release tag to receive rebuilt Desktop assets
+        description: Draft release tag whose source includes the hermetic runtime builder
         required: true
         type: string
 
@@ -25,16 +25,6 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
 
-      - name: Verify release and source version
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
-          version="$(node -e "process.stdout.write(require('./packages/koed/package.json').version)")"
-          test "${TAG}" = "v${version}"
-
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
@@ -46,6 +36,42 @@ jobs:
         with:
           node-version: 24.13.1
           cache: pnpm
+
+      - name: Verify draft release and hermetic source boundary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          release_is_draft="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')"
+          if [ "${release_is_draft}" != "true" ]; then
+            echo "Desktop asset recovery is restricted to draft releases; ${TAG} is not a draft." >&2
+            exit 1
+          fi
+          version="$(node -e "process.stdout.write(require('./packages/koed/package.json').version)")"
+          if [ "${TAG}" != "v${version}" ]; then
+            echo "Release tag ${TAG} does not match the checked-out product version v${version}." >&2
+            exit 1
+          fi
+          node <<'NODE'
+          const fs = require("node:fs");
+          const sources = JSON.parse(
+            fs.readFileSync("scripts/native-runtime/sources.macos-arm64.json", "utf8")
+          );
+          const procurement = fs.readFileSync(
+            "scripts/native-runtime/procure-runtime.mjs",
+            "utf8"
+          );
+          if (
+            sources.openssl?.kind !== "source-static" ||
+            !sources.openssl?.sha256 ||
+            !procurement.includes("buildMacosOpenSslStatic")
+          ) {
+            throw new Error(
+              "This tag predates the hermetic macOS runtime builder and cannot be backfilled by this workflow. Publish a patch release instead."
+            );
+          }
+          NODE
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
