@@ -73,8 +73,8 @@ relay/tombstone retention; no first-slice LCM Summary replication; and only one
 unambiguous canonical Project alias auto-match. That normative specification
 controls where this ADR's earlier exploratory language differs.
 
-The V1 replication model should be a relay-assisted, source-owned replicated
-log of immutable Captured Session packages:
+The V1 replication model is a relay-assisted, source-owned replicated log of
+immutable Captured Session packages:
 
 - No personal device is the permanent Personal Memory authority.
 - Every associated device remains a normal local `koed-server` and can capture,
@@ -124,9 +124,9 @@ source record; PDS LCM Summary replication is non-V1.
 ## Personal Device Group Authority And Association
 
 A symmetric data plane still needs a neutral identity and key control plane.
-Koed should use a **Personal Device Group Authority** that is not any personal
-device and cannot decrypt replicated Memory. It may be deployed with the relay,
-self-hosted separately, or operated by Koed, but those deployment choices must
+Koed uses a **Personal Device Group Authority** that is not any personal device
+and cannot decrypt replicated Memory. It may be deployed with the relay,
+self-hosted separately, or operated by Koed, but every deployment choice must
 implement the same protocol.
 
 The authority:
@@ -209,7 +209,7 @@ Memory synchronization. The association must record at least:
 - device public key or equivalent verifier;
 - allowed personal operation families;
 - creation, validation, expiry, and revocation state;
-- current key epoch and package compatibility range;
+- current key epoch and current-protocol compatibility status;
 - auditable consent and policy state.
 
 Email equality, hostname, operating-system account, local path, Git remote, or
@@ -244,12 +244,12 @@ visible; removing a device from group is required to stop its future receipt.
 
 ## Replication Unit And Ownership
 
-V1 should replicate one Captured Session at a time. Personal Device Sync uses
-its own versioned package protocol; it must not treat a directed hosted
-projected-event package as its source closure.
+V1 replicates one Captured Session at a time. Personal Device Sync uses its own
+versioned package protocol; it must not treat a directed hosted projected-event
+package as its source closure.
 
-A package should contain the closed source set needed to reconstruct that
-Session's Personal Memory representation, including where applicable:
+A package contains closed source set needed to reconstruct that Session's
+Personal Memory representation, including:
 
 - Captured Session metadata and stable source identity;
 - raw Conversation source items;
@@ -301,8 +301,8 @@ identity or authorization boundary.
 
 ## Consistency Model
 
-Koed should use eventual consistency with per-origin ordering rather than a
-global total order.
+Koed uses eventual consistency with per-origin ordering rather than a global
+total order.
 
 - Every origin device has a monotonic source sequence.
 - Package ids include stable origin deployment identity, source sequence, and
@@ -364,9 +364,8 @@ conflicting source closures, cloned profiles, and deletion after convergence.
 
 ## Relay Boundary
 
-The recommended transport is an encrypted mailbox/relay because direct device
-connectivity is unreliable across NAT, sleep, roaming, firewalls, and offline
-periods.
+V1 requires encrypted mailbox/relay transport because direct device connectivity
+is unreliable across NAT, sleep, roaming, firewalls, and offline periods.
 
 The relay may retain only what is required for delivery and recovery:
 
@@ -465,9 +464,9 @@ make already downloaded plaintext disappear from a device that previously had
 legitimate access. UI and policy must state that limitation clearly.
 
 Group membership changes require a new key epoch. Remaining devices must stop
-encrypting new packages to revoked members. Historical package re-encryption,
-retention, and purge need explicit policy and cannot be inferred from credential
-revocation.
+encrypting new packages to revoked members. Historical package re-encryption is
+non-V1; V1 relay and tombstone retention is fixed by protocol profile and cannot
+be inferred from credential revocation.
 
 An authenticated User deletion request creates an active-device- or
 recovery-root-authorized, authority-countersigned monotonic tombstone. A
@@ -494,17 +493,13 @@ Share Grant and Team retention model from ADR 0004.
 
 ## Historical Import
 
-Historical AI-client import should remain a local ingestion path when KOE-317
-and its children are implemented.
-
-Imported Conversations become normal local Captured Sessions with stable source
-and origin-device provenance. Import alone does not grant synchronization
-consent or upload source data. When synchronization policy permits, imported
-Sessions use the same package and idempotency path as live-captured Sessions.
-Hook/import overlap must deduplicate before replication so it cannot create two
-logical Memory lifespans on one origin. Cross-origin duplicate observations use
-the group-stable fingerprint and convergence rules from the consistency model;
-local deduplication is not a substitute for that group-level boundary.
+Historical AI-client import remains a local ingestion path when KOE-317 and its
+children are implemented. PDS V1 never replicates imported Sessions: it admits
+only Sessions first closed after PDS policy activation. Import alone does not
+grant synchronization consent or upload source data. A later PDS profile must
+specify bounded import consent, closure, retention, and idempotency before an
+imported Session can replicate. Hook/import overlap must still deduplicate
+locally so it cannot create two logical Memory lifespans on one origin.
 
 ## Alternative: Designated Personal Hub
 
@@ -540,11 +535,9 @@ and becomes a concentrated plaintext target, while symmetric replication gives
 every selected device a decryptable replica and therefore expands endpoint
 exposure. Neither model removes trust; they place it differently.
 
-The Hub design should be preferred if implementation cost, constrained devices,
-or operational simplicity outweigh device symmetry. This ADR proposes symmetric
-replication because avoiding a privileged personal device is considered the
-stronger long-term product property. Acceptance of this ADR should explicitly
-confirm that trade-off.
+The Hub design is not selected: symmetric replication avoids privileged personal
+device and is accepted as stronger long-term product property despite added
+implementation and operational cost.
 
 ## Consequences
 
@@ -591,7 +584,7 @@ This decision does not add:
 
 ## Required Follow-Up Work
 
-Acceptance should create or amend implementation work for:
+Follow-up implementation work:
 
 1. stable deployment/device identity and cloned-`KOED_HOME` handling;
 2. secure Desktop and headless credential storage;

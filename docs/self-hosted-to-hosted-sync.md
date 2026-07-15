@@ -11,9 +11,10 @@ migration paths.
 
 The default path is Cross-Identity Live Sync, not one-time import.
 
-V1 is a directed local-personal-to-hosted flow. It is not symmetric Personal
-Device Sync, a peer replication protocol, or a mechanism for downloading one
-device's Personal Memory into another device's local database.
+V1 is a directed local-personal-to-hosted flow. It is not symmetric [Personal
+Device Sync](personal-device-sync-protocol.md), a peer replication protocol, or
+a mechanism for downloading one device's Personal Memory into another device's
+local database.
 
 Cross-Identity Live Sync means the selected memory keeps one logical lifespan
 while becoming available across identities or deployments. A self-hosted source
