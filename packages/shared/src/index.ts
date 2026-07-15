@@ -165,6 +165,11 @@ export {
   verifyPdsRelayRequestProof
 } from "./personal-device-sync-relay.js";
 export type { PdsRelayRequestProof } from "./personal-device-sync-relay.js";
+export { PdsRelayClient } from "./personal-device-sync-relay-client.js";
+export type {
+  PdsRelayClientIdentity,
+  PdsRelayClientOptions
+} from "./personal-device-sync-relay-client.js";
 export {
   PDS_SESSION_PACKAGE_VERSION,
   PDS_SESSION_PACKAGE_MAX_BYTES,

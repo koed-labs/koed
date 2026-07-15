@@ -139,14 +139,16 @@ material, proof references, paths, and fingerprints.
 
 ## Personal Device Sync V1 authority configuration
 
-PDS control-plane routes require all three deployment-secret values:
-`PDS_AUTHORITY_KEY_ID`, `PDS_AUTHORITY_ED25519_PUBLIC_KEY`, and
-`PDS_AUTHORITY_ED25519_SECRET_SEED`. Public key and seed are unpadded base64url
-raw 32-byte Ed25519 material. Keep seed only in deployment secret provider;
-never put it in `server.json`, `KOED_HOME`, browser config, logs, database, or
-responses. Missing or malformed signer reports PDS capability unavailable and
-all PDS governance routes fail closed. No local/test signer fallback exists in
-managed deployments.
+PDS uses explicit secret-provider mode. Set `PDS_SECRET_PROVIDER=headless`
+with `PDS_RUNTIME_SECRET_REF=env://OPERATOR_MANAGED_PDS_RUNTIME`, or use
+`PDS_SECRET_PROVIDER=desktop` after Desktop main process installs keychain
+adapter. Reference is configuration; referenced JSON is Operator/Keychain
+secret material containing current Authority signing key, certificate/head/epoch,
+device signing and KEM private keys, and group secret set. Never set raw
+`PDS_AUTHORITY_*`, group keys, or private keys in ordinary environment/config,
+`KOED_HOME`, browser config, logs, database, queue, or responses. Missing,
+malformed, or Windows-limited Desktop adapter reports PDS unavailable only;
+local capture and local Recall remain usable. No raw-key fallback exists.
 
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired
@@ -162,15 +164,10 @@ mutation/read. Revocation or epoch transition wins races; stale actions fail
 closed. Recipient reads also bind current recipient state to intended snapshot.
 
 Relay stores canonical encrypted transport/package bytes and bounded opaque
-metadata only while active. Local PDS publication/materialization additionally
-requires an injected secure runtime provider with device signing/X25519 private
-key references, current Authority certificates/epoch, and group-secret-set
-references. It is not environment configuration: do not put PDS group keys,
-private keys, recovery material, API Tokens, or upstream credentials in
-`server.json`, `KOED_HOME`, env files, database rows, queues, or logs. Missing
-or clone-limited secure runtime disables PDS only; local capture and Recall
-remain available. `PDS_LOCAL_SYNC_INTERVAL_MS` controls worker polling after a
-complete secure runtime is injected; it does not enable a fallback provider.
+metadata only while active. Runtime resolves secret reference only inside
+process boundary; route/worker queue payloads contain encrypted package IDs and
+opaque work IDs only. `PDS_LOCAL_SYNC_INTERVAL_MS` controls durable worker
+claim/retry loops. It never enables a fallback provider.
 
 Expiry and seven-day post-quorum ACK cleanup delete
 ciphertext chunks and recipient envelopes, retaining only redacted receipt

@@ -3986,6 +3986,8 @@ export const personalSyncPolicies = pgTable(
     enabled: boolean("enabled").notNull().default(false),
     /** Effective time is set by local data-plane trigger on policy activation. */
     enabledAt: timestamp("enabled_at", { withTimezone: true }),
+    /** Durable kill switch. Close, claim, and network action all read this row. */
+    publicationPaused: boolean("publication_paused").notNull().default(false),
     futureClosedSessionsOnly: boolean("future_closed_sessions_only")
       .notNull()
       .default(true),

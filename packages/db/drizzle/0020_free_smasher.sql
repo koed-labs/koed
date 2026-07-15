@@ -356,6 +356,7 @@ CREATE TABLE "personal_sync_policies" (
 	"group_id" uuid NOT NULL,
 	"enabled" boolean DEFAULT false NOT NULL,
 	"enabled_at" timestamp with time zone,
+	"publication_paused" boolean DEFAULT false NOT NULL,
 	"future_closed_sessions_only" boolean DEFAULT true NOT NULL,
 	"historical_backfill_enabled" boolean DEFAULT false NOT NULL,
 	"updated_by_user_id" uuid NOT NULL,

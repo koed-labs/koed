@@ -35,6 +35,7 @@ import {
   createPdsLocalSyncService,
   getInstalledPdsWorkerSecureRuntime
 } from "./personal-device-sync-service.js";
+import { createPdsWorkerRuntimeFromEnvironment } from "./personal-device-sync-runtime.js";
 
 loadWorkerEnv();
 
@@ -215,7 +216,14 @@ crossIdentitySyncService?.start();
 
 // Runtime only starts after bootstrap injected complete secure key/relay path.
 // Missing provider leaves local capture and Recall untouched.
-const pdsSecureRuntime = getInstalledPdsWorkerSecureRuntime();
+const pdsSecureRuntime =
+  getInstalledPdsWorkerSecureRuntime() ??
+  (repository && envelopeEncryptionProvider
+    ? createPdsWorkerRuntimeFromEnvironment({
+        repository,
+        envelopeEncryptionProvider
+      })
+    : null);
 const pdsLocalSyncService =
   repository && envelopeEncryptionProvider && pdsSecureRuntime
     ? createPdsLocalSyncService({

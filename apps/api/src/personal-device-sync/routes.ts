@@ -921,74 +921,55 @@ export const registerPersonalDeviceSyncRoutes = (
       if (!secureKeys || !envelope) {
         throw pdsError("PDS secure publication path is unavailable", 503);
       }
-      const source = await repo().getPdsClosureSource({
-        userId: user.id,
-        groupId: input.groupId,
-        sessionId: input.sessionId
-      });
-      if (!source) {
-        throw pdsError(
-          "PDS requires enabled policy, eligible future Captured Session, and stable source IDs",
-          409
-        );
-      }
       const keyContext = await secureKeys.getSourceContext({
         userId: user.id,
         groupId: input.groupId
       });
       if (!keyContext)
         throw pdsError("PDS secure key context is unavailable", 503);
-      const sourceSequence = await repo().reservePdsSourceSequence({
+      const closure = await repo().closePdsSourceSession({
         userId: user.id,
         groupId: input.groupId,
-        originDeploymentId: keyContext.originDeploymentId,
-        originDeviceId: keyContext.originDeviceId
-      });
-      const closedAt = new Date();
-      const built = await keyContext.buildClosedSessionPackage({
-        source,
-        sourceSequence,
-        items: pdsConversationItemsForClosure(source),
-        closedAt
-      });
-      const packageId = built.package.header.packageId;
-      const sourceManifestHash = built.package.header.sourceManifestHash;
-      if (
-        sourceManifestHash !== built.sourceManifestHash ||
-        built.package.packageDigest !==
-          pdsSessionPackageDigest({
-            header: built.package.header,
-            envelopes: built.package.envelopes,
-            chunks: built.package.chunks
-          })
-      ) {
-        throw pdsError("PDS secure package identity binding failed", 409);
-      }
-      const encryptedEnvelope = await envelope.encrypt({
-        plaintext: JSON.stringify(built.package),
-        scope: { tenantId: user.id, objectClass: "pds_source_package" },
-        provenance: {
-          rowFamily: "pds_retained_packages",
-          sourceTable: "pds_retained_packages",
-          sourceId: packageId
-        },
-        ciphertextLocation: "pds_retained_packages",
-        aad: { ownerUserId: user.id, groupId: input.groupId, packageId }
-      });
-      const closure = await repo().persistPdsSourceClosure({
-        userId: user.id,
-        groupId: input.groupId,
+        sessionId: input.sessionId,
         originDeploymentId: keyContext.originDeploymentId,
         originDeviceId: keyContext.originDeviceId,
-        sourceSequence,
-        sessionId: input.sessionId,
-        terminalCursor: String(source.items.length),
-        terminalItemCount: String(source.items.length),
-        sourceClosureHash: built.sourceClosureHash,
-        packageId,
-        sourceManifestHash,
-        encryptedEnvelope,
-        closedAt
+        async build({ source, sourceSequence, closedAt }) {
+          const built = await keyContext.buildClosedSessionPackage({
+            source,
+            sourceSequence,
+            items: pdsConversationItemsForClosure(source),
+            closedAt
+          });
+          const packageId = built.package.header.packageId;
+          const sourceManifestHash = built.package.header.sourceManifestHash;
+          if (
+            sourceManifestHash !== built.sourceManifestHash ||
+            built.package.packageDigest !==
+              pdsSessionPackageDigest({
+                header: built.package.header,
+                envelopes: built.package.envelopes,
+                chunks: built.package.chunks
+              })
+          ) {
+            throw pdsError("PDS secure package identity binding failed", 409);
+          }
+          return {
+            sourceClosureHash: built.sourceClosureHash,
+            packageId,
+            sourceManifestHash,
+            encryptedEnvelope: await envelope.encrypt({
+              plaintext: JSON.stringify(built.package),
+              scope: { tenantId: user.id, objectClass: "pds_source_package" },
+              provenance: {
+                rowFamily: "pds_retained_packages",
+                sourceTable: "pds_retained_packages",
+                sourceId: packageId
+              },
+              ciphertextLocation: "pds_retained_packages",
+              aad: { ownerUserId: user.id, groupId: input.groupId, packageId }
+            })
+          };
+        }
       });
       return {
         closure: {

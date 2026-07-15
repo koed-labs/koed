@@ -38,12 +38,28 @@ describe("PDS source closure sanitizer", () => {
     ]);
   });
 
-  it("rejects paths and derived fields before package construction", () => {
+  it.each([
+    { apiToken: "secret" },
+    { API_TOKEN: "secret" },
+    { nested: { credential: "secret" } },
+    { params: { item: { path: "/secret" } } },
+    { Team: { name: "derived" } },
+    { derivedMemory: true }
+  ])("rejects sensitive nested source field %#", (rawJson) => {
     expect(() =>
       pdsConversationItemsForClosure({
         ...source,
-        items: [{ ...source.items[0]!, rawJson: { path: "/secret" } }]
+        items: [{ ...source.items[0]!, rawJson }]
       })
     ).toThrow("PDS source contains forbidden field");
+  });
+
+  it("never serializes arbitrary raw JSON when raw text is unavailable", () => {
+    expect(() =>
+      pdsConversationItemsForClosure({
+        ...source,
+        items: [{ ...source.items[0]!, rawText: null, rawJson: { other: "x" } }]
+      })
+    ).toThrow("PDS source adapter payload is not exportable");
   });
 });

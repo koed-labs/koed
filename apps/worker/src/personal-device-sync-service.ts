@@ -9,7 +9,9 @@ import type { Logger } from "pino";
  * worker config/logging/queue state.
  */
 export interface PdsWorkerSecureRuntime {
+  heartbeatGroups?(): Promise<string[]>;
   publish(input: {
+    workerId: string;
     outboxId: string;
     closureId: string;
     packageId: string;
@@ -21,8 +23,17 @@ export interface PdsWorkerSecureRuntime {
       groupId: string;
       packageId: string;
       sourceManifestHash: string;
+      transportId?: string;
     }>
   >;
+  acknowledge?(input: {
+    inboxId: string;
+    groupId: string;
+    packageId: string;
+    sourceManifestHash: string;
+    originDeviceId: string;
+    sourceSequence: string;
+  }): Promise<void>;
   materialize(input: {
     inboxId: string;
     groupId: string;
@@ -72,23 +83,56 @@ export const createPdsLocalSyncService = (input: {
   let running = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  const retryAt = () => new Date(Date.now() + 5_000);
+  const retryAt = (attempt: number) =>
+    new Date(
+      Date.now() + Math.min(5 * 60_000, 1_000 * 2 ** Math.min(attempt, 8))
+    );
   const errorClass = (error: unknown): string =>
     error instanceof Error && /^[A-Za-z][A-Za-z0-9_.-]{0,119}$/.test(error.name)
       ? error.name
       : "pds_worker_failure";
+  const permanentFailure = (error: unknown): boolean =>
+    error instanceof Error &&
+    /(?:crypto|signature|authority|certificate|policy|floor|tamper|quarantine)/i.test(
+      `${error.name} ${error.message}`
+    );
 
   const run = async () => {
     if (running) return;
     running = true;
     try {
+      for (const groupId of (await input.secureRuntime.heartbeatGroups?.()) ??
+        []) {
+        await Promise.all([
+          input.repository.heartbeatPdsWorker({
+            groupId,
+            workerId,
+            capability: "source_publication"
+          }),
+          input.repository.heartbeatPdsWorker({
+            groupId,
+            workerId,
+            capability: "receiver_materialization"
+          })
+        ]);
+      }
       for (const incoming of await input.secureRuntime.poll()) {
         await input.repository.receivePdsInbox(incoming);
       }
       const outbox = await input.repository.claimPdsOutbox({ workerId });
       for (const entry of outbox) {
         try {
+          // Pause may change after claim. Check durable policy before relay I/O.
+          if (
+            !(await input.repository.beginPdsOutboxNetworkAction({
+              workerId,
+              outboxId: entry.id
+            }))
+          ) {
+            continue;
+          }
           const result = await input.secureRuntime.publish({
+            workerId,
             outboxId: entry.id,
             closureId: entry.closureId,
             packageId: entry.packageId,
@@ -100,12 +144,17 @@ export const createPdsLocalSyncService = (input: {
             state: result.state,
             transportId: result.transportId
           });
+          await input.repository.heartbeatPdsWorker({
+            groupId: entry.groupId,
+            workerId,
+            capability: "source_publication"
+          });
         } catch (error) {
           await input.repository.retryPdsOutbox({
             workerId,
             outboxId: entry.id,
             errorClass: errorClass(error),
-            retryAt: retryAt()
+            retryAt: retryAt(entry.attemptCount)
           });
         }
       }
@@ -121,6 +170,15 @@ export const createPdsLocalSyncService = (input: {
           const result = await input.repository.materializePdsReplica({
             ...materialized,
             groupId: entry.groupId
+          });
+          // ACK only after durable verification, local materialization, and handoff.
+          await input.secureRuntime.acknowledge?.({
+            inboxId: entry.id,
+            groupId: entry.groupId,
+            packageId: entry.packageId,
+            sourceManifestHash: entry.sourceManifestHash,
+            originDeviceId: materialized.originDeviceId,
+            sourceSequence: materialized.sourceSequence
           });
           await input.repository.heartbeatPdsWorker({
             groupId: entry.groupId,
@@ -143,7 +201,8 @@ export const createPdsLocalSyncService = (input: {
             workerId,
             inboxId: entry.id,
             errorClass: errorClass(error),
-            retryAt: retryAt()
+            retryAt: retryAt(entry.attemptCount),
+            permanent: permanentFailure(error)
           });
         }
       }

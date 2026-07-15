@@ -537,11 +537,18 @@ export const registerOperationalRoutes = (
     }
   };
   const pdsRelayCapability = async () => {
-    if (!context.personalDeviceSync.authoritySigner)
+    if (
+      !context.personalDeviceSync.authoritySigner ||
+      !context.personalDeviceSync.secureKeyProvider
+    ) {
       return "unavailable" as const;
+    }
     try {
-      await requireRepository().getPdsRelayOperationalStatus();
-      return "available" as const;
+      const repository = requireRepository();
+      await repository.getPdsRelayOperationalStatus();
+      return (await repository.isPdsWorkerReady())
+        ? ("available" as const)
+        : ("unavailable" as const);
     } catch {
       return "unavailable" as const;
     }

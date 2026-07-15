@@ -1,5 +1,5 @@
 {
-  "id": "dd418792-990e-4bcc-900a-ee9e00d53fee",
+  "id": "3cd7198e-df53-4983-8f49-8ca862a7d33b",
   "prevId": "971958da-47ff-4e5b-a08b-1b67b5fff9e2",
   "version": "7",
   "dialect": "postgresql",
@@ -11645,6 +11645,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "publication_paused": {
+          "name": "publication_paused",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "future_closed_sessions_only": {
           "name": "future_closed_sessions_only",
