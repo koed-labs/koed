@@ -18,18 +18,43 @@ describe("koed-server supervisor lock", () => {
     const first = acquireKoedServerSupervisorLock(paths, {
       pid: 101,
       isProcessRunning: (pid) => pid === 101,
+      resolveProcessIdentity: (pid) => `process-${pid}`,
       now: () => new Date("2026-01-01T00:00:00.000Z")
     });
     const second = acquireKoedServerSupervisorLock(paths, {
       pid: 202,
-      isProcessRunning: (pid) => pid === 101
+      isProcessRunning: (pid) => pid === 101,
+      resolveProcessIdentity: (pid) => `process-${pid}`
     });
 
     expect(first.acquired).toBe(true);
     expect(second).toMatchObject({ acquired: false, ownerPid: 101 });
     expect(JSON.parse(readFileSync(first.lockPath, "utf8"))).toMatchObject({
       pid: 101,
-      acquiredAt: "2026-01-01T00:00:00.000Z"
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+      processIdentity: "process-101"
+    });
+  });
+
+  it("reclaims a lock when a PID has been reused by another process", () => {
+    const paths = pathsForTest();
+    const first = acquireKoedServerSupervisorLock(paths, {
+      pid: 1,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: () => "first-container:process-1"
+    });
+
+    const second = acquireKoedServerSupervisorLock(paths, {
+      pid: 1,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: () => "replacement-container:process-1"
+    });
+
+    expect(first.acquired).toBe(true);
+    expect(second).toMatchObject({ acquired: true, ownerPid: 1 });
+    expect(JSON.parse(readFileSync(second.lockPath, "utf8"))).toMatchObject({
+      pid: 1,
+      processIdentity: "replacement-container:process-1"
     });
   });
 
@@ -41,7 +66,8 @@ describe("koed-server supervisor lock", () => {
 
     const result = acquireKoedServerSupervisorLock(paths, {
       pid: 303,
-      isProcessRunning: () => false
+      isProcessRunning: () => false,
+      resolveProcessIdentity: () => "process-303"
     });
 
     expect(result).toMatchObject({ acquired: true, ownerPid: 303 });

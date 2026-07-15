@@ -22,7 +22,11 @@ const writeRuntime = (koedHome: string, runtime: KoedServerRuntimeState) => {
 const writeSupervisorLock = (koedHome: string, pid: number) => {
   writeFileSync(
     resolve(koedHome, "run", "koed-server.lock"),
-    JSON.stringify({ pid, acquiredAt: "2026-01-01T00:00:00.000Z" })
+    JSON.stringify({
+      pid,
+      acquiredAt: "2026-01-01T00:00:00.000Z",
+      processIdentity: "test-supervisor"
+    })
   );
 };
 

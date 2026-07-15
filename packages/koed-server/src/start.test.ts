@@ -11,11 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveKoedServerPaths } from "./paths.js";
 import {
   startKoedServer,
   stopChildProcess,
   waitForManagedProcessExits
 } from "./start.js";
+import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
 
 const temps: string[] = [];
@@ -694,14 +696,10 @@ describe("start supervisor", () => {
 
   it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
     const root = tempDir();
-    mkdirSync(resolve(root, "run"), { recursive: true });
-    writeFileSync(
-      resolve(root, "run/koed-server.lock"),
-      JSON.stringify({
-        pid: process.pid,
-        acquiredAt: "2026-01-01T00:00:00.000Z"
-      })
+    const lock = acquireKoedServerSupervisorLock(
+      resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root })
     );
+    expect(lock.acquired).toBe(true);
     const commands: string[] = [];
 
     await startKoedServer({

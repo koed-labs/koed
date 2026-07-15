@@ -55,10 +55,7 @@ import {
   toolAnswerResponse
 } from "./memory-question-answer-persistence.js";
 import { logger } from "./logger.js";
-import {
-  resolveProjectTeamWorkspaceLink,
-  teamWorkspaceAutoResolutionEnabled
-} from "./project-team-workspace-links.js";
+import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
 
 const parseArgs = (
   args: string[]
@@ -494,18 +491,13 @@ server.registerTool(
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
-    const projectTeamWorkspaceLink =
-      !input.team_workspace_id &&
-      input.search_domain === "project" &&
-      workspace_id &&
-      teamWorkspaceAutoResolutionEnabled(process.env)
-        ? resolveProjectTeamWorkspaceLink(workspace_id, process.env)
-        : undefined;
-    const mappedTeamWorkspaceId = projectTeamWorkspaceLink?.teamWorkspaceId;
-    const team_workspace_id = input.team_workspace_id ?? mappedTeamWorkspaceId;
-    const upstream_backend_id =
-      projectTeamWorkspaceLink?.backendId ??
-      process.env.KOED_TEAM_UPSTREAM_BACKEND_ID?.trim();
+    const teamWorkspaceRoute = resolveProjectTeamWorkspaceRoute({
+      projectRoot: input.search_domain === "project" ? workspace_id : undefined,
+      requestedTeamWorkspaceId: input.team_workspace_id,
+      env: process.env
+    });
+    const team_workspace_id = teamWorkspaceRoute.teamWorkspaceId;
+    const upstream_backend_id = teamWorkspaceRoute.backendId;
     if (team_workspace_id && !upstream_backend_id) {
       return jsonResponse({
         markdown:
