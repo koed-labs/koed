@@ -120,6 +120,12 @@ describe("project memory UI view model", () => {
     ).toBe("Open the Conversation to review this Captured Session.");
     expect(
       sessionPreview({
+        name: "Open a focused PR",
+        sample: "Tool output: exec\n\nsecret-looking tool payload"
+      })
+    ).toBe("Open the Conversation to review this Captured Session.");
+    expect(
+      sessionPreview({
         name: "Refine Desktop",
         sample: "  The Desktop layout now keeps Project context visible.  "
       })

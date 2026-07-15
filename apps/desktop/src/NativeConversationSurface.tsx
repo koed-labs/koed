@@ -90,14 +90,14 @@ function ToolActivityGroup({ events }: { events: DesktopConversationEvent[] }) {
   return (
     <div className="native-event-wrap">
       <details className="native-tool-group">
-        <summary>
+        <summary tabIndex={0}>
           <span className="native-tool-group-icon" aria-hidden="true">
             {events.length}
           </span>
           <span>
             <strong>Agent activity</strong>
             <small>
-              {events.length} tool calls · {summary}
+              {events.length} activity items · {summary}
             </small>
           </span>
           <span className="native-tool-group-disclosure" aria-hidden="true">

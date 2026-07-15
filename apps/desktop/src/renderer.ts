@@ -3,7 +3,10 @@ import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import "./styles.css";
 import { ProjectWorkspace } from "./ProjectWorkspace.js";
+import { renderSettingsOutcomeRows } from "./settings-outcome-ui.js";
 import {
+  componentDefinitions,
+  recoveryActionForStatusComponent,
   stateLabels,
   statusCards,
   statusGroups,
@@ -1546,29 +1549,55 @@ const statusGroupState = (
     group.componentKeys.map((key) => statusComponent(key)?.state ?? "starting")
   );
 
+const statusGroupIssue = (group: (typeof statusGroups)[number]) => {
+  const groupState = statusGroupState(group);
+  return group.componentKeys
+    .map((key) => ({ component: statusComponent(key), key }))
+    .find(({ component }) => component?.state === groupState);
+};
+
 const statusGroupSummary = (group: (typeof statusGroups)[number]): string => {
   if (!status) return "Waiting for first status";
-  const unhealthy = group.componentKeys
-    .map((key) => statusComponent(key))
-    .find((component) => component && component.state !== "healthy");
-  return unhealthy ? componentMessage(unhealthy) : group.healthySummary;
+  const issue = statusGroupIssue(group);
+  return issue?.component
+    ? componentMessage(issue.component)
+    : group.healthySummary;
 };
+
+const settingsOutcomeRows = () =>
+  renderSettingsOutcomeRows(
+    statusGroups.map((group) => {
+      const state = statusGroupState(group);
+      const issue = statusGroupIssue(group);
+      const recovery =
+        issue && ["needs_attention", "not_configured"].includes(state)
+          ? {
+              action: recoveryActionForStatusComponent(
+                issue.key,
+                issue.component?.state
+              ),
+              componentKey: issue.key,
+              componentLabel: componentDefinitions[issue.key].label
+            }
+          : undefined;
+      return {
+        id: group.id,
+        title: group.title,
+        description: group.description,
+        state,
+        stateLabel: stateLabels[state],
+        summary: statusGroupSummary(group),
+        recovery
+      };
+    }),
+    escapeHtml
+  );
 
 const renderSettingsPane = (): string => `
   <div class="settings-screen screen-stack" data-view-root tabindex="-1">
     <header class="screen-header"><div><p class="eyebrow">Koed</p><h1>Settings</h1><p>Capture, recall, and local service health.</p></div></header>
     <div class="settings-list">
-      ${statusGroups
-        .map((group) => {
-          const state = statusGroupState(group);
-          const recovery =
-            !["needs_attention", "not_configured"].includes(state) ||
-            !group.action
-              ? ""
-              : `<button type="button" class="secondary settings-recovery" data-startup-action="${escapeHtml(group.action.command)}">${escapeHtml(group.action.label)}</button>`;
-          return `<article class="settings-row ${state}"><span class="settings-state-dot" aria-hidden="true"></span><span><strong>${escapeHtml(group.title)}</strong><small>${escapeHtml(group.description)}</small></span><span class="settings-result"><strong>${escapeHtml(stateLabels[state])}</strong><small>${escapeHtml(statusGroupSummary(group))}</small></span>${recovery}</article>`;
-        })
-        .join("")}
+      ${settingsOutcomeRows()}
     </div>
     <div class="settings-actions">
       <button type="button" data-startup-action="refresh-status">Refresh</button>

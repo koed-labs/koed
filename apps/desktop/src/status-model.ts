@@ -94,19 +94,12 @@ export const componentDefinitions = {
   }
 } as const satisfies Record<StatusComponentKey, StatusComponentDefinition>;
 
-export interface StatusGroupAction {
-  label: string;
-  command: string;
-  timeoutMs: number;
-}
-
 export interface StatusGroupDefinition {
   id: string;
   title: string;
   description: string;
   healthySummary: string;
   componentKeys: readonly StatusComponentKey[];
-  action?: StatusGroupAction;
 }
 
 export type StatusCardActionCommand =
@@ -368,18 +361,58 @@ export const statusCards = [
 
 export type StatusCardId = (typeof statusCards)[number]["id"];
 
+const recoveryCardIdByComponent = {
+  serverPackage: "serverPackage",
+  api: "api",
+  explorer: "explorer",
+  database: "memoryStore",
+  redis: "queueWorker",
+  workerQueues: "queueWorker",
+  embeddingService: "embeddingEngine",
+  apiToken: "aiClientIntegration",
+  mcpServer: "aiClientIntegration",
+  captureHook: "capturePath",
+  codex: "aiClientIntegration",
+  lcmSummaryService: "memoryProcessing",
+  upstreamBackends: "teamBackend",
+  lastVerification: "memoryProcessing"
+} as const satisfies Record<StatusComponentKey, StatusCardId>;
+
+export const recoveryActionForStatusComponent = (
+  componentKey: StatusComponentKey,
+  state?: ComponentState
+): StatusCardAction => {
+  const cardId = recoveryCardIdByComponent[componentKey];
+  const card = statusCards.find((entry) => entry.id === cardId);
+  if (!card) {
+    throw new Error(`Missing Desktop recovery card: ${cardId}`);
+  }
+  if (state === "not_configured") {
+    const installCommand =
+      componentKey === "embeddingService"
+        ? "models_install"
+        : componentKey === "database"
+          ? "runtime_install"
+          : null;
+    const installAction = installCommand
+      ? card.secondaryActions.find(
+          (action) => action.command === installCommand
+        )
+      : undefined;
+    if (installAction) {
+      return installAction;
+    }
+  }
+  return card.primaryAction;
+};
+
 export const statusGroups = [
   {
     id: "capture",
     title: "Capture",
     description: "Collect new AI Client Conversations into Personal Memory.",
     healthySummary: "New Conversations are being captured locally.",
-    componentKeys: ["api", "apiToken", "captureHook", "codex"],
-    action: {
-      label: "Fix capture",
-      command: "repair_codex",
-      timeoutMs: 120_000
-    }
+    componentKeys: ["api", "apiToken", "captureHook", "codex"]
   },
   {
     id: "recall",
@@ -393,12 +426,7 @@ export const statusGroups = [
       "apiToken",
       "mcpServer",
       "codex"
-    ],
-    action: {
-      label: "Fix recall",
-      command: "repair_codex",
-      timeoutMs: 120_000
-    }
+    ]
   },
   {
     id: "processing",
@@ -410,12 +438,7 @@ export const statusGroups = [
       "workerQueues",
       "lcmSummaryService",
       "lastVerification"
-    ],
-    action: {
-      label: "Run memory check",
-      command: "doctor",
-      timeoutMs: 90_000
-    }
+    ]
   }
 ] as const satisfies readonly StatusGroupDefinition[];
 

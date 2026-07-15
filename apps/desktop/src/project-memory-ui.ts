@@ -182,7 +182,7 @@ export const relativeTime = (
 };
 
 const technicalSessionPreviewPatterns = [
-  /^tool\s*call\s*:/i,
+  /^tool\s*(call|output)\s*:/i,
   /^status\s*:\s*(completed|failed|running)/i,
   /^input\s*:/i,
   /^\{\s*["']?(cmd|command|path|query)["']?\s*:/i,

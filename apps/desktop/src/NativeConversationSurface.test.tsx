@@ -129,7 +129,7 @@ describe("NativeConversationSurface", () => {
     );
   });
 
-  it("collapses consecutive tool calls into one expandable activity group", async () => {
+  it("supports focus and interaction with a labelled tool activity disclosure", async () => {
     const tool = (id: string, toolName: string): DesktopConversationEvent => ({
       ...event(id, `Raw output from ${toolName}`),
       actor: "tool",
@@ -146,14 +146,23 @@ describe("NativeConversationSurface", () => {
 
     await renderSurface();
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("2 tool calls")
+      expect(container.textContent).toContain("2 activity items")
     );
 
     const group =
       container.querySelector<HTMLDetailsElement>(".native-tool-group");
+    const summary = group?.querySelector("summary");
     expect(group?.open).toBe(false);
+    expect(summary?.textContent).toContain("Agent activity");
+    expect(summary?.textContent).toContain("2 activity items");
+    expect(summary?.tabIndex).toBe(0);
     expect(group?.textContent).toContain("exec, apply_patch");
     expect(group?.textContent).toContain("Raw output from exec");
+
+    summary?.focus();
+    expect(document.activeElement).toBe(summary);
+    await act(async () => summary?.click());
+    expect(group?.open).toBe(true);
   });
 
   it("offers Retry after an actionable HTTP error", async () => {
