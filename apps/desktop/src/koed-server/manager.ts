@@ -1102,6 +1102,25 @@ export const createKoedServerManager = ({
       package_status: () => runPackageStatusJson(),
       package_install: (args) => runPackageInstallJson(args),
       project_list: () => runJson(["project", "list"], 10_000),
+      personal_sync_status: () => runJson(["personal-sync", "status"], 10_000),
+      personal_sync_pause: () =>
+        runJson(["personal-sync", "policy", "pause"], 20_000),
+      personal_sync_resume: () =>
+        runJson(["personal-sync", "policy", "resume"], 20_000),
+      personal_sync_retry: () => runJson(["personal-sync", "retry"], 20_000),
+      personal_sync_join_request: () =>
+        runJson(["personal-sync", "join", "request"], 20_000),
+      personal_sync_recovery_guidance: () =>
+        runJson(["personal-sync", "recovery", "guidance"], 10_000),
+      personal_sync_revoke: (args) => {
+        const deviceId =
+          typeof args?.deviceId === "string" ? args.deviceId : "";
+        if (!deviceId) return { ok: false, error: "deviceId is required." };
+        return runJson(
+          ["personal-sync", "device", "revoke", "--device-id", deviceId],
+          20_000
+        );
+      },
       explorer_credential: (args) =>
         provisionExplorerCredential(args?.force === true),
       upstream_connect: connectTeamBackend,

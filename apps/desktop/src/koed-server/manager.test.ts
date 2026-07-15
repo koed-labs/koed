@@ -124,6 +124,38 @@ describe("Koed server desktop manager", () => {
         "--json"
       ]
     });
+
+    await expect(
+      manager.handlers.personal_sync_status!()
+    ).resolves.toMatchObject({
+      ok: true
+    });
+    await expect(
+      manager.handlers.personal_sync_revoke!({ deviceId: "device_redacted" })
+    ).resolves.toMatchObject({ ok: true });
+    expect(calls.slice(2)).toEqual([
+      {
+        command: "/node",
+        args: [
+          "/repo/packages/koed-server/dist/cli.js",
+          "personal-sync",
+          "status",
+          "--json"
+        ]
+      },
+      {
+        command: "/node",
+        args: [
+          "/repo/packages/koed-server/dist/cli.js",
+          "personal-sync",
+          "device",
+          "revoke",
+          "--device-id",
+          "device_redacted",
+          "--json"
+        ]
+      }
+    ]);
   });
 
   it("replaces an existing Explorer credential when forced after a 401", async () => {

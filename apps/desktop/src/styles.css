@@ -2649,3 +2649,95 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+.personal-sync-settings {
+  background: var(--memory-card);
+  border: 1px solid var(--memory-border);
+  border-radius: 14px;
+}
+
+.personal-sync-settings > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  padding: 18px 20px;
+}
+
+.personal-sync-settings summary span:first-child,
+.personal-sync-settings-body {
+  display: grid;
+  gap: 4px;
+}
+
+.personal-sync-settings summary small,
+.personal-sync-settings-body p,
+.personal-sync-device-list small {
+  color: var(--memory-muted);
+}
+
+.personal-sync-settings-state {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 9px;
+}
+
+.personal-sync-settings-state.enabled {
+  background: #d8f5dc;
+  color: #216431;
+}
+.personal-sync-settings-state.paused {
+  background: #fff0c4;
+  color: #765200;
+}
+.personal-sync-settings-state.unavailable {
+  background: #f9dddd;
+  color: #8f2727;
+}
+.personal-sync-settings-state.disabled,
+.personal-sync-settings-state.not_configured {
+  background: #ece9e1;
+  color: #625d53;
+}
+
+.personal-sync-settings-body {
+  border-top: 1px solid var(--memory-border);
+  padding: 18px 20px 20px;
+}
+
+.personal-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.personal-sync-freshness,
+.personal-sync-note {
+  font-size: 13px;
+}
+
+.personal-sync-device-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.personal-sync-device-list li {
+  align-items: center;
+  border: 1px solid var(--memory-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 8px 10px;
+}
+
+.personal-sync-detail {
+  margin: 0;
+  max-height: 110px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

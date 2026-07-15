@@ -30,6 +30,10 @@ import {
   type DesktopView
 } from "./project-memory-ui.js";
 import {
+  renderPersonalSyncSettings,
+  type PersonalSyncSettingsView
+} from "./personal-sync-settings.js";
+import {
   readTeamBackendDisclosureState,
   renderTeamBackendSettings,
   restoreTeamBackendDisclosureState,
@@ -128,6 +132,13 @@ let refreshInFlight: Promise<void> | null = null;
 let explorerApiToken: string | null = null;
 let teamBackendUrlInput = "";
 let revealTeamBackendFailure = false;
+let personalSync: PersonalSyncSettingsView = {
+  busy: false,
+  detail: "Checking secure Personal Sync capability.",
+  status: "not_configured",
+  devices: [],
+  freshness: "Not available"
+};
 let selectionClearedByInactiveCollapse = false;
 let activeDesktopView: DesktopView = "projects";
 let showInactiveProjects = false;
@@ -1610,6 +1621,7 @@ const renderSettingsPane = (): string => `
       status: statusCardResultCue("teamBackend"),
       urlValue: teamBackendUrlInput
     })}
+    ${renderPersonalSyncSettings(personalSync)}
     <details class="diagnostic-details"><summary>Advanced diagnostics <span>${statusCards.length} components</span></summary><div class="diagnostic-actions"><button type="button" class="secondary" data-startup-action="doctor">Run doctor</button><button type="button" class="secondary" data-startup-action="setup_codex">Set up AI Client</button></div><div class="diagnostic-list">${statusCards.map((card) => `<div class="diagnostic-row"><span>${escapeHtml(card.title)}</span><strong class="${statusCardState(card.id)}">${escapeHtml(statusCardResultCue(card.id))}</strong></div>`).join("")}</div></details>
   </div>
 `;
@@ -1627,7 +1639,7 @@ const dashboardRenderKey = (): string => {
           `${card.id}:${statusCardState(card.id)}:${statusCardResultCue(card.id)}`
       )
       .join("|");
-    return `settings:${status?.state ?? "starting"}:${busyAction ?? ""}:${status?.upstreamBackends.registered ?? 0}:${status?.upstreamBackends.validated ?? 0}:${firstUpstreamBackendId() ?? ""}:${cardState}`;
+    return `settings:${status?.state ?? "starting"}:${busyAction ?? ""}:${status?.upstreamBackends.registered ?? 0}:${status?.upstreamBackends.validated ?? 0}:${firstUpstreamBackendId() ?? ""}:${personalSync.status}:${personalSync.busy}:${personalSync.freshness}:${personalSync.devices.map((device) => `${device.id}:${device.state}`).join(",")}:${cardState}`;
   }
   return "project-workspace";
 };
@@ -2174,6 +2186,71 @@ const updateSessionProject = async (
   }
 };
 
+const personalSyncViewFrom = (value: unknown): PersonalSyncSettingsView => {
+  if (!value || typeof value !== "object") {
+    return {
+      ...personalSync,
+      status: "unavailable",
+      detail: "Personal Sync status is unavailable."
+    };
+  }
+  const payload = value as Record<string, unknown>;
+  const status = payload.state;
+  const devices = Array.isArray(payload.devices)
+    ? payload.devices.flatMap((device) => {
+        if (!device || typeof device !== "object") return [];
+        const item = device as Record<string, unknown>;
+        return typeof item.id === "string" && typeof item.state === "string"
+          ? [
+              {
+                id: item.id,
+                label: typeof item.label === "string" ? item.label : "Device",
+                state: item.state
+              }
+            ]
+          : [];
+      })
+    : [];
+  const replica = payload.replica;
+  const freshness =
+    replica && typeof replica === "object" && "lastSuccessfulSyncAt" in replica
+      ? String(
+          (replica as { lastSuccessfulSyncAt?: unknown })
+            .lastSuccessfulSyncAt ?? "No synchronized replica yet"
+        )
+      : "No synchronized replica yet";
+  return {
+    busy: Boolean(busyAction),
+    detail:
+      typeof payload.message === "string"
+        ? payload.message
+        : "No Personal Sync details available.",
+    status:
+      status === "disabled" || status === "enabled" || status === "paused"
+        ? status
+        : status === "not_configured"
+          ? "not_configured"
+          : "unavailable",
+    devices,
+    freshness
+  };
+};
+
+const refreshPersonalSync = async (): Promise<void> => {
+  try {
+    personalSync = personalSyncViewFrom(
+      await invokeWithTimeout("personal_sync_status", undefined, 10_000)
+    );
+  } catch (error) {
+    personalSync = {
+      ...personalSync,
+      busy: false,
+      status: "unavailable",
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+};
+
 const refreshStatus = async () => {
   if (refreshInFlight) {
     return refreshInFlight;
@@ -2203,7 +2280,8 @@ const refreshStatus = async () => {
         .then(() =>
           Promise.all([
             refreshProjectGraph().catch(() => undefined),
-            refreshProjectCatalog().catch(() => undefined)
+            refreshProjectCatalog().catch(() => undefined),
+            refreshPersonalSync()
           ])
         )
         .then(() => {
@@ -2961,6 +3039,49 @@ const runTeamBackendDisconnect = async (): Promise<void> => {
   }
 };
 
+const runPersonalSyncAction = async (
+  action: "setup" | "pair" | "pause" | "resume" | "retry" | "revoke",
+  deviceId?: string
+): Promise<void> => {
+  const command =
+    action === "setup"
+      ? "personal_sync_recovery_guidance"
+      : action === "pair"
+        ? "personal_sync_join_request"
+        : action === "revoke"
+          ? "personal_sync_revoke"
+          : `personal_sync_${action}`;
+  personalSync = { ...personalSync, busy: true };
+  syncUI();
+  try {
+    const result = await invokeWithTimeout(
+      command,
+      action === "revoke" ? { deviceId } : undefined,
+      30_000
+    );
+    const error = commandResultError(result);
+    personalSync = {
+      ...personalSync,
+      busy: false,
+      detail:
+        error ??
+        (result &&
+        typeof result === "object" &&
+        typeof (result as { message?: unknown }).message === "string"
+          ? (result as { message: string }).message
+          : "Personal Sync action completed.")
+    };
+    await refreshPersonalSync();
+  } catch (error) {
+    personalSync = {
+      ...personalSync,
+      busy: false,
+      detail: error instanceof Error ? error.message : String(error)
+    };
+  }
+  syncUI();
+};
+
 const registerHandlers = () => {
   app.addEventListener("submit", (event) => {
     const form = event.target;
@@ -3141,6 +3262,36 @@ const registerHandlers = () => {
     if (resetSessionProject) {
       event.preventDefault();
       void updateSessionProject("reset");
+      return;
+    }
+
+    const personalSyncAction = target.closest<HTMLButtonElement>(
+      "[data-personal-sync-action]"
+    );
+    if (personalSyncAction) {
+      event.preventDefault();
+      const action = personalSyncAction.dataset.personalSyncAction;
+      if (
+        action === "setup" ||
+        action === "pair" ||
+        action === "pause" ||
+        action === "resume" ||
+        action === "retry"
+      ) {
+        void runPersonalSyncAction(action);
+      }
+      return;
+    }
+
+    const personalSyncRevoke = target.closest<HTMLButtonElement>(
+      "[data-personal-sync-revoke]"
+    );
+    if (personalSyncRevoke?.dataset.personalSyncRevoke) {
+      event.preventDefault();
+      void runPersonalSyncAction(
+        "revoke",
+        personalSyncRevoke.dataset.personalSyncRevoke
+      );
       return;
     }
 
