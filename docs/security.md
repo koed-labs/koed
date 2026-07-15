@@ -60,6 +60,13 @@ User, relationship, replica, consent, policy, cursor, version, size, and digest
 metadata before decrypting. A missing key, wrong version, provider outage,
 tampered envelope, unauthorized target, or unsupported package fails closed.
 
+Personal Device Sync V1 is not implemented by this RSA envelope path. Its
+separate Ed25519/X25519/HKDF-SHA-256/AES-256-GCM, recovery, authority, and
+relay boundary is fixed by [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+PDS keys and plaintext must never enter Operator/support/browser/email recovery
+flows, ordinary configuration, Authority, or Relay. Existing canonical JSON and
+RSA envelope code must not be represented as PDS V1 compliance.
+
 Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.
 
 The commercial/team target posture is application-layer envelope encryption for

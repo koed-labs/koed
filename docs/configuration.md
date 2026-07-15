@@ -137,6 +137,19 @@ credential through authorized remote flow, run `identity rotate` again as
 Operator acknowledgement, then explicitly re-enroll. Status redacts proof
 material, proof references, paths, and fingerprints.
 
+## Personal Device Sync V1 configuration status
+
+Personal Device Sync V1 is accepted protocol design, not shipped configuration.
+No current environment variable, `server.json` field, API Token, upstream
+credential, Cross-Identity Sync setting, canonical JSON helper, or RSA envelope
+setting enables it. Future implementation must add explicit secure storage and
+machine-readable configuration only after conforming to
+[Personal Device Sync Protocol V1](personal-device-sync-protocol.md). It must
+keep device signing/KEM, recovery, Authority, epoch, source-fingerprint,
+tombstone, and Project keys separate; ordinary `KOED_HOME` config must never
+contain any PDS private or symmetric key. Clone quarantine and full-machine
+clone collision/re-enrollment rules above remain mandatory prerequisites.
+
 ## Local Edge Upstream Registry
 
 Local edge `koed-server` stores remote/private/cloud upstream backend metadata

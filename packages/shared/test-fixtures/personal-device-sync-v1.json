@@ -1,0 +1,137 @@
+{
+  "fixtureVersion": 1,
+  "notice": "Non-production deterministic PDS V1 fixture. Values are fixed test material only.",
+  "protocol": "koed/pds/v1",
+  "references": {
+    "jcs": "RFC 8785",
+    "ed25519": "RFC 8032 test vector 1 key material",
+    "x25519": "RFC 7748 section 6.1 Alice/Bob vector",
+    "hkdf": "RFC 5869 HKDF-SHA-256 construction",
+    "aesGcm": "NIST SP 800-38D AES-256-GCM"
+  },
+  "jcsSigning": {
+    "domain": "koed/pds/v1/source-manifest\n",
+    "canonicalPayloadUtf8": "{\"closedSession\":{\"captureMethod\":\"supported_capture_hook\",\"closed\":true,\"observedClosedAt\":\"2026-07-15T00:00:02.000Z\",\"sourceAdapter\":\"codex\",\"sourceAdapterVersion\":\"1\",\"sourceClosedAt\":\"2026-07-15T00:00:01.000Z\",\"sourceCreatedAt\":\"2026-07-15T00:00:00.000Z\"},\"contentEpoch\":\"3\",\"originDeploymentId\":\"deployment-alice\",\"originDeviceId\":\"device-alice\",\"packageId\":\"XIYkr3EBYccBFUH0GLPxzEA8_8TC9iLa6zs7SrFMJfM\",\"protocol\":\"koed/pds/v1\",\"rawClosure\":{\"rawByteCount\":\"12\",\"recordCount\":\"1\",\"records\":[{\"observedAt\":\"2026-07-15T00:00:01.000Z\",\"ordinal\":\"0\",\"payload\":\"SGVsbG8sIFBEUyEK\",\"payloadHash\":\"dtKRZEwhd_sF8NMbGqeu5fEDJfQvsU8x7OCzHldJsqg\",\"sourceNativeItemId\":\"item-1\",\"sourceTimestamp\":\"2026-07-15T00:00:00.000Z\"}]},\"sourceClosureHash\":\"3N3hukQUH6UF05_Ne770dI-NZRXjh7rXKtvb861ATa8\",\"sourceFingerprint\":\"ddDVvDeEXrlPT81rZXeCF_Z3AMTgZyq5_dp0EucIMss\",\"sourceNativeSessionId\":\"codex-thread-42\",\"sourceSequence\":\"7\",\"sourceType\":\"captured_session\"}",
+    "packageIdPreimageUtf8": "{\"closedSession\":{\"captureMethod\":\"supported_capture_hook\",\"closed\":true,\"observedClosedAt\":\"2026-07-15T00:00:02.000Z\",\"sourceAdapter\":\"codex\",\"sourceAdapterVersion\":\"1\",\"sourceClosedAt\":\"2026-07-15T00:00:01.000Z\",\"sourceCreatedAt\":\"2026-07-15T00:00:00.000Z\"},\"contentEpoch\":\"3\",\"originDeploymentId\":\"deployment-alice\",\"originDeviceId\":\"device-alice\",\"protocol\":\"koed/pds/v1\",\"rawClosure\":{\"rawByteCount\":\"12\",\"recordCount\":\"1\",\"records\":[{\"observedAt\":\"2026-07-15T00:00:01.000Z\",\"ordinal\":\"0\",\"payload\":\"SGVsbG8sIFBEUyEK\",\"payloadHash\":\"dtKRZEwhd_sF8NMbGqeu5fEDJfQvsU8x7OCzHldJsqg\",\"sourceNativeItemId\":\"item-1\",\"sourceTimestamp\":\"2026-07-15T00:00:00.000Z\"}]},\"sourceClosureHash\":\"3N3hukQUH6UF05_Ne770dI-NZRXjh7rXKtvb861ATa8\",\"sourceFingerprint\":\"ddDVvDeEXrlPT81rZXeCF_Z3AMTgZyq5_dp0EucIMss\",\"sourceNativeSessionId\":\"codex-thread-42\",\"sourceSequence\":\"7\",\"sourceType\":\"captured_session\"}",
+    "packageId": "XIYkr3EBYccBFUH0GLPxzEA8_8TC9iLa6zs7SrFMJfM",
+    "manifestHash": "EdGKI0Bh3AhtJ4zS54Tnv7GJUgWIggFwVJ-xQWLFgFI",
+    "ed25519": {
+      "seedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signatureHex": "0c32a68959935f7bd06a482187f255531292f93a9c680fc4d2a7d0b2924d80e024e1da17f2fd5085e6a525938d7f1a5ad174742360c81c1ae29335ae73d8810d",
+      "rfc8032EmptyMessageSignatureHex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    }
+  },
+  "hkdfRfc5869Case1": {
+    "ikmHex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+    "saltHex": "000102030405060708090a0b0c",
+    "infoHex": "f0f1f2f3f4f5f6f7f8f9",
+    "length": 42,
+    "okmHex": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+  },
+  "aes256GcmNist": {
+    "keyHex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "nonceHex": "000000000000000000000000",
+    "aadHex": "",
+    "plaintextHex": "00000000000000000000000000000000",
+    "ciphertextHex": "cea7403d4d606b6e074ec5d3baf39d18",
+    "tagHex": "d0d1c8a799996bf0265b98b5d48ab919"
+  },
+  "x25519": {
+    "alicePrivateKeyHex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+    "alicePublicKeyHex": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    "bobPrivateKeyHex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+    "bobPublicKeyHex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+    "sharedSecretHex": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+    "allZeroSharedSecretHex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "allZeroRejected": true
+  },
+  "compositeRecipientEnvelope": {
+    "groupId": "group-fixture-01",
+    "recipientEpoch": 3,
+    "packageId": "pkg-fixture-001",
+    "senderDeviceId": "device-alice",
+    "recipientDeviceId": "device-bob",
+    "saltHex": "f9c6d077b8fc55f979797bb5f1766195bd3b9fd4fdf36f773c3efce543372918",
+    "infoHex": "6b6f65642f7064732f76312f656e76656c6f70652f6b6579000000000000000003706b672d666978747572652d303031006465766963652d626f62006465766963652d616c696365",
+    "wrappingKeyHex": "273d0543aac7ac2e0845a038dc12bfcc9c044c34a1b59146761585d6d5a9c1a9",
+    "contentEncryptionKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "nonceHex": "1af38c2dc2b96ffdd8669409",
+    "aadUtf8": "{\"packageId\":\"pkg-fixture-001\",\"recipientDeviceId\":\"device-bob\",\"recipientEpoch\":3,\"senderDeviceId\":\"device-alice\"}",
+    "ciphertextHex": "60a9829d4ae0da0c7233777de107694ed69e91087be6cbb8774b02b4c7fe37c5",
+    "tagHex": "51264ad281d3404ba0babc53f584af5e",
+    "rewrappedRecipientEnvelope": {
+      "recipientEpoch": 4,
+      "infoHex": "6b6f65642f7064732f76312f656e76656c6f70652f6b6579000000000000000004706b672d666978747572652d303031006465766963652d626f62006465766963652d616c696365",
+      "wrappingKeyHex": "c10677243171e0923e240840f7d7985861bb1c8f4a7c64632cdfc26a4fd0ff3e",
+      "nonceHex": "000102030405060708090a0b",
+      "aadUtf8": "{\"packageId\":\"pkg-fixture-001\",\"recipientDeviceId\":\"device-bob\",\"recipientEpoch\":4,\"senderDeviceId\":\"device-alice\"}",
+      "ciphertextHex": "32afceeae94d6965652c50e7f597cb2da762da05270f3c7fa57c0e44cd37d047",
+      "tagHex": "70bad166ca263faa5cf9ea7ea64afb27"
+    }
+  },
+  "sourceFingerprint": {
+    "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "messageUtf8": "koed/pds/v1/source-fingerprint\u0000captured_session\u0000codex-thread-42",
+    "digestHex": "75d0d5bc37845eb94f4fcd6b65778217f67700c4e0672ab9fdda7412e70832cb"
+  },
+  "package": {
+    "id": "r1jMb6bUBvYEAHmtTA7u30i3i-6mpLo7A2BKWb2I7HM",
+    "manifestHash": "r1jMb6bUBvYEAHmtTA7u30i3i-6mpLo7A2BKWb2I7HM",
+    "changedManifestHash": "HWR0W8GSOJ0cwwUvT7Y-_uIDzQvpGrq4Qb1YOWgY6jQ"
+  },
+  "membershipCertificate": {
+    "issuedAt": "2026-07-15T00:00:00.000Z",
+    "expiresAt": "2026-07-15T00:05:00.000Z",
+    "maxLifetimeSeconds": 604800,
+    "clockSkewSeconds": 300
+  },
+  "stateFixtures": {
+    "replay": {
+      "first": {
+        "packageId": "pkg-fixture-001",
+        "manifestHash": "r1jMb6bUBvYEAHmtTA7u30i3i-6mpLo7A2BKWb2I7HM"
+      },
+      "same": {
+        "packageId": "pkg-fixture-001",
+        "manifestHash": "r1jMb6bUBvYEAHmtTA7u30i3i-6mpLo7A2BKWb2I7HM",
+        "expected": "idempotent"
+      },
+      "changed": {
+        "packageId": "pkg-fixture-001",
+        "manifestHash": "HWR0W8GSOJ0cwwUvT7Y-_uIDzQvpGrq4Qb1YOWgY6jQ",
+        "expected": "quarantine"
+      }
+    },
+    "convergence": {
+      "sameClosure": {
+        "fingerprint": "fp-1",
+        "closureHash": "closure-a",
+        "expected": "converge"
+      },
+      "differentClosure": {
+        "fingerprint": "fp-1",
+        "closureHash": "closure-b",
+        "existingClosureHash": "closure-a",
+        "expected": "quarantine"
+      }
+    },
+    "equivocation": {
+      "trusted": { "sequence": "7", "head": "head-a" },
+      "received": { "sequence": "7", "head": "head-b", "expected": "freeze" }
+    },
+    "tombstone": {
+      "floor": { "logicalMemoryId": "lm-1", "sequence": 8 },
+      "stalePackage": {
+        "logicalMemoryId": "lm-1",
+        "sequence": 8,
+        "expected": "reject"
+      },
+      "newerPackage": {
+        "logicalMemoryId": "lm-1",
+        "sequence": 9,
+        "expected": "allow"
+      }
+    }
+  }
+}

@@ -973,6 +973,21 @@ Fork/Import operation is introduced.
     devices recall the hosted replica, while any future pull protocol must
     define cursor, conflict, deletion, key, retention, and offline behavior.
 
+## Personal Device Sync V1
+
+Personal Device Sync is distinct from directed hosted Cross-Identity Sync and
+has no production route, worker, or local-edge API in this build. Its accepted
+protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+When implemented, an eligible future closed Captured Session will follow this
+sequence: source seals contiguous raw closure; origin signs JCS source manifest;
+source encrypts package and recipient CEK envelopes; relay stores encrypted
+chunks; every active device verifies membership/log, signatures, hashes, and
+AEAD before local materialization; local Projection, embedding, and LCM Summary
+work rebuilds derived state. Relay/Authority outage, conflict quarantine, or
+expired membership certificate blocks remote PDS action only; local capture and
+Recall continue. PDS must not use Cross-Identity Sync's RSA recipient-envelope
+or target-processing path.
+
 ## Future Memory Inbox
 
 Memory Inbox is a future ingestion surface for external Content Objects such as

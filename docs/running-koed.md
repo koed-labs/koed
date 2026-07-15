@@ -150,6 +150,18 @@ relationship status and redacted `/ops/status` sync metrics to diagnose queue
 lag, retries, stale replicas, and failure classes; do not inspect encrypted
 package rows as an operational workflow.
 
+## Personal Device Sync V1
+
+Personal Device Sync V1 is protocol-only in this build; no CLI command, API,
+relay, Authority, or automatic sync path is available. Do not configure
+Cross-Identity Sync to imitate it: hosted Cross-Identity Sync remains directed
+and uses separate identities and RSA recipient envelopes. Future PDS operation
+must use relay-required symmetric replicas, current `koed/pds/v1` only, and
+[Personal Device Sync Protocol V1](personal-device-sync-protocol.md). Local
+capture and Recall must continue during relay/Authority outage or equivocation
+freeze. Perfect same-path full-machine clone remains undetectable locally;
+remote collision detection and explicit re-enrollment are required.
+
 ## KOED_HOME layout
 
 `koed-server` keeps local state under `KOED_HOME`:
