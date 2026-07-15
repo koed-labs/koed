@@ -37,6 +37,7 @@ export interface WorkerEnvConfig {
   rawProjectionActorLimit: number;
   crossIdentitySyncIntervalMs: number;
   crossIdentitySyncStaleAfterSeconds: number;
+  pdsLocalSyncIntervalMs: number;
   koedHome: string;
   historicalImport: HistoricalImportBatchConfig;
   historicalImportApiReadyUrl?: string;
@@ -189,6 +190,11 @@ export const resolveWorkerEnv = (
       environment,
       "CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS",
       86_400
+    ),
+    pdsLocalSyncIntervalMs: positiveIntEnv(
+      environment,
+      "PDS_LOCAL_SYNC_INTERVAL_MS",
+      5_000
     ),
     koedHome: resolve(environment.KOED_HOME ?? resolve(homedir(), ".koed")),
     historicalImport: {

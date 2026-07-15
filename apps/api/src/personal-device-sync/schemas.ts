@@ -60,3 +60,7 @@ export const pdsEpochAckSchema = z.object({ ack: canonicalPdsJson }).strict();
 export const pdsRemoteAccountLinkSchema = z
   .object({ proof_token: z.string().min(12).max(8_192) })
   .strict();
+export const pdsCloseSessionParamsSchema = z
+  .object({ groupId: opaqueId, sessionId: z.uuid() })
+  .strict();
+export const pdsPauseSchema = z.object({ paused: z.boolean() }).strict();

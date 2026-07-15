@@ -106,7 +106,11 @@ key id, outcome, and timestamp. Relay logs/metrics/audit exclude Memory, raw
 source IDs, fingerprints, Project aliases, keys, recovery-kit data, signatures,
 nonces, ciphertext, credentials, browser identity, and signed record bodies.
 PDS request logs use relay route templates/category only; they omit concrete
-route IDs and query keys. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+route IDs and query keys. Local materialization status reports only bounded
+outbox/inbox/replica state counts and secure-worker heartbeat readiness. It does
+not expose per-origin high-water marks, source fingerprints, package IDs,
+closure hashes, paths, retained ciphertext, keys, or source content. Conflict
+quarantine is a redacted state, never an automatic winner selection. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
 Current durable audit action names:
 

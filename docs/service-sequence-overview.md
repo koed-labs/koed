@@ -996,8 +996,17 @@ chunk/digest commit without decrypting, delivers mailbox chunks, validates
 signed package ACKs, and tracks independent recipient/origin high-water cursors.
 All-recipient ACK cleanup waits seven days; unacked package retention expires
 after thirty days; finalized post-acceptance revocation can waive only its
-snapshot recipient. Tombstones remain reserved for KOE-352. Materialization
-stays device-local.
+snapshot recipient. Tombstones remain reserved for KOE-352. Materialization stays device-local.
+
+KOE-351 adds local materialization foundation: browser-authenticated close seals
+one eligible future Captured Session after Personal Sync Policy activation;
+association alone never publishes. Source raw items are sanitized, closure-bound,
+and retained only as an application-envelope-encrypted PDS package. Receiver
+claims inbox work with leases, verifies/decrypts only inside secure worker,
+then materializes read-only raw source before normal local Projection, embedding,
+and LCM dispatch. Equal source fingerprint/closure converges observations;
+different closure quarantines every synchronized representation before Projection
+or Recall. PDS data-plane tables remain separate from directed sync tables.
 
 PDS protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 Any future eligible closed Captured Session sequence remains separate: source

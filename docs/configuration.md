@@ -162,7 +162,17 @@ mutation/read. Revocation or epoch transition wins races; stale actions fail
 closed. Recipient reads also bind current recipient state to intended snapshot.
 
 Relay stores canonical encrypted transport/package bytes and bounded opaque
-metadata only while active. Expiry and seven-day post-quorum ACK cleanup delete
+metadata only while active. Local PDS publication/materialization additionally
+requires an injected secure runtime provider with device signing/X25519 private
+key references, current Authority certificates/epoch, and group-secret-set
+references. It is not environment configuration: do not put PDS group keys,
+private keys, recovery material, API Tokens, or upstream credentials in
+`server.json`, `KOED_HOME`, env files, database rows, queues, or logs. Missing
+or clone-limited secure runtime disables PDS only; local capture and Recall
+remain available. `PDS_LOCAL_SYNC_INTERVAL_MS` controls worker polling after a
+complete secure runtime is injected; it does not enable a fallback provider.
+
+Expiry and seven-day post-quorum ACK cleanup delete
 ciphertext chunks and recipient envelopes, retaining only redacted receipt
 metadata; tombstones remain reserved. It does not decrypt, project, embed,
 recall, inspect Project aliases, or access Team state. API Tokens, device

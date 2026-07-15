@@ -1,5 +1,7 @@
 import type { KeyObject } from "node:crypto";
 import { randomBytes } from "node:crypto";
+import { pdsSessionPackageDigest } from "@koed/shared";
+import { pdsConversationItemsForClosure } from "./local-source.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   canonicalizePdsJson,
@@ -24,6 +26,8 @@ import {
   pdsEpochAckSchema,
   pdsGroupParamsSchema,
   pdsKeyBundleParamsSchema,
+  pdsCloseSessionParamsSchema,
+  pdsPauseSchema,
   pdsPolicySchema,
   pdsRemoteAccountLinkSchema,
   pdsTransitionSchema
@@ -903,6 +907,143 @@ export const registerPersonalDeviceSyncRoutes = (
       );
       if (!group) throw pdsError("Personal Device Group not found", 404);
       return { policy: publicGroup(group).policy };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/groups/:groupId/sessions/:sessionId/close",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      pdsAuthority(context);
+      const user = await sessionUser(request);
+      const input = pdsCloseSessionParamsSchema.parse(request.params);
+      const secureKeys = context.personalDeviceSync.secureKeyProvider;
+      const envelope = context.encryption.envelopeEncryptionProvider;
+      if (!secureKeys || !envelope) {
+        throw pdsError("PDS secure publication path is unavailable", 503);
+      }
+      const source = await repo().getPdsClosureSource({
+        userId: user.id,
+        groupId: input.groupId,
+        sessionId: input.sessionId
+      });
+      if (!source) {
+        throw pdsError(
+          "PDS requires enabled policy, eligible future Captured Session, and stable source IDs",
+          409
+        );
+      }
+      const keyContext = await secureKeys.getSourceContext({
+        userId: user.id,
+        groupId: input.groupId
+      });
+      if (!keyContext)
+        throw pdsError("PDS secure key context is unavailable", 503);
+      const sourceSequence = await repo().reservePdsSourceSequence({
+        userId: user.id,
+        groupId: input.groupId,
+        originDeploymentId: keyContext.originDeploymentId,
+        originDeviceId: keyContext.originDeviceId
+      });
+      const closedAt = new Date();
+      const built = await keyContext.buildClosedSessionPackage({
+        source,
+        sourceSequence,
+        items: pdsConversationItemsForClosure(source),
+        closedAt
+      });
+      const packageId = built.package.header.packageId;
+      const sourceManifestHash = built.package.header.sourceManifestHash;
+      if (
+        sourceManifestHash !== built.sourceManifestHash ||
+        built.package.packageDigest !==
+          pdsSessionPackageDigest({
+            header: built.package.header,
+            envelopes: built.package.envelopes,
+            chunks: built.package.chunks
+          })
+      ) {
+        throw pdsError("PDS secure package identity binding failed", 409);
+      }
+      const encryptedEnvelope = await envelope.encrypt({
+        plaintext: JSON.stringify(built.package),
+        scope: { tenantId: user.id, objectClass: "pds_source_package" },
+        provenance: {
+          rowFamily: "pds_retained_packages",
+          sourceTable: "pds_retained_packages",
+          sourceId: packageId
+        },
+        ciphertextLocation: "pds_retained_packages",
+        aad: { ownerUserId: user.id, groupId: input.groupId, packageId }
+      });
+      const closure = await repo().persistPdsSourceClosure({
+        userId: user.id,
+        groupId: input.groupId,
+        originDeploymentId: keyContext.originDeploymentId,
+        originDeviceId: keyContext.originDeviceId,
+        sourceSequence,
+        sessionId: input.sessionId,
+        terminalCursor: String(source.items.length),
+        terminalItemCount: String(source.items.length),
+        sourceClosureHash: built.sourceClosureHash,
+        packageId,
+        sourceManifestHash,
+        encryptedEnvelope,
+        closedAt
+      });
+      return {
+        closure: {
+          source_sequence: closure.sourceSequence,
+          state: closure.state
+        }
+      };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/groups/:groupId/retry",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      return {
+        retried: await repo().requestPdsOutboxRetry({
+          userId: user.id,
+          groupId
+        })
+      };
+    }
+  );
+  app.put(
+    "/v1/personal-device-sync/groups/:groupId/pause",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      const { paused } = pdsPauseSchema.parse(request.body);
+      return {
+        paused,
+        updated: await repo().setPdsPublicationPaused({
+          userId: user.id,
+          groupId,
+          paused
+        })
+      };
+    }
+  );
+  app.get(
+    "/v1/personal-device-sync/groups/:groupId/local-status",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      const status = await repo().getPdsLocalSyncStatus({
+        userId: user.id,
+        groupId
+      });
+      if (!status) throw pdsError("Personal Device Group not found", 404);
+      return { status };
     }
   );
   app.post(

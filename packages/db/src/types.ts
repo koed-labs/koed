@@ -5,6 +5,7 @@ import type {
 } from "@koed/core";
 import type { KoedWorkClass } from "@koed/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
+import type { PersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
 import type { CrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
 import type { EncryptedPayloadRepository } from "./encrypted-payload-repository.js";
@@ -1426,6 +1427,7 @@ export interface MemorySourceRepository
     EncryptedPayloadRepository,
     LocalEmbeddingStatusRepository,
     PersonalDeviceSyncRepository,
+    PersonalDeviceSyncLocalRepository,
     PersonalDeviceSyncRelayRepository,
     MemoryNodeRepository,
     MemoryQuestionRepository,

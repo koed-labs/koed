@@ -40,6 +40,7 @@ import { createLocalEmbeddingStatusRepository } from "./local-embedding-status-r
 import { createMemoryNodeRepository } from "./memory-node-repository.js";
 import { createMemoryQuestionRepository } from "./memory-question-repository.js";
 import { createPersonalDeviceSyncRepository } from "./personal-device-sync-repository.js";
+import { createPersonalDeviceSyncLocalRepository } from "./personal-device-sync-local-repository.js";
 import { createPersonalDeviceSyncRelayRepository } from "./personal-device-sync-relay-repository.js";
 import { createSettingsRepository } from "./settings-repository.js";
 import { createTeamAccessRepository } from "./team-access-repository.js";
@@ -3885,6 +3886,7 @@ export const createMemorySourceRepository = (
       envelopeEncryptionProvider: options.envelopeEncryptionProvider
     }),
     ...createPersonalDeviceSyncRepository(pool),
+    ...createPersonalDeviceSyncLocalRepository(pool),
     ...createPersonalDeviceSyncRelayRepository(pool),
     ...curatedMemoryRepository,
     ...encryptedPayloadRepository,
@@ -4482,6 +4484,14 @@ export const createMemorySourceRepository = (
               )
             )
             and ci.owner_user_id = $1
+            and not exists (
+              select 1
+              from pds_source_item_mappings pds_source
+              join pds_logical_replicas pds_replica
+                on pds_replica.id = pds_source.replica_id
+              where pds_source.conversation_item_id = ci.id
+                and pds_replica.materialization_state <> 'ready'
+            )
         ), ordered_items as (
           select
             *,

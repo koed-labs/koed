@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -14,7 +14,7 @@ const signingKeyId = "AQEBAQEBAQEBAQEBAQEBAQ";
 const certificate = Buffer.from("{}", "utf8").toString("base64url");
 
 const relayProof = (input: {
-  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"];
+  privateKey: KeyObject;
   target: string;
   nonce: string;
 }) => {

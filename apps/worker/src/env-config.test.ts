@@ -21,6 +21,7 @@ describe("resolveWorkerEnv", () => {
       rawProjectionActorLimit: 10,
       crossIdentitySyncIntervalMs: 1000,
       crossIdentitySyncStaleAfterSeconds: 86400,
+      pdsLocalSyncIntervalMs: 5000,
       koedHome: resolve(homedir(), ".koed"),
       historicalImport: {
         maxRows: 100,
@@ -53,6 +54,7 @@ describe("resolveWorkerEnv", () => {
         MEMORY_RAW_PROJECTION_BATCH_LIMIT: "50",
         MEMORY_RAW_PROJECTION_ACTOR_LIMIT: "4",
         CROSS_IDENTITY_SYNC_STALE_AFTER_SECONDS: "7200",
+        PDS_LOCAL_SYNC_INTERVAL_MS: "7000",
         MEMORY_HISTORICAL_IMPORT_BATCH_ROWS: "25",
         MEMORY_HISTORICAL_IMPORT_BATCH_BYTES: "250000",
         MEMORY_HISTORICAL_IMPORT_BATCH_RUNTIME_MS: "2000",
@@ -83,6 +85,7 @@ describe("resolveWorkerEnv", () => {
       rawProjectionBatchLimit: 50,
       rawProjectionActorLimit: 4,
       crossIdentitySyncStaleAfterSeconds: 7200,
+      pdsLocalSyncIntervalMs: 7000,
       historicalImport: {
         maxRows: 25,
         maxBytes: 250000,

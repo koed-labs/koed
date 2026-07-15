@@ -3984,6 +3984,8 @@ export const personalSyncPolicies = pgTable(
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
     enabled: boolean("enabled").notNull().default(false),
+    /** Effective time is set by local data-plane trigger on policy activation. */
+    enabledAt: timestamp("enabled_at", { withTimezone: true }),
     futureClosedSessionsOnly: boolean("future_closed_sessions_only")
       .notNull()
       .default(true),
@@ -4058,6 +4060,409 @@ export const remoteAccountLinks = pgTable(
     check(
       "remote_account_links_no_implicit_sync_check",
       sql`not ${table.syncEnabled}`
+    )
+  ]
+);
+
+export const pdsSessionClosures = pgTable(
+  "pds_session_closures",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceSessionId: uuid("source_session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "restrict" }),
+    sourceSequence: text("source_sequence").notNull(),
+    terminalCursor: text("terminal_cursor").notNull(),
+    terminalItemCount: text("terminal_item_count").notNull(),
+    sourceClosureHash: text("source_closure_hash").notNull(),
+    packageId: text("package_id").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    state: text("state").notNull().default("ready"),
+    closedAt: timestamp("closed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_session_closure_session_unique").on(
+      table.groupId,
+      table.sourceSessionId
+    ),
+    unique("pds_session_closure_sequence_unique").on(
+      table.groupId,
+      table.sourceSequence
+    ),
+    unique("pds_session_closure_package_unique").on(
+      table.groupId,
+      table.packageId
+    ),
+    check(
+      "pds_session_closure_sequence_check",
+      sql`${table.sourceSequence} ~ '^(0|[1-9][0-9]*)$' and ${table.terminalCursor} ~ '^(0|[1-9][0-9]*)$' and ${table.terminalItemCount} ~ '^(0|[1-9][0-9]*)$'`
+    ),
+    check(
+      "pds_session_closure_state_check",
+      sql`${table.state} in ('ready','quarantined','revoked')`
+    )
+  ]
+);
+
+export const pdsOriginSequences = pgTable(
+  "pds_origin_sequences",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    originDeploymentId: text("origin_deployment_id").notNull(),
+    originDeviceId: text("origin_device_id").notNull(),
+    nextSequence: text("next_sequence").notNull().default("0"),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_origin_sequence_unique").on(
+      table.groupId,
+      table.originDeploymentId,
+      table.originDeviceId
+    ),
+    check(
+      "pds_origin_sequence_decimal_check",
+      sql`${table.nextSequence} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsRetainedPackages = pgTable(
+  "pds_retained_packages",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    packageId: text("package_id").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    originDeploymentId: text("origin_deployment_id").notNull(),
+    originDeviceId: text("origin_device_id").notNull(),
+    sourceSequence: text("source_sequence").notNull(),
+    encryptedEnvelope: jsonb("encrypted_envelope")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    state: text("state").notNull().default("ready"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_retained_package_unique").on(table.groupId, table.packageId),
+    unique("pds_retained_origin_sequence_unique").on(
+      table.groupId,
+      table.originDeploymentId,
+      table.originDeviceId,
+      table.sourceSequence
+    ),
+    check(
+      "pds_retained_package_sequence_check",
+      sql`${table.sourceSequence} ~ '^(0|[1-9][0-9]*)$'`
+    ),
+    check(
+      "pds_retained_package_state_check",
+      sql`${table.state} in ('ready','stale','quarantined','revoked')`
+    )
+  ]
+);
+
+export const pdsLogicalReplicas = pgTable(
+  "pds_logical_replicas",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    sourceFingerprint: text("source_fingerprint"),
+    closureHash: text("closure_hash").notNull(),
+    localSessionId: uuid("local_session_id").references(() => sessions.id, {
+      onDelete: "set null"
+    }),
+    materializationState: text("materialization_state")
+      .notNull()
+      .default("pending"),
+    conflictId: uuid("conflict_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_logical_replica_fingerprint_closure_unique").on(
+      table.groupId,
+      table.sourceFingerprint,
+      table.closureHash
+    ),
+    unique("pds_logical_replica_local_session_unique").on(table.localSessionId),
+    index("pds_logical_replica_recall_idx").on(
+      table.ownerUserId,
+      table.materializationState
+    ),
+    check(
+      "pds_logical_replica_state_check",
+      sql`${table.materializationState} in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')`
+    )
+  ]
+);
+
+export const pdsReplicaObservations = pgTable(
+  "pds_replica_observations",
+  {
+    id: id(),
+    replicaId: uuid("replica_id")
+      .notNull()
+      .references(() => pdsLogicalReplicas.id, { onDelete: "cascade" }),
+    retainedPackageId: uuid("retained_package_id")
+      .notNull()
+      .references(() => pdsRetainedPackages.id, { onDelete: "cascade" }),
+    originDeploymentId: text("origin_deployment_id").notNull(),
+    originDeviceId: text("origin_device_id").notNull(),
+    sourceSequence: text("source_sequence").notNull(),
+    sourceClosedAt: timestamp("source_closed_at", {
+      withTimezone: true
+    }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_replica_observation_origin_sequence_unique").on(
+      table.replicaId,
+      table.originDeploymentId,
+      table.originDeviceId,
+      table.sourceSequence
+    ),
+    unique("pds_replica_observation_package_unique").on(
+      table.retainedPackageId
+    ),
+    check(
+      "pds_replica_observation_sequence_check",
+      sql`${table.sourceSequence} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsOutboxEntries = pgTable(
+  "pds_outbox_entries",
+  {
+    id: id(),
+    closureId: uuid("closure_id")
+      .notNull()
+      .references(() => pdsSessionClosures.id, { onDelete: "cascade" }),
+    state: text("state").notNull().default("pending"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastErrorClass: text("last_error_class"),
+    transportId: text("transport_id"),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_outbox_closure_unique").on(table.closureId),
+    unique("pds_outbox_idempotency_unique").on(table.idempotencyKey),
+    index("pds_outbox_claim_idx").on(table.state, table.retryAt),
+    check(
+      "pds_outbox_state_check",
+      sql`${table.state} in ('pending','uploading','committed','acked','paused','failed','quarantined')`
+    ),
+    check("pds_outbox_attempt_count_check", sql`${table.attemptCount} >= 0`)
+  ]
+);
+
+export const pdsInboxEntries = pgTable(
+  "pds_inbox_entries",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    packageId: text("package_id").notNull(),
+    sourceManifestHash: text("source_manifest_hash").notNull(),
+    state: text("state").notNull().default("pending"),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    retryAt: timestamp("retry_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastErrorClass: text("last_error_class"),
+    retainedPackageId: uuid("retained_package_id").references(
+      () => pdsRetainedPackages.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_inbox_replay_unique").on(table.groupId, table.packageId),
+    index("pds_inbox_claim_idx").on(table.state, table.retryAt),
+    check(
+      "pds_inbox_state_check",
+      sql`${table.state} in ('pending','downloading','verifying','processing','ready','stale','failed','quarantined','revoked')`
+    ),
+    check("pds_inbox_attempt_count_check", sql`${table.attemptCount} >= 0`)
+  ]
+);
+
+export const pdsTransportMappings = pgTable(
+  "pds_transport_mappings",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    packageId: text("package_id").notNull(),
+    transportId: text("transport_id").notNull(),
+    direction: text("direction").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_transport_mapping_transport_unique").on(
+      table.groupId,
+      table.transportId
+    ),
+    unique("pds_transport_mapping_package_direction_unique").on(
+      table.groupId,
+      table.packageId,
+      table.direction
+    ),
+    check(
+      "pds_transport_mapping_direction_check",
+      sql`${table.direction} in ('outbound','inbound')`
+    )
+  ]
+);
+
+export const pdsOriginHighWaterMarks = pgTable(
+  "pds_origin_high_water_marks",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    originDeploymentId: text("origin_deployment_id").notNull(),
+    originDeviceId: text("origin_device_id").notNull(),
+    acceptedSequence: text("accepted_sequence").notNull().default("0"),
+    servedSequence: text("served_sequence").notNull().default("0"),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_origin_high_water_unique").on(
+      table.groupId,
+      table.originDeploymentId,
+      table.originDeviceId
+    ),
+    check(
+      "pds_origin_high_water_decimal_check",
+      sql`${table.acceptedSequence} ~ '^(0|[1-9][0-9]*)$' and ${table.servedSequence} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsConflicts = pgTable(
+  "pds_conflicts",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    sourceFingerprint: text("source_fingerprint").notNull(),
+    state: text("state").notNull().default("quarantined"),
+    resolutionStatementHash: text("resolution_statement_hash"),
+    createdAt: now(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true })
+  },
+  (table) => [
+    unique("pds_conflict_fingerprint_unique").on(
+      table.groupId,
+      table.sourceFingerprint
+    ),
+    check(
+      "pds_conflict_state_check",
+      sql`${table.state} in ('quarantined','resolved')`
+    )
+  ]
+);
+
+export const pdsSourceItemMappings = pgTable(
+  "pds_source_item_mappings",
+  {
+    id: id(),
+    closureId: uuid("closure_id").references(() => pdsSessionClosures.id, {
+      onDelete: "cascade"
+    }),
+    replicaId: uuid("replica_id").references(() => pdsLogicalReplicas.id, {
+      onDelete: "cascade"
+    }),
+    conversationItemId: uuid("conversation_item_id")
+      .notNull()
+      .references(() => conversationItems.id, { onDelete: "cascade" }),
+    sourceOrdinal: text("source_ordinal").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_source_item_mapping_item_unique").on(table.conversationItemId),
+    unique("pds_source_item_mapping_closure_ordinal_unique").on(
+      table.closureId,
+      table.sourceOrdinal
+    ),
+    unique("pds_source_item_mapping_replica_ordinal_unique").on(
+      table.replicaId,
+      table.sourceOrdinal
+    ),
+    check(
+      "pds_source_item_mapping_owner_check",
+      sql`(${table.closureId} is null) <> (${table.replicaId} is null)`
+    ),
+    check(
+      "pds_source_item_mapping_ordinal_check",
+      sql`${table.sourceOrdinal} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsWorkerHeartbeats = pgTable(
+  "pds_worker_heartbeats",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    workerId: text("worker_id").notNull(),
+    capability: text("capability").notNull(),
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_worker_heartbeat_unique").on(
+      table.groupId,
+      table.workerId,
+      table.capability
+    ),
+    check(
+      "pds_worker_heartbeat_capability_check",
+      sql`${table.capability} in ('source_publication','receiver_materialization')`
     )
   ]
 );

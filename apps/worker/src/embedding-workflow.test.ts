@@ -21,6 +21,7 @@ const workerEnv: WorkerEnvConfig = {
   rawProjectionActorLimit: 10,
   crossIdentitySyncIntervalMs: 1000,
   crossIdentitySyncStaleAfterSeconds: 86400,
+  pdsLocalSyncIntervalMs: 5000,
   koedHome: "/tmp/koed-test",
   historicalImport: {
     maxRows: 100,

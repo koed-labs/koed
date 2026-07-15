@@ -181,6 +181,7 @@ export {
   pdsDeletionFloorToken,
   pdsLogicalMemoryId,
   pdsProjectAliasToken,
+  pdsSessionPackageDigest,
   pdsSourceFingerprint,
   rewrapPdsSessionPackage,
   validatePdsRelayTransport,

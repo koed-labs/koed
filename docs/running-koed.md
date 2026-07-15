@@ -87,6 +87,23 @@ remote requests kept outside the locked mutation phase. Browser approval and
 upstream-side device credential revocation remain browser/session-mediated
 local-edge flows.
 
+## Personal Device Sync local data plane
+
+PDS local source publication is opt-in. Browser-authenticated PDS close/status/
+retry/pause routes are available only when Authority signer, envelope encryption,
+and injected secure PDS runtime path are complete. No environment variable or
+API Token can supply group/private keys. Missing provider, limited clone
+protection, expired authority context, or package incompatibility disables PDS
+transfer only; capture and Recall continue locally.
+
+Closing a Session seals terminal cursor/count/hash and creates durable encrypted
+outbox work. Worker leases resume uploads and inbox materialization after a
+crash or relay outage. Do not edit or append a closed source Session; start a
+new Captured Session. Replica source is read-only. Check local status through
+`GET /v1/personal-device-sync/groups/:groupId/local-status`; status is redacted
+and exposes only state counts/readiness, never package content, fingerprints,
+paths, or key references.
+
 ## Project metadata discovery
 
 Headless and Desktop flows can discover local Project metadata before linking a
