@@ -19,12 +19,14 @@ The uploaded Desktop artifact contains `Koed-<version>-arm64.dmg` and `Koed-<ver
 
 ## GitHub Release assets
 
-When the `Release` workflow creates a new GitHub Release, it also runs a macOS job that:
+When the `Release` workflow creates a new GitHub Release, it first creates it as a draft. It then runs a macOS job that:
 
 1. builds and validates the macOS arm64 native runtime;
 2. packages unsigned Desktop DMG/ZIP artifacts;
 3. runs packaged Desktop native smoke;
 4. uploads the unsigned DMG, ZIP, and `koed-desktop-macos-arm64-unsigned.sha256` checksum file to the GitHub Release.
+
+The workflow verifies the Desktop, standalone server, checksum, and release metadata assets before publishing the draft. A failed build therefore leaves a draft instead of a visible partial release. If only the Desktop asset job needs to be rebuilt, run `Recover Desktop release assets` with the existing release tag; it checks out that tag, repeats native-runtime validation and packaged smoke, replaces the Desktop assets, and publishes the release only when every required asset is present.
 
 These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
 

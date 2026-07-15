@@ -200,8 +200,18 @@ jobs:
           KOED_NATIVE_RUNTIME_VERSION: ${{ github.sha }}
         run: pnpm native-runtime:build:macos-arm64 -- --json
 
+      - name: Extract native runtime artifact for relocation validation
+        run: |
+          set -euo pipefail
+          runtime_root="${RUNNER_TEMP}/koed-native-runtime-validation"
+          mkdir -p "${runtime_root}"
+          tarball="$(find dist/native-runtime/macos-arm64 -name 'koed-native-runtime-macos-arm64-*.tar.gz' -print -quit)"
+          test -n "${tarball}"
+          tar -xzf "${tarball}" -C "${runtime_root}"
+          test -d "${runtime_root}/koed-runtime"
+
       - name: Validate native runtime artifact
-        run: pnpm native-runtime:validate -- --runtime-root dist/native-runtime/macos-arm64/koed-runtime --platform darwin --json
+        run: pnpm native-runtime:validate -- --runtime-root "${RUNNER_TEMP}/koed-native-runtime-validation/koed-runtime" --platform darwin --json
 
       - name: Upload native runtime artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
