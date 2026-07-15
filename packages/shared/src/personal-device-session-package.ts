@@ -957,75 +957,81 @@ const headerUnsigned = (
   >
 ): JsonRecord => ({ ...input });
 
-const validateHeader = (value: unknown): PdsSessionPackageHeader => {
-  const header = own(value, "transport header");
-  exact(
-    header,
-    [
-      "protocol",
-      "version",
-      "transportId",
-      "groupId",
-      "packageId",
-      "sourceManifestHash",
-      "originDeviceId",
-      "contentEpoch",
-      "recipientEpoch",
-      "plaintextByteCount",
-      "chunkCount",
-      "payloadNonce",
-      "payloadCiphertextHash",
-      "payloadTag",
-      "expiresAt",
-      "servingDeviceId",
-      "servingSigningKeyId",
-      "authorityHead",
-      "intendedRecipientSnapshot",
-      "intendedRecipientSnapshotHash",
-      "servingSignature"
-    ],
-    "transport header"
-  );
+const transportHeaderFields = [
+  "protocol",
+  "version",
+  "transportId",
+  "groupId",
+  "packageId",
+  "sourceManifestHash",
+  "originDeviceId",
+  "contentEpoch",
+  "recipientEpoch",
+  "plaintextByteCount",
+  "chunkCount",
+  "payloadNonce",
+  "payloadCiphertextHash",
+  "payloadTag",
+  "expiresAt",
+  "servingDeviceId",
+  "servingSigningKeyId",
+  "authorityHead",
+  "intendedRecipientSnapshot",
+  "intendedRecipientSnapshotHash",
+  "servingSignature"
+];
+
+const validateHeaderIdentity = (header: JsonRecord): void => {
+  exact(header, transportHeaderFields, "transport header");
   if (
     header.protocol !== PDS_PROTOCOL ||
     header.version !== PDS_SESSION_PACKAGE_VERSION
-  )
+  ) {
     throw new TypeError("PDS transport version is invalid");
+  }
   for (const field of [
     "transportId",
     "packageId",
     "sourceManifestHash",
     "authorityHead",
     "payloadCiphertextHash"
-  ])
+  ]) {
     requireHash(header[field], field);
+  }
   for (const field of [
     "groupId",
     "originDeviceId",
     "servingDeviceId",
     "servingSigningKeyId"
-  ])
+  ]) {
     requireId(header[field], field);
+  }
   for (const field of [
     "contentEpoch",
     "recipientEpoch",
     "plaintextByteCount",
     "chunkCount"
-  ])
+  ]) {
     requireUint64(header[field], field);
+  }
+  const byteCount = parsePdsUint64(header.plaintextByteCount as string);
+  const chunkCount = parsePdsUint64(header.chunkCount as string);
   if (
-    parsePdsUint64(header.plaintextByteCount as string) >
-      BigInt(PDS_SESSION_PACKAGE_MAX_BYTES) ||
-    parsePdsUint64(header.chunkCount as string) < 1n ||
-    parsePdsUint64(header.chunkCount as string) >
-      BigInt(PDS_SESSION_PACKAGE_MAX_CHUNKS)
-  )
+    byteCount > BigInt(PDS_SESSION_PACKAGE_MAX_BYTES) ||
+    chunkCount < 1n ||
+    chunkCount > BigInt(PDS_SESSION_PACKAGE_MAX_CHUNKS)
+  ) {
     throw new RangeError("PDS transport bounds are invalid");
+  }
   requireHash(header.payloadNonce, "payload nonce", 12);
   requireHash(header.payloadTag, "payload tag", 16);
   requireIso(header.expiresAt, "transport expiry");
-  if (!Array.isArray(header.intendedRecipientSnapshot))
+};
+
+const validateHeaderSnapshot = (header: JsonRecord): void => {
+  if (!Array.isArray(header.intendedRecipientSnapshot)) {
     throw new TypeError("PDS recipient snapshot is invalid");
+  }
   const snapshot = header.intendedRecipientSnapshot.map((id) =>
     requireId(id, "recipient snapshot member")
   );
@@ -1033,10 +1039,17 @@ const validateHeader = (value: unknown): PdsSessionPackageHeader => {
   if (
     sha256(bytes(snapshot)) !==
     requireHash(header.intendedRecipientSnapshotHash, "recipient snapshot hash")
-  )
+  ) {
     throw new TypeError("PDS recipient snapshot hash is invalid");
+  }
   signature(header.servingSignature);
   assertControlSize(header, "transport header");
+};
+
+const validateHeader = (value: unknown): PdsSessionPackageHeader => {
+  const header = own(value, "transport header");
+  validateHeaderIdentity(header);
+  validateHeaderSnapshot(header);
   return header as unknown as PdsSessionPackageHeader;
 };
 
@@ -1139,25 +1152,21 @@ export const pdsSessionPackageDigest = (
   value: Omit<PdsSessionPackage, "packageDigest">
 ): string => sha256(bytes(packagePreimage(value)));
 
-export const validatePdsSessionPackage = (
-  value: unknown
-): PdsSessionPackage => {
-  const pkg = own(value, "session package");
-  exact(
-    pkg,
-    ["header", "envelopes", "chunks", "packageDigest"],
-    "session package"
-  );
-  const header = validateHeader(pkg.header);
+const validatePackageEnvelopes = (
+  value: unknown,
+  header: PdsSessionPackageHeader
+): PdsSessionRecipientEnvelope[] => {
   if (
-    !Array.isArray(pkg.envelopes) ||
-    pkg.envelopes.length !== header.intendedRecipientSnapshot.length
-  )
+    !Array.isArray(value) ||
+    value.length !== header.intendedRecipientSnapshot.length
+  ) {
     throw new TypeError("PDS recipient envelopes are invalid");
-  const envelopes = pkg.envelopes.map(validateEnvelope);
+  }
+  const envelopes = value.map(validateEnvelope);
   const recipients = envelopes.map((envelope) => envelope.recipientDeviceId);
-  if (recipients.join("\0") !== header.intendedRecipientSnapshot.join("\0"))
+  if (recipients.join("\0") !== header.intendedRecipientSnapshot.join("\0")) {
     throw new TypeError("PDS recipient envelopes do not match snapshot");
+  }
   for (const envelope of envelopes) {
     if (
       envelope.transportId !== header.transportId ||
@@ -1170,12 +1179,17 @@ export const validatePdsSessionPackage = (
       throw new TypeError("PDS recipient envelope binding is invalid");
     }
   }
-  if (
-    !Array.isArray(pkg.chunks) ||
-    pkg.chunks.length !== Number(header.chunkCount)
-  )
+  return envelopes;
+};
+
+const validatePackageChunks = (
+  value: unknown,
+  header: PdsSessionPackageHeader
+): PdsSessionPackageChunk[] => {
+  if (!Array.isArray(value) || value.length !== Number(header.chunkCount)) {
     throw new TypeError("PDS package chunks are incomplete");
-  const chunks = pkg.chunks.map((chunk, index) =>
+  }
+  const chunks = value.map((chunk, index) =>
     validateChunk(chunk, index, header)
   );
   const ciphertext = Buffer.concat(
@@ -1186,12 +1200,56 @@ export const validatePdsSessionPackage = (
     sha256(
       Buffer.concat([ciphertext, decodePdsBase64url(header.payloadTag, 16)])
     ) !== header.payloadCiphertextHash
-  )
+  ) {
     throw new TypeError("PDS package ciphertext hash is invalid");
+  }
+  return chunks;
+};
+
+export const validatePdsSessionPackage = (
+  value: unknown
+): PdsSessionPackage => {
+  const pkg = own(value, "session package");
+  exact(
+    pkg,
+    ["header", "envelopes", "chunks", "packageDigest"],
+    "session package"
+  );
+  const header = validateHeader(pkg.header);
+  const envelopes = validatePackageEnvelopes(pkg.envelopes, header);
+  const chunks = validatePackageChunks(pkg.chunks, header);
   const digest = requireHash(pkg.packageDigest, "package digest");
-  if (digest !== pdsSessionPackageDigest({ header, envelopes, chunks }))
+  if (digest !== pdsSessionPackageDigest({ header, envelopes, chunks })) {
     throw new TypeError("PDS package digest is invalid");
+  }
   return { header, envelopes, chunks, packageDigest: digest };
+};
+
+type UnsignedRecipientEnvelope = Omit<
+  PdsSessionRecipientEnvelope,
+  "servingSignature"
+>;
+
+const encryptRecipientCek = (
+  cek: Buffer,
+  groupId: string,
+  recipientPublicKey: string,
+  ephemeral: KeyObject,
+  envelope: UnsignedRecipientEnvelope
+): void => {
+  const key = envelopeKey(
+    sharedSecret(ephemeral, x25519PublicKey(recipientPublicKey)),
+    groupId,
+    envelope
+  );
+  const encrypted = aesEncrypt(
+    key,
+    cek,
+    decodePdsBase64url(envelope.nonce, 12),
+    envelopeAad(envelope)
+  );
+  envelope.ciphertext = encrypted.ciphertext.toString("base64url");
+  envelope.tag = encrypted.tag.toString("base64url");
 };
 
 const recipientEnvelope = (input: {
@@ -1202,7 +1260,7 @@ const recipientEnvelope = (input: {
   servingSigningPrivateKey: KeyObject;
 }): PdsSessionRecipientEnvelope => {
   const ephemeral = generatedX25519();
-  const unsigned = {
+  const unsigned: UnsignedRecipientEnvelope = {
     protocol: PDS_PROTOCOL,
     version: PDS_SESSION_PACKAGE_VERSION,
     transportId: input.header.transportId,
@@ -1217,22 +1275,13 @@ const recipientEnvelope = (input: {
     ciphertext: "",
     tag: ""
   };
-  const key = envelopeKey(
-    sharedSecret(
-      ephemeral.privateKey,
-      x25519PublicKey(input.recipient.kemPublicKey)
-    ),
+  encryptRecipientCek(
+    input.cek,
     input.groupId,
+    input.recipient.kemPublicKey,
+    ephemeral.privateKey,
     unsigned
   );
-  const encrypted = aesEncrypt(
-    key,
-    input.cek,
-    decodePdsBase64url(unsigned.nonce, 12),
-    envelopeAad(unsigned)
-  );
-  unsigned.ciphertext = encrypted.ciphertext.toString("base64url");
-  unsigned.tag = encrypted.tag.toString("base64url");
   return {
     ...unsigned,
     servingSignature: {

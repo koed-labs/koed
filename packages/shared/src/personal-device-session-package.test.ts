@@ -314,6 +314,12 @@ describe("PDS origin-signed session package", () => {
     expect(() =>
       verifyAndDecryptPdsSessionPackage(pkg, {
         ...verify,
+        servingDeviceId: "device-other"
+      })
+    ).toThrow();
+    expect(() =>
+      verifyAndDecryptPdsSessionPackage(pkg, {
+        ...verify,
         servingDeviceId: "wrong-member"
       })
     ).toThrow();
@@ -380,6 +386,9 @@ describe("PDS origin-signed session package", () => {
     const tag = structuredClone(pkg);
     tag.envelopes[0]!.tag = "AA";
     expect(() => validatePdsSessionPackage(tag)).toThrow();
+    const version = structuredClone(pkg);
+    version.chunks[0]!.version = "2" as "1";
+    expect(() => validatePdsSessionPackage(version)).toThrow();
     const changedId = structuredClone(pkg);
     changedId.header.transportId = Buffer.alloc(32, 2).toString("base64url");
     expect(() => digest(changedId)).toThrow();
@@ -414,6 +423,9 @@ describe("PDS origin-signed session package", () => {
       "base64url"
     );
     expect(() => validatePdsSessionManifest(mutated)).toThrow();
+    const open = structuredClone(manifest);
+    open.closedSession.closed = false as true;
+    expect(() => validatePdsSessionManifest(open)).toThrow();
   });
 
   it("rejects Session paths, credentials, vectors, derived state, and unknown source metadata", () => {
