@@ -17,6 +17,8 @@ export interface PdsWorkerSecureRuntime {
     packageId: string;
     sourceManifestHash: string;
   }): Promise<{ state: "committed" | "acked"; transportId?: string }>;
+  /** Durable lifecycle controls run before mailbox, publication, or Recall work. */
+  pollLifecycle?(): Promise<void>;
   poll(): Promise<
     Array<{
       userId: string;
@@ -116,6 +118,7 @@ export const createPdsLocalSyncService = (input: {
           })
         ]);
       }
+      await input.secureRuntime.pollLifecycle?.();
       for (const incoming of await input.secureRuntime.poll()) {
         await input.repository.receivePdsInbox(incoming);
       }

@@ -210,8 +210,16 @@ export class PdsRelayClient {
     return this.request("POST", `${relayPath}/acks`, ack);
   }
 
-  lifecycle(): Promise<unknown> {
-    return this.request("GET", `${relayPath}/lifecycle`);
+  certificate(): Promise<unknown> {
+    return this.request("GET", `${relayPath}/certificate`);
+  }
+
+  lifecycle(cursor?: string, limit = 50): Promise<unknown> {
+    const query = new URLSearchParams({
+      limit: String(Math.min(Math.max(limit, 1), 100))
+    });
+    if (cursor) query.set("cursor", cursor);
+    return this.request("GET", `${relayPath}/lifecycle?${query.toString()}`);
   }
 
   acknowledgeTombstone(ack: unknown): Promise<unknown> {

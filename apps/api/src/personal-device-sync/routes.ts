@@ -869,8 +869,11 @@ export const registerPersonalDeviceSyncRoutes = (
         sequence: statement.draft.sequence as string,
         statementHash: pdsFinalizedStatementHash(finalizedStatement),
         canonicalStatement: canonicalizePdsJson(finalizedStatement),
+        canonicalRecord: canonicalizePdsJson(finalRecord),
         tombstoneHash,
         tombstoneSequence: draftRecord.tombstoneSequence as string,
+        sourceFingerprint: draftRecord.sourceFingerprint as string,
+        closureHashes: draftRecord.closureHashes as string[],
         logicalMemoryId: draftRecord.logicalMemoryId as string,
         deletionFloorToken: draftRecord.deletionFloorToken as string,
         activeDeviceSnapshot: expectedSnapshot,
@@ -882,6 +885,10 @@ export const registerPersonalDeviceSyncRoutes = (
         throw pdsError("Personal Device Group not found", 404);
       if (outcome === "conflict")
         throw pdsError("PDS tombstone conflicts with current lifecycle", 409);
+      // Same epoch; head-bound certificates are reissued for every active device.
+      const refreshed = await repo().getPersonalDeviceGroup(user.id, groupId);
+      if (!refreshed) throw pdsError("Personal Device Group not found", 404);
+      await issueMembershipCertificates(context, user.id, refreshed, signer);
       return {
         tombstone: finalRecord,
         statement: finalizedStatement,
@@ -987,6 +994,9 @@ export const registerPersonalDeviceSyncRoutes = (
       });
       if (outcome === "missing")
         throw pdsError("PDS conflict candidates are unavailable", 409);
+      const refreshed = await repo().getPersonalDeviceGroup(user.id, groupId);
+      if (!refreshed) throw pdsError("Personal Device Group not found", 404);
+      await issueMembershipCertificates(context, user.id, refreshed, signer);
       return {
         resolution: finalRecord,
         statement: finalizedStatement,
@@ -1078,6 +1088,20 @@ export const registerPersonalDeviceSyncRoutes = (
       });
       if (!keyBundle) throw pdsError("PDS key bundle is unavailable", 404);
       return { key_bundle: parseCanonicalPdsJson(keyBundle) };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/groups/:groupId/certificates/refresh",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const signer = pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      const group = await repo().getPersonalDeviceGroup(user.id, groupId);
+      if (!group || group.state !== "active" || group.pendingEpoch !== null)
+        throw pdsError("PDS membership certificate is unavailable", 409);
+      await issueMembershipCertificates(context, user.id, group, signer);
+      return { group: publicGroup(group), refreshed: true };
     }
   );
   app.get(
@@ -1198,6 +1222,7 @@ export const registerPersonalDeviceSyncRoutes = (
             sourceClosureHash: built.sourceClosureHash,
             packageId,
             sourceManifestHash,
+            sourceFingerprint: built.sourceFingerprint,
             logicalMemoryId: built.logicalMemoryId,
             deletionFloorToken: built.deletionFloorToken,
             encryptedEnvelope: await envelope.encrypt({

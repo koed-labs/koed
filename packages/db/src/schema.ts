@@ -4150,6 +4150,8 @@ export const pdsRetainedPackages = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     packageId: text("package_id").notNull(),
     sourceManifestHash: text("source_manifest_hash").notNull(),
+    sourceFingerprint: text("source_fingerprint"),
+    sourceClosureHash: text("source_closure_hash"),
     originDeploymentId: text("origin_deployment_id").notNull(),
     originDeviceId: text("origin_device_id").notNull(),
     sourceSequence: text("source_sequence").notNull(),
@@ -4426,6 +4428,9 @@ export const pdsTombstoneLedger = pgTable(
     encryptedRecord: jsonb("encrypted_record")
       .$type<Record<string, unknown>>()
       .notNull(),
+    /** Signed opaque control bytes. Never Memory plaintext. */
+    canonicalRecord: text("canonical_record").notNull(),
+    statementSequence: text("statement_sequence").notNull(),
     activeDeviceSnapshot: text("active_device_snapshot").array().notNull(),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     quorumCompletedAt: timestamp("quorum_completed_at", { withTimezone: true }),
@@ -4442,9 +4447,13 @@ export const pdsTombstoneLedger = pgTable(
       table.tombstoneHash
     ),
     index("pds_tombstone_ledger_retention_idx").on(table.retainUntil),
+    index("pds_tombstone_ledger_control_idx").on(
+      table.groupId,
+      table.statementSequence
+    ),
     check(
       "pds_tombstone_ledger_sequence_check",
-      sql`${table.tombstoneSequence} ~ '^(0|[1-9][0-9]*)$'`
+      sql`${table.tombstoneSequence} ~ '^(0|[1-9][0-9]*)$' and ${table.statementSequence} ~ '^(0|[1-9][0-9]*)$'`
     )
   ]
 );
@@ -4574,6 +4583,7 @@ export const pdsConflictResolutionRecords = pgTable(
     selectedClosureHash: text("selected_closure_hash"),
     candidateClosureHashes: text("candidate_closure_hashes").array().notNull(),
     canonicalRecord: text("canonical_record").notNull(),
+    statementSequence: text("statement_sequence").notNull(),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     createdAt: now()
   },
@@ -4585,6 +4595,10 @@ export const pdsConflictResolutionRecords = pgTable(
     unique("pds_conflict_resolution_hash_unique").on(
       table.groupId,
       table.resolutionHash
+    ),
+    index("pds_conflict_resolution_control_idx").on(
+      table.groupId,
+      table.statementSequence
     ),
     check(
       "pds_conflict_resolution_kind_check",

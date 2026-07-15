@@ -82,6 +82,52 @@ describe("PDS relay routes", () => {
     await app.close();
   });
 
+  it("serves Authority lifecycle controls through prior-head control authentication", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const publicKey = keys.publicKey.export({ format: "jwk" }).x!;
+    const authenticatePdsRelayRequest = vi.fn(async () => ({
+      groupDbId: "group-db",
+      groupId: "group",
+      headHash: "head",
+      epoch: "1",
+      deviceId,
+      signingKeyId,
+      signingPublicKey: publicKey,
+      recipientDeviceIds: [deviceId],
+      certificate: {}
+    }));
+    const repository = {
+      authenticatePdsRelayRequest,
+      consumePdsRelayRequestNonce: vi.fn(async () => undefined),
+      getPdsLifecycleControl: vi.fn(async () => ({
+        authorityHead: { sequence: "2", hash: "head", statement: "{}" },
+        deletionFloors: [],
+        controls: [],
+        nextCursor: null
+      }))
+    };
+    const app = Fastify();
+    registerPersonalDeviceSyncRelayRoutes(app, relayContext(repository));
+    const target = "/v1/personal-device-sync/relay/lifecycle?limit=1";
+    const response = await app.inject({
+      method: "GET",
+      url: target,
+      headers: {
+        "x-pds-membership-certificate": certificate,
+        "x-pds-relay-proof": relayProof({
+          privateKey: keys.privateKey,
+          target,
+          nonce: Buffer.alloc(32, 2).toString("base64url")
+        })
+      }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(authenticatePdsRelayRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ allowStaleHead: true })
+    );
+    await app.close();
+  });
+
   it("binds proof query exactly and rejects nonce replay", async () => {
     const keys = generateKeyPairSync("ed25519");
     const publicKey = keys.publicKey.export({ format: "jwk" }).x!;

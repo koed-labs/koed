@@ -21,6 +21,7 @@ CREATE TABLE "pds_conflict_resolution_records" (
 	"selected_closure_hash" text,
 	"candidate_closure_hashes" text[] NOT NULL,
 	"canonical_record" text NOT NULL,
+	"statement_sequence" text NOT NULL,
 	"issued_at" timestamp with time zone NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "pds_conflict_resolution_fingerprint_unique" UNIQUE("group_id","source_fingerprint"),
@@ -176,6 +177,8 @@ CREATE TABLE "pds_retained_packages" (
 	"owner_user_id" uuid NOT NULL,
 	"package_id" text NOT NULL,
 	"source_manifest_hash" text NOT NULL,
+	"source_fingerprint" text,
+	"source_closure_hash" text,
 	"origin_deployment_id" text NOT NULL,
 	"origin_device_id" text NOT NULL,
 	"source_sequence" text NOT NULL,
@@ -250,6 +253,8 @@ CREATE TABLE "pds_tombstone_ledger" (
 	"tombstone_sequence" text NOT NULL,
 	"statement_hash" text NOT NULL,
 	"encrypted_record" jsonb NOT NULL,
+	"canonical_record" text NOT NULL,
+	"statement_sequence" text NOT NULL,
 	"active_device_snapshot" text[] NOT NULL,
 	"issued_at" timestamp with time zone NOT NULL,
 	"quorum_completed_at" timestamp with time zone,
@@ -257,7 +262,7 @@ CREATE TABLE "pds_tombstone_ledger" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "pds_tombstone_ledger_group_floor_unique" UNIQUE("group_id","deletion_floor_token"),
 	CONSTRAINT "pds_tombstone_ledger_hash_unique" UNIQUE("group_id","tombstone_hash"),
-	CONSTRAINT "pds_tombstone_ledger_sequence_check" CHECK ("pds_tombstone_ledger"."tombstone_sequence" ~ '^(0|[1-9][0-9]*)$')
+	CONSTRAINT "pds_tombstone_ledger_sequence_check" CHECK ("pds_tombstone_ledger"."tombstone_sequence" ~ '^(0|[1-9][0-9]*)$' and "pds_tombstone_ledger"."statement_sequence" ~ '^(0|[1-9][0-9]*)$')
 );
 --> statement-breakpoint
 CREATE TABLE "pds_transport_mappings" (
@@ -605,12 +610,14 @@ ALTER TABLE "pds_relay_cursors" ADD CONSTRAINT "pds_relay_cursors_group_id_perso
 ALTER TABLE "pds_relay_recipients" ADD CONSTRAINT "pds_relay_recipients_transport_id_pds_relay_transports_id_fk" FOREIGN KEY ("transport_id") REFERENCES "public"."pds_relay_transports"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_relay_request_nonces" ADD CONSTRAINT "pds_relay_request_nonces_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pds_relay_transports" ADD CONSTRAINT "pds_relay_transports_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "pds_conflict_resolution_control_idx" ON "pds_conflict_resolution_records" USING btree ("group_id","statement_sequence");--> statement-breakpoint
 CREATE INDEX "pds_inbox_claim_idx" ON "pds_inbox_entries" USING btree ("state","retry_at");--> statement-breakpoint
 CREATE INDEX "pds_logical_replica_recall_idx" ON "pds_logical_replicas" USING btree ("owner_user_id","materialization_state");--> statement-breakpoint
 CREATE INDEX "pds_outbox_claim_idx" ON "pds_outbox_entries" USING btree ("state","retry_at");--> statement-breakpoint
 CREATE INDEX "pds_restore_reconciliation_group_created_idx" ON "pds_restore_reconciliations" USING btree ("group_id","created_at");--> statement-breakpoint
 CREATE INDEX "pds_retained_packages_floor_idx" ON "pds_retained_packages" USING btree ("group_id","deletion_floor_token");--> statement-breakpoint
 CREATE INDEX "pds_tombstone_ledger_retention_idx" ON "pds_tombstone_ledger" USING btree ("retain_until");--> statement-breakpoint
+CREATE INDEX "pds_tombstone_ledger_control_idx" ON "pds_tombstone_ledger" USING btree ("group_id","statement_sequence");--> statement-breakpoint
 CREATE INDEX "personal_device_enrollment_challenge_active_idx" ON "personal_device_enrollment_challenges" USING btree ("user_id","expires_at") WHERE "personal_device_enrollment_challenges"."used_at" is null;--> statement-breakpoint
 CREATE INDEX "personal_device_group_members_active_idx" ON "personal_device_group_members" USING btree ("group_id","status");--> statement-breakpoint
 CREATE INDEX "personal_device_membership_certificate_active_idx" ON "personal_device_membership_certificates" USING btree ("group_id","expires_at") WHERE "personal_device_membership_certificates"."revoked_at" is null;--> statement-breakpoint

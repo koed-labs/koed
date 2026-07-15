@@ -40,7 +40,11 @@ const b64hash = (value: unknown, label: string): string => {
   return value;
 };
 
-const authenticate = async (request: RawRequest, context: ApiRouteContext) => {
+const authenticate = async (
+  request: RawRequest,
+  context: ApiRouteContext,
+  allowStaleHead = false
+) => {
   if (
     request.headers["content-encoding"] &&
     request.headers["content-encoding"] !== "identity"
@@ -65,7 +69,11 @@ const authenticate = async (request: RawRequest, context: ApiRouteContext) => {
   const relay = context.requireRepository();
   let auth;
   try {
-    auth = await relay.authenticatePdsRelayRequest({ certificate, proof });
+    auth = await relay.authenticatePdsRelayRequest({
+      certificate,
+      proof,
+      allowStaleHead
+    });
   } catch {
     throw unavailable();
   }
@@ -313,14 +321,49 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     return { accepted: true };
   });
   app.get(
+    "/v1/personal-device-sync/relay/certificate",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context, true);
+      return {
+        certificate: parseCanonicalPdsJson(
+          await input.relay.getPdsRelayCurrentCertificate(input.auth)
+        )
+      };
+    }
+  );
+  app.get(
     "/v1/personal-device-sync/relay/lifecycle",
     { preHandler: context.rateLimit.memoryRead },
     async (request) => {
       if (!context.personalDeviceSync.authoritySigner)
         throw error("Personal Device Sync relay is unavailable", 503);
-      const input = await authenticate(request as RawRequest, context);
+      const input = await authenticate(request as RawRequest, context, true);
+      const query = request.query as { cursor?: string; limit?: string };
+      const parsed = Number(query.limit ?? "50");
+      const limit =
+        Number.isInteger(parsed) && parsed > 0 && parsed <= 100 ? parsed : 50;
+      const lifecycle = await input.relay.getPdsLifecycleControl({
+        ...input.auth,
+        cursor:
+          typeof query.cursor === "string" &&
+          /^(0|[1-9][0-9]*)$/.test(query.cursor)
+            ? query.cursor
+            : "0",
+        limit
+      });
       return {
-        deletion_floors: await input.relay.getPdsLifecycleForRelay(input.auth)
+        authority_head: lifecycle.authorityHead,
+        deletion_floors: lifecycle.deletionFloors,
+        controls: lifecycle.controls.map((control) => ({
+          sequence: control.sequence,
+          kind: control.kind,
+          record: parseCanonicalPdsJson(control.record),
+          statement: parseCanonicalPdsJson(control.statement)
+        })),
+        next_cursor: lifecycle.nextCursor
       };
     }
   );
@@ -330,7 +373,7 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     async (request) => {
       if (!context.personalDeviceSync.authoritySigner)
         throw error("Personal Device Sync relay is unavailable", 503);
-      const input = await authenticate(request as RawRequest, context);
+      const input = await authenticate(request as RawRequest, context, true);
       const ack = body(request as RawRequest);
       if (typeof ack.tombstoneHash !== "string")
         throw error("PDS tombstone acknowledgement is invalid");

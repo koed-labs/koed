@@ -1,5 +1,5 @@
 {
-  "id": "c3cb36a4-06af-4c0f-9e21-958561752cac",
+  "id": "53248116-a0bd-473d-bef7-1fa9264b35d0",
   "prevId": "971958da-47ff-4e5b-a08b-1b67b5fff9e2",
   "version": "7",
   "dialect": "postgresql",
@@ -8988,6 +8988,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "statement_sequence": {
+          "name": "statement_sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "issued_at": {
           "name": "issued_at",
           "type": "timestamp with time zone",
@@ -9002,7 +9008,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "pds_conflict_resolution_control_idx": {
+          "name": "pds_conflict_resolution_control_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "statement_sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "pds_conflict_resolution_records_group_id_personal_device_groups_id_fk": {
           "name": "pds_conflict_resolution_records_group_id_personal_device_groups_id_fk",
@@ -10233,6 +10261,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "source_fingerprint": {
+          "name": "source_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_closure_hash": {
+          "name": "source_closure_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "origin_deployment_id": {
           "name": "origin_deployment_id",
           "type": "text",
@@ -10826,6 +10866,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "canonical_record": {
+          "name": "canonical_record",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "statement_sequence": {
+          "name": "statement_sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "active_device_snapshot": {
           "name": "active_device_snapshot",
           "type": "text[]",
@@ -10864,6 +10916,27 @@
           "columns": [
             {
               "expression": "retain_until",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pds_tombstone_ledger_control_idx": {
+          "name": "pds_tombstone_ledger_control_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "statement_sequence",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -10913,7 +10986,7 @@
       "checkConstraints": {
         "pds_tombstone_ledger_sequence_check": {
           "name": "pds_tombstone_ledger_sequence_check",
-          "value": "\"pds_tombstone_ledger\".\"tombstone_sequence\" ~ '^(0|[1-9][0-9]*)$'"
+          "value": "\"pds_tombstone_ledger\".\"tombstone_sequence\" ~ '^(0|[1-9][0-9]*)$' and \"pds_tombstone_ledger\".\"statement_sequence\" ~ '^(0|[1-9][0-9]*)$'"
         }
       },
       "isRLSEnabled": false

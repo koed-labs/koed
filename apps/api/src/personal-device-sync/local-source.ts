@@ -20,6 +20,7 @@ export interface PdsSecureSourceKeyContext {
     package: PdsSessionPackage;
     sourceClosureHash: string;
     sourceManifestHash: string;
+    sourceFingerprint: string;
     logicalMemoryId: string;
     deletionFloorToken: string;
   }>;

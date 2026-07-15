@@ -1,4 +1,5 @@
 import pg from "pg";
+import { invalidateDerivedMemoryForMemoryEvents } from "./derived-memory-invalidation.js";
 
 export type PdsMaterializationState =
   | "pending"
@@ -129,6 +130,7 @@ export interface PersonalDeviceSyncLocalRepository {
       sourceClosureHash: string;
       packageId: string;
       sourceManifestHash: string;
+      sourceFingerprint: string;
       logicalMemoryId: string;
       deletionFloorToken: string;
       encryptedEnvelope: unknown;
@@ -221,6 +223,8 @@ export interface PersonalDeviceSyncLocalRepository {
     sourceSequence: string;
     logicalMemoryId?: string;
     deletionFloorToken?: string;
+    sourceFingerprint?: string;
+    sourceClosureHash?: string;
     encryptedEnvelope: unknown;
   }): Promise<{ retainedPackageId: string; state: PdsMaterializationState }>;
   materializePdsReplica(input: {
@@ -480,8 +484,8 @@ export const createPersonalDeviceSyncLocalRepository = (
       const closureRow = closure.rows[0]!;
       await client.query(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,encrypted_envelope)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,encrypted_envelope)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
         [
           groupRow.id,
           input.userId,
@@ -492,6 +496,8 @@ export const createPersonalDeviceSyncLocalRepository = (
           sourceSequence,
           built.logicalMemoryId,
           built.deletionFloorToken,
+          built.sourceFingerprint,
+          built.sourceClosureHash,
           JSON.stringify(built.encryptedEnvelope)
         ]
       );
@@ -821,15 +827,16 @@ export const createPersonalDeviceSyncLocalRepository = (
          where o.replica_id=r.id and p.state='revoked' and r.group_id=(select id from personal_device_groups where group_id=$1)`,
         [input.groupId]
       );
-      await client.query(
+      const invalidatedEvents = await client.query<{ id: string }>(
         `update memory_events set invalidated_at=coalesce(invalidated_at,now()),invalidation_reason=coalesce(invalidation_reason,'pds_tombstone'),updated_at=now()
-         where session_id in (select local_session_id from pds_logical_replicas where group_id=(select id from personal_device_groups where group_id=$1) and materialization_state='revoked' and local_session_id is not null)`,
+         where session_id in (select local_session_id from pds_logical_replicas where group_id=(select id from personal_device_groups where group_id=$1) and materialization_state='revoked' and local_session_id is not null)
+         returning id`,
         [input.groupId]
       );
-      await client.query(
-        `update memory_nodes set invalidated_at=coalesce(invalidated_at,now()),invalidation_reason=coalesce(invalidation_reason,'pds_tombstone'),updated_at=now()
-         where exists (select 1 from memory_node_sources ns join memory_events me on me.id=ns.memory_event_id
-                       where ns.memory_node_id=memory_nodes.id and me.invalidation_reason='pds_tombstone')`
+      await invalidateDerivedMemoryForMemoryEvents(
+        client,
+        invalidatedEvents.rows.map((item) => item.id),
+        "pds_tombstone"
       );
       await client.query("commit");
       return affected.rowCount ?? 0;
@@ -846,9 +853,12 @@ export const createPersonalDeviceSyncLocalRepository = (
     const client = await pool.connect();
     try {
       await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `pds-lifecycle:${input.groupId}`
+      ]);
       const group = await client.query<{ id: string }>(
         `select g.id from personal_device_groups g join local_personal_identities i on i.id=g.local_personal_identity_id
-         where i.owner_user_id=$1 and g.group_id=$2`,
+         where i.owner_user_id=$1 and g.group_id=$2 for update of g`,
         [input.userId, input.groupId]
       );
       const groupId = group.rows[0]?.id;
@@ -858,8 +868,9 @@ export const createPersonalDeviceSyncLocalRepository = (
         state: PdsMaterializationState;
       }>(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,encrypted_envelope)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,source_fingerprint,source_closure_hash,encrypted_envelope,state)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,
+           case when exists (select 1 from pds_deletion_floors f where f.group_id=$1 and f.logical_memory_id=$8 and f.deletion_floor_token=$9) then 'revoked' else 'ready' end)
          on conflict (group_id,package_id) do update set updated_at=now()
          returning id,state`,
         [
@@ -872,6 +883,8 @@ export const createPersonalDeviceSyncLocalRepository = (
           input.sourceSequence,
           input.logicalMemoryId ?? null,
           input.deletionFloorToken ?? null,
+          input.sourceFingerprint ?? null,
+          input.sourceClosureHash ?? null,
           JSON.stringify(input.encryptedEnvelope)
         ]
       );
@@ -897,6 +910,9 @@ export const createPersonalDeviceSyncLocalRepository = (
     try {
       await client.query("begin");
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `pds-lifecycle:${input.groupId}`
+      ]);
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
         `pds-materialize:${input.groupId}:${input.sourceFingerprint ?? input.closureHash}`
       ]);
       const group = await client.query<{ id: string }>(
@@ -906,6 +922,30 @@ export const createPersonalDeviceSyncLocalRepository = (
       );
       const groupId = group.rows[0]?.id;
       if (!groupId) throw new Error("PDS group is unavailable");
+      const retained = await client.query<{ state: PdsMaterializationState }>(
+        `select p.state from pds_retained_packages p
+         left join pds_deletion_floors f on f.group_id=p.group_id
+           and f.logical_memory_id=p.logical_memory_id
+           and f.deletion_floor_token=p.deletion_floor_token
+         where p.id=$1 and p.group_id=$2 for update`,
+        [input.retainedPackageId, groupId]
+      );
+      if (!retained.rowCount || retained.rows[0]!.state === "revoked")
+        throw new Error("PdsCryptoFloorError");
+      const floored = await client.query(
+        `select 1 from pds_retained_packages p join pds_deletion_floors f
+           on f.group_id=p.group_id and f.logical_memory_id=p.logical_memory_id
+           and f.deletion_floor_token=p.deletion_floor_token
+         where p.id=$1 for share`,
+        [input.retainedPackageId]
+      );
+      if (floored.rowCount) {
+        await client.query(
+          "update pds_retained_packages set state='revoked',updated_at=now() where id=$1",
+          [input.retainedPackageId]
+        );
+        throw new Error("PdsCryptoFloorError");
+      }
       let conflict = false;
       if (input.sourceFingerprint) {
         const variants = await client.query<{ closure_hash: string }>(

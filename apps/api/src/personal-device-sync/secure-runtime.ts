@@ -148,6 +148,7 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
         package: pkg,
         sourceClosureHash: manifest.sourceClosureHash,
         sourceManifestHash: pkg.header.sourceManifestHash,
+        sourceFingerprint: manifest.sourceFingerprint,
         logicalMemoryId: manifest.logicalMemoryId,
         deletionFloorToken: manifest.deletionFloorToken
       });

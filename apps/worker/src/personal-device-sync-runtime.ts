@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { MemorySourceRepository } from "@koed/db";
 import {
   PDS_PROTOCOL,
@@ -8,8 +9,12 @@ import {
   parseCanonicalPdsJson,
   parsePdsSessionPackageJson,
   pdsEd25519PrivateKey,
+  pdsFinalizedStatementHash,
   pdsSessionPackageDigest,
   signPdsRecord,
+  validatePdsConflictResolution,
+  validatePdsGroupStatement,
+  validatePdsTombstone,
   verifyAndDecryptPdsSessionPackage,
   type EnvelopeEncryptionProvider,
   type PdsSessionPackage,
@@ -123,15 +128,16 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
         historicalOriginCertificates: secret.historicalOriginCertificates
       });
     };
-    const relay = new PdsRelayClient({
+    const relayIdentity = (certificate: string) => ({
+      certificate,
+      deviceId: runtime.recipient.deviceId,
+      signingKeyId: runtime.recipient.signingKeyId,
+      signingPublicKey: runtime.recipient.signingPublicKey,
+      signingPrivateSeed: secret.deviceSigningPrivateSeed
+    });
+    let relay = new PdsRelayClient({
       baseUrl: secret.relayUrl,
-      identity: {
-        certificate: secret.recipientCertificate,
-        deviceId: runtime.recipient.deviceId,
-        signingKeyId: runtime.recipient.signingKeyId,
-        signingPublicKey: runtime.recipient.signingPublicKey,
-        signingPrivateSeed: secret.deviceSigningPrivateSeed
-      }
+      identity: relayIdentity(secret.recipientCertificate)
     });
     const downloaded = new Map<
       string,
@@ -165,6 +171,163 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
           state: "committed" as const,
           transportId: committed.transportId
         };
+      },
+      async pollLifecycle() {
+        // Control endpoint permits prior-head active certificate only to recover
+        // current Authority binding; content endpoints remain fail-closed.
+        const refreshed = record(await relay.certificate(), "certificate");
+        const certificate = record(refreshed.certificate, "certificate");
+        relay = new PdsRelayClient({
+          baseUrl: secret.relayUrl,
+          identity: relayIdentity(canonicalizePdsJson(certificate))
+        });
+        const lifecycle = record(await relay.lifecycle(), "lifecycle");
+        const head = record(lifecycle.authority_head, "authority head");
+        if (
+          typeof head.sequence !== "string" ||
+          typeof head.hash !== "string" ||
+          !head.statement
+        )
+          throw new TypeError("PdsCryptoAuthorityError");
+        const headStatement = record(
+          typeof head.statement === "string"
+            ? parseCanonicalPdsJson(head.statement)
+            : head.statement,
+          "authority head statement"
+        );
+        const headAuthorization = record(
+          headStatement.authorization,
+          "authority head authorization"
+        );
+        const headCertificate = secret.recipientCertificates
+          .map((value) => record(parseCanonicalPdsJson(value), "certificate"))
+          .find(
+            (value) =>
+              value.deviceSigningKeyId === headAuthorization.signerKeyId &&
+              typeof value.deviceSigningPublicKey === "string"
+          );
+        if (
+          !headCertificate ||
+          pdsFinalizedStatementHash(headStatement as never) !== head.hash
+        )
+          throw new TypeError("PdsCryptoAuthorityError");
+        validatePdsGroupStatement(headStatement as never, {
+          authorizationPublicKey:
+            headCertificate.deviceSigningPublicKey as string,
+          authorityPublicKey: secret.authority.publicKey,
+          expectedGroupId: secret.groupId,
+          expectedSequence: head.sequence
+        });
+        const controls = Array.isArray(lifecycle.controls)
+          ? lifecycle.controls
+          : (() => {
+              throw new TypeError("PdsCryptoAuthorityError");
+            })();
+        const floors = Array.isArray(lifecycle.deletion_floors)
+          ? lifecycle.deletion_floors.map((floor) => {
+              const item = record(floor, "deletion floor");
+              if (
+                typeof item.logicalMemoryId !== "string" ||
+                typeof item.deletionFloorToken !== "string"
+              )
+                throw new TypeError("PdsCryptoAuthorityError");
+              return {
+                logicalMemoryId: item.logicalMemoryId,
+                deletionFloorToken: item.deletionFloorToken
+              };
+            })
+          : (() => {
+              throw new TypeError("PdsCryptoAuthorityError");
+            })();
+        for (const item of controls) {
+          const control = record(item, "lifecycle control");
+          if (
+            (control.kind !== "tombstone" &&
+              control.kind !== "resolve-conflict") ||
+            typeof control.record !== "object"
+          )
+            throw new TypeError("PdsCryptoAuthorityError");
+          const tombstone = record(control.record, "tombstone control");
+          const authorization = record(
+            tombstone.authorization,
+            "authorization"
+          );
+          const certificate = secret.recipientCertificates
+            .map((value) => record(parseCanonicalPdsJson(value), "certificate"))
+            .find(
+              (value) =>
+                value.deviceSigningKeyId === authorization.signerKeyId &&
+                typeof value.deviceSigningPublicKey === "string"
+            );
+          if (!certificate) throw new TypeError("PdsCryptoAuthorityError");
+          const validation = {
+            authorizationPublicKey:
+              certificate.deviceSigningPublicKey as string,
+            authorityPublicKey: secret.authority.publicKey,
+            expectedAuthorizationKeyId: authorization.signerKeyId as string,
+            expectedGroupId: secret.groupId
+          };
+          if (control.kind === "tombstone")
+            validatePdsTombstone(tombstone, validation);
+          else validatePdsConflictResolution(tombstone, validation);
+          const statement = record(control.statement, "lifecycle statement");
+          validatePdsGroupStatement(statement as never, {
+            authorizationPublicKey:
+              certificate.deviceSigningPublicKey as string,
+            authorityPublicKey: secret.authority.publicKey,
+            expectedGroupId: secret.groupId
+          });
+        }
+        await input.repository.applyPdsDeletionFloors({
+          userId: secret.userId,
+          groupId: secret.groupId,
+          floors
+        });
+        const reconciled = await input.repository.reconcilePdsRestore({
+          groupId: secret.groupId,
+          deviceId: runtime.recipient.deviceId,
+          authorityHead: head.hash,
+          authoritySequence: head.sequence,
+          lifecycleHighWater:
+            controls.length &&
+            typeof record(controls.at(-1), "control").sequence === "string"
+              ? (record(controls.at(-1), "control").sequence as string)
+              : "0"
+        });
+        if (!reconciled.accepted)
+          throw new TypeError("PdsCryptoAuthorityError");
+        for (const item of controls) {
+          const control = record(item, "lifecycle control");
+          if (control.kind !== "tombstone") continue;
+          const tombstone = record(control.record, "tombstone control");
+          const draft = record(tombstone.draft, "tombstone draft");
+          if (
+            typeof draft.groupId !== "string" ||
+            typeof control.record !== "object" ||
+            typeof control.statement !== "object"
+          )
+            throw new TypeError("PdsCryptoAuthorityError");
+          const tombstoneHash = createHash("sha256")
+            .update(canonicalizePdsJson(tombstone))
+            .digest("base64url");
+          const unsigned = {
+            protocol: PDS_PROTOCOL,
+            groupId: secret.groupId,
+            tombstoneHash,
+            deviceId: runtime.recipient.deviceId,
+            statementHash: pdsFinalizedStatementHash(
+              record(control.statement, "tombstone statement") as never
+            ),
+            ackedAt: new Date().toISOString()
+          };
+          await relay.acknowledgeTombstone({
+            ...unsigned,
+            signature: {
+              signerKeyId: runtime.recipient.signingKeyId,
+              signature: signPdsRecord("tombstone-ack", unsigned, signingKey)
+            }
+          });
+        }
       },
       async poll() {
         const mailbox = record(await relay.mailbox(), "mailbox");
@@ -325,8 +488,12 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
           sourceSequence: manifest.sourceSequence,
           logicalMemoryId: manifest.logicalMemoryId,
           deletionFloorToken: manifest.deletionFloorToken,
+          sourceFingerprint: manifest.sourceFingerprint,
+          sourceClosureHash: manifest.sourceClosureHash,
           encryptedEnvelope
         });
+        if (retained.state === "revoked")
+          throw new Error("PdsCryptoFloorError");
         const session = await materializeSession(
           input.repository,
           secret.userId,

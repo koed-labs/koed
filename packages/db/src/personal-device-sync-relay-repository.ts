@@ -43,6 +43,8 @@ export interface PdsRelayAuthContext {
   signingPublicKey: string;
   recipientDeviceIds: string[];
   certificate: Record<string, unknown>;
+  /** Control plane alone accepts active same-epoch certificate at prior head. */
+  allowStaleHead?: boolean;
 }
 
 export interface PdsRelayTransportRecord {
@@ -68,6 +70,12 @@ export interface PdsRelayOperationalStatus {
   };
   quota: { groupBytes: number; groupLimitBytes: number };
   retries: { uploading: number; expired: number };
+  lifecycle: {
+    tombstones: number;
+    pendingTombstoneAcks: number;
+    deletionFloors: number;
+    oldestTombstoneAckLagSeconds: number;
+  };
 }
 
 const transportRecord = (
@@ -107,11 +115,11 @@ const assertCurrentRelayAuth = async (
   if (
     group.state !== "active" ||
     group.pending_epoch !== null ||
-    group.head_hash !== input.headHash ||
+    (!input.allowStaleHead && group.head_hash !== input.headHash) ||
     group.current_epoch !== input.epoch ||
     !certificateIsPdsValid(certificate, group.authority_public_key as string) ||
     certificate.groupId !== group.group_id ||
-    certificate.statementHash !== group.head_hash ||
+    (!input.allowStaleHead && certificate.statementHash !== group.head_hash) ||
     certificate.epoch !== group.current_epoch ||
     certificate.deviceId !== input.deviceId ||
     certificate.deviceSigningKeyId !== input.signingKeyId
@@ -196,6 +204,7 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
   async authenticatePdsRelayRequest(input: {
     certificate: string;
     proof: PdsRelayRequestProof;
+    allowStaleHead?: boolean;
   }): Promise<PdsRelayAuthContext> {
     const certificate = parseCanonicalPdsJson(input.certificate) as Record<
       string,
@@ -223,7 +232,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
           certificate,
           group.authority_public_key as string
         ) ||
-        certificate.statementHash !== group.head_hash ||
+        (!input.allowStaleHead &&
+          certificate.statementHash !== group.head_hash) ||
         certificate.epoch !== group.current_epoch ||
         certificate.deviceId !== input.proof.deviceId ||
         certificate.deviceSigningKeyId !== input.proof.deviceSigningKeyId
@@ -257,7 +267,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         recipientDeviceIds: recipients.rows.map(
           (entry) => row<{ device_id: string }>(entry).device_id
         ),
-        certificate
+        certificate,
+        allowStaleHead: input.allowStaleHead === true
       };
     } catch (error) {
       await client.query("rollback");
@@ -295,6 +306,22 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
     } finally {
       client.release();
     }
+  },
+
+  async getPdsRelayCurrentCertificate(
+    input: PdsRelayAuthContext
+  ): Promise<string> {
+    const result = await pool.query<{ canonical_certificate: string }>(
+      `select c.canonical_certificate from personal_device_membership_certificates c
+       join personal_device_group_members m on m.id=c.member_id
+       join personal_device_groups g on g.id=c.group_id
+       where c.group_id=$1 and m.device_id=$2 and m.status='active'
+         and c.epoch=g.current_epoch and c.statement_hash=g.head_hash
+         and c.revoked_at is null and c.expires_at>now()`,
+      [input.groupDbId, input.deviceId]
+    );
+    if (!result.rowCount) throw publicError();
+    return result.rows[0]!.canonical_certificate;
   },
 
   async initializePdsRelayTransport(
@@ -919,6 +946,27 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
     }
   },
 
+  async getPdsLifecycleOperationalStatus(): Promise<
+    PdsRelayOperationalStatus["lifecycle"]
+  > {
+    const result = await pool.query(
+      `select
+        (select count(*)::int from pds_tombstone_ledger) as tombstones,
+        (select count(*)::int from pds_tombstone_acks where acked_at is null and waived_at is null) as pending_acks,
+        (select count(*)::int from pds_deletion_floors) as floors,
+        coalesce((select extract(epoch from now()-min(t.created_at))::int
+          from pds_tombstone_ledger t join pds_tombstone_acks a on a.tombstone_id=t.id
+          where a.acked_at is null and a.waived_at is null),0) as lag`
+    );
+    const value = row<Record<string, unknown>>(result.rows[0]);
+    return {
+      tombstones: Number(value.tombstones ?? 0),
+      pendingTombstoneAcks: Number(value.pending_acks ?? 0),
+      deletionFloors: Number(value.floors ?? 0),
+      oldestTombstoneAckLagSeconds: Number(value.lag ?? 0)
+    };
+  },
+
   async getPdsRelayOperationalStatus(): Promise<PdsRelayOperationalStatus> {
     const result = await pool.query(
       `select
@@ -945,7 +993,8 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
         groupBytes: count("ciphertext_bytes"),
         groupLimitBytes: MAX_GROUP_BYTES
       },
-      retries: { uploading: count("uploading"), expired: count("expired") }
+      retries: { uploading: count("uploading"), expired: count("expired") },
+      lifecycle: await this.getPdsLifecycleOperationalStatus()
     };
   },
 
@@ -955,6 +1004,29 @@ export const createPersonalDeviceSyncRelayRepository = (pool: pg.Pool) => ({
     const client = await pool.connect();
     try {
       await client.query("begin");
+      await client.query(
+        `update pds_tombstone_acks a set waived_at=now(),waiver_statement_hash=s.statement_hash
+         from pds_tombstone_ledger t join personal_device_groups g on g.id=t.group_id
+         join personal_device_group_members m on m.group_id=g.id and m.device_id=a.device_id
+         join personal_device_group_statements s on s.group_id=g.id and s.sequence=m.revoked_sequence
+         where a.tombstone_id=t.id and a.acked_at is null and a.waived_at is null
+           and a.device_id=any(t.active_device_snapshot) and m.status='revoked'
+           and s.kind in ('revoke-device','recover') and m.revoked_sequence::numeric>t.statement_sequence::numeric`
+      );
+      await client.query(
+        `update pds_tombstone_ledger t set quorum_completed_at=coalesce(t.quorum_completed_at,now()),
+          retain_until=coalesce(t.retain_until,now()+interval '30 days')
+         where t.quorum_completed_at is null and not exists (
+           select 1 from unnest(t.active_device_snapshot) d(device_id)
+           left join pds_tombstone_acks a on a.tombstone_id=t.id and a.device_id=d.device_id
+           where a.acked_at is null and a.waived_at is null
+         )`
+      );
+      await client.query(
+        `update pds_tombstone_ledger set encrypted_record='{}'::jsonb
+         where retain_until is not null and retain_until <= $1 and encrypted_record <> '{}'::jsonb`,
+        [now]
+      );
       await client.query(
         `update pds_relay_recipients r set waived_at=now(),waiver_hash=s.statement_hash
          from pds_relay_transports t, personal_device_group_members m, personal_device_group_statements s

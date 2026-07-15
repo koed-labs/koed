@@ -13,8 +13,11 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
     sequence: string;
     statementHash: string;
     canonicalStatement: string;
+    canonicalRecord: string;
     tombstoneHash: string;
     tombstoneSequence: string;
+    sourceFingerprint: string;
+    closureHashes: string[];
     logicalMemoryId: string;
     deletionFloorToken: string;
     activeDeviceSnapshot: string[];
@@ -52,6 +55,27 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
         return existing.rows[0]!.tombstone_hash === input.tombstoneHash
           ? "idempotent"
           : "conflict";
+      }
+      const origins = await client.query<{ source_closure_hash: string }>(
+        `select p.source_closure_hash from pds_retained_packages p
+         join personal_device_group_members m on m.group_id=p.group_id and m.device_id=p.origin_device_id
+         where p.group_id=$1 and p.logical_memory_id=$2 and p.deletion_floor_token=$3
+           and p.source_fingerprint=$4 and p.source_closure_hash = any($5::text[])`,
+        [
+          current.id,
+          input.logicalMemoryId,
+          input.deletionFloorToken,
+          input.sourceFingerprint,
+          input.closureHashes
+        ]
+      );
+      if (
+        origins.rowCount !== input.closureHashes.length ||
+        new Set(origins.rows.map((entry) => entry.source_closure_hash)).size !==
+          input.closureHashes.length
+      ) {
+        await client.query("rollback");
+        return "missing";
       }
       if (
         current.head_hash !== input.expectedHeadHash ||
@@ -94,8 +118,8 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
       );
       const ledger = await client.query<{ id: string }>(
         `insert into pds_tombstone_ledger
-         (group_id,logical_memory_id,deletion_floor_token,tombstone_hash,tombstone_sequence,statement_hash,encrypted_record,active_device_snapshot,issued_at)
-         values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9) returning id`,
+         (group_id,logical_memory_id,deletion_floor_token,tombstone_hash,tombstone_sequence,statement_hash,encrypted_record,canonical_record,statement_sequence,active_device_snapshot,issued_at)
+         values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11) returning id`,
         [
           current.id,
           input.logicalMemoryId,
@@ -104,6 +128,8 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
           input.tombstoneSequence,
           input.statementHash,
           JSON.stringify(input.encryptedRecord),
+          input.canonicalRecord,
+          input.sequence,
           input.activeDeviceSnapshot,
           input.issuedAt
         ]
@@ -172,6 +198,63 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
       deletionFloorToken: item.deletion_floor_token,
       tombstoneHash: item.tombstone_hash
     }));
+  },
+
+  async getPdsLifecycleControl(input: {
+    groupDbId: string;
+    groupId: string;
+    cursor: string;
+    limit: number;
+  }) {
+    const group = await pool.query<{
+      head_sequence: string;
+      head_hash: string;
+      canonical_statement: string;
+    }>(
+      `select g.head_sequence,g.head_hash,s.canonical_statement from personal_device_groups g
+       join personal_device_group_statements s on s.group_id=g.id and s.sequence=g.head_sequence
+       where g.id=$1 and g.group_id=$2`,
+      [input.groupDbId, input.groupId]
+    );
+    if (!group.rowCount) throw new Error("PDS group is unavailable");
+    const controls = await pool.query<{
+      sequence: string;
+      kind: "tombstone" | "resolve-conflict";
+      canonical_record: string;
+      canonical_statement: string;
+    }>(
+      `select t.statement_sequence as sequence,'tombstone'::text as kind,t.canonical_record,s.canonical_statement
+         from pds_tombstone_ledger t join personal_device_group_statements s
+           on s.group_id=t.group_id and s.sequence=t.statement_sequence
+         where t.group_id=$1 and t.statement_sequence::numeric>$2::numeric
+       union all
+       select c.statement_sequence as sequence,'resolve-conflict'::text as kind,c.canonical_record,s.canonical_statement
+         from pds_conflict_resolution_records c join personal_device_group_statements s
+           on s.group_id=c.group_id and s.sequence=c.statement_sequence
+         where c.group_id=$1 and c.statement_sequence::numeric>$2::numeric
+       order by sequence::numeric limit $3`,
+      [input.groupDbId, input.cursor, input.limit + 1]
+    );
+    const floors = await this.getPdsLifecycleForRelay(input);
+    const visible = controls.rows.slice(0, input.limit);
+    return {
+      authorityHead: {
+        sequence: group.rows[0]!.head_sequence,
+        hash: group.rows[0]!.head_hash,
+        statement: group.rows[0]!.canonical_statement
+      },
+      deletionFloors: floors,
+      controls: visible.map((item) => ({
+        sequence: item.sequence,
+        kind: item.kind,
+        record: item.canonical_record,
+        statement: item.canonical_statement
+      })),
+      nextCursor:
+        controls.rows.length > input.limit
+          ? (visible.at(-1)?.sequence ?? null)
+          : null
+    };
   },
 
   async getPdsTombstoneAckBinding(input: {
@@ -359,8 +442,8 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
         ]
       );
       await client.query(
-        `insert into pds_conflict_resolution_records (group_id,source_fingerprint,resolution_hash,statement_hash,resolution,selected_closure_hash,candidate_closure_hashes,canonical_record,issued_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `insert into pds_conflict_resolution_records (group_id,source_fingerprint,resolution_hash,statement_hash,resolution,selected_closure_hash,candidate_closure_hashes,canonical_record,statement_sequence,issued_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         [
           group.rows[0]!.id,
           input.sourceFingerprint,
@@ -370,6 +453,7 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
           input.selectedClosureHash,
           input.candidateClosureHashes,
           input.canonicalRecord,
+          input.sequence,
           input.issuedAt
         ]
       );
@@ -418,6 +502,7 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
         input.groupId
       ]);
       const prior = await client.query<{
+        authority_head: string;
         authority_sequence: string;
         lifecycle_high_water: string;
         restore_high_water: string;
@@ -431,7 +516,9 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
         (BigInt(input.authoritySequence) <
           BigInt(prior.rows[0]!.authority_sequence) ||
           BigInt(input.lifecycleHighWater) <
-            BigInt(prior.rows[0]!.lifecycle_high_water));
+            BigInt(prior.rows[0]!.lifecycle_high_water) ||
+          (input.authoritySequence === prior.rows[0]!.authority_sequence &&
+            input.authorityHead !== prior.rows[0]!.authority_head));
       const group = await client.query<{ id: string }>(
         "select id from personal_device_groups where group_id=$1",
         [input.groupId]
@@ -450,6 +537,13 @@ export const createPersonalDeviceSyncLifecycleRepository = (pool: pg.Pool) => ({
           outcome
         ]
       );
+      if (rollback)
+        await client.query(
+          `update personal_device_groups set state='equivocation_freeze',
+            state_reason='authority_log_rollback_or_equivocation',updated_at=now()
+           where id=$1 and state='active'`,
+          [group.rows[0]!.id]
+        );
       if (!rollback)
         await client.query(
           `insert into pds_replica_lifecycle_state (group_id,device_id,authority_head,authority_sequence,lifecycle_high_water,restore_high_water)
