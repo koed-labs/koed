@@ -182,9 +182,10 @@ package exchange may continue only while a cached signed membership statement
 is unexpired, which bounds revocation delay.
 
 Personal Device Association is a same-Local-Personal-Identity,
-cross-deployment specialization of Cross-Identity Sync. It keeps one logical
-Memory lifespan across deployment-local identities; it is not Fork/Import and
-does not imply Team sharing.
+cross-deployment specialization of Cross-Identity Sync. It is not Directed
+Hosted Cross-Identity Sync: it keeps one logical Memory lifespan across
+deployment-local identities without directed hosted target semantics. It is not
+Fork/Import and does not imply Team sharing.
 
 A device necessarily has its own database subject, device id, and device key.
 Those are replication and revocation implementation details, not locally

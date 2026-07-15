@@ -21,5 +21,8 @@
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "json-canonicalize": "2.0.0"
   }
 }

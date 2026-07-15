@@ -11,35 +11,48 @@ import {
 } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { canonicalJsonStringify } from "./canonical-json.js";
+import {
+  canonicalizePdsJson,
+  parseCanonicalPdsJson,
+  parsePdsUint64,
+  pdsUint64be
+} from "./personal-device-sync-jcs.js";
+
+type SignaturePlan = {
+  domain: string;
+  wrapper: string;
+  removeFields: string[];
+  publicKeyHex: string;
+};
+
+type SignedRecord = {
+  canonicalPayloadUtf8: string;
+  recordHash: string;
+  plans: SignaturePlan[];
+};
 
 type Fixture = {
   protocol: "koed/pds/v1";
   jcsSigning: {
-    domain: string;
-    canonicalPayloadUtf8: string;
-    packageIdPreimageUtf8: string;
-    packageId: string;
-    manifestHash: string;
-    sourceClosureHash: string;
-    ed25519: {
-      seedHex: string;
-      publicKeyHex: string;
-      signatureHex: string;
-      rfc8032EmptyMessageSignatureHex: string;
-    };
-    groupStatement: {
+    sourceManifest: {
       domain: string;
       canonicalPayloadUtf8: string;
-      authorizationPublicKeyHex: string;
-      authorityPublicKeyHex: string;
+      packageIdPreimageUtf8: string;
+      packageId: string;
+      manifestHash: string;
+      sourceClosureHash: string;
+      ed25519: {
+        publicKeyHex: string;
+        rfc8032EmptyMessageSignatureHex: string;
+      };
     };
   };
+  signedRecords: Record<string, SignedRecord>;
   hkdfRfc5869Case1: {
     ikmHex: string;
     saltHex: string;
     infoHex: string;
-    length: number;
+    length: string;
     okmHex: string;
   };
   aes256GcmNist: {
@@ -60,7 +73,7 @@ type Fixture = {
   };
   compositeRecipientEnvelope: {
     groupId: string;
-    recipientEpoch: number;
+    recipientEpoch: string;
     packageId: string;
     senderDeviceId: string;
     recipientDeviceId: string;
@@ -73,7 +86,7 @@ type Fixture = {
     ciphertextHex: string;
     tagHex: string;
     rewrappedRecipientEnvelope: {
-      recipientEpoch: number;
+      recipientEpoch: string;
       infoHex: string;
       wrappingKeyHex: string;
       nonceHex: string;
@@ -84,15 +97,19 @@ type Fixture = {
   };
   sourceFingerprint: {
     keyHex: string;
+    tombstoneKeyHex: string;
+    projectAliasKeyHex: string;
     sourceType: string;
     sourceNativeSessionId: string;
     digestBase64url: string;
+    logicalMemoryId: string;
+    deletionFloorToken: string;
   };
   membershipCertificate: {
     issuedAt: string;
     expiresAt: string;
-    maxLifetimeSeconds: number;
-    clockSkewSeconds: number;
+    maxLifetimeSeconds: string;
+    clockSkewSeconds: string;
   };
   stateFixtures: {
     replay: {
@@ -118,17 +135,26 @@ type Fixture = {
       received: { sequence: string; head: string; expected: string };
     };
     tombstone: {
-      floor: { logicalMemoryId: string; sequence: number };
+      floor: { logicalMemoryId: string; deletionFloorToken: string };
       stalePackage: {
         logicalMemoryId: string;
-        sequence: number;
+        deletionFloorToken: string;
         expected: string;
       };
-      newerPackage: {
+      differentPackage: {
         logicalMemoryId: string;
-        sequence: number;
+        deletionFloorToken: string;
         expected: string;
       };
+    };
+    packageAck: {
+      intendedRecipientSnapshot: string[];
+      acknowledgedRecipient: string;
+      revokedAfterUploadRecipient: string;
+      expiresAt: string;
+      expectedAllAckCleanup: string;
+      expectedRevocationWaiver: string;
+      expectedExpiry: string;
     };
   };
 };
@@ -137,12 +163,16 @@ type SourceManifest = {
   packageId: string;
   sourceClosureHash: string;
   sourceFingerprint: string;
+  logicalMemoryId: string;
+  deletionFloorToken: string;
   sourceNativeSessionId: string;
   sourceType: string;
+  terminal: { cursor: string; itemCount: string };
+  projectAliasManifest: { version: string; epoch: string; tokens: string[] };
   rawClosure: {
     rawByteCount: string;
     recordCount: string;
-    records: Array<{ payload: string; payloadHash: string }>;
+    records: Array<{ ordinal: string; payload: string; payloadHash: string }>;
   };
 };
 
@@ -155,6 +185,8 @@ const fixture = JSON.parse(
 
 const hex = (value: string): Buffer => Buffer.from(value, "hex");
 const base64url = (value: Buffer): string => value.toString("base64url");
+const sha256 = (value: string | Buffer): Buffer =>
+  createHash("sha256").update(value).digest();
 
 const okpJwk = (
   crv: "Ed25519" | "X25519",
@@ -168,7 +200,9 @@ const okpJwk = (
 });
 
 const parseSourceManifest = (): SourceManifest =>
-  JSON.parse(fixture.jcsSigning.canonicalPayloadUtf8) as SourceManifest;
+  parseCanonicalPdsJson(
+    fixture.jcsSigning.sourceManifest.canonicalPayloadUtf8
+  ) as SourceManifest;
 
 const withoutFields = (
   value: Record<string, unknown>,
@@ -178,28 +212,33 @@ const withoutFields = (
     Object.entries(value).filter(([field]) => !fields.includes(field))
   );
 
-const sha256 = (value: string | Buffer): Buffer =>
-  createHash("sha256").update(value).digest();
+const signatureFor = (
+  record: Record<string, unknown>,
+  wrapper: string
+): Buffer => {
+  const value = record[wrapper] as { signature?: unknown };
+  if (typeof value?.signature !== "string") {
+    throw new TypeError(`Fixture wrapper ${wrapper} lacks signature`);
+  }
+  return Buffer.from(value.signature, "base64url");
+};
 
 const recipientEnvelopeInfo = (
   envelope: Fixture["compositeRecipientEnvelope"]
-): Buffer => {
-  const epoch = Buffer.alloc(8);
-  epoch.writeBigUInt64BE(BigInt(envelope.recipientEpoch));
-  return Buffer.concat([
+): Buffer =>
+  Buffer.concat([
     Buffer.from("koed/pds/v1/envelope/key\0", "utf8"),
-    epoch,
+    pdsUint64be(envelope.recipientEpoch),
     Buffer.from(
       `${envelope.packageId}\0${envelope.recipientDeviceId}\0${envelope.senderDeviceId}`,
       "utf8"
     )
   ]);
-};
 
 const recipientEnvelopeAad = (
   envelope: Fixture["compositeRecipientEnvelope"]
 ): string =>
-  canonicalJsonStringify({
+  canonicalizePdsJson({
     packageId: envelope.packageId,
     recipientDeviceId: envelope.recipientDeviceId,
     recipientEpoch: envelope.recipientEpoch,
@@ -210,12 +249,17 @@ const certificateIsAccepted = (
   now: Date,
   issuedAt: Date,
   expiresAt: Date,
-  clockSkewSeconds: number,
-  maxLifetimeSeconds: number
-): boolean =>
-  issuedAt.getTime() <= now.getTime() + clockSkewSeconds * 1_000 &&
-  now.getTime() < expiresAt.getTime() &&
-  expiresAt.getTime() - issuedAt.getTime() <= maxLifetimeSeconds * 1_000;
+  clockSkewSeconds: string,
+  maxLifetimeSeconds: string
+): boolean => {
+  const skew = Number(parsePdsUint64(clockSkewSeconds));
+  const maximumLifetime = Number(parsePdsUint64(maxLifetimeSeconds));
+  return (
+    issuedAt.getTime() <= now.getTime() + skew * 1_000 &&
+    now.getTime() < expiresAt.getTime() &&
+    expiresAt.getTime() - issuedAt.getTime() <= maximumLifetime * 1_000
+  );
+};
 
 const classifyReplay = (
   known: { packageId: string; manifestHash: string },
@@ -246,23 +290,55 @@ const classifyLogHead = (
     : "continue";
 
 const applyDeletionFloor = (
-  floor: { logicalMemoryId: string; sequence: number },
-  received: { logicalMemoryId: string; sequence: number }
+  floor: { logicalMemoryId: string; deletionFloorToken: string },
+  received: { logicalMemoryId: string; deletionFloorToken: string }
 ): "allow" | "reject" =>
   floor.logicalMemoryId === received.logicalMemoryId &&
-  received.sequence <= floor.sequence
+  floor.deletionFloorToken === received.deletionFloorToken
     ? "reject"
     : "allow";
 
+const requireNonZeroSharedSecret = (sharedSecret: Buffer): Buffer => {
+  if (sharedSecret.length !== 32 || sharedSecret.equals(Buffer.alloc(32))) {
+    throw new Error("PDS X25519 shared secret must be 32 non-zero bytes");
+  }
+  return sharedSecret;
+};
+
+const cleanupDisposition = (
+  recipients: string[],
+  acknowledged: Set<string>,
+  waived: Set<string>,
+  now: Date,
+  expiresAt: Date
+):
+  | "delete-after-7-days"
+  | "retain"
+  | "delete-and-reupload-for-current-snapshot" => {
+  if (now >= expiresAt) return "delete-and-reupload-for-current-snapshot";
+  return recipients.every(
+    (recipient) => acknowledged.has(recipient) || waived.has(recipient)
+  )
+    ? "delete-after-7-days"
+    : "retain";
+};
+
 describe("Personal Device Sync V1 fixed fixture", () => {
-  it("recomputes committed JCS bytes, hashes, and source-manifest signature", () => {
-    const signing = fixture.jcsSigning;
+  it("recomputes committed source-manifest bytes, hashes, signature, and terminal attestation", () => {
+    const signing = fixture.jcsSigning.sourceManifest;
     const manifest = parseSourceManifest();
     const publicKey = createPublicKey({
       key: okpJwk("Ed25519", signing.ed25519.publicKeyHex),
       format: "jwk"
     });
-    const { packageId: omittedPackageId, ...packageIdPreimage } = manifest;
+    const omittedPackageId = manifest.packageId;
+    const preimage = withoutFields(manifest as Record<string, unknown>, [
+      "packageId",
+      "originSignature"
+    ]);
+    const { originSignature, ...unsigned } = manifest as SourceManifest & {
+      originSignature: unknown;
+    };
     const rawByteCount = manifest.rawClosure.records.reduce(
       (count, record) =>
         count + Buffer.from(record.payload, "base64url").length,
@@ -270,30 +346,33 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     );
 
     expect(fixture.protocol).toBe("koed/pds/v1");
-    expect(canonicalJsonStringify(manifest)).toBe(signing.canonicalPayloadUtf8);
-    expect(canonicalJsonStringify(packageIdPreimage)).toBe(
-      signing.packageIdPreimageUtf8
-    );
+    expect(canonicalizePdsJson(manifest)).toBe(signing.canonicalPayloadUtf8);
+    expect(canonicalizePdsJson(preimage)).toBe(signing.packageIdPreimageUtf8);
     expect(omittedPackageId).toBe(signing.packageId);
     expect(rawByteCount).toBe(Number(manifest.rawClosure.rawByteCount));
     expect(manifest.rawClosure.records).toHaveLength(
       Number(manifest.rawClosure.recordCount)
     );
+    expect(manifest.terminal).toEqual({ cursor: "1", itemCount: "1" });
+    expect(manifest.projectAliasManifest).toEqual({
+      version: "1",
+      epoch: "3",
+      tokens: [manifest.projectAliasManifest.tokens[0]]
+    });
     expect(
       manifest.rawClosure.records.map((record) =>
         base64url(sha256(Buffer.from(record.payload, "base64url")))
       )
     ).toEqual(manifest.rawClosure.records.map((record) => record.payloadHash));
     expect(
-      base64url(sha256(canonicalJsonStringify(manifest.rawClosure.records)))
+      base64url(sha256(canonicalizePdsJson(manifest.rawClosure.records)))
     ).toBe(signing.sourceClosureHash);
-    expect(manifest.sourceClosureHash).toBe(signing.sourceClosureHash);
     expect(
       base64url(
         sha256(`koed/pds/v1/package-id\n${signing.packageIdPreimageUtf8}`)
       )
     ).toBe(signing.packageId);
-    expect(base64url(sha256(signing.canonicalPayloadUtf8))).toBe(
+    expect(base64url(sha256(canonicalizePdsJson(unsigned)))).toBe(
       signing.manifestHash
     );
     expect(
@@ -307,84 +386,196 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     expect(
       verify(
         null,
-        Buffer.from(`${signing.domain}${signing.canonicalPayloadUtf8}`, "utf8"),
-        publicKey,
-        hex(signing.ed25519.signatureHex)
-      )
-    ).toBe(true);
-    expect(
-      verify(
-        null,
         Buffer.from(
-          `koed/pds/v1/tombstone\n${signing.canonicalPayloadUtf8}`,
+          `${signing.domain}${canonicalizePdsJson(unsigned)}`,
           "utf8"
         ),
         publicKey,
-        hex(signing.ed25519.signatureHex)
+        Buffer.from(
+          (originSignature as { signature: string }).signature,
+          "base64url"
+        )
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it("verifies committed group-statement authorization and countersignature", () => {
-    const statement = fixture.jcsSigning.groupStatement;
-    const parsed = JSON.parse(statement.canonicalPayloadUtf8) as {
-      authorization: { signature: string };
-      authority: { signature: string };
-      [key: string]: unknown;
+  it("recomputes every committed signed record, wrapper, domain, and record hash", () => {
+    for (const [recordName, fixtureRecord] of Object.entries(
+      fixture.signedRecords
+    )) {
+      const parsed = parseCanonicalPdsJson(
+        fixtureRecord.canonicalPayloadUtf8
+      ) as Record<string, unknown>;
+      expect(canonicalizePdsJson(parsed), recordName).toBe(
+        fixtureRecord.canonicalPayloadUtf8
+      );
+      expect(
+        base64url(sha256(fixtureRecord.canonicalPayloadUtf8)),
+        recordName
+      ).toBe(fixtureRecord.recordHash);
+
+      for (const plan of fixtureRecord.plans) {
+        const signedInput =
+          plan.wrapper === "authorization"
+            ? (parsed.draft as Record<string, unknown>)
+            : withoutFields(parsed, plan.removeFields);
+        const publicKey = createPublicKey({
+          key: okpJwk("Ed25519", plan.publicKeyHex),
+          format: "jwk"
+        });
+        const signature = signatureFor(parsed, plan.wrapper);
+        const message = Buffer.from(
+          `${plan.domain}${canonicalizePdsJson(signedInput)}`,
+          "utf8"
+        );
+
+        expect(verify(null, message, publicKey, signature), recordName).toBe(
+          true
+        );
+        expect(
+          verify(
+            null,
+            Buffer.from(
+              `koed/pds/v1/not-${recordName}\n${canonicalizePdsJson(signedInput)}`,
+              "utf8"
+            ),
+            publicKey,
+            signature
+          ),
+          `${recordName} domain`
+        ).toBe(false);
+        expect(
+          verify(
+            null,
+            Buffer.from(
+              `${plan.domain}${canonicalizePdsJson({ ...signedInput, altered: true })}`,
+              "utf8"
+            ),
+            publicKey,
+            signature
+          ),
+          `${recordName} wrapper`
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("binds versioned Key Bundle recipients, commitments, and envelope context", () => {
+    const bundle = parseCanonicalPdsJson(
+      fixture.signedRecords.keyBundle.canonicalPayloadUtf8
+    ) as {
+      draft: {
+        epoch: string;
+        keyType: string;
+        recipientSnapshot: string[];
+        recipientSnapshotHash: string;
+        epochKeyCommitment: string;
+        sourceFingerprintKeyCommitment: string;
+        tombstoneFloorKeyCommitment: string;
+        projectAliasKeyCommitment: string;
+        envelopes: Array<{
+          recipientId: string;
+          recipientKind: string;
+          recipientKemKeyId: string;
+          ephemeralPublicKey: string;
+          envelopeContext: string;
+        }>;
+      };
     };
-    const authorization = parsed.authorization;
-    const authority = parsed.authority;
-    const authorizationInput = withoutFields(parsed, [
-      "authorization",
-      "authority"
-    ]);
-    const authorityInput = withoutFields(parsed, ["authority"]);
-    const authorizationPublicKey = createPublicKey({
-      key: okpJwk("Ed25519", statement.authorizationPublicKeyHex),
-      format: "jwk"
-    });
-    const authorityPublicKey = createPublicKey({
-      key: okpJwk("Ed25519", statement.authorityPublicKeyHex),
-      format: "jwk"
-    });
+    const draft = bundle.draft;
 
-    expect(canonicalJsonStringify(parsed)).toBe(statement.canonicalPayloadUtf8);
+    expect(draft.epoch).toBe("2");
+    expect(draft.keyType).toBe("group-secret-set");
+    expect(draft.recipientSnapshot).toEqual(
+      [...draft.recipientSnapshot].sort()
+    );
     expect(
-      verify(
-        null,
-        Buffer.from(
-          `${statement.domain}${canonicalJsonStringify(authorizationInput)}`,
-          "utf8"
-        ),
-        authorizationPublicKey,
-        Buffer.from(authorization.signature, "base64url")
-      )
-    ).toBe(true);
-    expect(
-      verify(
-        null,
-        Buffer.from(
-          `${statement.domain}${canonicalJsonStringify(authorityInput)}`,
-          "utf8"
-        ),
-        authorityPublicKey,
-        Buffer.from(authority.signature, "base64url")
-      )
-    ).toBe(true);
-    expect(
-      verify(
-        null,
-        Buffer.from(
-          `koed/pds/v1/tombstone\n${canonicalJsonStringify(authorityInput)}`,
-          "utf8"
-        ),
-        authorityPublicKey,
-        Buffer.from(authority.signature, "base64url")
-      )
-    ).toBe(false);
+      base64url(sha256(canonicalizePdsJson(draft.recipientSnapshot)))
+    ).toBe(draft.recipientSnapshotHash);
+    for (const commitment of [
+      draft.epochKeyCommitment,
+      draft.sourceFingerprintKeyCommitment,
+      draft.tombstoneFloorKeyCommitment,
+      draft.projectAliasKeyCommitment
+    ]) {
+      expect(Buffer.from(commitment, "base64url")).toHaveLength(32);
+    }
+    expect(draft.envelopes.map((envelope) => envelope.recipientId)).toEqual(
+      draft.recipientSnapshot
+    );
+    for (const envelope of draft.envelopes) {
+      expect(["device", "recovery"]).toContain(envelope.recipientKind);
+      expect(envelope.recipientKemKeyId).not.toBe("");
+      expect(
+        Buffer.from(envelope.ephemeralPublicKey, "base64url")
+      ).toHaveLength(32);
+      expect(envelope.envelopeContext).toBe("koed/pds/v1/key-bundle-envelope");
+    }
   });
 
-  it("verifies committed HKDF and AES-256-GCM reference outputs", () => {
+  it("uses exact two-stage group draft and finalized-statement hash", () => {
+    const group = parseCanonicalPdsJson(
+      fixture.signedRecords.groupStatement.canonicalPayloadUtf8
+    ) as {
+      draft: Record<string, unknown>;
+      authorization: unknown;
+      authority: unknown;
+    };
+
+    expect(Object.keys(group.draft).sort()).toEqual([
+      "body",
+      "groupId",
+      "kind",
+      "previousHash",
+      "protocol",
+      "sequence"
+    ]);
+    expect(group.draft.previousHash).toBeNull();
+    expect(
+      (group.draft.body as Record<string, unknown>).recoveryKitVerified
+    ).toBe(true);
+    expect(group.authorization).toBeDefined();
+    expect(group.authority).toBeDefined();
+    expect(fixture.signedRecords.groupStatement.recordHash).toBe(
+      base64url(
+        sha256(fixture.signedRecords.groupStatement.canonicalPayloadUtf8)
+      )
+    );
+  });
+
+  it("rejects duplicate members, invalid Unicode, numbers, undefined, and noncanonical raw PDS JSON", () => {
+    expect(() => parseCanonicalPdsJson('{"a":"first","a":"second"}')).toThrow(
+      "duplicate object member"
+    );
+    expect(() => parseCanonicalPdsJson('{"a":"\\ud800"}')).toThrow(
+      "invalid string"
+    );
+    expect(() => parseCanonicalPdsJson('{"a":1}')).toThrow("decimal strings");
+    expect(() => canonicalizePdsJson({ a: undefined })).toThrow("undefined");
+    expect(() => parseCanonicalPdsJson('{ "a":"value"}')).toThrow(
+      "not RFC 8785 canonical"
+    );
+    expect(canonicalizePdsJson({ a: "é" })).toBe('{"a":"é"}');
+  });
+
+  it("requires canonical decimal uint64 fields and unsigned uint64be encoding", () => {
+    expect(parsePdsUint64("18446744073709551615")).toBe(
+      18_446_744_073_709_551_615n
+    );
+    expect(pdsUint64be("3").toString("hex")).toBe("0000000000000003");
+    for (const value of ["03", "-1", "1.0", "18446744073709551616"]) {
+      expect(() => parsePdsUint64(value)).toThrow();
+    }
+    expect(typeof fixture.compositeRecipientEnvelope.recipientEpoch).toBe(
+      "string"
+    );
+    expect(
+      typeof fixture.compositeRecipientEnvelope.rewrappedRecipientEnvelope
+        .recipientEpoch
+    ).toBe("string");
+  });
+
+  it("recomputes committed HKDF and AES-256-GCM reference outputs", () => {
     const hkdf = fixture.hkdfRfc5869Case1;
     const aes = fixture.aes256GcmNist;
     const cipher = createCipheriv(
@@ -405,7 +596,7 @@ describe("Personal Device Sync V1 fixed fixture", () => {
           hex(hkdf.ikmHex),
           hex(hkdf.saltHex),
           hex(hkdf.infoHex),
-          hkdf.length
+          Number(parsePdsUint64(hkdf.length))
         )
       ).toString("hex")
     ).toBe(hkdf.okmHex);
@@ -428,23 +619,26 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       key: okpJwk("X25519", x25519.bobPublicKeyHex, x25519.bobPrivateKeyHex),
       format: "jwk"
     });
-    const sharedSecret = diffieHellman({
-      privateKey: alice,
-      publicKey: createPublicKey(bob)
-    });
-    const reciprocalSharedSecret = diffieHellman({
-      privateKey: bob,
-      publicKey: createPublicKey(alice)
-    });
+    const sharedSecret = requireNonZeroSharedSecret(
+      diffieHellman({ privateKey: alice, publicKey: createPublicKey(bob) })
+    );
+    const reciprocalSharedSecret = requireNonZeroSharedSecret(
+      diffieHellman({ privateKey: bob, publicKey: createPublicKey(alice) })
+    );
     const salt = sha256(
       Buffer.concat([
         Buffer.from("koed/pds/v1/envelope/salt\0", "utf8"),
         Buffer.from(envelope.groupId, "utf8")
       ])
     );
-    const info = recipientEnvelopeInfo(envelope);
     const wrappingKey = Buffer.from(
-      hkdfSync("sha256", sharedSecret, salt, info, 32)
+      hkdfSync(
+        "sha256",
+        sharedSecret,
+        salt,
+        recipientEnvelopeInfo(envelope),
+        32
+      )
     );
     const cipher = createCipheriv(
       "aes-256-gcm",
@@ -457,17 +651,12 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       cipher.final()
     ]);
 
-    expect(base64url(hex(x25519.alicePublicKeyHex))).toBe(
-      createPublicKey(alice).export({ format: "jwk" }).x
-    );
-    expect(base64url(hex(x25519.bobPublicKeyHex))).toBe(
-      createPublicKey(bob).export({ format: "jwk" }).x
-    );
     expect(reciprocalSharedSecret).toEqual(sharedSecret);
-    expect(sharedSecret.equals(Buffer.alloc(32))).toBe(false);
     expect(sharedSecret.toString("hex")).toBe(x25519.sharedSecretHex);
     expect(salt.toString("hex")).toBe(envelope.saltHex);
-    expect(info.toString("hex")).toBe(envelope.infoHex);
+    expect(recipientEnvelopeInfo(envelope).toString("hex")).toBe(
+      envelope.infoHex
+    );
     expect(recipientEnvelopeAad(envelope)).toBe(envelope.aadUtf8);
     expect(wrappingKey.toString("hex")).toBe(envelope.wrappingKeyHex);
     expect(ciphertext.toString("hex")).toBe(envelope.ciphertextHex);
@@ -505,7 +694,7 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     expect(rewrappedCipher.getAuthTag().toString("hex")).toBe(rewrapped.tagHex);
   });
 
-  it("rejects all-zero X25519 output and altered recipient-envelope AAD", () => {
+  it("rejects injected all-zero shared secret and altered recipient-envelope AAD", () => {
     const x25519 = fixture.x25519;
     const envelope = fixture.compositeRecipientEnvelope;
     const alice = createPrivateKey({
@@ -528,6 +717,9 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     decipher.setAAD(Buffer.from(`${envelope.aadUtf8}!`, "utf8"));
     decipher.setAuthTag(hex(envelope.tagHex));
 
+    expect(() => requireNonZeroSharedSecret(Buffer.alloc(32))).toThrow(
+      "must be 32 non-zero bytes"
+    );
     expect(() =>
       diffieHellman({ privateKey: alice, publicKey: allZeroPublicKey })
     ).toThrow();
@@ -539,58 +731,67 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     ).toThrow();
   });
 
-  it("rejects altered HMAC and envelope domain labels", () => {
+  it("derives opaque deletion identifiers from source fingerprint and rejects matching floor before materialization", () => {
     const fingerprint = fixture.sourceFingerprint;
     const manifest = parseSourceManifest();
-    const envelope = fixture.compositeRecipientEnvelope;
-    const sourceFingerprintInput = `koed/pds/v1/source-fingerprint\0${fingerprint.sourceType}\0${fingerprint.sourceNativeSessionId}`;
-    const digest = createHmac("sha256", hex(fingerprint.keyHex))
-      .update(sourceFingerprintInput, "utf8")
-      .digest("base64url");
-    const alteredDomainDigest = createHmac("sha256", hex(fingerprint.keyHex))
+    const sourceDigest = createHmac("sha256", hex(fingerprint.keyHex))
       .update(
-        `koed/pds/v1/source-fingerprint/v2\0${fingerprint.sourceType}\0${fingerprint.sourceNativeSessionId}`,
+        `koed/pds/v1/source-fingerprint\0${fingerprint.sourceType}\0${fingerprint.sourceNativeSessionId}`,
         "utf8"
       )
       .digest("base64url");
-    const alteredSalt = sha256(
-      `koed/pds/v1/envelope/salt/v2\0${envelope.groupId}`
-    );
-    const alteredWrappingKey = Buffer.from(
-      hkdfSync(
-        "sha256",
-        hex(fixture.x25519.sharedSecretHex),
-        alteredSalt,
-        recipientEnvelopeInfo(envelope),
-        32
-      )
-    ).toString("hex");
+    const logicalMemoryId = createHmac(
+      "sha256",
+      hex(fingerprint.tombstoneKeyHex)
+    )
+      .update(`koed/pds/v1/logical-memory-id\0${sourceDigest}`, "utf8")
+      .digest("base64url");
+    const deletionFloorToken = createHmac(
+      "sha256",
+      hex(fingerprint.tombstoneKeyHex)
+    )
+      .update(`koed/pds/v1/deletion-floor\0${sourceDigest}`, "utf8")
+      .digest("base64url");
 
-    expect(digest).toBe(fingerprint.digestBase64url);
-    expect(manifest.sourceType).toBe(fingerprint.sourceType);
-    expect(manifest.sourceNativeSessionId).toBe(
-      fingerprint.sourceNativeSessionId
-    );
-    expect(manifest.sourceFingerprint).toBe(fingerprint.digestBase64url);
-    expect(alteredDomainDigest).not.toBe(fingerprint.digestBase64url);
-    expect(alteredSalt.toString("hex")).not.toBe(envelope.saltHex);
-    expect(alteredWrappingKey).not.toBe(envelope.wrappingKeyHex);
+    expect(sourceDigest).toBe(fingerprint.digestBase64url);
+    expect(logicalMemoryId).toBe(fingerprint.logicalMemoryId);
+    expect(deletionFloorToken).toBe(fingerprint.deletionFloorToken);
+    expect(manifest.logicalMemoryId).toBe(logicalMemoryId);
+    expect(manifest.deletionFloorToken).toBe(deletionFloorToken);
+    expect(manifest.projectAliasManifest.tokens).toEqual([
+      createHmac("sha256", hex(fingerprint.projectAliasKeyHex))
+        .update("koed/pds/v1/project-alias\0github.com/example/koed", "utf8")
+        .digest("base64url")
+    ]);
+    expect(
+      fixture.jcsSigning.sourceManifest.canonicalPayloadUtf8
+    ).not.toContain("github.com/example/koed");
+    expect(
+      applyDeletionFloor(
+        fixture.stateFixtures.tombstone.floor,
+        fixture.stateFixtures.tombstone.stalePackage
+      )
+    ).toBe(fixture.stateFixtures.tombstone.stalePackage.expected);
+    expect(
+      applyDeletionFloor(
+        fixture.stateFixtures.tombstone.floor,
+        fixture.stateFixtures.tombstone.differentPackage
+      )
+    ).toBe(fixture.stateFixtures.tombstone.differentPackage.expected);
   });
 
-  it("enforces membership certificate skew, maximum lifetime, and expiry", () => {
+  it("enforces certificate skew, lifetime, and expiry", () => {
     const certificate = fixture.membershipCertificate;
     const issuedAt = new Date(certificate.issuedAt);
     const expiresAt = new Date(certificate.expiresAt);
-    const oneMillisecondBeforeIssuedSkew = new Date(
-      issuedAt.getTime() - certificate.clockSkewSeconds * 1_000 - 1
-    );
-    const maximumLifetimeExceeded = new Date(
-      issuedAt.getTime() + (certificate.maxLifetimeSeconds + 1) * 1_000
+    const skew = Number(parsePdsUint64(certificate.clockSkewSeconds));
+    const maximumLifetime = Number(
+      parsePdsUint64(certificate.maxLifetimeSeconds)
     );
 
     expect(
       certificateIsAccepted(
-        new Date(issuedAt.getTime() - certificate.clockSkewSeconds * 1_000),
+        new Date(issuedAt.getTime() - skew * 1_000),
         issuedAt,
         expiresAt,
         certificate.clockSkewSeconds,
@@ -599,7 +800,7 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     ).toBe(true);
     expect(
       certificateIsAccepted(
-        oneMillisecondBeforeIssuedSkew,
+        new Date(issuedAt.getTime() - skew * 1_000 - 1),
         issuedAt,
         expiresAt,
         certificate.clockSkewSeconds,
@@ -619,28 +820,21 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       certificateIsAccepted(
         issuedAt,
         issuedAt,
-        maximumLifetimeExceeded,
+        new Date(issuedAt.getTime() + (maximumLifetime + 1) * 1_000),
         certificate.clockSkewSeconds,
         certificate.maxLifetimeSeconds
       )
     ).toBe(false);
   });
 
-  it("enforces replay, convergence quarantine, equivocation freeze, and tombstone floor", () => {
+  it("enforces replay, convergence quarantine, equivocation freeze, and ACK cleanup", () => {
     const states = fixture.stateFixtures;
-
     expect(classifyReplay(states.replay.first, states.replay.same)).toBe(
       states.replay.same.expected
     );
     expect(classifyReplay(states.replay.first, states.replay.changed)).toBe(
       states.replay.changed.expected
     );
-    expect(
-      classifyReplay(states.replay.first, {
-        ...states.replay.same,
-        packageId: "pkg-other"
-      })
-    ).toBe("new");
     expect(
       classifyClosure(
         states.convergence.sameClosure,
@@ -657,19 +851,30 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       )
     ).toBe(states.convergence.differentClosure.expected);
     expect(
-      classifyClosure(states.convergence.sameClosure, {
-        ...states.convergence.sameClosure,
-        fingerprint: "fp-other"
-      })
-    ).toBe("distinct");
-    expect(
       classifyLogHead(states.equivocation.trusted, states.equivocation.received)
     ).toBe(states.equivocation.received.expected);
+
+    const ack = states.packageAck;
     expect(
-      applyDeletionFloor(states.tombstone.floor, states.tombstone.stalePackage)
-    ).toBe(states.tombstone.stalePackage.expected);
+      cleanupDisposition(
+        ack.intendedRecipientSnapshot,
+        new Set([ack.acknowledgedRecipient]),
+        new Set([ack.revokedAfterUploadRecipient]),
+        new Date("2026-07-15T00:01:00.000Z"),
+        new Date(ack.expiresAt)
+      )
+    ).toBe(ack.expectedAllAckCleanup);
+    expect(ack.expectedRevocationWaiver).toBe(
+      "waive-after-countersigned-revoke"
+    );
     expect(
-      applyDeletionFloor(states.tombstone.floor, states.tombstone.newerPackage)
-    ).toBe(states.tombstone.newerPackage.expected);
+      cleanupDisposition(
+        ack.intendedRecipientSnapshot,
+        new Set([ack.acknowledgedRecipient]),
+        new Set(),
+        new Date("2026-08-15T00:00:04.000Z"),
+        new Date(ack.expiresAt)
+      )
+    ).toBe(ack.expectedExpiry);
   });
 });

@@ -3,10 +3,13 @@
 Status: Normative V1 profile for [ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 
 This document freezes Personal Device Sync (PDS) V1. It is implementation
-input, not an implementation. No current production API, canonical-JSON helper,
-or RSA recipient-envelope code implements this protocol. In particular, existing
-directed [Cross-Identity Sync](self-hosted-to-hosted-sync.md) uses a distinct
-RSA-OAEP target-envelope contract and must not be reused as PDS V1.
+input, not an implementation. No current production API or RSA
+recipient-envelope code implements this protocol. In particular, existing
+[Directed Hosted Cross-Identity Sync](self-hosted-to-hosted-sync.md) uses a
+distinct RSA-OAEP target-envelope contract and must not be reused as PDS V1.
+PDS is not Directed Hosted Cross-Identity Sync. It is a symmetric Personal
+Device Group specialization under Cross-Identity Sync umbrella language in
+[ADR 0012](adr/0012-symmetric-replicated-personal-memory.md).
 
 ## 1. Scope and trust boundary
 
@@ -22,8 +25,9 @@ Recall are local. Relay outage never stops local capture or Recall of already
 materialized Memory.
 
 PDS is not PostgreSQL replication, Team replication, a Personal Hub, or
-Cross-Identity Sync. Directed hosted Cross-Identity Sync remains a separate
-one-way protocol between distinct identities/deployments. Its selected-source,
+Directed Hosted Cross-Identity Sync. Directed Hosted Cross-Identity Sync remains
+a separate one-way protocol between distinct identities/deployments. Its
+selected-source,
 target authorization, RSA envelope, hosted lifecycle, and retention contracts
 remain unchanged.
 
@@ -43,34 +47,50 @@ human identity, but does not authorize group transition.
 
 ## 2. Encoding and signed bytes
 
-All protocol JSON is RFC 8785 JCS. Signatures cover UTF-8 bytes only. JSON
-objects reject duplicate members, non-finite numbers, non-JCS input, unknown
-members, and non-canonical reserialization. Binary fields use unpadded base64url
-unless a field explicitly says `hex`; IDs are printable opaque ASCII and never
-local paths.
+All protocol JSON is RFC 8785 JCS. PDS uses pinned `json-canonicalize@2.0.0`
+for JCS serialization; `packages/shared/src/canonical-json.ts` is not protocol
+authority. Before parsing a signed wire value, implementation must use a raw
+JSON parser that rejects duplicate object members, malformed escapes, lone UTF-16
+surrogates, non-finite values, and trailing data. It then rejects input unless
+byte-for-byte equal to reserialized JCS. Schemas reject unknown members. PDS
+never accepts JavaScript `undefined`, numeric JSON values, non-plain objects, or
+cyclic values: every numeric protocol field is a canonical decimal string.
+Binary fields use unpadded base64url unless a field explicitly says `hex`; IDs
+are printable opaque ASCII and never local paths.
 
-Integers that can exceed JavaScript safe range are canonical decimal strings.
-Timestamps are RFC 3339 UTC strings with exactly three fractional digits, for
-example `2026-07-15T00:00:00.000Z`.
+Every uint64 JSON field, including `sequence`, epochs, cursors, counts,
+`tombstoneSequence`, `chunkIndex`, and `recipientEpoch`, is a canonical unsigned
+decimal string (`0` or nonzero digit followed by digits). Parser rejects signs,
+leading zeroes, fractions, exponents, and values above `18446744073709551615`.
+`uint64be` is exactly eight unsigned big-endian bytes. Timestamps are RFC 3339
+UTC strings with exactly three fractional digits, for example
+`2026-07-15T00:00:00.000Z`.
 
-A signing input is exactly:
+Except for two-stage records below, a signing input is exactly:
 
 ```text
 UTF8("koed/pds/v1/" + recordType + "\n") || UTF8(JCS(recordWithoutSignerWrapper))
 ```
 
-Permitted `recordType` values are `group-statement`, `membership-certificate`,
-`source-manifest`, `transport-envelope`, `tombstone`, `tombstone-ack`, and
-`conflict-resolution`. A signature valid for one type is invalid for every
-other type. To make `recordWithoutSignerWrapper`, remove whole signer wrapper, including
-key ID and signature: `authorization`, `authority`, `authoritySignature`,
-`originSignature`, `servingSignature`, or `signature`, as applicable. Group and
-tombstone authorization removes both `authorization` and absent-at-signing-time
-`authority`; Authority countersignature removes only its `authority` wrapper
-and retains verified authorization wrapper. Group/tombstone authorization uses
-`group-statement`/`tombstone` domain; Authority countersignature uses same
-record type. Authority wrappers use `keyId`; device/recovery wrappers use
-`signerKeyId`.
+Permitted `recordType` values are `membership-certificate`, `source-manifest`,
+`transport-envelope`, `tombstone-ack`, and `package-ack`. A signature valid for
+one type is invalid for every other type. Remove whole signer wrapper, including
+key ID and signature: `authoritySignature`, `originSignature`,
+`servingSignature`, or `signature`, as applicable. Authority wrappers use
+`keyId`; device/recovery wrappers use `signerKeyId`.
+
+Two-stage `group-statement`, `key-bundle`, `tombstone`, and
+`conflict-resolution` records use exact domains:
+
+```text
+active-device/recovery authorization: UTF8("koed/pds/v1/" + recordType + "/draft\n") || UTF8(JCS(draft))
+Authority countersignature:            UTF8("koed/pds/v1/" + recordType + "/final\n") || UTF8(JCS({draft, authorization}))
+```
+
+The authorization signs only `draft`. Authority verifies it, then signs the
+finalized `{draft, authorization}` value. Fully finalized record hash is
+`base64url(SHA256(UTF8(JCS({draft, authorization, authority}))))`; it includes
+both wrappers. `previousHash` always names that exact prior finalized hash.
 
 SHA-256 is `SHA256(bytes)`. Content hashes and log heads are base64url SHA-256.
 `packageId` is derived before source-manifest signing. Its preimage is JCS of
@@ -124,6 +144,10 @@ HMAC-SHA-256(K_source,
 It is encrypted package content. Never derive it from database IDs, paths,
 checkouts, device IDs, unsalted hashes, or Project signals.
 
+`logicalMemoryId` and `deletionFloorToken` remain inside same encrypted signed
+source manifest. Their derivation and irreversible floor semantics are section
+8; raw identifiers never reach Relay or Authority.
+
 ## 4. Group creation, recovery, membership
 
 First-device setup generates separate device signing/KEM keys, recovery signing
@@ -139,67 +163,140 @@ Loss of every active device and recovery kit permanently loses group control.
 Recovery restores governance and available retained packages; it cannot recreate
 lost source bytes.
 
-### CAS group log
+### CAS group log and membership epochs
 
-`GroupStatement` has exact required fields:
+A `GroupStatement` is exactly this two-stage wrapper:
 
 ```json
 {
-  "protocol": "koed/pds/v1",
-  "groupId": "opaque-group-id",
-  "sequence": "1",
-  "previousHead": null,
-  "kind": "genesis|add-device|revoke-device|rotate-epoch|recover|tombstone|resolve-conflict",
-  "issuedAt": "2026-07-15T00:00:00.000Z",
+  "draft": {
+    "protocol": "koed/pds/v1",
+    "kind": "genesis|add-device|revoke-device|recover|tombstone|resolve-conflict",
+    "groupId": "opaque-group-id",
+    "sequence": "1",
+    "previousHash": null,
+    "body": {}
+  },
   "authorization": { "signerKeyId": "...", "signature": "..." },
-  "body": {},
   "authority": { "keyId": "...", "signature": "..." }
 }
 ```
+
+No field, including timestamp, exists outside `draft`. `draft` contains exactly
+`protocol`, `kind`, `groupId`, `sequence`, `previousHash`, and `body`.
+Authorization and countersigning bytes are section 2's `group-statement/draft`
+and `group-statement/final` domains. The finalized record hash is used for
+`previousHash`; implementations must never hash a draft, omit either signature,
+or use a differently wrapped statement as log head.
 
 `body` has exactly one shape by `kind`:
 
 - `genesis`: `authorityKeyId`, `authorityPublicKey`, `recoverySigningKeyId`,
   `recoverySigningPublicKey`, `recoveryKemKeyId`, `recoveryKemPublicKey`,
-  `initialEpoch` (decimal string), `initialKeyCommitment`, and
-  `recoveryKitHash`;
-- `add-device`: `deviceId`, `deviceSigningKeyId`, `deviceSigningPublicKey`,
-  `deviceKemKeyId`, `deviceKemPublicKey`, and `operationFamilies`;
-- `revoke-device`: `deviceId`, `reasonCode`, and `revokedAt`;
-- `rotate-epoch`: `previousEpoch`, `nextEpoch`, and `nextKeyCommitment`;
-- `recover`: `replacementDeviceId`, replacement signing/KEM key IDs/public
-  keys, and `recoveryKitHash`;
-- `tombstone`: `tombstoneHash` and `floorId` supplied in signed tombstone;
+  `recoveryKitHash`, **`recoveryKitVerified: true`**, `initialEpoch`, and
+  `initialKeyCommitment`;
+- `add-device`: new `deviceId`, signing/KEM key IDs and public keys,
+  `operationFamilies`, `previousEpoch`, `nextEpoch`, `keyBundleHash`;
+- `revoke-device`: `deviceId`, `reasonCode`, `revokedAt`, `previousEpoch`,
+  `nextEpoch`, `keyBundleHash`;
+- `recover`: replacement device signing/KEM IDs and public keys,
+  `recoveryKitHash`, `previousEpoch`, `nextEpoch`, `keyBundleHash`;
+- `tombstone`: `tombstoneHash` and `deletionFloorToken` from signed tombstone;
 - `resolve-conflict`: `sourceFingerprint`, `selectedClosureHash`, and
   `resolution` (`select` or `distinct`).
 
-Every key ID is opaque ASCII; public keys are raw 32-byte base64url; epoch and
-sequence values are canonical decimal strings. `operationFamilies` contains
-only `pds_relay`. `sequence` increments by one; `previousHead` equals SHA-256
-of prior fully countersigned statement. Client submits `previousHead` as
-mandatory CAS value.
-Authority atomically accepts only current head and sequence + 1, validates
-active-device or recovery-root authorization, then countersigns. CAS conflict
-returns current signed head; client rereads and makes a new explicit action. It
-must never silently retry a transition against changed state.
+Every key ID is opaque ASCII; public keys are raw 32-byte base64url;
+`sequence`, epochs, and times/counts are canonical decimal strings.
+`operationFamilies` contains only `pds_relay`. `sequence` increments by one;
+`previousHash` is mandatory CAS input. Authority atomically accepts only
+current hash and next sequence, verifies draft authorization, persists valid
+required bundle(s), and countersigns. CAS conflict returns current signed head;
+client rereads and creates a new explicit transition. It must never silently
+retry against changed state.
 
-Authority signs a membership certificate only for group-log active device key
+Every `add-device`, `revoke-device`, and `recover` atomically advances from
+`previousEpoch` to `nextEpoch = previousEpoch + 1`. Its `keyBundleHash` must
+identify a valid finalized Key Bundle with recipient envelopes for **every
+post-transition active device and recovery recipient**. Authority commits bundle
+and statement in one transaction. No transition is active, no membership
+certificate for `nextEpoch` is issued, and all package exchange is frozen until
+that transaction commits and every required envelope validates. A missing,
+invalid, duplicate, unordered, wrong-epoch, or incomplete bundle freezes
+exchange; it is not a partial-membership state. Revoked recipients are absent
+from post-transition snapshot. Existing members and recovery recipient receive
+fresh `K_epoch[nextEpoch]` and `K_project[nextEpoch]`; source and tombstone
+keys are re-enveloped unchanged. Authority never receives plaintext keys.
+
+Authority signs a membership certificate only for active group-log device key
 material. It has exactly `protocol`, `groupId`, `deviceId`, `deviceSigningKeyId`,
 `deviceSigningPublicKey`, `deviceKemKeyId`, `deviceKemPublicKey`, `epoch`,
-`operationFamilies`, `statementSequence`, `statementHead`, `issuedAt`,
+`operationFamilies`, `statementSequence`, `statementHash`, `issuedAt`,
 `expiresAt`, and `authoritySignature` (`keyId`, `signature`).
-`authoritySignature` is omitted from its `membership-certificate` signing bytes.
-Maximum lifetime is 7 days. Receiver permits 5 minutes clock skew for
-`issuedAt`, requires `now < expiresAt` exactly, and rejects a certificate whose
-stated lifetime exceeds 7 days. Cached certificate expiry blocks relay
-send/receive; local capture/Recall continue.
+`authoritySignature` is omitted from membership-certificate bytes. Maximum
+lifetime is 7 days. Receiver permits 5 minutes `issuedAt` skew, requires
+`now < expiresAt`, and rejects stated lifetime over 7 days. Cached expiry
+blocks relay send/receive; local capture/Recall continue.
 
 A membership/log fork, same sequence with different bytes, invalid prior hash,
-or mismatched Authority countersignature is authority equivocation. Device
-enters **equivocation freeze**: no enroll, revoke, recovery, key delivery,
-package upload, download, serve, or tombstone action. It continues local capture
-and Recall. Freeze clears only after a valid group-authorized,
-Authority-countersigned resolution statement extends one verified head.
+mismatched Authority countersignature, concurrent Authority lease, duplicate
+device signing/KEM key use, or duplicate origin sequence with different closure
+is clone suspicion. Device quarantines affected records, freezes exchange,
+revokes implicated membership through valid group action, and requires
+re-enrollment with fresh device keys. Perfect same-path clone use alternating
+offline remains indistinguishable; V1 does not claim guaranteed clone
+detection. Authority equivocation similarly enters **equivocation freeze**: no
+enroll, revoke, recovery, key delivery, package upload/download/serve, or
+tombstone action. Local capture and Recall continue. Freeze clears only after
+valid group-authorized, Authority-countersigned resolution extends one verified
+head.
+
+### Key Bundle and recipient envelopes
+
+A versioned, signed `KeyBundle` delivers one secret set only through recipient
+X25519 envelopes. It is never Authority plaintext. It is exactly:
+
+```json
+{
+  "draft": {
+    "protocol": "koed/pds/v1",
+    "version": "1",
+    "groupId": "opaque-group-id",
+    "epoch": "2",
+    "transitionKind": "add-device|revoke-device|recover",
+    "recipientSnapshot": ["opaque-recipient-id"],
+    "recipientSnapshotHash": "base64url-sha256",
+    "keyType": "group-secret-set",
+    "epochKeyCommitment": "base64url-sha256",
+    "sourceFingerprintKeyCommitment": "base64url-sha256",
+    "tombstoneFloorKeyCommitment": "base64url-sha256",
+    "projectAliasKeyCommitment": "base64url-sha256",
+    "envelopes": []
+  },
+  "authorization": { "signerKeyId": "...", "signature": "..." },
+  "authority": { "keyId": "...", "signature": "..." }
+}
+```
+
+`recipientSnapshot` is unique, ASCII sorted, and equals post-transition active
+devices plus exactly one recovery recipient. `recipientSnapshotHash` is SHA-256
+of its JCS array. `keyBundleHash` is SHA-256 of full finalized Key Bundle.
+Commitments are SHA-256 of exact 32-byte key values. `epoch` is `nextEpoch`;
+`keyType` is exactly `group-secret-set`; `version` is exactly `1`.
+
+Each envelope is exactly `recipientId`, `recipientKind` (`device` or
+`recovery`), `recipientKemKeyId`, `ephemeralPublicKey`, `nonce`, `ciphertext`,
+`tag`, and `envelopeContext`. Its plaintext is JCS object with exactly
+`epochSecret`, `sourceFingerprintKey`, `tombstoneFloorKey`, and
+`projectAliasKey`; all are 32-byte base64url. `envelopeContext` is exactly
+`koed/pds/v1/key-bundle-envelope`; envelope AEAD AAD is JCS of `protocol`,
+`version`, `groupId`, `epoch`, `recipientId`, `recipientKind`,
+`recipientKemKeyId`, `keyType`, and `recipientSnapshotHash`. Envelopes sort by
+`recipientId`; each recipient appears once. Recipient verifies all key lengths,
+commitments, epoch, snapshot, KEM key ID, signatures, and AEAD before marking
+transition usable. Bundle records and envelopes are retained through recovery
+and replay validation; duplicate same hash is idempotent, same transition/epoch
+with different bytes quarantines. Revocation removes future delivery but cannot
+erase already received plaintext.
 
 ## 5. Closed Captured Session source package
 
@@ -209,7 +306,8 @@ historical backfill, Project-wide/all-memory packages, mutation after closure,
 and partial device placement are non-V1.
 
 `source-manifest` is encrypted content and has exactly these fields; unknown
-fields are rejected:
+fields are rejected. `projectAliasManifest` may be omitted only where no
+canonical remote alias exists:
 
 ```json
 {
@@ -221,8 +319,11 @@ fields are rejected:
   "sourceType": "captured_session",
   "sourceNativeSessionId": "opaque-source-id",
   "sourceFingerprint": "base64url-hmac-sha256",
+  "logicalMemoryId": "base64url-hmac-sha256",
+  "deletionFloorToken": "base64url-hmac-sha256",
   "sourceClosureHash": "base64url-sha256",
   "contentEpoch": "3",
+  "projectAliasManifest": { "version": "1", "epoch": "3", "tokens": [] },
   "closedSession": {
     "closed": true,
     "sourceAdapter": "adapter-id",
@@ -232,6 +333,7 @@ fields are rejected:
     "sourceClosedAt": "2026-07-15T00:00:01.000Z",
     "observedClosedAt": "2026-07-15T00:00:02.000Z"
   },
+  "terminal": { "cursor": "1", "itemCount": "1" },
   "rawClosure": { "recordCount": "1", "rawByteCount": "1", "records": [] },
   "originSignature": { "signerKeyId": "opaque-id", "signature": "base64url" }
 }
@@ -248,11 +350,13 @@ Payload plaintext is exactly UTF-8 JCS of complete source manifest, including
 package-id preimage, and source-manifest signature bytes as defined in section 2.
 
 Closure is contiguous ordered raw source observations with ordinals `0..n-1`,
-no gaps, no duplicate ordinal, and no omitted source record from Session start
-through terminal close evidence. Raw source records retain original source
-payload bytes plus source-native identity, source order, and observation
-provenance. Receiver verifies raw hash for every record, ordinal contiguity,
-closure hash, manifest ID, and origin signature before materialization.
+no gaps, and no duplicate ordinal. Origin attests immutable `terminal.cursor`
+and `terminal.itemCount`, and receiver verifies that item count, ordinal range,
+raw hashes, closure hash, manifest ID, and origin signature before
+materialization. Without an independently signed source feed, receiver can
+verify internal closure consistency only; it cannot prove origin omitted no
+source records. Raw source records retain original source payload bytes plus
+source-native identity, source order, and observation provenance.
 
 First slice excludes **all** derived data: Memory Events, Memory Nodes,
 Projection rows, embeddings/vectors, indexes, LCM Placeholders, LCM Summaries,
@@ -264,13 +368,14 @@ Equal source fingerprint plus equal closure hash converges to one logical
 Memory identity while preserving both origin observations. Equal fingerprint
 plus different closure hash is **quarantine**: store redacted provenance,
 exclude all conflicting variants from Projection and Recall, and never choose
-last writer. Only valid group-authorized/Authority-countersigned
-`resolve-conflict` has exactly `protocol`, `groupId`, `sourceFingerprint`,
-`candidateClosureHashes`, `selectedClosureHash`, `resolution` (`select` or
-`distinct`), `statementHead`, `issuedAt`, `authorization` (`signerKeyId`,
-`signature`), and `authority` (`keyId`, `signature`). `select` requires exactly
-one selected candidate; `distinct` requires `selectedClosureHash: null`. Sources
-without trustworthy stable native ID remain distinct.
+last writer. Only valid group-authorized/Authority-countersigned two-stage
+`conflict-resolution` is accepted. Its `draft` has exactly `protocol`,
+`groupId`, `sourceFingerprint`, `candidateClosureHashes`,
+`selectedClosureHash`, `resolution` (`select` or `distinct`), `statementHash`,
+and `issuedAt`; wrappers and signing domains are section 2. `select` requires
+exactly one selected candidate; `distinct` requires
+`selectedClosureHash: null`. Sources without trustworthy stable native ID remain
+distinct.
 
 ## 6. Encryption and recipient envelopes
 
@@ -310,12 +415,13 @@ info = UTF8("koed/pds/v1/envelope/key\0") || uint64be(recipientEpoch) ||
 wrappingKey = HKDF-SHA-256(sharedSecret, salt, info, 32)
 ```
 
-`uint64be(epoch)` is unsigned eight-byte big-endian. Envelope CEK encryption is
-AES-256-GCM using `wrappingKey`, CSPRNG 96-bit nonce, and JCS UTF-8 AAD:
+`uint64be(recipientEpoch)` is unsigned eight-byte big-endian parsed from its
+canonical decimal string. Envelope CEK encryption is AES-256-GCM using
+`wrappingKey`, CSPRNG 96-bit nonce, and JCS UTF-8 AAD:
 
 ```json
 {
-  "recipientEpoch": 3,
+  "recipientEpoch": "3",
   "packageId": "...",
   "recipientDeviceId": "...",
   "senderDeviceId": "..."
@@ -339,11 +445,17 @@ Relay accepts only current valid membership certificate and signed transport
 header. Header has exactly `protocol`, `groupId`, `packageId`,
 `sourceManifestHash`, `originDeviceId`, `contentEpoch`, `plaintextByteCount`,
 `chunkCount`, `payloadNonce`, `payloadCiphertextHash`, `payloadTag`, `expiresAt`,
-and `originTransportSignature` (`signerKeyId`, `signature`). Signature bytes
-omit whole `originTransportSignature` wrapper; `payloadNonce` is 12-byte
-base64url, `payloadTag` is 16-byte base64url, and `payloadCiphertextHash` is
-base64url SHA-256 of `payloadCiphertext || payloadTag`; `payloadCiphertext` is
-concatenation of chunk `ciphertext` in ascending `chunkIndex`. Each chunk has
+`intendedRecipientSnapshot`, `intendedRecipientSnapshotHash`, and
+`originTransportSignature` (`signerKeyId`, `signature`). Signature bytes omit
+whole `originTransportSignature` wrapper. Snapshot is unique ASCII-sorted active
+device IDs at acceptance; its hash is SHA-256 of its JCS array. Relay validates
+submitted snapshot against group head and persists exact snapshot/hash and
+`relayAcceptedAt` atomically with package acceptance. It rejects snapshot
+mismatch, stale membership, expiry, or re-acceptance with different snapshot.
+`payloadNonce` is 12-byte base64url, `payloadTag` is 16-byte base64url, and
+`payloadCiphertextHash` is base64url SHA-256 of
+`payloadCiphertext || payloadTag`; `payloadCiphertext` is concatenation of chunk
+`ciphertext` in ascending `chunkIndex`. Each chunk has
 exactly `protocol`, `groupId`,
 `packageId`, `chunkIndex`, `chunkCount`, `ciphertext`, and `chunkHash`. It sees
 encrypted chunks plus redacted metadata: opaque group/source/
@@ -366,10 +478,26 @@ Limits are hard limits before persistence:
 | compression                            | forbidden |
 
 Relay retains undelivered package bytes for 30 days from accepted upload.
-After every active intended recipient ACKs package id plus source-manifest hash,
-relay deletes package bytes 7 days later. Redacted delivery receipt may remain
-only through quota/audit retention. Retention expiry never changes local
-replicas.
+`PackageAck` is exactly `protocol`, `packageId`, `sourceManifestHash`,
+`recipientDeviceId`, `intendedRecipientSnapshotHash`, `relayAcceptedAt`,
+`ackedAt`, `result` (`materialized`), and `signature` (`signerKeyId`,
+`signature`). It signs `package-ack` bytes with `signature` omitted. Relay
+accepts ACK only once receiver has validated signed header, exact persisted
+snapshot/hash, recipient membership at acceptance, ciphertext, envelopes,
+source manifest, and authority deletion floor before materialization. Same ACK
+bytes are idempotent; same `(packageId, recipientDeviceId)` with different hash,
+result, snapshot, or signature quarantines and does not count.
+
+After every snapshot recipient ACKs, relay deletes bytes 7 days later. If a
+snapshot recipient is revoked **after acceptance**, only a valid finalized
+revoke statement waives that recipient; relay retains waiver hash. A revoked
+recipient cannot ACK after revocation. On expiry relay deletes bytes, records
+redacted expiry, and accepts no successful ACK; an authorized active replica
+must re-upload same immutable package under a fresh header/current recipient
+snapshot. Recovery recipient may re-serve retained validated package after
+membership recovery, subject to current epoch/bundle and deletion-floor checks.
+Redacted delivery receipt may remain only through quota/audit retention.
+Retention expiry never changes local replicas.
 
 Receiver replay table key is `(groupId, packageId)`. Same id and same signed
 source-manifest hash is idempotent. Same id with different hash is tampering:
@@ -385,62 +513,78 @@ PDS device revocation, replica removal, PDS pause, Personal deletion, Team
 Share Grant revocation, and Team retention remain separate. PDS never mutates
 Team Membership, Workspace Access, Share Grants, or Team-retained knowledge.
 
-Personal deletion tombstone has exactly `protocol`, `groupId`,
-`logicalMemoryId`, `sourceFingerprint`, `closureHashes`, `tombstoneSequence`,
-`statementHead`, `activeDeviceSnapshot`, `floorId`, `issuedAt`, `authorization`
-(`signerKeyId`, `signature`), and `authority` (`keyId`, `signature`).
-`floorId` is created by authorized device/recovery root using `K_tombstone` and
-is bound by its signature before Authority verifies/countersigns it. Authority
-never derives it and never holds `K_tombstone`. Tombstone is bound to logical
-memory identity, source fingerprint, closure hash(es), group-log head,
-monotonic tombstone sequence, and active-device ACK snapshot. It needs
-active-device or recovery root authorization and Authority countersignature.
-Authority alone cannot issue it. Tombstone has its own signing domain and is
-immutable.
-
-At tombstone creation, Authority snapshots exact active device IDs from accepted
-log head. `tombstone-ack` has exactly `protocol`, `groupId`, `tombstoneHash`,
-`deviceId`, `statementHead`, `ackedAt`, and `signature` (`signerKeyId`,
-`signature`); signature is omitted from `tombstone-ack` signing bytes. Each
-device signs ACK after local removal/quarantine of matching source and derived
-representation. Tombstone full record remains until
-all snapshot devices ACK, then for 30 additional days. Revoked-after-snapshot
-devices remain required only if they were active at snapshot; a later
-Authority-countersigned resolution may mark an irrecoverable device exception.
-
-Authority stores opaque group-lifetime deletion floor:
+`logicalMemoryId` and `deletionFloorToken` are opaque authenticated values
+included inside signed encrypted source manifest and signed tombstone. Origin
+derives both from source fingerprint, not source sequence:
 
 ```text
-floorId = HMAC-SHA-256(K_tombstone,
-  UTF8("koed/pds/v1/deletion-floor\0") || UTF8(logicalMemoryId))
+logicalMemoryId = HMAC-SHA-256(K_tombstone,
+  UTF8("koed/pds/v1/logical-memory-id\0") || UTF8(sourceFingerprint))
+deletionFloorToken = HMAC-SHA-256(K_tombstone,
+  UTF8("koed/pds/v1/deletion-floor\0") || UTF8(sourceFingerprint))
 ```
 
-It stores `floorId`, highest tombstone sequence, and signed tombstone hash, not
-Memory plaintext, source fingerprint, raw Session ID, or keys. Floor cannot be
-removed before irreversible group purge. On backup restore or new materializer,
-device fetches/verifies group head and all applicable floors before accepting
-package bytes; any package at or below tombstone sequence is rejected. Restore
-never lowers local lifecycle high-water mark.
+Personal deletion tombstone is exact two-stage `tombstone` record whose `draft`
+has exactly `protocol`, `groupId`, `logicalMemoryId`, `sourceFingerprint`,
+`deletionFloorToken`, `closureHashes`, `tombstoneSequence`, `statementHash`,
+`activeDeviceSnapshot`, and `issuedAt`. It needs active-device or recovery-root
+authorization and Authority countersignature. Authority verifies token matches
+manifest's authenticated value but never derives it or holds `K_tombstone`.
+Authority persists token, logical ID, finalized tombstone hash, and tombstone
+sequence as signed authority floor. It stores no Memory plaintext, raw source
+ID, fingerprint, or key.
+
+V1 deletion is irreversible for that exact `logicalMemoryId`/floor token until
+irreversible group purge. Receiver fetches and verifies signed Authority floors
+before downloading, decrypting, or materializing package. Matching
+`logicalMemoryId` and `deletionFloorToken` rejects package regardless of source
+sequence, tombstone sequence, source origin, or delivery order. It must never
+compare unrelated source and tombstone sequences. Restore never lowers local
+floor state; a package cannot resurrect deleted logical Memory.
+
+At tombstone creation Authority snapshots exact active device IDs. `tombstone-ack`
+has exactly `protocol`, `groupId`, `tombstoneHash`, `deviceId`, `statementHash`,
+`ackedAt`, and `signature` (`signerKeyId`, `signature`); it signs `tombstone-ack`
+bytes with `signature` omitted. Device ACKs after local removal/quarantine of
+matching source and derived state. Full tombstone remains until all snapshot
+ACKs plus 30 days. A valid finalized revoke can waive a recipient after snapshot;
+otherwise revoked-after-snapshot device remains required.
 
 ## 9. Project aliases
 
 Project association is local grouping/search context only. It never grants Team
-access or chooses a Workspace. PDS package can contain epoch-HMACed canonical
-remote alias tokens, never raw paths/remotes:
+access or chooses a Workspace. Raw aliases, paths, remotes, and canonical alias
+text never leave encrypted package boundary. Signed source manifest contains
+exact `projectAliasManifest`:
+
+```json
+{
+  "version": "1",
+  "epoch": "3",
+  "tokens": ["base64url-hmac-sha256"]
+}
+```
+
+It is absent only when no canonical remote alias exists. `tokens` is unique,
+ASCII sorted, maximum 16 entries; every token is 32-byte HMAC output base64url.
+`version` is exactly `1`; `epoch` must equal manifest `contentEpoch` and a
+verified `K_project[epoch]`. Token is exactly:
 
 ```text
-HMAC-SHA-256(K_project[e], UTF8("koed/pds/v1/project-alias\0") || UTF8(alias))
+HMAC-SHA-256(K_project[epoch], UTF8("koed/pds/v1/project-alias\0") || UTF8(alias))
 ```
 
 Canonical alias is normalized network host (lowercase, IDNA), namespace, and
 repository name after stripping credentials, default port, `.git` suffix, and
-transport spelling. Local-only paths have no alias.
+transport spelling. Local-only paths have no alias. Receiver rejects raw alias
+fields, mismatched version/epoch, oversized or unordered token set, bad token
+length, or unverified project epoch.
 
-Auto-match only when exactly one canonical alias token intersects and it maps to
-exactly one local Project on each device, with no explicit deny/manual override
-and no competing current/historical alias. Zero or multiple aliases, collisions,
-forks, changed canonicalization, local-only Projects, or any competing Project
-requires User confirmation. User override wins until removed.
+Auto-match only when exactly one token intersects and maps to exactly one local
+Project on each device, with no explicit deny/manual override and no competing
+current/historical token. Zero or multiple tokens, collisions, forks, changed
+canonicalization, local-only Projects, or any competing Project requires User
+confirmation. User override wins until removed.
 
 ## 10. Observability and operational state
 
@@ -462,13 +606,16 @@ Not V1: direct peer transport, historical import/backfill, open/edited Sessions,
 partial replication, mixed-version compatibility, LCM Summary replication,
 Project-wide/global packages, automatic conflict resolution, device-authorized
 Team actions, any Operator/support recovery bypass, server key escrow,
-post-closure source mutation, or any change to directed hosted Cross-Identity
+post-closure source mutation, or any change to Directed Hosted Cross-Identity
 Sync.
 
 Fixed interoperability vectors live at
 `packages/shared/test-fixtures/personal-device-sync-v1.json`. They include
-non-production keys only. They cover source and group statements, signature
-domains, key envelopes and rewrapping, replay, convergence quarantine,
-equivocation freeze, tombstone restore, expiry, and AEAD/AAD failure.
-Implementations must consume committed expected bytes and outputs; tests must not
-generate expected signatures, X25519 secrets, HKDF, or AEAD output at run time.
+non-production source manifest/wrapper, two-stage group statement, membership
+certificate, Key Bundle, tombstone, Package ACK, conflict resolution, recipient
+envelope/rewrap, deletion-floor, replay, convergence quarantine, equivocation,
+expiry, and AEAD/AAD cases. Tests recompute every committed signature and hash,
+and reject altered wrapper, domain, duplicate member, Unicode, numeric,
+undefined, zero-shared-secret, and envelope-AAD inputs. Implementations consume
+committed expected bytes and outputs; tests must not generate expected
+signatures, X25519 secrets, HKDF, or AEAD output at run time.

@@ -975,8 +975,9 @@ Fork/Import operation is introduced.
 
 ## Personal Device Sync V1
 
-Personal Device Sync is distinct from directed hosted Cross-Identity Sync and
-has no production route, worker, or local-edge API in this build. Its accepted
+Personal Device Sync is not Directed Hosted Cross-Identity Sync; both remain
+Cross-Identity Sync umbrella specializations. PDS has no production route,
+worker, or local-edge API in this build. Its accepted
 protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 When implemented, an eligible future closed Captured Session will follow this
 sequence: source seals contiguous raw closure; origin signs JCS source manifest;
