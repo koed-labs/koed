@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeSync
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { isKoedServerCliEntrypoint, runKoedServerCli } from "./cli.js";
+import {
+  isKoedServerCliEntrypoint,
+  runKoedServerCli,
+  startKoedServerDaemon
+} from "./cli.js";
 import type { KoedServerDoctorResult, KoedServerStatus } from "./types.js";
 
 const writer = () => {
@@ -81,6 +94,49 @@ describe("koed-server CLI entrypoint detection", () => {
     expect(
       isKoedServerCliEntrypoint(pathToFileURL(cliPath).href, cliPath)
     ).toBe(true);
+  });
+});
+
+describe("koed-server detached supervisor", () => {
+  it("redirects detached supervisor output to the Koed log directory", () => {
+    const koedHome = mkdtempSync(resolve(tmpdir(), "koed-daemon-log-test-"));
+    const logsDir = resolve(koedHome, "logs");
+    let unrefCalled = false;
+    try {
+      const result = startKoedServerDaemon({
+        environment: { KOED_HOME: koedHome },
+        startCommand: "/repo/dist/cli.js",
+        resolvePaths: () => ({ koedHome, logsDir, repoRoot: "/repo" }) as never,
+        spawn: ((
+          _command: string,
+          _args: readonly string[],
+          options: { stdio?: unknown }
+        ) => {
+          const stdio = options?.stdio as [string, number, number];
+          writeSync(stdio[1], "supervisor stdout\n");
+          writeSync(stdio[2], "supervisor stderr\n");
+          return {
+            pid: 42,
+            unref: () => {
+              unrefCalled = true;
+            }
+          } as never;
+        }) as never
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        startedPid: 42,
+        logPath: resolve(logsDir, "supervisor.log")
+      });
+      expect(unrefCalled).toBe(true);
+      expect(existsSync(result.logPath!)).toBe(true);
+      expect(readFileSync(result.logPath!, "utf8")).toContain(
+        "supervisor stdout\nsupervisor stderr"
+      );
+    } finally {
+      rmSync(koedHome, { recursive: true, force: true });
+    }
   });
 });
 

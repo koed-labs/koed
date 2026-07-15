@@ -252,6 +252,36 @@ export const stopKoedServer = ({
     }
   }
 
+  if (runtime.pid > 0 && runtime.pid !== process.pid && checkPid(runtime.pid)) {
+    if (
+      waitForPidExit(runtime.pid, {
+        checkPid,
+        waitForExitMs,
+        pollIntervalMs,
+        sleepSync
+      })
+    ) {
+      stoppedPids.push(runtime.pid);
+      stoppedServices.push("supervisor");
+    } else {
+      const stopped = stopPid("supervisor", runtime.pid, {
+        kill,
+        checkPid,
+        waitForExitMs,
+        pollIntervalMs,
+        sleepSync
+      });
+      stoppedPids.push(...stopped.stoppedPids);
+      missingPids.push(...stopped.missingPids);
+      errors.push(...stopped.errors);
+      if (stopped.missingPids.length > 0) {
+        missingServices.push("supervisor");
+      } else if (stopped.stoppedPids.length > 0) {
+        stoppedServices.push("supervisor");
+      }
+    }
+  }
+
   if (errors.length === 0) {
     remove(paths.runtimeStatePath as PathLike, { force: true });
   }

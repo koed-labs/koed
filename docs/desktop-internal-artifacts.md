@@ -28,6 +28,8 @@ When the `Release` workflow creates a new GitHub Release, it first creates it as
 
 The workflow verifies the Desktop, standalone server, checksum, and release metadata assets before publishing the draft. A failed build therefore leaves a draft instead of a visible partial release. If only the Desktop asset job needs to be rebuilt, run `Recover Desktop release assets` with the existing draft release tag; it checks out that tag, confirms the tagged source already contains the pinned hermetic OpenSSL builder, repeats native-runtime validation and packaged smoke, replaces the Desktop assets, and publishes the release only when every required asset is present. The recovery workflow deliberately rejects published releases and tags such as `v0.4.0` that predate the hermetic builder; repair those through a patch release instead of mixing current build tooling into historical source.
 
+Packaged Desktop smoke writes detached supervisor output to `KOED_HOME/logs/supervisor.log`. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and preserves the same curated files as a short-lived workflow artifact. Secret-bearing configuration files are excluded from that artifact.
+
 These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
 
 ## Install/open manually

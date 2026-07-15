@@ -101,7 +101,16 @@ jobs:
         run: pnpm desktop:package:internal:mac
 
       - name: Packaged Desktop native smoke
-        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+
+      - name: Upload packaged Desktop smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-recovery-smoke-diagnostics-${{ inputs.tag }}
+          path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Generate Desktop artifact checksums
         run: |

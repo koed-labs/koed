@@ -68,6 +68,36 @@ describe("stopKoedServer", () => {
     expect(result.stoppedPids).toEqual([12, 11, 10]);
   });
 
+  it("waits for the supervisor to exit before completing stop", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime());
+    const running = new Set([100, 10, 11, 12]);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      kill: (pid, signal) => {
+        signals.push([pid, signal]);
+        running.delete(pid);
+      },
+      checkPid: (pid) => running.has(pid),
+      sleepSync: () => {
+        if (![10, 11, 12].some((pid) => running.has(pid))) {
+          running.delete(100);
+        }
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(signals).toEqual([
+      [12, "SIGTERM"],
+      [11, "SIGTERM"],
+      [10, "SIGTERM"]
+    ]);
+    expect(result.stoppedPids).toEqual([12, 11, 10, 100]);
+    expect(result.stoppedServices).toContain("supervisor");
+  });
+
   it("escalates lingering app PIDs before removing runtime state", () => {
     const koedHome = makeHome();
     writeRuntime(koedHome, runtime({ processes: { api: 10 } }));

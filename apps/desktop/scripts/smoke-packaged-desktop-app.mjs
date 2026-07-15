@@ -2,11 +2,15 @@
 /* global console, process, setTimeout */
 import { listPackage } from "@electron/asar";
 import {
+  cpSync,
   readdirSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
-  statSync
+  statSync,
+  writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -24,6 +28,7 @@ const parseArgs = (argv) => {
     json: false,
     build: false,
     missingAssets: false,
+    diagnosticsDir: undefined,
     timeoutMs: 180_000,
     pollIntervalMs: 2_000
   };
@@ -40,6 +45,15 @@ const parseArgs = (argv) => {
     }
     if (value === "--missing-assets") {
       options.missingAssets = true;
+      continue;
+    }
+    if (value === "--diagnostics-dir") {
+      const diagnosticsDir = argv[index + 1]?.trim();
+      if (!diagnosticsDir) {
+        throw new Error("--diagnostics-dir requires a path.");
+      }
+      options.diagnosticsDir = resolve(diagnosticsDir);
+      index += 1;
       continue;
     }
     if (value === "--timeout-ms") {
@@ -73,6 +87,7 @@ Options:
   --json                    Emit JSON result
   --build                   Build packaged app before smoke
   --missing-assets          Expect packaged native runtime assets to be missing
+  --diagnostics-dir <path>  Preserve curated failure diagnostics at this path
   --timeout-ms <number>     Max wait for healthy status (default 180000)
   --poll-interval-ms <num>  Poll interval (default 2000)
   --help, -h                Show this help
@@ -220,6 +235,68 @@ const killPidBestEffort = (pid) => {
   } catch {
     // Process already exited.
   }
+};
+
+const pidIsRunning = (pid) => {
+  if (typeof pid !== "number" || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const readableDiagnostic = (label, path) => {
+  if (!existsSync(path)) return `${label}: not created`;
+  try {
+    const contents = readFileSync(path, "utf8");
+    const maxCharacters = 64 * 1024;
+    const output =
+      contents.length > maxCharacters
+        ? `[last ${maxCharacters} characters]\n${contents.slice(-maxCharacters)}`
+        : contents;
+    return `${label} (${path}):\n${output}`;
+  } catch (error) {
+    return `${label} (${path}): could not read (${error instanceof Error ? error.message : String(error)})`;
+  }
+};
+
+const preserveFailureDiagnostics = ({ layout, koedHome, diagnosticsDir }) => {
+  const status = runPackagedCommand(layout, koedHome, ["status", "--json"]);
+  const supervisorLog = resolve(koedHome, "logs", "supervisor.log");
+  const postgresLog = resolve(koedHome, "logs", "postgres.log");
+  const runtimeState = resolve(koedHome, "run", "koed-server.json");
+  const localPorts = resolve(koedHome, "config", "local-ports.json");
+  if (diagnosticsDir) {
+    rmSync(diagnosticsDir, { recursive: true, force: true });
+    mkdirSync(diagnosticsDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      resolve(diagnosticsDir, "status.json"),
+      status.stdout || "{}",
+      {
+        mode: 0o600
+      }
+    );
+    for (const [source, relativePath] of [
+      [supervisorLog, "logs/supervisor.log"],
+      [postgresLog, "logs/postgres.log"],
+      [runtimeState, "run/koed-server.json"],
+      [localPorts, "config/local-ports.json"]
+    ]) {
+      if (!existsSync(source)) continue;
+      const target = resolve(diagnosticsDir, relativePath);
+      mkdirSync(resolve(target, ".."), { recursive: true, mode: 0o700 });
+      cpSync(source, target);
+    }
+  }
+  return [
+    readableDiagnostic("Supervisor log", supervisorLog),
+    readableDiagnostic("Postgres log", postgresLog),
+    readableDiagnostic("Runtime state", runtimeState),
+    `Last status:\n${status.stdout || status.stderr || "not available"}`,
+    ...(diagnosticsDir ? [`Preserved diagnostics: ${diagnosticsDir}`] : [])
+  ].join("\n\n");
 };
 
 const runPackagedCommand = (layout, koedHome, args, extraEnv = {}) => {
@@ -416,11 +493,17 @@ const waitForHealthyStatus = async ({
   layout,
   koedHome,
   timeoutMs,
-  pollIntervalMs
+  pollIntervalMs,
+  supervisorPid
 }) => {
   const startedAt = Date.now();
   let lastStatus = null;
   while (Date.now() - startedAt < timeoutMs) {
+    if (!pidIsRunning(supervisorPid)) {
+      throw new Error(
+        `Packaged daemon supervisor ${supervisorPid} exited before becoming healthy.`
+      );
+    }
     const status = runPackagedCommand(layout, koedHome, ["status", "--json"]);
     if (status.status !== 0) {
       lastStatus = parseJsonOutput("status --json", status.stdout || "{}");
@@ -577,7 +660,8 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     layout,
     koedHome,
     timeoutMs: options.timeoutMs,
-    pollIntervalMs: options.pollIntervalMs
+    pollIntervalMs: options.pollIntervalMs,
+    supervisorPid: startJson.startedPid
   });
 
   const reconnectStatus = runPackagedCommand(layout, koedHome, [
@@ -627,7 +711,8 @@ const smokeHealthyDaemon = async (layout, koedHome, options) => {
     layout,
     koedHome,
     timeoutMs: options.timeoutMs,
-    pollIntervalMs: options.pollIntervalMs
+    pollIntervalMs: options.pollIntervalMs,
+    supervisorPid: restartJson.startedPid
   });
 
   const finalStop = runPackagedCommand(layout, koedHome, ["stop", "--json"]);
@@ -728,6 +813,16 @@ const run = async () => {
       return;
     }
     console.log("Packaged Desktop smoke passed.");
+  } catch (error) {
+    const diagnostics = preserveFailureDiagnostics({
+      layout,
+      koedHome,
+      diagnosticsDir: options.diagnosticsDir
+    });
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}\n\n${diagnostics}`,
+      { cause: error }
+    );
   } finally {
     runPackagedCommand(layout, koedHome, ["stop", "--json"]);
     for (const pid of daemonPids.toReversed()) {
