@@ -15,6 +15,7 @@
     "packageIdPreimageUtf8": "{\"closedSession\":{\"captureMethod\":\"supported_capture_hook\",\"closed\":true,\"observedClosedAt\":\"2026-07-15T00:00:02.000Z\",\"sourceAdapter\":\"codex\",\"sourceAdapterVersion\":\"1\",\"sourceClosedAt\":\"2026-07-15T00:00:01.000Z\",\"sourceCreatedAt\":\"2026-07-15T00:00:00.000Z\"},\"contentEpoch\":\"3\",\"originDeploymentId\":\"deployment-alice\",\"originDeviceId\":\"device-alice\",\"protocol\":\"koed/pds/v1\",\"rawClosure\":{\"rawByteCount\":\"12\",\"recordCount\":\"1\",\"records\":[{\"observedAt\":\"2026-07-15T00:00:01.000Z\",\"ordinal\":\"0\",\"payload\":\"SGVsbG8sIFBEUyEK\",\"payloadHash\":\"dtKRZEwhd_sF8NMbGqeu5fEDJfQvsU8x7OCzHldJsqg\",\"sourceNativeItemId\":\"item-1\",\"sourceTimestamp\":\"2026-07-15T00:00:00.000Z\"}]},\"sourceClosureHash\":\"3N3hukQUH6UF05_Ne770dI-NZRXjh7rXKtvb861ATa8\",\"sourceFingerprint\":\"ddDVvDeEXrlPT81rZXeCF_Z3AMTgZyq5_dp0EucIMss\",\"sourceNativeSessionId\":\"codex-thread-42\",\"sourceSequence\":\"7\",\"sourceType\":\"captured_session\"}",
     "packageId": "XIYkr3EBYccBFUH0GLPxzEA8_8TC9iLa6zs7SrFMJfM",
     "manifestHash": "EdGKI0Bh3AhtJ4zS54Tnv7GJUgWIggFwVJ-xQWLFgFI",
+    "sourceClosureHash": "3N3hukQUH6UF05_Ne770dI-NZRXjh7rXKtvb861ATa8",
     "ed25519": {
       "seedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
       "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
@@ -43,8 +44,7 @@
     "bobPrivateKeyHex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
     "bobPublicKeyHex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
     "sharedSecretHex": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
-    "allZeroSharedSecretHex": "0000000000000000000000000000000000000000000000000000000000000000",
-    "allZeroRejected": true
+    "allZeroPublicKeyHex": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "compositeRecipientEnvelope": {
     "groupId": "group-fixture-01",
@@ -72,13 +72,9 @@
   },
   "sourceFingerprint": {
     "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-    "messageUtf8": "koed/pds/v1/source-fingerprint\u0000captured_session\u0000codex-thread-42",
-    "digestHex": "75d0d5bc37845eb94f4fcd6b65778217f67700c4e0672ab9fdda7412e70832cb"
-  },
-  "package": {
-    "id": "r1jMb6bUBvYEAHmtTA7u30i3i-6mpLo7A2BKWb2I7HM",
-    "manifestHash": "r1jMb6bUBvYEAHmtTA7u30i3i-6mpLo7A2BKWb2I7HM",
-    "changedManifestHash": "HWR0W8GSOJ0cwwUvT7Y-_uIDzQvpGrq4Qb1YOWgY6jQ"
+    "sourceType": "captured_session",
+    "sourceNativeSessionId": "codex-thread-42",
+    "digestBase64url": "ddDVvDeEXrlPT81rZXeCF_Z3AMTgZyq5_dp0EucIMss"
   },
   "membershipCertificate": {
     "issuedAt": "2026-07-15T00:00:00.000Z",

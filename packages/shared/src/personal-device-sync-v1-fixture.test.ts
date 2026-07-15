@@ -11,6 +11,7 @@ import {
 } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { canonicalJsonStringify } from "./canonical-json.js";
 
 type Fixture = {
   protocol: "koed/pds/v1";
@@ -20,6 +21,7 @@ type Fixture = {
     packageIdPreimageUtf8: string;
     packageId: string;
     manifestHash: string;
+    sourceClosureHash: string;
     ed25519: {
       seedHex: string;
       publicKeyHex: string;
@@ -48,8 +50,7 @@ type Fixture = {
     bobPrivateKeyHex: string;
     bobPublicKeyHex: string;
     sharedSecretHex: string;
-    allZeroSharedSecretHex: string;
-    allZeroRejected: boolean;
+    allZeroPublicKeyHex: string;
   };
   compositeRecipientEnvelope: {
     groupId: string;
@@ -75,7 +76,12 @@ type Fixture = {
       tagHex: string;
     };
   };
-  sourceFingerprint: { keyHex: string; messageUtf8: string; digestHex: string };
+  sourceFingerprint: {
+    keyHex: string;
+    sourceType: string;
+    sourceNativeSessionId: string;
+    digestBase64url: string;
+  };
   membershipCertificate: {
     issuedAt: string;
     expiresAt: string;
@@ -121,6 +127,19 @@ type Fixture = {
   };
 };
 
+type SourceManifest = {
+  packageId: string;
+  sourceClosureHash: string;
+  sourceFingerprint: string;
+  sourceNativeSessionId: string;
+  sourceType: string;
+  rawClosure: {
+    rawByteCount: string;
+    recordCount: string;
+    records: Array<{ payload: string; payloadHash: string }>;
+  };
+};
+
 const fixture = JSON.parse(
   readFileSync(
     new URL("../test-fixtures/personal-device-sync-v1.json", import.meta.url),
@@ -129,36 +148,60 @@ const fixture = JSON.parse(
 ) as Fixture;
 
 const hex = (value: string): Buffer => Buffer.from(value, "hex");
+const base64url = (value: Buffer): string => value.toString("base64url");
 
-const rawPrivateKey = (algorithmOid: string, raw: string) =>
-  createPrivateKey({
-    key: Buffer.concat([
-      Buffer.from(`302e02010030050603${algorithmOid}04220420`, "hex"),
-      hex(raw)
-    ]),
-    format: "der",
-    type: "pkcs8"
-  });
+const okpJwk = (
+  crv: "Ed25519" | "X25519",
+  publicKeyHex: string,
+  privateKeyHex?: string
+): JsonWebKey => ({
+  kty: "OKP",
+  crv,
+  x: base64url(hex(publicKeyHex)),
+  ...(privateKeyHex ? { d: base64url(hex(privateKeyHex)) } : {})
+});
 
-const rawPublicKey = (algorithmOid: string, raw: string) =>
-  createPublicKey({
-    key: Buffer.concat([
-      Buffer.from(`302a30050603${algorithmOid}032100`, "hex"),
-      hex(raw)
-    ]),
-    format: "der",
-    type: "spki"
-  });
+const parseSourceManifest = (): SourceManifest =>
+  JSON.parse(fixture.jcsSigning.canonicalPayloadUtf8) as SourceManifest;
 
-const requireNonZeroX25519SharedSecret = (value: Buffer): Buffer => {
-  if (value.byteLength !== 32 || value.every((byte) => byte === 0)) {
-    throw new Error("X25519 shared secret must be 32 non-zero bytes");
-  }
-  return value;
+const sha256 = (value: string | Buffer): Buffer =>
+  createHash("sha256").update(value).digest();
+
+const recipientEnvelopeInfo = (
+  envelope: Fixture["compositeRecipientEnvelope"]
+): Buffer => {
+  const epoch = Buffer.alloc(8);
+  epoch.writeBigUInt64BE(BigInt(envelope.recipientEpoch));
+  return Buffer.concat([
+    Buffer.from("koed/pds/v1/envelope/key\0", "utf8"),
+    epoch,
+    Buffer.from(
+      `${envelope.packageId}\0${envelope.recipientDeviceId}\0${envelope.senderDeviceId}`,
+      "utf8"
+    )
+  ]);
 };
 
-const certificateIsCurrent = (now: Date, expiresAt: Date): boolean =>
-  now.getTime() < expiresAt.getTime();
+const recipientEnvelopeAad = (
+  envelope: Fixture["compositeRecipientEnvelope"]
+): string =>
+  canonicalJsonStringify({
+    packageId: envelope.packageId,
+    recipientDeviceId: envelope.recipientDeviceId,
+    recipientEpoch: envelope.recipientEpoch,
+    senderDeviceId: envelope.senderDeviceId
+  });
+
+const certificateIsAccepted = (
+  now: Date,
+  issuedAt: Date,
+  expiresAt: Date,
+  clockSkewSeconds: number,
+  maxLifetimeSeconds: number
+): boolean =>
+  issuedAt.getTime() <= now.getTime() + clockSkewSeconds * 1_000 &&
+  now.getTime() < expiresAt.getTime() &&
+  expiresAt.getTime() - issuedAt.getTime() <= maxLifetimeSeconds * 1_000;
 
 const classifyReplay = (
   known: { packageId: string; manifestHash: string },
@@ -198,15 +241,47 @@ const applyDeletionFloor = (
     : "allow";
 
 describe("Personal Device Sync V1 fixed fixture", () => {
-  it("verifies fixed RFC 8785 UTF-8 domain bytes and Ed25519 signature", () => {
+  it("recomputes committed JCS bytes, hashes, and source-manifest signature", () => {
     const signing = fixture.jcsSigning;
-    const publicKey = rawPublicKey("2b6570", signing.ed25519.publicKeyHex);
-    const input = Buffer.from(
-      `${signing.domain}${signing.canonicalPayloadUtf8}`,
-      "utf8"
+    const manifest = parseSourceManifest();
+    const publicKey = createPublicKey({
+      key: okpJwk("Ed25519", signing.ed25519.publicKeyHex),
+      format: "jwk"
+    });
+    const { packageId: omittedPackageId, ...packageIdPreimage } = manifest;
+    const rawByteCount = manifest.rawClosure.records.reduce(
+      (count, record) =>
+        count + Buffer.from(record.payload, "base64url").length,
+      0
     );
 
     expect(fixture.protocol).toBe("koed/pds/v1");
+    expect(canonicalJsonStringify(manifest)).toBe(signing.canonicalPayloadUtf8);
+    expect(canonicalJsonStringify(packageIdPreimage)).toBe(
+      signing.packageIdPreimageUtf8
+    );
+    expect(omittedPackageId).toBe(signing.packageId);
+    expect(rawByteCount).toBe(Number(manifest.rawClosure.rawByteCount));
+    expect(manifest.rawClosure.records).toHaveLength(
+      Number(manifest.rawClosure.recordCount)
+    );
+    expect(
+      manifest.rawClosure.records.map((record) =>
+        base64url(sha256(Buffer.from(record.payload, "base64url")))
+      )
+    ).toEqual(manifest.rawClosure.records.map((record) => record.payloadHash));
+    expect(
+      base64url(sha256(canonicalJsonStringify(manifest.rawClosure.records)))
+    ).toBe(signing.sourceClosureHash);
+    expect(manifest.sourceClosureHash).toBe(signing.sourceClosureHash);
+    expect(
+      base64url(
+        sha256(`koed/pds/v1/package-id\n${signing.packageIdPreimageUtf8}`)
+      )
+    ).toBe(signing.packageId);
+    expect(base64url(sha256(signing.canonicalPayloadUtf8))).toBe(
+      signing.manifestHash
+    );
     expect(
       verify(
         null,
@@ -216,131 +291,162 @@ describe("Personal Device Sync V1 fixed fixture", () => {
       )
     ).toBe(true);
     expect(
-      verify(null, input, publicKey, hex(signing.ed25519.signatureHex))
+      verify(
+        null,
+        Buffer.from(`${signing.domain}${signing.canonicalPayloadUtf8}`, "utf8"),
+        publicKey,
+        hex(signing.ed25519.signatureHex)
+      )
     ).toBe(true);
-    expect(
-      createHash("sha256")
-        .update("koed/pds/v1/package-id\n", "utf8")
-        .update(signing.packageIdPreimageUtf8, "utf8")
-        .digest("base64url")
-    ).toBe(signing.packageId);
-    expect(
-      createHash("sha256")
-        .update(signing.canonicalPayloadUtf8, "utf8")
-        .digest("base64url")
-    ).toBe(signing.manifestHash);
     expect(
       verify(
         null,
-        Buffer.from(`koed/pds/v1/tombstone\n${signing.canonicalPayloadUtf8}`),
+        Buffer.from(
+          `koed/pds/v1/tombstone\n${signing.canonicalPayloadUtf8}`,
+          "utf8"
+        ),
         publicKey,
         hex(signing.ed25519.signatureHex)
       )
     ).toBe(false);
   });
 
-  it("uses committed RFC 5869 HKDF-SHA-256 output", () => {
-    const vector = fixture.hkdfRfc5869Case1;
-    const output = Buffer.from(
-      hkdfSync(
-        "sha256",
-        hex(vector.ikmHex),
-        hex(vector.saltHex),
-        hex(vector.infoHex),
-        vector.length
-      )
-    );
-
-    expect(output.toString("hex")).toBe(vector.okmHex);
-  });
-
-  it("uses committed NIST AES-256-GCM output", () => {
-    const vector = fixture.aes256GcmNist;
+  it("verifies committed HKDF and AES-256-GCM reference outputs", () => {
+    const hkdf = fixture.hkdfRfc5869Case1;
+    const aes = fixture.aes256GcmNist;
     const cipher = createCipheriv(
       "aes-256-gcm",
-      hex(vector.keyHex),
-      hex(vector.nonceHex)
+      hex(aes.keyHex),
+      hex(aes.nonceHex)
     );
-    cipher.setAAD(hex(vector.aadHex));
+    cipher.setAAD(hex(aes.aadHex));
     const ciphertext = Buffer.concat([
-      cipher.update(hex(vector.plaintextHex)),
+      cipher.update(hex(aes.plaintextHex)),
       cipher.final()
     ]);
 
-    expect(ciphertext.toString("hex")).toBe(vector.ciphertextHex);
-    expect(cipher.getAuthTag().toString("hex")).toBe(vector.tagHex);
+    expect(
+      Buffer.from(
+        hkdfSync(
+          "sha256",
+          hex(hkdf.ikmHex),
+          hex(hkdf.saltHex),
+          hex(hkdf.infoHex),
+          hkdf.length
+        )
+      ).toString("hex")
+    ).toBe(hkdf.okmHex);
+    expect(ciphertext.toString("hex")).toBe(aes.ciphertextHex);
+    expect(cipher.getAuthTag().toString("hex")).toBe(aes.tagHex);
   });
 
-  it("uses committed X25519, HKDF-SHA-256, and AES-256-GCM outputs", () => {
+  it("recomputes committed X25519 recipient-envelope bytes and outputs", () => {
     const x25519 = fixture.x25519;
     const envelope = fixture.compositeRecipientEnvelope;
-    const alice = rawPrivateKey("2b656e", x25519.alicePrivateKeyHex);
-    const bob = rawPublicKey("2b656e", x25519.bobPublicKeyHex);
-    const sharedSecret = requireNonZeroX25519SharedSecret(
-      diffieHellman({ privateKey: alice, publicKey: bob })
+    const alice = createPrivateKey({
+      key: okpJwk(
+        "X25519",
+        x25519.alicePublicKeyHex,
+        x25519.alicePrivateKeyHex
+      ),
+      format: "jwk"
+    });
+    const bob = createPrivateKey({
+      key: okpJwk("X25519", x25519.bobPublicKeyHex, x25519.bobPrivateKeyHex),
+      format: "jwk"
+    });
+    const sharedSecret = diffieHellman({
+      privateKey: alice,
+      publicKey: createPublicKey(bob)
+    });
+    const reciprocalSharedSecret = diffieHellman({
+      privateKey: bob,
+      publicKey: createPublicKey(alice)
+    });
+    const salt = sha256(
+      Buffer.concat([
+        Buffer.from("koed/pds/v1/envelope/salt\0", "utf8"),
+        Buffer.from(envelope.groupId, "utf8")
+      ])
     );
+    const info = recipientEnvelopeInfo(envelope);
     const wrappingKey = Buffer.from(
-      hkdfSync(
-        "sha256",
-        sharedSecret,
-        hex(envelope.saltHex),
-        hex(envelope.infoHex),
-        32
-      )
+      hkdfSync("sha256", sharedSecret, salt, info, 32)
     );
     const cipher = createCipheriv(
       "aes-256-gcm",
       wrappingKey,
       hex(envelope.nonceHex)
     );
-    cipher.setAAD(Buffer.from(envelope.aadUtf8, "utf8"));
+    cipher.setAAD(Buffer.from(recipientEnvelopeAad(envelope), "utf8"));
     const ciphertext = Buffer.concat([
       cipher.update(hex(envelope.contentEncryptionKeyHex)),
       cipher.final()
     ]);
 
+    expect(base64url(hex(x25519.alicePublicKeyHex))).toBe(
+      createPublicKey(alice).export({ format: "jwk" }).x
+    );
+    expect(base64url(hex(x25519.bobPublicKeyHex))).toBe(
+      createPublicKey(bob).export({ format: "jwk" }).x
+    );
+    expect(reciprocalSharedSecret).toEqual(sharedSecret);
+    expect(sharedSecret.equals(Buffer.alloc(32))).toBe(false);
     expect(sharedSecret.toString("hex")).toBe(x25519.sharedSecretHex);
+    expect(salt.toString("hex")).toBe(envelope.saltHex);
+    expect(info.toString("hex")).toBe(envelope.infoHex);
+    expect(recipientEnvelopeAad(envelope)).toBe(envelope.aadUtf8);
     expect(wrappingKey.toString("hex")).toBe(envelope.wrappingKeyHex);
     expect(ciphertext.toString("hex")).toBe(envelope.ciphertextHex);
     expect(cipher.getAuthTag().toString("hex")).toBe(envelope.tagHex);
-  });
 
-  it("re-wraps fixed CEK for a new recipient epoch without changing CEK", () => {
-    const x25519 = fixture.x25519;
-    const envelope = fixture.compositeRecipientEnvelope;
-    const rewrapped = envelope.rewrappedRecipientEnvelope;
-    const alice = rawPrivateKey("2b656e", x25519.alicePrivateKeyHex);
-    const bob = rawPublicKey("2b656e", x25519.bobPublicKeyHex);
-    const shared = diffieHellman({ privateKey: alice, publicKey: bob });
-    const key = Buffer.from(
+    const rewrapped = { ...envelope, ...envelope.rewrappedRecipientEnvelope };
+    const rewrappedKey = Buffer.from(
       hkdfSync(
         "sha256",
-        shared,
-        hex(envelope.saltHex),
-        hex(rewrapped.infoHex),
+        sharedSecret,
+        salt,
+        recipientEnvelopeInfo(rewrapped),
         32
       )
     );
-    const decipher = createDecipheriv(
+    const rewrappedCipher = createCipheriv(
       "aes-256-gcm",
-      key,
+      rewrappedKey,
       hex(rewrapped.nonceHex)
     );
-    decipher.setAAD(Buffer.from(rewrapped.aadUtf8, "utf8"));
-    decipher.setAuthTag(hex(rewrapped.tagHex));
+    rewrappedCipher.setAAD(
+      Buffer.from(recipientEnvelopeAad(rewrapped), "utf8")
+    );
+    const rewrappedCiphertext = Buffer.concat([
+      rewrappedCipher.update(hex(envelope.contentEncryptionKeyHex)),
+      rewrappedCipher.final()
+    ]);
 
-    expect(key.toString("hex")).toBe(rewrapped.wrappingKeyHex);
-    expect(
-      Buffer.concat([
-        decipher.update(hex(rewrapped.ciphertextHex)),
-        decipher.final()
-      ]).toString("hex")
-    ).toBe(envelope.contentEncryptionKeyHex);
+    expect(recipientEnvelopeInfo(rewrapped).toString("hex")).toBe(
+      rewrapped.infoHex
+    );
+    expect(recipientEnvelopeAad(rewrapped)).toBe(rewrapped.aadUtf8);
+    expect(rewrappedKey.toString("hex")).toBe(rewrapped.wrappingKeyHex);
+    expect(rewrappedCiphertext.toString("hex")).toBe(rewrapped.ciphertextHex);
+    expect(rewrappedCipher.getAuthTag().toString("hex")).toBe(rewrapped.tagHex);
   });
 
-  it("rejects all-zero X25519 output and altered AES-GCM AAD", () => {
+  it("rejects all-zero X25519 output and altered recipient-envelope AAD", () => {
     const x25519 = fixture.x25519;
     const envelope = fixture.compositeRecipientEnvelope;
+    const alice = createPrivateKey({
+      key: okpJwk(
+        "X25519",
+        x25519.alicePublicKeyHex,
+        x25519.alicePrivateKeyHex
+      ),
+      format: "jwk"
+    });
+    const allZeroPublicKey = createPublicKey({
+      key: okpJwk("X25519", x25519.allZeroPublicKeyHex),
+      format: "jwk"
+    });
     const decipher = createDecipheriv(
       "aes-256-gcm",
       hex(envelope.wrappingKeyHex),
@@ -350,9 +456,8 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     decipher.setAuthTag(hex(envelope.tagHex));
 
     expect(() =>
-      requireNonZeroX25519SharedSecret(hex(x25519.allZeroSharedSecretHex))
-    ).toThrow("must be 32 non-zero bytes");
-    expect(x25519.allZeroRejected).toBe(true);
+      diffieHellman({ privateKey: alice, publicKey: allZeroPublicKey })
+    ).toThrow();
     expect(() =>
       Buffer.concat([
         decipher.update(hex(envelope.ciphertextHex)),
@@ -361,26 +466,94 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     ).toThrow();
   });
 
-  it("uses fixed HMAC source-fingerprint output and strict expiry boundary", () => {
+  it("rejects altered HMAC and envelope domain labels", () => {
     const fingerprint = fixture.sourceFingerprint;
-    const certificate = fixture.membershipCertificate;
+    const manifest = parseSourceManifest();
+    const envelope = fixture.compositeRecipientEnvelope;
+    const sourceFingerprintInput = `koed/pds/v1/source-fingerprint\0${fingerprint.sourceType}\0${fingerprint.sourceNativeSessionId}`;
     const digest = createHmac("sha256", hex(fingerprint.keyHex))
-      .update(fingerprint.messageUtf8, "utf8")
-      .digest("hex");
-    const issuedAt = new Date(certificate.issuedAt);
-    const expiresAt = new Date(certificate.expiresAt);
+      .update(sourceFingerprintInput, "utf8")
+      .digest("base64url");
+    const alteredDomainDigest = createHmac("sha256", hex(fingerprint.keyHex))
+      .update(
+        `koed/pds/v1/source-fingerprint/v2\0${fingerprint.sourceType}\0${fingerprint.sourceNativeSessionId}`,
+        "utf8"
+      )
+      .digest("base64url");
+    const alteredSalt = sha256(
+      `koed/pds/v1/envelope/salt/v2\0${envelope.groupId}`
+    );
+    const alteredWrappingKey = Buffer.from(
+      hkdfSync(
+        "sha256",
+        hex(fixture.x25519.sharedSecretHex),
+        alteredSalt,
+        recipientEnvelopeInfo(envelope),
+        32
+      )
+    ).toString("hex");
 
-    expect(digest).toBe(fingerprint.digestHex);
-    expect(certificate.maxLifetimeSeconds).toBe(7 * 24 * 60 * 60);
-    expect(certificate.clockSkewSeconds).toBe(5 * 60);
-    expect(
-      certificateIsCurrent(new Date(expiresAt.getTime() - 1), expiresAt)
-    ).toBe(true);
-    expect(certificateIsCurrent(expiresAt, expiresAt)).toBe(false);
-    expect(issuedAt.getTime()).toBeLessThan(expiresAt.getTime());
+    expect(digest).toBe(fingerprint.digestBase64url);
+    expect(manifest.sourceType).toBe(fingerprint.sourceType);
+    expect(manifest.sourceNativeSessionId).toBe(
+      fingerprint.sourceNativeSessionId
+    );
+    expect(manifest.sourceFingerprint).toBe(fingerprint.digestBase64url);
+    expect(alteredDomainDigest).not.toBe(fingerprint.digestBase64url);
+    expect(alteredSalt.toString("hex")).not.toBe(envelope.saltHex);
+    expect(alteredWrappingKey).not.toBe(envelope.wrappingKeyHex);
   });
 
-  it("makes replay, convergence quarantine, and tombstone-floor outcomes fixed", () => {
+  it("enforces membership certificate skew, maximum lifetime, and expiry", () => {
+    const certificate = fixture.membershipCertificate;
+    const issuedAt = new Date(certificate.issuedAt);
+    const expiresAt = new Date(certificate.expiresAt);
+    const oneMillisecondBeforeIssuedSkew = new Date(
+      issuedAt.getTime() - certificate.clockSkewSeconds * 1_000 - 1
+    );
+    const maximumLifetimeExceeded = new Date(
+      issuedAt.getTime() + (certificate.maxLifetimeSeconds + 1) * 1_000
+    );
+
+    expect(
+      certificateIsAccepted(
+        new Date(issuedAt.getTime() - certificate.clockSkewSeconds * 1_000),
+        issuedAt,
+        expiresAt,
+        certificate.clockSkewSeconds,
+        certificate.maxLifetimeSeconds
+      )
+    ).toBe(true);
+    expect(
+      certificateIsAccepted(
+        oneMillisecondBeforeIssuedSkew,
+        issuedAt,
+        expiresAt,
+        certificate.clockSkewSeconds,
+        certificate.maxLifetimeSeconds
+      )
+    ).toBe(false);
+    expect(
+      certificateIsAccepted(
+        expiresAt,
+        issuedAt,
+        expiresAt,
+        certificate.clockSkewSeconds,
+        certificate.maxLifetimeSeconds
+      )
+    ).toBe(false);
+    expect(
+      certificateIsAccepted(
+        issuedAt,
+        issuedAt,
+        maximumLifetimeExceeded,
+        certificate.clockSkewSeconds,
+        certificate.maxLifetimeSeconds
+      )
+    ).toBe(false);
+  });
+
+  it("enforces replay, convergence quarantine, equivocation freeze, and tombstone floor", () => {
     const states = fixture.stateFixtures;
 
     expect(classifyReplay(states.replay.first, states.replay.same)).toBe(
@@ -389,6 +562,12 @@ describe("Personal Device Sync V1 fixed fixture", () => {
     expect(classifyReplay(states.replay.first, states.replay.changed)).toBe(
       states.replay.changed.expected
     );
+    expect(
+      classifyReplay(states.replay.first, {
+        ...states.replay.same,
+        packageId: "pkg-other"
+      })
+    ).toBe("new");
     expect(
       classifyClosure(
         states.convergence.sameClosure,
@@ -404,6 +583,12 @@ describe("Personal Device Sync V1 fixed fixture", () => {
         states.convergence.differentClosure
       )
     ).toBe(states.convergence.differentClosure.expected);
+    expect(
+      classifyClosure(states.convergence.sameClosure, {
+        ...states.convergence.sameClosure,
+        fingerprint: "fp-other"
+      })
+    ).toBe("distinct");
     expect(
       classifyLogHead(states.equivocation.trusted, states.equivocation.received)
     ).toBe(states.equivocation.received.expected);
