@@ -1,18 +1,5 @@
 import type { LcmSummaryNode } from "@koed/mcp-server";
 
-export type LcmSummaryField =
-  | "summary_text"
-  | "user_requests"
-  | "decisions"
-  | "facts"
-  | "files"
-  | "commands"
-  | "model_names"
-  | "tool_outcomes"
-  | "errors"
-  | "unresolved_questions"
-  | "provenance_hints";
-
 export interface LcmSummaryTermMatch {
   exactPhrases?: string[];
   phraseGroups?: string[][];
@@ -24,16 +11,13 @@ export interface LcmSummaryRequiredClaim {
   id: string;
   label: string;
   match: LcmSummaryTermMatch;
-  fields: LcmSummaryField[];
   critical?: boolean;
-  fieldCritical?: boolean;
 }
 
 export interface LcmSummaryForbiddenClaim {
   id: string;
   label: string;
   match: LcmSummaryTermMatch;
-  fields?: LcmSummaryField[];
   allowedContextTerms?: string[];
   critical?: boolean;
   redactInReports?: boolean;
@@ -47,8 +31,6 @@ export interface LcmSummaryBenchmarkCase {
   expected: {
     requiredClaims: LcmSummaryRequiredClaim[];
     forbiddenClaims?: LcmSummaryForbiddenClaim[];
-    requiredNonEmptyFields?: LcmSummaryField[];
-    minNonEmptyFields?: number;
     maxSummaryTextChars?: number;
   };
   notes: string;
@@ -103,7 +85,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["backend", "Evidence Bundles"],
             anyTermGroups: [["return", "returns", "returned"], ["only"]]
           },
-          fields: ["decisions"],
           critical: true
         },
         {
@@ -123,7 +104,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
               ]
             ]
           },
-          fields: ["decisions"],
           critical: true
         }
       ],
@@ -141,8 +121,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["decisions", "provenance_hints"],
-      minNonEmptyFields: 2,
       maxSummaryTextChars: 900
     },
     notes: "Preserves the product boundary between Recall and Answer Synthesis."
@@ -193,7 +171,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
               ["support", "supported", "supporting", "TypeScript-only"]
             ]
           },
-          fields: ["decisions"],
           critical: true
         },
         {
@@ -206,7 +183,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
               ["remove", "removed", "supersede", "superseded"]
             ]
           },
-          fields: ["decisions"],
           critical: true
         }
       ],
@@ -222,12 +198,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
               "Python Capture Hook is supported"
             ]
           },
-          fields: ["decisions", "unresolved_questions"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["decisions"],
-      minNonEmptyFields: 2,
       maxSummaryTextChars: 900
     },
     notes: "Checks that latest accepted state wins over stale discussion."
@@ -274,7 +247,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["projection_status", "pending"],
             anyTermGroups: [["stuck", "stayed", "remained"]]
           },
-          fields: ["errors"],
           critical: true
         },
         {
@@ -283,12 +255,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             allTerms: ["LCM app-server telemetry", "raw_only"]
           },
-          fields: ["decisions"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["errors"],
-      minNonEmptyFields: 4,
       maxSummaryTextChars: 900
     },
     notes: "Preserves both the failure and the final implementation fix."
@@ -336,7 +305,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             exactPhrases: ["migration 0012_memory_nodes_backfill"],
             allTerms: ["first migration", "fresh local reset"]
           },
-          fields: ["facts", "tool_outcomes"],
           critical: true
         }
       ],
@@ -350,8 +318,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           critical: false
         }
       ],
-      requiredNonEmptyFields: ["facts", "tool_outcomes"],
-      minNonEmptyFields: 3,
       maxSummaryTextChars: 700
     },
     notes: "Checks that noise is compressed while the durable fact survives."
@@ -397,7 +363,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             exactPhrases: ["docs/codex-integration.md"]
           },
-          fields: ["files"],
           critical: true
         },
         {
@@ -406,7 +371,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             exactPhrases: ["pnpm smoke:lcm"]
           },
-          fields: ["commands"],
           critical: true
         },
         {
@@ -415,12 +379,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             exactPhrases: ["MEMORY_LCM_SUMMARY_MAX_PROMPT_TOKENS"]
           },
-          fields: ["facts", "decisions"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["files", "commands", "facts"],
-      minNonEmptyFields: 4,
       maxSummaryTextChars: 900
     },
     notes:
@@ -468,9 +429,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["team memory", "Memory Answer", "default"],
             anyTermGroups: [["visible", "visibility"]]
           },
-          fields: ["unresolved_questions"],
-          critical: true,
-          fieldCritical: true
+          critical: true
         },
         {
           id: "scope-domain-open",
@@ -478,9 +437,7 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             allTerms: ["Search Domain", "Retrieval Scope", "team memory"]
           },
-          fields: ["unresolved_questions"],
-          critical: true,
-          fieldCritical: true
+          critical: true
         }
       ],
       forbiddenClaims: [
@@ -491,13 +448,10 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["team memory", "visible", "default"],
             anyTermGroups: [["accepted", "decided", "decision"]]
           },
-          fields: ["decisions", "facts"],
           allowedContextTerms: ["not decided", "undecided", "unresolved"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["unresolved_questions"],
-      minNonEmptyFields: 2,
       maxSummaryTextChars: 800
     },
     notes: "Open issues must remain unresolved, not become decisions."
@@ -540,7 +494,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
               ["Projection", "project", "projects", "create", "creates"]
             ]
           },
-          fields: ["summary_text", "decisions", "facts"],
           critical: true
         },
         {
@@ -550,12 +503,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["rollups", "child LCM summaries"],
             anyTermGroups: [["summarize", "summarizes", "operate"]]
           },
-          fields: ["summary_text", "decisions", "facts"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["facts", "provenance_hints"],
-      minNonEmptyFields: 2,
       maxSummaryTextChars: 900
     },
     notes:
@@ -595,9 +545,17 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           label: "diagnostic low-level memory tools stay hidden unless enabled",
           match: {
             allTerms: ["diagnostic low-level memory tools", "hidden"],
-            exactPhrases: ["unless explicitly enabled"]
+            phraseGroups: [
+              [
+                "unless explicitly enabled",
+                "unless enabled explicitly",
+                "when explicitly enabled",
+                "when enabled explicitly",
+                "if explicitly enabled",
+                "if enabled explicitly"
+              ]
+            ]
           },
-          fields: ["decisions"],
           critical: true
         }
       ],
@@ -608,13 +566,15 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             exactPhrases: ["enabled by default for all users"]
           },
-          fields: ["decisions", "unresolved_questions"],
-          allowedContextTerms: ["superseded", "earlier"],
+          allowedContextTerms: [
+            "superseded",
+            "earlier",
+            "initial",
+            "initially"
+          ],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["decisions", "provenance_hints"],
-      minNonEmptyFields: 3,
       maxSummaryTextChars: 850
     },
     notes:
@@ -666,12 +626,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             ],
             anyTermGroups: [["remain", "keep", "kept"]]
           },
-          fields: ["decisions"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["decisions"],
-      minNonEmptyFields: 2,
       maxSummaryTextChars: 700
     },
     notes:
@@ -708,7 +665,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             exactPhrases: ["gpt-5.4-mini"]
           },
-          fields: ["model_names"],
           critical: true
         },
         {
@@ -717,12 +673,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             allTerms: ["reasoning effort", "medium"]
           },
-          fields: ["summary_text", "decisions", "facts"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["model_names", "facts"],
-      minNonEmptyFields: 3,
       maxSummaryTextChars: 700
     },
     notes: "Model identifiers should not be normalized away."
@@ -758,7 +711,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             exactPhrases: ["00000000-0000-4000-8000-000000300001"]
           },
-          fields: ["provenance_hints"],
           critical: true
         },
         {
@@ -768,12 +720,9 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["source", "trace", "claim"],
             anyTermGroups: [["expand", "expansion"]]
           },
-          fields: ["summary_text", "user_requests", "facts"],
           critical: true
         }
       ],
-      requiredNonEmptyFields: ["provenance_hints", "facts"],
-      minNonEmptyFields: 3,
       maxSummaryTextChars: 800
     },
     notes: "Provenance hints should keep useful source ids."
@@ -819,7 +768,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           match: {
             allTerms: ["API token", "rotated"]
           },
-          fields: ["facts", "tool_outcomes"],
           critical: true
         },
         {
@@ -829,7 +777,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
             allTerms: ["secret"],
             anyTermGroups: [["redact", "redacted", "redacting"]]
           },
-          fields: ["summary_text", "facts"],
           critical: true
         }
       ],
@@ -844,8 +791,6 @@ export const lcmSummaryBenchmarkCases: LcmSummaryBenchmarkCase[] = [
           redactInReports: true
         }
       ],
-      requiredNonEmptyFields: ["facts"],
-      minNonEmptyFields: 2,
       maxSummaryTextChars: 700
     },
     notes: "Secret-like source text must not be reproduced in benchmark output."

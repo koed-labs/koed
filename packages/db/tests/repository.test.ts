@@ -1601,19 +1601,20 @@ describeDb("memory repository visibility", () => {
         }
       );
       const structured = {
+        schema_version: "lcm-semantic-summary-v1",
         title: "Encrypted managed cloud node",
-        summary_text: "Managed cloud finished summary sentinel 731f3c",
-        facts: ["The LCM worker summary is encrypted at rest."]
+        summary_text:
+          "Managed cloud finished summary sentinel 731f3c. The LCM worker summary is encrypted at rest."
       };
 
       await encryptedRepo.updateLcmNodeSummary({
         nodeId: node.id,
         summaryText: "Managed cloud finished summary sentinel 731f3c",
         summaryModel: "codex:test",
-        summaryPromptVersion: "lcm-codex-summary-json-v2",
+        summaryPromptVersion: "lcm-codex-summary-json-v3",
         summaryTokenEstimate: 23,
         summaryStructuredJson: structured,
-        summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+        summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
       });
 
       const stored = await pool.query<{
@@ -20890,19 +20891,19 @@ describeDb("memory repository visibility", () => {
       }
     );
     const structured = {
-      summary_text: "Structured summary text",
-      facts: ["The worker returned strict JSON."],
-      unresolved_questions: []
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Structured summary",
+      summary_text: "Structured summary text. The worker returned strict JSON."
     };
 
     await repo.updateLcmNodeSummary({
       nodeId: node.id,
       summaryText: "Structured summary text",
       summaryModel: "codex:test",
-      summaryPromptVersion: "lcm-codex-summary-json-v2",
+      summaryPromptVersion: "lcm-codex-summary-json-v3",
       summaryTokenEstimate: 17,
       summaryStructuredJson: structured,
-      summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
     });
 
     const fetched = await repo.getLcmNodeForSummarization(node.id);
@@ -20915,13 +20916,125 @@ describeDb("memory repository visibility", () => {
     expect(fetched?.summaryText).toBe("Structured summary text");
     expect(fetched?.summaryStructuredJson).toEqual(structured);
     expect(fetched?.summaryStructuredSchemaVersion).toBe(
-      "lcm-structured-summary-v1"
+      "lcm-semantic-summary-v1"
     );
     expect(visible?.summaryStructuredJson).toEqual(structured);
     expect(graphNode?.summaryStructuredJson).toEqual(structured);
     expect(graphNode?.summaryStructuredSchemaVersion).toBe(
-      "lcm-structured-summary-v1"
+      "lcm-semantic-summary-v1"
     );
+  });
+
+  it("hydrates rollup children as compact complete summary payloads", async () => {
+    const alice = await repo.createUser({
+      email: `alice-rollup-summary-payload-${randomUUID()}@example.com`
+    });
+    const child = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending child placeholder"
+      }
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: child.id,
+      summaryText:
+        "Use scoped device credentials; determine the revocation TTL.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v3",
+      summaryTokenEstimate: 11,
+      summaryStructuredJson: {
+        schema_version: "lcm-semantic-summary-v1",
+        title: "Device credential policy",
+        summary_text:
+          "Use scoped device credentials; determine the revocation TTL."
+      },
+      summaryStructuredSchemaVersion: "lcm-semantic-summary-v1"
+    });
+    const legacyChild = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Legacy summary text."
+      }
+    );
+    await repo.updateLcmNodeSummary({
+      nodeId: legacyChild.id,
+      summaryText: "Legacy summary text.",
+      summaryModel: "codex:test",
+      summaryPromptVersion: "lcm-codex-summary-json-v2",
+      summaryTokenEstimate: 9,
+      summaryStructuredJson: {
+        schema_version: "lcm-structured-summary-v1",
+        title: "Legacy child",
+        summary_text: "Legacy summary text.",
+        decisions: ["Preserve this legacy decision."],
+        unresolved_questions: ["Keep this legacy question open."],
+        unrecognized_field: ["Do not forward arbitrary payload fields."]
+      },
+      summaryStructuredSchemaVersion: "lcm-structured-summary-v1"
+    });
+    const rollup = await repo.createMemoryNode(
+      { userId: alice.id },
+      {
+        visibility: "personal",
+        summaryText: "Pending rollup placeholder"
+      }
+    );
+    await pool.query(
+      `
+        update memory_nodes
+        set kind = 'rollup',
+            depth = 1,
+            source_items_json = $2::jsonb
+        where id = $1
+      `,
+      [
+        rollup.id,
+        JSON.stringify([
+          {
+            kind: "lcm_child",
+            nodeId: child.id,
+            text: "stale placeholder"
+          },
+          {
+            kind: "lcm_child",
+            nodeId: legacyChild.id,
+            text: "stale legacy placeholder"
+          }
+        ])
+      ]
+    );
+    await pool.query(
+      `
+        insert into memory_node_children (
+          parent_memory_node_id,
+          child_memory_node_id,
+          child_order
+        )
+        values ($1, $2, 0), ($1, $3, 1)
+      `,
+      [rollup.id, child.id, legacyChild.id]
+    );
+
+    const candidate = await repo.getLcmNodeForSummarization(rollup.id);
+    const childPayload = JSON.parse(
+      candidate?.sourceItems[0]?.text ?? "{}"
+    ) as unknown;
+
+    expect(childPayload).toEqual({
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Device credential policy",
+      summary_text:
+        "Use scoped device credentials; determine the revocation TTL."
+    });
+    expect(
+      JSON.parse(candidate?.sourceItems[1]?.text ?? "{}") as unknown
+    ).toEqual({
+      schema_version: "lcm-semantic-summary-v1",
+      title: "Child memory summary",
+      summary_text: "Legacy summary text."
+    });
   });
 
   it("prefers idempotency key matches over source hash matches", async () => {

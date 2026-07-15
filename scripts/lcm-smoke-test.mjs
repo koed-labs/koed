@@ -334,8 +334,13 @@ const getDbState = () =>
       'structuredSummaryCount', (
         select count(*)
         from marked_nodes
-        where summary_structured_json is not null
-          and summary_structured_schema_version = 'lcm-structured-summary-v1'
+        where summary_structured_schema_version = 'lcm-semantic-summary-v1'
+          and nullif(btrim(summary_structured_json ->> 'title'), '') is not null
+          and summary_structured_json = jsonb_build_object(
+            'schema_version', 'lcm-semantic-summary-v1',
+            'title', summary_structured_json ->> 'title',
+            'summary_text', summary_text
+          )
       ),
       'embeddedNodeCount', (
         select count(distinct me.memory_node_id)

@@ -109,8 +109,7 @@ describe("LCM summary generation live runner", () => {
       runner: async () => ({
         text: JSON.stringify({
           ...passingOutput(benchmarkCase),
-          facts: ["koed_live_secret_abc123"],
-          koed_live_secret_abc123: "unexpected passthrough key"
+          summary_text: `${passingOutput(benchmarkCase).summary_text} koed_live_secret_abc123`
         }),
         model: "codex-app-server:test"
       })

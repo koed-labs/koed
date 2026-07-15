@@ -53,6 +53,7 @@ import { createWorkflowTokenUsageRepository } from "./workflow-token-usage-repos
 import {
   codexIdePromptUserText,
   estimateTokens,
+  normalizeStoredLcmSummary,
   resolveTeamWorkspaceAuthorization,
   type LcmSourceItem
 } from "@koed/core";
@@ -3773,9 +3774,17 @@ const mapLcmNodeForSummarization = async (
       owner_user_id: string | null;
       depth: number;
       summary_text: string;
+      summary_structured_json: Record<string, unknown> | null;
+      summary_structured_schema_version: string | null;
     }>(
       `
-        select child.id, child.owner_user_id, child.depth, child.summary_text
+        select
+          child.id,
+          child.owner_user_id,
+          child.depth,
+          child.summary_text,
+          child.summary_structured_json,
+          child.summary_structured_schema_version
         from memory_node_children mnc
         join memory_nodes child on child.id = mnc.child_memory_node_id
         where mnc.parent_memory_node_id = $1
@@ -3790,10 +3799,19 @@ const mapLcmNodeForSummarization = async (
       children.rows
     );
     const childSummaries = new Map(
-      hydratedChildren.map((child) => [
-        child.id,
-        { depth: child.depth, summaryText: child.summary_text }
-      ])
+      hydratedChildren.map((child) => {
+        const structured = normalizeStoredLcmSummary({
+          summaryText: child.summary_text,
+          structuredSummary: child.summary_structured_json
+        });
+        return [
+          child.id,
+          {
+            depth: child.depth,
+            summaryText: JSON.stringify(structured)
+          }
+        ] as const;
+      })
     );
 
     sourceItems = sourceItems.map((item) => {

@@ -1,3 +1,4 @@
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
 import { describe, expect, it } from "vitest";
 import { workerJsonCases } from "./cases.js";
 import {
@@ -41,35 +42,44 @@ describe("worker JSON benchmark scoring", () => {
     expect(score.score).toBe(score.maxScore);
   });
 
-  it("scores an LCM summary with required structured arrays", () => {
+  it("scores an LCM summary with a canonical semantic body", () => {
     const score = scoreWorkerJsonRun(
-      mustCase("lcm-leaf-preserves-operational-details"),
+      mustCase("lcm-leaf-preserves-semantic-outcomes"),
       {
-        caseId: "lcm-leaf-preserves-operational-details",
+        caseId: "lcm-leaf-preserves-semantic-outcomes",
         runIndex: 0,
         worker: "lcm_summary",
         output: {
-          schema_version: "lcm-structured-summary-v1",
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: "Docker UI regression",
           summary_text:
-            "The user requested a Docker rebuild and noted a UI regression.",
-          user_requests: ["Rebuild Docker locally."],
-          decisions: [],
-          facts: [],
-          files: [],
-          commands: [
-            "docker compose -f examples/docker-compose/docker-compose.yml up --build"
-          ],
-          model_names: [],
-          tool_outcomes: [],
-          errors: ["UI regression remains."],
-          unresolved_questions: [],
-          provenance_hints: []
+            "The user requested a local Docker rebuild while a UI regression remained unresolved."
         }
       }
     );
 
     expect(score.validJson).toBe(true);
     expect(score.score).toBe(score.maxScore);
+  });
+
+  it("uses the production title length constraint", () => {
+    const score = scoreWorkerJsonRun(
+      mustCase("lcm-leaf-preserves-semantic-outcomes"),
+      {
+        caseId: "lcm-leaf-preserves-semantic-outcomes",
+        runIndex: 0,
+        worker: "lcm_summary",
+        output: {
+          schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+          title: "x".repeat(121),
+          summary_text:
+            "The user requested a local Docker rebuild while a UI regression remained unresolved."
+        }
+      }
+    );
+
+    expect(score.validJson).toBe(false);
+    expect(score.score).toBe(0);
   });
 
   it("rejects prose-only output", () => {

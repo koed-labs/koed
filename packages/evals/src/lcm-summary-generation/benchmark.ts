@@ -2,10 +2,9 @@ import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   parseStructuredLcmSummary,
   type StructuredLcmSummary
-} from "@koed/mcp-server";
+} from "@koed/core";
 import type {
   LcmSummaryBenchmarkCase,
-  LcmSummaryField,
   LcmSummaryForbiddenClaim,
   LcmSummaryRequiredClaim,
   LcmSummaryTermMatch
@@ -246,74 +245,8 @@ const parseOutput = (output: unknown): StructuredLcmSummary => {
   return parseStructuredLcmSummary(JSON.stringify(output));
 };
 
-const fieldValue = (
-  summary: StructuredLcmSummary,
-  field: LcmSummaryField
-): string => {
-  const value = summary[field];
-  if (Array.isArray(value)) {
-    return value.join("\n");
-  }
-  return typeof value === "string" ? value : "";
-};
-
-const structuredSummaryFields = new Set<string>([
-  "schema_version",
-  "title",
-  "summary_text",
-  "user_requests",
-  "decisions",
-  "facts",
-  "files",
-  "commands",
-  "model_names",
-  "tool_outcomes",
-  "errors",
-  "unresolved_questions",
-  "provenance_hints"
-]);
-
-const textFragments = (value: unknown): string[] => {
-  if (typeof value === "string") {
-    return [value];
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap(textFragments);
-  }
-  if (value && typeof value === "object") {
-    return Object.entries(value).flatMap(([key, item]) => [
-      key,
-      ...textFragments(item)
-    ]);
-  }
-  return [];
-};
-
-const passthroughSummaryText = (summary: StructuredLcmSummary): string =>
-  Object.entries(summary)
-    .flatMap(([key, value]) =>
-      structuredSummaryFields.has(key) ? [] : [key, ...textFragments(value)]
-    )
-    .join("\n");
-
 const structuredSummaryText = (summary: StructuredLcmSummary): string =>
-  [
-    summary.title,
-    summary.summary_text,
-    ...summary.user_requests,
-    ...summary.decisions,
-    ...summary.facts,
-    ...summary.files,
-    ...summary.commands,
-    ...summary.model_names,
-    ...summary.tool_outcomes,
-    ...summary.errors,
-    ...summary.unresolved_questions,
-    ...summary.provenance_hints
-  ].join("\n");
-
-const allSummaryText = (summary: StructuredLcmSummary): string =>
-  [structuredSummaryText(summary), passthroughSummaryText(summary)].join("\n");
+  [summary.title, summary.summary_text].join("\n");
 
 const requiredMatchPresent = (
   text: string,
@@ -403,33 +336,12 @@ const forbiddenPresent = (
   summary: StructuredLcmSummary,
   claim: LcmSummaryForbiddenClaim
 ): boolean => {
-  const text =
-    claim.fields && claim.fields.length > 0
-      ? claim.fields.map((field) => fieldValue(summary, field)).join("\n")
-      : allSummaryText(summary);
+  const text = structuredSummaryText(summary);
   const spans = forbiddenMatchingSpans(text, claim);
   if (spans.length === 0) {
     return false;
   }
   return spans.some((span) => !forbiddenSpanAllowed(span, claim));
-};
-
-const nonEmptyStructuredFields = (
-  summary: StructuredLcmSummary
-): LcmSummaryField[] => {
-  const fields: LcmSummaryField[] = [
-    "user_requests",
-    "decisions",
-    "facts",
-    "files",
-    "commands",
-    "model_names",
-    "tool_outcomes",
-    "errors",
-    "unresolved_questions",
-    "provenance_hints"
-  ];
-  return fields.filter((field) => fieldValue(summary, field).trim().length > 0);
 };
 
 const schemaDetail = (): LcmSummaryScoreDetail => ({
@@ -443,7 +355,7 @@ const requiredClaimDetails = (
   summary: StructuredLcmSummary,
   claim: LcmSummaryRequiredClaim
 ): LcmSummaryScoreDetail[] => {
-  const text = structuredSummaryText(summary);
+  const text = summary.summary_text;
   const present = claimPresent(text, claim);
   const critical = claim.critical ?? true;
   const details: LcmSummaryScoreDetail[] = [
@@ -456,24 +368,6 @@ const requiredClaimDetails = (
       critical
     }
   ];
-
-  if (claim.fields.length > 0) {
-    const placed = claim.fields.some((field) =>
-      claimPresent(fieldValue(summary, field), claim)
-    );
-    details.push({
-      name: `field:${claim.id}`,
-      score: placed ? 2 : 0,
-      maxScore: 2,
-      reason: placed
-        ? "claim present in an expected field"
-        : "claim missing from expected fields",
-      actual: Object.fromEntries(
-        claim.fields.map((field) => [field, fieldValue(summary, field)])
-      ),
-      critical: claim.fieldCritical ?? false
-    });
-  }
 
   return details;
 };
@@ -537,34 +431,6 @@ export const scoreLcmSummaryRun = (
   for (const claim of benchmarkCase.expected.forbiddenClaims ?? []) {
     details.push(forbiddenClaimDetail(summary, claim));
   }
-  for (const field of benchmarkCase.expected.requiredNonEmptyFields ?? []) {
-    const value = fieldValue(summary, field);
-    details.push({
-      name: `non_empty:${field}`,
-      score: value.trim().length > 0 ? 2 : 0,
-      maxScore: 2,
-      reason: value.trim().length > 0 ? "non-empty" : "empty",
-      actual: value,
-      critical: true
-    });
-  }
-
-  const minFields = benchmarkCase.expected.minNonEmptyFields;
-  if (minFields !== undefined) {
-    const fields = nonEmptyStructuredFields(summary);
-    details.push({
-      name: "non_empty_field_count",
-      score: fields.length >= minFields ? 3 : 0,
-      maxScore: 3,
-      reason:
-        fields.length >= minFields
-          ? "enough structured fields"
-          : "too few structured fields",
-      actual: fields,
-      critical: true
-    });
-  }
-
   const maxSummaryTextChars = benchmarkCase.expected.maxSummaryTextChars;
   if (maxSummaryTextChars !== undefined) {
     details.push({
