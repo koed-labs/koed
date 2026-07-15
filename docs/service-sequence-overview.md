@@ -981,18 +981,25 @@ Fork/Import operation is introduced.
 ## Personal Device Sync V1
 
 Personal Device Sync is not Directed Hosted Cross-Identity Sync; both remain
-Cross-Identity Sync umbrella specializations. PDS has no production route,
-worker, or local-edge API in this build. Its accepted
-protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
-When implemented, an eligible future closed Captured Session will follow this
-sequence: source seals contiguous raw closure; origin signs JCS source manifest;
-source encrypts package and recipient CEK envelopes; relay stores encrypted
-chunks; every active device verifies membership/log, signatures, hashes, and
-AEAD before local materialization; local Projection, embedding, and LCM Summary
-work rebuilds derived state. Relay/Authority outage, conflict quarantine, or
-expired membership certificate blocks remote PDS action only; local capture and
-Recall continue. PDS must not use Cross-Identity Sync's RSA recipient-envelope
-or target-processing path.
+Cross-Identity Sync umbrella specializations. PDS V1 now exposes browser-session
+Personal Device Group authority routes only: challenge, genesis, membership
+transition, signed key-bundle ACK, scoped group/status/key-bundle/certificate
+retrieval, policy, and opaque Remote Account Link proof submission. A membership
+transition advances log head but leaves its epoch pending. Every active
+post-transition device must submit its signed ACK, bound to bundle, recipient
+KEM key commitment, and epoch, before authority activates epoch or issues
+membership certificates. Invalid, stale, missing, or revoked-device ACKs never
+activate an epoch. Relay, package transport, package lifecycle, and materialized
+sync remain later work.
+
+PDS protocol is [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+Any future eligible closed Captured Session sequence remains separate: source
+seals contiguous raw closure; origin signs JCS source manifest; source encrypts
+package and recipient CEK envelopes; relay stores encrypted chunks; every active
+device verifies membership/log, signatures, hashes, and AEAD before local
+materialization; local Projection, embedding, and LCM Summary work rebuilds
+derived state. PDS must not use Cross-Identity Sync's RSA recipient-envelope or
+target-processing path.
 
 ## Future Memory Inbox
 

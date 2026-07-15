@@ -3711,6 +3711,10 @@ export const personalDeviceGroups = pgTable(
     recoveryKemPublicKey: text("recovery_kem_public_key").notNull(),
     recoveryKitHash: text("recovery_kit_hash").notNull(),
     currentEpoch: text("current_epoch").notNull(),
+    pendingEpoch: text("pending_epoch"),
+    pendingStatementSequence: text("pending_statement_sequence"),
+    pendingStatementHash: text("pending_statement_hash"),
+    pendingBundleHash: text("pending_bundle_hash"),
     headSequence: text("head_sequence").notNull(),
     headHash: text("head_hash").notNull(),
     state: personalDeviceGroupState("state").notNull().default("active"),
@@ -3744,6 +3748,7 @@ export const personalDeviceGroupUserSubjects = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     subjectId: text("subject_id").notNull(),
+    deploymentId: text("deployment_id").notNull(),
     createdAt: now(),
     revokedAt: timestamp("revoked_at", { withTimezone: true })
   },
@@ -3754,7 +3759,7 @@ export const personalDeviceGroupUserSubjects = pgTable(
     ),
     check(
       "personal_device_group_subject_not_empty_check",
-      sql`length(trim(${table.subjectId})) > 0`
+      sql`length(trim(${table.subjectId})) > 0 and length(trim(${table.deploymentId})) > 0`
     )
   ]
 );
@@ -3766,10 +3771,11 @@ export const personalDeviceGroupMembers = pgTable(
     groupId: uuid("group_id")
       .notNull()
       .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
-    userSubjectId: uuid("user_subject_id").references(
-      () => personalDeviceGroupUserSubjects.id,
-      { onDelete: "set null" }
-    ),
+    userSubjectId: uuid("user_subject_id")
+      .notNull()
+      .references(() => personalDeviceGroupUserSubjects.id, {
+        onDelete: "restrict"
+      }),
     deviceId: text("device_id").notNull(),
     signingKeyId: text("signing_key_id").notNull(),
     signingPublicKey: text("signing_public_key").notNull(),
@@ -3879,6 +3885,36 @@ export const personalDeviceGroupKeyBundles = pgTable(
   ]
 );
 
+export const personalDeviceEpochAcks = pgTable(
+  "personal_device_epoch_acks",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    memberId: uuid("member_id")
+      .notNull()
+      .references(() => personalDeviceGroupMembers.id, { onDelete: "cascade" }),
+    epoch: text("epoch").notNull(),
+    canonicalAck: text("canonical_ack").notNull(),
+    acknowledgedAt: timestamp("acknowledged_at", {
+      withTimezone: true
+    }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("personal_device_epoch_ack_unique").on(
+      table.groupId,
+      table.memberId,
+      table.epoch
+    ),
+    check(
+      "personal_device_epoch_ack_epoch_check",
+      sql`${table.epoch} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
 export const personalDeviceEnrollmentChallenges = pgTable(
   "personal_device_enrollment_challenges",
   {
@@ -3887,6 +3923,8 @@ export const personalDeviceEnrollmentChallenges = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     groupId: text("group_id"),
+    browserSubjectId: text("browser_subject_id").notNull(),
+    browserDeploymentId: text("browser_deployment_id").notNull(),
     challengeHash: text("challenge_hash").notNull().unique(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     usedAt: timestamp("used_at", { withTimezone: true }),
@@ -3967,6 +4005,27 @@ export const personalSyncPolicies = pgTable(
   ]
 );
 
+export const personalDeviceRemoteLinkNonces = pgTable(
+  "personal_device_remote_link_nonces",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    issuerDeploymentId: text("issuer_deployment_id").notNull(),
+    nonceHash: text("nonce_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    unique("personal_device_remote_link_nonce_unique").on(
+      table.issuerDeploymentId,
+      table.nonceHash
+    )
+  ]
+);
+
 export const remoteAccountLinks = pgTable(
   "remote_account_links",
   {
@@ -3974,9 +4033,13 @@ export const remoteAccountLinks = pgTable(
     localPersonalIdentityId: uuid("local_personal_identity_id")
       .notNull()
       .references(() => localPersonalIdentities.id, { onDelete: "cascade" }),
+    remoteIssuer: text("remote_issuer").notNull(),
     remoteDeploymentId: text("remote_deployment_id").notNull(),
     remoteSubjectId: text("remote_subject_id").notNull(),
-    remoteProofReference: text("remote_proof_reference").notNull(),
+    proofNonceHash: text("proof_nonce_hash").notNull(),
+    proofExpiresAt: timestamp("proof_expires_at", {
+      withTimezone: true
+    }).notNull(),
     syncEnabled: boolean("sync_enabled").notNull().default(false),
     createdAt: now(),
     updatedAt: updatedNow(),
@@ -3989,8 +4052,8 @@ export const remoteAccountLinks = pgTable(
       table.remoteSubjectId
     ),
     check(
-      "remote_account_links_proof_check",
-      sql`length(trim(${table.remoteProofReference})) > 0`
+      "remote_account_links_issuer_check",
+      sql`length(trim(${table.remoteIssuer})) > 0`
     ),
     check(
       "remote_account_links_no_implicit_sync_check",

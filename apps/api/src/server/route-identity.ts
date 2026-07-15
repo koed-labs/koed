@@ -1098,6 +1098,83 @@ export const routeIdentityContracts = [
   ),
   route(
     "POST",
+    "/v1/personal-device-sync/challenges",
+    "session",
+    "personal_memory",
+    "Create browser-bound Personal Device Group enrollment challenge."
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/groups/genesis",
+    "session",
+    "personal_memory",
+    "Create Personal Device Group genesis."
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/groups/{groupId}/transitions",
+    "session",
+    "personal_memory",
+    "Submit signed Personal Device Group membership transition."
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/groups/{groupId}/epoch-acks",
+    "session",
+    "personal_memory",
+    "Acknowledge pending Personal Device Group epoch."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/groups/{groupId}",
+    "session",
+    "personal_memory",
+    "Retrieve scoped Personal Device Group status."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/groups/{groupId}/key-bundles/{epoch}",
+    "session",
+    "personal_memory",
+    "Retrieve scoped pending or active Personal Device Group key bundle."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/groups/{groupId}/certificates/{deviceId}",
+    "session",
+    "personal_memory",
+    "Retrieve active scoped Personal Device Group membership certificate."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/groups/{groupId}/status",
+    "session",
+    "personal_memory",
+    "Retrieve scoped Personal Device Group activation status."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/groups/{groupId}/log",
+    "session",
+    "personal_memory",
+    "Retrieve scoped Personal Device Group statement log."
+  ),
+  route(
+    "PUT",
+    "/v1/personal-device-sync/groups/{groupId}/policy",
+    "session",
+    "personal_memory",
+    "Update Personal Device Group sync policy."
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/groups/{groupId}/remote-account-links",
+    "session",
+    "personal_memory",
+    "Link Remote Account with opaque verified proof."
+  ),
+  route(
+    "POST",
     "/v1/internal/jobs",
     "internal_service_token",
     "future_remote",

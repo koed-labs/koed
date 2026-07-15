@@ -28,7 +28,7 @@ describe("PDS group authority verification", () => {
   const groupFixture = fixture.signedRecords.groupStatement!;
   const keyBundleFixture = fixture.signedRecords.keyBundle!;
 
-  it("accepts fixed two-stage group and key-bundle vectors", () => {
+  it("accepts fixed group vector and rejects legacy unbound key-bundle envelopes", () => {
     const statement = parseCanonicalPdsJson(groupFixture.canonicalPayloadUtf8);
     const group = validatePdsGroupStatement(statement, {
       authorizationPublicKey: b64(groupFixture.plans[0]!.publicKeyHex),
@@ -38,15 +38,15 @@ describe("PDS group authority verification", () => {
       expectedSequence: "1"
     });
     expect(pdsFinalizedStatementHash(group)).toBe(groupFixture.recordHash);
-    expect(
+    expect(() =>
       validatePdsKeyBundle(
         parseCanonicalPdsJson(keyBundleFixture.canonicalPayloadUtf8),
         {
           authorizationPublicKey: b64(keyBundleFixture.plans[0]!.publicKeyHex),
           authorityPublicKey: b64(keyBundleFixture.plans[1]!.publicKeyHex)
         }
-      ).hash
-    ).toBe(keyBundleFixture.recordHash);
+      )
+    ).toThrow("envelope");
   });
 
   it("rejects wrong domain key, same-sequence fork bytes, malformed base64url, and incomplete envelope snapshot", () => {

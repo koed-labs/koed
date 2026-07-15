@@ -11,7 +11,10 @@ import type { RateLimitHandler, RateLimitName } from "../infra/rate-limit.js";
 import type { EmbeddingSourceType, MemoryJobStatus } from "../memory/jobs.js";
 import type { ApiServerConfig } from "./config.js";
 import type { WorkosAuthKitClient } from "../auth/workos.js";
-import type { PdsAuthoritySigner } from "../personal-device-sync/index.js";
+import type {
+  PdsAuthoritySigner,
+  PdsRemoteAccountLinkVerifier
+} from "../personal-device-sync/index.js";
 
 export type CapturePolicy = Awaited<
   ReturnType<MemorySourceRepository["getEffectiveCapturePolicy"]>
@@ -82,5 +85,6 @@ export interface ApiRouteContext {
   personalDeviceSync: {
     /** Missing or malformed signer keeps all PDS governance routes unavailable. */
     authoritySigner: PdsAuthoritySigner | null;
+    remoteAccountLinkVerifier: PdsRemoteAccountLinkVerifier | null;
   };
 }

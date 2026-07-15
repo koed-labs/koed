@@ -130,6 +130,7 @@ export {
   pdsEd25519PrivateKey,
   pdsEd25519PublicKey,
   pdsFinalizedStatementHash,
+  pdsPublicKeyCommitment,
   pdsSha256,
   signPdsGroupDraft,
   signPdsGroupFinal,
@@ -137,6 +138,8 @@ export {
   signPdsTwoStageFinal,
   validatePdsGroupStatement,
   validatePdsKeyBundle,
+  validatePdsEpochAck,
+  validatePdsKeyBundleAck,
   validatePdsKeyBundleMetadata,
   verifyPdsEnrollmentProof
 } from "./personal-device-sync.js";

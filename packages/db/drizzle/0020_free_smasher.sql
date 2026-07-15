@@ -15,12 +15,26 @@ CREATE TABLE "personal_device_enrollment_challenges" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"group_id" text,
+	"browser_subject_id" text NOT NULL,
+	"browser_deployment_id" text NOT NULL,
 	"challenge_hash" text NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"used_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "personal_device_enrollment_challenges_challenge_hash_unique" UNIQUE("challenge_hash"),
 	CONSTRAINT "personal_device_enrollment_challenge_hash_check" CHECK (length("personal_device_enrollment_challenges"."challenge_hash") = 64)
+);
+--> statement-breakpoint
+CREATE TABLE "personal_device_epoch_acks" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"member_id" uuid NOT NULL,
+	"epoch" text NOT NULL,
+	"canonical_ack" text NOT NULL,
+	"acknowledged_at" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_epoch_ack_unique" UNIQUE("group_id","member_id","epoch"),
+	CONSTRAINT "personal_device_epoch_ack_epoch_check" CHECK ("personal_device_epoch_acks"."epoch" ~ '^(0|[1-9][0-9]*)$')
 );
 --> statement-breakpoint
 CREATE TABLE "personal_device_group_audit_events" (
@@ -52,7 +66,7 @@ CREATE TABLE "personal_device_group_key_bundles" (
 CREATE TABLE "personal_device_group_members" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
-	"user_subject_id" uuid,
+	"user_subject_id" uuid NOT NULL,
 	"device_id" text NOT NULL,
 	"signing_key_id" text NOT NULL,
 	"signing_public_key" text NOT NULL,
@@ -93,10 +107,11 @@ CREATE TABLE "personal_device_group_user_subjects" (
 	"group_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
 	"subject_id" text NOT NULL,
+	"deployment_id" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"revoked_at" timestamp with time zone,
 	CONSTRAINT "personal_device_group_subject_unique" UNIQUE("group_id","user_id"),
-	CONSTRAINT "personal_device_group_subject_not_empty_check" CHECK (length(trim("personal_device_group_user_subjects"."subject_id")) > 0)
+	CONSTRAINT "personal_device_group_subject_not_empty_check" CHECK (length(trim("personal_device_group_user_subjects"."subject_id")) > 0 and length(trim("personal_device_group_user_subjects"."deployment_id")) > 0)
 );
 --> statement-breakpoint
 CREATE TABLE "personal_device_groups" (
@@ -111,6 +126,10 @@ CREATE TABLE "personal_device_groups" (
 	"recovery_kem_public_key" text NOT NULL,
 	"recovery_kit_hash" text NOT NULL,
 	"current_epoch" text NOT NULL,
+	"pending_epoch" text,
+	"pending_statement_sequence" text,
+	"pending_statement_hash" text,
+	"pending_bundle_hash" text,
 	"head_sequence" text NOT NULL,
 	"head_hash" text NOT NULL,
 	"state" "personal_device_group_state" DEFAULT 'active' NOT NULL,
@@ -139,6 +158,17 @@ CREATE TABLE "personal_device_membership_certificates" (
 	CONSTRAINT "personal_device_membership_certificate_epoch_check" CHECK ("personal_device_membership_certificates"."epoch" ~ '^(0|[1-9][0-9]*)$')
 );
 --> statement-breakpoint
+CREATE TABLE "personal_device_remote_link_nonces" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"group_id" uuid NOT NULL,
+	"issuer_deployment_id" text NOT NULL,
+	"nonce_hash" text NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	"consumed_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "personal_device_remote_link_nonce_unique" UNIQUE("issuer_deployment_id","nonce_hash")
+);
+--> statement-breakpoint
 CREATE TABLE "personal_sync_policies" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
@@ -155,30 +185,35 @@ CREATE TABLE "personal_sync_policies" (
 CREATE TABLE "remote_account_links" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"local_personal_identity_id" uuid NOT NULL,
+	"remote_issuer" text NOT NULL,
 	"remote_deployment_id" text NOT NULL,
 	"remote_subject_id" text NOT NULL,
-	"remote_proof_reference" text NOT NULL,
+	"proof_nonce_hash" text NOT NULL,
+	"proof_expires_at" timestamp with time zone NOT NULL,
 	"sync_enabled" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"revoked_at" timestamp with time zone,
 	CONSTRAINT "remote_account_links_identity_remote_unique" UNIQUE("local_personal_identity_id","remote_deployment_id","remote_subject_id"),
-	CONSTRAINT "remote_account_links_proof_check" CHECK (length(trim("remote_account_links"."remote_proof_reference")) > 0),
+	CONSTRAINT "remote_account_links_issuer_check" CHECK (length(trim("remote_account_links"."remote_issuer")) > 0),
 	CONSTRAINT "remote_account_links_no_implicit_sync_check" CHECK (not "remote_account_links"."sync_enabled")
 );
 --> statement-breakpoint
 ALTER TABLE "local_personal_identities" ADD CONSTRAINT "local_personal_identities_owner_user_id_users_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_enrollment_challenges" ADD CONSTRAINT "personal_device_enrollment_challenges_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_epoch_acks" ADD CONSTRAINT "personal_device_epoch_acks_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_epoch_acks" ADD CONSTRAINT "personal_device_epoch_acks_member_id_personal_device_group_members_id_fk" FOREIGN KEY ("member_id") REFERENCES "public"."personal_device_group_members"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_group_audit_events" ADD CONSTRAINT "personal_device_group_audit_events_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_group_key_bundles" ADD CONSTRAINT "personal_device_group_key_bundles_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_group_members" ADD CONSTRAINT "personal_device_group_members_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "personal_device_group_members" ADD CONSTRAINT "personal_device_group_members_user_subject_id_personal_device_group_user_subjects_id_fk" FOREIGN KEY ("user_subject_id") REFERENCES "public"."personal_device_group_user_subjects"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_group_members" ADD CONSTRAINT "personal_device_group_members_user_subject_id_personal_device_group_user_subjects_id_fk" FOREIGN KEY ("user_subject_id") REFERENCES "public"."personal_device_group_user_subjects"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_group_statements" ADD CONSTRAINT "personal_device_group_statements_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_group_user_subjects" ADD CONSTRAINT "personal_device_group_user_subjects_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_group_user_subjects" ADD CONSTRAINT "personal_device_group_user_subjects_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_groups" ADD CONSTRAINT "personal_device_groups_local_personal_identity_id_local_personal_identities_id_fk" FOREIGN KEY ("local_personal_identity_id") REFERENCES "public"."local_personal_identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_membership_certificates" ADD CONSTRAINT "personal_device_membership_certificates_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_device_membership_certificates" ADD CONSTRAINT "personal_device_membership_certificates_member_id_personal_device_group_members_id_fk" FOREIGN KEY ("member_id") REFERENCES "public"."personal_device_group_members"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "personal_device_remote_link_nonces" ADD CONSTRAINT "personal_device_remote_link_nonces_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_sync_policies" ADD CONSTRAINT "personal_sync_policies_group_id_personal_device_groups_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."personal_device_groups"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "personal_sync_policies" ADD CONSTRAINT "personal_sync_policies_updated_by_user_id_users_id_fk" FOREIGN KEY ("updated_by_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "remote_account_links" ADD CONSTRAINT "remote_account_links_local_personal_identity_id_local_personal_identities_id_fk" FOREIGN KEY ("local_personal_identity_id") REFERENCES "public"."local_personal_identities"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

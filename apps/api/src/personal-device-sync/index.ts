@@ -1,2 +1,5 @@
 export { registerPersonalDeviceSyncRoutes } from "./routes.js";
-export type { PdsAuthoritySigner } from "./routes.js";
+export type {
+  PdsAuthoritySigner,
+  PdsRemoteAccountLinkVerifier
+} from "./routes.js";

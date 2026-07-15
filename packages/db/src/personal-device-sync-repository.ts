@@ -31,6 +31,10 @@ export interface PersonalDeviceGroupRecord {
   recoveryKemKeyId: string;
   recoveryKemPublicKey: string;
   currentEpoch: string;
+  pendingEpoch: string | null;
+  pendingStatementSequence: string | null;
+  pendingStatementHash: string | null;
+  pendingBundleHash: string | null;
   headSequence: string;
   headHash: string;
   state: PersonalDeviceGroupState;
@@ -106,6 +110,11 @@ const selectGroup = async (
     recoveryKemKeyId: row.recovery_kem_key_id as string,
     recoveryKemPublicKey: row.recovery_kem_public_key as string,
     currentEpoch: row.current_epoch as string,
+    pendingEpoch: (row.pending_epoch as string | null) ?? null,
+    pendingStatementSequence:
+      (row.pending_statement_sequence as string | null) ?? null,
+    pendingStatementHash: (row.pending_statement_hash as string | null) ?? null,
+    pendingBundleHash: (row.pending_bundle_hash as string | null) ?? null,
     headSequence: row.head_sequence as string,
     headHash: row.head_hash as string,
     state: row.state as PersonalDeviceGroupState,
@@ -134,15 +143,20 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
   async createPersonalDeviceEnrollmentChallenge(input: {
     userId: string;
     groupId?: string | null;
+    browserSubjectId: string;
+    browserDeploymentId: string;
     challenge: string;
     expiresAt: Date;
   }): Promise<{ id: string; challenge: string; expiresAt: string }> {
     const result = await pool.query(
-      `insert into personal_device_enrollment_challenges (user_id, group_id, challenge_hash, expires_at)
-      values ($1, $2, $3, $4) returning id, expires_at`,
+      `insert into personal_device_enrollment_challenges
+        (user_id,group_id,browser_subject_id,browser_deployment_id,challenge_hash,expires_at)
+      values ($1,$2,$3,$4,$5,$6) returning id, expires_at`,
       [
         input.userId,
         input.groupId ?? null,
+        input.browserSubjectId,
+        input.browserDeploymentId,
         hashSecret(input.challenge),
         input.expiresAt
       ]
@@ -159,17 +173,22 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     userId: string;
     challengeId: string;
     groupId?: string | null;
+    browserSubjectId: string;
+    browserDeploymentId: string;
     challenge: string;
   }): Promise<boolean> {
     const result = await pool.query(
       `update personal_device_enrollment_challenges set used_at = now()
       where id = $1 and user_id = $2 and challenge_hash = $3 and used_at is null and expires_at > now()
-      and (($4::text is null and group_id is null) or group_id = $4)`,
+      and (($4::text is null and group_id is null) or group_id = $4)
+      and browser_subject_id=$5 and browser_deployment_id=$6`,
       [
         input.challengeId,
         input.userId,
         hashSecret(input.challenge),
-        input.groupId ?? null
+        input.groupId ?? null,
+        input.browserSubjectId,
+        input.browserDeploymentId
       ]
     );
     return result.rowCount === 1;
@@ -226,6 +245,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     userId: string;
     groupId: string;
     subjectId: string;
+    subjectDeploymentId: string;
     authorityKeyId: string;
     authorityPublicKey: string;
     recoverySigningKeyId: string;
@@ -274,8 +294,8 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       }
       const groupDbId = queryRow<{ id: string }>(group.rows[0]).id;
       const subject = await client.query(
-        "insert into personal_device_group_user_subjects (group_id, user_id, subject_id) values ($1,$2,$3) returning id",
-        [groupDbId, input.userId, input.subjectId]
+        "insert into personal_device_group_user_subjects (group_id, user_id, subject_id, deployment_id) values ($1,$2,$3,$4) returning id",
+        [groupDbId, input.userId, input.subjectId, input.subjectDeploymentId]
       );
       await client.query(
         `insert into personal_device_group_members (group_id,user_subject_id,device_id,signing_key_id,signing_public_key,kem_key_id,kem_public_key,operation_families,status,admitted_sequence)
@@ -339,6 +359,8 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     statementHash: string;
     statement: string;
     authorizationKeyId: string;
+    browserSubjectId: string;
+    browserDeploymentId: string;
     keyBundle?: {
       hash: string;
       canonical: string;
@@ -350,7 +372,7 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
       PersonalDeviceMemberRecord,
       "status" | "admittedSequence" | "revokedSequence" | "revokedAt"
     >;
-    revokeDeviceId?: string;
+    revokeDeviceIds?: string[];
   }): Promise<PdsTransitionResult | null> {
     const client = await pool.connect();
     try {
@@ -367,6 +389,10 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         await client.query("rollback");
         return { outcome: "equivocation", group, statement: null };
       }
+      if (group.pendingEpoch !== null) {
+        await client.query("rollback");
+        return { outcome: "conflict", group, statement: null };
+      }
       if (
         group.headHash !== input.expectedHeadHash ||
         BigInt(group.headSequence) + 1n !== BigInt(input.sequence)
@@ -378,33 +404,12 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         const existingStatement = sameSequence.rowCount
           ? queryRow<{ canonical_statement: string }>(sameSequence.rows[0])
           : null;
-        if (
-          existingStatement &&
-          existingStatement.canonical_statement !== input.statement
-        ) {
-          await client.query(
-            "update personal_device_groups set state='equivocation_freeze', state_reason='same_sequence_fork', updated_at=now() where id=$1",
-            [group.id]
-          );
-          await client.query(
-            "insert into personal_device_group_audit_events (group_id,transition_kind,actor_key_id,outcome,head_sequence,head_hash) values ($1,$2,$3,'frozen',$4,$5)",
-            [
-              group.id,
-              input.kind,
-              input.authorizationKeyId,
-              group.headSequence,
-              group.headHash
-            ]
-          );
-          await client.query("commit");
-          return {
-            outcome: "equivocation",
-            group: (await selectGroup(client, input.userId, input.groupId))!,
-            statement: existingStatement.canonical_statement
-          };
-        }
         await client.query("rollback");
-        return { outcome: "conflict", group, statement: null };
+        return {
+          outcome: "conflict",
+          group,
+          statement: existingStatement?.canonical_statement ?? null
+        };
       }
       if (
         ["add-device", "revoke-device", "recover"].includes(input.kind) &&
@@ -422,9 +427,9 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
           .map((member) => member.deviceId);
         if (input.addedDevice)
           expectedRecipients.push(input.addedDevice.deviceId);
-        if (input.revokeDeviceId) {
+        if (input.revokeDeviceIds) {
           expectedRecipients = expectedRecipients.filter(
-            (deviceId) => deviceId !== input.revokeDeviceId
+            (deviceId) => !input.revokeDeviceIds?.includes(deviceId)
           );
         }
         expectedRecipients.push(group.recoveryKemKeyId);
@@ -466,9 +471,12 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
             ]
           );
       }
-      if (input.addedDevice)
-        await client.query(
-          `insert into personal_device_group_members (group_id,device_id,signing_key_id,signing_public_key,kem_key_id,kem_public_key,operation_families,status,admitted_sequence) values ($1,$2,$3,$4,$5,$6,$7,'active',$8)`,
+      if (input.addedDevice) {
+        const added = await client.query(
+          `insert into personal_device_group_members (group_id,user_subject_id,device_id,signing_key_id,signing_public_key,kem_key_id,kem_public_key,operation_families,status,admitted_sequence)
+          select $1,id,$2,$3,$4,$5,$6,$7,'active',$8 from personal_device_group_user_subjects
+          where group_id=$1 and user_id=$9 and subject_id=$10 and deployment_id=$11
+            and revoked_at is null`,
           [
             group.id,
             input.addedDevice.deviceId,
@@ -477,32 +485,50 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
             input.addedDevice.kemKeyId,
             input.addedDevice.kemPublicKey,
             input.addedDevice.operationFamilies,
-            input.sequence
+            input.sequence,
+            input.userId,
+            input.browserSubjectId,
+            input.browserDeploymentId
           ]
         );
-      if (input.revokeDeviceId) {
+        if (!added.rowCount)
+          throw Object.assign(
+            new Error("PDS browser subject binding is unavailable"),
+            { statusCode: 403 }
+          );
+      }
+      if (input.revokeDeviceIds?.length) {
         const revoked = await client.query(
-          "update personal_device_group_members set status='revoked', revoked_sequence=$1, revoked_at=now(), updated_at=now() where group_id=$2 and device_id=$3 and status='active'",
-          [input.sequence, group.id, input.revokeDeviceId]
+          "update personal_device_group_members set status='revoked', revoked_sequence=$1, revoked_at=now(), updated_at=now() where group_id=$2 and device_id = any($3::text[]) and status='active'",
+          [input.sequence, group.id, input.revokeDeviceIds]
         );
-        if (!revoked.rowCount)
+        if (revoked.rowCount !== input.revokeDeviceIds.length)
           throw Object.assign(new Error("PDS device is not active"), {
             statusCode: 409
           });
         await client.query(
           `update personal_device_membership_certificates set revoked_at=now()
-          where group_id=$1 and member_id in (select id from personal_device_group_members where group_id=$1 and device_id=$2) and revoked_at is null`,
-          [group.id, input.revokeDeviceId]
+          where group_id=$1 and member_id in (select id from personal_device_group_members where group_id=$1 and device_id = any($2::text[])) and revoked_at is null`,
+          [group.id, input.revokeDeviceIds]
         );
       }
+      const membershipTransition = input.nextEpoch !== null;
       const update = await client.query(
-        `update personal_device_groups set head_sequence=$1,head_hash=$2,current_epoch=coalesce($3,current_epoch),updated_at=now() where id=$4 and head_hash=$5 returning id`,
+        `update personal_device_groups set head_sequence=$1,head_hash=$2,
+          current_epoch=case when $3 then current_epoch else coalesce($4,current_epoch) end,
+          pending_epoch=case when $3 then $4 else null end,
+          pending_statement_sequence=case when $3 then $1 else null end,
+          pending_statement_hash=case when $3 then $2 else null end,
+          pending_bundle_hash=case when $3 then $7 else null end,
+          updated_at=now() where id=$5 and head_hash=$6 and pending_epoch is null returning id`,
         [
           input.sequence,
           input.statementHash,
+          membershipTransition,
           input.nextEpoch,
           group.id,
-          input.expectedHeadHash
+          input.expectedHeadHash,
+          input.keyBundle?.hash ?? null
         ]
       );
       if (!update.rowCount) {
@@ -541,6 +567,74 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         outcome: "accepted",
         group: (await selectGroup(client, input.userId, input.groupId))!,
         statement: input.statement
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  async acknowledgePersonalDeviceEpoch(input: {
+    userId: string;
+    groupId: string;
+    deviceId: string;
+    epoch: string;
+    canonicalAck: string;
+    acknowledgedAt: Date;
+  }): Promise<{ group: PersonalDeviceGroupRecord; activated: boolean } | null> {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        input.groupId
+      ]);
+      const group = await selectGroup(client, input.userId, input.groupId);
+      if (!group || group.pendingEpoch !== input.epoch) {
+        await client.query("rollback");
+        return null;
+      }
+      const member = await client.query(
+        "select id from personal_device_group_members where group_id=$1 and device_id=$2 and status='active'",
+        [group.id, input.deviceId]
+      );
+      if (!member.rowCount)
+        throw Object.assign(new Error("PDS member is not active"), {
+          statusCode: 409
+        });
+      await client.query(
+        `insert into personal_device_epoch_acks (group_id,member_id,epoch,canonical_ack,acknowledged_at)
+        values ($1,$2,$3,$4,$5) on conflict (group_id,member_id,epoch) do nothing`,
+        [
+          group.id,
+          queryRow<{ id: string }>(member.rows[0]).id,
+          input.epoch,
+          input.canonicalAck,
+          input.acknowledgedAt
+        ]
+      );
+      const pending = await client.query(
+        `select count(*) filter (where m.status='active')::int as active_count,
+          count(a.id) filter (where m.status='active')::int as ack_count
+        from personal_device_group_members m left join personal_device_epoch_acks a
+          on a.member_id=m.id and a.group_id=m.group_id and a.epoch=$2 where m.group_id=$1`,
+        [group.id, input.epoch]
+      );
+      const counts = queryRow<{ active_count: number; ack_count: number }>(
+        pending.rows[0]
+      );
+      const activated =
+        counts.active_count > 0 && counts.active_count === counts.ack_count;
+      if (activated)
+        await client.query(
+          `update personal_device_groups set current_epoch=pending_epoch,pending_epoch=null,pending_statement_sequence=null,pending_statement_hash=null,pending_bundle_hash=null,updated_at=now() where id=$1`,
+          [group.id]
+        );
+      await client.query("commit");
+      return {
+        group: (await selectGroup(client, input.userId, input.groupId))!,
+        activated
       };
     } catch (error) {
       await client.query("rollback");
@@ -639,6 +733,59 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
     }
   },
 
+  async getPersonalDeviceKeyBundle(input: {
+    userId: string;
+    groupId: string;
+    epoch: string;
+  }): Promise<string | null> {
+    const client = await pool.connect();
+    try {
+      const group = await selectGroup(client, input.userId, input.groupId);
+      if (
+        !group ||
+        (group.currentEpoch !== input.epoch &&
+          group.pendingEpoch !== input.epoch) ||
+        !group.members.some((member) => member.status === "active")
+      )
+        return null;
+      const result = await client.query(
+        "select canonical_bundle from personal_device_group_key_bundles where group_id=$1 and epoch=$2",
+        [group.id, input.epoch]
+      );
+      return result.rowCount
+        ? queryRow<{ canonical_bundle: string }>(result.rows[0])
+            .canonical_bundle
+        : null;
+    } finally {
+      client.release();
+    }
+  },
+
+  async getPersonalDeviceMembershipCertificate(input: {
+    userId: string;
+    groupId: string;
+    deviceId: string;
+  }): Promise<string | null> {
+    const client = await pool.connect();
+    try {
+      const group = await selectGroup(client, input.userId, input.groupId);
+      if (!group || group.pendingEpoch !== null) return null;
+      const result = await client.query(
+        `select c.canonical_certificate from personal_device_membership_certificates c
+        join personal_device_group_members m on m.id=c.member_id
+        where c.group_id=$1 and c.epoch=$2 and m.device_id=$3 and m.status='active'
+          and c.revoked_at is null and c.expires_at>now()`,
+        [group.id, group.currentEpoch, input.deviceId]
+      );
+      return result.rowCount
+        ? queryRow<{ canonical_certificate: string }>(result.rows[0])
+            .canonical_certificate
+        : null;
+    } finally {
+      client.release();
+    }
+  },
+
   async updatePersonalSyncPolicy(
     userId: string,
     groupId: string,
@@ -661,9 +808,11 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
   async createRemoteAccountLink(input: {
     userId: string;
     groupId: string;
+    remoteIssuer: string;
     remoteDeploymentId: string;
     remoteSubjectId: string;
-    remoteProofReference: string;
+    nonce: string;
+    expiresAt: Date;
   }): Promise<{
     id: string;
     remoteDeploymentId: string;
@@ -672,14 +821,71 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
   } | null> {
     const client = await pool.connect();
     try {
+      await client.query("begin");
       const group = await selectGroup(client, input.userId, input.groupId);
-      if (!group) return null;
-      const row = await client.query(
-        `insert into remote_account_links (local_personal_identity_id,remote_deployment_id,remote_subject_id,remote_proof_reference,sync_enabled) select local_personal_identity_id,$1,$2,$3,false from personal_device_groups where id=$4 on conflict (local_personal_identity_id,remote_deployment_id,remote_subject_id) do update set remote_proof_reference=excluded.remote_proof_reference,updated_at=now() returning id,remote_deployment_id,remote_subject_id`,
+      if (!group) {
+        await client.query("rollback");
+        return null;
+      }
+      const nonce = await client.query(
+        `insert into personal_device_remote_link_nonces (group_id,issuer_deployment_id,nonce_hash,expires_at,consumed_at)
+        values ($1,$2,$3,$4,now()) on conflict (issuer_deployment_id,nonce_hash) do nothing returning id`,
         [
+          group.id,
+          `${input.remoteIssuer}\0${input.remoteDeploymentId}`,
+          hashSecret(input.nonce),
+          input.expiresAt
+        ]
+      );
+      const nonceHash = hashSecret(input.nonce);
+      if (!nonce.rowCount) {
+        const existing = await client.query(
+          `select l.id,l.remote_deployment_id,l.remote_subject_id from remote_account_links l
+          join personal_device_groups g on g.local_personal_identity_id=l.local_personal_identity_id
+          where g.id=$1 and l.remote_issuer=$2 and l.remote_deployment_id=$3
+            and l.remote_subject_id=$4 and l.proof_nonce_hash=$5`,
+          [
+            group.id,
+            input.remoteIssuer,
+            input.remoteDeploymentId,
+            input.remoteSubjectId,
+            nonceHash
+          ]
+        );
+        if (!existing.rowCount) {
+          await client.query("rollback");
+          throw Object.assign(
+            new Error("Remote Account Link proof nonce was already consumed"),
+            { statusCode: 409 }
+          );
+        }
+        await client.query("commit");
+        const linked = queryRow<{
+          id: string;
+          remote_deployment_id: string;
+          remote_subject_id: string;
+        }>(existing.rows[0]);
+        return {
+          id: linked.id,
+          remoteDeploymentId: linked.remote_deployment_id,
+          remoteSubjectId: linked.remote_subject_id,
+          syncEnabled: false
+        };
+      }
+      const row = await client.query(
+        `insert into remote_account_links
+          (local_personal_identity_id,remote_issuer,remote_deployment_id,remote_subject_id,proof_nonce_hash,proof_expires_at,sync_enabled)
+        select local_personal_identity_id,$1,$2,$3,$4,$5,false from personal_device_groups where id=$6
+        on conflict (local_personal_identity_id,remote_deployment_id,remote_subject_id)
+        do update set remote_issuer=excluded.remote_issuer,proof_nonce_hash=excluded.proof_nonce_hash,
+          proof_expires_at=excluded.proof_expires_at,updated_at=now()
+        returning id,remote_deployment_id,remote_subject_id`,
+        [
+          input.remoteIssuer,
           input.remoteDeploymentId,
           input.remoteSubjectId,
-          input.remoteProofReference,
+          nonceHash,
+          input.expiresAt,
           group.id
         ]
       );
@@ -688,12 +894,16 @@ export const createPersonalDeviceSyncRepository = (pool: pg.Pool) => ({
         remote_deployment_id: string;
         remote_subject_id: string;
       }>(row.rows[0]);
+      await client.query("commit");
       return {
         id: linked.id,
         remoteDeploymentId: linked.remote_deployment_id,
         remoteSubjectId: linked.remote_subject_id,
         syncEnabled: false
       };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
     } finally {
       client.release();
     }

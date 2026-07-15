@@ -66,7 +66,8 @@ import { registerTeamRoutes } from "../team/index.js";
 import { registerCrossIdentitySyncRoutes } from "../cross-identity-sync/index.js";
 import {
   registerPersonalDeviceSyncRoutes,
-  type PdsAuthoritySigner
+  type PdsAuthoritySigner,
+  type PdsRemoteAccountLinkVerifier
 } from "../personal-device-sync/index.js";
 import { resolveApiServerConfig } from "./config.js";
 import {
@@ -103,6 +104,8 @@ interface BuildServerOptions {
   envelopeEncryptionProvider?: EnvelopeEncryptionProvider;
   /** Test-only injection. Production obtains PDS signer only from secret config. */
   pdsAuthoritySigner?: PdsAuthoritySigner | null;
+  /** Test/deployment injection; absent verifier fails Remote Account Link closed. */
+  pdsRemoteAccountLinkVerifier?: PdsRemoteAccountLinkVerifier | null;
 }
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/, "");
@@ -469,7 +472,8 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
     },
     personalDeviceSync: {
       authoritySigner:
-        options.pdsAuthoritySigner ?? resolvePdsAuthoritySigner(config)
+        options.pdsAuthoritySigner ?? resolvePdsAuthoritySigner(config),
+      remoteAccountLinkVerifier: options.pdsRemoteAccountLinkVerifier ?? null
     }
   };
   graphStreamService = await createGraphStreamService({
