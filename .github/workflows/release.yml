@@ -305,6 +305,9 @@ jobs:
           KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-release/koed-runtime
         run: pnpm desktop:package:internal:mac
 
+      - name: Verify Desktop artifact code integrity
+        run: pnpm --filter @koed/desktop verify:package:integrity:mac -- --dmg release/Koed-*-arm64.dmg
+
       - name: Packaged Desktop native smoke
         run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
 

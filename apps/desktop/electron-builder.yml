@@ -4,6 +4,7 @@ copyright: Copyright © 2026 Koed
 
 asar: true
 npmRebuild: false
+afterPack: scripts/after-pack.mjs
 
 files:
   - dist-electron/**/*
