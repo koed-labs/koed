@@ -1,5 +1,11 @@
 # Koed
 
+## 0.4.1
+
+### Patch Changes
+
+- 2ee0b35: Make macOS native runtime builds independent of Homebrew OpenSSL and publish releases only after required artifacts pass validation.
+
 ## 0.4.0
 
 ### Minor Changes
