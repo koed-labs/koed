@@ -473,9 +473,7 @@ const finalizeGenesis = (
       recoveryKitHash: state.recovery.kitHash,
       recoveryKitVerified: true,
       initialEpoch: state.epoch,
-      initialKeyCommitment: digest(
-        Buffer.from(secret.epochKey, "base64url")
-      )
+      initialKeyCommitment: digest(Buffer.from(secret.epochKey, "base64url"))
     }
   };
   const authorization = {
@@ -516,7 +514,10 @@ const writeRecoveryKit = (path: string, kit: RecoveryKit): void => {
   chmodSync(output, 0o600);
 };
 
-const isSecretPayload = (value: unknown, groupId: string): value is SecretPayload => {
+const isSecretPayload = (
+  value: unknown,
+  groupId: string
+): value is SecretPayload => {
   if (!value || typeof value !== "object") return false;
   const secret = value as Record<string, unknown>;
   const required = [
@@ -558,7 +559,7 @@ const getSecret = (
     const secret = JSON.parse(raw) as unknown;
     if (!isSecretPayload(secret, state.groupId))
       fail("Operator secret provider returned invalid Personal Sync material.");
-    return secret;
+    return secret as SecretPayload;
   } catch (error) {
     if (error instanceof Error && error.message.includes("Personal Sync"))
       throw error;
@@ -572,7 +573,8 @@ const equalSecrets = (left: SecretPayload, right: SecretPayload): boolean => {
   const leftBytes = Buffer.from(JSON.stringify(left));
   const rightBytes = Buffer.from(JSON.stringify(right));
   return (
-    leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes)
+    leftBytes.length === rightBytes.length &&
+    timingSafeEqual(leftBytes, rightBytes)
   );
 };
 
@@ -597,7 +599,8 @@ const redactedStatus = (
       futureClosedSessionsOnly: true,
       historicalBackfillEnabled: false
     },
-    epoch: state.epoch
+    epoch: state.epoch,
+    genesis: state.genesis
   },
   devices: state.devices.map(
     ({ id, label, state: deviceState, addedAt, revokedAt }) => ({
@@ -627,21 +630,27 @@ const bootstrap = (
   if (readState(paths, deps)) fail("Personal Sync group already exists.");
   const ref = assertRef(requiredFlag(args, "--secret-ref"));
   const kitPath = requiredFlag(args, "--recovery-kit");
-  const password = passwordFrom(args);
   const capability = secretProviderStatus(environment);
   if (capability.state !== "available") fail(capability.message);
+  const password = passwordFrom(args);
   const deviceSigning = rawKeyPair("ed25519");
   const deviceKem = rawKeyPair("x25519");
   const recoverySigning = rawKeyPair("ed25519");
   const recoveryKem = rawKeyPair("x25519");
+  const authoritySigning = rawKeyPair("ed25519");
   const groupId = opaqueId("pds");
-  const authorityFingerprint = fingerprint(`pending-authority:${groupId}`);
+  const authorityFingerprint = fingerprint(authoritySigning.publicKey);
   const createdAt = now(deps);
   const state: PersonalSyncState = {
     version: STATE_VERSION,
     groupId,
     createdAt,
     authorityFingerprint,
+    authority: {
+      signingKeyId: opaqueId("authority-ed25519"),
+      signingPublicKey: authoritySigning.publicKey
+    },
+    genesis: { state: "pending_recovery_verification", hash: null },
     secretRef: ref,
     device: {
       id: opaqueId("device"),
@@ -656,6 +665,7 @@ const bootstrap = (
       kemKeyId: opaqueId("recovery-x25519"),
       kemPublicKey: recoveryKem.publicKey,
       kitFingerprint: "",
+      kitHash: "",
       kitVerified: false
     },
     policy: "disabled",
@@ -691,6 +701,7 @@ const bootstrap = (
     deviceKemSeed: deviceKem.privateSeed,
     recoverySigningSeed: recoverySigning.privateSeed,
     recoveryKemSeed: recoveryKem.privateSeed,
+    authoritySigningSeed: authoritySigning.privateSeed,
     epochKey: base64url(randomBytes(32)),
     sourceFingerprintKey: base64url(randomBytes(32)),
     tombstoneFloorKey: base64url(randomBytes(32)),
@@ -698,20 +709,30 @@ const bootstrap = (
   };
   const plaintext = recoveryPlaintext(state, secret);
   state.recovery.kitFingerprint = kitFingerprint(plaintext);
+  state.recovery.kitHash = kitHash(plaintext);
   const kit = encryptRecoveryKit(plaintext, password);
-  writeRecoveryKit(kitPath, kit);
-  invokeSecretProvider(environment, "put", ref, JSON.stringify(secret), deps);
-  writeState(paths, state);
+  try {
+    if (decryptRecoveryKit(kit, password) !== plaintext)
+      fail("Recovery kit round-trip verification failed.");
+    writeRecoveryKit(kitPath, kit);
+    invokeSecretProvider(environment, "put", ref, JSON.stringify(secret), deps);
+    const stored = getSecret(state, environment, deps);
+    if (!equalSecrets(secret, stored))
+      fail("Operator secret provider did not preserve Personal Sync material.");
+    writeState(paths, state);
+  } finally {
+    password.fill(0);
+  }
   return {
     ok: true,
     state: "recovery_verification_required",
     message:
-      "Recovery kit created. Re-open it, verify displayed fingerprint, then enable Personal Sync.",
+      "Recovery kit round-trip verified. Re-open it and verify its fingerprint before genesis and future-only Personal Sync.",
     groupId,
     recoveryKit: {
-      path: resolve(kitPath),
       fingerprint: kit.fingerprint,
-      permissions: "0600"
+      permissions: "0600",
+      roundTripVerified: true
     }
   };
 };
@@ -727,30 +748,44 @@ const verifyKit = (
   const path = requiredFlag(args, "--recovery-kit");
   if (!secureFile(path))
     fail("Recovery kit permissions are unsafe; require 0600.");
-  const kit = JSON.parse(readFileSync(path, "utf8")) as RecoveryKit;
-  const plaintext = decryptRecoveryKit(kit, password);
-  const parsed = JSON.parse(plaintext) as {
-    groupId?: string;
-    authorityFingerprint?: string;
-    secret?: SecretPayload;
-  };
-  if (
-    parsed.groupId !== state.groupId ||
-    parsed.authorityFingerprint !== state.authorityFingerprint ||
-    !parsed.secret ||
-    kit.fingerprint !== state.recovery.kitFingerprint
-  ) {
-    fail("Recovery kit does not match this Personal Device Group.");
+  try {
+    const kit = JSON.parse(readFileSync(path, "utf8")) as RecoveryKit;
+    const plaintext = decryptRecoveryKit(kit, password);
+    const parsed = JSON.parse(plaintext) as {
+      groupId?: string;
+      authorityFingerprint?: string;
+      secret?: unknown;
+    };
+    if (
+      parsed.groupId !== state.groupId ||
+      parsed.authorityFingerprint !== state.authorityFingerprint ||
+      !isSecretPayload(parsed.secret, state.groupId) ||
+      kit.fingerprint !== state.recovery.kitFingerprint ||
+      kitHash(plaintext) !== state.recovery.kitHash
+    ) {
+      fail("Recovery kit does not match this Personal Device Group.");
+    }
+    const kitSecret = parsed.secret as SecretPayload;
+    const providerSecret = getSecret(state, environment, deps);
+    if (!equalSecrets(kitSecret, providerSecret))
+      fail("Recovery kit does not match Operator secret provider material.");
+    state.recovery.kitVerified = true;
+    state.genesis = {
+      state: "finalized",
+      hash: finalizeGenesis(state, kitSecret)
+    };
+    writeState(paths, state);
+    return {
+      ok: true,
+      state: "verified",
+      message:
+        "Recovery kit decrypted and fingerprint verified. Genesis is finalized; you may enable future-only Personal Sync.",
+      fingerprint: kit.fingerprint,
+      genesis: { state: state.genesis.state, hash: state.genesis.hash }
+    };
+  } finally {
+    password.fill(0);
   }
-  state.recovery.kitVerified = true;
-  writeState(paths, state);
-  return {
-    ok: true,
-    state: "verified",
-    message:
-      "Recovery kit decrypted and fingerprint verified. You may now enable future-only Personal Sync.",
-    fingerprint: kit.fingerprint
-  };
 };
 
 const createKit = (
@@ -763,20 +798,26 @@ const createKit = (
   const password = passwordFrom(args);
   const output = requiredFlag(args, "--output");
   const secret = getSecret(state, environment, deps);
-  const plaintext = recoveryPlaintext(state, secret);
-  const kit = encryptRecoveryKit(plaintext, password);
-  writeRecoveryKit(output, kit);
-  return {
-    ok: true,
-    state: "created",
-    message:
-      "Recovery kit written. Re-open and verify it before relying on it.",
-    recoveryKit: {
-      path: resolve(output),
-      fingerprint: kit.fingerprint,
-      permissions: "0600"
-    }
-  };
+  try {
+    const plaintext = recoveryPlaintext(state, secret);
+    const kit = encryptRecoveryKit(plaintext, password);
+    if (decryptRecoveryKit(kit, password) !== plaintext)
+      fail("Recovery kit round-trip verification failed.");
+    writeRecoveryKit(output, kit);
+    return {
+      ok: true,
+      state: "created",
+      message:
+        "Recovery kit round-trip verified and written. Re-open and verify its fingerprint before relying on it.",
+      recoveryKit: {
+        fingerprint: kit.fingerprint,
+        permissions: "0600",
+        roundTripVerified: true
+      }
+    };
+  } finally {
+    password.fill(0);
+  }
 };
 
 const updatePolicy = (
@@ -785,9 +826,9 @@ const updatePolicy = (
   deps: PersonalSyncDependencies
 ): PersonalSyncResult => {
   if (action === "enable") {
-    if (!state.recovery.kitVerified)
+    if (!state.recovery.kitVerified || state.genesis.state !== "finalized")
       fail(
-        "Recovery kit verification is required before genesis and sync enable."
+        "Recovery kit verification and finalized genesis are required before sync enable."
       );
     state.policy = "enabled";
     state.policyEnabledAt = now(deps);
@@ -952,7 +993,7 @@ export const runPersonalSyncCommand = async (
     return createKit(args.slice(2), paths, environment, deps);
   if (area === "recovery-kit" && action === "verify")
     return verifyKit(args.slice(2), paths, environment, deps);
-  const state = requireState(paths, deps);
+  let state = requireState(paths, deps);
   let result: PersonalSyncResult;
   if (area === "join" && action === "request")
     result = joinRequest(state, deps);
@@ -965,11 +1006,14 @@ export const runPersonalSyncCommand = async (
         .filter((join) => join.state === "pending")
         .map(({ id, createdAt }) => ({ id, createdAt }))
     };
-  else if (area === "active-device" && action === "approve")
+  else if (area === "active-device" && action === "approve") {
+    getSecret(state, environment, deps);
     result = approveDevice(state, args.slice(2), "active_device", deps);
-  else if (area === "recovery" && action === "approve")
+  } else if (area === "recovery" && action === "approve") {
+    verifyKit(args.slice(2), paths, environment, deps);
+    state = requireState(paths, deps);
     result = approveDevice(state, args.slice(2), "recovery", deps);
-  else if (
+  } else if (
     area === "policy" &&
     ["enable", "pause", "resume"].includes(action ?? "")
   )

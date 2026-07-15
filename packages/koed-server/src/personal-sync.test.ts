@@ -4,6 +4,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -111,7 +112,7 @@ describe("Personal Sync recovery kit", () => {
         runPersonalSyncCommand(["policy", "enable"], pathsFor(directory), env, {
           spawnSync: provider.spawnSync
         })
-      ).rejects.toThrow("Recovery kit verification is required");
+      ).rejects.toThrow("Recovery kit verification and finalized genesis");
     } finally {
       closeSync(fd);
     }
@@ -131,7 +132,10 @@ describe("Personal Sync recovery kit", () => {
         env,
         { spawnSync: provider.spawnSync }
       );
-      expect(verified.state).toBe("verified");
+      expect(verified).toMatchObject({
+        state: "verified",
+        genesis: { state: "finalized" }
+      });
     } finally {
       closeSync(verificationFd);
     }
@@ -142,6 +146,7 @@ describe("Personal Sync recovery kit", () => {
       { spawnSync: provider.spawnSync }
     );
     expect(enabled.message).toContain("future closed Sessions only");
+    expect(statSync(recoveryKit).mode & 0o777).toBe(0o600);
     const status = await runPersonalSyncCommand(
       ["status"],
       pathsFor(directory),
