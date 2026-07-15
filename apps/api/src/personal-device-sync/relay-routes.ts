@@ -8,7 +8,8 @@ import {
   parseCanonicalPdsJson,
   parsePdsRelayRequestProof,
   pdsRelayRequestNonceExpiresAt,
-  verifyPdsRelayRequestProof
+  verifyPdsRelayRequestProof,
+  validatePdsTombstoneAck
 } from "@koed/shared";
 import type { ApiRouteContext } from "../server/context.js";
 
@@ -311,6 +312,52 @@ export const registerPersonalDeviceSyncRelayRoutes = (
     });
     return { accepted: true };
   });
+  app.get(
+    "/v1/personal-device-sync/relay/lifecycle",
+    { preHandler: context.rateLimit.memoryRead },
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      return {
+        deletion_floors: await input.relay.getPdsLifecycleForRelay(input.auth)
+      };
+    }
+  );
+  app.post(
+    "/v1/personal-device-sync/relay/tombstone-acks",
+    pre,
+    async (request) => {
+      if (!context.personalDeviceSync.authoritySigner)
+        throw error("Personal Device Sync relay is unavailable", 503);
+      const input = await authenticate(request as RawRequest, context);
+      const ack = body(request as RawRequest);
+      if (typeof ack.tombstoneHash !== "string")
+        throw error("PDS tombstone acknowledgement is invalid");
+      const binding = await input.relay.getPdsTombstoneAckBinding({
+        groupDbId: input.auth.groupDbId,
+        tombstoneHash: ack.tombstoneHash
+      });
+      if (!binding) throw unavailable();
+      validatePdsTombstoneAck(ack, {
+        signingPublicKey: input.auth.signingPublicKey,
+        expectedSignerKeyId: input.auth.signingKeyId,
+        expectedGroupId: input.auth.groupId,
+        expectedTombstoneHash: ack.tombstoneHash,
+        expectedDeviceId: input.auth.deviceId,
+        expectedStatementHash: binding.statement_hash
+      });
+      await input.relay.acknowledgePdsTombstone({
+        groupId: input.auth.groupId,
+        groupDbId: input.auth.groupDbId,
+        tombstoneHash: ack.tombstoneHash,
+        deviceId: input.auth.deviceId,
+        canonicalAck: canonicalizePdsJson(ack),
+        ackedAt: new Date(ack.ackedAt as string)
+      });
+      return { accepted: true };
+    }
+  );
   app.get(
     "/v1/personal-device-sync/relay/cursors",
     { preHandler: context.rateLimit.memoryRead },

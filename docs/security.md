@@ -70,7 +70,11 @@ plaintext, group secrets, device/recovery private keys, or recovery kit
 material. Browser session binds governance requester identity but cannot
 replace active-device/recovery authorization; browser/API Token/`Koed-Device`
 authentication alone is rejected by relay. Existing directed-sync RSA code must
-not be represented as PDS compliance.
+not be represented as PDS compliance. PDS deletion floors are opaque group-lifetime
+records. Authority retains opaque logical-memory/floor tokens and encrypted signed
+tombstone records, not source plaintext or a source-fingerprint mapping. Normal
+relay ACK cleanup never removes a floor. A revoked device receives no new key
+bundle or package but cannot be remotely stripped of plaintext it already had.
 
 Use deployment controls for data-at-rest protection: private database networking, least-privilege database credentials, encrypted volumes or managed-database storage encryption, encrypted backups, and restricted administrator access. Treat database exports and backups as sensitive memory material.
 

@@ -129,6 +129,8 @@ export interface PersonalDeviceSyncLocalRepository {
       sourceClosureHash: string;
       packageId: string;
       sourceManifestHash: string;
+      logicalMemoryId: string;
+      deletionFloorToken: string;
       encryptedEnvelope: unknown;
     }>;
   }): Promise<PdsLocalClosureRecord>;
@@ -203,6 +205,11 @@ export interface PersonalDeviceSyncLocalRepository {
     limit?: number;
     leaseSeconds?: number;
   }): Promise<PdsClaimedInboxEntry[]>;
+  applyPdsDeletionFloors(input: {
+    userId: string;
+    groupId: string;
+    floors: Array<{ logicalMemoryId: string; deletionFloorToken: string }>;
+  }): Promise<number>;
   retainPdsInboundPackage(input: {
     userId: string;
     groupId: string;
@@ -212,6 +219,8 @@ export interface PersonalDeviceSyncLocalRepository {
     originDeploymentId: string;
     originDeviceId: string;
     sourceSequence: string;
+    logicalMemoryId?: string;
+    deletionFloorToken?: string;
     encryptedEnvelope: unknown;
   }): Promise<{ retainedPackageId: string; state: PdsMaterializationState }>;
   materializePdsReplica(input: {
@@ -471,8 +480,8 @@ export const createPersonalDeviceSyncLocalRepository = (
       const closureRow = closure.rows[0]!;
       await client.query(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope)
-         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,encrypted_envelope)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
         [
           groupRow.id,
           input.userId,
@@ -481,6 +490,8 @@ export const createPersonalDeviceSyncLocalRepository = (
           input.originDeploymentId,
           input.originDeviceId,
           sourceSequence,
+          built.logicalMemoryId,
+          built.deletionFloorToken,
           JSON.stringify(built.encryptedEnvelope)
         ]
       );
@@ -783,6 +794,53 @@ export const createPersonalDeviceSyncLocalRepository = (
     return rows.rows;
   },
 
+  async applyPdsDeletionFloors(input) {
+    if (!input.floors.length) return 0;
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [
+        `pds-lifecycle:${input.groupId}`
+      ]);
+      const affected = await client.query<{ local_session_id: string | null }>(
+        `update pds_retained_packages p set state='revoked',updated_at=now()
+         from personal_device_groups g join local_personal_identities i on i.id=g.local_personal_identity_id
+         where p.group_id=g.id and i.owner_user_id=$1 and g.group_id=$2
+           and (p.logical_memory_id,p.deletion_floor_token) in (select x.logical_memory_id,x.deletion_floor_token from unnest($3::text[],$4::text[]) x(logical_memory_id,deletion_floor_token))
+         returning p.id`,
+        [
+          input.userId,
+          input.groupId,
+          input.floors.map((floor) => floor.logicalMemoryId),
+          input.floors.map((floor) => floor.deletionFloorToken)
+        ]
+      );
+      await client.query(
+        `update pds_logical_replicas r set materialization_state='revoked',updated_at=now()
+         from pds_replica_observations o join pds_retained_packages p on p.id=o.retained_package_id
+         where o.replica_id=r.id and p.state='revoked' and r.group_id=(select id from personal_device_groups where group_id=$1)`,
+        [input.groupId]
+      );
+      await client.query(
+        `update memory_events set invalidated_at=coalesce(invalidated_at,now()),invalidation_reason=coalesce(invalidation_reason,'pds_tombstone'),updated_at=now()
+         where session_id in (select local_session_id from pds_logical_replicas where group_id=(select id from personal_device_groups where group_id=$1) and materialization_state='revoked' and local_session_id is not null)`,
+        [input.groupId]
+      );
+      await client.query(
+        `update memory_nodes set invalidated_at=coalesce(invalidated_at,now()),invalidation_reason=coalesce(invalidation_reason,'pds_tombstone'),updated_at=now()
+         where exists (select 1 from memory_node_sources ns join memory_events me on me.id=ns.memory_event_id
+                       where ns.memory_node_id=memory_nodes.id and me.invalidation_reason='pds_tombstone')`
+      );
+      await client.query("commit");
+      return affected.rowCount ?? 0;
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
   async retainPdsInboundPackage(input) {
     mustDecimal(input.sourceSequence, "source sequence");
     const client = await pool.connect();
@@ -800,8 +858,8 @@ export const createPersonalDeviceSyncLocalRepository = (
         state: PdsMaterializationState;
       }>(
         `insert into pds_retained_packages
-         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,encrypted_envelope)
-         values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+         (group_id,owner_user_id,package_id,source_manifest_hash,origin_deployment_id,origin_device_id,source_sequence,logical_memory_id,deletion_floor_token,encrypted_envelope)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
          on conflict (group_id,package_id) do update set updated_at=now()
          returning id,state`,
         [
@@ -812,6 +870,8 @@ export const createPersonalDeviceSyncLocalRepository = (
           input.originDeploymentId,
           input.originDeviceId,
           input.sourceSequence,
+          input.logicalMemoryId ?? null,
+          input.deletionFloorToken ?? null,
           JSON.stringify(input.encryptedEnvelope)
         ]
       );

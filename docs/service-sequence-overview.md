@@ -996,7 +996,16 @@ chunk/digest commit without decrypting, delivers mailbox chunks, validates
 signed package ACKs, and tracks independent recipient/origin high-water cursors.
 All-recipient ACK cleanup waits seven days; unacked package retention expires
 after thirty days; finalized post-acceptance revocation can waive only its
-snapshot recipient. Tombstones remain reserved for KOE-352. Materialization stays device-local.
+snapshot recipient. Before every package accept, restore, materialization, or
+re-serve, device fetches current Authority lifecycle/floor state and rejects a
+matching opaque logical-memory/floor pair regardless of package origin sequence
+or delivery order. Tombstone apply disables source packages and converged
+replicas, invalidates derived Memory/embeddings/graph/evidence, excludes Recall,
+then sends a signed tombstone ACK. Snapshot quorum plus thirty days retains
+signed tombstone ledger records; opaque floors survive normal relay cleanup for
+group lifetime. Conflict records name exact observed closure hashes and either
+select one closure or mark candidates intentionally distinct; no latest-clock or
+silent merge exists. Materialization stays device-local.
 
 KOE-351 adds local materialization foundation: browser-authenticated close seals
 one eligible future Captured Session after Personal Sync Policy activation;

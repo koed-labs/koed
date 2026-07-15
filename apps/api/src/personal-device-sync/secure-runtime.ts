@@ -147,7 +147,9 @@ const sourceContext = (secret: PdsRuntimeSecret): PdsSecureSourceKeyContext => {
       return Promise.resolve({
         package: pkg,
         sourceClosureHash: manifest.sourceClosureHash,
-        sourceManifestHash: pkg.header.sourceManifestHash
+        sourceManifestHash: pkg.header.sourceManifestHash,
+        logicalMemoryId: manifest.logicalMemoryId,
+        deletionFloorToken: manifest.deletionFloorToken
       });
     }
   };

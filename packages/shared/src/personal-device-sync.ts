@@ -232,6 +232,23 @@ export const signPdsTwoStageFinal = (
     "base64url"
   );
 
+export const signPdsTwoStageDraft = (
+  recordType: "key-bundle" | "tombstone" | "conflict-resolution",
+  draft: JsonRecord,
+  privateKey: KeyObject
+): string =>
+  sign(null, signingBytes(recordType, "draft", draft), privateKey).toString(
+    "base64url"
+  );
+
+export type PdsTombstone = {
+  draft: JsonRecord;
+  authorization: { signerKeyId: string; signature: string };
+  authority?: { keyId: string; signature: string };
+};
+
+export type PdsConflictResolution = PdsTombstone;
+
 const signatureWrapper = (
   value: unknown,
   field: "signerKeyId" | "keyId"
@@ -877,6 +894,333 @@ export const validatePdsEpochAck = (
     )
   )
     throw new TypeError("PDS epoch acknowledgement signature is invalid");
+};
+
+const sortedUniqueIds = (value: unknown, label: string): string[] => {
+  if (!Array.isArray(value) || value.length === 0)
+    throw new TypeError(`PDS ${label} is invalid`);
+  const values = value.map((item) => requireId(item, label));
+  if (
+    new Set(values).size !== values.length ||
+    values.join("\0") !== [...values].sort().join("\0")
+  )
+    throw new TypeError(`PDS ${label} must be unique and ASCII sorted`);
+  return values;
+};
+
+const sortedUniqueHashes = (value: unknown, label: string): string[] => {
+  if (!Array.isArray(value) || value.length === 0)
+    throw new TypeError(`PDS ${label} is invalid`);
+  const values = value.map((item) => {
+    decodePdsBase64url(item, 32);
+    return item as string;
+  });
+  if (
+    new Set(values).size !== values.length ||
+    values.join("\0") !== [...values].sort().join("\0")
+  )
+    throw new TypeError(`PDS ${label} must be unique and ASCII sorted`);
+  return values;
+};
+
+const validatePdsTwoStageRecord = (
+  value: unknown,
+  recordType: "tombstone" | "conflict-resolution",
+  options: {
+    authorizationPublicKey: string | Buffer;
+    authorityPublicKey?: string | Buffer;
+    expectedAuthorizationKeyId?: string;
+    expectedAuthorityKeyId?: string;
+    expectedGroupId?: string;
+  }
+): PdsTombstone => {
+  const record = own(value);
+  const finalized = "authority" in record;
+  exact(
+    record,
+    finalized
+      ? ["draft", "authorization", "authority"]
+      : ["draft", "authorization"],
+    recordType
+  );
+  const draft = own(record.draft);
+  const authorization = own(record.authorization);
+  const authorizationSignature = signatureWrapper(authorization, "signerKeyId");
+  if (
+    options.expectedAuthorizationKeyId !== undefined &&
+    authorization.signerKeyId !== options.expectedAuthorizationKeyId
+  )
+    throw new TypeError(
+      `PDS ${recordType} authorization signer does not match key`
+    );
+  if (
+    !verify(
+      null,
+      signingBytes(recordType, "draft", draft),
+      pdsEd25519PublicKey(options.authorizationPublicKey),
+      decodePdsBase64url(authorizationSignature, 64)
+    )
+  )
+    throw new TypeError(`PDS ${recordType} authorization signature is invalid`);
+  if (finalized) {
+    if (!options.authorityPublicKey)
+      throw new TypeError("PDS authority public key is required");
+    const authority = own(record.authority);
+    const authoritySignature = signatureWrapper(authority, "keyId");
+    if (
+      options.expectedAuthorityKeyId !== undefined &&
+      authority.keyId !== options.expectedAuthorityKeyId
+    )
+      throw new TypeError(
+        `PDS ${recordType} authority signer does not match key`
+      );
+    if (
+      !verify(
+        null,
+        signingBytes(recordType, "final", { draft, authorization }),
+        pdsEd25519PublicKey(options.authorityPublicKey),
+        decodePdsBase64url(authoritySignature, 64)
+      )
+    )
+      throw new TypeError(
+        `PDS ${recordType} authority countersignature is invalid`
+      );
+  }
+  if (
+    options.expectedGroupId !== undefined &&
+    draft.groupId !== options.expectedGroupId
+  )
+    throw new TypeError(`PDS ${recordType} group does not match`);
+  return record as PdsTombstone;
+};
+
+export const pdsFinalizedTwoStageRecordHash = (
+  record: PdsTombstone
+): string => {
+  if (!record.authority) throw new TypeError("PDS record is not finalized");
+  return sha256(canonicalizePdsJson(record));
+};
+
+export const validatePdsTombstone = (
+  value: unknown,
+  options: {
+    authorizationPublicKey: string | Buffer;
+    authorityPublicKey?: string | Buffer;
+    expectedAuthorizationKeyId?: string;
+    expectedAuthorityKeyId?: string;
+    expectedGroupId?: string;
+  }
+): PdsTombstone => {
+  const record = validatePdsTwoStageRecord(value, "tombstone", options);
+  const draft = own(record.draft);
+  exact(
+    draft,
+    [
+      "protocol",
+      "groupId",
+      "logicalMemoryId",
+      "sourceFingerprint",
+      "deletionFloorToken",
+      "closureHashes",
+      "tombstoneSequence",
+      "statementHash",
+      "activeDeviceSnapshot",
+      "issuedAt"
+    ],
+    "tombstone draft"
+  );
+  if (draft.protocol !== PDS_PROTOCOL)
+    throw new TypeError("PDS tombstone protocol is invalid");
+  requireId(draft.groupId, "groupId");
+  for (const field of [
+    "logicalMemoryId",
+    "sourceFingerprint",
+    "deletionFloorToken",
+    "statementHash"
+  ])
+    decodePdsBase64url(draft[field], 32);
+  sortedUniqueHashes(draft.closureHashes, "tombstone closure hashes");
+  requireUint64(draft.tombstoneSequence, "tombstoneSequence");
+  sortedUniqueIds(
+    draft.activeDeviceSnapshot,
+    "tombstone active device snapshot"
+  );
+  pdsIsoMillis(draft.issuedAt, "tombstone issuedAt");
+  return record;
+};
+
+export const validatePdsConflictResolution = (
+  value: unknown,
+  options: {
+    authorizationPublicKey: string | Buffer;
+    authorityPublicKey?: string | Buffer;
+    expectedAuthorizationKeyId?: string;
+    expectedAuthorityKeyId?: string;
+    expectedGroupId?: string;
+  }
+): PdsConflictResolution => {
+  const record = validatePdsTwoStageRecord(
+    value,
+    "conflict-resolution",
+    options
+  );
+  const draft = own(record.draft);
+  exact(
+    draft,
+    [
+      "protocol",
+      "groupId",
+      "sourceFingerprint",
+      "candidateClosureHashes",
+      "selectedClosureHash",
+      "resolution",
+      "statementHash",
+      "issuedAt"
+    ],
+    "conflict resolution draft"
+  );
+  if (draft.protocol !== PDS_PROTOCOL)
+    throw new TypeError("PDS conflict resolution protocol is invalid");
+  requireId(draft.groupId, "groupId");
+  decodePdsBase64url(draft.sourceFingerprint, 32);
+  const candidates = sortedUniqueHashes(
+    draft.candidateClosureHashes,
+    "conflict candidates"
+  );
+  decodePdsBase64url(draft.statementHash, 32);
+  pdsIsoMillis(draft.issuedAt, "conflict resolution issuedAt");
+  if (draft.resolution === "select") {
+    if (
+      typeof draft.selectedClosureHash !== "string" ||
+      !candidates.includes(draft.selectedClosureHash)
+    )
+      throw new TypeError(
+        "PDS conflict selection must name an observed candidate"
+      );
+  } else if (
+    draft.resolution !== "distinct" ||
+    draft.selectedClosureHash !== null
+  ) {
+    throw new TypeError("PDS conflict resolution is invalid");
+  }
+  return record;
+};
+
+const validatePdsSingleSignatureRecord = (
+  value: unknown,
+  fields: string[],
+  recordType: "tombstone-ack" | "package-ack",
+  options: { signingPublicKey: string | Buffer; expectedSignerKeyId: string }
+): JsonRecord => {
+  const record = own(value);
+  exact(record, fields, recordType);
+  const wrapper = own(record.signature);
+  const signature = signatureWrapper(wrapper, "signerKeyId");
+  if (wrapper.signerKeyId !== options.expectedSignerKeyId)
+    throw new TypeError(`PDS ${recordType} signer is invalid`);
+  const unsigned = { ...record };
+  delete unsigned.signature;
+  if (
+    !verify(
+      null,
+      Buffer.from(
+        `${PDS_PROTOCOL}/${recordType}\n${canonicalizePdsJson(unsigned)}`,
+        "utf8"
+      ),
+      pdsEd25519PublicKey(options.signingPublicKey),
+      decodePdsBase64url(signature, 64)
+    )
+  )
+    throw new TypeError(`PDS ${recordType} signature is invalid`);
+  return record;
+};
+
+export const validatePdsTombstoneAck = (
+  value: unknown,
+  options: {
+    signingPublicKey: string | Buffer;
+    expectedSignerKeyId: string;
+    expectedGroupId: string;
+    expectedTombstoneHash: string;
+    expectedDeviceId: string;
+    expectedStatementHash: string;
+  }
+): { ackedAt: Date } => {
+  const record = validatePdsSingleSignatureRecord(
+    value,
+    [
+      "protocol",
+      "groupId",
+      "tombstoneHash",
+      "deviceId",
+      "statementHash",
+      "ackedAt",
+      "signature"
+    ],
+    "tombstone-ack",
+    options
+  );
+  if (
+    record.protocol !== PDS_PROTOCOL ||
+    record.groupId !== options.expectedGroupId ||
+    record.tombstoneHash !== options.expectedTombstoneHash ||
+    record.deviceId !== options.expectedDeviceId ||
+    record.statementHash !== options.expectedStatementHash
+  )
+    throw new TypeError(
+      "PDS tombstone acknowledgement does not bind tombstone"
+    );
+  const ackedAt = new Date(
+    pdsIsoMillis(record.ackedAt, "tombstone acknowledgement time")
+  );
+  if (ackedAt.getTime() > Date.now() + PDS_CERTIFICATE_CLOCK_SKEW_MS)
+    throw new TypeError("PDS tombstone acknowledgement is from future");
+  return { ackedAt };
+};
+
+export const validatePdsPackageAck = (
+  value: unknown,
+  options: {
+    signingPublicKey: string | Buffer;
+    expectedSignerKeyId: string;
+    expectedGroupId: string;
+    expectedDeviceId: string;
+  }
+): void => {
+  const record = validatePdsSingleSignatureRecord(
+    value,
+    [
+      "protocol",
+      "groupId",
+      "transportId",
+      "packageId",
+      "sourceManifestHash",
+      "recipientDeviceId",
+      "intendedRecipientSnapshotHash",
+      "relayAcceptedAt",
+      "ackedAt",
+      "result",
+      "signature"
+    ],
+    "package-ack",
+    options
+  );
+  if (
+    record.protocol !== PDS_PROTOCOL ||
+    record.groupId !== options.expectedGroupId ||
+    record.recipientDeviceId !== options.expectedDeviceId ||
+    record.result !== "materialized"
+  )
+    throw new TypeError("PDS package acknowledgement does not bind recipient");
+  for (const field of [
+    "packageId",
+    "sourceManifestHash",
+    "intendedRecipientSnapshotHash"
+  ])
+    decodePdsBase64url(record[field], 32);
+  requireId(record.transportId, "transportId");
+  pdsIsoMillis(record.relayAcceptedAt, "relayAcceptedAt");
+  pdsIsoMillis(record.ackedAt, "ackedAt");
 };
 
 export const certificateIsPdsValid = (

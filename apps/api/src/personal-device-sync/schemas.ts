@@ -64,3 +64,6 @@ export const pdsCloseSessionParamsSchema = z
   .object({ groupId: opaqueId, sessionId: z.uuid() })
   .strict();
 export const pdsPauseSchema = z.object({ paused: z.boolean() }).strict();
+export const pdsLifecycleRecordSchema = z
+  .object({ record: canonicalPdsJson, statement: canonicalPdsJson })
+  .strict();

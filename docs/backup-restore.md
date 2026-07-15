@@ -25,6 +25,11 @@ PDS local data-plane restore includes encrypted retained packages, immutable
 closures, outbox/inbox leases, provenance, and convergence quarantine state.
 Restore never recreates device private keys or group secrets from Postgres.
 Re-inject valid secure runtime references, revalidate current Authority state,
-and resume work from durable leases; do not lower deletion floors or force a
-quarantined replica ready. If secure runtime or authority is unavailable, leave
-PDS paused—local captured Memory and Recall remain usable.
+and resume work from durable leases; do not lower deletion floors, lifecycle
+high-water, or Authority-log high-water, and do not force a quarantined replica
+ready. Restore reconciles current Authority floors before package restore,
+materialization, or re-serve; stale relay or backup packages remain rejected.
+Governance recovery restores control and retained validated packages only. It
+cannot undo a tombstone or recreate missing source bytes. If secure runtime or
+authority is unavailable, leave PDS paused—local captured Memory and Recall
+remain usable.

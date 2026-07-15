@@ -210,6 +210,14 @@ export class PdsRelayClient {
     return this.request("POST", `${relayPath}/acks`, ack);
   }
 
+  lifecycle(): Promise<unknown> {
+    return this.request("GET", `${relayPath}/lifecycle`);
+  }
+
+  acknowledgeTombstone(ack: unknown): Promise<unknown> {
+    return this.request("POST", `${relayPath}/tombstone-acks`, ack);
+  }
+
   cursors(): Promise<unknown> {
     return this.request("GET", `${relayPath}/cursors`);
   }

@@ -224,6 +224,10 @@ export interface VerifyPdsSessionPackageInput {
   recipientKemPrivateKey: string | Buffer;
   now?: Date;
   deletionFloor?: { logicalMemoryId: string; deletionFloorToken: string };
+  deletionFloors?: Array<{
+    logicalMemoryId: string;
+    deletionFloorToken: string;
+  }>;
 }
 
 type RuntimeMember = Readonly<{
@@ -1840,8 +1844,10 @@ const validateVerificationInput = (
   input: VerifyPdsSessionPackageInput
 ): PdsSessionPackageRuntimeContext => {
   const runtime = assertRuntimeContext(input.runtime);
-  if (input.deletionFloor) {
-    const floor = own(input.deletionFloor, "verification deletion floor");
+  const floors =
+    input.deletionFloors ?? (input.deletionFloor ? [input.deletionFloor] : []);
+  for (const value of floors) {
+    const floor = own(value, "verification deletion floor");
     exact(floor, ["logicalMemoryId", "deletionFloorToken"], "deletion floor");
     requireHash(floor.logicalMemoryId, "deletion floor logical memory ID");
     requireHash(floor.deletionFloorToken, "deletion floor token");
@@ -2052,9 +2058,13 @@ export const verifyAndDecryptPdsSessionPackage = (
   )
     throw new TypeError("PDS source manifest transport binding is invalid");
   if (
-    input.deletionFloor &&
-    manifest.logicalMemoryId === input.deletionFloor.logicalMemoryId &&
-    manifest.deletionFloorToken === input.deletionFloor.deletionFloorToken
+    (
+      input.deletionFloors ?? (input.deletionFloor ? [input.deletionFloor] : [])
+    ).some(
+      (floor) =>
+        manifest.logicalMemoryId === floor.logicalMemoryId &&
+        manifest.deletionFloorToken === floor.deletionFloorToken
+    )
   )
     throw new TypeError("PDS deletion floor rejects source package");
   return manifest;

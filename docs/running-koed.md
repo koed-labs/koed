@@ -180,8 +180,7 @@ denied. Stale valid transitions return current signed head without rebasing or
 freezing; governance freezes only on verified Authority equivocation or durable
 integrity evidence. Membership epoch remains pending until every active device
 acknowledges its bound encrypted bundle. Remote Account Link accepts opaque
-proof token only and fails closed without server verifier. Tombstone and conflict
-resolution remain unavailable pending exact lifecycle persistence.
+proof token only and fails closed without server verifier. Tombstone and conflict-resolution routes accept only canonical, active-device or recovery-root authorized records and Authority-countersign final records. Browser sessions initiate requests but cannot authorize them; API Tokens and device credentials cannot initiate them. Device relay routes fetch opaque deletion floors before package service and submit signed tombstone ACKs only after durable local apply. Device revocation stops future key/package delivery, never erases plaintext already downloaded. PDS pause/revoke, local replica removal, Personal deletion, Team Share Grant revocation, Team retention, and hard purge remain separate operations.
 
 Control plane and relay are separate from directed hosted Cross-Identity Sync
 and its RSA envelopes. PDS remains `koed/pds/v1` only. Relay endpoints accept

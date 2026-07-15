@@ -4153,6 +4153,8 @@ export const pdsRetainedPackages = pgTable(
     originDeploymentId: text("origin_deployment_id").notNull(),
     originDeviceId: text("origin_device_id").notNull(),
     sourceSequence: text("source_sequence").notNull(),
+    logicalMemoryId: text("logical_memory_id"),
+    deletionFloorToken: text("deletion_floor_token"),
     encryptedEnvelope: jsonb("encrypted_envelope")
       .$type<Record<string, unknown>>()
       .notNull(),
@@ -4162,6 +4164,10 @@ export const pdsRetainedPackages = pgTable(
   },
   (table) => [
     unique("pds_retained_package_unique").on(table.groupId, table.packageId),
+    index("pds_retained_packages_floor_idx").on(
+      table.groupId,
+      table.deletionFloorToken
+    ),
     unique("pds_retained_origin_sequence_unique").on(
       table.groupId,
       table.originDeploymentId,
@@ -4401,6 +4407,188 @@ export const pdsConflicts = pgTable(
     check(
       "pds_conflict_state_check",
       sql`${table.state} in ('quarantined','resolved')`
+    )
+  ]
+);
+
+export const pdsTombstoneLedger = pgTable(
+  "pds_tombstone_ledger",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    logicalMemoryId: text("logical_memory_id").notNull(),
+    deletionFloorToken: text("deletion_floor_token").notNull(),
+    tombstoneHash: text("tombstone_hash").notNull(),
+    tombstoneSequence: text("tombstone_sequence").notNull(),
+    statementHash: text("statement_hash").notNull(),
+    encryptedRecord: jsonb("encrypted_record")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    activeDeviceSnapshot: text("active_device_snapshot").array().notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    quorumCompletedAt: timestamp("quorum_completed_at", { withTimezone: true }),
+    retainUntil: timestamp("retain_until", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_tombstone_ledger_group_floor_unique").on(
+      table.groupId,
+      table.deletionFloorToken
+    ),
+    unique("pds_tombstone_ledger_hash_unique").on(
+      table.groupId,
+      table.tombstoneHash
+    ),
+    index("pds_tombstone_ledger_retention_idx").on(table.retainUntil),
+    check(
+      "pds_tombstone_ledger_sequence_check",
+      sql`${table.tombstoneSequence} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsDeletionFloors = pgTable(
+  "pds_deletion_floors",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "restrict" }),
+    logicalMemoryId: text("logical_memory_id").notNull(),
+    deletionFloorToken: text("deletion_floor_token").notNull(),
+    tombstoneHash: text("tombstone_hash").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_deletion_floor_group_token_unique").on(
+      table.groupId,
+      table.deletionFloorToken
+    ),
+    unique("pds_deletion_floor_group_logical_unique").on(
+      table.groupId,
+      table.logicalMemoryId
+    )
+  ]
+);
+
+export const pdsTombstoneAcks = pgTable(
+  "pds_tombstone_acks",
+  {
+    id: id(),
+    tombstoneId: uuid("tombstone_id")
+      .notNull()
+      .references(() => pdsTombstoneLedger.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    canonicalAck: text("canonical_ack").notNull(),
+    ackHash: text("ack_hash").notNull(),
+    ackedAt: timestamp("acked_at", { withTimezone: true }).notNull(),
+    waivedAt: timestamp("waived_at", { withTimezone: true }),
+    waiverStatementHash: text("waiver_statement_hash"),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_tombstone_ack_snapshot_unique").on(
+      table.tombstoneId,
+      table.deviceId
+    ),
+    unique("pds_tombstone_ack_hash_unique").on(
+      table.tombstoneId,
+      table.ackHash
+    ),
+    check(
+      "pds_tombstone_ack_waiver_check",
+      sql`(${table.waivedAt} is null) = (${table.waiverStatementHash} is null)`
+    )
+  ]
+);
+
+export const pdsReplicaLifecycleState = pgTable(
+  "pds_replica_lifecycle_state",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    authorityHead: text("authority_head").notNull(),
+    authoritySequence: text("authority_sequence").notNull(),
+    lifecycleHighWater: text("lifecycle_high_water").notNull().default("0"),
+    restoreHighWater: text("restore_high_water").notNull().default("0"),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    unique("pds_replica_lifecycle_group_device_unique").on(
+      table.groupId,
+      table.deviceId
+    ),
+    check(
+      "pds_replica_lifecycle_water_check",
+      sql`${table.authoritySequence} ~ '^(0|[1-9][0-9]*)$' and ${table.lifecycleHighWater} ~ '^(0|[1-9][0-9]*)$' and ${table.restoreHighWater} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsRestoreReconciliations = pgTable(
+  "pds_restore_reconciliations",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    deviceId: text("device_id").notNull(),
+    authorityHead: text("authority_head").notNull(),
+    authoritySequence: text("authority_sequence").notNull(),
+    lifecycleHighWater: text("lifecycle_high_water").notNull(),
+    outcome: text("outcome").notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    index("pds_restore_reconciliation_group_created_idx").on(
+      table.groupId,
+      table.createdAt
+    ),
+    check(
+      "pds_restore_reconciliation_outcome_check",
+      sql`${table.outcome} in ('accepted','rollback_rejected','authority_unavailable')`
+    ),
+    check(
+      "pds_restore_reconciliation_sequence_check",
+      sql`${table.authoritySequence} ~ '^(0|[1-9][0-9]*)$' and ${table.lifecycleHighWater} ~ '^(0|[1-9][0-9]*)$'`
+    )
+  ]
+);
+
+export const pdsConflictResolutionRecords = pgTable(
+  "pds_conflict_resolution_records",
+  {
+    id: id(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => personalDeviceGroups.id, { onDelete: "cascade" }),
+    sourceFingerprint: text("source_fingerprint").notNull(),
+    resolutionHash: text("resolution_hash").notNull(),
+    statementHash: text("statement_hash").notNull(),
+    resolution: text("resolution").notNull(),
+    selectedClosureHash: text("selected_closure_hash"),
+    candidateClosureHashes: text("candidate_closure_hashes").array().notNull(),
+    canonicalRecord: text("canonical_record").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    unique("pds_conflict_resolution_fingerprint_unique").on(
+      table.groupId,
+      table.sourceFingerprint
+    ),
+    unique("pds_conflict_resolution_hash_unique").on(
+      table.groupId,
+      table.resolutionHash
+    ),
+    check(
+      "pds_conflict_resolution_kind_check",
+      sql`(${table.resolution} = 'select' and ${table.selectedClosureHash} is not null) or (${table.resolution} = 'distinct' and ${table.selectedClosureHash} is null)`
     )
   ]
 );

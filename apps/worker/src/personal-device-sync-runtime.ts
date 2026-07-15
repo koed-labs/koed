@@ -221,6 +221,29 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
         downloaded.delete(work.inboxId);
       },
       async materialize(work) {
+        // Fetch current Authority-authenticated lifecycle before any package bytes.
+        const lifecycle = record(await relay.lifecycle(), "lifecycle");
+        const deletionFloors = Array.isArray(lifecycle.deletion_floors)
+          ? lifecycle.deletion_floors.map((floor) => {
+              const item = record(floor, "deletion floor");
+              if (
+                typeof item.logicalMemoryId !== "string" ||
+                typeof item.deletionFloorToken !== "string"
+              )
+                throw new TypeError("PdsCryptoAuthorityError");
+              return {
+                logicalMemoryId: item.logicalMemoryId,
+                deletionFloorToken: item.deletionFloorToken
+              };
+            })
+          : (() => {
+              throw new TypeError("PdsCryptoAuthorityError");
+            })();
+        await input.repository.applyPdsDeletionFloors({
+          userId: secret.userId,
+          groupId: secret.groupId,
+          floors: deletionFloors
+        });
         const transportId = await input.repository.getPdsInboundTransport({
           groupId: work.groupId,
           packageId: work.packageId
@@ -262,7 +285,8 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
           canonicalizePdsJson(pkg),
           {
             runtime: runtimeForServing(pkg.header.servingDeviceId),
-            recipientKemPrivateKey: secret.deviceKemPrivateSeed
+            recipientKemPrivateKey: secret.deviceKemPrivateSeed,
+            deletionFloors
           }
         );
         if (
@@ -299,6 +323,8 @@ export const createPdsWorkerRuntimeFromEnvironment = (input: {
           originDeploymentId: manifest.originDeploymentId,
           originDeviceId: manifest.originDeviceId,
           sourceSequence: manifest.sourceSequence,
+          logicalMemoryId: manifest.logicalMemoryId,
+          deletionFloorToken: manifest.deletionFloorToken,
           encryptedEnvelope
         });
         const session = await materializeSession(

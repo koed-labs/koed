@@ -1,5 +1,5 @@
 {
-  "id": "3cd7198e-df53-4983-8f49-8ca862a7d33b",
+  "id": "c3cb36a4-06af-4c0f-9e21-958561752cac",
   "prevId": "971958da-47ff-4e5b-a08b-1b67b5fff9e2",
   "version": "7",
   "dialect": "postgresql",
@@ -8929,6 +8929,123 @@
       },
       "isRLSEnabled": false
     },
+    "public.pds_conflict_resolution_records": {
+      "name": "pds_conflict_resolution_records",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_fingerprint": {
+          "name": "source_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resolution_hash": {
+          "name": "resolution_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "statement_hash": {
+          "name": "statement_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resolution": {
+          "name": "resolution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selected_closure_hash": {
+          "name": "selected_closure_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "candidate_closure_hashes": {
+          "name": "candidate_closure_hashes",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_record": {
+          "name": "canonical_record",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_conflict_resolution_records_group_id_personal_device_groups_id_fk": {
+          "name": "pds_conflict_resolution_records_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_conflict_resolution_records",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_conflict_resolution_fingerprint_unique": {
+          "name": "pds_conflict_resolution_fingerprint_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "source_fingerprint"
+          ]
+        },
+        "pds_conflict_resolution_hash_unique": {
+          "name": "pds_conflict_resolution_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "resolution_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_conflict_resolution_kind_check": {
+          "name": "pds_conflict_resolution_kind_check",
+          "value": "(\"pds_conflict_resolution_records\".\"resolution\" = 'select' and \"pds_conflict_resolution_records\".\"selected_closure_hash\" is not null) or (\"pds_conflict_resolution_records\".\"resolution\" = 'distinct' and \"pds_conflict_resolution_records\".\"selected_closure_hash\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.pds_conflicts": {
       "name": "pds_conflicts",
       "schema": "",
@@ -9013,6 +9130,88 @@
           "value": "\"pds_conflicts\".\"state\" in ('quarantined','resolved')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.pds_deletion_floors": {
+      "name": "pds_deletion_floors",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deletion_floor_token": {
+          "name": "deletion_floor_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tombstone_hash": {
+          "name": "tombstone_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_deletion_floors_group_id_personal_device_groups_id_fk": {
+          "name": "pds_deletion_floors_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_deletion_floors",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_deletion_floor_group_token_unique": {
+          "name": "pds_deletion_floor_group_token_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "deletion_floor_token"
+          ]
+        },
+        "pds_deletion_floor_group_logical_unique": {
+          "name": "pds_deletion_floor_group_logical_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "logical_memory_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.pds_inbox_entries": {
@@ -9679,6 +9878,99 @@
       },
       "isRLSEnabled": false
     },
+    "public.pds_replica_lifecycle_state": {
+      "name": "pds_replica_lifecycle_state",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_head": {
+          "name": "authority_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_sequence": {
+          "name": "authority_sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lifecycle_high_water": {
+          "name": "lifecycle_high_water",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "restore_high_water": {
+          "name": "restore_high_water",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_replica_lifecycle_state_group_id_personal_device_groups_id_fk": {
+          "name": "pds_replica_lifecycle_state_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_replica_lifecycle_state",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_replica_lifecycle_group_device_unique": {
+          "name": "pds_replica_lifecycle_group_device_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "device_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_replica_lifecycle_water_check": {
+          "name": "pds_replica_lifecycle_water_check",
+          "value": "\"pds_replica_lifecycle_state\".\"authority_sequence\" ~ '^(0|[1-9][0-9]*)$' and \"pds_replica_lifecycle_state\".\"lifecycle_high_water\" ~ '^(0|[1-9][0-9]*)$' and \"pds_replica_lifecycle_state\".\"restore_high_water\" ~ '^(0|[1-9][0-9]*)$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.pds_replica_observations": {
       "name": "pds_replica_observations",
       "schema": "",
@@ -9798,6 +10090,114 @@
       },
       "isRLSEnabled": false
     },
+    "public.pds_restore_reconciliations": {
+      "name": "pds_restore_reconciliations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_head": {
+          "name": "authority_head",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_sequence": {
+          "name": "authority_sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lifecycle_high_water": {
+          "name": "lifecycle_high_water",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_restore_reconciliation_group_created_idx": {
+          "name": "pds_restore_reconciliation_group_created_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_restore_reconciliations_group_id_personal_device_groups_id_fk": {
+          "name": "pds_restore_reconciliations_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_restore_reconciliations",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "pds_restore_reconciliation_outcome_check": {
+          "name": "pds_restore_reconciliation_outcome_check",
+          "value": "\"pds_restore_reconciliations\".\"outcome\" in ('accepted','rollback_rejected','authority_unavailable')"
+        },
+        "pds_restore_reconciliation_sequence_check": {
+          "name": "pds_restore_reconciliation_sequence_check",
+          "value": "\"pds_restore_reconciliations\".\"authority_sequence\" ~ '^(0|[1-9][0-9]*)$' and \"pds_restore_reconciliations\".\"lifecycle_high_water\" ~ '^(0|[1-9][0-9]*)$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.pds_retained_packages": {
       "name": "pds_retained_packages",
       "schema": "",
@@ -9851,6 +10251,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deletion_floor_token": {
+          "name": "deletion_floor_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "encrypted_envelope": {
           "name": "encrypted_envelope",
           "type": "jsonb",
@@ -9879,7 +10291,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "pds_retained_packages_floor_idx": {
+          "name": "pds_retained_packages_floor_idx",
+          "columns": [
+            {
+              "expression": "group_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "deletion_floor_token",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "pds_retained_packages_group_id_personal_device_groups_id_fk": {
           "name": "pds_retained_packages_group_id_personal_device_groups_id_fk",
@@ -10230,6 +10664,256 @@
         "pds_source_item_mapping_ordinal_check": {
           "name": "pds_source_item_mapping_ordinal_check",
           "value": "\"pds_source_item_mappings\".\"source_ordinal\" ~ '^(0|[1-9][0-9]*)$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_tombstone_acks": {
+      "name": "pds_tombstone_acks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tombstone_id": {
+          "name": "tombstone_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "canonical_ack": {
+          "name": "canonical_ack",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ack_hash": {
+          "name": "ack_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acked_at": {
+          "name": "acked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "waived_at": {
+          "name": "waived_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "waiver_statement_hash": {
+          "name": "waiver_statement_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "pds_tombstone_acks_tombstone_id_pds_tombstone_ledger_id_fk": {
+          "name": "pds_tombstone_acks_tombstone_id_pds_tombstone_ledger_id_fk",
+          "tableFrom": "pds_tombstone_acks",
+          "tableTo": "pds_tombstone_ledger",
+          "columnsFrom": [
+            "tombstone_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_tombstone_ack_snapshot_unique": {
+          "name": "pds_tombstone_ack_snapshot_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tombstone_id",
+            "device_id"
+          ]
+        },
+        "pds_tombstone_ack_hash_unique": {
+          "name": "pds_tombstone_ack_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tombstone_id",
+            "ack_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_tombstone_ack_waiver_check": {
+          "name": "pds_tombstone_ack_waiver_check",
+          "value": "(\"pds_tombstone_acks\".\"waived_at\" is null) = (\"pds_tombstone_acks\".\"waiver_statement_hash\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pds_tombstone_ledger": {
+      "name": "pds_tombstone_ledger",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "group_id": {
+          "name": "group_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logical_memory_id": {
+          "name": "logical_memory_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deletion_floor_token": {
+          "name": "deletion_floor_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tombstone_hash": {
+          "name": "tombstone_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tombstone_sequence": {
+          "name": "tombstone_sequence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "statement_hash": {
+          "name": "statement_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "encrypted_record": {
+          "name": "encrypted_record",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "active_device_snapshot": {
+          "name": "active_device_snapshot",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quorum_completed_at": {
+          "name": "quorum_completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retain_until": {
+          "name": "retain_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "pds_tombstone_ledger_retention_idx": {
+          "name": "pds_tombstone_ledger_retention_idx",
+          "columns": [
+            {
+              "expression": "retain_until",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pds_tombstone_ledger_group_id_personal_device_groups_id_fk": {
+          "name": "pds_tombstone_ledger_group_id_personal_device_groups_id_fk",
+          "tableFrom": "pds_tombstone_ledger",
+          "tableTo": "personal_device_groups",
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "pds_tombstone_ledger_group_floor_unique": {
+          "name": "pds_tombstone_ledger_group_floor_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "deletion_floor_token"
+          ]
+        },
+        "pds_tombstone_ledger_hash_unique": {
+          "name": "pds_tombstone_ledger_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "group_id",
+            "tombstone_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pds_tombstone_ledger_sequence_check": {
+          "name": "pds_tombstone_ledger_sequence_check",
+          "value": "\"pds_tombstone_ledger\".\"tombstone_sequence\" ~ '^(0|[1-9][0-9]*)$'"
         }
       },
       "isRLSEnabled": false

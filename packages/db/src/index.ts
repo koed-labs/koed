@@ -71,6 +71,10 @@ export {
   type PersonalDeviceSyncRelayRepository
 } from "./personal-device-sync-relay-repository.js";
 export {
+  createPersonalDeviceSyncLifecycleRepository,
+  type PersonalDeviceSyncLifecycleRepository
+} from "./personal-device-sync-lifecycle-repository.js";
+export {
   createPersonalDeviceSyncLocalRepository,
   type PersonalDeviceSyncLocalRepository,
   type PdsClaimedInboxEntry,

@@ -11,7 +11,10 @@ import {
   signPdsGroupFinal,
   signPdsRecord,
   signPdsTwoStageFinal,
+  validatePdsConflictResolution,
   validatePdsGroupStatement,
+  validatePdsTombstone,
+  pdsFinalizedTwoStageRecordHash,
   validatePdsKeyBundle,
   validatePdsKeyBundleAck,
   verifyPdsEnrollmentProof,
@@ -26,6 +29,7 @@ import {
   pdsEpochAckSchema,
   pdsGroupParamsSchema,
   pdsKeyBundleParamsSchema,
+  pdsLifecycleRecordSchema,
   pdsCloseSessionParamsSchema,
   pdsPauseSchema,
   pdsPolicySchema,
@@ -755,6 +759,243 @@ export const registerPersonalDeviceSyncRoutes = (
   );
 
   app.post(
+    "/v1/personal-device-sync/groups/:groupId/tombstones",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const signer = pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      const input = pdsLifecycleRecordSchema.parse(request.body);
+      const group = await repo().getPersonalDeviceGroup(user.id, groupId);
+      if (!group || group.state !== "active" || group.pendingEpoch !== null)
+        throw pdsError("PDS lifecycle is unavailable", 409);
+      const record = parseCanonicalPdsJson(input.record) as Record<
+        string,
+        unknown
+      >;
+      const authorization = record.authorization as Record<string, unknown>;
+      const authorKey = authorizationPublicKey(
+        group,
+        record as PdsGroupStatement
+      );
+      const draftRecord = record.draft as Record<string, unknown>;
+      if (draftRecord.statementHash !== group.headHash)
+        throw pdsError(
+          "PDS tombstone does not bind current authority head",
+          409
+        );
+      const validated = validatePdsTombstone(record, {
+        authorizationPublicKey: authorKey,
+        expectedAuthorizationKeyId: string(
+          authorization.signerKeyId,
+          "signerKeyId"
+        ),
+        expectedGroupId: group.groupId
+      });
+      const activeSnapshot =
+        (draftRecord.activeDeviceSnapshot as string[]) ?? [];
+      const expectedSnapshot = group.members
+        .filter((member) => member.status === "active")
+        .map((member) => member.deviceId)
+        .sort();
+      if (JSON.stringify(activeSnapshot) !== JSON.stringify(expectedSnapshot))
+        throw pdsError("PDS tombstone active snapshot is stale", 409);
+      const finalRecord = {
+        draft: validated.draft,
+        authorization: validated.authorization,
+        authority: {
+          keyId: signer.keyId,
+          signature: signPdsTwoStageFinal(
+            "tombstone",
+            validated,
+            signer.privateKey
+          )
+        }
+      };
+      validatePdsTombstone(finalRecord, {
+        authorizationPublicKey: authorKey,
+        authorityPublicKey: signer.publicKey,
+        expectedAuthorizationKeyId: string(
+          authorization.signerKeyId,
+          "signerKeyId"
+        ),
+        expectedAuthorityKeyId: signer.keyId,
+        expectedGroupId: group.groupId
+      });
+      const statement = parsedStatement(input.statement);
+      if (
+        statement.draft.kind !== "tombstone" ||
+        statement.draft.previousHash !== group.headHash ||
+        statement.draft.sequence !==
+          (BigInt(group.headSequence) + 1n).toString()
+      )
+        throw pdsError("PDS tombstone statement head is invalid", 409);
+      const statementBody = body(statement);
+      const tombstoneHash = pdsFinalizedTwoStageRecordHash(finalRecord);
+      if (
+        statementBody.tombstoneHash !== tombstoneHash ||
+        statementBody.deletionFloorToken !== draftRecord.deletionFloorToken
+      )
+        throw pdsError("PDS tombstone statement does not bind record");
+      validatePdsGroupStatement(statement, {
+        authorizationPublicKey: authorKey,
+        expectedAuthorizationKeyId: string(
+          authorization.signerKeyId,
+          "signerKeyId"
+        ),
+        expectedGroupId: group.groupId,
+        expectedPreviousHash: group.headHash,
+        expectedSequence: (BigInt(group.headSequence) + 1n).toString()
+      });
+      const finalizedStatement = counterSignStatement(statement, signer);
+      const envelope = context.encryption.envelopeEncryptionProvider;
+      if (!envelope)
+        throw pdsError("PDS tombstone storage is unavailable", 503);
+      const encryptedRecord = await envelope.encrypt({
+        plaintext: canonicalizePdsJson(finalRecord),
+        scope: { tenantId: user.id, objectClass: "pds_tombstone" },
+        provenance: {
+          rowFamily: "pds_tombstone_ledger",
+          sourceTable: "pds_tombstone_ledger",
+          sourceId: tombstoneHash
+        },
+        ciphertextLocation: "pds_tombstone_ledger",
+        aad: { groupId, tombstoneHash }
+      });
+      const outcome = await repo().commitPdsTombstone({
+        userId: user.id,
+        groupId,
+        expectedHeadHash: group.headHash,
+        sequence: statement.draft.sequence as string,
+        statementHash: pdsFinalizedStatementHash(finalizedStatement),
+        canonicalStatement: canonicalizePdsJson(finalizedStatement),
+        tombstoneHash,
+        tombstoneSequence: draftRecord.tombstoneSequence as string,
+        logicalMemoryId: draftRecord.logicalMemoryId as string,
+        deletionFloorToken: draftRecord.deletionFloorToken as string,
+        activeDeviceSnapshot: expectedSnapshot,
+        issuedAt: new Date(draftRecord.issuedAt as string),
+        encryptedRecord,
+        authorizationKeyId: authorization.signerKeyId as string
+      });
+      if (outcome === "missing")
+        throw pdsError("Personal Device Group not found", 404);
+      if (outcome === "conflict")
+        throw pdsError("PDS tombstone conflicts with current lifecycle", 409);
+      return {
+        tombstone: finalRecord,
+        statement: finalizedStatement,
+        idempotent: outcome === "idempotent"
+      };
+    }
+  );
+
+  app.post(
+    "/v1/personal-device-sync/groups/:groupId/conflict-resolutions",
+    { preHandler: context.rateLimit.memoryWrite },
+    async (request) => {
+      const signer = pdsAuthority(context);
+      const user = await sessionUser(request);
+      const { groupId } = pdsGroupParamsSchema.parse(request.params);
+      const input = pdsLifecycleRecordSchema.parse(request.body);
+      const group = await repo().getPersonalDeviceGroup(user.id, groupId);
+      if (!group || group.state !== "active" || group.pendingEpoch !== null)
+        throw pdsError("PDS lifecycle is unavailable", 409);
+      const record = parseCanonicalPdsJson(input.record) as Record<
+        string,
+        unknown
+      >;
+      const authorization = record.authorization as Record<string, unknown>;
+      const authorKey = authorizationPublicKey(
+        group,
+        record as PdsGroupStatement
+      );
+      const draftRecord = record.draft as Record<string, unknown>;
+      if (draftRecord.statementHash !== group.headHash)
+        throw pdsError(
+          "PDS resolution does not bind current authority head",
+          409
+        );
+      const validated = validatePdsConflictResolution(record, {
+        authorizationPublicKey: authorKey,
+        expectedAuthorizationKeyId: string(
+          authorization.signerKeyId,
+          "signerKeyId"
+        ),
+        expectedGroupId: group.groupId
+      });
+      const finalRecord = {
+        draft: validated.draft,
+        authorization: validated.authorization,
+        authority: {
+          keyId: signer.keyId,
+          signature: signPdsTwoStageFinal(
+            "conflict-resolution",
+            validated,
+            signer.privateKey
+          )
+        }
+      };
+      validatePdsConflictResolution(finalRecord, {
+        authorizationPublicKey: authorKey,
+        authorityPublicKey: signer.publicKey,
+        expectedAuthorizationKeyId: string(
+          authorization.signerKeyId,
+          "signerKeyId"
+        ),
+        expectedAuthorityKeyId: signer.keyId,
+        expectedGroupId: group.groupId
+      });
+      const statement = parsedStatement(input.statement);
+      const statementBody = body(statement);
+      if (
+        statement.draft.kind !== "resolve-conflict" ||
+        statement.draft.previousHash !== group.headHash ||
+        statement.draft.sequence !==
+          (BigInt(group.headSequence) + 1n).toString() ||
+        statementBody.sourceFingerprint !== draftRecord.sourceFingerprint ||
+        statementBody.selectedClosureHash !== draftRecord.selectedClosureHash ||
+        statementBody.resolution !== draftRecord.resolution
+      )
+        throw pdsError("PDS resolution statement does not bind record", 409);
+      validatePdsGroupStatement(statement, {
+        authorizationPublicKey: authorKey,
+        expectedAuthorizationKeyId: string(
+          authorization.signerKeyId,
+          "signerKeyId"
+        ),
+        expectedGroupId: group.groupId,
+        expectedPreviousHash: group.headHash,
+        expectedSequence: (BigInt(group.headSequence) + 1n).toString()
+      });
+      const finalizedStatement = counterSignStatement(statement, signer);
+      const outcome = await repo().resolvePdsConflict({
+        userId: user.id,
+        groupId,
+        sourceFingerprint: draftRecord.sourceFingerprint as string,
+        resolutionHash: pdsFinalizedTwoStageRecordHash(finalRecord),
+        statementHash: pdsFinalizedStatementHash(finalizedStatement),
+        expectedHeadHash: group.headHash,
+        sequence: statement.draft.sequence as string,
+        canonicalStatement: canonicalizePdsJson(finalizedStatement),
+        authorizationKeyId: authorization.signerKeyId as string,
+        resolution: draftRecord.resolution as "select" | "distinct",
+        selectedClosureHash: draftRecord.selectedClosureHash as string | null,
+        candidateClosureHashes: draftRecord.candidateClosureHashes as string[],
+        canonicalRecord: canonicalizePdsJson(finalRecord),
+        issuedAt: new Date(draftRecord.issuedAt as string)
+      });
+      if (outcome === "missing")
+        throw pdsError("PDS conflict candidates are unavailable", 409);
+      return {
+        resolution: finalRecord,
+        statement: finalizedStatement,
+        idempotent: outcome === "idempotent"
+      };
+    }
+  );
+
+  app.post(
     "/v1/personal-device-sync/groups/:groupId/epoch-acks",
     { preHandler: context.rateLimit.memoryWrite },
     async (request) => {
@@ -957,6 +1198,8 @@ export const registerPersonalDeviceSyncRoutes = (
             sourceClosureHash: built.sourceClosureHash,
             packageId,
             sourceManifestHash,
+            logicalMemoryId: built.logicalMemoryId,
+            deletionFloorToken: built.deletionFloorToken,
             encryptedEnvelope: await envelope.encrypt({
               plaintext: JSON.stringify(built.package),
               scope: { tenantId: user.id, objectClass: "pds_source_package" },

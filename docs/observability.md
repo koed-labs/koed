@@ -110,7 +110,7 @@ route IDs and query keys. Local materialization status reports only bounded
 outbox/inbox/replica state counts and secure-worker heartbeat readiness. It does
 not expose per-origin high-water marks, source fingerprints, package IDs,
 closure hashes, paths, retained ciphertext, keys, or source content. Conflict
-quarantine is a redacted state, never an automatic winner selection. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+quarantine is a redacted state, never an automatic winner selection. Lifecycle metrics add only tombstone ledger count, pending snapshot ACK count, oldest tombstone ACK lag, deletion-floor count, restore rollback rejections, and conflict-resolution state counts. They never expose floor tokens, logical IDs, candidate hashes, package IDs, source fingerprints, or signed records. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
 Current durable audit action names:
 

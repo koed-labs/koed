@@ -130,13 +130,19 @@ export {
   pdsEd25519PrivateKey,
   pdsEd25519PublicKey,
   pdsFinalizedStatementHash,
+  pdsFinalizedTwoStageRecordHash,
   pdsPublicKeyCommitment,
   pdsSha256,
   signPdsGroupDraft,
   signPdsGroupFinal,
+  signPdsTwoStageDraft,
   signPdsRecord,
   signPdsTwoStageFinal,
   validatePdsGroupStatement,
+  validatePdsTombstone,
+  validatePdsTombstoneAck,
+  validatePdsPackageAck,
+  validatePdsConflictResolution,
   validatePdsKeyBundle,
   validatePdsEpochAck,
   validatePdsKeyBundleAck,
@@ -144,8 +150,10 @@ export {
   verifyPdsEnrollmentProof
 } from "./personal-device-sync.js";
 export type {
+  PdsConflictResolution,
   PdsGroupStatement,
-  PdsSignature
+  PdsSignature,
+  PdsTombstone
 } from "./personal-device-sync.js";
 export {
   canonicalizePdsJson,
