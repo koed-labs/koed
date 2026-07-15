@@ -283,7 +283,7 @@ describe("Personal Sync recovery kit", () => {
         env,
         { spawnSync: provider.spawnSync }
       )
-    ).rejects.toThrow("Use exactly one of --password-stdin or --password-fd");
+    ).rejects.toThrow("--recovery-kit is required.");
 
     const approvalFd = passwordFd(directory);
     try {
