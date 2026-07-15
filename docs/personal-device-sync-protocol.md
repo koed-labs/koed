@@ -62,11 +62,12 @@ UTF8("koed/pds/v1/" + recordType + "\n") || UTF8(JCS(recordWithoutSignerWrapper)
 Permitted `recordType` values are `group-statement`, `membership-certificate`,
 `source-manifest`, `transport-envelope`, `tombstone`, `tombstone-ack`, and
 `conflict-resolution`. A signature valid for one type is invalid for every
-other type. To make `recordWithoutSignerWrapper`, remove whole signer wrapper,
-including key ID and signature: `authorization`, `authority`,
-`authoritySignature`, `originSignature`, `servingSignature`, or `signature`, as
-applicable. For a countersignature, remove only its `authority` wrapper and
-retain verified authorization wrapper. Group/tombstone authorization uses the
+other type. To make `recordWithoutSignerWrapper`, remove whole signer wrapper, including
+key ID and signature: `authorization`, `authority`, `authoritySignature`,
+`originSignature`, `servingSignature`, or `signature`, as applicable. Group and
+tombstone authorization removes both `authorization` and absent-at-signing-time
+`authority`; Authority countersignature removes only its `authority` wrapper
+and retains verified authorization wrapper. Group/tombstone authorization uses
 `group-statement`/`tombstone` domain; Authority countersignature uses same
 record type. Authority wrappers use `keyId`; device/recovery wrappers use
 `signerKeyId`.
@@ -341,8 +342,9 @@ header. Header has exactly `protocol`, `groupId`, `packageId`,
 and `originTransportSignature` (`signerKeyId`, `signature`). Signature bytes
 omit whole `originTransportSignature` wrapper; `payloadNonce` is 12-byte
 base64url, `payloadTag` is 16-byte base64url, and `payloadCiphertextHash` is
-base64url SHA-256 of `payloadCiphertext || payloadTag`. Each chunk has exactly
-`protocol`, `groupId`,
+base64url SHA-256 of `payloadCiphertext || payloadTag`; `payloadCiphertext` is
+concatenation of chunk `ciphertext` in ascending `chunkIndex`. Each chunk has
+exactly `protocol`, `groupId`,
 `packageId`, `chunkIndex`, `chunkCount`, `ciphertext`, and `chunkHash`. It sees
 encrypted chunks plus redacted metadata: opaque group/source/
 target IDs, package id/hash, epoch, byte count, chunk count/index, expiry,
@@ -465,6 +467,8 @@ Sync.
 
 Fixed interoperability vectors live at
 `packages/shared/test-fixtures/personal-device-sync-v1.json`. They include
-non-production keys only. Implementations must consume committed expected bytes
-and outputs; tests must not generate expected signatures, X25519 secrets, HKDF,
-or AEAD output at run time.
+non-production keys only. They cover source and group statements, signature
+domains, key envelopes and rewrapping, replay, convergence quarantine,
+equivocation freeze, tombstone restore, expiry, and AEAD/AAD failure.
+Implementations must consume committed expected bytes and outputs; tests must not
+generate expected signatures, X25519 secrets, HKDF, or AEAD output at run time.

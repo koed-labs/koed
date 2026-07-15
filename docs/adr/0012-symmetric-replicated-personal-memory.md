@@ -248,7 +248,7 @@ V1 replicates one Captured Session at a time. Personal Device Sync uses its own
 versioned package protocol; it must not treat a directed hosted projected-event
 package as its source closure.
 
-A package contains closed source set needed to reconstruct that Session's
+A package contains the closed source set needed to reconstruct that Session's
 Personal Memory representation, including:
 
 - Captured Session metadata and stable source identity;

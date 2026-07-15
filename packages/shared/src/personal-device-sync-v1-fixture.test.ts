@@ -28,6 +28,12 @@ type Fixture = {
       signatureHex: string;
       rfc8032EmptyMessageSignatureHex: string;
     };
+    groupStatement: {
+      domain: string;
+      canonicalPayloadUtf8: string;
+      authorizationPublicKeyHex: string;
+      authorityPublicKeyHex: string;
+    };
   };
   hkdfRfc5869Case1: {
     ikmHex: string;
@@ -163,6 +169,14 @@ const okpJwk = (
 
 const parseSourceManifest = (): SourceManifest =>
   JSON.parse(fixture.jcsSigning.canonicalPayloadUtf8) as SourceManifest;
+
+const withoutFields = (
+  value: Record<string, unknown>,
+  fields: readonly string[]
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(value).filter(([field]) => !fields.includes(field))
+  );
 
 const sha256 = (value: string | Buffer): Buffer =>
   createHash("sha256").update(value).digest();
@@ -307,6 +321,65 @@ describe("Personal Device Sync V1 fixed fixture", () => {
         ),
         publicKey,
         hex(signing.ed25519.signatureHex)
+      )
+    ).toBe(false);
+  });
+
+  it("verifies committed group-statement authorization and countersignature", () => {
+    const statement = fixture.jcsSigning.groupStatement;
+    const parsed = JSON.parse(statement.canonicalPayloadUtf8) as {
+      authorization: { signature: string };
+      authority: { signature: string };
+      [key: string]: unknown;
+    };
+    const authorization = parsed.authorization;
+    const authority = parsed.authority;
+    const authorizationInput = withoutFields(parsed, [
+      "authorization",
+      "authority"
+    ]);
+    const authorityInput = withoutFields(parsed, ["authority"]);
+    const authorizationPublicKey = createPublicKey({
+      key: okpJwk("Ed25519", statement.authorizationPublicKeyHex),
+      format: "jwk"
+    });
+    const authorityPublicKey = createPublicKey({
+      key: okpJwk("Ed25519", statement.authorityPublicKeyHex),
+      format: "jwk"
+    });
+
+    expect(canonicalJsonStringify(parsed)).toBe(statement.canonicalPayloadUtf8);
+    expect(
+      verify(
+        null,
+        Buffer.from(
+          `${statement.domain}${canonicalJsonStringify(authorizationInput)}`,
+          "utf8"
+        ),
+        authorizationPublicKey,
+        Buffer.from(authorization.signature, "base64url")
+      )
+    ).toBe(true);
+    expect(
+      verify(
+        null,
+        Buffer.from(
+          `${statement.domain}${canonicalJsonStringify(authorityInput)}`,
+          "utf8"
+        ),
+        authorityPublicKey,
+        Buffer.from(authority.signature, "base64url")
+      )
+    ).toBe(true);
+    expect(
+      verify(
+        null,
+        Buffer.from(
+          `koed/pds/v1/tombstone\n${canonicalJsonStringify(authorityInput)}`,
+          "utf8"
+        ),
+        authorityPublicKey,
+        Buffer.from(authority.signature, "base64url")
       )
     ).toBe(false);
   });

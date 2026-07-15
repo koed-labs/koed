@@ -21,6 +21,12 @@
       "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
       "signatureHex": "0c32a68959935f7bd06a482187f255531292f93a9c680fc4d2a7d0b2924d80e024e1da17f2fd5085e6a525938d7f1a5ad174742360c81c1ae29335ae73d8810d",
       "rfc8032EmptyMessageSignatureHex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    "groupStatement": {
+      "domain": "koed/pds/v1/group-statement\n",
+      "canonicalPayloadUtf8": "{\"authority\":{\"keyId\":\"authority-fixture\",\"signature\":\"70KHAE1sWLf4fx7GzEI2TmNV17gkkQ_zXlYyF4p_MXYUV7CygKZcQOfHvbJ9ppKtnWw7763S2_Wmn8c55yqWBQ\"},\"authorization\":{\"signature\":\"CfNGhiWLc1MQb8d3tLOG3X5vxX3jcFltjPcBBa4l7qE42DocbUWo-OZJksXv3GW93Q-vWNVpXlyDEWqk27l-CQ\",\"signerKeyId\":\"device-fixture-signing\"},\"body\":{\"authorityKeyId\":\"authority-fixture\",\"authorityPublicKey\":\"PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw\",\"initialEpoch\":\"1\",\"initialKeyCommitment\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"recoveryKemKeyId\":\"recovery-kem-fixture\",\"recoveryKemPublicKey\":\"3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08\",\"recoveryKitHash\":\"__________________________________________8\",\"recoverySigningKeyId\":\"recovery-signing-fixture\",\"recoverySigningPublicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"},\"groupId\":\"group-fixture-01\",\"issuedAt\":\"2026-07-15T00:00:00.000Z\",\"kind\":\"genesis\",\"previousHead\":null,\"protocol\":\"koed/pds/v1\",\"sequence\":\"1\"}",
+      "authorizationPublicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "authorityPublicKeyHex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
     }
   },
   "hkdfRfc5869Case1": {
