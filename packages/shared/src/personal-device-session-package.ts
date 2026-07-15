@@ -254,6 +254,7 @@ export type PdsSessionPackageRuntimeContext = Readonly<{
   readonly recipients: readonly RuntimeMember[];
   readonly originCertificates: readonly unknown[];
   readonly authorityPublicKey: string | Buffer;
+  readonly now: Date;
 }>;
 
 export interface CreatePdsSessionPackageRuntimeContextInput {
@@ -433,7 +434,8 @@ export const createPdsSessionPackageRuntimeContext = (
         )
       )
     ]),
-    authorityPublicKey: input.authorityPublicKey
+    authorityPublicKey: input.authorityPublicKey,
+    now: new Date(now.getTime())
   });
 };
 
@@ -885,6 +887,7 @@ const unsignedSourceManifest = (
   input: CreatePdsSessionManifestInput,
   closure: ReturnType<typeof preparedSourceClosure>
 ): Omit<PdsSessionManifest, "originSignature"> => {
+  const runtime = assertRuntimeContext(input.runtime);
   const fingerprint = pdsSourceFingerprint(
     input.sourceFingerprintKey,
     input.sourceNativeSessionId
@@ -893,9 +896,9 @@ const unsignedSourceManifest = (
     protocol: PDS_PROTOCOL,
     packageId: "",
     originDeploymentId: input.originDeploymentId,
-    originDeviceId: assertRuntimeContext(input.runtime).serving.deviceId,
+    originDeviceId: runtime.serving.deviceId,
     originAuthorityHead: input.runtime.authorityHead,
-    originSignedAt: new Date().toISOString(),
+    originSignedAt: runtime.now.toISOString(),
     sourceSequence: input.sourceSequence,
     sourceType: "captured_session" as const,
     sourceNativeSessionId: input.sourceNativeSessionId,

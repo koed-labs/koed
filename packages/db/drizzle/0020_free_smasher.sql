@@ -623,4 +623,70 @@ CREATE INDEX "personal_device_group_members_active_idx" ON "personal_device_grou
 CREATE INDEX "personal_device_membership_certificate_active_idx" ON "personal_device_membership_certificates" USING btree ("group_id","expires_at") WHERE "personal_device_membership_certificates"."revoked_at" is null;--> statement-breakpoint
 CREATE INDEX "pds_relay_recipient_mailbox_idx" ON "pds_relay_recipients" USING btree ("recipient_device_id","acked_at");--> statement-breakpoint
 CREATE INDEX "pds_relay_nonce_expiry_idx" ON "pds_relay_request_nonces" USING btree ("expires_at");--> statement-breakpoint
-CREATE INDEX "pds_relay_transport_mailbox_idx" ON "pds_relay_transports" USING btree ("group_id","state","expires_at");
+CREATE INDEX "pds_relay_transport_mailbox_idx" ON "pds_relay_transports" USING btree ("group_id","state","expires_at");--> statement-breakpoint
+CREATE OR REPLACE FUNCTION pds_session_recall_ready(session_uuid uuid) RETURNS boolean AS $$
+  SELECT session_uuid IS NULL OR NOT EXISTS (
+    SELECT 1 FROM pds_source_item_mappings m
+    JOIN pds_logical_replicas r ON r.id=m.replica_id
+    WHERE m.conversation_item_id IN (
+      SELECT ci.id FROM conversation_items ci WHERE ci.session_id=session_uuid
+    ) AND r.materialization_state <> 'ready'
+  );
+$$ LANGUAGE sql STABLE;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION pds_set_policy_enabled_at() RETURNS trigger AS $$
+BEGIN
+  IF NEW.enabled AND NOT OLD.enabled THEN NEW.enabled_at = now(); END IF;
+  IF NOT NEW.enabled THEN NEW.enabled_at = NULL; END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER pds_personal_sync_policy_enabled_at
+  BEFORE UPDATE OF enabled ON personal_sync_policies
+  FOR EACH ROW EXECUTE FUNCTION pds_set_policy_enabled_at();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION pds_reject_closed_source_mutation() RETURNS trigger AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'pds_session_closures' THEN
+    IF NEW.group_id IS DISTINCT FROM OLD.group_id
+      OR NEW.owner_user_id IS DISTINCT FROM OLD.owner_user_id
+      OR NEW.source_session_id IS DISTINCT FROM OLD.source_session_id
+      OR NEW.source_sequence IS DISTINCT FROM OLD.source_sequence
+      OR NEW.terminal_cursor IS DISTINCT FROM OLD.terminal_cursor
+      OR NEW.terminal_item_count IS DISTINCT FROM OLD.terminal_item_count
+      OR NEW.source_closure_hash IS DISTINCT FROM OLD.source_closure_hash
+      OR NEW.package_id IS DISTINCT FROM OLD.package_id
+      OR NEW.source_manifest_hash IS DISTINCT FROM OLD.source_manifest_hash
+      OR NEW.closed_at IS DISTINCT FROM OLD.closed_at THEN
+      RAISE EXCEPTION 'PDS Session closure is immutable';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_TABLE_NAME = 'sessions' AND TG_OP IN ('UPDATE', 'DELETE') THEN
+    IF EXISTS (SELECT 1 FROM pds_logical_replicas r WHERE r.local_session_id = OLD.id) THEN
+      RAISE EXCEPTION 'PDS replica Sessions are read-only';
+    END IF;
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    -- Close path holds same lock while snapshotting. Insert either wins before
+    -- snapshot or waits and is rejected after immutable closure commits.
+    PERFORM pg_advisory_xact_lock(hashtext('pds-session:' || NEW.session_id::text));
+    IF EXISTS (SELECT 1 FROM pds_session_closures c WHERE c.source_session_id = NEW.session_id AND c.state = 'ready') THEN
+      RAISE EXCEPTION 'PDS closed source Session cannot accept later items';
+    END IF;
+  END IF;
+  IF TG_OP IN ('UPDATE', 'DELETE') THEN
+    IF EXISTS (SELECT 1 FROM pds_source_item_mappings m WHERE m.conversation_item_id = OLD.id) THEN
+      RAISE EXCEPTION 'PDS source items are read-only';
+    END IF;
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;--> statement-breakpoint
+CREATE TRIGGER pds_session_closure_immutable
+  BEFORE UPDATE ON pds_session_closures
+  FOR EACH ROW EXECUTE FUNCTION pds_reject_closed_source_mutation();--> statement-breakpoint
+CREATE TRIGGER pds_conversation_item_read_only
+  BEFORE INSERT OR UPDATE OR DELETE ON conversation_items
+  FOR EACH ROW EXECUTE FUNCTION pds_reject_closed_source_mutation();--> statement-breakpoint
+CREATE TRIGGER pds_replica_session_read_only
+  BEFORE UPDATE OR DELETE ON sessions
+  FOR EACH ROW EXECUTE FUNCTION pds_reject_closed_source_mutation();

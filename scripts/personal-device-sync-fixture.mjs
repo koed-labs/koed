@@ -23,53 +23,67 @@ const requiredScenarios = [
 ];
 
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
-if (fixture.mode !== "ci-safe-control-and-crypto") {
-  throw new Error("PDS fixture mode must state its CI-safe boundary.");
-}
-if (!Array.isArray(fixture.coverageBoundary?.dbRequired)) {
-  throw new Error("PDS fixture must label DB-required coverage honestly.");
-}
 const scenarios = new Map(
   (fixture.scenarioMatrix ?? []).map((scenario) => [scenario.id, scenario])
 );
 for (const scenario of requiredScenarios) {
-  const coverage = scenarios.get(scenario)?.coverage;
-  if (!coverage) throw new Error(`PDS fixture is missing ${scenario}.`);
-  if (!["shared-crypto", "control-status", "db-required"].includes(coverage)) {
-    throw new Error(
-      `PDS fixture has invalid coverage boundary for ${scenario}.`
-    );
+  if (scenarios.get(scenario)?.coverage !== "executed") {
+    throw new Error(`PDS fixture must execute ${scenario}.`);
   }
+}
+if (!Array.isArray(fixture.coverageBoundary?.optionalDb)) {
+  throw new Error("PDS fixture must state optional DB coverage.");
 }
 for (const [key, value] of Object.entries(fixture.truth ?? {})) {
   if (value !== true) throw new Error(`PDS fixture truth ${key} must be true.`);
 }
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-const run = (filter, testFiles) =>
+const run = (filter, testFiles, extra = []) =>
   execFileSync(
     pnpm,
-    ["--filter", filter, "exec", "vitest", "run", ...testFiles],
+    ["--filter", filter, "exec", "vitest", "run", ...testFiles, ...extra],
     {
       cwd: process.cwd(),
       stdio: "inherit"
     }
   );
 
-// Fixed shared vectors exercise actual protocol crypto; control tests exercise
-// encrypted recovery and lifecycle behavior. DB-required rows remain declared,
-// not falsely represented as in-process relay or Projection coverage.
+// New simulation uses shared production protocol verification/signing/package APIs.
 run("@koed/shared", [
+  "src/personal-device-sync-adversarial-fixture.test.ts",
   "src/personal-device-sync-v1-fixture.test.ts",
-  "src/personal-device-sync.test.ts"
+  "src/personal-device-session-package.test.ts",
+  "src/personal-device-sync-relay.test.ts"
 ]);
 run("@koed/koed-server", ["src/personal-sync.test.ts"]);
+
+let dbStage = {
+  state: "skipped",
+  missingPrerequisite: "DATABASE_URL"
+};
+if (process.env.DATABASE_URL?.trim()) {
+  execFileSync(pnpm, ["--filter", "@koed/db", "migrate:up"], {
+    cwd: process.cwd(),
+    stdio: "inherit"
+  });
+  run(
+    "@koed/db",
+    ["tests/repository.test.ts"],
+    [
+      "-t",
+      "keeps display-only Projection messages out of every recall source path"
+    ]
+  );
+  run("@koed/worker", ["src/raw-projection-service.test.ts"]);
+  dbStage = { state: "executed" };
+}
 
 console.log(
   JSON.stringify({
     ok: true,
     suite: fixture.suite,
-    scenarios: fixture.scenarioMatrix.length,
-    dbRequired: fixture.coverageBoundary.dbRequired
+    scenarios: requiredScenarios,
+    dbStage
   })
 );
