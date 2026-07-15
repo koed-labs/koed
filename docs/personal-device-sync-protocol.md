@@ -451,8 +451,14 @@ recipient epoch.
 ## 7. Relay, package, replay, and retention
 
 Relay accepts only current valid membership certificate and signed transport
-header. Header has exactly `protocol`, `version`, `transportId`, `groupId`,
-`packageId`, `sourceManifestHash`, `originDeviceId`, `contentEpoch`,
+header. Package implementations construct an opaque runtime context only after
+cryptographically verifying Authority-signed membership certificates against
+configured Authority public key and current log head/epoch. Callers cannot
+supply keys, heads, epochs, or recipient snapshots to package verification.
+Public package verification accepts bounded canonical UTF-8 wire bytes only;
+objects are not a wire input. Header has exactly `protocol`, `version`,
+`transportId`, `groupId`, `packageId`, `sourceManifestHash`, `originDeviceId`,
+`contentEpoch`,
 `recipientEpoch`, `plaintextByteCount`, `chunkCount`, `payloadNonce`,
 `payloadCiphertextHash`, `payloadTag`, `expiresAt`, `servingDeviceId`,
 `servingSigningKeyId`, `authorityHead`, `intendedRecipientSnapshot`,
@@ -494,6 +500,7 @@ Limits are hard limits before persistence:
 | encrypted chunk                        |   512 KiB |
 | chunks per package                     |       128 |
 | control statement/certificate          |     1 MiB |
+| recipients per package                 |        64 |
 | outstanding encrypted bytes per sender |     2 GiB |
 | retained encrypted bytes per group     |    10 GiB |
 | compression                            | forbidden |

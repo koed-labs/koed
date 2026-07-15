@@ -6,6 +6,7 @@ import { canonicalizePdsJson } from "./personal-device-sync-jcs.js";
 import {
   PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
   classifyPdsSessionPackageReplay,
+  createPdsSessionPackageRuntimeContext,
   createPdsSessionManifest,
   createPdsSessionPackage,
   pdsDeletionFloorToken,
@@ -23,7 +24,8 @@ import {
   validatePdsSessionPackage,
   verifyAndDecryptPdsSessionPackage,
   verifyPdsSessionManifest,
-  type PdsSessionPackage
+  type PdsSessionPackage,
+  type PdsSessionPackageRuntimeContext
 } from "./personal-device-session-package.js";
 
 const sessionPackageVector = (
@@ -41,6 +43,30 @@ const sessionPackageVector = (
     };
   }
 ).sessionPackageV1;
+
+const productionFixture = JSON.parse(
+  readFileSync(
+    new URL(
+      "../test-fixtures/personal-device-session-package-v1.json",
+      import.meta.url
+    ),
+    "utf8"
+  )
+) as {
+  runtime: Parameters<typeof createPdsSessionPackageRuntimeContext>[0] & {
+    now: string;
+  };
+  recipientKemPrivateKey: string;
+  originManifest: string;
+  package: string;
+  expected: {
+    packageId: string;
+    sourceManifestHash: string;
+    packageDigest: string;
+    sourceClosureHash: string;
+    payloadCiphertextHash: string;
+  };
+};
 
 type RawKeyPair = {
   privateKey: KeyObject;
@@ -69,9 +95,17 @@ const rawPair = (type: "ed25519" | "x25519"): RawKeyPair => {
   };
 };
 
+const relayId = (label: string): string =>
+  createHash("sha256")
+    .update(label)
+    .digest()
+    .subarray(0, 16)
+    .toString("base64url");
+
 const fixture = () => {
+  const authority = rawPair("ed25519");
   const origin = rawPair("ed25519");
-  const serving = rawPair("ed25519");
+  const serving = origin;
   const recipient = rawPair("x25519");
   const sourceKey = Buffer.from(
     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -83,9 +117,69 @@ const fixture = () => {
   );
   const projectKey = Buffer.alloc(32, 3);
   const epoch = "3";
+  const groupId = relayId("group-alpha");
+  const authorityHead = Buffer.alloc(32, 7).toString("base64url");
+  const certificate = (
+    deviceId: string,
+    signingKeyId: string,
+    signingPublicKey: string,
+    kemKeyId: string,
+    kemPublicKey: string
+  ): string => {
+    const unsigned = {
+      protocol: "koed/pds/v1",
+      groupId,
+      deviceId,
+      deviceSigningKeyId: signingKeyId,
+      deviceSigningPublicKey: signingPublicKey,
+      deviceKemKeyId: kemKeyId,
+      deviceKemPublicKey: kemPublicKey,
+      epoch,
+      operationFamilies: ["pds_relay"],
+      statementSequence: "1",
+      statementHash: authorityHead,
+      issuedAt: "2026-07-14T00:00:00.000Z",
+      expiresAt: "2026-07-20T00:00:00.000Z"
+    };
+    return canonicalizePdsJson({
+      ...unsigned,
+      authoritySignature: {
+        keyId: relayId("authority-key"),
+        signature: signPdsRecord(
+          "membership-certificate",
+          unsigned,
+          authority.privateKey
+        )
+      }
+    });
+  };
+  const servingCertificate = certificate(
+    relayId("device-origin"),
+    relayId("origin-signing-key"),
+    origin.publicKey,
+    relayId("origin-kem-key"),
+    rawPair("x25519").publicKey
+  );
+  const recipientCertificate = certificate(
+    relayId("device-recipient"),
+    relayId("recipient-signing-key"),
+    rawPair("ed25519").publicKey,
+    relayId("recipient-kem-key"),
+    recipient.publicKey
+  );
+  const runtime = createPdsSessionPackageRuntimeContext({
+    authorityPublicKey: authority.publicKey,
+    groupId,
+    authorityHead,
+    currentEpoch: epoch,
+    servingCertificate,
+    recipientCertificate,
+    recipientCertificates: [recipientCertificate],
+    now: new Date("2026-07-15T00:00:00.000Z")
+  });
   const manifest = createPdsSessionManifest({
-    originDeploymentId: "deployment-origin",
-    originDeviceId: "device-origin",
+    runtime,
+    originDeploymentId: relayId("deployment-origin"),
     sourceSequence: "7",
     sourceNativeSessionId: "codex-thread-42",
     contentEpoch: epoch,
@@ -123,7 +217,6 @@ const fixture = () => {
     ],
     sourceFingerprintKey: sourceKey,
     tombstoneFloorKey: tombstoneKey,
-    originSigningKeyId: "origin-signing-key",
     originSigningPrivateKey: origin.privateKey,
     projectAliasManifest: {
       version: "1",
@@ -132,36 +225,14 @@ const fixture = () => {
     }
   });
   const input = {
-    groupId: "group-alpha",
-    authorityHead: Buffer.alloc(32, 7).toString("base64url"),
+    runtime,
     expiresAt: "2030-07-15T00:00:00.000Z",
-    currentEpoch: epoch,
-    servingDeviceId: "device-serving",
-    servingSigningKeyId: "serving-signing-key",
     servingSigningPrivateKey: serving.privateKey,
-    recipients: [
-      {
-        deviceId: "device-recipient",
-        kemKeyId: "recipient-kem-key",
-        kemPublicKey: recipient.publicKey
-      }
-    ],
     manifest
   };
   const verify = {
-    groupId: input.groupId,
-    authorityHead: input.authorityHead,
-    currentEpoch: epoch,
-    recipientDeviceId: "device-recipient",
-    recipientKemKeyId: "recipient-kem-key",
+    runtime,
     recipientKemPrivateKey: recipient.privateSeed,
-    recipientKemPublicKey: recipient.publicKey,
-    recipientSnapshot: ["device-recipient"],
-    servingDeviceId: input.servingDeviceId,
-    servingSigningPublicKey: serving.publicKey,
-    servingSigningKeyId: input.servingSigningKeyId,
-    originSigningPublicKey: origin.publicKey,
-    originSigningKeyId: "origin-signing-key",
     now: new Date("2026-07-15T00:00:00.000Z")
   };
   return {
@@ -215,6 +286,79 @@ describe("PDS origin-signed session package", () => {
     ).toBe(sessionPackageVector.sourceClosureHash);
   });
 
+  it("verifies committed production wire fixture and rejects cryptographic drift", () => {
+    const runtime = createPdsSessionPackageRuntimeContext({
+      ...productionFixture.runtime,
+      now: new Date(productionFixture.runtime.now)
+    });
+    const manifest = parsePdsSessionManifestJson(
+      productionFixture.originManifest
+    );
+    const pkg = parsePdsSessionPackageJson(productionFixture.package);
+    expect(manifest.packageId).toBe(productionFixture.expected.packageId);
+    expect(manifest.sourceClosureHash).toBe(
+      productionFixture.expected.sourceClosureHash
+    );
+    expect(pkg.packageDigest).toBe(productionFixture.expected.packageDigest);
+    expect(pkg.header.sourceManifestHash).toBe(
+      productionFixture.expected.sourceManifestHash
+    );
+    expect(pkg.header.payloadCiphertextHash).toBe(
+      productionFixture.expected.payloadCiphertextHash
+    );
+    expect(
+      verifyAndDecryptPdsSessionPackage(productionFixture.package, {
+        runtime,
+        recipientKemPrivateKey: productionFixture.recipientKemPrivateKey,
+        now: new Date(productionFixture.runtime.now)
+      })
+    ).toEqual(manifest);
+    const tampered = JSON.parse(productionFixture.package) as PdsSessionPackage;
+    tampered.chunks[0]!.chunkHash = Buffer.alloc(32, 9).toString("base64url");
+    expect(() =>
+      parsePdsSessionPackageJson(canonicalizePdsJson(tampered))
+    ).toThrow();
+  });
+
+  it("rejects attacker-controlled authority state, IDs, raw bytes, and recipient excess", () => {
+    const forged = structuredClone(productionFixture.runtime);
+    forged.authorityHead = Buffer.alloc(32, 8).toString("base64url");
+    expect(() =>
+      createPdsSessionPackageRuntimeContext({
+        ...forged,
+        now: new Date(forged.now)
+      })
+    ).toThrow("certificate");
+    const pathId = structuredClone(productionFixture.runtime);
+    pathId.groupId = "../../authority-state";
+    expect(() =>
+      createPdsSessionPackageRuntimeContext({
+        ...pathId,
+        now: new Date(pathId.now)
+      })
+    ).toThrow("opaque 16-byte ID");
+    const excessive = structuredClone(productionFixture.runtime);
+    excessive.recipientCertificates = Array.from(
+      { length: 65 },
+      () => excessive.recipientCertificate
+    );
+    expect(() =>
+      createPdsSessionPackageRuntimeContext({
+        ...excessive,
+        now: new Date(excessive.now)
+      })
+    ).toThrow("recipient state");
+    expect(() => parsePdsSessionPackageJson(Buffer.from([0xc3, 0x28]))).toThrow(
+      "UTF-8"
+    );
+    expect(() =>
+      verifyAndDecryptPdsSessionPackage(` ${productionFixture.package}`, {
+        runtime: {} as PdsSessionPackageRuntimeContext,
+        recipientKemPrivateKey: productionFixture.recipientKemPrivateKey
+      })
+    ).toThrow("canonical");
+  });
+
   it("recomputes fixed protocol HMAC vectors", () => {
     const { sourceKey, tombstoneKey, projectKey } = fixture();
     const fingerprint = pdsSourceFingerprint(sourceKey, "codex-thread-42");
@@ -231,9 +375,11 @@ describe("PDS origin-signed session package", () => {
   });
 
   it("creates, verifies, decrypts, retries, and rewraps immutable origin content", () => {
-    const { input, verify, manifest, origin } = fixture();
+    const { input, verify, manifest } = fixture();
     const pkg = createPdsSessionPackage(input);
-    expect(verifyAndDecryptPdsSessionPackage(pkg, verify)).toEqual(manifest);
+    expect(
+      verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(pkg), verify)
+    ).toEqual(manifest);
     expect(retryPdsSessionPackage(pkg)).toEqual(pkg);
     expect(parsePdsSessionManifestJson(canonicalizePdsJson(manifest))).toEqual(
       manifest
@@ -249,20 +395,16 @@ describe("PDS origin-signed session package", () => {
         localEncryption: { provider: "local-kms", reference: "ciphertext-1" }
       }).originManifest
     ).toEqual(manifest);
-    const rewrapped = rewrapPdsSessionPackage({
-      ...input,
-      originSigningPublicKey: origin.publicKey,
-      originSigningKeyId: "origin-signing-key"
-    });
+    const rewrapped = rewrapPdsSessionPackage(input);
     expect(rewrapped.header.transportId).not.toBe(pkg.header.transportId);
     expect(rewrapped.header.payloadNonce).not.toBe(pkg.header.payloadNonce);
     expect(rewrapped.packageDigest).not.toBe(pkg.packageDigest);
     expect(rewrapped.header.sourceManifestHash).toBe(
       pkg.header.sourceManifestHash
     );
-    expect(verifyAndDecryptPdsSessionPackage(rewrapped, verify)).toEqual(
-      manifest
-    );
+    expect(
+      verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(rewrapped), verify)
+    ).toEqual(manifest);
   });
 
   it("fails closed before plaintext for altered bindings, signatures, roles, and floors", () => {
@@ -282,7 +424,9 @@ describe("PDS origin-signed session package", () => {
     );
     cases.push(signature);
     for (const value of cases)
-      expect(() => verifyAndDecryptPdsSessionPackage(value, verify)).toThrow();
+      expect(() =>
+        verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(value), verify)
+      ).toThrow();
     const aad = structuredClone(pkg);
     aad.header.authorityHead = Buffer.alloc(32, 4).toString("base64url");
     const unsignedHeader = { ...aad.header } as Record<string, unknown>;
@@ -294,40 +438,19 @@ describe("PDS origin-signed session package", () => {
     );
     const validAadMutation = withDigest(aad);
     expect(() =>
-      verifyAndDecryptPdsSessionPackage(validAadMutation, {
+      verifyAndDecryptPdsSessionPackage(
+        canonicalizePdsJson(validAadMutation),
+        verify
+      )
+    ).toThrow();
+    expect(() =>
+      verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(pkg), {
         ...verify,
-        authorityHead: aad.header.authorityHead
+        runtime: {} as typeof verify.runtime
       })
-    ).toThrow();
+    ).toThrow("runtime context");
     expect(() =>
-      verifyAndDecryptPdsSessionPackage(pkg, {
-        ...verify,
-        recipientDeviceId: "wrong-device"
-      })
-    ).toThrow();
-    expect(() =>
-      verifyAndDecryptPdsSessionPackage(pkg, { ...verify, currentEpoch: "4" })
-    ).toThrow();
-    expect(() =>
-      verifyAndDecryptPdsSessionPackage(pkg, {
-        ...verify,
-        groupId: "group-other"
-      })
-    ).toThrow();
-    expect(() =>
-      verifyAndDecryptPdsSessionPackage(pkg, {
-        ...verify,
-        servingDeviceId: "device-other"
-      })
-    ).toThrow();
-    expect(() =>
-      verifyAndDecryptPdsSessionPackage(pkg, {
-        ...verify,
-        servingDeviceId: "wrong-member"
-      })
-    ).toThrow();
-    expect(() =>
-      verifyAndDecryptPdsSessionPackage(pkg, {
+      verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(pkg), {
         ...verify,
         deletionFloor: {
           logicalMemoryId: manifest.logicalMemoryId,
@@ -346,7 +469,10 @@ describe("PDS origin-signed session package", () => {
       serving.privateKey
     );
     expect(() =>
-      verifyAndDecryptPdsSessionPackage(withDigest(zero), verify)
+      verifyAndDecryptPdsSessionPackage(
+        canonicalizePdsJson(withDigest(zero)),
+        verify
+      )
     ).toThrow();
     const alteredManifest = structuredClone(manifest);
     alteredManifest.originSignature.signature = Buffer.alloc(64, 1).toString(
@@ -355,8 +481,8 @@ describe("PDS origin-signed session package", () => {
     expect(() =>
       verifyPdsSessionManifest(
         alteredManifest,
-        verify.originSigningPublicKey,
-        verify.originSigningKeyId
+        serving.publicKey,
+        relayId("origin-signing-key")
       )
     ).toThrow();
   });

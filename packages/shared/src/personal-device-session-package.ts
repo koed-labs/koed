@@ -9,11 +9,13 @@ import {
   generateKeyPairSync,
   hkdfSync,
   randomBytes,
+  timingSafeEqual,
   verify,
   type KeyObject
 } from "node:crypto";
 import {
   PDS_PROTOCOL,
+  certificateIsPdsValid,
   decodePdsBase64url,
   pdsEd25519PublicKey,
   signPdsRecord
@@ -30,11 +32,13 @@ export const PDS_SESSION_PACKAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES = 512 * 1024;
 export const PDS_SESSION_PACKAGE_MAX_CHUNKS = 128;
 export const PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES = 1024 * 1024;
+export const PDS_SESSION_PACKAGE_MAX_RECIPIENTS = 64;
 export const PDS_SESSION_PACKAGE_MAX_JSON_BYTES =
   Math.ceil((PDS_SESSION_PACKAGE_MAX_BYTES * 4) / 3) +
   2 * PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES;
 
 const opaqueIdPattern = /^[\x21-\x7e]{1,240}$/;
+const relayIdPattern = /^[A-Za-z0-9_-]{22}$/;
 const sourceMetadataKeys = new Set([
   "contentType",
   "sourceRole",
@@ -79,6 +83,8 @@ export interface PdsSessionManifest {
   packageId: string;
   originDeploymentId: string;
   originDeviceId: string;
+  originAuthorityHead: string;
+  originSignedAt: string;
   sourceSequence: string;
   sourceType: "captured_session";
   sourceNativeSessionId: string;
@@ -184,8 +190,9 @@ export interface PdsRetainedSessionPackage {
 }
 
 export interface CreatePdsSessionManifestInput {
+  /** Validated runtime state supplies all relay-visible identity and authority fields. */
+  runtime: PdsSessionPackageRuntimeContext;
   originDeploymentId: string;
-  originDeviceId: string;
   sourceSequence: string;
   sourceNativeSessionId: string;
   contentEpoch: string;
@@ -194,20 +201,14 @@ export interface CreatePdsSessionManifestInput {
   items: PdsConversationSourceItem[];
   sourceFingerprintKey: string | Buffer;
   tombstoneFloorKey: string | Buffer;
-  originSigningKeyId: string;
   originSigningPrivateKey: KeyObject;
   projectAliasManifest?: PdsProjectAliasManifest;
 }
 
 export interface CreatePdsSessionPackageInput {
-  groupId: string;
-  authorityHead: string;
+  runtime: PdsSessionPackageRuntimeContext;
   expiresAt: string;
-  currentEpoch: string;
-  servingDeviceId: string;
-  servingSigningKeyId: string;
   servingSigningPrivateKey: KeyObject;
-  recipients: PdsSessionRecipient[];
   manifest: PdsSessionManifest;
 }
 
@@ -219,22 +220,74 @@ export interface PdsSessionPackageReplayEntry {
 export type PdsSessionPackageReplayResult = "new" | "idempotent" | "quarantine";
 
 export interface VerifyPdsSessionPackageInput {
-  groupId: string;
-  authorityHead: string;
-  currentEpoch: string;
-  recipientDeviceId: string;
-  recipientKemKeyId: string;
+  runtime: PdsSessionPackageRuntimeContext;
   recipientKemPrivateKey: string | Buffer;
-  recipientKemPublicKey: string | Buffer;
-  recipientSnapshot: string[];
-  servingDeviceId: string;
-  servingSigningPublicKey: string | Buffer;
-  servingSigningKeyId: string;
-  originSigningPublicKey: string | Buffer;
-  originSigningKeyId: string;
   now?: Date;
   deletionFloor?: { logicalMemoryId: string; deletionFloorToken: string };
 }
+
+type RuntimeMember = Readonly<{
+  deviceId: string;
+  signingKeyId: string;
+  signingPublicKey: string;
+  kemKeyId: string;
+  kemPublicKey: string;
+  certificate: unknown;
+}>;
+
+const runtimeContextBrand: unique symbol = Symbol(
+  "PdsSessionPackageRuntimeContext"
+);
+
+/** Opaque state, constructed only after authority-certificate verification. */
+export type PdsSessionPackageRuntimeContext = Readonly<{
+  readonly [runtimeContextBrand]: true;
+  readonly groupId: string;
+  readonly authorityHead: string;
+  readonly epoch: string;
+  readonly serving: RuntimeMember;
+  readonly recipient: RuntimeMember;
+  readonly recipients: readonly RuntimeMember[];
+  readonly originCertificates: readonly unknown[];
+  readonly authorityPublicKey: string | Buffer;
+}>;
+
+export interface CreatePdsSessionPackageRuntimeContextInput {
+  authorityPublicKey: string | Buffer;
+  groupId: string;
+  authorityHead: string;
+  currentEpoch: string;
+  servingCertificate: string | Uint8Array;
+  recipientCertificate: string | Uint8Array;
+  recipientCertificates: Array<string | Uint8Array>;
+  historicalOriginCertificates?: Array<string | Uint8Array>;
+  now?: Date;
+}
+
+const parsePdsWireJson = (
+  input: string | Uint8Array,
+  maximumBytes: number,
+  label: string
+): unknown => {
+  if (
+    (typeof input === "string" &&
+      Buffer.byteLength(input, "utf8") > maximumBytes) ||
+    (typeof input !== "string" && input.byteLength > maximumBytes)
+  ) {
+    throw new RangeError(`PDS ${label} exceeds limit`);
+  }
+  const raw =
+    typeof input === "string"
+      ? Buffer.from(input, "utf8")
+      : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+  } catch {
+    throw new TypeError(`PDS ${label} must be UTF-8`);
+  }
+  return parseCanonicalPdsJson(text);
+};
 
 const own = (value: unknown, label: string): JsonRecord => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -245,6 +298,154 @@ const own = (value: unknown, label: string): JsonRecord => {
     throw new TypeError(`PDS ${label} must be a plain object`);
   }
   return value as JsonRecord;
+};
+
+const memberFromCertificate = (
+  raw: string | Uint8Array,
+  authorityPublicKey: string | Buffer,
+  groupId: string,
+  authorityHead: string,
+  epoch: string,
+  now: Date
+): RuntimeMember => {
+  const certificate = parsePdsWireJson(
+    raw,
+    PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES,
+    "membership certificate"
+  );
+  if (!certificateIsPdsValid(certificate, authorityPublicKey, now)) {
+    throw new TypeError("PDS membership certificate is invalid or expired");
+  }
+  const record = own(certificate, "membership certificate");
+  if (
+    record.groupId !== groupId ||
+    record.statementHash !== authorityHead ||
+    record.epoch !== epoch
+  ) {
+    throw new TypeError(
+      "PDS membership certificate does not bind authority state"
+    );
+  }
+  const deviceId = requireRelayId(record.deviceId, "membership device ID");
+  const signingKeyId = requireRelayId(
+    record.deviceSigningKeyId,
+    "membership signing key ID"
+  );
+  const kemKeyId = requireRelayId(
+    record.deviceKemKeyId,
+    "membership KEM key ID"
+  );
+  const signingPublicKey = requireHash(
+    record.deviceSigningPublicKey,
+    "membership signing public key"
+  );
+  const kemPublicKey = requireHash(
+    record.deviceKemPublicKey,
+    "membership KEM public key"
+  );
+  if (
+    signingKeyId === kemKeyId ||
+    signingPublicKey === kemPublicKey ||
+    deviceId === signingKeyId ||
+    deviceId === kemKeyId
+  ) {
+    throw new TypeError("PDS membership key roles must be distinct");
+  }
+  return {
+    deviceId,
+    signingKeyId,
+    signingPublicKey,
+    kemKeyId,
+    kemPublicKey,
+    certificate
+  };
+};
+
+export const createPdsSessionPackageRuntimeContext = (
+  input: CreatePdsSessionPackageRuntimeContextInput
+): PdsSessionPackageRuntimeContext => {
+  const now = input.now ?? new Date();
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+    throw new TypeError("PDS runtime clock is invalid");
+  }
+  requireRelayId(input.groupId, "runtime group ID");
+  requireHash(input.authorityHead, "runtime authority head");
+  requireUint64(input.currentEpoch, "runtime epoch");
+  const serving = memberFromCertificate(
+    input.servingCertificate,
+    input.authorityPublicKey,
+    input.groupId,
+    input.authorityHead,
+    input.currentEpoch,
+    now
+  );
+  const recipient = memberFromCertificate(
+    input.recipientCertificate,
+    input.authorityPublicKey,
+    input.groupId,
+    input.authorityHead,
+    input.currentEpoch,
+    now
+  );
+  const recipients = input.recipientCertificates.map((certificate) =>
+    memberFromCertificate(
+      certificate,
+      input.authorityPublicKey,
+      input.groupId,
+      input.authorityHead,
+      input.currentEpoch,
+      now
+    )
+  );
+  if (
+    recipients.length === 0 ||
+    recipients.length > PDS_SESSION_PACKAGE_MAX_RECIPIENTS ||
+    !recipients.some((member) => member.deviceId === recipient.deviceId)
+  ) {
+    throw new TypeError("PDS runtime recipient state is invalid");
+  }
+  const ids = recipients.map((member) => member.deviceId);
+  assertSortedUnique(ids, "runtime recipient snapshot");
+  if (
+    new Set(recipients.map((member) => member.kemKeyId)).size !== ids.length
+  ) {
+    throw new TypeError("PDS runtime recipient KEM keys must be unique");
+  }
+  return Object.freeze({
+    [runtimeContextBrand]: true as const,
+    groupId: input.groupId,
+    authorityHead: input.authorityHead,
+    epoch: input.currentEpoch,
+    serving,
+    recipient,
+    recipients: Object.freeze(recipients),
+    originCertificates: Object.freeze([
+      serving.certificate,
+      ...(input.historicalOriginCertificates ?? []).map((certificate) =>
+        parsePdsWireJson(
+          certificate,
+          PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES,
+          "historical origin certificate"
+        )
+      )
+    ]),
+    authorityPublicKey: input.authorityPublicKey
+  });
+};
+
+const assertRuntimeContext = (
+  value: unknown
+): PdsSessionPackageRuntimeContext => {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    (value as PdsSessionPackageRuntimeContext)[runtimeContextBrand] !== true
+  ) {
+    throw new TypeError(
+      "PDS requires cryptographically validated runtime context"
+    );
+  }
+  return value as PdsSessionPackageRuntimeContext;
 };
 
 const exact = (
@@ -266,6 +467,15 @@ const requireId = (value: unknown, label: string): string => {
   if (typeof value !== "string" || !opaqueIdPattern.test(value)) {
     throw new TypeError(`PDS ${label} is invalid`);
   }
+  return value;
+};
+
+/** Relay-visible identifiers are exact opaque 16-byte base64url values. */
+const requireRelayId = (value: unknown, label: string): string => {
+  if (typeof value !== "string" || !relayIdPattern.test(value)) {
+    throw new TypeError(`PDS ${label} must be an opaque 16-byte ID`);
+  }
+  decodePdsBase64url(value, 16);
   return value;
 };
 
@@ -307,7 +517,11 @@ const assertControlSize = (value: unknown, label: string): void => {
 };
 
 const assertSortedUnique = (values: string[], label: string): void => {
-  if (values.length === 0 || new Set(values).size !== values.length) {
+  if (
+    values.length === 0 ||
+    values.length > PDS_SESSION_PACKAGE_MAX_RECIPIENTS ||
+    new Set(values).size !== values.length
+  ) {
     throw new TypeError(`PDS ${label} must be unique and non-empty`);
   }
   if (values.join("\0") !== [...values].sort().join("\0")) {
@@ -649,7 +863,13 @@ const preparedSourceClosure = (
   if (input.terminalCursor !== String(records.length))
     throw new TypeError("PDS terminal cursor is inconsistent");
   const rawByteCount = records.reduce(
-    (total, record) => total + decodePdsBase64url(record.payload).length,
+    (total, record) =>
+      total +
+      decodePdsBase64url(
+        record.payload,
+        undefined,
+        PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+      ).length,
     0
   );
   if (rawByteCount > PDS_SESSION_PACKAGE_MAX_BYTES)
@@ -669,7 +889,9 @@ const unsignedSourceManifest = (
     protocol: PDS_PROTOCOL,
     packageId: "",
     originDeploymentId: input.originDeploymentId,
-    originDeviceId: input.originDeviceId,
+    originDeviceId: assertRuntimeContext(input.runtime).serving.deviceId,
+    originAuthorityHead: input.runtime.authorityHead,
+    originSignedAt: new Date().toISOString(),
     sourceSequence: input.sourceSequence,
     sourceType: "captured_session" as const,
     sourceNativeSessionId: input.sourceNativeSessionId,
@@ -702,12 +924,29 @@ const unsignedSourceManifest = (
 export const createPdsSessionManifest = (
   input: CreatePdsSessionManifestInput
 ): PdsSessionManifest => {
-  requireId(input.originDeploymentId, "originDeploymentId");
-  requireId(input.originDeviceId, "originDeviceId");
+  const runtime = assertRuntimeContext(input.runtime);
+  requireRelayId(input.originDeploymentId, "originDeploymentId");
   requireUint64(input.sourceSequence, "sourceSequence");
   requireId(input.sourceNativeSessionId, "sourceNativeSessionId");
+  const sourceFingerprintKey =
+    typeof input.sourceFingerprintKey === "string"
+      ? decodePdsBase64url(input.sourceFingerprintKey, 32)
+      : input.sourceFingerprintKey;
+  const tombstoneFloorKey =
+    typeof input.tombstoneFloorKey === "string"
+      ? decodePdsBase64url(input.tombstoneFloorKey, 32)
+      : input.tombstoneFloorKey;
+  if (
+    sourceFingerprintKey.length !== 32 ||
+    tombstoneFloorKey.length !== 32 ||
+    timingSafeEqual(sourceFingerprintKey, tombstoneFloorKey)
+  ) {
+    throw new TypeError(
+      "PDS source fingerprint and tombstone keys must differ"
+    );
+  }
   requireUint64(input.contentEpoch, "contentEpoch");
-  requireId(input.originSigningKeyId, "originSigningKeyId");
+  requireRelayId(runtime.serving.signingKeyId, "originSigningKeyId");
   validateClosedSession(input.closedSession);
   if (input.projectAliasManifest)
     validateProjectAliases(input.projectAliasManifest, input.contentEpoch);
@@ -715,7 +954,7 @@ export const createPdsSessionManifest = (
   const manifest = {
     ...unsigned,
     originSignature: {
-      signerKeyId: input.originSigningKeyId,
+      signerKeyId: runtime.serving.signingKeyId,
       signature: signPdsRecord(
         "source-manifest",
         unsigned,
@@ -723,6 +962,12 @@ export const createPdsSessionManifest = (
       )
     }
   } as PdsSessionManifest;
+  verifyRecord(
+    "source-manifest",
+    without(manifest, "originSignature"),
+    manifest.originSignature,
+    runtime.serving.signingPublicKey
+  );
   return validatePdsSessionManifest(manifest);
 };
 
@@ -748,7 +993,11 @@ const validateRawRecord = (
   requireId(record.sourceNativeItemId, "raw source ID");
   requireIso(record.sourceTimestamp, "raw source timestamp");
   requireIso(record.observedAt, "raw observed timestamp");
-  const payload = decodePdsBase64url(record.payload);
+  const payload = decodePdsBase64url(
+    record.payload,
+    undefined,
+    PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+  );
   if (
     payload.length === 0 ||
     payload.length > PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES ||
@@ -775,6 +1024,8 @@ const sourceManifestFields = [
   "packageId",
   "originDeploymentId",
   "originDeviceId",
+  "originAuthorityHead",
+  "originSignedAt",
   "sourceSequence",
   "sourceType",
   "sourceNativeSessionId",
@@ -803,12 +1054,11 @@ const validateManifestIdentity = (manifest: JsonRecord): void => {
   ) {
     throw new TypeError("PDS source manifest protocol is invalid");
   }
-  for (const field of [
-    "originDeploymentId",
-    "originDeviceId",
-    "sourceNativeSessionId"
-  ])
-    requireId(manifest[field], field);
+  for (const field of ["originDeploymentId", "originDeviceId"])
+    requireRelayId(manifest[field], field);
+  requireHash(manifest.originAuthorityHead, "origin authority head");
+  requireIso(manifest.originSignedAt, "origin signed at");
+  requireId(manifest.sourceNativeSessionId, "sourceNativeSessionId");
   for (const field of ["sourceSequence", "contentEpoch"])
     requireUint64(manifest[field], field);
   for (const field of [
@@ -846,7 +1096,13 @@ const validateManifestClosure = (manifest: JsonRecord): void => {
   }
   const records = closure.records.map(validateRawRecord);
   const rawByteCount = records.reduce(
-    (total, record) => total + decodePdsBase64url(record.payload).length,
+    (total, record) =>
+      total +
+      decodePdsBase64url(
+        record.payload,
+        undefined,
+        PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+      ).length,
     0
   );
   if (
@@ -873,7 +1129,8 @@ const validateManifestPackageId = (manifest: JsonRecord): void => {
   if (manifest.packageId !== sourcePackageId(unsigned)) {
     throw new TypeError("PDS source package ID is invalid");
   }
-  signature(manifest.originSignature);
+  const originSignature = signature(manifest.originSignature);
+  requireRelayId(originSignature.signerKeyId, "origin signing key ID");
   if (bytes(manifest).length > PDS_SESSION_PACKAGE_MAX_BYTES) {
     throw new RangeError("PDS source manifest exceeds package size limit");
   }
@@ -1004,7 +1261,7 @@ const validateHeaderIdentity = (header: JsonRecord): void => {
     "servingDeviceId",
     "servingSigningKeyId"
   ]) {
-    requireId(header[field], field);
+    requireRelayId(header[field], field);
   }
   for (const field of [
     "contentEpoch",
@@ -1033,7 +1290,7 @@ const validateHeaderSnapshot = (header: JsonRecord): void => {
     throw new TypeError("PDS recipient snapshot is invalid");
   }
   const snapshot = header.intendedRecipientSnapshot.map((id) =>
-    requireId(id, "recipient snapshot member")
+    requireRelayId(id, "recipient snapshot member")
   );
   assertSortedUnique(snapshot, "recipient snapshot");
   if (
@@ -1089,7 +1346,7 @@ const validateEnvelope = (value: unknown): PdsSessionRecipientEnvelope => {
     "recipientDeviceId",
     "recipientKemKeyId"
   ])
-    requireId(envelope[field], field);
+    requireRelayId(envelope[field], field);
   requireHash(envelope.ephemeralPublicKey, "ephemeral public key");
   requireHash(envelope.nonce, "envelope nonce", 12);
   requireHash(envelope.ciphertext, "envelope ciphertext", 32);
@@ -1130,7 +1387,11 @@ const validateChunk = (
     chunk.chunkCount !== header.chunkCount
   )
     throw new TypeError("PDS package chunk binding is invalid");
-  const ciphertext = decodePdsBase64url(chunk.ciphertext);
+  const ciphertext = decodePdsBase64url(
+    chunk.ciphertext,
+    undefined,
+    PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+  );
   if (
     ciphertext.length === 0 ||
     ciphertext.length > PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES ||
@@ -1193,7 +1454,13 @@ const validatePackageChunks = (
     validateChunk(chunk, index, header)
   );
   const ciphertext = Buffer.concat(
-    chunks.map((chunk) => decodePdsBase64url(chunk.ciphertext))
+    chunks.map((chunk) =>
+      decodePdsBase64url(
+        chunk.ciphertext,
+        undefined,
+        PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+      )
+    )
   );
   if (
     ciphertext.length !== Number(header.plaintextByteCount) ||
@@ -1222,7 +1489,11 @@ export const validatePdsSessionPackage = (
   if (digest !== pdsSessionPackageDigest({ header, envelopes, chunks })) {
     throw new TypeError("PDS package digest is invalid");
   }
-  return { header, envelopes, chunks, packageDigest: digest };
+  const validated = { header, envelopes, chunks, packageDigest: digest };
+  if (bytes(validated).length > PDS_SESSION_PACKAGE_MAX_JSON_BYTES) {
+    throw new RangeError("PDS serialized package exceeds size limit");
+  }
+  return validated;
 };
 
 type UnsignedRecipientEnvelope = Omit<
@@ -1327,8 +1598,8 @@ const packageRecipients = (
     left.deviceId < right.deviceId ? -1 : left.deviceId > right.deviceId ? 1 : 0
   );
   for (const recipient of sorted) {
-    requireId(recipient.deviceId, "recipient device");
-    requireId(recipient.kemKeyId, "recipient KEM key");
+    requireRelayId(recipient.deviceId, "recipient device");
+    requireRelayId(recipient.kemKeyId, "recipient KEM key");
     requireHash(recipient.kemPublicKey, "recipient KEM public key");
     if (recipient.kemKeyId === servingSigningKeyId) {
       throw new TypeError("PDS signing and KEM key roles must differ");
@@ -1342,6 +1613,9 @@ const packageRecipients = (
     sorted.map((recipient) => recipient.kemKeyId),
     "recipient KEM keys"
   );
+  if (sorted.length > PDS_SESSION_PACKAGE_MAX_RECIPIENTS) {
+    throw new RangeError("PDS recipient count exceeds limit");
+  }
   if (
     new Set(sorted.map((recipient) => recipient.kemPublicKey)).size !==
     sorted.length
@@ -1352,7 +1626,21 @@ const packageRecipients = (
 };
 
 const unsignedTransportHeader = (
-  input: CreatePdsSessionPackageInput,
+  input: Pick<
+    CreatePdsSessionPackageInput & {
+      groupId: string;
+      authorityHead: string;
+      currentEpoch: string;
+      servingDeviceId: string;
+      servingSigningKeyId: string;
+    },
+    | "groupId"
+    | "authorityHead"
+    | "currentEpoch"
+    | "expiresAt"
+    | "servingDeviceId"
+    | "servingSigningKeyId"
+  >,
   manifest: PdsSessionManifest,
   recipients: PdsSessionRecipient[],
   plaintext: Buffer
@@ -1425,28 +1713,41 @@ export const createPdsSessionPackage = (
   input: CreatePdsSessionPackageInput
 ): PdsSessionPackage => {
   const manifest = validatePdsSessionManifest(input.manifest);
-  requireId(input.groupId, "groupId");
-  requireHash(input.authorityHead, "authority head");
+  const runtime = assertRuntimeContext(input.runtime);
+  verifyOriginMembership(manifest, runtime);
   requireIso(input.expiresAt, "transport expiry");
-  requireUint64(input.currentEpoch, "current epoch");
-  requireId(input.servingDeviceId, "servingDeviceId");
-  requireId(input.servingSigningKeyId, "servingSigningKeyId");
   const recipients = packageRecipients(
-    input.recipients,
-    input.servingSigningKeyId
+    runtime.recipients.map((recipient) => ({
+      deviceId: recipient.deviceId,
+      kemKeyId: recipient.kemKeyId,
+      kemPublicKey: recipient.kemPublicKey
+    })),
+    runtime.serving.signingKeyId
   );
   const plaintext = bytes(manifest);
   if (plaintext.length > PDS_SESSION_PACKAGE_MAX_BYTES)
     throw new RangeError("PDS package plaintext exceeds limit");
   const encrypted = encryptTransportPayload(
-    unsignedTransportHeader(input, manifest, recipients, plaintext),
+    unsignedTransportHeader(
+      {
+        ...input,
+        groupId: runtime.groupId,
+        authorityHead: runtime.authorityHead,
+        currentEpoch: runtime.epoch,
+        servingDeviceId: runtime.serving.deviceId,
+        servingSigningKeyId: runtime.serving.signingKeyId
+      },
+      manifest,
+      recipients,
+      plaintext
+    ),
     plaintext,
-    input.servingSigningKeyId,
+    runtime.serving.signingKeyId,
     input.servingSigningPrivateKey
   );
   const envelopes = recipients.map((recipient) =>
     recipientEnvelope({
-      groupId: input.groupId,
+      groupId: runtime.groupId,
       header: encrypted.header,
       recipient,
       cek: encrypted.cek,
@@ -1458,28 +1759,16 @@ export const createPdsSessionPackage = (
     envelopes,
     chunks: chunksFor(encrypted.header, encrypted.ciphertext)
   };
-  return { ...pkg, packageDigest: pdsSessionPackageDigest(pkg) };
+  return validatePdsSessionPackage({
+    ...pkg,
+    packageDigest: pdsSessionPackageDigest(pkg)
+  });
 };
 
 const validateVerificationInput = (
   input: VerifyPdsSessionPackageInput
-): void => {
-  requireId(input.groupId, "verification group ID");
-  requireHash(input.authorityHead, "verification authority head");
-  requireUint64(input.currentEpoch, "verification current epoch");
-  requireId(input.recipientDeviceId, "verification recipient device ID");
-  requireId(input.recipientKemKeyId, "verification recipient KEM key ID");
-  requireId(input.servingSigningKeyId, "verification serving key ID");
-  requireId(input.originSigningKeyId, "verification origin key ID");
-  if (!Array.isArray(input.recipientSnapshot)) {
-    throw new TypeError("PDS verification recipient snapshot is invalid");
-  }
-  assertSortedUnique(
-    input.recipientSnapshot.map((member) =>
-      requireId(member, "verification snapshot member")
-    ),
-    "verification recipient snapshot"
-  );
+): PdsSessionPackageRuntimeContext => {
+  const runtime = assertRuntimeContext(input.runtime);
   if (input.deletionFloor) {
     const floor = own(input.deletionFloor, "verification deletion floor");
     exact(floor, ["logicalMemoryId", "deletionFloorToken"], "deletion floor");
@@ -1492,25 +1781,26 @@ const validateVerificationInput = (
   ) {
     throw new TypeError("PDS verification clock is invalid");
   }
+  return runtime;
 };
 
 const verifyHeader = (
   header: PdsSessionPackageHeader,
   input: VerifyPdsSessionPackageInput
 ): void => {
-  validateVerificationInput(input);
+  const runtime = validateVerificationInput(input);
   if (
-    header.groupId !== input.groupId ||
-    header.authorityHead !== input.authorityHead ||
-    header.recipientEpoch !== input.currentEpoch ||
-    header.servingDeviceId !== input.servingDeviceId ||
-    header.servingSigningKeyId !== input.servingSigningKeyId
+    header.groupId !== runtime.groupId ||
+    header.authorityHead !== runtime.authorityHead ||
+    header.recipientEpoch !== runtime.epoch ||
+    header.servingDeviceId !== runtime.serving.deviceId ||
+    header.servingSigningKeyId !== runtime.serving.signingKeyId
   )
     throw new TypeError("PDS transport authority binding is invalid");
   if (
-    !header.intendedRecipientSnapshot.includes(input.recipientDeviceId) ||
+    !header.intendedRecipientSnapshot.includes(runtime.recipient.deviceId) ||
     canonicalizePdsJson(header.intendedRecipientSnapshot) !==
-      canonicalizePdsJson(input.recipientSnapshot)
+      canonicalizePdsJson(runtime.recipients.map((member) => member.deviceId))
   )
     throw new TypeError("PDS transport recipient snapshot is invalid");
   if (Date.parse(header.expiresAt) <= (input.now ?? new Date()).getTime())
@@ -1519,7 +1809,7 @@ const verifyHeader = (
     "transport-envelope",
     without(header, "servingSignature"),
     header.servingSignature,
-    input.servingSigningPublicKey
+    runtime.serving.signingPublicKey
   );
 };
 
@@ -1527,30 +1817,31 @@ const decryptCek = (
   pkg: PdsSessionPackage,
   input: VerifyPdsSessionPackageInput
 ): Buffer => {
+  const runtime = assertRuntimeContext(input.runtime);
   const envelope = pkg.envelopes.find(
-    (item) => item.recipientDeviceId === input.recipientDeviceId
+    (item) => item.recipientDeviceId === runtime.recipient.deviceId
   );
   if (
     !envelope ||
-    envelope.recipientKemKeyId !== input.recipientKemKeyId ||
-    envelope.recipientEpoch !== input.currentEpoch ||
+    envelope.recipientKemKeyId !== runtime.recipient.kemKeyId ||
+    envelope.recipientEpoch !== runtime.epoch ||
     envelope.senderDeviceId !== pkg.header.servingDeviceId ||
-    envelope.servingSignature.signerKeyId !== input.servingSigningKeyId
+    envelope.servingSignature.signerKeyId !== runtime.serving.signingKeyId
   )
     throw new TypeError("PDS recipient envelope is not authorized");
   verifyRecord(
     "transport-envelope",
     without(envelope, "servingSignature"),
     envelope.servingSignature,
-    input.servingSigningPublicKey
+    runtime.serving.signingPublicKey
   );
   const privateKey = x25519PrivateKey(
     input.recipientKemPrivateKey,
-    input.recipientKemPublicKey
+    runtime.recipient.kemPublicKey
   );
   const key = envelopeKey(
     sharedSecret(privateKey, x25519PublicKey(envelope.ephemeralPublicKey)),
-    input.groupId,
+    runtime.groupId,
     envelope
   );
   return aesDecrypt(
@@ -1600,15 +1891,71 @@ export const classifyPdsSessionPackageReplay = (
     : "quarantine";
 };
 
+const verifyOriginMembership = (
+  manifest: PdsSessionManifest,
+  runtime: PdsSessionPackageRuntimeContext
+): void => {
+  const signedAt = new Date(manifest.originSignedAt);
+  const certificate = runtime.originCertificates.find((candidate) => {
+    const record = own(candidate, "historical origin certificate");
+    return (
+      record.groupId === runtime.groupId &&
+      record.statementHash === manifest.originAuthorityHead &&
+      record.epoch === manifest.contentEpoch &&
+      record.deviceId === manifest.originDeviceId &&
+      record.deviceSigningKeyId === manifest.originSignature.signerKeyId &&
+      certificateIsPdsValid(candidate, runtime.authorityPublicKey, signedAt)
+    );
+  });
+  if (!certificate) {
+    throw new TypeError(
+      "PDS origin membership was not valid at signed head/time"
+    );
+  }
+  const record = own(certificate, "historical origin certificate");
+  requireRelayId(record.deviceId, "historical origin device ID");
+  requireRelayId(record.deviceSigningKeyId, "historical origin signing key ID");
+  const signingPublicKey = requireHash(
+    record.deviceSigningPublicKey,
+    "historical origin signing public key"
+  );
+  const kemPublicKey = requireHash(
+    record.deviceKemPublicKey,
+    "historical origin KEM public key"
+  );
+  requireRelayId(record.deviceKemKeyId, "historical origin KEM key ID");
+  if (
+    record.deviceSigningKeyId === record.deviceKemKeyId ||
+    signingPublicKey === kemPublicKey
+  ) {
+    throw new TypeError("PDS historical origin key roles must be distinct");
+  }
+  verifyRecord(
+    "source-manifest",
+    without(manifest, "originSignature"),
+    manifest.originSignature,
+    signingPublicKey
+  );
+};
+
+/** Public verifier accepts only bounded canonical UTF-8 wire bytes. */
 export const verifyAndDecryptPdsSessionPackage = (
-  value: unknown,
+  value: string | Uint8Array,
   input: VerifyPdsSessionPackageInput
 ): PdsSessionManifest => {
-  const pkg = validatePdsSessionPackage(value);
+  const pkg = validatePdsSessionPackage(
+    parsePdsWireJson(value, PDS_SESSION_PACKAGE_MAX_JSON_BYTES, "package JSON")
+  );
   verifyHeader(pkg.header, input);
   const cek = decryptCek(pkg, input);
   const ciphertext = Buffer.concat(
-    pkg.chunks.map((chunk) => decodePdsBase64url(chunk.ciphertext))
+    pkg.chunks.map((chunk) =>
+      decodePdsBase64url(
+        chunk.ciphertext,
+        undefined,
+        PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES
+      )
+    )
   );
   const plaintext = aesDecrypt(
     cek,
@@ -1619,11 +1966,14 @@ export const verifyAndDecryptPdsSessionPackage = (
   );
   if (plaintext.length !== Number(pkg.header.plaintextByteCount))
     throw new TypeError("PDS plaintext size is invalid");
-  const manifest = verifyPdsSessionManifest(
-    parseCanonicalPdsJson(plaintext.toString("utf8")),
-    input.originSigningPublicKey,
-    input.originSigningKeyId
+  const manifest = validatePdsSessionManifest(
+    parsePdsWireJson(
+      plaintext,
+      PDS_SESSION_PACKAGE_MAX_BYTES,
+      "source manifest"
+    )
   );
+  verifyOriginMembership(manifest, assertRuntimeContext(input.runtime));
   if (
     manifest.packageId !== pkg.header.packageId ||
     manifest.originDeviceId !== pkg.header.originDeviceId ||
@@ -1645,17 +1995,11 @@ export const retryPdsSessionPackage = (value: unknown): PdsSessionPackage =>
 
 /** Rewrap preserves immutable origin manifest; fresh CEK, nonce, transport ID, and envelopes. */
 export const rewrapPdsSessionPackage = (
-  input: CreatePdsSessionPackageInput & {
-    originSigningPublicKey: string | Buffer;
-    originSigningKeyId: string;
-  }
+  input: CreatePdsSessionPackageInput
 ): PdsSessionPackage => {
-  verifyPdsSessionManifest(
-    input.manifest,
-    input.originSigningPublicKey,
-    input.originSigningKeyId
-  );
-  return createPdsSessionPackage(input);
+  const manifest = validatePdsSessionManifest(input.manifest);
+  verifyOriginMembership(manifest, assertRuntimeContext(input.runtime));
+  return createPdsSessionPackage({ ...input, manifest });
 };
 
 export const retainPdsSessionPackage = (input: {
@@ -1686,18 +2030,20 @@ export const retainPdsSessionPackage = (input: {
 };
 
 export const parsePdsSessionManifestJson = (
-  input: string
-): PdsSessionManifest => {
-  if (Buffer.byteLength(input, "utf8") > PDS_SESSION_PACKAGE_MAX_BYTES) {
-    throw new RangeError("PDS source manifest JSON exceeds limit");
-  }
-  return validatePdsSessionManifest(parseCanonicalPdsJson(input));
-};
+  input: string | Uint8Array
+): PdsSessionManifest =>
+  validatePdsSessionManifest(
+    parsePdsWireJson(
+      input,
+      PDS_SESSION_PACKAGE_MAX_BYTES,
+      "source manifest JSON"
+    )
+  );
 
+/** Public wire parser. Canonical UTF-8 bytes are mandatory before validation. */
 export const parsePdsSessionPackageJson = (
-  input: string
-): PdsSessionPackage => {
-  if (Buffer.byteLength(input, "utf8") > PDS_SESSION_PACKAGE_MAX_JSON_BYTES)
-    throw new RangeError("PDS package JSON exceeds limit");
-  return validatePdsSessionPackage(parseCanonicalPdsJson(input));
-};
+  input: string | Uint8Array
+): PdsSessionPackage =>
+  validatePdsSessionPackage(
+    parsePdsWireJson(input, PDS_SESSION_PACKAGE_MAX_JSON_BYTES, "package JSON")
+  );

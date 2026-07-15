@@ -64,20 +64,32 @@ const exact = (
   }
 };
 
-export const decodePdsBase64url = (value: unknown, length?: number): Buffer => {
+export const decodePdsBase64url = (
+  value: unknown,
+  length?: number,
+  maximumLength = length
+): Buffer => {
   if (
     typeof value !== "string" ||
     !base64url.test(value) ||
-    value.includes("=")
+    value.includes("=") ||
+    (length !== undefined && value.length !== Math.ceil((length * 4) / 3)) ||
+    (maximumLength !== undefined &&
+      value.length > Math.ceil((maximumLength * 4) / 3))
   ) {
-    throw new TypeError("PDS binary value must be unpadded base64url");
+    throw new TypeError(
+      "PDS binary value has invalid base64url length or encoding"
+    );
   }
   const bytes = Buffer.from(value, "base64url");
   if (
     bytes.toString("base64url") !== value ||
-    (length !== undefined && bytes.length !== length)
+    (length !== undefined && bytes.length !== length) ||
+    (maximumLength !== undefined && bytes.length > maximumLength)
   ) {
-    throw new TypeError("PDS binary value has invalid length or encoding");
+    throw new TypeError(
+      "PDS binary value has invalid base64url length or encoding"
+    );
   }
   return bytes;
 };
@@ -594,7 +606,11 @@ export const validatePdsKeyBundleMetadata = (
     decodePdsBase64url(envelope.tag, 16);
     if (envelope.envelopeContext !== "koed/pds/v1/key-bundle-envelope")
       throw new TypeError("PDS key bundle envelope is invalid");
-    const ciphertext = decodePdsBase64url(envelope.ciphertext);
+    const ciphertext = decodePdsBase64url(
+      envelope.ciphertext,
+      undefined,
+      PDS_ENVELOPE_CIPHERTEXT_MAX_BYTES
+    );
     if (
       ciphertext.length === 0 ||
       ciphertext.length > PDS_ENVELOPE_CIPHERTEXT_MAX_BYTES
