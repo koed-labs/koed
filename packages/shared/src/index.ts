@@ -154,6 +154,51 @@ export {
   pdsUint64be
 } from "./personal-device-sync-jcs.js";
 export {
+  PDS_SESSION_PACKAGE_VERSION,
+  PDS_SESSION_PACKAGE_MAX_BYTES,
+  PDS_SESSION_PACKAGE_MAX_CHUNK_BYTES,
+  PDS_SESSION_PACKAGE_MAX_CHUNKS,
+  PDS_SESSION_PACKAGE_MAX_CONTROL_BYTES,
+  PDS_SESSION_PACKAGE_MAX_JSON_BYTES,
+  classifyPdsSessionPackageReplay,
+  createPdsSessionManifest,
+  createPdsSessionPackage,
+  parsePdsSessionManifestJson,
+  parsePdsSessionPackageJson,
+  pdsDeletionFloorToken,
+  pdsLogicalMemoryId,
+  pdsProjectAliasToken,
+  pdsSessionPackageDigest,
+  pdsSessionPackageReplayEntry,
+  pdsSourceFingerprint,
+  retainPdsSessionPackage,
+  retryPdsSessionPackage,
+  rewrapPdsSessionPackage,
+  validatePdsConversationSourceItem,
+  validatePdsSessionManifest,
+  validatePdsSessionPackage,
+  verifyAndDecryptPdsSessionPackage,
+  verifyPdsSessionManifest
+} from "./personal-device-session-package.js";
+export type {
+  CreatePdsSessionManifestInput,
+  CreatePdsSessionPackageInput,
+  PdsClosedSessionMetadata,
+  PdsConversationSourceItem,
+  PdsProjectAliasManifest,
+  PdsRetainedSessionPackage,
+  PdsSessionManifest,
+  PdsSessionPackage,
+  PdsSessionPackageChunk,
+  PdsSessionPackageReplayEntry,
+  PdsSessionPackageReplayResult,
+  PdsSessionPackageHeader,
+  PdsSessionRecipient,
+  PdsSessionRecipientEnvelope,
+  PdsRawSourceRecord,
+  VerifyPdsSessionPackageInput
+} from "./personal-device-session-package.js";
+export {
   CAPTURED_SESSION_SYNC_FORMAT,
   CAPTURED_SESSION_SYNC_FORMAT_VERSION,
   CAPTURED_SESSION_SYNC_MAX_CHANGES,

@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": 2,
+  "fixtureVersion": 3,
   "notice": "Non-production deterministic PDS V1 fixture. Values are fixed test material only.",
   "protocol": "koed/pds/v1",
   "references": {
@@ -263,5 +263,12 @@
       "expectedRevocationWaiver": "waive-after-countersigned-revoke",
       "expectedExpiry": "delete-and-reupload-for-current-snapshot"
     }
+  },
+  "sessionPackageV1": {
+    "notice": "Static source-item closure vector for origin-signed PDS Session package V1.",
+    "canonicalItemUtf8": "{\"actor\":\"user\",\"content\":\"hello\",\"metadata\":{\"contentType\":\"text/plain\",\"sourceRole\":\"user\"},\"observedAt\":\"2026-07-15T00:00:00.000Z\",\"sequence\":\"0\",\"sourceNativeItemId\":\"item-0\",\"sourceTimestamp\":\"2026-07-15T00:00:00.000Z\",\"type\":\"message\"}",
+    "payload": "eyJhY3RvciI6InVzZXIiLCJjb250ZW50IjoiaGVsbG8iLCJtZXRhZGF0YSI6eyJjb250ZW50VHlwZSI6InRleHQvcGxhaW4iLCJzb3VyY2VSb2xlIjoidXNlciJ9LCJvYnNlcnZlZEF0IjoiMjAyNi0wNy0xNVQwMDowMDowMC4wMDBaIiwic2VxdWVuY2UiOiIwIiwic291cmNlTmF0aXZlSXRlbUlkIjoiaXRlbS0wIiwic291cmNlVGltZXN0YW1wIjoiMjAyNi0wNy0xNVQwMDowMDowMC4wMDBaIiwidHlwZSI6Im1lc3NhZ2UifQ",
+    "payloadHash": "awRRpyDW-eroG0YURrCB-OA9JPpkQZQP-iBjD8_zqjw",
+    "sourceClosureHash": "aEd8r-6oeYz8toXqSuZTHLXX0T2hHcFT7_YupXIH-Pg"
   }
 }
