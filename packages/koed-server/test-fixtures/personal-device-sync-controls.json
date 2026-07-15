@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "suite": "koed/pds/v1/control-fixture",
+  "mode": "ci-safe-control-and-crypto",
+  "dbRequired": [
+    "receiver Projection and Recall seams",
+    "Authority and relay transaction races",
+    "retained replica materialization"
+  ],
+  "scenarios": [
+    "two-device-offline-concurrent-capture",
+    "two-order-convergence",
+    "n-device-conflict-quarantine-and-resolution",
+    "relay-replay-chunk-reorder-drop-and-duplicate",
+    "relay-and-authority-outage",
+    "membership-expiry",
+    "key-rotation-and-revoked-member",
+    "delayed-join-and-replacement-from-retained-replica",
+    "lost-origin-and-recovery-loss",
+    "tombstone-before-after-and-old-backup-restore",
+    "perfect-clone-warning",
+    "unknown-version-downgrade-tamper-and-cross-group",
+    "no-team-api-token-path-vector-or-plaintext-leak"
+  ],
+  "truth": {
+    "associationSyncsNothing": true,
+    "remoteAccountLinkSyncsNothing": true,
+    "futureClosedSessionsOnly": true,
+    "offlineLocalCaptureAndRecallContinue": true,
+    "conflictsRequireExactResolution": true,
+    "revocationCannotEraseDownloadedPlaintext": true,
+    "allDeviceAndRecoveryLossIsPermanent": true,
+    "statusIsRedacted": true
+  }
+}

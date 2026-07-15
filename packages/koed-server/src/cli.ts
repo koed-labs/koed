@@ -68,6 +68,7 @@ import {
   ensureDeviceIdentity,
   rotateDeviceIdentity
 } from "./device-identity.js";
+import { runPersonalSyncCommand } from "./personal-sync.js";
 
 export const usageText = `Usage: koed-server <command> [options]
 
@@ -80,6 +81,21 @@ Commands:
   doctor --json          Print actionable setup/dependency diagnostics
   identity status --json Print clone-safe deployment/device identity state
   identity rotate --json Create fresh device identity and invalidate local enrollment references
+  personal-sync status --json             Print redacted Personal Sync status
+  personal-sync group bootstrap --json    Create group and encrypted recovery kit
+  personal-sync recovery-kit create|verify --json
+  personal-sync join request|challenge --json
+  personal-sync active-device approve --json
+  personal-sync recovery approve|guidance --json
+  personal-sync policy enable|pause|resume --json
+  personal-sync start --future-only --json
+  personal-sync device list|revoke --json
+  personal-sync credential status --json
+  personal-sync key-epoch status --json
+  personal-sync replica status --json
+  personal-sync retry --json
+  personal-sync local-replica remove --json
+  personal-sync conflict resolve --json
   setup codex --json     Configure the supported Codex integration
   repair codex --json    Rewrite Codex integration for the active local API
   models status --json   Print bundled local model install state
@@ -164,6 +180,7 @@ export interface KoedServerCliDependencies {
   getProjectMetadataForCwd?: typeof getProjectMetadataForCwd;
   forgetProjectMetadata?: typeof forgetProjectMetadata;
   shareProjectCapturedSession?: typeof shareProjectCapturedSession;
+  runPersonalSync?: typeof runPersonalSyncCommand;
   loadEnvironment?: typeof loadRepoEnv;
   resolvePaths?: typeof resolveKoedServerPaths;
   stdout?: Pick<NodeJS.WriteStream, "write">;
@@ -429,6 +446,7 @@ export const runKoedServerCli = async (
     forgetProjectMetadata: forgetProject = forgetProjectMetadata,
     shareProjectCapturedSession:
       shareProjectSession = shareProjectCapturedSession,
+    runPersonalSync = runPersonalSyncCommand,
     loadEnvironment = loadRepoEnv,
     resolvePaths = resolveKoedServerPaths,
     stdout = process.stdout,
@@ -490,6 +508,21 @@ export const runKoedServerCli = async (
         stdout.write(`${identity.health}\n`);
       }
       return identity.remoteOperationsAllowed ? 0 : 1;
+    }
+
+    if (command === "personal-sync") {
+      const paths = resolvePaths();
+      const result = await runPersonalSync(
+        args.slice(1).filter((arg) => arg !== "--json"),
+        paths,
+        process.env
+      );
+      if (wantsJson) {
+        printJson(stdout, result);
+      } else {
+        stdout.write(`${result.message}\n`);
+      }
+      return result.ok ? 0 : 1;
     }
 
     if (command === "start") {

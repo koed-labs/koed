@@ -80,6 +80,9 @@ The README keeps to one basic local path. For other options, see:
   experimental recall-only Claude Code setup.
 - [Curated Memory](docs/curated-memory.md) for source-linked durable facts and
   recall behavior.
+- [Personal Device Sync controls](docs/running-koed.md#personal-sync-control-commands)
+  for opt-in future-Session replication, recovery-kit ceremony, and headless
+  Operator secret references.
 - [Security](docs/security.md), [Backup and restore](docs/backup-restore.md),
   and [Upgrades](docs/upgrades.md) for operational guidance.
 

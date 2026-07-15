@@ -67,8 +67,12 @@ It never decrypts, projects, embeds, recalls, logs plaintext, source
 fingerprints, Project aliases, keys, credentials, or Team fields. Authority
 secret signer is deployment-secret material; Authority never stores PDS
 plaintext, group secrets, device/recovery private keys, or recovery kit
-material. Browser session binds governance requester identity but cannot
-replace active-device/recovery authorization; browser/API Token/`Koed-Device`
+material. Headless controls use an opaque Operator secret reference and
+provider stdin/stdout boundary; raw PDS environment values, CLI password
+arguments, config values, status, and logs are rejected. Desktop IPC never
+carries private keys or recovery-kit bytes. Browser session binds governance
+requester identity but cannot replace active-device/recovery authorization;
+browser/API Token/`Koed-Device`
 authentication alone is rejected by relay. Existing directed-sync RSA code must
 not be represented as PDS compliance. PDS deletion floors are opaque group-lifetime
 records. Authority retains opaque logical-memory/floor tokens and encrypted signed

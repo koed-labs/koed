@@ -139,16 +139,17 @@ material, proof references, paths, and fingerprints.
 
 ## Personal Device Sync V1 authority configuration
 
-PDS uses explicit secret-provider mode. Set `PDS_SECRET_PROVIDER=headless`
-with `PDS_RUNTIME_SECRET_REF=env://OPERATOR_MANAGED_PDS_RUNTIME`, or use
-`PDS_SECRET_PROVIDER=desktop` after Desktop main process installs keychain
-adapter. Reference is configuration; referenced JSON is Operator/Keychain
-secret material containing current Authority signing key, certificate/head/epoch,
-device signing and KEM private keys, and group secret set. Never set raw
-`PDS_AUTHORITY_*`, group keys, or private keys in ordinary environment/config,
-`KOED_HOME`, browser config, logs, database, queue, or responses. Missing,
-malformed, or Windows-limited Desktop adapter reports PDS unavailable only;
-local capture and local Recall remain usable. No raw-key fallback exists.
+PDS uses explicit secret-provider mode. Headless setup requires
+`PDS_SECRET_PROVIDER=headless` and `PDS_SECRET_PROVIDER_COMMAND`; Koed passes
+only an opaque `--secret-ref` to that Operator-managed provider. Provider `put`
+receives generated material on stdin and `get` returns it on stdout inside the
+local process boundary. No secret appears in command arguments, ordinary
+configuration, status, logs, queue payloads, or `KOED_HOME` state. Desktop
+requires its main-process platform secure provider; unsupported platforms,
+including current Windows builds, fail closed. Never set raw `PDS_AUTHORITY_*`,
+group keys, recovery material, private keys, passwords, or `env://` PDS secret
+values. Missing or malformed provider reports PDS unavailable only; local
+capture and local Recall remain usable. No raw-key fallback exists.
 
 PDS relay capability additionally requires usable Authority state and migrated
 relay repository. Relay requests authenticate only with an unexpired

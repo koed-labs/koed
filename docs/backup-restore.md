@@ -32,4 +32,7 @@ materialization, or re-serve; stale relay or backup packages remain rejected.
 Governance recovery restores control and retained validated packages only. It
 cannot undo a tombstone or recreate missing source bytes. If secure runtime or
 authority is unavailable, leave PDS paused—local captured Memory and Recall
-remain usable.
+remain usable. Recovery kits are separate, explicit 0600 encrypted files, not
+backup payloads. Back up each kit only through an offline encrypted secret
+workflow; test decrypt/fingerprint verification after restore. Loss of every
+active device and every recovery kit permanently loses group control.

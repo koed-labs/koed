@@ -758,6 +758,36 @@ describe("JSON command output", () => {
     });
   });
 
+  it("prints personal-sync status --json through koed-server", async () => {
+    const stdout = writer();
+    const calls: unknown[] = [];
+
+    const exitCode = await runKoedServerCli(
+      ["personal-sync", "status", "--json"],
+      {
+        stdout: stdout.stream,
+        resolvePaths: () => ({ configDir: "/tmp/koed/config" }) as never,
+        runPersonalSync: async (args, paths) => {
+          calls.push({ args, paths });
+          return {
+            ok: true,
+            state: "not_configured",
+            message: "Association alone synchronizes nothing."
+          };
+        }
+      }
+    );
+
+    expect(exitCode).toBe(0);
+    expect(calls).toEqual([
+      { args: ["status"], paths: { configDir: "/tmp/koed/config" } }
+    ]);
+    expect(JSON.parse(stdout.text())).toMatchObject({
+      state: "not_configured",
+      message: "Association alone synchronizes nothing."
+    });
+  });
+
   it("prints status --json", async () => {
     const stdout = writer();
 

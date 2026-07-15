@@ -112,6 +112,13 @@ not expose per-origin high-water marks, source fingerprints, package IDs,
 closure hashes, paths, retained ciphertext, keys, or source content. Conflict
 quarantine is a redacted state, never an automatic winner selection. Lifecycle metrics add only tombstone ledger count, pending snapshot ACK count, oldest tombstone ACK lag, deletion-floor count, restore rollback rejections, and conflict-resolution state counts. They never expose floor tokens, logical IDs, candidate hashes, package IDs, source fingerprints, or signed records. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
+`koed-server personal-sync status --json`, `credential status`, `key-epoch
+status`, and `replica status` use same redaction boundary. They show only
+policy, epoch, device lifecycle, freshness, processing, failure, conflict,
+revocation, and tombstone counters. They never show secret-provider references,
+private keys, recovery bytes/passwords, Team authority, API Tokens, paths,
+vectors, package bytes, or plaintext.
+
 Current durable audit action names:
 
 - `api_token.created`

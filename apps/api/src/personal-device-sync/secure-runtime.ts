@@ -1,4 +1,5 @@
 import type { KeyObject } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   createPdsSessionManifest,
   createPdsSessionPackage,
@@ -22,13 +23,32 @@ export const installPdsDesktopSecretResolver = (
   desktopSecretResolver = resolver;
 };
 
-const environmentSecretResolver =
+const providerEnvironment = (
+  environment: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv => ({
+  PATH: environment.PATH,
+  HOME: environment.HOME,
+  USER: environment.USER,
+  LANG: environment.LANG,
+  LC_ALL: environment.LC_ALL
+});
+
+const operatorSecretResolver =
   (environment: NodeJS.ProcessEnv): PdsSecretResolver =>
   (reference) => {
-    const match = /^env:\/\/([A-Z][A-Z0-9_]*)$/.exec(reference);
-    if (!match) return Promise.resolve(null);
-    const value = environment[match[1]!];
-    return Promise.resolve(value?.trim() || null);
+    const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
+    if (!command || /[\r\n\0]/.test(`${command}${reference}`))
+      return Promise.resolve(null);
+    const result = spawnSync(command, ["get", reference], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: providerEnvironment(environment)
+    });
+    return Promise.resolve(
+      result.status === 0 && typeof result.stdout === "string"
+        ? result.stdout.trim() || null
+        : null
+    );
   };
 
 const runtimeSecretResolver = (
@@ -36,7 +56,7 @@ const runtimeSecretResolver = (
 ): PdsSecretResolver | null => {
   const mode = environment.PDS_SECRET_PROVIDER?.trim();
   if (mode === "desktop") return desktopSecretResolver;
-  if (mode === "headless") return environmentSecretResolver(environment);
+  if (mode === "headless") return operatorSecretResolver(environment);
   return null;
 };
 

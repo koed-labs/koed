@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import type { MemorySourceRepository } from "@koed/db";
 import {
   PDS_PROTOCOL,
@@ -37,18 +38,32 @@ type RuntimeSecret = {
   deviceKemPrivateSeed: string;
 };
 
+const providerEnvironment = (
+  environment: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv => ({
+  PATH: environment.PATH,
+  HOME: environment.HOME,
+  USER: environment.USER,
+  LANG: environment.LANG,
+  LC_ALL: environment.LC_ALL
+});
+
 const resolveHeadlessSecret = (
   environment: NodeJS.ProcessEnv
 ): RuntimeSecret | null => {
   if (environment.PDS_SECRET_PROVIDER?.trim() !== "headless") return null;
   const reference = environment.PDS_RUNTIME_SECRET_REF?.trim();
-  const match = reference && /^env:\/\/([A-Z][A-Z0-9_]*)$/.exec(reference);
-  if (!match) return null;
+  const command = environment.PDS_SECRET_PROVIDER_COMMAND?.trim();
+  if (!reference || !command || /[\r\n\0]/.test(reference + command))
+    return null;
   try {
-    const value = JSON.parse(environment[match[1]!] ?? "") as Record<
-      string,
-      unknown
-    >;
+    const result = spawnSync(command, ["get", reference], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: providerEnvironment(environment)
+    });
+    if (result.status !== 0 || typeof result.stdout !== "string") return null;
+    const value = JSON.parse(result.stdout) as Record<string, unknown>;
     if (
       typeof value.userId !== "string" ||
       typeof value.groupId !== "string" ||
