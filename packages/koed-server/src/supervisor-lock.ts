@@ -14,7 +14,7 @@ import type { KoedServerPaths } from "./paths.js";
 export interface SupervisorLockRecord {
   pid: number;
   acquiredAt: string;
-  processIdentity: string;
+  processIdentity?: string;
 }
 
 export interface KoedServerSupervisorLock {
@@ -84,14 +84,14 @@ export const readSupervisorLock = (
     const value = JSON.parse(
       readFileSync(lockPath, "utf8")
     ) as Partial<SupervisorLockRecord>;
-    return Number.isInteger(value.pid) &&
-      Number(value.pid) > 0 &&
-      typeof value.processIdentity === "string" &&
-      value.processIdentity.length > 0
+    return Number.isInteger(value.pid) && Number(value.pid) > 0
       ? {
           pid: Number(value.pid),
           acquiredAt: String(value.acquiredAt ?? "unknown"),
-          processIdentity: value.processIdentity
+          ...(typeof value.processIdentity === "string" &&
+          value.processIdentity.length > 0
+            ? { processIdentity: value.processIdentity }
+            : {})
         }
       : null;
   } catch {
@@ -110,9 +110,8 @@ export const acquireKoedServerSupervisorLock = (
 ): KoedServerSupervisorLock => {
   const pid = options.pid ?? process.pid;
   const isRunning = options.isProcessRunning ?? processIsRunning;
-  const processIdentity = (
-    options.resolveProcessIdentity ?? resolveProcessIdentity
-  )(pid);
+  const identify = options.resolveProcessIdentity ?? resolveProcessIdentity;
+  const processIdentity = identify(pid);
   if (!processIdentity) {
     throw new Error(`Could not resolve process identity for PID ${pid}.`);
   }
@@ -142,14 +141,22 @@ export const acquireKoedServerSupervisorLock = (
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const owner = readSupervisorLock(lockPath);
-      if (
-        owner &&
-        isRunning(owner.pid) &&
-        (options.resolveProcessIdentity ?? resolveProcessIdentity)(
-          owner.pid
-        ) === owner.processIdentity
-      ) {
-        return { acquired: false, lockPath, ownerPid: owner.pid };
+      if (owner && isRunning(owner.pid)) {
+        const ownerIdentity = identify(owner.pid);
+        if (!ownerIdentity && isRunning(owner.pid)) {
+          return { acquired: false, lockPath, ownerPid: owner.pid };
+        }
+        if (ownerIdentity) {
+          if (!owner.processIdentity && owner.pid !== pid) {
+            return { acquired: false, lockPath, ownerPid: owner.pid };
+          }
+          if (
+            owner.processIdentity &&
+            ownerIdentity === owner.processIdentity
+          ) {
+            return { acquired: false, lockPath, ownerPid: owner.pid };
+          }
+        }
       }
       rmSync(lockPath, { force: true });
     }

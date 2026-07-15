@@ -73,4 +73,76 @@ describe("koed-server supervisor lock", () => {
     expect(result).toMatchObject({ acquired: true, ownerPid: 303 });
     expect(existsSync(lockPath)).toBe(true);
   });
+
+  it("preserves a released-shape lock while its supervisor is live", () => {
+    const paths = pathsForTest();
+    const lockPath = resolve(paths.runDir, "koed-server.lock");
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: 101,
+        acquiredAt: "2026-01-01T00:00:00.000Z"
+      })
+    );
+
+    const result = acquireKoedServerSupervisorLock(paths, {
+      pid: 202,
+      isProcessRunning: (pid) => pid === 101,
+      resolveProcessIdentity: (pid) =>
+        pid === 101 ? "legacy-owner" : "candidate"
+    });
+
+    expect(result).toMatchObject({ acquired: false, ownerPid: 101 });
+    expect(JSON.parse(readFileSync(lockPath, "utf8"))).toEqual({
+      pid: 101,
+      acquiredAt: "2026-01-01T00:00:00.000Z"
+    });
+  });
+
+  it("reclaims a released-shape lock when the candidate owns the same PID", () => {
+    const paths = pathsForTest();
+    const lockPath = resolve(paths.runDir, "koed-server.lock");
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: 1,
+        acquiredAt: "2026-01-01T00:00:00.000Z"
+      })
+    );
+
+    const result = acquireKoedServerSupervisorLock(paths, {
+      pid: 1,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: () => "candidate"
+    });
+
+    expect(result).toMatchObject({ acquired: true, ownerPid: 1 });
+    expect(JSON.parse(readFileSync(lockPath, "utf8"))).toMatchObject({
+      pid: 1,
+      processIdentity: "candidate"
+    });
+  });
+
+  it("preserves a live lock when process identity lookup is inconclusive", () => {
+    const paths = pathsForTest();
+    const first = acquireKoedServerSupervisorLock(paths, {
+      pid: 101,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: () => "live-owner"
+    });
+
+    const second = acquireKoedServerSupervisorLock(paths, {
+      pid: 202,
+      isProcessRunning: () => true,
+      resolveProcessIdentity: (pid) => (pid === 101 ? null : "candidate")
+    });
+
+    expect(second).toMatchObject({ acquired: false, ownerPid: 101 });
+    expect(JSON.parse(readFileSync(first.lockPath, "utf8"))).toMatchObject({
+      pid: 101,
+      processIdentity: "live-owner"
+    });
+  });
 });

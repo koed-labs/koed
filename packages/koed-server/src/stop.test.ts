@@ -19,13 +19,17 @@ const writeRuntime = (koedHome: string, runtime: KoedServerRuntimeState) => {
   );
 };
 
-const writeSupervisorLock = (koedHome: string, pid: number) => {
+const writeSupervisorLock = (
+  koedHome: string,
+  pid: number,
+  includeProcessIdentity = true
+) => {
   writeFileSync(
     resolve(koedHome, "run", "koed-server.lock"),
     JSON.stringify({
       pid,
       acquiredAt: "2026-01-01T00:00:00.000Z",
-      processIdentity: "test-supervisor"
+      ...(includeProcessIdentity ? { processIdentity: "test-supervisor" } : {})
     })
   );
 };
@@ -107,6 +111,25 @@ describe("stopKoedServer", () => {
       [10, "SIGTERM"]
     ]);
     expect(result.stoppedPids).toEqual([12, 11, 10, 100]);
+    expect(result.stoppedServices).toContain("supervisor");
+  });
+
+  it("stops a supervisor referenced by a released-shape lock", () => {
+    const koedHome = makeHome();
+    writeRuntime(koedHome, runtime({ processes: {} }));
+    writeSupervisorLock(koedHome, 100, false);
+    let supervisorRunning = true;
+
+    const result = stopKoedServer({
+      environment: { KOED_HOME: koedHome },
+      checkPid: (pid) => pid === 100 && supervisorRunning,
+      sleepSync: () => {
+        supervisorRunning = false;
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stoppedPids).toContain(100);
     expect(result.stoppedServices).toContain("supervisor");
   });
 
