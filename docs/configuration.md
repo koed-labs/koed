@@ -156,10 +156,18 @@ authorize relay traffic. Authority may be temporarily unreachable while a valid
 certificate remains unexpired; stale, expired, revoked, wrong-head, and
 wrong-epoch certificates fail closed.
 
+Every relay action rereads and locks current Group, active member, certificate,
+head, epoch, and no-pending-epoch state in same database transaction as relay
+mutation/read. Revocation or epoch transition wins races; stale actions fail
+closed. Recipient reads also bind current recipient state to intended snapshot.
+
 Relay stores canonical encrypted transport/package bytes and bounded opaque
-metadata only. It does not decrypt, project, embed, recall, inspect Project
-aliases, or access Team state. API Tokens, device credentials, Cross-Identity
-Sync configuration, and RSA envelope settings do not authorize PDS relay.
+metadata only while active. Expiry and seven-day post-quorum ACK cleanup delete
+ciphertext chunks and recipient envelopes, retaining only redacted receipt
+metadata; tombstones remain reserved. It does not decrypt, project, embed,
+recall, inspect Project aliases, or access Team state. API Tokens, device
+credentials, Cross-Identity Sync configuration, and RSA envelope settings do
+not authorize PDS relay.
 
 ## Local Edge Upstream Registry
 

@@ -536,6 +536,16 @@ export const registerOperationalRoutes = (
       return null;
     }
   };
+  const pdsRelayCapability = async () => {
+    if (!context.personalDeviceSync.authoritySigner)
+      return "unavailable" as const;
+    try {
+      await requireRepository().getPdsRelayOperationalStatus();
+      return "available" as const;
+    } catch {
+      return "unavailable" as const;
+    }
+  };
   const crossIdentitySyncCapability = async () => {
     if (
       applicationLayerEncryptionCapability(
@@ -730,18 +740,7 @@ export const registerOperationalRoutes = (
           options.envelopeEncryptionProvider
         ),
         crossIdentitySync: await crossIdentitySyncCapability(),
-        personalDeviceSync:
-          context.personalDeviceSync.authoritySigner &&
-          (() => {
-            try {
-              context.requireRepository();
-              return true;
-            } catch {
-              return false;
-            }
-          })()
-            ? "available"
-            : "unavailable"
+        personalDeviceSync: await pdsRelayCapability()
       },
       "public"
     )
@@ -788,18 +787,7 @@ export const registerOperationalRoutes = (
           options.envelopeEncryptionProvider
         ),
         crossIdentitySync: await crossIdentitySyncCapability(),
-        personalDeviceSync:
-          context.personalDeviceSync.authoritySigner &&
-          (() => {
-            try {
-              context.requireRepository();
-              return true;
-            } catch {
-              return false;
-            }
-          })()
-            ? "available"
-            : "unavailable"
+        personalDeviceSync: await pdsRelayCapability()
       },
       "authenticated",
       entitlement,
@@ -1060,6 +1048,15 @@ export const registerOperationalRoutes = (
       config.ops.alertWebhookUrl,
       Boolean(config.ops.alertWebhookToken)
     );
+    try {
+      const relay = await repo.getPdsRelayOperationalStatus();
+      components.pdsRelay = {
+        status: relay.transports.expired > 0 ? "degraded" : "ok",
+        details: { ...relay }
+      };
+    } catch {
+      components.pdsRelay = { status: "error" };
+    }
     try {
       const sync = await repo.getCrossIdentitySyncOperationalStatus();
       components.crossIdentitySync = {

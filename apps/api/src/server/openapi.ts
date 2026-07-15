@@ -129,6 +129,8 @@ const securityForIdentity = (
       return [{ bearerApiToken: [] }, { deviceCredential: [] }];
     case "device_credential":
       return [{ deviceCredential: [] }];
+    case "pds_relay_proof":
+      return [{ pdsRelayProof: [] }];
     case "internal_service_token":
       return [{ bearerApiToken: [] }];
     case "upstream_credential":
@@ -177,6 +179,13 @@ export const openApiDocument = {
         name: "Authorization",
         description:
           "Use the custom device credential header value: Koed-Device <credentialKeyId>:<secret>."
+      },
+      pdsRelayProof: {
+        type: "apiKey",
+        in: "header",
+        name: "X-PDS-Relay-Proof",
+        description:
+          "Canonical PDS relay request proof. X-PDS-Membership-Certificate is also required; browser sessions, API Tokens, and Koed-Device credentials are rejected."
       },
       sessionCookie: {
         type: "apiKey",

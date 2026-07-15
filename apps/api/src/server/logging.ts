@@ -132,10 +132,19 @@ export const serializeApiRequest = (request: unknown) => {
     getString(record, "routerPath");
   const trace = parseTraceparent(firstHeaderValue(headers?.traceparent));
 
+  const parsedPath = parsePath(url);
+  const pdsRelay =
+    route?.startsWith("/v1/personal-device-sync/relay/") ||
+    parsedPath.path?.startsWith("/v1/personal-device-sync/relay/");
   return {
     id: safeLogString(record.id) ?? "",
     method: getString(record, "method"),
-    ...parsePath(url),
+    ...(pdsRelay
+      ? {
+          path: route ?? "/v1/personal-device-sync/relay",
+          category: "pds_relay"
+        }
+      : parsedPath),
     ...(route ? { route } : {}),
     ...(trace ? { trace } : {})
   };

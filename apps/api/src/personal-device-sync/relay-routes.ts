@@ -7,6 +7,7 @@ import {
   decodePdsBase64url,
   parseCanonicalPdsJson,
   parsePdsRelayRequestProof,
+  pdsRelayRequestNonceExpiresAt,
   verifyPdsRelayRequestProof
 } from "@koed/shared";
 import type { ApiRouteContext } from "../server/context.js";
@@ -20,8 +21,7 @@ const unavailable = (): never => {
 };
 const rawBody = (request: RawRequest): Buffer =>
   request.pdsRelayRawBody ?? Buffer.alloc(0);
-const routePath = (request: FastifyRequest): string =>
-  new URL(request.url, "http://koed.local").pathname;
+const requestTarget = (request: FastifyRequest): string => request.url;
 const body = (request: RawRequest): Record<string, unknown> =>
   parseCanonicalPdsJson(rawBody(request).toString("utf8")) as Record<
     string,
@@ -52,23 +52,37 @@ const authenticate = async (request: RawRequest, context: ApiRouteContext) => {
     authorization.startsWith("koed-device ")
   )
     throw error("PDS relay requires device request proof", 403);
-  const proof = parsePdsRelayRequestProof(
-    headerValue(request, "x-pds-relay-proof")
-  );
+  let proof;
+  try {
+    proof = parsePdsRelayRequestProof(
+      headerValue(request, "x-pds-relay-proof")
+    );
+  } catch {
+    throw error("PDS relay request proof is invalid", 403);
+  }
   const certificate = headerValue(request, "x-pds-membership-certificate");
   const relay = context.requireRepository();
-  const auth = await relay.authenticatePdsRelayRequest({ certificate, proof });
-  verifyPdsRelayRequestProof({
-    proof,
-    method: request.method,
-    path: routePath(request),
-    body: rawBody(request),
-    signingPublicKey: auth.signingPublicKey
-  });
+  let auth;
+  try {
+    auth = await relay.authenticatePdsRelayRequest({ certificate, proof });
+  } catch {
+    throw unavailable();
+  }
+  try {
+    verifyPdsRelayRequestProof({
+      proof,
+      method: request.method,
+      target: requestTarget(request),
+      body: rawBody(request),
+      signingPublicKey: auth.signingPublicKey
+    });
+  } catch {
+    throw error("PDS relay request proof is invalid", 403);
+  }
   await relay.consumePdsRelayRequestNonce({
     ...auth,
     nonce: proof.nonce,
-    expiresAt: new Date(Date.now() + 5 * 60 * 1_000)
+    expiresAt: pdsRelayRequestNonceExpiresAt(proof.timestamp)
   });
   return { relay, auth };
 };
@@ -80,6 +94,8 @@ const verifyAck = (
 ): void => {
   const expected = [
     "protocol",
+    "groupId",
+    "transportId",
     "packageId",
     "sourceManifestHash",
     "recipientDeviceId",
@@ -104,7 +120,12 @@ const verifyAck = (
   ])
     b64hash(ack[key], key);
   if (
+    typeof ack.groupId !== "string" ||
+    typeof ack.transportId !== "string" ||
     typeof ack.recipientDeviceId !== "string" ||
+    !/^[A-Za-z0-9_-]{22}$/.test(ack.groupId) ||
+    !/^[A-Za-z0-9_-]{22}$/.test(ack.transportId) ||
+    !/^[A-Za-z0-9_-]{22}$/.test(ack.recipientDeviceId) ||
     typeof ack.relayAcceptedAt !== "string" ||
     typeof ack.ackedAt !== "string"
   )
@@ -140,7 +161,11 @@ export const registerPersonalDeviceSyncRelayRoutes = (
   context: ApiRouteContext
 ): void => {
   app.addHook("preParsing", async (request, _reply, payload) => {
-    if (!routePath(request).startsWith("/v1/personal-device-sync/relay/"))
+    if (
+      !new URL(request.url, "http://koed.local").pathname.startsWith(
+        "/v1/personal-device-sync/relay/"
+      )
+    )
       return payload;
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -240,10 +265,9 @@ export const registerPersonalDeviceSyncRelayRoutes = (
       if (!context.personalDeviceSync.authoritySigner)
         throw error("Personal Device Sync relay is unavailable", 503);
       const input = await authenticate(request as RawRequest, context);
-      const value = await input.relay.getPdsRelayTransport({
+      const value = await input.relay.getPdsRelayTransportMetadata({
         ...input.auth,
-        transportId: (request.params as { transportId: string }).transportId,
-        recipientOnly: true
+        transportId: (request.params as { transportId: string }).transportId
       });
       return {
         transport: value.transport,
@@ -263,16 +287,13 @@ export const registerPersonalDeviceSyncRelayRoutes = (
         transportId: string;
         chunkIndex: string;
       };
-      const value = await input.relay.getPdsRelayTransport({
-        ...input.auth,
-        transportId: params.transportId,
-        recipientOnly: true
-      });
-      const chunk = value.chunks?.find(
-        (item) => item.chunkIndex === params.chunkIndex
-      );
-      if (!chunk) throw unavailable();
-      return { chunk };
+      return {
+        chunk: await input.relay.getPdsRelayChunk({
+          ...input.auth,
+          transportId: params.transportId,
+          chunkIndex: params.chunkIndex
+        })
+      };
     }
   );
   app.post("/v1/personal-device-sync/relay/acks", pre, async (request) => {

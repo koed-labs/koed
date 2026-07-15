@@ -37,9 +37,13 @@ export const pdsRelayTransports = pgTable(
     chunkCount: text("chunk_count").notNull(),
     ciphertextBytes: text("ciphertext_bytes").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    relayAcceptedAt: timestamp("relay_accepted_at", {
+      withTimezone: true
+    }).notNull(),
     requestHash: text("request_hash").notNull(),
-    canonicalHeader: text("canonical_header").notNull(),
-    canonicalEnvelopes: text("canonical_envelopes").notNull(),
+    canonicalHeader: text("canonical_header"),
+    canonicalEnvelopes: text("canonical_envelopes"),
+    receiptMetadata: text("receipt_metadata").notNull().default("{}"),
     packageDigest: text("package_digest"),
     state: text("state").notNull().default("uploading"),
     committedAt: timestamp("committed_at", { withTimezone: true }),
@@ -48,9 +52,8 @@ export const pdsRelayTransports = pgTable(
     createdAt: now()
   },
   (table) => [
-    unique("pds_relay_transport_sender_unique").on(
+    unique("pds_relay_transport_group_unique").on(
       table.groupId,
-      table.senderDeviceId,
       table.transportId
     ),
     index("pds_relay_transport_mailbox_idx").on(

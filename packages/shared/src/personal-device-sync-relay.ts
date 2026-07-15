@@ -63,19 +63,67 @@ export const pdsRelayNonceDigest = (nonce: string): string => {
   return createHash("sha256").update(nonce, "utf8").digest("hex");
 };
 
+const encodeTargetPart = (value: string): string =>
+  encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+
+/** Canonical path plus sorted, percent-normalized query for request signatures. */
+export const canonicalizePdsRelayRequestTarget = (value: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value, "http://koed.local");
+  } catch (error) {
+    throw new TypeError("PDS relay request target is invalid", {
+      cause: error
+    });
+  }
+  const path = parsed.pathname
+    .split("/")
+    .map((segment) => {
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch (error) {
+        throw new TypeError("PDS relay request target is invalid", {
+          cause: error
+        });
+      }
+      if (decoded.includes("/") || decoded.includes("\\")) {
+        throw new TypeError("PDS relay request target is invalid");
+      }
+      return encodeTargetPart(decoded);
+    })
+    .join("/");
+  const query = [...parsed.searchParams.entries()]
+    .map(
+      ([key, queryValue]) =>
+        [encodeTargetPart(key), encodeTargetPart(queryValue)] as const
+    )
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey === rightKey
+        ? leftValue.localeCompare(rightValue)
+        : leftKey.localeCompare(rightKey)
+    );
+  return query.length
+    ? `${path}?${query.map(([key, queryValue]) => `${key}=${queryValue}`).join("&")}`
+    : path;
+};
+
 export const pdsRelayRequestSigningBytes = (
   input: Omit<PdsRelayRequestProof, "protocol" | "signature"> & {
     method: string;
-    path: string;
+    target: string;
   }
 ): Buffer => {
-  if (!/^[A-Z]+$/.test(input.method) || !input.path.startsWith("/")) {
+  if (!/^[A-Z]+$/.test(input.method)) {
     throw new TypeError("PDS relay request target is invalid");
   }
   return Buffer.from(
     `${PDS_PROTOCOL}/relay-request\n${canonicalizePdsJson({
       method: input.method,
-      path: input.path,
+      target: canonicalizePdsRelayRequestTarget(input.target),
       bodyDigest: base64(input.bodyDigest, 32, "body digest"),
       timestamp: timestamp(input.timestamp),
       nonce: base64(input.nonce, PDS_RELAY_REQUEST_NONCE_BYTES, "nonce"),
@@ -121,10 +169,26 @@ export const parsePdsRelayRequestProof = (
   };
 };
 
+export const pdsRelayRequestNonceExpiresAt = (
+  proofTimestamp: string,
+  now = new Date()
+): Date => {
+  const requestTime = new Date(timestamp(proofTimestamp)).getTime();
+  if (!Number.isFinite(now.getTime())) {
+    throw new TypeError("PDS relay clock is invalid");
+  }
+  return new Date(
+    Math.min(
+      requestTime + PDS_RELAY_REQUEST_CLOCK_SKEW_MS,
+      now.getTime() + PDS_RELAY_REQUEST_CLOCK_SKEW_MS
+    )
+  );
+};
+
 export const verifyPdsRelayRequestProof = (input: {
   proof: PdsRelayRequestProof;
   method: string;
-  path: string;
+  target: string;
   body: Uint8Array;
   signingPublicKey: string | Buffer | KeyObject;
   now?: Date;
@@ -153,7 +217,7 @@ export const verifyPdsRelayRequestProof = (input: {
       pdsRelayRequestSigningBytes({
         ...proof,
         method: input.method,
-        path: input.path
+        target: input.target
       }),
       key,
       decodePdsBase64url(proof.signature, 64)

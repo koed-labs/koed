@@ -11,6 +11,7 @@ export type RouteIdentity =
   | "api_token_or_device_credential"
   | "internal_service_token"
   | "device_credential"
+  | "pds_relay_proof"
   | "upstream_credential";
 
 export type RouteIdentityStatus = "implemented" | "not_implemented";
@@ -1095,6 +1096,69 @@ export const routeIdentityContracts = [
     "future_request_time",
     "not_implemented",
     localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/relay/transports",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay transport initialization; browser sessions, API Tokens, and legacy credentials are rejected."
+  ),
+  route(
+    "PUT",
+    "/v1/personal-device-sync/relay/transports/{transportId}/chunks/{chunkIndex}",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed exact bounded PDS relay chunk upload."
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/relay/transports/{transportId}/commit",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay transport commit."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/relay/mailbox",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay mailbox metadata."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/relay/transports/{transportId}",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay transport metadata."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/relay/transports/{transportId}/chunks/{chunkIndex}",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed exact bounded PDS relay chunk read."
+  ),
+  route(
+    "POST",
+    "/v1/personal-device-sync/relay/acks",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay package acknowledgement."
+  ),
+  route(
+    "GET",
+    "/v1/personal-device-sync/relay/cursors",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay cursor read."
+  ),
+  route(
+    "PUT",
+    "/v1/personal-device-sync/relay/cursors/{originDeviceId}",
+    "pds_relay_proof",
+    "personal_memory",
+    "Device-signed PDS relay cursor mutation."
   ),
   route(
     "POST",

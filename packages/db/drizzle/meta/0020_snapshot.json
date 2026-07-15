@@ -1,5 +1,5 @@
 {
-  "id": "9b9466f0-91a3-49cf-8235-98e124641a5b",
+  "id": "25897eea-5f18-47ab-84e9-4e870231a2d0",
   "prevId": "971958da-47ff-4e5b-a08b-1b67b5fff9e2",
   "version": "7",
   "dialect": "postgresql",
@@ -15553,6 +15553,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "relay_accepted_at": {
+          "name": "relay_accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
         "request_hash": {
           "name": "request_hash",
           "type": "text",
@@ -15563,13 +15569,20 @@
           "name": "canonical_header",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "canonical_envelopes": {
           "name": "canonical_envelopes",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "receipt_metadata": {
+          "name": "receipt_metadata",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
         },
         "package_digest": {
           "name": "package_digest",
@@ -15656,12 +15669,11 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "pds_relay_transport_sender_unique": {
-          "name": "pds_relay_transport_sender_unique",
+        "pds_relay_transport_group_unique": {
+          "name": "pds_relay_transport_group_unique",
           "nullsNotDistinct": false,
           "columns": [
             "group_id",
-            "sender_device_id",
             "transport_id"
           ]
         }

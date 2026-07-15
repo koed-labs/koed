@@ -156,9 +156,11 @@ export {
 export {
   PDS_RELAY_REQUEST_CLOCK_SKEW_MS,
   PDS_RELAY_REQUEST_NONCE_BYTES,
+  canonicalizePdsRelayRequestTarget,
   parsePdsRelayRequestProof,
   pdsRelayBodyDigest,
   pdsRelayNonceDigest,
+  pdsRelayRequestNonceExpiresAt,
   pdsRelayRequestSigningBytes,
   verifyPdsRelayRequestProof
 } from "./personal-device-sync-relay.js";

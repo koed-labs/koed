@@ -308,6 +308,23 @@ describe("route identity contract", () => {
     );
   });
 
+  it("documents PDS relay proof-only routes", () => {
+    expect(
+      routeIdentityFor("POST", "/v1/personal-device-sync/relay/transports")
+    ).toMatchObject({ identity: "pds_relay_proof", status: "implemented" });
+    expect(
+      openApiPaths["/v1/personal-device-sync/relay/transports"]?.post
+    ).toMatchObject({
+      security: [{ pdsRelayProof: [] }],
+      "x-koed-identity": "pds_relay_proof"
+    });
+    expect(openApiSecuritySchemes.pdsRelayProof).toMatchObject({
+      type: "apiKey",
+      in: "header",
+      name: "X-PDS-Relay-Proof"
+    });
+  });
+
   it("documents Team authority as request-time session-bound checks", () => {
     expect(
       routeIdentityFor("POST", "/v1/teams/{teamId}/invites")

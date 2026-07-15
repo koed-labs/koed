@@ -99,6 +99,27 @@ describe("API logging", () => {
     expect(serializedText).not.toContain("cms_team_secret");
   });
 
+  it("redacts PDS relay concrete params and query keys by route category", () => {
+    const serialized = serializeApiRequest({
+      id: "req-pds",
+      method: "GET",
+      url: "/v1/personal-device-sync/relay/transports/opaque-id/chunks/7?proof=signature&cursor=opaque",
+      routeOptions: {
+        url: "/v1/personal-device-sync/relay/transports/:transportId/chunks/:chunkIndex"
+      }
+    });
+    expect(serialized).toEqual({
+      id: "req-pds",
+      method: "GET",
+      path: "/v1/personal-device-sync/relay/transports/:transportId/chunks/:chunkIndex",
+      category: "pds_relay",
+      route:
+        "/v1/personal-device-sync/relay/transports/:transportId/chunks/:chunkIndex"
+    });
+    expect(JSON.stringify(serialized)).not.toContain("opaque-id");
+    expect(JSON.stringify(serialized)).not.toContain("signature");
+  });
+
   it("preserves W3C trace ids without logging all headers", () => {
     const serialized = serializeApiRequest({
       id: "req-2",

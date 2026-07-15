@@ -96,14 +96,17 @@ distance because monotonic source cursors may contain gaps between sessions.
 Source lag counts unsynchronized canonical changes for each selected session;
 target lag counts authenticated package records beyond the processing cursor.
 
-PDS control plane exposes capability availability and browser-authenticated
-redacted group state/head/epoch. Relay exposes bounded-cardinality package/chunk
-counts, byte totals, delivery state, ACK lag, expiry/retry class, quota state,
-and per-origin cursor state only. Audit stores transition kind, opaque group/head,
-actor key id, outcome, and timestamp. Relay logs/metrics/audit exclude Memory,
-raw source IDs, fingerprints, Project aliases, keys, recovery-kit data,
-signatures, nonces, ciphertext, credentials, browser identity, and signed record
-bodies. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
+PDS relay capability liveness requires both configured Authority signer and a
+successful relay repository status query. `/ops/status` reports implemented,
+bounded-cardinality relay metrics: uploading/committed/expired transport counts,
+active ciphertext-byte total, pending-recipient count, oldest pending ACK lag,
+group quota usage/limit, and uploading/expired retry classes. It does not report
+per-origin cursor state. Audit stores transition kind, opaque group/head, actor
+key id, outcome, and timestamp. Relay logs/metrics/audit exclude Memory, raw
+source IDs, fingerprints, Project aliases, keys, recovery-kit data, signatures,
+nonces, ciphertext, credentials, browser identity, and signed record bodies.
+PDS request logs use relay route templates/category only; they omit concrete
+route IDs and query keys. See [Personal Device Sync Protocol V1](personal-device-sync-protocol.md).
 
 Current durable audit action names:
 

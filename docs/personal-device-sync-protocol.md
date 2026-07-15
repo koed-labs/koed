@@ -506,26 +506,34 @@ Limits are hard limits before persistence:
 | compression                            | forbidden |
 
 Relay retains undelivered package bytes for 30 days from accepted upload.
-`PackageAck` is exactly `protocol`, `packageId`, `sourceManifestHash`,
-`recipientDeviceId`, `intendedRecipientSnapshotHash`, `relayAcceptedAt`,
-`ackedAt`, `result` (`materialized`), and `signature` (`signerKeyId`,
-`signature`). It signs `package-ack` bytes with `signature` omitted. Relay
-accepts ACK only once receiver has validated signed header, exact persisted
-snapshot/hash, recipient membership at acceptance, ciphertext, envelopes,
-source manifest, and authority deletion floor before materialization. Same ACK
-bytes are idempotent; same `(packageId, recipientDeviceId)` with different hash,
-result, snapshot, or signature quarantines and does not count.
+Every init, upload, metadata/read, exact chunk read, commit, ACK, and cursor
+operation locks and rereads current active Group/member/certificate/head/epoch
+with no pending epoch in same transaction as its data action. A lifecycle race
+therefore fails action rather than trusting cached authorization.
 
-After every snapshot recipient ACKs, relay deletes bytes 7 days later. If a
-snapshot recipient is revoked **after acceptance**, only a valid finalized
-revoke statement waives that recipient; relay retains waiver hash. A revoked
-recipient cannot ACK after revocation. On expiry relay deletes bytes, records
-redacted expiry, and accepts no successful ACK; an authorized active replica
-must re-upload same immutable package under a fresh header/current recipient
-snapshot. Recovery recipient may re-serve retained validated package after
-membership recovery, subject to current epoch/bundle and deletion-floor checks.
-Redacted delivery receipt may remain only through quota/audit retention.
-Retention expiry never changes local replicas.
+`PackageAck` is exactly `protocol`, `groupId`, `transportId`, `packageId`,
+`sourceManifestHash`, `recipientDeviceId`,
+`intendedRecipientSnapshotHash`, `relayAcceptedAt`, `ackedAt`, `result`
+(`materialized`), and `signature` (`signerKeyId`, `signature`). It signs
+`package-ack` bytes with `signature` omitted. Relay accepts ACK only once
+receiver has validated signed header, exact persisted transport/package/snapshot
+identity and `relayAcceptedAt`, current recipient membership, ciphertext,
+envelopes, source manifest, and authority deletion floor before materialization.
+Same ACK bytes are idempotent; same `(groupId, transportId, packageId,
+recipientDeviceId)` with different hash, result, snapshot, or signature
+quarantines and does not count.
+
+After every snapshot recipient ACKs, relay deletes encrypted chunk bytes and
+recipient envelopes 7 days later. If a snapshot recipient is revoked **after
+acceptance**, only a valid finalized revoke statement waives that recipient;
+relay retains waiver hash. A revoked recipient cannot ACK after revocation. On
+expiry relay deletes encrypted chunk bytes and envelopes, records bounded
+redacted receipt metadata, creates no tombstone, and accepts no successful ACK;
+an authorized active replica must re-upload same immutable package under a
+fresh header/current recipient snapshot. Recovery recipient may re-serve
+retained validated package after membership recovery, subject to current
+epoch/bundle and deletion-floor checks. Retention expiry never changes local
+replicas.
 
 Receiver replay table key is `(groupId, packageId)`. Same id and same signed
 source-manifest hash is idempotent. Same id with different hash is tampering:
