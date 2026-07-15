@@ -153,10 +153,15 @@ package rows as an operational workflow.
 ## Personal Device Sync V1 control plane
 
 Browser-session PDS routes provide genesis, enrollment challenge, signed group
-transitions, status/log, Personal Sync Policy, and Remote Account Link records.
-They require configured Authority signer. Bearer API Tokens and `Koed-Device`
-credentials are denied. Authority outage or equivocation freezes governance;
-local capture and Recall continue.
+transitions, key-bundle acknowledgement, scoped status/log/certificate/bundle
+retrieval, Personal Sync Policy, and Remote Account Link records. They require
+configured Authority signer. Bearer API Tokens and `Koed-Device` credentials are
+denied. Stale valid transitions return current signed head without rebasing or
+freezing; governance freezes only on verified Authority equivocation or durable
+integrity evidence. Membership epoch remains pending until every active device
+acknowledges its bound encrypted bundle. Remote Account Link accepts opaque
+proof token only and fails closed without server verifier. Tombstone and conflict
+resolution remain unavailable pending exact lifecycle persistence.
 
 Control plane is separate from directed hosted Cross-Identity Sync and its RSA
 envelopes. PDS remains `koed/pds/v1` only. Relay/package delivery,
