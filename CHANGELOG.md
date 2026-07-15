@@ -1,5 +1,11 @@
 # Koed
 
+## 0.4.2
+
+### Patch Changes
+
+- c1cba29: Make packaged Desktop stop/reopen wait for the previous supervisor to exit and preserve actionable smoke diagnostics when startup fails.
+
 ## 0.4.1
 
 ### Patch Changes
