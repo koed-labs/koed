@@ -3,11 +3,10 @@ import {
   lstatSync,
   readlinkSync,
   readdirSync,
-  rmSync,
-  symlinkSync
+  rmSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { basename, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /**
  * Electron's prebuilt macOS binary is ad-hoc signed without a sealed resource
@@ -45,41 +44,30 @@ const nestedCodeBundles = (directory) => {
   return bundles;
 };
 
-const normalizePackagedSymlinks = (directory) => {
-  const result = { removed: 0, relocated: 0 };
+export const normalizePackagedSymlinks = (directory) => {
+  let removed = 0;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const entryPath = join(directory, entry.name);
     const stat = lstatSync(entryPath);
     if (stat.isSymbolicLink()) {
       const target = readlinkSync(entryPath);
-      if (target.startsWith("/")) {
-        // The native Postgres install leaves compatibility links pointing at
-        // its staging directory. Preserve the link name but point it at the
-        // copied sibling inside the app bundle.
-        const packagedTarget = join(directory, basename(target));
-        if (!existsSync(packagedTarget)) {
-          throw new Error(
-            `Cannot relocate absolute symlink ${entryPath} -> ${target}: ${packagedTarget} is missing.`
-          );
-        }
-        rmSync(entryPath);
-        symlinkSync(basename(packagedTarget), entryPath);
-        result.relocated += 1;
+      if (isAbsolute(target)) {
+        throw new Error(
+          `Packaged app contains an absolute symlink ${entryPath} -> ${target}. Native runtime copies must preserve relative symlink targets.`
+        );
       } else if (!existsSync(entryPath)) {
         // pnpm deploy can retain workspace self-links whose targets are
         // outside the packaged app. They cannot work at runtime or be sealed.
         rmSync(entryPath);
-        result.removed += 1;
+        removed += 1;
       }
       continue;
     }
     if (stat.isDirectory()) {
-      const child = normalizePackagedSymlinks(entryPath);
-      result.removed += child.removed;
-      result.relocated += child.relocated;
+      removed += normalizePackagedSymlinks(entryPath);
     }
   }
-  return result;
+  return removed;
 };
 
 export default async function afterPack(context) {
@@ -93,11 +81,9 @@ export default async function afterPack(context) {
     throw new Error(`Expected packaged macOS app at ${appPath}.`);
   }
 
-  const symlinks = normalizePackagedSymlinks(appPath);
-  if (symlinks.removed > 0 || symlinks.relocated > 0) {
-    console.log(
-      `Normalized ${symlinks.relocated} absolute and removed ${symlinks.removed} dangling symlink(s) from ${appPath}.`
-    );
+  const removed = normalizePackagedSymlinks(appPath);
+  if (removed > 0) {
+    console.log(`Removed ${removed} dangling symlink(s) from ${appPath}.`);
   }
   if (process.env.KOED_ADHOC_SIGN_MACOS_APP !== "true") return;
 

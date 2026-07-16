@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Draft release tag whose source includes the hermetic runtime builder
+        description: Draft release name whose source supports safe Desktop recovery
         required: true
         type: string
 
@@ -20,10 +20,26 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Checkout release tag
+      - name: Resolve draft release source
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          release="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,targetCommitish)"
+          if [ "$(jq -r '.isDraft' <<< "${release}")" != "true" ]; then
+            echo "Desktop asset recovery is restricted to draft releases; ${TAG} is not a draft." >&2
+            exit 1
+          fi
+          target_commitish="$(jq -r '.targetCommitish' <<< "${release}")"
+          commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${target_commitish}" --jq '.sha')"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout immutable release source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ steps.release.outputs.commit }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
@@ -37,28 +53,39 @@ jobs:
           node-version: 24.13.1
           cache: pnpm
 
-      - name: Verify draft release and hermetic source boundary
+      - name: Verify release version and safe source boundary
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          release_is_draft="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')"
-          if [ "${release_is_draft}" != "true" ]; then
-            echo "Desktop asset recovery is restricted to draft releases; ${TAG} is not a draft." >&2
-            exit 1
-          fi
           version="$(node -e "process.stdout.write(require('./packages/koed/package.json').version)")"
           if [ "${TAG}" != "v${version}" ]; then
-            echo "Release tag ${TAG} does not match the checked-out product version v${version}." >&2
+            echo "Release name ${TAG} does not match the checked-out product version v${version}." >&2
             exit 1
           fi
-          node <<'NODE'
-          const fs = require("node:fs");
+          if [ ! -f apps/desktop/scripts/native-runtime-copy.mjs ]; then
+            echo "This release source predates safe Desktop symlink and sealing behavior. Publish a patch release instead." >&2
+            exit 1
+          fi
+          node --input-type=module <<'NODE'
+          import {
+            mkdirSync,
+            mkdtempSync,
+            readFileSync,
+            readlinkSync,
+            rmSync,
+            symlinkSync,
+            writeFileSync
+          } from "node:fs";
+          import { tmpdir } from "node:os";
+          import { resolve } from "node:path";
+          import { normalizePackagedSymlinks } from "./apps/desktop/scripts/after-pack.mjs";
+          import { copyNativeRuntimeSource } from "./apps/desktop/scripts/native-runtime-copy.mjs";
+
           const sources = JSON.parse(
-            fs.readFileSync("scripts/native-runtime/sources.macos-arm64.json", "utf8")
+            readFileSync("scripts/native-runtime/sources.macos-arm64.json", "utf8")
           );
-          const procurement = fs.readFileSync(
+          const procurement = readFileSync(
             "scripts/native-runtime/procure-runtime.mjs",
             "utf8"
           );
@@ -70,6 +97,30 @@ jobs:
             throw new Error(
               "This tag predates the hermetic macOS runtime builder and cannot be backfilled by this workflow. Publish a patch release instead."
             );
+          }
+
+          const root = mkdtempSync(resolve(tmpdir(), "koed-recovery-source-"));
+          try {
+            const source = resolve(root, "source");
+            const destination = resolve(root, "destination");
+            mkdirSync(source, { recursive: true });
+            writeFileSync(resolve(source, "target"), "fixture");
+            symlinkSync("target", resolve(source, "link"));
+            copyNativeRuntimeSource(source, destination);
+            if (readlinkSync(resolve(destination, "link")) !== "target") {
+              throw new Error("Native runtime copying does not preserve relative symlinks.");
+            }
+            symlinkSync("/staging/target", resolve(destination, "absolute-link"));
+            try {
+              normalizePackagedSymlinks(destination);
+              throw new Error("Desktop packaging accepted an absolute symlink.");
+            } catch (error) {
+              if (!String(error).includes("Packaged app contains an absolute symlink")) {
+                throw error;
+              }
+            }
+          } finally {
+            rmSync(root, { recursive: true, force: true });
           }
           NODE
 
