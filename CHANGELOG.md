@@ -1,5 +1,12 @@
 # Koed
 
+## 0.4.4
+
+### Patch Changes
+
+- 2a8db88: Fix macOS Desktop release artifacts with bundled native runtime files so they retain valid code signatures and can be verified before publication.
+- 93d8924: Accept current upstream capability metadata, route explicit Team Workspace recall through matching Project links, and recover supervisor locks safely after process reuse.
+
 ## 0.4.3
 
 ### Patch Changes
