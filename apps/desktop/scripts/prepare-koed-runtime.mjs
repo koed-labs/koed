@@ -7,7 +7,7 @@ import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest
 } from "../../../scripts/native-runtime/manifest-lib.mjs";
-import { copyNativeRuntimeSource } from "./native-runtime-copy.mjs";
+import { copyNativeRuntimeSource } from "../../../scripts/native-runtime-copy.mjs";
 
 const desktopRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(desktopRoot, "..", "..");

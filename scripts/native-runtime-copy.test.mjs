@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,12 +9,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
-import { normalizePackagedSymlinks } from "./after-pack.mjs";
+import { describe, it } from "node:test";
+import { normalizePackagedSymlinks } from "../apps/desktop/scripts/after-pack.mjs";
 import { copyNativeRuntimeSource } from "./native-runtime-copy.mjs";
 
 describe("packaged native runtime symlinks", () => {
-  it("preserves relative targets while copying the native runtime", () => {
+  it("preserves relative targets while copying staged runtime sources", () => {
     const root = mkdtempSync(resolve(tmpdir(), "koed-native-runtime-copy-"));
     const source = resolve(root, "source");
     const destination = resolve(root, "destination");
@@ -26,9 +27,10 @@ describe("packaged native runtime symlinks", () => {
 
       copyNativeRuntimeSource(source, destination);
 
-      expect(
-        readlinkSync(resolve(destination, "postgres", "lib", "libpq.dylib"))
-      ).toBe("libpq.5.dylib");
+      assert.equal(
+        readlinkSync(resolve(destination, "postgres", "lib", "libpq.dylib")),
+        "libpq.5.dylib"
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -39,8 +41,9 @@ describe("packaged native runtime symlinks", () => {
     try {
       symlinkSync("/staging/libpq.5.dylib", resolve(root, "libpq.dylib"));
 
-      expect(() => normalizePackagedSymlinks(root)).toThrow(
-        "Packaged app contains an absolute symlink"
+      assert.throws(
+        () => normalizePackagedSymlinks(root),
+        /Packaged app contains an absolute symlink/
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

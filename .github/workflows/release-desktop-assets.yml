@@ -63,7 +63,7 @@ jobs:
             echo "Release name ${TAG} does not match the checked-out product version v${version}." >&2
             exit 1
           fi
-          if [ ! -f apps/desktop/scripts/native-runtime-copy.mjs ]; then
+          if [ ! -f scripts/native-runtime-copy.mjs ]; then
             echo "This release source predates safe Desktop symlink and sealing behavior. Publish a patch release instead." >&2
             exit 1
           fi
@@ -80,7 +80,7 @@ jobs:
           import { tmpdir } from "node:os";
           import { resolve } from "node:path";
           import { normalizePackagedSymlinks } from "./apps/desktop/scripts/after-pack.mjs";
-          import { copyNativeRuntimeSource } from "./apps/desktop/scripts/native-runtime-copy.mjs";
+          import { copyNativeRuntimeSource } from "./scripts/native-runtime-copy.mjs";
 
           const sources = JSON.parse(
             readFileSync("scripts/native-runtime/sources.macos-arm64.json", "utf8")
