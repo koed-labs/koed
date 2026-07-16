@@ -4,16 +4,17 @@ Koed CI can produce unsigned macOS Desktop DMG/ZIP artifacts for internal instal
 
 ## Build in CI
 
-Every pull request runs the macOS arm64 native-runtime and packaged Desktop native-smoke jobs. To build the same artifacts from another ref, run the `CI` workflow manually with `build_native_runtime_macos_arm64=true`.
+Every pull request runs the combined macOS arm64 native-runtime and packaged Desktop native-smoke job. To build the same artifacts from another ref, run the `CI` workflow manually with `build_native_runtime_macos_arm64=true`.
 
 The workflow:
 
-1. builds and validates `koed-native-runtime-macos-arm64`;
-2. extracts it for Desktop packaging;
-3. sets `KOED_NATIVE_RUNTIME_SOURCE_DIR`;
-4. builds unsigned `dmg` and `zip` Desktop artifacts;
-5. runs packaged Desktop native smoke against the built app;
-6. uploads `koed-desktop-macos-arm64-unsigned`.
+1. builds `koed-native-runtime-macos-arm64`;
+2. extracts and validates the completed tarball at the consumer boundary;
+3. uploads the validated runtime artifact before Desktop packaging;
+4. sets `KOED_NATIVE_RUNTIME_SOURCE_DIR` to the validated extraction;
+5. builds unsigned `dmg` and `zip` Desktop artifacts;
+6. runs packaged Desktop native smoke against the built app;
+7. uploads `koed-desktop-macos-arm64-unsigned`.
 
 The uploaded Desktop artifact contains `Koed-<version>-arm64.dmg` and `Koed-<version>-arm64.zip` from `apps/desktop/release/`.
 

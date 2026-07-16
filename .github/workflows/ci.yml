@@ -19,10 +19,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     name: Format, Typecheck, Test
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 10
     services:
       postgres:
@@ -98,35 +102,8 @@ jobs:
 
   build:
     name: Build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 11.1.2
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24.13.1
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
-
-  standalone-koed-server-package:
-    name: Standalone koed-server package
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
+    runs-on: ${{ github.event_name == 'pull_request' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -166,11 +143,13 @@ jobs:
             dist/koed-server-package/linux-x64/koed-server-*/koed-server-package-manifest.json
             dist/koed-server-package/linux-x64/koed-server-*/README.txt
           if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   native-runtime-macos-arm64:
-    name: Native runtime macOS arm64
+    name: Native runtime and Packaged Desktop native smoke
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.build_native_runtime_macos_arm64)
 
     steps:
@@ -221,6 +200,39 @@ jobs:
             dist/native-runtime/macos-arm64/*.tar.gz
             dist/native-runtime/macos-arm64/*.sha256
             dist/native-runtime/macos-arm64/provenance.json
+          retention-days: 7
+          compression-level: 0
+
+      - name: Build unsigned Desktop artifacts
+        env:
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-validation/koed-runtime
+        run: pnpm desktop:package:internal:mac
+
+      - name: Verify Desktop artifact code integrity
+        run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
+
+      - name: Packaged Desktop native smoke
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+
+      - name: Upload packaged Desktop smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-macos-arm64-smoke-diagnostics
+          path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload unsigned Desktop artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-macos-arm64-unsigned
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   native-runtime-linux-x64:
     name: Native runtime Linux x64
@@ -269,6 +281,8 @@ jobs:
             dist/native-runtime/linux-x64/*.tar.gz
             dist/native-runtime/linux-x64/*.sha256
             dist/native-runtime/linux-x64/provenance.json
+          retention-days: 7
+          compression-level: 0
 
   packaged-desktop-smoke:
     name: Packaged Desktop smoke
@@ -296,76 +310,3 @@ jobs:
 
       - name: Packaged Desktop missing-asset smoke
         run: pnpm desktop:package:smoke:mac -- --json --missing-assets
-
-  packaged-desktop-native-smoke:
-    name: Packaged Desktop native smoke and unsigned artifacts
-    runs-on: macos-14
-    timeout-minutes: 50
-    needs: native-runtime-macos-arm64
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.build_native_runtime_macos_arm64)
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 11.1.2
-          run_install: false
-
-      - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
-        with:
-          node-version: 24.13.1
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Download native runtime artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: koed-native-runtime-macos-arm64
-          path: /tmp/koed-native-runtime-artifact
-
-      - name: Extract native runtime artifact
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/koed-native-runtime-extracted
-          tarball="$(find /tmp/koed-native-runtime-artifact -name 'koed-native-runtime-macos-arm64-*.tar.gz' -print -quit)"
-          test -n "${tarball}"
-          tar -xzf "${tarball}" -C /tmp/koed-native-runtime-extracted
-          test -d /tmp/koed-native-runtime-extracted/koed-runtime
-
-      - name: Validate native runtime artifact
-        run: pnpm native-runtime:validate -- --runtime-root /tmp/koed-native-runtime-extracted/koed-runtime --platform darwin --json
-
-      - name: Build unsigned Desktop artifacts
-        env:
-          KOED_NATIVE_RUNTIME_SOURCE_DIR: /tmp/koed-native-runtime-extracted/koed-runtime
-        run: pnpm desktop:package:internal:mac
-
-      - name: Verify Desktop artifact code integrity
-        run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
-
-      - name: Packaged Desktop native smoke
-        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
-
-      - name: Upload packaged Desktop smoke diagnostics
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: koed-desktop-macos-arm64-smoke-diagnostics
-          path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload unsigned Desktop artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: koed-desktop-macos-arm64-unsigned
-          path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.zip
-          if-no-files-found: error

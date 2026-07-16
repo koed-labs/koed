@@ -14,7 +14,7 @@ concurrency: ${{ github.workflow }}-${{ github.ref }}
 jobs:
   release:
     name: Version and Release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       desktop_assets_enabled: ${{ steps.release_assets.outputs.enabled }}
@@ -92,10 +92,6 @@ jobs:
           DATABASE_URL: postgres://koed:koed@127.0.0.1:5432/koed
         run: pnpm verify
 
-      - name: Build release artifacts
-        if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
-        run: pnpm build
-
       - name: Create release notes
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.release.outputs.exists == 'false'
         run: pnpm release:notes > release-notes.md
@@ -146,7 +142,7 @@ jobs:
         include:
           - platform: linux
             arch: x64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: ubuntu-24.04
           - platform: macos
             arch: arm64
             runner: macos-14
@@ -201,6 +197,8 @@ jobs:
           name: koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}
           path: release-artifacts/koed-server-app-runtime-${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Upload standalone koed-server assets to GitHub release
         env:
@@ -212,7 +210,7 @@ jobs:
 
   standalone-koed-server-release-metadata:
     name: Standalone koed-server release metadata
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs:
       - release
@@ -337,7 +335,7 @@ jobs:
 
   publish-release:
     name: Verify assets and publish release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs:
       - release
