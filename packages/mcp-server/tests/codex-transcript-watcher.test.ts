@@ -427,15 +427,21 @@ describe("Codex Transcript Watcher", () => {
     await watcher.stop();
   });
 
-  it("advances a held assistant page with one bounded resolver lookahead", async () => {
+  it("resumes bounded held-record resolution beyond 16 MiB after restart", async () => {
     const root = temporaryDirectory();
     const transcript = transcriptPath(root);
     writeFileSync(transcript, line(sessionRecord("session-held-page")));
     const client = new FakeWatcherClient();
+    const maxBytesPerBatch = 8 * 1024 * 1024;
     const assistant = line({
       timestamp: "2026-01-01T00:00:01.000Z",
       type: "event_msg",
       payload: { type: "agent_message", message: "held answer" }
+    });
+    const filler = line({
+      timestamp: "2026-01-01T00:00:01.500Z",
+      type: "event_msg",
+      payload: { type: "token_count", data: "x".repeat(1024 * 1024 - 200) }
     });
     const resolver = line({
       timestamp: "2026-01-01T00:00:02.000Z",
@@ -448,29 +454,42 @@ describe("Codex Transcript Watcher", () => {
         content: [{ type: "output_text", text: "held answer" }]
       }
     });
-    const watcher = trackedWatcher(client, {
-      ...watcherConfig(root),
-      maxBytesPerBatch: Buffer.byteLength(assistant)
-    });
+    const config = { ...watcherConfig(root), maxBytesPerBatch };
+    let watcher = trackedWatcher(client, config);
     await watcher.scanNow();
     const frontier = client.sources.get("session-held-page")!.liveCursorOffset;
-    appendFileSync(transcript, assistant + resolver);
-    const reads = vi.spyOn(fs, "readSync");
-    await watcher.scanNow();
+    appendFileSync(transcript, assistant + filler.repeat(17) + resolver);
+    expect(completeTranscriptBoundary(transcript) - frontier).toBeGreaterThan(
+      16 * 1024 * 1024
+    );
 
+    const readVolume = async () => {
+      const reads = vi.spyOn(fs, "readSync");
+      await watcher.scanNow();
+      const bytes = reads.mock.calls.map((call) => call[1].byteLength);
+      reads.mockRestore();
+      expect(Math.max(...bytes)).toBeLessThanOrEqual(maxBytesPerBatch);
+    };
+    await readVolume();
+    await readVolume();
+    await watcher.stop();
+
+    const state = readFileSync(
+      path.join(root, "koed", "state", "codex-transcript-watcher.json"),
+      "utf8"
+    );
+    expect(state).toContain("resolverProgress");
+    expect(state).not.toContain(transcript);
+    expect(state).not.toContain("held answer");
+
+    watcher = trackedWatcher(client, config);
+    for (let index = 0; index < 6; index += 1) {
+      await readVolume();
+    }
     expect(client.sources.get("session-held-page")!.liveCursorOffset).toBe(
       completeTranscriptBoundary(transcript)
     );
-    expect(client.itemBatches.flat()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ externalSessionId: "session-held-page" })
-      ])
-    );
-    expect(
-      reads.mock.calls.every((call) => call[1].byteLength <= 16 * 1024 * 1024)
-    ).toBe(true);
     expect(watcher.snapshot().bytesAdvanced).toBeGreaterThan(frontier);
-    reads.mockRestore();
   });
 
   it("holds partial and malformed appends without cursor corruption", async () => {

@@ -1732,6 +1732,7 @@ export const parseTranscriptFileRecords = (input: {
   readThroughOffset?: number;
   deferPageEndingAssistantEvent?: boolean;
   strictJsonLines?: boolean;
+  strictMaxBytes?: boolean;
 }): {
   records: unknown[];
   indexOffset: number;
@@ -1814,6 +1815,9 @@ export const parseTranscriptFileRecords = (input: {
       break;
     }
     const attemptedBytes = end - start;
+    if (input.strictMaxBytes) {
+      throw new Error("transcript_batch_record_exceeds_max_bytes");
+    }
     if (attemptedBytes >= maxTranscriptRecordBytes()) {
       throw new Error(
         `Codex transcript record exceeds MEMORY_TRANSCRIPT_MAX_RECORD_BYTES (${maxTranscriptRecordBytes()})`

@@ -34,7 +34,7 @@ export {
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
 
-const WATCHER_VERSION = 2;
+const WATCHER_VERSION = 3;
 const EMPTY_SHA256 = createHash("sha256").digest("hex");
 const PREFIX_SENTINEL_BYTES = 64 * 1024;
 const BOUNDARY_SCAN_BYTES = 64 * 1024;
@@ -265,9 +265,19 @@ export const completeTranscriptBoundary = (
 const watcherStatePath = (config: CodexTranscriptWatcherConfig): string =>
   path.join(config.koedHome, "state", "codex-transcript-watcher.json");
 
+type ResolverProgress = {
+  fileKey: string;
+  heldOffset: number;
+  heldLine: number;
+  scanOffset: number;
+  scanLine: number;
+  assistantMessagePreference?: "response_item";
+};
+
 type WatcherActivationState = {
   activatedAt: number | null;
   baselineFileFrontiers: Map<string, number | null>;
+  resolverProgress: Map<string, ResolverProgress>;
 };
 
 const readActivationState = (
@@ -282,9 +292,18 @@ const readActivationState = (
       activatedAtMs?: number;
       baselineFileKeys?: unknown;
       baselineFileFrontiers?: unknown;
+      resolverProgress?: unknown;
     };
-    if (parsed.version !== 1 && parsed.version !== WATCHER_VERSION) {
-      return { activatedAt: null, baselineFileFrontiers: new Map() };
+    if (
+      parsed.version !== 1 &&
+      parsed.version !== 2 &&
+      parsed.version !== WATCHER_VERSION
+    ) {
+      return {
+        activatedAt: null,
+        baselineFileFrontiers: new Map(),
+        resolverProgress: new Map()
+      };
     }
     const frontiers = new Map<string, number | null>();
     if (
@@ -309,14 +328,59 @@ const readActivationState = (
         if (typeof fileKey === "string") frontiers.set(fileKey, null);
       }
     }
+    const resolverProgress = new Map<string, ResolverProgress>();
+    if (
+      parsed.resolverProgress &&
+      typeof parsed.resolverProgress === "object" &&
+      !Array.isArray(parsed.resolverProgress)
+    ) {
+      for (const [sourceId, rawProgress] of Object.entries(
+        parsed.resolverProgress
+      )) {
+        if (!rawProgress || typeof rawProgress !== "object") continue;
+        const progress = rawProgress as Record<string, unknown>;
+        const numericValues = [
+          progress.heldOffset,
+          progress.heldLine,
+          progress.scanOffset,
+          progress.scanLine
+        ];
+        if (
+          typeof progress.fileKey !== "string" ||
+          numericValues.some(
+            (value) => !Number.isSafeInteger(value) || Number(value) < 0
+          ) ||
+          Number(progress.scanOffset) < Number(progress.heldOffset) ||
+          Number(progress.scanLine) < Number(progress.heldLine) ||
+          (progress.assistantMessagePreference !== undefined &&
+            progress.assistantMessagePreference !== "response_item")
+        )
+          continue;
+        resolverProgress.set(sourceId, {
+          fileKey: progress.fileKey,
+          heldOffset: Number(progress.heldOffset),
+          heldLine: Number(progress.heldLine),
+          scanOffset: Number(progress.scanOffset),
+          scanLine: Number(progress.scanLine),
+          ...(progress.assistantMessagePreference === "response_item"
+            ? { assistantMessagePreference: "response_item" }
+            : {})
+        });
+      }
+    }
     const activatedAt =
       parsed.activatedAtMs ?? Date.parse(parsed.activatedAt ?? "");
     return {
       activatedAt: Number.isFinite(activatedAt) ? activatedAt : null,
-      baselineFileFrontiers: frontiers
+      baselineFileFrontiers: frontiers,
+      resolverProgress
     };
   } catch {
-    return { activatedAt: null, baselineFileFrontiers: new Map() };
+    return {
+      activatedAt: null,
+      baselineFileFrontiers: new Map(),
+      resolverProgress: new Map()
+    };
   }
 };
 
@@ -337,7 +401,8 @@ const persistActivationState = (
             activatedAt: new Date(state.activatedAt).toISOString(),
             activatedAtMs: state.activatedAt
           }),
-      baselineFileFrontiers: Object.fromEntries(state.baselineFileFrontiers)
+      baselineFileFrontiers: Object.fromEntries(state.baselineFileFrontiers),
+      resolverProgress: Object.fromEntries(state.resolverProgress)
     })}\n`,
     { mode: 0o600 }
   );
@@ -349,7 +414,11 @@ const activate = (
   baselineFileFrontiers: Map<string, number | null>
 ): number => {
   const activatedAt = performance.timeOrigin + performance.now();
-  persistActivationState(config, { activatedAt, baselineFileFrontiers });
+  persistActivationState(config, {
+    activatedAt,
+    baselineFileFrontiers,
+    resolverProgress: new Map()
+  });
   return activatedAt;
 };
 
@@ -452,9 +521,10 @@ const sourceIdentity = (
     transcriptPath,
     state,
     stateScope: "watcher-identity",
-    maxBytes: Math.min(maxBytes, 1),
+    maxBytes,
     readThroughOffset: boundary,
-    strictJsonLines: true
+    strictJsonLines: true,
+    strictMaxBytes: true
   });
   const context = extractTranscriptSessionMetadata(parsed.records);
   return context.transcriptSessionId
@@ -533,6 +603,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly client: CodexTranscriptWatcherClient;
   private activatedAt: number | null;
   private readonly baselineFileFrontiers: Map<string, number | null>;
+  private readonly resolverProgress: Map<string, ResolverProgress>;
   private readonly discovery: BoundedTranscriptDiscovery;
   private readonly watchers: FSWatcher[] = [];
   private readonly processing = new Set<string>();
@@ -572,6 +643,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const activationState = readActivationState(config);
     this.activatedAt = activationState.activatedAt;
     this.baselineFileFrontiers = activationState.baselineFileFrontiers;
+    this.resolverProgress = activationState.resolverProgress;
     this.discovery = new BoundedTranscriptDiscovery(config);
     this.metrics = {
       state: "starting",
@@ -703,7 +775,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const fileKey = `${before.dev}:${before.ino}`;
     this.rememberBaselineFile(fileKey);
     if (this.sourcePathUnchanged(transcriptPath, before)) return;
-    const boundary = completeTranscriptBoundary(transcriptPath);
+    const boundary = completeTranscriptBoundary(
+      transcriptPath,
+      this.config.maxBytesPerBatch
+    );
     this.rememberBaselineFile(fileKey, boundary);
     const cachedIdentity = this.identities.get(transcriptPath);
     const parsedIdentity =
@@ -722,10 +797,18 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.rememberIdentity(transcriptPath, { ...identity, fileKey });
     let source = await lookupSource(this.client, identity.sessionId);
     if (source) {
+      const resolver = this.resolverProgress.get(source.id);
+      if (resolver && resolver.fileKey !== fileKey) {
+        this.clearResolver(source.id);
+      } else if (resolver && resolver.scanOffset > boundary) {
+        this.clearResolver(source.id);
+        throw new Error("transcript_truncated");
+      }
       if (
         source.sourceSizeBytes !== null &&
         before.size < source.sourceSizeBytes
       ) {
+        this.clearResolver(source.id);
         throw new Error("transcript_truncated");
       }
       const priorObservation = this.sourcePaths.get(source.id);
@@ -736,7 +819,12 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
         priorObservation?.size !== before.size ||
         priorObservation?.modifiedAt !== before.mtime.toISOString();
       if (firstPathObservation || sourceChanged) {
-        await this.verifyCursorSentinels(source, transcriptPath, before.size);
+        try {
+          await this.verifyCursorSentinels(source, transcriptPath, before.size);
+        } catch (error) {
+          this.clearResolver(source.id);
+          throw error;
+        }
       }
       if (firstPathObservation) {
         source = await this.refreshSourcePath(source, transcriptPath, before);
@@ -751,8 +839,16 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       );
     }
     this.rememberSourcePath(source, transcriptPath, before);
+    const resolver = this.resolverProgress.get(source.id);
+    if (resolver && resolver.fileKey !== fileKey) this.clearResolver(source.id);
     if (boundary <= source.liveCursorOffset) return;
-    await this.ingestPage(source, transcriptPath, identity.context, boundary);
+    try {
+      await this.ingestPage(source, transcriptPath, identity.context, boundary);
+    } catch (error) {
+      this.clearResolver(source.id);
+      this.parserStates.delete(source.id);
+      throw error;
+    }
   }
 
   private sourcePathUnchanged(transcriptPath: string, file: Stats): boolean {
@@ -771,10 +867,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const frontier = boundary ?? null;
     if (this.baselineFileFrontiers.get(fileKey) === frontier) return;
     this.baselineFileFrontiers.set(fileKey, frontier);
-    persistActivationState(this.config, {
-      activatedAt: this.activatedAt,
-      baselineFileFrontiers: this.baselineFileFrontiers
-    });
+    this.persistWatcherState();
   }
 
   private rememberIdentity(
@@ -811,6 +904,19 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       this.sourcePaths.delete(oldest);
       this.parserStates.delete(oldest);
     }
+  }
+
+  private persistWatcherState(): void {
+    persistActivationState(this.config, {
+      activatedAt: this.activatedAt,
+      baselineFileFrontiers: this.baselineFileFrontiers,
+      resolverProgress: this.resolverProgress
+    });
+  }
+
+  private clearResolver(sourceId: string): void {
+    if (!this.resolverProgress.delete(sourceId)) return;
+    this.persistWatcherState();
   }
 
   private async ensureRunId(): Promise<string> {
@@ -850,10 +956,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     });
     this.metrics.sourcesRegistered += 1;
     this.baselineFileFrontiers.delete(fileKey);
-    persistActivationState(this.config, {
-      activatedAt: this.activatedAt,
-      baselineFileFrontiers: this.baselineFileFrontiers
-    });
+    this.persistWatcherState();
     return responseValue<HistoricalSource>(response, "source");
   }
 
@@ -949,7 +1052,8 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       stateScope: "watcher",
       maxBytes: this.config.maxBytesPerBatch,
       readThroughOffset: source.liveCursorOffset,
-      strictJsonLines: false
+      strictJsonLines: false,
+      strictMaxBytes: true
     });
     if (!parsed.checkpoint) return null;
     this.applyParserCheckpoint(entry.state, parsed.checkpoint);
@@ -963,6 +1067,91 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     return entry.state;
   }
 
+  private startResolver(
+    source: HistoricalSource,
+    fileKey: string,
+    checkpoint: NonNullable<
+      ReturnType<typeof parseTranscriptFileRecords>["checkpoint"]
+    >
+  ): void {
+    this.resolverProgress.set(source.id, {
+      fileKey,
+      heldOffset: checkpoint.offset,
+      heldLine: checkpoint.lineCount,
+      scanOffset: checkpoint.offset,
+      scanLine: checkpoint.lineCount
+    });
+    this.persistWatcherState();
+  }
+
+  private advanceResolver(
+    source: HistoricalSource,
+    transcriptPath: string,
+    fileKey: string,
+    boundary: number,
+    checkpoint: NonNullable<
+      ReturnType<typeof parseTranscriptFileRecords>["checkpoint"]
+    >
+  ): ResolverProgress | null {
+    let progress = this.resolverProgress.get(source.id);
+    if (
+      !progress ||
+      progress.fileKey !== fileKey ||
+      progress.heldOffset !== checkpoint.offset
+    ) {
+      progress = {
+        fileKey,
+        heldOffset: checkpoint.offset,
+        heldLine: checkpoint.lineCount,
+        scanOffset: checkpoint.offset,
+        scanLine: checkpoint.lineCount
+      };
+    }
+    const key = `watcher:${transcriptPath}`;
+    const resolverState: CodexTranscriptCheckpointState = {
+      seen: {},
+      rawSeen: {},
+      transcriptOffsets: {
+        [key]: {
+          offset: progress.scanOffset,
+          lineCount: progress.scanLine,
+          size: boundary,
+          ...(progress.assistantMessagePreference
+            ? {
+                assistantMessagePreference: progress.assistantMessagePreference
+              }
+            : {})
+        }
+      }
+    };
+    const parsed = parseTranscriptFileRecords({
+      transcriptPath,
+      state: resolverState,
+      stateScope: "watcher",
+      maxBytes: this.config.maxBytesPerBatch,
+      readThroughOffset: boundary,
+      strictJsonLines: true,
+      strictMaxBytes: true
+    });
+    if (!parsed.checkpoint || parsed.checkpoint.offset <= progress.scanOffset) {
+      return null;
+    }
+    const next: ResolverProgress = {
+      ...progress,
+      scanOffset: parsed.checkpoint.offset,
+      scanLine: parsed.checkpoint.lineCount,
+      ...(parsed.checkpoint.assistantMessagePreference
+        ? {
+            assistantMessagePreference:
+              parsed.checkpoint.assistantMessagePreference
+          }
+        : {})
+    };
+    this.resolverProgress.set(source.id, next);
+    this.persistWatcherState();
+    return next;
+  }
+
   private async ingestPage(
     source: HistoricalSource,
     transcriptPath: string,
@@ -971,28 +1160,50 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   ): Promise<void> {
     const state = this.parserStateAtCursor(source, transcriptPath);
     if (!state) return;
-    let parsed = parseTranscriptFileRecords({
+    const resolver = this.resolverProgress.get(source.id);
+    if (resolver && !resolver.assistantMessagePreference) {
+      const file = await stat(transcriptPath);
+      this.advanceResolver(
+        source,
+        transcriptPath,
+        `${file.dev}:${file.ino}`,
+        boundary,
+        {
+          key: `watcher:${transcriptPath}`,
+          offset: resolver.heldOffset,
+          lineCount: resolver.heldLine,
+          size: boundary
+        }
+      );
+      this.scanRequested = true;
+      return;
+    }
+    if (resolver?.assistantMessagePreference) {
+      const key = `watcher:${transcriptPath}`;
+      const checkpoint = state.transcriptOffsets?.[key];
+      if (checkpoint) {
+        checkpoint.assistantMessagePreference =
+          resolver.assistantMessagePreference;
+      }
+    }
+    const parsed = parseTranscriptFileRecords({
       transcriptPath,
       state,
       stateScope: "watcher",
       maxBytes: this.config.maxBytesPerBatch,
       readThroughOffset: boundary,
       deferPageEndingAssistantEvent: true,
-      strictJsonLines: true
+      strictJsonLines: true,
+      strictMaxBytes: true
     });
     if (
       parsed.checkpoint?.offset === source.liveCursorOffset &&
       boundary > source.liveCursorOffset
     ) {
-      parsed = parseTranscriptFileRecords({
-        transcriptPath,
-        state,
-        stateScope: "watcher",
-        maxBytes: Math.max(this.config.maxBytesPerBatch, 16 * 1024 * 1024),
-        readThroughOffset: boundary,
-        deferPageEndingAssistantEvent: true,
-        strictJsonLines: true
-      });
+      const file = await stat(transcriptPath);
+      this.startResolver(source, `${file.dev}:${file.ino}`, parsed.checkpoint);
+      this.scanRequested = true;
+      return;
     }
     const checkpoint = parsed.checkpoint;
     if (!checkpoint || checkpoint.offset <= source.liveCursorOffset) return;
@@ -1046,6 +1257,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     });
     source.liveCursorOffset = checkpoint.offset;
     source.sourceSizeBytes = current.size;
+    const completedResolver = this.resolverProgress.get(source.id);
+    if (completedResolver && checkpoint.offset > completedResolver.heldOffset) {
+      this.clearResolver(source.id);
+    }
     this.rememberSourcePath(source, transcriptPath, current);
     this.applyParserCheckpoint(state, checkpoint);
     this.metrics.batchesIngested += 1;
