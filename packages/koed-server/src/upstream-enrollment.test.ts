@@ -193,6 +193,7 @@ const registerValidatedBackend = async () => {
 afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
+    rmSync(`${path}-proof-root`, { recursive: true, force: true });
   }
   for (const path of proofTemps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
@@ -249,6 +250,7 @@ describe("upstream enrollment orchestration", () => {
     expect(enrolledDeviceId).toBe(identity.deviceInstanceId);
 
     rmSync(`${paths.koedHome}-proof`, { recursive: true, force: true });
+    rmSync(`${paths.koedHome}-proof-root`, { recursive: true, force: true });
     rmSync(process.env.KOED_DEVICE_PROOF_DIR!, {
       recursive: true,
       force: true
