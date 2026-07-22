@@ -451,6 +451,28 @@ describeDb("durable historical import repository", () => {
           sourceId: source!.id,
           expectedCheckpointOffset: 60,
           expectedCheckpointHash: "5".repeat(64),
+          checkpointOffset: 80,
+          checkpointLine: 3,
+          checkpointHash: "7".repeat(64),
+          sourceSizeBytes: 175,
+          importedRecordCount: 1
+        }
+      )
+    ).rejects.toThrow("conflict");
+    expect(
+      await repo.getHistoricalImportSource({ userId: owner.id }, source!.id)
+    ).toMatchObject({
+      checkpointOffset: 60,
+      sourceSizeBytes: 200,
+      liveCursorOffset: 150
+    });
+    await expect(
+      repo.advanceHistoricalImportSource(
+        { userId: owner.id },
+        {
+          sourceId: source!.id,
+          expectedCheckpointOffset: 60,
+          expectedCheckpointHash: "5".repeat(64),
           checkpointOffset: 110,
           checkpointLine: 4,
           checkpointHash: "7".repeat(64),

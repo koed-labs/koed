@@ -690,6 +690,11 @@ const validateBatchCheckpoint = (
   source: HistoricalImportSourceRecord,
   input: HistoricalImportBatchWriteInput
 ): "write" | "replay" => {
+  if (input.sourceSizeBytes < (source.sourceSizeBytes ?? 0)) {
+    throw Object.assign(new Error("Historical import checkpoint conflict"), {
+      statusCode: 409
+    });
+  }
   if (
     source.checkpointOffset === input.checkpointOffset &&
     source.checkpointLine === input.checkpointLine &&
@@ -908,6 +913,7 @@ const advanceSourceWithClient = async (
        and $4 <= registration_frontier_offset
        and ($4 < registration_frontier_offset or $6 = registration_prefix_hash)
        and $7 >= live_cursor_offset
+       and $7 >= coalesce(source_size_bytes, 0)
        and state in ('queued', 'importing') returning *`,
     [
       actor.userId,

@@ -573,6 +573,58 @@ describe("Codex Transcript Watcher", () => {
     expect(watcher.snapshot().lastErrorCode).toBe("transcript_truncated");
   });
 
+  it("rejects a mid-page truncation below its initial complete boundary", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    const sessionId = "session-mid-page-truncation";
+    writeFileSync(transcript, line(sessionRecord(sessionId)));
+    const frontier = completeTranscriptBoundary(transcript);
+    const prefixHash = await hashFilePrefixSentinels(transcript, frontier);
+    const client = new FakeWatcherClient();
+    client.sources.set(sessionId, {
+      id: "source-mid-page-truncation",
+      runId: "11111111-1111-4111-8111-111111111111",
+      sourceSessionId: sessionId,
+      sourceFingerprint: "1".repeat(64),
+      registrationFrontierOffset: frontier,
+      registrationPrefixHash: prefixHash,
+      liveCursorOffset: frontier,
+      liveCursorLine: 1,
+      liveCursorHash: prefixHash,
+      sourceSizeBytes: frontier,
+      sourceModifiedAt: null,
+      localSourcePath: transcript,
+      detectedProject: {}
+    });
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+
+    appendFileSync(
+      transcript,
+      Array.from({ length: 200 }, (_, index) =>
+        line(userRecord("x".repeat(1_000), index + 1))
+      ).join("")
+    );
+    const boundary = completeTranscriptBoundary(transcript);
+    expect(boundary).toBeGreaterThan(128 * 1024);
+    client.afterCreateItems = () => {
+      writeFileSync(
+        transcript,
+        readFileSync(transcript).subarray(0, 100 * 1024)
+      );
+    };
+
+    await watcher.scanNow();
+
+    expect(statSync(transcript).size).toBeLessThan(boundary);
+    expect(client.cursorWrites).toHaveLength(0);
+    expect(client.sources.get(sessionId)).toMatchObject({
+      sourceSizeBytes: frontier,
+      liveCursorOffset: frontier
+    });
+    expect(watcher.snapshot().lastErrorCode).toBe("transcript_truncated");
+  });
+
   it("detects truncation and treats inode rotation as a new live source", async () => {
     const root = temporaryDirectory();
     const transcript = transcriptPath(root);

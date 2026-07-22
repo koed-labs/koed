@@ -992,6 +992,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     const current = await stat(transcriptPath);
     if (
       current.size < checkpoint.offset ||
+      current.size < boundary ||
       (source.sourceSizeBytes !== null && current.size < source.sourceSizeBytes)
     ) {
       throw new Error("transcript_truncated");
