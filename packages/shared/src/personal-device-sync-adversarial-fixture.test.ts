@@ -44,6 +44,10 @@ type StoredPackage = {
   manifest: PdsSessionManifest;
   package: PdsSessionPackage;
 };
+type KeyBundleRecipient = Pick<Device, "id" | "kemKeyId" | "kem">;
+type MutableVersionPackage = Omit<PdsSessionPackage, "header"> & {
+  header: Omit<PdsSessionPackage["header"], "version"> & { version: string };
+};
 
 const NOW = new Date("2026-07-15T00:00:00.000Z");
 const EXPIRES = "2026-07-20T00:00:00.000Z";
@@ -60,7 +64,7 @@ const bytes = (value: number): string =>
   Buffer.alloc(32, value).toString("base64url");
 
 // Published non-production fixture material. Never accepted by deployment config.
-const keys: Record<string, FixtureKey> = {
+const keys = {
   authority: {
     publicKey: "OYxsvNdshY9FXWXeuccL7VKae17-sIUD0YEHV21mHE0",
     privateSeed: "SrOLMXs6afGTmZuj_9Wsc85MzHw7rXNXjtsJRgFMykc"
@@ -105,7 +109,7 @@ const keys: Record<string, FixtureKey> = {
     publicKey: "60B4EXBIwT6lpQ4fClJWONWaIVb2gkXBMYHhUl1Ac24",
     privateSeed: "UIOlWRv95Lc1td4PeafcN3Qfxsk0CXeNtz8Qgl6IeFw"
   }
-};
+} satisfies Record<string, FixtureKey>;
 
 const kemOrder: Record<string, number> = {
   alpha: 2,
@@ -210,7 +214,7 @@ class Authority {
     kind: "add-device" | "revoke-device" | "recover",
     epoch: string
   ): string {
-    const recipients = [
+    const recipients: KeyBundleRecipient[] = [
       ...nextMembers,
       { id: this.recoveryId, kemKeyId: this.recoveryId, kem: keys.recoveryKem }
     ].sort((left, right) => left.id.localeCompare(right.id));
@@ -1010,7 +1014,7 @@ describe("PDS adversarial deterministic in-memory fixture", () => {
     const clone = new DeviceStore();
     clone.quarantine("same-origin-sequence", "other-closure");
     expect(clone.state).toBe("quarantined");
-    const downgraded = structuredClone(pkg);
+    const downgraded = structuredClone(pkg) as MutableVersionPackage;
     downgraded.header.version = "0";
     expect(() =>
       verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(downgraded), {
@@ -1019,7 +1023,7 @@ describe("PDS adversarial deterministic in-memory fixture", () => {
         now: NOW
       })
     ).toThrow("version");
-    const unknown = structuredClone(pkg);
+    const unknown = structuredClone(pkg) as MutableVersionPackage;
     unknown.header.version = "2";
     expect(() =>
       verifyAndDecryptPdsSessionPackage(canonicalizePdsJson(unknown), {
