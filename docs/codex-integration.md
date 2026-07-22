@@ -2,6 +2,9 @@
 
 Codex is currently the only supported AI Client for Koed.
 
+For an experimental recall-only Claude Code setup, see
+[Claude Code integration](claude-code-integration.md).
+
 ## Recommended Setup
 
 Start the local control plane supervisor in one terminal:
