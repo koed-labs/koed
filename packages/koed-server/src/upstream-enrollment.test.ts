@@ -23,9 +23,12 @@ import {
 } from "./upstream-enrollment.js";
 
 const temps: string[] = [];
+const proofEnvRestores: Array<string | undefined> = [];
 
 const tempPaths = () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-upstream-enroll-"));
+  proofEnvRestores.push(process.env.KOED_DEVICE_PROOF_DIR);
+  process.env.KOED_DEVICE_PROOF_DIR = resolve(`${root}-proof`);
   temps.push(root);
   return resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root });
 };
@@ -185,6 +188,13 @@ const registerValidatedBackend = async () => {
 afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
+    rmSync(`${path}-proof`, { recursive: true, force: true });
+  }
+  const previousProofDir = proofEnvRestores.pop();
+  if (previousProofDir === undefined) {
+    delete process.env.KOED_DEVICE_PROOF_DIR;
+  } else {
+    process.env.KOED_DEVICE_PROOF_DIR = previousProofDir;
   }
 });
 
