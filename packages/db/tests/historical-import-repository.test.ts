@@ -909,6 +909,30 @@ describeDb("durable historical import repository", () => {
       repo.ingestHistoricalImportBatch({ userId: owner.id }, batch)
     ]);
     expect([first.replayed, retry.replayed].sort()).toEqual([false, true]);
+    const liveCursor = {
+      sourceId: source!.id,
+      expectedCursorOffset: 100,
+      expectedCursorHash: "e".repeat(64),
+      cursorOffset: 110,
+      cursorLine: 2,
+      cursorHash: "f".repeat(64),
+      sourceSizeBytes: 110
+    };
+    await repo.advanceLiveTranscriptCursor({ userId: owner.id }, liveCursor);
+    await repo.observeHistoricalImportSource(
+      { userId: owner.id },
+      {
+        sourceId: source!.id,
+        localSourcePath: "/Users/private/.codex/sessions/batch.jsonl",
+        sourceSizeBytes: 120
+      }
+    );
+    await expect(
+      repo.advanceLiveTranscriptCursor({ userId: owner.id }, liveCursor)
+    ).resolves.toMatchObject({ liveCursorOffset: 110 });
+    await expect(
+      repo.ingestHistoricalImportBatch({ userId: owner.id }, batch)
+    ).resolves.toMatchObject({ replayed: true });
     const stored = await pool.query<{
       source_path: string | null;
       captured_project: Record<string, unknown>;

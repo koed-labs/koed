@@ -34,7 +34,7 @@ export {
   watcherWakePath
 } from "./codex-transcript-watcher-signal.js";
 
-const WATCHER_VERSION = 1;
+const WATCHER_VERSION = 2;
 const EMPTY_SHA256 = createHash("sha256").digest("hex");
 const PREFIX_SENTINEL_BYTES = 64 * 1024;
 const BOUNDARY_SCAN_BYTES = 64 * 1024;
@@ -267,7 +267,7 @@ const watcherStatePath = (config: CodexTranscriptWatcherConfig): string =>
 
 type WatcherActivationState = {
   activatedAt: number | null;
-  baselineFileKeys: Set<string>;
+  baselineFileFrontiers: Map<string, number | null>;
 };
 
 const readActivationState = (
@@ -281,24 +281,42 @@ const readActivationState = (
       activatedAt?: string;
       activatedAtMs?: number;
       baselineFileKeys?: unknown;
+      baselineFileFrontiers?: unknown;
     };
-    if (parsed.version !== WATCHER_VERSION) {
-      return { activatedAt: null, baselineFileKeys: new Set() };
+    if (parsed.version !== 1 && parsed.version !== WATCHER_VERSION) {
+      return { activatedAt: null, baselineFileFrontiers: new Map() };
+    }
+    const frontiers = new Map<string, number | null>();
+    if (
+      parsed.baselineFileFrontiers &&
+      typeof parsed.baselineFileFrontiers === "object"
+    ) {
+      for (const [fileKey, frontier] of Object.entries(
+        parsed.baselineFileFrontiers
+      )) {
+        if (frontier === null) {
+          frontiers.set(fileKey, null);
+        } else if (
+          typeof frontier === "number" &&
+          Number.isSafeInteger(frontier) &&
+          frontier >= 0
+        ) {
+          frontiers.set(fileKey, frontier);
+        }
+      }
+    } else if (Array.isArray(parsed.baselineFileKeys)) {
+      for (const fileKey of parsed.baselineFileKeys) {
+        if (typeof fileKey === "string") frontiers.set(fileKey, null);
+      }
     }
     const activatedAt =
       parsed.activatedAtMs ?? Date.parse(parsed.activatedAt ?? "");
     return {
       activatedAt: Number.isFinite(activatedAt) ? activatedAt : null,
-      baselineFileKeys: new Set(
-        Array.isArray(parsed.baselineFileKeys)
-          ? parsed.baselineFileKeys.filter(
-              (value): value is string => typeof value === "string"
-            )
-          : []
-      )
+      baselineFileFrontiers: frontiers
     };
   } catch {
-    return { activatedAt: null, baselineFileKeys: new Set() };
+    return { activatedAt: null, baselineFileFrontiers: new Map() };
   }
 };
 
@@ -319,7 +337,7 @@ const persistActivationState = (
             activatedAt: new Date(state.activatedAt).toISOString(),
             activatedAtMs: state.activatedAt
           }),
-      baselineFileKeys: [...state.baselineFileKeys]
+      baselineFileFrontiers: Object.fromEntries(state.baselineFileFrontiers)
     })}\n`,
     { mode: 0o600 }
   );
@@ -328,10 +346,10 @@ const persistActivationState = (
 
 const activate = (
   config: CodexTranscriptWatcherConfig,
-  baselineFileKeys: Set<string>
+  baselineFileFrontiers: Map<string, number | null>
 ): number => {
   const activatedAt = performance.timeOrigin + performance.now();
-  persistActivationState(config, { activatedAt, baselineFileKeys });
+  persistActivationState(config, { activatedAt, baselineFileFrontiers });
   return activatedAt;
 };
 
@@ -514,7 +532,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   private readonly config: CodexTranscriptWatcherConfig;
   private readonly client: CodexTranscriptWatcherClient;
   private activatedAt: number | null;
-  private readonly baselineFileKeys: Set<string>;
+  private readonly baselineFileFrontiers: Map<string, number | null>;
   private readonly discovery: BoundedTranscriptDiscovery;
   private readonly watchers: FSWatcher[] = [];
   private readonly processing = new Set<string>();
@@ -553,7 +571,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.config = config;
     const activationState = readActivationState(config);
     this.activatedAt = activationState.activatedAt;
-    this.baselineFileKeys = activationState.baselineFileKeys;
+    this.baselineFileFrontiers = activationState.baselineFileFrontiers;
     this.discovery = new BoundedTranscriptDiscovery(config);
     this.metrics = {
       state: "starting",
@@ -651,7 +669,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
         await this.processPathOnce(transcriptPath);
       }
       if (this.activatedAt === null && discovery.cycleComplete) {
-        this.activatedAt = activate(this.config, this.baselineFileKeys);
+        this.activatedAt = activate(this.config, this.baselineFileFrontiers);
         this.metrics.state = "running";
       }
       if (this.failureCount === failuresBefore) {
@@ -686,6 +704,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     this.rememberBaselineFile(fileKey);
     if (this.sourcePathUnchanged(transcriptPath, before)) return;
     const boundary = completeTranscriptBoundary(transcriptPath);
+    this.rememberBaselineFile(fileKey, boundary);
     const cachedIdentity = this.identities.get(transcriptPath);
     const parsedIdentity =
       cachedIdentity?.fileKey === fileKey
@@ -747,12 +766,14 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     );
   }
 
-  private rememberBaselineFile(fileKey: string): void {
-    if (this.activatedAt !== null || this.baselineFileKeys.has(fileKey)) return;
-    this.baselineFileKeys.add(fileKey);
+  private rememberBaselineFile(fileKey: string, boundary?: number): void {
+    if (this.activatedAt !== null) return;
+    const frontier = boundary ?? null;
+    if (this.baselineFileFrontiers.get(fileKey) === frontier) return;
+    this.baselineFileFrontiers.set(fileKey, frontier);
     persistActivationState(this.config, {
       activatedAt: this.activatedAt,
-      baselineFileKeys: this.baselineFileKeys
+      baselineFileFrontiers: this.baselineFileFrontiers
     });
   }
 
@@ -806,10 +827,13 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
     fileKey: string,
     identity: { sessionId: string; context: TranscriptContext }
   ): Promise<HistoricalSource> {
+    const baselineFrontier = this.baselineFileFrontiers.get(fileKey);
     const frontier =
-      this.activatedAt === null || this.baselineFileKeys.has(fileKey)
+      this.activatedAt === null
         ? boundary
-        : 0;
+        : baselineFrontier === undefined
+          ? 0
+          : (baselineFrontier ?? boundary);
     const prefixHash = await hashFilePrefixSentinels(transcriptPath, frontier);
     const response = await this.client.createHistoricalImportSource({
       runId: await this.ensureRunId(),
@@ -825,10 +849,10 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       detectedProject: projectFromContext(identity.context)
     });
     this.metrics.sourcesRegistered += 1;
-    this.baselineFileKeys.delete(fileKey);
+    this.baselineFileFrontiers.delete(fileKey);
     persistActivationState(this.config, {
       activatedAt: this.activatedAt,
-      baselineFileKeys: this.baselineFileKeys
+      baselineFileFrontiers: this.baselineFileFrontiers
     });
     return responseValue<HistoricalSource>(response, "source");
   }
@@ -947,7 +971,7 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
   ): Promise<void> {
     const state = this.parserStateAtCursor(source, transcriptPath);
     if (!state) return;
-    const parsed = parseTranscriptFileRecords({
+    let parsed = parseTranscriptFileRecords({
       transcriptPath,
       state,
       stateScope: "watcher",
@@ -956,6 +980,20 @@ class CodexTranscriptWatcher implements CodexTranscriptWatcherHandle {
       deferPageEndingAssistantEvent: true,
       strictJsonLines: true
     });
+    if (
+      parsed.checkpoint?.offset === source.liveCursorOffset &&
+      boundary > source.liveCursorOffset
+    ) {
+      parsed = parseTranscriptFileRecords({
+        transcriptPath,
+        state,
+        stateScope: "watcher",
+        maxBytes: Math.max(this.config.maxBytesPerBatch, 16 * 1024 * 1024),
+        readThroughOffset: boundary,
+        deferPageEndingAssistantEvent: true,
+        strictJsonLines: true
+      });
+    }
     const checkpoint = parsed.checkpoint;
     if (!checkpoint || checkpoint.offset <= source.liveCursorOffset) return;
     const cursorHash = await hashFilePrefixSentinels(

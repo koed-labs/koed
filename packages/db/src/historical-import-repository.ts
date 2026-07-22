@@ -690,11 +690,6 @@ const validateBatchCheckpoint = (
   source: HistoricalImportSourceRecord,
   input: HistoricalImportBatchWriteInput
 ): "write" | "replay" => {
-  if (input.sourceSizeBytes < (source.sourceSizeBytes ?? 0)) {
-    throw Object.assign(new Error("Historical import checkpoint conflict"), {
-      statusCode: 409
-    });
-  }
   if (
     source.checkpointOffset === input.checkpointOffset &&
     source.checkpointLine === input.checkpointLine &&
@@ -702,6 +697,11 @@ const validateBatchCheckpoint = (
     input.checkpointOffset > input.expectedCheckpointOffset
   ) {
     return "replay";
+  }
+  if (input.sourceSizeBytes < (source.sourceSizeBytes ?? 0)) {
+    throw Object.assign(new Error("Historical import checkpoint conflict"), {
+      statusCode: 409
+    });
   }
   if (
     !["queued", "importing"].includes(source.state) ||
@@ -1133,11 +1133,6 @@ const advanceLiveCursorRecord = (
     await lockImportOwner(client, actor.userId);
     const source = await requireSourceForUpdate(client, actor, input.sourceId);
     const expectedHash = input.expectedCursorHash ?? null;
-    if (input.sourceSizeBytes < (source.sourceSizeBytes ?? 0)) {
-      throw Object.assign(new Error("Live transcript cursor conflict"), {
-        statusCode: 409
-      });
-    }
     if (
       source.liveCursorOffset === input.cursorOffset &&
       source.liveCursorLine === input.cursorLine &&
@@ -1145,6 +1140,11 @@ const advanceLiveCursorRecord = (
       input.cursorOffset > input.expectedCursorOffset
     ) {
       return source;
+    }
+    if (input.sourceSizeBytes < (source.sourceSizeBytes ?? 0)) {
+      throw Object.assign(new Error("Live transcript cursor conflict"), {
+        statusCode: 409
+      });
     }
     if (
       source.liveCursorOffset !== input.expectedCursorOffset ||

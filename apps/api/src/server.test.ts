@@ -10904,8 +10904,8 @@ describe("account and access flows", () => {
         localSourcePath: "/Users/alice/.codex/sessions/private.jsonl",
         sourceSizeBytes: 100,
         detectedProject: {
+          projectId: "project-history",
           name: "Koed",
-          path: "/Users/alice/private/koed",
           branch: "main"
         }
       }
@@ -10931,9 +10931,19 @@ describe("account and access flows", () => {
     expect(lookup.statusCode).toBe(200);
     expect(lookup.body).not.toContain("/Users/alice");
     expect(
-      jsonBody<{ source: { id: string; sourceLabel: string } }>(lookup)
+      jsonBody<{
+        source: {
+          id: string;
+          sourceLabel: string;
+          detectedProject: { projectId: string };
+        };
+      }>(lookup)
     ).toMatchObject({
-      source: { id: sourceId, sourceLabel: "…/private.jsonl" }
+      source: {
+        id: sourceId,
+        sourceLabel: "…/private.jsonl",
+        detectedProject: { projectId: "project-history" }
+      }
     });
     expect(strictLookup.statusCode).toBe(400);
     expect(unauthenticatedLookup.statusCode).toBe(401);
@@ -10978,7 +10988,11 @@ describe("account and access flows", () => {
         fullyEmbedded: true,
         semanticReady: false,
         lcmComplete: true,
-        detectedProject: { name: "Koed", branch: "main" }
+        detectedProject: {
+          projectId: "project-history",
+          name: "Koed",
+          branch: "main"
+        }
       })
     ]);
 
@@ -11028,7 +11042,8 @@ describe("account and access flows", () => {
       url: "/v1/capture-policies",
       headers: ownerHeaders,
       payload: {
-        targetType: "global",
+        targetType: "project",
+        projectId: "project-history",
         captureState: "disabled",
         visibility: "personal"
       }
@@ -11118,7 +11133,8 @@ describe("account and access flows", () => {
       url: "/v1/capture-policies",
       headers: ownerHeaders,
       payload: {
-        targetType: "global",
+        targetType: "project",
+        projectId: "project-history",
         captureState: "enabled",
         visibility: "personal",
         pauseUntil: null

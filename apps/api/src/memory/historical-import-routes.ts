@@ -32,7 +32,7 @@ const safeProjectProvenance = (
   project: Record<string, unknown>
 ): Record<string, unknown> =>
   Object.fromEntries(
-    ["name", "branch", "ref", "fingerprint"]
+    ["projectId", "name", "branch", "ref", "fingerprint"]
       .filter((key) => project[key] !== undefined)
       .map((key) => [key, project[key]])
   );

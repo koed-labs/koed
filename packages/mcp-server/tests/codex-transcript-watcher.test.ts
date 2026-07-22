@@ -99,6 +99,7 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
   captureState: "enabled" | "disabled" | "ask" = "enabled";
   policyPaused = false;
   policyVisibility = "personal";
+  readonly policyRequests: Array<Record<string, unknown>> = [];
   sessionCalls = 0;
   failProjection = false;
   afterCreateItems?: () => void;
@@ -187,7 +188,8 @@ class FakeWatcherClient implements CodexTranscriptWatcherClient {
     return { source };
   }
 
-  async effectiveCapturePolicy() {
+  async effectiveCapturePolicy(input: Record<string, unknown> = {}) {
+    this.policyRequests.push(input);
     return {
       policy: {
         captureState: this.policyEnabled ? this.captureState : "disabled",
@@ -311,12 +313,12 @@ describe("Codex Transcript Watcher", () => {
     await watcher.stop();
   });
 
-  it("activates despite malformed baseline files and keeps their later recovery historical", async () => {
+  it("persists an incomplete activation frontier and captures its first complete records", async () => {
     const root = temporaryDirectory();
     const config = watcherConfig(root);
     const badPath = path.join(config.roots[0]!, "rollout-malformed.jsonl");
     fsMkdir(path.dirname(badPath));
-    writeFileSync(badPath, "not-json\n");
+    writeFileSync(badPath, "not-json");
     const client = new FakeWatcherClient();
     const watcher = trackedWatcher(client, config);
 
@@ -333,12 +335,25 @@ describe("Codex Transcript Watcher", () => {
       client.sources.get("session-after-malformed")?.registrationFrontierOffset
     ).toBe(0);
 
-    writeFileSync(badPath, line(sessionRecord("session-baseline-recovery")));
-    await watcher.scanNow();
+    await watcher.stop();
+    const restarted = trackedWatcher(client, config);
+    writeFileSync(
+      badPath,
+      line(sessionRecord("session-baseline-recovery")) +
+        line(userRecord("first live record"))
+    );
+    await restarted.scanNow();
     expect(
       client.sources.get("session-baseline-recovery")
         ?.registrationFrontierOffset
-    ).toBe(completeTranscriptBoundary(badPath));
+    ).toBe(0);
+    expect(client.itemBatches.flat()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          externalSessionId: "session-baseline-recovery"
+        })
+      ])
+    );
   });
 
   it("keeps a boundary-failing baseline file historical after recovery", async () => {
@@ -410,6 +425,52 @@ describe("Codex Transcript Watcher", () => {
     );
     expect(client.itemBatches.flat().length).toBeGreaterThanOrEqual(2);
     await watcher.stop();
+  });
+
+  it("advances a held assistant page with one bounded resolver lookahead", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    writeFileSync(transcript, line(sessionRecord("session-held-page")));
+    const client = new FakeWatcherClient();
+    const assistant = line({
+      timestamp: "2026-01-01T00:00:01.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "held answer" }
+    });
+    const resolver = line({
+      timestamp: "2026-01-01T00:00:02.000Z",
+      type: "response_item",
+      payload: {
+        id: "held-answer-id",
+        type: "message",
+        role: "assistant",
+        turn_id: "held-answer-turn",
+        content: [{ type: "output_text", text: "held answer" }]
+      }
+    });
+    const watcher = trackedWatcher(client, {
+      ...watcherConfig(root),
+      maxBytesPerBatch: Buffer.byteLength(assistant)
+    });
+    await watcher.scanNow();
+    const frontier = client.sources.get("session-held-page")!.liveCursorOffset;
+    appendFileSync(transcript, assistant + resolver);
+    const reads = vi.spyOn(fs, "readSync");
+    await watcher.scanNow();
+
+    expect(client.sources.get("session-held-page")!.liveCursorOffset).toBe(
+      completeTranscriptBoundary(transcript)
+    );
+    expect(client.itemBatches.flat()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ externalSessionId: "session-held-page" })
+      ])
+    );
+    expect(
+      reads.mock.calls.every((call) => call[1].byteLength <= 16 * 1024 * 1024)
+    ).toBe(true);
+    expect(watcher.snapshot().bytesAdvanced).toBeGreaterThan(frontier);
+    reads.mockRestore();
   });
 
   it("holds partial and malformed appends without cursor corruption", async () => {
@@ -748,6 +809,29 @@ describe("Codex Transcript Watcher", () => {
       "session-two"
     ]);
     expect(client.sources.has("session-outside")).toBe(false);
+  });
+
+  it("uses retained project ID for Capture Policy when transcript has no cwd", async () => {
+    const root = temporaryDirectory();
+    const transcript = transcriptPath(root);
+    writeFileSync(
+      transcript,
+      line(sessionRecord("session-project-policy", ""))
+    );
+    const client = new FakeWatcherClient();
+    const watcher = trackedWatcher(client, watcherConfig(root));
+    await watcher.scanNow();
+    const source = client.sources.get("session-project-policy")!;
+    source.detectedProject = { projectId: "project-policy-id" };
+    client.captureState = "disabled";
+    appendFileSync(transcript, line(userRecord("blocked by project policy")));
+    await watcher.scanNow();
+
+    expect(client.policyRequests.at(-1)).toMatchObject({
+      projectId: "project-policy-id"
+    });
+    expect(client.sessionCalls).toBe(0);
+    expect(source.liveCursorOffset).toBe(source.registrationFrontierOffset);
   });
 
   it("blocks ask, pause, and non-personal policy before session creation", async () => {
