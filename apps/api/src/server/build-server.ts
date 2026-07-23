@@ -53,6 +53,7 @@ import {
 import {
   createEnvelopeEncryptionProviderFromEnvironment,
   inspectDeviceIdentityAtKoedHome,
+  reconcileDeviceIdentityDeployment,
   embeddingDispatchKey,
   readUpstreamCredentialAuthorization,
   type DeviceIdentityInspection,
@@ -217,6 +218,14 @@ export const buildServer = async (options: BuildServerOptions = {}) => {
           envelopeEncryptionProvider
         })
       : null);
+  if (repository && !options.repository) {
+    const legacyDeployment = await repository.getLocalSyncDeployment();
+    reconcileDeviceIdentityDeployment({
+      koedHome: config.koedHome,
+      protocolDeploymentId: legacyDeployment?.protocolDeploymentId ?? null,
+      environment: process.env
+    });
+  }
   const createQueue = <TJobData>(name: string) =>
     createMemoryJobQueue<TJobData>(name, {
       backend: config.queueBackend,

@@ -120,6 +120,14 @@ No local proof can distinguish a perfect full-machine clone or restored image at
 the same canonical path. Remote service collision detection and explicit
 re-enrollment remain required for that case.
 
+During upgrade, API startup adopts an existing local Cross-Identity Sync
+protocol deployment ID into freshly bootstrapped device identity once. This
+preserves existing relationships and transport references without rewriting the
+database identity. After adoption, any mismatch fails closed. Status reports
+proof placement inside `KOED_HOME` as `unsafe_proof_storage` with move-storage
+remediation; owner, mode, or symlink problems remain `unsafe_proof_permissions`
+with permission remediation.
+
 Inspect or explicitly repair identity with machine-readable output:
 
 ```bash

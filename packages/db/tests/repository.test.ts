@@ -272,7 +272,12 @@ describeDb("memory repository visibility", () => {
       profile: "local_personal",
       protocolDeploymentId: verifiedDeploymentId
     });
+    const persisted = await repo.getLocalSyncDeployment();
 
+    expect(persisted).toMatchObject({
+      id: local.id,
+      protocolDeploymentId: verifiedDeploymentId
+    });
     await expect(
       repo.ensureLocalSyncDeployment({
         profile: "local_personal",

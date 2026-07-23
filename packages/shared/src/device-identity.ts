@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -42,6 +42,8 @@ export interface DeviceIdentityState {
   remoteOperations: "enabled" | "repair_required";
   /** Remote credential may remain active until Operator revokes it upstream. */
   pendingRemoteRevocation?: boolean;
+  /** One startup-only reconciliation may adopt pre-clone-safe sync identity. */
+  deploymentIdentityAdoptionPending?: true;
   createdAt: string;
   updatedAt: string;
 }
@@ -59,7 +61,12 @@ export interface DeviceIdentityInspection {
 }
 
 export interface HostProofReadResult {
-  state: "present" | "missing" | "malformed" | "unsafe_permissions";
+  state:
+    | "present"
+    | "missing"
+    | "malformed"
+    | "unsafe_permissions"
+    | "unsafe_storage";
   value?: string;
 }
 
@@ -184,23 +191,14 @@ export const createPlatformHostProofStore = (input: {
 }): HostProofStore => {
   const environment = input.environment ?? process.env;
   const platform = input.platform ?? nodePlatform();
-  const configuredProofDirectory = Boolean(
-    environment.KOED_DEVICE_PROOF_DIR?.trim()
-  );
   const proofDirectory = defaultProofDirectory(environment, platform);
+  const proofParent = dirname(proofDirectory);
   const unsafeStorage = () => {
     try {
+      if (isPathInside(proofDirectory, input.koedHome)) return true;
       const canonicalHome = canonicalPath(input.koedHome);
-      const proofParent = dirname(proofDirectory);
       if (isPathInside(proofDirectory, canonicalHome)) return true;
       if (existsSync(proofParent) && lstatSync(proofParent).isSymbolicLink()) {
-        return true;
-      }
-      if (
-        configuredProofDirectory &&
-        existsSync(proofParent) &&
-        isUnsafe(proofParent, platform)
-      ) {
         return true;
       }
       if (!existsSync(proofDirectory)) return false;
@@ -231,7 +229,10 @@ export const createPlatformHostProofStore = (input: {
 
   return {
     read(reference) {
-      if (unsafeStorage()) return { state: "unsafe_permissions" };
+      if (unsafeStorage()) return { state: "unsafe_storage" };
+      if (existsSync(proofParent) && isUnsafe(proofParent, platform)) {
+        return { state: "unsafe_permissions" };
+      }
       if (!existsSync(proofDirectory)) return { state: "missing" };
       if (isUnsafe(proofDirectory, platform)) {
         return { state: "unsafe_permissions" };
@@ -301,8 +302,22 @@ export const parseDeviceIdentityState = (
     ...expected,
     "pendingRemoteRevocation"
   ].sort();
+  const expectedWithPendingAdoption = [
+    ...expected,
+    "deploymentIdentityAdoptionPending"
+  ].sort();
+  const expectedWithPendingRevocationAndAdoption = [
+    ...expected,
+    "pendingRemoteRevocation",
+    "deploymentIdentityAdoptionPending"
+  ].sort();
   if (
-    ![expected, expectedWithPendingRevocation].some(
+    ![
+      expected,
+      expectedWithPendingRevocation,
+      expectedWithPendingAdoption,
+      expectedWithPendingRevocationAndAdoption
+    ].some(
       (candidate) =>
         keys.length === candidate.length &&
         keys.every((key, index) => key === candidate[index])
@@ -321,6 +336,8 @@ export const parseDeviceIdentityState = (
       state.remoteOperations !== "repair_required") ||
     (state.pendingRemoteRevocation !== undefined &&
       state.pendingRemoteRevocation !== true) ||
+    (state.deploymentIdentityAdoptionPending !== undefined &&
+      state.deploymentIdentityAdoptionPending !== true) ||
     !isFiniteIsoDate(state.createdAt) ||
     !isFiniteIsoDate(state.updatedAt)
   ) {
@@ -390,6 +407,12 @@ const inspection = (
     repair_required:
       "Device identity rotation is incomplete; remote operations remain blocked."
   };
+  const actions: Partial<Record<DeviceIdentityHealth, string>> = {
+    unsafe_proof_storage:
+      "Move host proof storage outside KOED_HOME, then run koed-server identity rotate --json.",
+    unsafe_proof_permissions:
+      "Restrict host proof storage permissions to current Operator, then run koed-server identity rotate --json."
+  };
   return {
     health,
     deploymentId: state?.deploymentId ?? null,
@@ -403,6 +426,7 @@ const inspection = (
       ? {}
       : {
           action:
+            actions[health] ??
             "Run koed-server identity rotate --json to create a new local device identity."
         }),
     platformProtection: isPosix(platform) ? "verified" : "limited"
@@ -450,6 +474,9 @@ export const inspectDeviceIdentity = (input: {
     return inspection("missing_proof", state, platform);
   if (stored.state === "malformed")
     return inspection("malformed_proof", state, platform);
+  if (stored.state === "unsafe_storage") {
+    return inspection("unsafe_proof_storage", state, platform);
+  }
   if (stored.state === "unsafe_permissions" || !stored.value) {
     return inspection("unsafe_proof_permissions", state, platform);
   }
@@ -476,6 +503,81 @@ export const inspectDeviceIdentity = (input: {
     state,
     platform
   );
+};
+
+const writeDeviceIdentityState = (
+  statePath: string,
+  state: DeviceIdentityState
+): void => {
+  const temporary = `${statePath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
+      mode: 0o600,
+      flag: "wx"
+    });
+    renameSync(temporary, statePath);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+};
+
+/**
+ * Reconciles only freshly bootstrapped state with a pre-clone-safe local
+ * Cross-Identity Sync row. Once finalized, mismatches remain fail-closed.
+ */
+export const reconcileDeviceIdentityDeployment = (input: {
+  koedHome: string;
+  protocolDeploymentId: string | null;
+  environment?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+}): DeviceIdentityInspection => {
+  const statePath = deviceIdentityStatePathFor(input.koedHome);
+  const proofStore = createPlatformHostProofStore(input);
+  const current = inspectDeviceIdentity({
+    statePath,
+    proofStore,
+    platform: input.platform
+  });
+  if (current.health !== "healthy") return current;
+
+  const state = parseDeviceIdentityState(JSON.parse(readNoFollow(statePath)));
+  if (!state?.deploymentIdentityAdoptionPending) return current;
+  const protocolDeploymentId = input.protocolDeploymentId;
+  if (
+    protocolDeploymentId !== null &&
+    !uuidPattern.test(protocolDeploymentId)
+  ) {
+    throw new Error("Legacy local deployment protocol identity is malformed.");
+  }
+
+  const finalized: DeviceIdentityState = {
+    ...state,
+    ...(protocolDeploymentId ? { deploymentId: protocolDeploymentId } : {}),
+    updatedAt: new Date().toISOString()
+  };
+  delete finalized.deploymentIdentityAdoptionPending;
+  if (protocolDeploymentId && protocolDeploymentId !== state.deploymentId) {
+    const proof = randomBytes(32).toString("base64url");
+    proofStore.write(
+      finalized.proof.reference,
+      serializeHostProof({
+        deploymentId: finalized.deploymentId,
+        deviceInstanceId: finalized.deviceInstanceId,
+        proof,
+        canonicalKoedHome: canonicalPath(input.koedHome)
+      })
+    );
+    finalized.proof = {
+      ...finalized.proof,
+      fingerprint: deviceProofFingerprint(proof)
+    };
+  }
+  writeDeviceIdentityState(statePath, finalized);
+  return inspectDeviceIdentity({
+    statePath,
+    proofStore,
+    platform: input.platform
+  });
 };
 
 export const inspectDeviceIdentityAtKoedHome = (input: {
