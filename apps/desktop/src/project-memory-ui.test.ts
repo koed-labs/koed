@@ -156,9 +156,14 @@ describe("project memory UI view model", () => {
     const active = mergeProjectSources([graphProject()], [metadata()]);
 
     expect(reconcileSelectedProjectId(active, null, true)).toBeNull();
-    expect(reconcileSelectedProjectId(active, "deleted-project", false)).toBe(
-      "graph-koed"
-    );
+    expect(
+      reconcileSelectedProjectId(
+        active,
+        "deleted-project",
+        false,
+        Date.parse("2026-07-10T00:00:00.000Z")
+      )
+    ).toBe("graph-koed");
   });
 
   it("rejects stale Project graph responses", () => {
