@@ -23,10 +23,18 @@ import {
 } from "./upstream-enrollment.js";
 
 const temps: string[] = [];
+const proofTemps: string[] = [];
+const proofEnvRestores: Array<string | undefined> = [];
 
 const tempPaths = () => {
   const root = mkdtempSync(resolve(tmpdir(), "koed-upstream-enroll-"));
+  const proofRoot = mkdtempSync(
+    resolve(tmpdir(), "koed-upstream-enroll-proof-")
+  );
+  proofEnvRestores.push(process.env.KOED_DEVICE_PROOF_DIR);
+  process.env.KOED_DEVICE_PROOF_DIR = resolve(proofRoot, "proof");
   temps.push(root);
+  proofTemps.push(proofRoot);
   return resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root });
 };
 
@@ -185,6 +193,16 @@ const registerValidatedBackend = async () => {
 afterEach(() => {
   for (const path of temps.splice(0)) {
     rmSync(path, { recursive: true, force: true });
+    rmSync(`${path}-proof-root`, { recursive: true, force: true });
+  }
+  for (const path of proofTemps.splice(0)) {
+    rmSync(path, { recursive: true, force: true });
+  }
+  const previousProofDir = proofEnvRestores.pop();
+  if (previousProofDir === undefined) {
+    delete process.env.KOED_DEVICE_PROOF_DIR;
+  } else {
+    process.env.KOED_DEVICE_PROOF_DIR = previousProofDir;
   }
 });
 
@@ -232,6 +250,11 @@ describe("upstream enrollment orchestration", () => {
     expect(enrolledDeviceId).toBe(identity.deviceInstanceId);
 
     rmSync(`${paths.koedHome}-proof`, { recursive: true, force: true });
+    rmSync(`${paths.koedHome}-proof-root`, { recursive: true, force: true });
+    rmSync(process.env.KOED_DEVICE_PROOF_DIR!, {
+      recursive: true,
+      force: true
+    });
     const blockedFetch = vi.fn();
     await expect(
       getUpstreamEnrollmentStatus(paths, "team-vps", {
