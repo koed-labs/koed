@@ -257,6 +257,7 @@ const conversationItemSchema = z
     transportChunkEncoding: classificationTokenSchema.optional(),
     sourceHash: sourceHashSchema,
     idempotencyKey: idempotencyKeySchema,
+    legacyIdempotencyKeys: z.array(idempotencyKeySchema).max(16).optional(),
     canonicalItemKey: canonicalItemKeySchema.optional(),
     canonicalStableItemId: providerIdentifierSchema.optional(),
     observationKind: z

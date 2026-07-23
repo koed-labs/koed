@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,6 +10,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
+import { copyNativeRuntimeSource } from "../native-runtime-copy.mjs";
 import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest,
@@ -104,7 +104,7 @@ const copySourceRuntime = ({
     throw new Error(
       `Native runtime source directory does not exist: ${resolved}`
     );
-  cpSync(resolved, runtimeRoot, { recursive: true, preserveTimestamps: true });
+  copyNativeRuntimeSource(resolved, runtimeRoot);
   return { sourceDir: resolved };
 };
 

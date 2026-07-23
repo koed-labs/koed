@@ -36,6 +36,9 @@ export type ConversationSemanticProjectionRow = {
   canonical_item_key: string;
   projection_policy_revision: number | null;
   idempotency_key: string;
+  projection_work_class:
+    | "live_capture_projection"
+    | "historical_import_backfill";
   session_workspace_id: string | null;
   session_cwd: string | null;
   session_metadata: Record<string, unknown> | null;

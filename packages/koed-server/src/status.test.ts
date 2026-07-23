@@ -698,6 +698,7 @@ describe("status and doctor JSON contracts", () => {
     expect(status.runtimeMode).toBe("developer");
     expect(status.dependencyMode).toBe("external");
     expect(status.state).toBe("healthy");
+    expect(status.codexTranscriptWatcher.state).toBe("starting");
     expect(status.explorer.state).toBe("starting");
   });
   it("prefers running runtime state over plain-shell dependency defaults", async () => {
@@ -722,9 +723,16 @@ describe("status and doctor JSON contracts", () => {
           "embedding-service-native",
           "api",
           "worker",
-          "explorer"
+          "explorer",
+          "codex-transcript-watcher"
         ],
-        processes: { api: 43, worker: 44, explorer: 45 }
+        codexTranscriptWatcherEnabled: true,
+        processes: {
+          api: 43,
+          worker: 44,
+          explorer: 45,
+          codexTranscriptWatcher: 46
+        }
       })
     );
 
@@ -747,7 +755,7 @@ describe("status and doctor JSON contracts", () => {
           });
         },
         spawnSync: () => spawnResult("", 0),
-        checkPid: (pid) => [42, 44, 45].includes(pid),
+        checkPid: (pid) => [42, 44, 45, 46].includes(pid),
         now: () => new Date("2026-01-01T00:00:00.000Z")
       }
     );
@@ -755,6 +763,7 @@ describe("status and doctor JSON contracts", () => {
     expect(fetchedUrls).toContain("http://localhost:43300/ready");
     expect(status.runtimeMode).toBe("local-personal");
     expect(status.dependencyMode).toBe("bundled-local");
+    expect(status.codexTranscriptWatcher.state).toBe("healthy");
     expect(status.redis.message).toContain("local queue");
     expect(status.explorer.url).toBe("http://localhost:45774");
   });

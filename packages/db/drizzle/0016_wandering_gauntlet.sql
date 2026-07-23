@@ -1,0 +1,7 @@
+ALTER TABLE "historical_import_sources" DROP CONSTRAINT "historical_import_sources_counters_check";--> statement-breakpoint
+ALTER TABLE "historical_import_sources" DROP CONSTRAINT "historical_import_sources_run_id_historical_import_runs_id_fk";
+--> statement-breakpoint
+ALTER TABLE "historical_import_sources" ADD COLUMN "checkpoint_hash" text;--> statement-breakpoint
+ALTER TABLE "historical_import_runs" ADD CONSTRAINT "historical_import_runs_id_owner_unique" UNIQUE("id","owner_user_id");--> statement-breakpoint
+ALTER TABLE "historical_import_sources" ADD CONSTRAINT "historical_import_sources_run_owner_fk" FOREIGN KEY ("run_id","owner_user_id") REFERENCES "public"."historical_import_runs"("id","owner_user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "historical_import_sources" ADD CONSTRAINT "historical_import_sources_counters_check" CHECK ("historical_import_sources"."checkpoint_offset" >= 0 and "historical_import_sources"."checkpoint_line" >= 0 and ("historical_import_sources"."checkpoint_hash" is null or "historical_import_sources"."checkpoint_hash" ~ '^[0-9a-f]{64}$') and ("historical_import_sources"."source_size_bytes" is null or "historical_import_sources"."source_size_bytes" >= 0) and "historical_import_sources"."discovered_record_count" >= 0 and "historical_import_sources"."imported_record_count" >= 0 and "historical_import_sources"."skipped_record_count" >= 0 and "historical_import_sources"."malformed_record_count" >= 0 and "historical_import_sources"."retry_count" between 0 and 1000);

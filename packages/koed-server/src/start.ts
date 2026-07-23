@@ -5,7 +5,13 @@ import {
   type SpawnSyncReturns
 } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -15,6 +21,7 @@ import {
 } from "./app-runtime.js";
 import { resolveKoedServerConfig, type KoedServerConfig } from "./config.js";
 import {
+  resolveActiveIntegrationApiToken,
   resolveLocalApiToken,
   writeExplorerCredential
 } from "./credentials.js";
@@ -36,6 +43,8 @@ import { ensureDeviceIdentity } from "./device-identity.js";
 import { collectKoedServerStatus } from "./status.js";
 import { stopKoedServer } from "./stop.js";
 import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
+import { maintainSupervisorLog } from "./supervisor-log.js";
+import { monitorSupervisorExitRequest } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -317,7 +326,10 @@ const koedServerConfigEnvironment = (
     environment.KOED_EXTERNAL_REDIS_URL ?? repoEnv.KOED_EXTERNAL_REDIS_URL,
   KOED_EXTERNAL_EMBEDDING_SERVICE_URL:
     environment.KOED_EXTERNAL_EMBEDDING_SERVICE_URL ??
-    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL
+    repoEnv.KOED_EXTERNAL_EMBEDDING_SERVICE_URL,
+  MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED:
+    environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED ??
+    repoEnv.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
 });
 
 const bundledLocalDatabaseUrl = (
@@ -676,6 +688,27 @@ export const stopChildProcess = async (
   }
 };
 
+export const waitForManagedProcessExits = async (
+  children: Record<string, ChildProcess>
+): Promise<void> =>
+  new Promise<void>((resolvePromise, rejectPromise) => {
+    const entries = Object.entries(children);
+    const exits = new Set<string>();
+    const recordExit = (name: string) => {
+      exits.add(name);
+      if (exits.size === entries.length) resolvePromise();
+    };
+    for (const [name, child] of entries) {
+      if (child.exitCode != null || child.signalCode != null) {
+        recordExit(name);
+        continue;
+      }
+      child.once("exit", () => recordExit(name));
+      child.once("error", rejectPromise);
+    }
+    if (entries.length === 0) resolvePromise();
+  });
+
 export const startKoedServer = async ({
   environment = process.env,
   pollIntervalMs = 2_000,
@@ -706,6 +739,7 @@ export const startKoedServer = async ({
     return;
   }
   await ensureDeviceIdentity(paths, { environment });
+  const supervisorStartedAt = new Date().toISOString();
   const appRuntime = resolveKoedAppRuntime(paths, environment);
   assertKoedAppRuntimeAvailable(appRuntime, paths);
   environment = ensurePackagedLocalServiceSecrets(
@@ -778,6 +812,8 @@ export const startKoedServer = async ({
 
   let startedNativePostgres = false;
   let nativeEmbeddingProcess: ChildProcess | undefined;
+  const managedChildren: Record<string, ChildProcess> = {};
+  let stopSupervisorExitMonitor: () => void = () => undefined;
   const runtimeStateOwnedByCurrentProcess = (): boolean => {
     try {
       const runtime = JSON.parse(
@@ -791,6 +827,20 @@ export const startKoedServer = async ({
 
   const cleanupStartedResources = async () => {
     const cleanupErrors: string[] = [];
+    for (const name of [
+      "codexTranscriptWatcher",
+      "explorer",
+      "worker",
+      "api"
+    ]) {
+      try {
+        await stopChildProcess(managedChildren[name]);
+      } catch (error) {
+        cleanupErrors.push(
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
     try {
       await stopChildProcess(nativeEmbeddingProcess);
     } catch (error) {
@@ -829,6 +879,7 @@ export const startKoedServer = async ({
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  const stopSupervisorLogMaintenance = maintainSupervisorLog(refreshedEnv);
   try {
     if (config.dependencyMode === "external") {
       const queueBackend = resolveWorkQueueBackend(
@@ -879,6 +930,8 @@ export const startKoedServer = async ({
           "@koed/embedding-service",
           "--filter",
           "@koed/explorer",
+          "--filter",
+          "@koed/mcp-server",
           "build"
         ],
         refreshedEnv,
@@ -930,7 +983,11 @@ export const startKoedServer = async ({
       refreshedRepoEnv.EXPLORER_WEB_HOST ??
       "127.0.0.1";
 
-    const children = {
+    const children: Record<string, ChildProcess> & {
+      api: ChildProcess;
+      worker: ChildProcess;
+      explorer: ChildProcess;
+    } = {
       ...(nativeEmbeddingProcess
         ? { embeddingService: nativeEmbeddingProcess }
         : {}),
@@ -1010,14 +1067,21 @@ export const startKoedServer = async ({
             )
     };
 
+    Object.assign(managedChildren, {
+      api: children.api,
+      worker: children.worker,
+      explorer: children.explorer
+    });
+
     const runtime: KoedServerRuntimeState = {
       pid: process.pid,
-      startedAt: new Date().toISOString(),
+      startedAt: supervisorStartedAt,
       repoRoot: paths.repoRoot,
       apiUrl,
       explorerUrl,
       runtimeMode: config.runtimeMode,
       dependencyMode: config.dependencyMode,
+      codexTranscriptWatcherEnabled: config.codexTranscriptWatcherEnabled,
       services: [...runtimeServices, ...appServices],
       processes: {
         ...(nativeEmbeddingProcess
@@ -1035,6 +1099,10 @@ export const startKoedServer = async ({
         mode: 0o600
       }
     );
+    stopSupervisorExitMonitor = monitorSupervisorExitRequest(paths, {
+      pid: process.pid,
+      startedAt: supervisorStartedAt
+    });
 
     console.log(
       JSON.stringify(
@@ -1072,6 +1140,43 @@ export const startKoedServer = async ({
         status = await collectStatus(refreshedEnv);
       }
     }
+
+    const finalApiToken = resolveActiveIntegrationApiToken(
+      paths,
+      refreshedEnv,
+      refreshedRepoEnv
+    )?.token;
+    if (config.codexTranscriptWatcherEnabled && finalApiToken) {
+      const watcher = spawnManagedProcess(
+        paths,
+        "Codex Transcript Watcher",
+        process.execPath,
+        [appRuntime.mcpCli, "watch-codex-transcripts"],
+        {
+          ...refreshedEnv,
+          KOED_HOME: paths.koedHome,
+          MEMORY_API_URL: apiUrl,
+          MEMORY_API_TOKEN: finalApiToken
+        },
+        spawn,
+        appRuntime.kind === "packaged"
+          ? resolve(appRuntime.root, "mcp-server")
+          : resolve(paths.repoRoot, "packages", "mcp-server")
+      );
+      children.codexTranscriptWatcher = watcher;
+      managedChildren.codexTranscriptWatcher = watcher;
+      runtime.services.push("codex-transcript-watcher");
+      runtime.processes = {
+        ...runtime.processes,
+        codexTranscriptWatcher: watcher.pid ?? 0
+      };
+      writeFileSync(
+        paths.runtimeStatePath,
+        `${JSON.stringify(runtime, null, 2)}\n`,
+        { mode: 0o600 }
+      );
+      status = await collectStatus(refreshedEnv);
+    }
     console.log(
       JSON.stringify(
         {
@@ -1091,21 +1196,13 @@ export const startKoedServer = async ({
       "Koed server supervisor is running. Press Ctrl-C to stop local app processes."
     );
 
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      const exits = new Set<string>();
-      for (const [name, child] of Object.entries(children)) {
-        child.on("exit", () => {
-          exits.add(name);
-          if (exits.size === Object.keys(children).length) {
-            resolvePromise();
-          }
-        });
-        child.on("error", rejectPromise);
-      }
-    });
+    await waitForManagedProcessExits(children);
   } catch (error) {
     try {
       await cleanupStartedResources();
+      if (runtimeStateOwnedByCurrentProcess()) {
+        rmSync(paths.runtimeStatePath, { force: true });
+      }
     } catch (cleanupError) {
       throw new Error(
         `${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
@@ -1114,6 +1211,8 @@ export const startKoedServer = async ({
     }
     throw error;
   } finally {
+    stopSupervisorExitMonitor();
+    stopSupervisorLogMaintenance();
     process.off("SIGINT", shutdown);
     process.off("SIGTERM", shutdown);
   }

@@ -1,0 +1,220 @@
+name: Recover Desktop release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft release name whose source supports safe Desktop recovery
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency: recover-desktop-release-${{ inputs.tag }}
+
+jobs:
+  recover-desktop-assets:
+    name: Recover unsigned Desktop assets for ${{ inputs.tag }}
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Resolve draft release source
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          release="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft,targetCommitish)"
+          if [ "$(jq -r '.isDraft' <<< "${release}")" != "true" ]; then
+            echo "Desktop asset recovery is restricted to draft releases; ${TAG} is not a draft." >&2
+            exit 1
+          fi
+          target_commitish="$(jq -r '.targetCommitish' <<< "${release}")"
+          commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${target_commitish}" --jq '.sha')"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout immutable release source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ steps.release.outputs.commit }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 11.1.2
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24.13.1
+          cache: pnpm
+
+      - name: Verify release version and safe source boundary
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(node -e "process.stdout.write(require('./packages/koed/package.json').version)")"
+          if [ "${TAG}" != "v${version}" ]; then
+            echo "Release name ${TAG} does not match the checked-out product version v${version}." >&2
+            exit 1
+          fi
+          if [ ! -f scripts/native-runtime-copy.mjs ]; then
+            echo "This release source predates safe Desktop symlink and sealing behavior. Publish a patch release instead." >&2
+            exit 1
+          fi
+          node --input-type=module <<'NODE'
+          import {
+            mkdirSync,
+            mkdtempSync,
+            readFileSync,
+            readlinkSync,
+            rmSync,
+            symlinkSync,
+            writeFileSync
+          } from "node:fs";
+          import { tmpdir } from "node:os";
+          import { resolve } from "node:path";
+          import { normalizePackagedSymlinks } from "./apps/desktop/scripts/after-pack.mjs";
+          import { copyNativeRuntimeSource } from "./scripts/native-runtime-copy.mjs";
+
+          const sources = JSON.parse(
+            readFileSync("scripts/native-runtime/sources.macos-arm64.json", "utf8")
+          );
+          const procurement = readFileSync(
+            "scripts/native-runtime/procure-runtime.mjs",
+            "utf8"
+          );
+          if (
+            sources.openssl?.kind !== "source-static" ||
+            !sources.openssl?.sha256 ||
+            !procurement.includes("buildMacosOpenSslStatic")
+          ) {
+            throw new Error(
+              "This tag predates the hermetic macOS runtime builder and cannot be backfilled by this workflow. Publish a patch release instead."
+            );
+          }
+
+          const root = mkdtempSync(resolve(tmpdir(), "koed-recovery-source-"));
+          try {
+            const source = resolve(root, "source");
+            const destination = resolve(root, "destination");
+            mkdirSync(source, { recursive: true });
+            writeFileSync(resolve(source, "target"), "fixture");
+            symlinkSync("target", resolve(source, "link"));
+            copyNativeRuntimeSource(source, destination);
+            if (readlinkSync(resolve(destination, "link")) !== "target") {
+              throw new Error("Native runtime copying does not preserve relative symlinks.");
+            }
+            symlinkSync("/staging/target", resolve(destination, "absolute-link"));
+            try {
+              normalizePackagedSymlinks(destination);
+              throw new Error("Desktop packaging accepted an absolute symlink.");
+            } catch (error) {
+              if (!String(error).includes("Packaged app contains an absolute symlink")) {
+                throw error;
+              }
+            }
+          } finally {
+            rmSync(root, { recursive: true, force: true });
+          }
+          NODE
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build koed-server CLI
+        run: pnpm --filter @koed/koed-server build
+
+      - name: Build native runtime artifact
+        env:
+          KOED_NATIVE_RUNTIME_VERSION: ${{ inputs.tag }}
+        run: pnpm native-runtime:build:macos-arm64 -- --json
+
+      - name: Extract and validate native runtime artifact
+        run: |
+          set -euo pipefail
+          runtime_root="${RUNNER_TEMP}/koed-native-runtime-recovery"
+          mkdir -p "${runtime_root}"
+          tarball="$(find dist/native-runtime/macos-arm64 -name 'koed-native-runtime-macos-arm64-*.tar.gz' -print -quit)"
+          test -n "${tarball}"
+          tar -xzf "${tarball}" -C "${runtime_root}"
+          test -d "${runtime_root}/koed-runtime"
+          pnpm native-runtime:validate -- --runtime-root "${runtime_root}/koed-runtime" --platform darwin --json
+
+      - name: Build unsigned Desktop artifacts
+        env:
+          KOED_NATIVE_RUNTIME_SOURCE_DIR: ${{ runner.temp }}/koed-native-runtime-recovery/koed-runtime
+        run: pnpm desktop:package:internal:mac
+
+      - name: Verify Desktop artifact code integrity
+        run: cd apps/desktop && node scripts/verify-macos-package.mjs --app release/mac/Koed.app --dmg release/Koed-*-arm64.dmg
+
+      - name: Packaged Desktop native smoke
+        run: cd apps/desktop && node scripts/smoke-packaged-desktop-app.mjs --json --timeout-ms 420000 --diagnostics-dir "${RUNNER_TEMP}/koed-desktop-smoke-diagnostics"
+
+      - name: Upload packaged Desktop smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: koed-desktop-recovery-smoke-diagnostics-${{ inputs.tag }}
+          path: ${{ runner.temp }}/koed-desktop-smoke-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Generate Desktop artifact checksums
+        run: |
+          cd apps/desktop/release
+          shasum -a 256 Koed-*-arm64.dmg Koed-*-arm64.zip > koed-desktop-macos-arm64-unsigned.sha256
+
+      - name: Upload recovered Desktop assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ inputs.tag }}" --repo "${GITHUB_REPOSITORY}" \
+            apps/desktop/release/Koed-*-arm64.dmg \
+            apps/desktop/release/Koed-*-arm64.zip \
+            apps/desktop/release/koed-desktop-macos-arm64-unsigned.sha256 \
+            --clobber
+
+      - name: Verify required assets and publish draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          assets="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          asset_present() {
+            local pattern="$1"
+            local asset
+            while IFS= read -r asset; do
+              [[ "${asset}" == ${pattern} ]] && return 0
+            done <<< "${assets}"
+            return 1
+          }
+          for pattern in \
+            "koed-server-${version}-linux-x64.tar.gz" \
+            "koed-server-${version}-linux-x64.tar.gz.sha256" \
+            "koed-server-app-runtime-${version}-linux-x64.provenance.json" \
+            "koed-server-app-runtime-${version}-linux-x64.manifest.json" \
+            "koed-server-${version}-macos-arm64.tar.gz" \
+            "koed-server-${version}-macos-arm64.tar.gz.sha256" \
+            "koed-server-app-runtime-${version}-macos-arm64.provenance.json" \
+            "koed-server-app-runtime-${version}-macos-arm64.manifest.json" \
+            "koed-release-artifacts-${version}.json" \
+            'Koed-*-arm64.dmg' \
+            'Koed-*-arm64.zip' \
+            'koed-desktop-macos-arm64-unsigned.sha256'; do
+            if ! asset_present "${pattern}"; then
+              echo "Missing required release asset: ${pattern}" >&2
+              exit 1
+            fi
+          done
+          if [ "$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = "true" ]; then
+            gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+          fi

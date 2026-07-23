@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   conversationEventsUrl,
   conversationEventText,
+  groupConversationEvents,
   mergeConversationEvents,
-  type DesktopConversationEvent
+  type DesktopConversationEvent,
+  type DesktopConversationTimelineItem
 } from "./desktop-conversation.js";
 import type { DesktopThreadGroup } from "./project-memory-ui.js";
 
@@ -74,6 +76,40 @@ function ConversationEventRow({ event }: { event: DesktopConversationEvent }) {
           <div className="native-event-content">{text}</div>
         </div>
       </article>
+    </div>
+  );
+}
+
+function ToolActivityGroup({ events }: { events: DesktopConversationEvent[] }) {
+  const toolNames = [
+    ...new Set(events.map(eventActorLabel).filter((name) => name !== "Tool"))
+  ];
+  const summary = toolNames.length
+    ? toolNames.slice(0, 3).join(", ")
+    : "Commands and tool calls";
+  return (
+    <div className="native-event-wrap">
+      <details className="native-tool-group">
+        <summary tabIndex={0}>
+          <span className="native-tool-group-icon" aria-hidden="true">
+            {events.length}
+          </span>
+          <span>
+            <strong>Agent activity</strong>
+            <small>
+              {events.length} activity items · {summary}
+            </small>
+          </span>
+          <span className="native-tool-group-disclosure" aria-hidden="true">
+            +
+          </span>
+        </summary>
+        <div className="native-tool-group-events">
+          {events.map((event) => (
+            <ConversationEventRow key={event.id} event={event} />
+          ))}
+        </div>
+      </details>
     </div>
   );
 }
@@ -257,8 +293,17 @@ export function NativeConversationSurface({
       ),
     [events]
   );
+  const timelineItems = useMemo(
+    () => groupConversationEvents(visibleEvents),
+    [visibleEvents]
+  );
   const renderEvent = useCallback(
-    (event: DesktopConversationEvent) => <ConversationEventRow event={event} />,
+    (item: DesktopConversationTimelineItem) =>
+      item.kind === "tool-group" ? (
+        <ToolActivityGroup events={item.events} />
+      ) : (
+        <ConversationEventRow event={item.event} />
+      ),
     []
   );
 
@@ -308,7 +353,7 @@ export function NativeConversationSurface({
       ) : null}
       <VirtualizedTimeline
         className="native-timeline-scroll"
-        events={visibleEvents}
+        events={timelineItems}
         hasOlderEvents={hasOlderEvents}
         onLoadOlder={loadOlder}
         renderEvent={renderEvent}

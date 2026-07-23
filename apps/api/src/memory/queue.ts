@@ -4,7 +4,11 @@ import {
   type DbPool,
   type LocalWorkQueueRepository
 } from "@koed/db";
-import type { KoedJobQueue, KoedQueueBackend } from "@koed/shared";
+import {
+  defaultKoedQueuePriority,
+  type KoedJobQueue,
+  type KoedQueueBackend
+} from "@koed/shared";
 
 export interface MemoryJobQueueFactoryOptions {
   backend: KoedQueueBackend;
@@ -57,6 +61,7 @@ export const createMemoryJobQueue = <TJobData>(
           jobName,
           data,
           jobKey: jobOptions?.jobId,
+          priority: jobOptions?.priority ?? defaultKoedQueuePriority,
           maxAttempts: jobOptions?.attempts,
           backoffMs: jobOptions?.backoff?.delay
         }),
@@ -74,7 +79,10 @@ export const createMemoryJobQueue = <TJobData>(
   });
   return {
     add: async (jobName, data, jobOptions) => {
-      const job = await queue.add(jobName, data, jobOptions);
+      const job = await queue.add(jobName, data, {
+        ...jobOptions,
+        priority: jobOptions?.priority ?? defaultKoedQueuePriority
+      });
       return { id: job.id };
     },
     getJobCounts: (...statuses) =>

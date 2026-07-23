@@ -9,6 +9,7 @@ export type KoedDependencyMode = "bundled-local" | "external";
 export interface KoedServerConfig {
   runtimeMode: KoedServerRuntimeMode;
   dependencyMode: KoedDependencyMode;
+  codexTranscriptWatcherEnabled: boolean;
   external?: {
     databaseUrl?: string;
     redisUrl?: string;
@@ -18,7 +19,8 @@ export interface KoedServerConfig {
 
 export const defaultKoedServerConfig: KoedServerConfig = {
   runtimeMode: "developer",
-  dependencyMode: "external"
+  dependencyMode: "external",
+  codexTranscriptWatcherEnabled: true
 };
 
 export interface KoedServerConfigDeps {
@@ -43,6 +45,14 @@ const dependencyMode = (
   value: string | undefined
 ): KoedDependencyMode | undefined =>
   value === "external" || value === "bundled-local" ? value : undefined;
+
+const codexTranscriptWatcherSetting = (
+  value: string | boolean | undefined
+): boolean | undefined => {
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return undefined;
+};
 
 const readConfig = (
   paths: KoedServerPaths,
@@ -69,15 +79,22 @@ export const resolveKoedServerConfig = (
     existsSync: deps.existsSync ?? existsSync,
     readFileSync: deps.readFileSync ?? readFileSync
   });
+  const resolvedRuntimeMode =
+    runtimeMode(environment.KOED_RUNTIME_MODE) ??
+    runtimeMode(file.runtimeMode) ??
+    defaultKoedServerConfig.runtimeMode;
   return {
-    runtimeMode:
-      runtimeMode(environment.KOED_RUNTIME_MODE) ??
-      runtimeMode(file.runtimeMode) ??
-      defaultKoedServerConfig.runtimeMode,
+    runtimeMode: resolvedRuntimeMode,
     dependencyMode:
       dependencyMode(environment.KOED_DEPENDENCY_MODE) ??
       dependencyMode(file.dependencyMode) ??
       defaultKoedServerConfig.dependencyMode,
+    codexTranscriptWatcherEnabled:
+      codexTranscriptWatcherSetting(
+        environment.MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED
+      ) ??
+      codexTranscriptWatcherSetting(file.codexTranscriptWatcherEnabled) ??
+      resolvedRuntimeMode !== "external",
     external: {
       databaseUrl:
         trim(environment.KOED_EXTERNAL_DATABASE_URL) ??

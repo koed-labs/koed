@@ -94,18 +94,12 @@ export const componentDefinitions = {
   }
 } as const satisfies Record<StatusComponentKey, StatusComponentDefinition>;
 
-export interface StatusGroupAction {
-  label: string;
-  command: string;
-  timeoutMs: number;
-}
-
 export interface StatusGroupDefinition {
   id: string;
   title: string;
   description: string;
+  healthySummary: string;
   componentKeys: readonly StatusComponentKey[];
-  action?: StatusGroupAction;
 }
 
 export type StatusCardActionCommand =
@@ -367,48 +361,84 @@ export const statusCards = [
 
 export type StatusCardId = (typeof statusCards)[number]["id"];
 
+const recoveryCardIdByComponent = {
+  serverPackage: "serverPackage",
+  api: "api",
+  explorer: "explorer",
+  database: "memoryStore",
+  redis: "queueWorker",
+  workerQueues: "queueWorker",
+  embeddingService: "embeddingEngine",
+  apiToken: "aiClientIntegration",
+  mcpServer: "aiClientIntegration",
+  captureHook: "capturePath",
+  codex: "aiClientIntegration",
+  lcmSummaryService: "memoryProcessing",
+  upstreamBackends: "teamBackend",
+  lastVerification: "memoryProcessing"
+} as const satisfies Record<StatusComponentKey, StatusCardId>;
+
+export const recoveryActionForStatusComponent = (
+  componentKey: StatusComponentKey,
+  state?: ComponentState
+): StatusCardAction => {
+  const cardId = recoveryCardIdByComponent[componentKey];
+  const card = statusCards.find((entry) => entry.id === cardId);
+  if (!card) {
+    throw new Error(`Missing Desktop recovery card: ${cardId}`);
+  }
+  if (state === "not_configured") {
+    const installCommand =
+      componentKey === "embeddingService"
+        ? "models_install"
+        : componentKey === "database"
+          ? "runtime_install"
+          : null;
+    const installAction = installCommand
+      ? card.secondaryActions.find(
+          (action) => action.command === installCommand
+        )
+      : undefined;
+    if (installAction) {
+      return installAction;
+    }
+  }
+  return card.primaryAction;
+};
+
 export const statusGroups = [
   {
-    id: "services",
-    title: "Services",
-    description:
-      "Local services that power capture, recall, Explorer, and storage.",
+    id: "capture",
+    title: "Capture",
+    description: "Collect new AI Client Conversations into Personal Memory.",
+    healthySummary: "New Conversations are being captured locally.",
+    componentKeys: ["api", "apiToken", "captureHook", "codex"]
+  },
+  {
+    id: "recall",
+    title: "Recall",
+    description: "Let your AI Client find and use Personal Memory.",
+    healthySummary: "Your AI Client can search Personal Memory.",
     componentKeys: [
       "api",
-      "explorer",
       "database",
+      "embeddingService",
+      "apiToken",
+      "mcpServer",
+      "codex"
+    ]
+  },
+  {
+    id: "processing",
+    title: "Memory processing",
+    description: "Prepare captured memory for useful summaries and recall.",
+    healthySummary: "Captured memory is processed and ready for recall.",
+    componentKeys: [
       "redis",
       "workerQueues",
-      "embeddingService"
-    ],
-    action: {
-      label: "Refresh stack",
-      command: "start",
-      timeoutMs: 180_000
-    }
-  },
-  {
-    id: "integration",
-    title: "AI Client integration",
-    description:
-      "Credentials and local integration pieces used by the supported AI Client.",
-    componentKeys: ["apiToken", "mcpServer", "captureHook", "codex"],
-    action: {
-      label: "Fix Codex integration",
-      command: "repair_codex",
-      timeoutMs: 120_000
-    }
-  },
-  {
-    id: "memory",
-    title: "Memory readiness",
-    description: "Background summarization and the latest verification result.",
-    componentKeys: ["lcmSummaryService", "lastVerification"],
-    action: {
-      label: "Check system",
-      command: "doctor",
-      timeoutMs: 90_000
-    }
+      "lcmSummaryService",
+      "lastVerification"
+    ]
   }
 ] as const satisfies readonly StatusGroupDefinition[];
 

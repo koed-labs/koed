@@ -3,6 +3,7 @@ import type {
   MemoryActor,
   MemoryEngineRepository
 } from "@koed/core";
+import type { KoedWorkClass } from "@koed/shared";
 import type { CapturedSessionRepository } from "./captured-session-repository.js";
 import type { ConversationItemRepository } from "./conversation-item-repository.js";
 import type { CrossIdentitySyncRepository } from "./cross-identity-sync-repository.js";
@@ -519,6 +520,154 @@ export interface EffectiveCapturePolicy {
   policy: CapturePolicyRecord | null;
 }
 
+export type HistoricalImportState =
+  | "discovered"
+  | "eligible"
+  | "queued"
+  | "importing"
+  | "paused"
+  | "skipped"
+  | "completed"
+  | "failed";
+
+export interface HistoricalImportCounters {
+  discoveredRecordCount: number;
+  importedRecordCount: number;
+  skippedRecordCount: number;
+}
+
+export interface HistoricalImportRunRecord extends HistoricalImportCounters {
+  id: string;
+  ownerUserId: string;
+  state: HistoricalImportState;
+  sourceCount: number;
+  completedSourceCount: number;
+  failedSourceCount: number;
+  skippedSourceCount: number;
+  scannedByteCount: number;
+  retryCount: number;
+  failureReason: string | null;
+  nextRetryAt: string | null;
+  discoveredAt: string;
+  eligibleAt: string | null;
+  queuedAt: string | null;
+  importStartedAt: string | null;
+  pausedAt: string | null;
+  skippedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  lastAttemptAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HistoricalImportSourceIdentity {
+  aiClient: string;
+  sourceKind: string;
+  sourceSessionId: string;
+}
+
+export interface HistoricalImportSourceObservationInput {
+  sourceId: string;
+  localSourcePath: string;
+  sourceSizeBytes: number;
+  sourceModifiedAt?: string;
+}
+
+export interface HistoricalImportSourceRecord extends HistoricalImportCounters {
+  id: string;
+  runId: string;
+  ownerUserId: string;
+  state: HistoricalImportState;
+  aiClient: string;
+  sourceKind: string;
+  sourceSessionId: string;
+  sourceFingerprint: string;
+  registrationFrontierOffset: number;
+  registrationPrefixHash: string;
+  localSourcePath: string;
+  redactedSourceLabel: string;
+  checkpointOffset: number;
+  checkpointLine: number;
+  checkpointHash: string | null;
+  historicalImportedRanges: Array<{
+    fromOffset: number;
+    toOffset: number;
+    checkpointHash: string;
+  }>;
+  liveCursorOffset: number;
+  liveCursorLine: number;
+  liveCursorHash: string | null;
+  sourceSizeBytes: number | null;
+  sourceModifiedAt: string | null;
+  sourceEventFrom: string | null;
+  sourceEventTo: string | null;
+  malformedRecordCount: number;
+  rawIngestedRecordCount: number;
+  projectedRecordCount: number;
+  embeddingEligibleEventCount: number;
+  embeddedEventCount: number;
+  lcmEligibleEventCount: number;
+  lcmCompletedEventCount: number;
+  rawIngested: boolean;
+  projected: boolean;
+  partiallyEmbedded: boolean;
+  fullyEmbedded: boolean;
+  semanticReady: boolean;
+  lcmComplete: boolean;
+  retryCount: number;
+  failureReason: string | null;
+  nextRetryAt: string | null;
+  detectedProject: Record<string, unknown>;
+  discoveredAt: string;
+  eligibleAt: string | null;
+  queuedAt: string | null;
+  importStartedAt: string | null;
+  pausedAt: string | null;
+  skippedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  lastObservedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HistoricalImportRunDetail extends HistoricalImportRunRecord {
+  sources: HistoricalImportSourceRecord[];
+}
+
+export interface HistoricalImportBatchWriteInput {
+  sourceId: string;
+  expectedCheckpointOffset: number;
+  expectedCheckpointHash?: string | null;
+  checkpointOffset: number;
+  checkpointLine: number;
+  checkpointHash: string;
+  sourceSizeBytes: number;
+  skippedRecordCount?: number;
+  malformedRecordCount?: number;
+  sourceEventFrom?: string;
+  sourceEventTo?: string;
+  items: ConversationItemInput[];
+}
+
+export interface HistoricalImportBatchWriteResult {
+  items: ConversationItemRecord[];
+  source: HistoricalImportSourceRecord;
+  policy: EffectiveCapturePolicy;
+  replayed: boolean;
+}
+
+export interface LiveTranscriptCursorAdvanceInput {
+  sourceId: string;
+  expectedCursorOffset: number;
+  expectedCursorHash?: string | null;
+  cursorOffset: number;
+  cursorLine: number;
+  cursorHash: string;
+  sourceSizeBytes: number;
+}
+
 export interface UpsertCapturePolicyInput {
   targetType: CapturePolicyTarget;
   projectId?: string;
@@ -701,6 +850,8 @@ export interface EmbeddableSourceRecord {
   visibility: Visibility;
   text: string;
   sourceHash: string;
+  workClass?: KoedWorkClass;
+  reconciliationJobId?: string;
 }
 
 export interface LocalEmbeddingStatus {
@@ -727,6 +878,11 @@ export interface CapturedSessionRecord {
   captureMethod: CaptureMethod;
   model: string | null;
   cwd: string | null;
+  sourceKind: string | null;
+  sourceAdapterVersion: string | null;
+  sourceFingerprint: string | null;
+  capturedProject: Record<string, unknown>;
+  importObservedAt: string | null;
   metadata: Record<string, unknown>;
   capturedProjectProvenance: Record<string, unknown>;
   automaticProject: PersonalProjectReference | null;
@@ -772,6 +928,9 @@ export interface ConversationItemInput {
   sourceSequence?: number;
   eventTime?: string;
   observedAt?: string;
+  importObservedAt?: string;
+  sourceFingerprint?: string;
+  capturedProject?: Record<string, unknown>;
   rawJson: unknown;
   rawText?: string;
   logicalSourceId?: string;
@@ -781,6 +940,7 @@ export interface ConversationItemInput {
   transportChunkEncoding?: string;
   sourceHash: string;
   idempotencyKey: string;
+  legacyIdempotencyKeys?: string[];
   canonicalItemKey?: string;
   canonicalStableItemId?: string;
   canonicalSourcePriority?: number;
@@ -814,6 +974,10 @@ export interface ConversationItemRecord {
   sourceEventType: string | null;
   sourceSequence: number | null;
   idempotencyKey: string;
+  observedAt: string;
+  importObservedAt: string | null;
+  sourceFingerprint: string | null;
+  capturedProject: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -937,20 +1101,48 @@ export interface ConversationProjectionResult {
     visibility: Visibility;
     includeInEmbedding: boolean;
     includeInLcm: boolean;
+    workClass: KoedWorkClass;
+    sourceEventTime?: string | null;
   }>;
+}
+
+export interface ConversationProjectionProcessingRecord {
+  eventId: string;
+  userId: string;
+  visibility: Visibility;
+  workClass: KoedWorkClass;
+  includeInEmbedding: boolean;
+  includeInLcm: boolean;
+  sourceEventTime: string | null;
+}
+
+export interface HistoricalProjectionLease {
+  release(): Promise<void>;
+}
+
+export interface ConversationProjectionBacklog {
+  liveProjectionRows: number;
+  historicalImportRows: number;
+  historicalImportBytes: number;
+  interactiveQuestionRows: number;
 }
 
 export interface LcmDispatchReconciliationScope {
   ownerUserId: string;
   visibility: "personal";
+  workClass: KoedWorkClass;
   pendingMemoryEventIds: string[];
   dispatchKey: string;
+  jobId: string;
 }
 
 interface ConversationProjectionInput {
   limit?: number;
+  maxBytes?: number;
+  maxRuntimeMs?: number;
   conversationItemIds?: string[];
   visibility?: Visibility;
+  workClass?: "live_capture_projection" | "historical_import_backfill";
 }
 
 export type SemanticMemoryRebuildInput = {
@@ -969,6 +1161,8 @@ export interface SemanticMemoryRebuildResult {
     visibility: Visibility;
     includeInEmbedding: boolean;
     includeInLcm: boolean;
+    workClass: KoedWorkClass;
+    sourceEventTime?: string | null;
   }>;
 }
 
@@ -1541,11 +1735,24 @@ export interface MemorySourceRepository
   }>;
   listConversationProjectionActors(input?: {
     limit?: number;
+    workClass?: "live_capture_projection" | "historical_import_backfill";
   }): Promise<ActorContext[]>;
+  getConversationProjectionBacklog(): Promise<ConversationProjectionBacklog>;
+  tryAcquireHistoricalProjectionLease(): Promise<HistoricalProjectionLease | null>;
+  listPendingConversationProjectionProcessing(
+    limit?: number
+  ): Promise<ConversationProjectionProcessingRecord[]>;
+  markConversationProjectionProcessingDispatched(
+    eventIds: string[]
+  ): Promise<number>;
   listPendingLcmDispatchScopes(input?: {
     limit?: number;
     ownerUserId?: string;
+    workClass?: KoedWorkClass;
   }): Promise<LcmDispatchReconciliationScope[]>;
+  listHistoricalImportSourcesNeedingLcmFinalization(): Promise<
+    Array<{ sourceId: string; ownerUserId: string; sessionId: string }>
+  >;
   listSemanticMemoryRebuildActors(input?: {
     limit?: number;
   }): Promise<ActorContext[]>;
@@ -1567,6 +1774,93 @@ export interface MemorySourceRepository
       maxAttempts: number;
     }
   ): Promise<LocalMemoryAgentSettingRecord>;
+  createHistoricalImportRun(
+    actor: ActorContext
+  ): Promise<HistoricalImportRunRecord>;
+  listHistoricalImportRuns(
+    actor: ActorContext,
+    input?: { limit?: number }
+  ): Promise<HistoricalImportRunRecord[]>;
+  getHistoricalImportRun(
+    actor: ActorContext,
+    runId: string
+  ): Promise<HistoricalImportRunDetail | null>;
+  createHistoricalImportSource(
+    actor: ActorContext,
+    input: {
+      runId: string;
+      aiClient: string;
+      sourceKind: string;
+      sourceSessionId: string;
+      sourceFingerprint: string;
+      registrationFrontierOffset: number;
+      registrationPrefixHash: string;
+      localSourcePath: string;
+      sourceSizeBytes: number;
+      sourceModifiedAt?: string;
+      sourceEventFrom?: string;
+      sourceEventTo?: string;
+      discoveredRecordCount?: number;
+      detectedProject?: Record<string, unknown>;
+    }
+  ): Promise<HistoricalImportSourceRecord | null>;
+  transitionHistoricalImportRun(
+    actor: ActorContext,
+    input: {
+      runId: string;
+      expectedState: HistoricalImportState;
+      state: HistoricalImportState;
+      failureReason?: string | null;
+      nextRetryAt?: string | null;
+    }
+  ): Promise<HistoricalImportRunRecord | null>;
+  transitionHistoricalImportSource(
+    actor: ActorContext,
+    input: {
+      sourceId: string;
+      expectedState: HistoricalImportState;
+      state: HistoricalImportState;
+      failureReason?: string | null;
+      nextRetryAt?: string | null;
+    }
+  ): Promise<HistoricalImportSourceRecord | null>;
+  advanceHistoricalImportSource(
+    actor: ActorContext,
+    input: {
+      sourceId: string;
+      expectedCheckpointOffset: number;
+      expectedCheckpointHash?: string | null;
+      checkpointOffset: number;
+      checkpointLine: number;
+      checkpointHash: string;
+      sourceSizeBytes: number;
+      importedRecordCount: number;
+      skippedRecordCount?: number;
+      malformedRecordCount?: number;
+      sourceEventFrom?: string;
+      sourceEventTo?: string;
+    }
+  ): Promise<HistoricalImportSourceRecord | null>;
+  advanceLiveTranscriptCursor(
+    actor: ActorContext,
+    input: LiveTranscriptCursorAdvanceInput
+  ): Promise<HistoricalImportSourceRecord>;
+  ingestHistoricalImportBatch(
+    actor: ActorContext,
+    input: HistoricalImportBatchWriteInput
+  ): Promise<HistoricalImportBatchWriteResult>;
+  getHistoricalImportSource(
+    actor: ActorContext,
+    sourceId: string
+  ): Promise<HistoricalImportSourceRecord | null>;
+  getHistoricalImportSourceByIdentity(
+    actor: ActorContext,
+    identity: HistoricalImportSourceIdentity
+  ): Promise<HistoricalImportSourceRecord | null>;
+  observeHistoricalImportSource(
+    actor: ActorContext,
+    input: HistoricalImportSourceObservationInput
+  ): Promise<HistoricalImportSourceRecord | null>;
   getEffectiveCapturePolicy(
     actor: ActorContext,
     input?: { projectId?: string; threadId?: string; sessionId?: string }

@@ -18,8 +18,35 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { collectPlatformBinaries } from "./loader-validation-lib.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
+const macosSystemPath = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+const macosNativeBuildEnv = (overrides = {}) => {
+  const env = { ...process.env };
+  for (const name of [
+    "CPATH",
+    "CPLUS_INCLUDE_PATH",
+    "C_INCLUDE_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "PKG_CONFIG_DIR",
+    "PKG_CONFIG_LIBDIR",
+    "PKG_CONFIG_PATH"
+  ]) {
+    delete env[name];
+  }
+  return {
+    ...env,
+    PATH: macosSystemPath,
+    LC_ALL: "C",
+    ZERO_AR_DATE: "1",
+    ...overrides
+  };
+};
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repoRoot,
@@ -162,12 +189,11 @@ const stageLlama = ({ source, runtimeRoot, cacheDir, workDir }) => {
 
 const relocateMacosPostgresLibraries = (postgresRoot) => {
   if (process.platform !== "darwin") return;
-  const libRoot = resolve(postgresRoot, "lib");
-  const candidates = listFiles(postgresRoot).filter((file) => {
-    const relativePath = relative(postgresRoot, file).replaceAll("\\", "/");
-    return (
-      relativePath.startsWith("bin/") || /\.(dylib|so)$/.test(relativePath)
-    );
+  const resolvedPostgresRoot = realpathSync(postgresRoot);
+  const libRoot = resolve(resolvedPostgresRoot, "lib");
+  const candidates = collectPlatformBinaries({
+    runtimeRoot: postgresRoot,
+    platform: "darwin"
   });
   for (const file of candidates) {
     const otool = spawnSync("otool", ["-L", file], {
@@ -175,20 +201,27 @@ const relocateMacosPostgresLibraries = (postgresRoot) => {
       stdio: "pipe"
     });
     if (otool.status !== 0) continue;
-    const relativePath = relative(postgresRoot, file).replaceAll("\\", "/");
-    const loaderPrefix = relativePath.startsWith("bin/")
-      ? "@loader_path/../lib"
-      : "@loader_path";
+    const relativePath = relative(resolvedPostgresRoot, file).replaceAll(
+      "\\",
+      "/"
+    );
     let changed = false;
     for (const line of otool.stdout.split("\n")) {
-      const match = line.trim().match(/^(\/[^\s]+\/postgres\/lib\/([^\s]+))/);
+      const match = line.trim().match(/^(\/[^\s]+\/postgres\/lib\/[^\s]+)/);
       if (!match) continue;
-      const [, dependency, name] = match;
-      if (!dependency.startsWith(libRoot)) continue;
+      const [dependency] = match;
+      const dependencyTarget = existsSync(dependency)
+        ? realpathSync(dependency)
+        : dependency;
+      if (!dependencyTarget.startsWith(`${libRoot}/`)) continue;
+      const loaderRelative = relative(
+        dirname(file),
+        dependencyTarget
+      ).replaceAll("\\", "/");
       run("install_name_tool", [
         "-change",
         dependency,
-        `${loaderPrefix}/${name}`,
+        `@loader_path/${loaderRelative}`,
         file
       ]);
       changed = true;
@@ -239,18 +272,87 @@ const requireCommand = (command, installHint) => {
 };
 
 const requirePostgresBuildTools = () => {
+  const bison = process.platform === "darwin" ? "/usr/bin/bison" : "bison";
+  const flex = process.platform === "darwin" ? "/usr/bin/flex" : "flex";
   requireCommand(
-    "bison",
+    bison,
     "Install bison before running native-runtime:build (for example: sudo apt-get install bison flex libssl-dev on Ubuntu/WSL)."
   );
   requireCommand(
-    "flex",
+    flex,
     "Install flex before running native-runtime:build (for example: sudo apt-get install bison flex libssl-dev on Ubuntu/WSL)."
   );
 };
 
-const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
+const buildMacosOpenSslStatic = ({ source, cacheDir, workDir }) => {
+  if (process.platform !== "darwin") return undefined;
+  if (!source) {
+    throw new Error(
+      "macOS PostgreSQL source builds require a pinned openssl source."
+    );
+  }
+  const archive = download({ ...source, cacheDir });
+  const extractDir = resolve(workDir, "openssl-source");
+  extractArchive(archive, extractDir);
+  const sourceRoot = firstChildDir(extractDir);
+  const prefix = resolve(workDir, "openssl-static");
+  rmSync(prefix, { recursive: true, force: true });
+  const env = macosNativeBuildEnv();
+  run(
+    "/usr/bin/perl",
+    [
+      "Configure",
+      "darwin64-arm64-cc",
+      "no-apps",
+      "no-atexit",
+      "no-quic",
+      "no-shared",
+      "no-tests",
+      "no-thread-pool",
+      `--prefix=${prefix}`,
+      `--openssldir=${resolve(prefix, "ssl")}`
+    ],
+    { cwd: sourceRoot, env, stdio: "inherit" }
+  );
+  run(
+    "/usr/bin/make",
+    ["-j", String(process.env.KOED_NATIVE_RUNTIME_MAKE_JOBS ?? "2")],
+    { cwd: sourceRoot, env, stdio: "inherit" }
+  );
+  run("/usr/bin/make", ["install_sw"], {
+    cwd: sourceRoot,
+    env,
+    stdio: "inherit"
+  });
+  const libDir = resolve(prefix, "lib");
+  for (const name of ["libcrypto.a", "libssl.a"]) {
+    if (!existsSync(resolve(libDir, name))) {
+      throw new Error(`Pinned OpenSSL build did not produce ${name}.`);
+    }
+  }
+  return {
+    archive,
+    version: source.version,
+    prefix,
+    includeDir: resolve(prefix, "include"),
+    libDir,
+    linkage: "static"
+  };
+};
+
+const buildPostgresSource = ({
+  source,
+  opensslSource,
+  runtimeRoot,
+  cacheDir,
+  workDir
+}) => {
   requirePostgresBuildTools();
+  const openssl = buildMacosOpenSslStatic({
+    source: opensslSource,
+    cacheDir,
+    workDir
+  });
   const archive = download({ ...source, cacheDir });
   const extractDir = resolve(workDir, "postgres-source");
   extractArchive(archive, extractDir);
@@ -258,6 +360,12 @@ const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const target = resolve(runtimeRoot, "postgres");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
+  const env = openssl
+    ? macosNativeBuildEnv({
+        CPPFLAGS: `-I${openssl.includeDir}`,
+        LDFLAGS: `-L${openssl.libDir}`
+      })
+    : process.env;
   run(
     "./configure",
     [
@@ -267,22 +375,27 @@ const buildPostgresSource = ({ source, runtimeRoot, cacheDir, workDir }) => {
       "--without-readline",
       "--without-zlib"
     ],
-    { cwd: sourceRoot, stdio: "inherit" }
+    { cwd: sourceRoot, env, stdio: "inherit" }
   );
   run(
     "make",
     ["-j", String(process.env.KOED_NATIVE_RUNTIME_MAKE_JOBS ?? "2")],
-    { cwd: sourceRoot, stdio: "inherit" }
+    { cwd: sourceRoot, env, stdio: "inherit" }
   );
-  run("make", ["install"], { cwd: sourceRoot, stdio: "inherit" });
+  run("make", ["install"], { cwd: sourceRoot, env, stdio: "inherit" });
   run("make", ["-C", "contrib/pgcrypto", "install"], {
     cwd: sourceRoot,
+    env,
     stdio: "inherit"
   });
   for (const name of ["initdb", "pg_ctl", "psql", "pg_config"])
     chmodIfExists(resolve(target, "bin", name));
   relocateMacosPostgresLibraries(target);
-  return { archive, pgConfig: resolve(target, "bin", "pg_config") };
+  return {
+    archive,
+    openssl,
+    pgConfig: resolve(target, "bin", "pg_config")
+  };
 };
 
 const assertInside = (base, child, label) => {
@@ -335,7 +448,11 @@ const buildPgvector = ({ source, runtimeRoot, cacheDir, workDir }) => {
   const pgConfig = resolve(runtimeRoot, "postgres", "bin", "pg_config");
   if (!existsSync(pgConfig))
     throw new Error(`Cannot build pgvector; missing ${pgConfig}`);
-  run("make", [`PG_CONFIG=${pgConfig}`], { cwd: sourceRoot, stdio: "inherit" });
+  run("make", [`PG_CONFIG=${pgConfig}`], {
+    cwd: sourceRoot,
+    env: process.platform === "darwin" ? macosNativeBuildEnv() : process.env,
+    stdio: "inherit"
+  });
   const copied = copyPgvectorBuildOutputs({
     buildDir: sourceRoot,
     postgresRoot: resolve(runtimeRoot, "postgres"),
@@ -348,6 +465,9 @@ const validateRequiredSources = (sources) => {
   for (const key of ["llamaCpp", "postgres", "pgvector"]) {
     if (!sources[key])
       throw new Error(`Native runtime sources file is missing ${key}.`);
+  }
+  if (sources.platform === "macos" && !sources.openssl) {
+    throw new Error("Native runtime sources file is missing openssl.");
   }
 };
 
@@ -376,6 +496,7 @@ export const procureRuntime = ({
     sources.postgres.kind === "source"
       ? buildPostgresSource({
           source: sources.postgres,
+          opensslSource: sources.openssl,
           runtimeRoot: resolvedRuntimeRoot,
           cacheDir: resolvedCacheDir,
           workDir: resolvedWorkDir

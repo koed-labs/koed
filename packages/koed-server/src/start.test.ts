@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startKoedServer, stopChildProcess } from "./start.js";
+import { resolveKoedServerPaths } from "./paths.js";
+import {
+  startKoedServer,
+  stopChildProcess,
+  waitForManagedProcessExits
+} from "./start.js";
+import { acquireKoedServerSupervisorLock } from "./supervisor-lock.js";
 import type { KoedServerStatus } from "./types.js";
 
 const temps: string[] = [];
@@ -46,6 +52,7 @@ const healthyStatus = (root: string): KoedServerStatus => ({
   apiToken: { state: "healthy", configured: true },
   mcpServer: { state: "healthy" },
   captureHook: { state: "healthy" },
+  codexTranscriptWatcher: { state: "healthy" },
   codex: { state: "healthy", configured: true },
   lcmSummaryService: { state: "healthy" },
   deviceIdentity: {
@@ -177,6 +184,30 @@ describe("start supervisor", () => {
       stopChildProcess(value as never, 100)
     ).resolves.toBeUndefined();
     expect(signals).toEqual(["SIGTERM"]);
+  });
+
+  it("recognizes managed processes that exited before listeners attach", async () => {
+    const alreadyExited = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+    };
+    alreadyExited.exitCode = 0;
+    alreadyExited.signalCode = null;
+    const live = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: NodeJS.Signals | null;
+    };
+    live.exitCode = null;
+    live.signalCode = null;
+
+    const waiting = waitForManagedProcessExits({
+      alreadyExited: alreadyExited as never,
+      live: live as never
+    });
+    live.exitCode = 0;
+    live.emit("exit", 0, null);
+
+    await expect(waiting).resolves.toBeUndefined();
   });
 
   it("requires explicit external service URLs without localhost fallbacks", async () => {
@@ -350,7 +381,7 @@ describe("start supervisor", () => {
       resolve(resources.pgBin, "pg_ctl")
     );
     expect(commands.map((command) => command.args.join(" "))).toContain(
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer --filter @koed/mcp-server build"
     );
     const buildEnv = commands.find((command) =>
       command.args.includes("@koed/embedding-service")
@@ -674,14 +705,10 @@ describe("start supervisor", () => {
 
   it("does not allocate ports when a live supervisor owns KOED_HOME", async () => {
     const root = tempDir();
-    mkdirSync(resolve(root, "run"), { recursive: true });
-    writeFileSync(
-      resolve(root, "run/koed-server.lock"),
-      JSON.stringify({
-        pid: process.pid,
-        acquiredAt: "2026-01-01T00:00:00.000Z"
-      })
+    const lock = acquireKoedServerSupervisorLock(
+      resolveKoedServerPaths({ KOED_HOME: root, KOED_REPO_ROOT: root })
     );
+    expect(lock.acquired).toBe(true);
     const commands: string[] = [];
 
     await startKoedServer({
@@ -763,6 +790,98 @@ describe("start supervisor", () => {
     expect(spawned.map((entry) => entry.command)).not.toContain("pnpm");
   });
 
+  it("cleans spawned app processes when startup status collection fails", async () => {
+    const root = tempDir();
+    const killed: number[] = [];
+    let nextPid = 20;
+
+    await expect(
+      startKoedServer({
+        environment: {
+          KOED_HOME: root,
+          KOED_REPO_ROOT: root,
+          KOED_RUNTIME_MODE: "developer",
+          MEMORY_API_TOKEN: "watcher-token",
+          DATABASE_URL: "postgres://operator/db",
+          REDIS_URL: "redis://operator:6379",
+          EMBEDDING_SERVICE_URL: "http://operator:8000"
+        },
+        timeoutMs: 1,
+        pollIntervalMs: 1,
+        spawnSync: () => spawnResult(),
+        spawn: () => {
+          const value = new EventEmitter() as EventEmitter & {
+            pid: number;
+            exitCode: number | null;
+            signalCode: NodeJS.Signals | null;
+            kill: (signal?: NodeJS.Signals) => boolean;
+          };
+          value.pid = nextPid++;
+          value.exitCode = null;
+          value.signalCode = null;
+          value.kill = (signal = "SIGTERM") => {
+            killed.push(value.pid);
+            value.signalCode = signal;
+            setImmediate(() => value.emit("exit", null, signal));
+            return true;
+          };
+          return value as never;
+        },
+        collectStatus: async () => {
+          throw new Error("status failed");
+        }
+      })
+    ).rejects.toThrow("status failed");
+
+    expect(killed.sort((left, right) => left - right)).toEqual([20, 21, 22]);
+    expect(() =>
+      readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+    ).toThrow();
+  });
+
+  it("starts Transcript Watcher after readiness check with final API Token", async () => {
+    const root = tempDir();
+    const spawned: Array<{
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+    }> = [];
+
+    await startKoedServer({
+      environment: {
+        KOED_HOME: root,
+        KOED_REPO_ROOT: root,
+        KOED_RUNTIME_MODE: "developer",
+        MEMORY_API_TOKEN: "watcher-token",
+        DATABASE_URL: "postgres://operator/db",
+        REDIS_URL: "redis://operator:6379",
+        EMBEDDING_SERVICE_URL: "http://operator:8000"
+      },
+      timeoutMs: 1,
+      pollIntervalMs: 1,
+      spawnSync: () => spawnResult(),
+      spawn: (_command, args, options) => {
+        spawned.push({ args, env: options?.env });
+        return child(spawned.length);
+      },
+      collectStatus: async () => healthyStatus(root)
+    });
+
+    const watcher = spawned.find((entry) =>
+      entry.args.includes("watch-codex-transcripts")
+    );
+    expect(watcher?.args).toEqual([
+      resolve(root, "packages/mcp-server/dist/cli.js"),
+      "watch-codex-transcripts"
+    ]);
+    expect(watcher?.env?.MEMORY_API_TOKEN).toBe("watcher-token");
+    expect(watcher?.env?.KOED_HOME).toBe(root);
+    const runtime = JSON.parse(
+      readFileSync(resolve(root, "run/koed-server.json"), "utf8")
+    ) as { services: string[]; processes: Record<string, number> };
+    expect(runtime.services).toContain("codex-transcript-watcher");
+    expect(runtime.processes.codexTranscriptWatcher).toBeGreaterThan(0);
+  });
+
   it("starts app services without managing external dependencies", async () => {
     const root = tempDir();
     const commands: Array<{ command: string; args: string[] }> = [];
@@ -791,7 +910,7 @@ describe("start supervisor", () => {
 
     expect(commands.map((command) => command.args.join(" "))).toEqual([
       resolve(root, "scripts/setup-env.mjs"),
-      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer build"
+      "--filter @koed/api --filter @koed/worker --filter @koed/embedding-service --filter @koed/explorer --filter @koed/mcp-server build"
     ]);
     expect(commands.some((command) => command.command === "docker")).toBe(
       false

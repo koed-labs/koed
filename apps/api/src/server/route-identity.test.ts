@@ -226,6 +226,34 @@ describe("route identity contract", () => {
       security: [{ bearerApiToken: [] }],
       "x-koed-identity": "api_token"
     });
+    expect(openApiPaths["/v1/historical-imports"]?.post).toMatchObject({
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-identity": "session_or_api_token",
+      "x-koed-team-authority": "none",
+      "x-koed-deployment-modes": ["developer", "local_personal"]
+    });
+    expect(
+      openApiPaths["/v1/historical-import-sources/lookup"]?.get
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-identity": "session_or_api_token",
+      "x-koed-team-authority": "none",
+      "x-koed-deployment-modes": ["developer", "local_personal"]
+    });
+    expect(
+      openApiPaths["/v1/historical-import-sources/{sourceId}/batches"]?.post
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-team-authority": "none"
+    });
+    expect(
+      openApiPaths["/v1/historical-import-sources/{sourceId}/live-cursor"]?.post
+    ).toMatchObject({
+      security: [{ sessionCookie: [] }, { bearerApiToken: [] }],
+      "x-koed-identity": "session_or_api_token",
+      "x-koed-team-authority": "none",
+      "x-koed-deployment-modes": ["developer", "local_personal"]
+    });
     expect(openApiPaths["/v1/memory/answer"]?.post).toMatchObject({
       security: [
         { sessionCookie: [] },

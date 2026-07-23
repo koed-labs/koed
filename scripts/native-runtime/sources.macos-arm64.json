@@ -1,7 +1,13 @@
 {
   "platform": "macos",
   "architecture": "arm64",
-  "notes": "Pinned upstream inputs for the macOS arm64 Koed native runtime artifact. CI aggregates and verifies relocatable upstream assets for llama.cpp. PostgreSQL is built from the official source tarball until a selected relocatable macOS PostgreSQL binary satisfies the packaged runtime contract; pgvector is built against that selected pg_config.",
+  "notes": "Pinned upstream inputs for the macOS arm64 Koed native runtime artifact. CI aggregates and verifies relocatable upstream assets for llama.cpp. PostgreSQL is built from the official source tarball against a pinned static OpenSSL build until a selected relocatable macOS PostgreSQL binary satisfies the packaged runtime contract; pgvector is built against that selected pg_config.",
+  "openssl": {
+    "kind": "source-static",
+    "version": "3.5.7",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.7/openssl-3.5.7.tar.gz",
+    "sha256": "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
+  },
   "postgres": {
     "kind": "source",
     "version": "17.6",

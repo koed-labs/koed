@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,6 +9,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
+import { copyNativeRuntimeSource } from "../native-runtime-copy.mjs";
 import {
   prunePythonEmbeddingRuntimeFiles,
   writeRuntimeAssetManifest,
@@ -111,11 +111,7 @@ const main = () => {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(runtimeRoot, { recursive: true });
   const procurement = sourceDir
-    ? (cpSync(sourceDir, runtimeRoot, {
-        recursive: true,
-        preserveTimestamps: true
-      }),
-      { sourceDir })
+    ? (copyNativeRuntimeSource(sourceDir, runtimeRoot), { sourceDir })
     : procureRuntime({
         sourcesPath: options.sourcesPath,
         runtimeRoot,

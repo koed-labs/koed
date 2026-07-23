@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION } from "@koed/core";
 
 export const PROMPT_OVERRIDE_DIR_ENV = "KOED_PROMPT_DIR";
 
@@ -23,6 +24,18 @@ export const promptFileNames = {
 } as const;
 
 export type PromptId = keyof typeof promptFileNames;
+
+export const lcmSummaryPromptIds = [
+  "lcm-summary-leaf",
+  "lcm-summary-rollup",
+  "lcm-summary-partial",
+  "lcm-summary-reduce"
+] as const satisfies readonly PromptId[];
+
+const requiredPromptOutputSchemas: Partial<Record<PromptId, string>> =
+  Object.fromEntries(
+    lcmSummaryPromptIds.map((id) => [id, LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION])
+  );
 
 export const requiredPromptPlaceholders = {
   "mcp-server-instructions": [],
@@ -284,6 +297,12 @@ export const loadPrompt = (
   }
   if (!metadata.version) {
     throw new Error(`Prompt file ${filePath} is missing version frontmatter`);
+  }
+  const requiredOutputSchema = requiredPromptOutputSchemas[id];
+  if (requiredOutputSchema && metadata.output_schema !== requiredOutputSchema) {
+    throw new Error(
+      `Prompt file ${filePath} declares output_schema ${metadata.output_schema ?? "<missing>"} but ${id} requires ${requiredOutputSchema}. Update or remove the incompatible ${PROMPT_OVERRIDE_DIR_ENV} override.`
+    );
   }
   if (!body.trim()) {
     throw new Error(`Prompt file ${filePath} is empty`);

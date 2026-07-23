@@ -72,6 +72,35 @@ describe("koed-server config", () => {
     ).toMatchObject({ dependencyMode: "external" });
   });
 
+  it("resolves Transcript Watcher defaults and file/environment precedence", () => {
+    const root = tempDir();
+    mkdirSync(resolve(root, "config"), { recursive: true });
+    writeFileSync(
+      resolve(root, "config/server.json"),
+      JSON.stringify({
+        runtimeMode: "local-personal",
+        codexTranscriptWatcherEnabled: false
+      })
+    );
+
+    expect(resolveKoedServerConfig(paths(root), {})).toMatchObject({
+      codexTranscriptWatcherEnabled: false
+    });
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: ""
+      })
+    ).toMatchObject({ codexTranscriptWatcherEnabled: false });
+    expect(
+      resolveKoedServerConfig(paths(root), {
+        MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED: "true"
+      })
+    ).toMatchObject({ codexTranscriptWatcherEnabled: true });
+    expect(
+      resolveKoedServerConfig(paths(root), { KOED_RUNTIME_MODE: "external" })
+    ).toMatchObject({ codexTranscriptWatcherEnabled: false });
+  });
+
   it("loads server config and lets environment override it", () => {
     const root = tempDir();
     mkdirSync(resolve(root, "config"), { recursive: true });

@@ -331,6 +331,106 @@ export const routeIdentityContracts = [
     "capture",
     "Project pending raw transcript rows."
   ),
+  route(
+    "POST",
+    "/v1/historical-imports",
+    "session_or_api_token",
+    "capture",
+    "Create local Personal Memory historical import run.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/historical-imports",
+    "session_or_api_token",
+    "capture",
+    "List owner-scoped redacted historical import status.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/historical-imports/{runId}",
+    "session_or_api_token",
+    "capture",
+    "Read owner-scoped redacted historical import status.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/historical-imports/{runId}",
+    "session_or_api_token",
+    "capture",
+    "Transition owner-scoped historical import run state.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/historical-import-sources",
+    "session_or_api_token",
+    "capture",
+    "Register local-only historical source state.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "GET",
+    "/v1/historical-import-sources/lookup",
+    "session_or_api_token",
+    "capture",
+    "Look up owner-scoped redacted historical source state by canonical identity.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/historical-import-sources/{sourceId}/observation",
+    "session_or_api_token",
+    "capture",
+    "Refresh verified owner-scoped local source observation without changing historical state.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "PATCH",
+    "/v1/historical-import-sources/{sourceId}",
+    "session_or_api_token",
+    "capture",
+    "Transition owner-scoped historical source state.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/historical-import-sources/{sourceId}/batches",
+    "session_or_api_token",
+    "capture",
+    "Idempotently ingest policy-eligible Personal Memory transcript batch.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
+  route(
+    "POST",
+    "/v1/historical-import-sources/{sourceId}/live-cursor",
+    "session_or_api_token",
+    "capture",
+    "Advance the owner-scoped durable live transcript cursor without importing historical Memory.",
+    "none",
+    "implemented",
+    localEdgeDeploymentModes
+  ),
 
   route(
     "POST",

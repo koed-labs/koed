@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { createLocalWorkQueueRepository } from "../src/index.js";
+import { randomUUID } from "node:crypto";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  createDbPool,
+  createLocalWorkQueueRepository,
+  runDbMigrations
+} from "../src/index.js";
 
 const createPool = () => ({
   query: vi.fn()
@@ -17,6 +22,7 @@ describe("local work queue repository", () => {
         jobName: "embed-source",
         data: { sourceId: "event-1" },
         jobKey: "job-1",
+        priority: 20,
         maxAttempts: 5,
         backoffMs: 10_000,
         delayMs: 500
@@ -30,6 +36,7 @@ describe("local work queue repository", () => {
         "embed-source",
         "job-1",
         JSON.stringify({ sourceId: "event-1" }),
+        20,
         5,
         10_000,
         "500 milliseconds"
@@ -38,20 +45,46 @@ describe("local work queue repository", () => {
     const sql = String(pool.query.mock.calls[0]?.[0] ?? "");
     expect(sql).toContain("where job_key is not null");
     expect(sql).toContain("local_work_queue.status in ('failed', 'completed')");
+    expect(sql).toContain("priority = case");
+    expect(sql).toContain("then excluded.priority");
     expect(sql).toContain("then 'pending'");
   });
 
-  it("claims pending jobs with a lease token", async () => {
+  it("defaults unspecified jobs to normal work priority", async () => {
+    const pool = createPool();
+    pool.query.mockResolvedValueOnce({ rows: [{ id: "43" }] });
+    const repo = createLocalWorkQueueRepository(pool as never);
+
+    await repo.enqueue({
+      queueName: "memory-embed",
+      jobName: "embed-source",
+      data: { sourceId: "event-2" }
+    });
+
+    expect(pool.query).toHaveBeenCalledWith(expect.any(String), [
+      "memory-embed",
+      "embed-source",
+      null,
+      JSON.stringify({ sourceId: "event-2" }),
+      10,
+      1,
+      null,
+      "0 milliseconds"
+    ]);
+  });
+
+  it("claims newer live work ahead of queued historical work", async () => {
     const pool = createPool();
     pool.query.mockResolvedValueOnce({
       rows: [
         {
           id: "7",
           queue_name: "lcm-compact",
-          job_name: "compact-scope",
-          data: { userId: "user-1" },
+          job_name: "compact-live-scope",
+          data: { userId: "user-1", workClass: "live_capture_projection" },
           attempt_count: 1,
           max_attempts: 5,
+          priority: 5,
           lock_token: "lock-1"
         }
       ]
@@ -66,10 +99,11 @@ describe("local work queue repository", () => {
     ).resolves.toEqual({
       id: 7,
       queueName: "lcm-compact",
-      jobName: "compact-scope",
-      data: { userId: "user-1" },
+      jobName: "compact-live-scope",
+      data: { userId: "user-1", workClass: "live_capture_projection" },
       attemptCount: 1,
       maxAttempts: 5,
+      priority: 5,
       lockToken: "lock-1"
     });
 
@@ -78,6 +112,7 @@ describe("local work queue repository", () => {
     expect(sql).toContain("expired_failed");
     expect(sql).toContain("attempt_count >= max_attempts");
     expect(sql).toContain("attempt_count < max_attempts");
+    expect(sql).toContain("order by priority asc, available_at asc, id asc");
     expect(pool.query).toHaveBeenCalledWith(expect.any(String), [
       "lcm-compact",
       expect.any(String),
@@ -134,5 +169,56 @@ describe("local work queue repository", () => {
       expect.stringContaining("available_at > now()"),
       [["pending", "delayed"]]
     );
+  });
+});
+
+const describeDb = process.env.DATABASE_URL ? describe : describe.skip;
+
+describeDb("local work queue priority integration", () => {
+  beforeAll(async () => {
+    const pool = createDbPool();
+    try {
+      await runDbMigrations(pool);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("claims newly arrived live work before sustained queued historical work", async () => {
+    const pool = createDbPool();
+    const repository = createLocalWorkQueueRepository(pool);
+    const queueName = `priority-${randomUUID()}`;
+    try {
+      for (let index = 0; index < 10; index += 1) {
+        await repository.enqueue({
+          queueName,
+          jobName: `historical-${index}`,
+          data: {},
+          priority: 20
+        });
+      }
+      const activeHistorical = await repository.claim({
+        queueName,
+        leaseMs: 60_000
+      });
+      await repository.enqueue({
+        queueName,
+        jobName: "live",
+        data: {},
+        priority: 5
+      });
+
+      const next = await repository.claim({ queueName, leaseMs: 60_000 });
+      const later = await repository.claim({ queueName, leaseMs: 60_000 });
+
+      expect(activeHistorical?.jobName).toBe("historical-0");
+      expect(next?.jobName).toBe("live");
+      expect(later?.jobName).toBe("historical-1");
+    } finally {
+      await pool.query("delete from local_work_queue where queue_name = $1", [
+        queueName
+      ]);
+      await pool.end();
+    }
   });
 });

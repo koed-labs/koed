@@ -46,6 +46,7 @@ Supported mode fields:
   reports `local_personal`; other source checkout runs report `developer`.
 - `KOED_RUNTIME_MODE`: `local-personal`, `external`, or `developer`.
 - `KOED_DEPENDENCY_MODE`: `external` or `bundled-local`.
+- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: enables the supervised Codex Transcript Watcher. When unset, developer and local-personal runtime modes enable it; external runtime mode disables it and requires explicit `true`. `KOED_HOME/config/server.json` may set the equivalent `codexTranscriptWatcherEnabled` field, with the environment taking precedence.
 - `KOED_EXTERNAL_DATABASE_URL` or `DATABASE_URL`: Operator-managed Postgres URL in external mode.
 - `KOED_EXTERNAL_REDIS_URL` or `REDIS_URL`: Operator-managed Redis/BullMQ URL when the queue backend is `bullmq`.
 - `KOED_EXTERNAL_EMBEDDING_SERVICE_URL` or `EMBEDDING_SERVICE_URL`: Operator-managed Embedding Service URL in external mode.
@@ -56,6 +57,7 @@ Example external `KOED_HOME/config/server.json`:
 {
   "runtimeMode": "developer",
   "dependencyMode": "external",
+  "codexTranscriptWatcherEnabled": true,
   "external": {
     "databaseUrl": "postgres://koed:password@127.0.0.1:15432/koed",
     "redisUrl": "redis://127.0.0.1:16379",
@@ -69,7 +71,8 @@ Example bundled-local `KOED_HOME/config/server.json`:
 ```json
 {
   "runtimeMode": "developer",
-  "dependencyMode": "bundled-local"
+  "dependencyMode": "bundled-local",
+  "codexTranscriptWatcherEnabled": true
 }
 ```
 
@@ -431,6 +434,14 @@ policy, or full URLs containing customer content.
 - `MEMORY_RAW_PROJECTION_INTERVAL_MS`: worker interval for projecting pending raw `conversation_items` into messages, tool events, Memory Events, and token-usage rows. Default `5000`.
 - `MEMORY_RAW_PROJECTION_BATCH_LIMIT`: maximum raw rows projected per actor on each worker catch-up pass. Default `1000`.
 - `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`: maximum memory owner scopes checked on each worker catch-up pass. Default `10`.
+- `MEMORY_HISTORICAL_IMPORT_BATCH_ROWS`: hard maximum raw rows selected for one historical Projection batch. An atomic segment larger than this cap remains pending until the Operator raises the cap. Default `100`; valid range `1`–`1000`.
+- `MEMORY_HISTORICAL_IMPORT_BATCH_BYTES`: hard maximum raw payload bytes selected for one historical Projection batch. An atomic segment larger than this cap remains pending until the Operator raises the cap. Default `1000000`; valid range `1`–`10000000`.
+- `MEMORY_HISTORICAL_IMPORT_BATCH_RUNTIME_MS`: maximum historical Projection runtime before yielding at next Projection boundary. Default `15000`; valid range `100`–`60000`.
+- `MEMORY_HISTORICAL_IMPORT_CONCURRENCY`: historical Projection worker slots. Must remain `1`; values outside `1`–`1` fail configuration validation.
+- `MEMORY_HISTORICAL_IMPORT_LIVE_BACKLOG_MAX`: live raw-Projection rows permitted before historical admission pauses. Default `0`; valid range `0`–`10000`.
+- `MEMORY_HISTORICAL_IMPORT_INTERACTIVE_BACKLOG_MAX`: pending interactive Memory Questions permitted before historical admission pauses. Default `0`; valid range `0`–`10000`.
+- `MEMORY_HISTORICAL_IMPORT_API_READY_URL`: required worker-visible API `/ready` URL for historical admission. Leave empty to fail closed and pause historical batches; Koed does not guess a replacement URL.
+- `MEMORY_HISTORICAL_IMPORT_API_READY_TIMEOUT_MS`: timeout for that API readiness probe. Default `1000`; valid range `100`–`10000`.
 - `MEMORY_VECTOR_CANDIDATE_LIMIT`: vector retrieval candidate count.
 - `MEMORY_RAG_ROLLUP_CANDIDATE_LIMIT`, `MEMORY_RAG_LEAF_CANDIDATE_LIMIT`, `MEMORY_RAG_FRESH_EVENT_CANDIDATE_LIMIT`, `MEMORY_RAG_RAW_FALLBACK_CANDIDATE_LIMIT`, `MEMORY_RAG_LEXICAL_CANDIDATE_LIMIT`, `MEMORY_RAG_SCOPED_LEAF_CANDIDATE_LIMIT`: optional per-stage retrieval candidate limits. Leave blank to use code defaults derived from the requested result limit.
 - `MEMORY_RAG_ROLLUP_RESULT_LIMIT`: optional cap on rollup results admitted into final recall evidence.
@@ -474,6 +485,20 @@ policy, or full URLs containing customer content.
 - `EMBEDDING_RERANKER_PARALLEL`: reranker llama-server parallel slot count.
 - `EMBEDDING_RERANKER_PROMPT_CACHE_ENABLED`: enables llama-server prompt caching for reranking. Default `true`; benchmark both modes explicitly because same-query rerank requests can reuse the shared instruction/query prefix.
 
+## Transcript Watcher Values
+
+`koed-server` passes these local values to its supervised
+`@koed/mcp-server watch-codex-transcripts` process:
+
+- `CODEX_HOME`: Codex state root. Transcript Watcher defaults to its `sessions` directory, or `~/.codex/sessions` when unset.
+- `MEMORY_CODEX_TRANSCRIPT_ROOTS`: optional platform path-delimited list of explicit transcript roots. When non-empty, replaces the `CODEX_HOME/sessions` default; it never broadens scanning to arbitrary home directories.
+- `MEMORY_CODEX_TRANSCRIPT_WATCHER_ENABLED`: watcher supervisor switch. Default `true` for developer/local-personal runtime modes and `false` for external mode unless explicitly set to `true`.
+- `MEMORY_CODEX_TRANSCRIPT_RESCAN_INTERVAL_MS`: periodic correctness rescan interval. Filesystem notifications and Hook wake files are latency hints only. Default `15000`.
+- `MEMORY_CODEX_TRANSCRIPT_DEBOUNCE_MS`: coalescing delay for notification, Hook, and rescan wakeups. Default `200`.
+- `MEMORY_CODEX_TRANSCRIPT_MAX_ENTRIES_PER_SCAN`: maximum filesystem entries inspected per scan. Default `4000`.
+- `MEMORY_CODEX_TRANSCRIPT_MAX_FILES_PER_SCAN`: maximum transcript files processed per scan. Default `200`.
+- `MEMORY_CODEX_TRANSCRIPT_MAX_BYTES_PER_BATCH`: maximum sequential transcript bytes parsed per watcher page. Default `1048576`.
+
 ## AI Client Values
 
 These values are copied into the AI Client configuration and are not consumed automatically by Docker Compose:
@@ -487,15 +512,20 @@ These values are copied into the AI Client configuration and are not consumed au
   template placeholders fail loudly. Prompt overrides can adjust wording and
   add optional content, but code still owns required placeholders, JSON schemas,
   parser validation, source serialization, authorization, redaction, and
-  retrieval boundaries. MCP builds carry the bundled defaults inside the
-  deployed runtime. `pnpm codex:bootstrap` resolves relative override paths
+  retrieval boundaries. LCM overrides must declare
+  `output_schema: lcm-semantic-summary-v1` in frontmatter and produce that
+  contract. The LCM Summary Service validates all four LCM prompt contracts
+  before listing pending work or calling Codex. Overrides copied from an earlier
+  build that produce `lcm-structured-summary-v1` output must be updated or
+  removed; incompatible overrides fail with an actionable error. MCP builds
+  carry the bundled defaults inside the deployed runtime. `pnpm codex:bootstrap` resolves relative override paths
   against the Koed checkout and writes an absolute directory into the persistent
   MCP environment, so opening Codex from a different Project does not change
   which prompts are loaded. LCM summaries, Memory Answer, and generated session
   titles persist the frontmatter version of the prompt that produced them.
 
-- `MEMORY_API_URL`: API URL used by the MCP Server and Supported Capture Hook.
-- `MEMORY_API_TOKEN`: API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.
+- `MEMORY_API_URL`: API URL used by the MCP Server, Transcript Watcher, and Supported Capture Hook.
+- `MEMORY_API_TOKEN`: Personal API Token created with `pnpm api-token:create` for the User. Operators can inspect and revoke local token records with `pnpm api-token:list` and `pnpm api-token:revoke`.
 - `MEMORY_HOOK_STRICT`: when `true`, Capture Hook failures exit non-zero.
 - `MEMORY_RAW_INGEST_BATCH_BYTES`: target maximum request size for Capture Hook raw-ingestion batches. Default `180000`. Oversized logical items use at most 64 transport chunks of 256 KiB each and fail before upload above the 16 MiB logical-item ceiling.
 - `MEMORY_API_REQUEST_TIMEOUT_MS`: timeout for local MCP Server API calls. Default `60_000`.
@@ -505,7 +535,8 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_HOOK_DEADLINE_MS`: soft deadline used by legacy foreground Capture Hook work. Signal-only hooks return after launching detached catch-up. Default `8500`.
 - `MEMORY_HOOK_TRANSCRIPT_TAIL_BYTES`: maximum sequential Codex transcript bytes processed by one background catch-up pass. The hook checkpoints transcript offsets only after raw rows are stored durably. Default `1000000`.
 - `MEMORY_TRANSCRIPT_FIRST_CONTACT_GRACE_MS`: timestamp grace window used only when live capture sees a transcript with no prior checkpoint. Koed reads the transcript tail, keeps only timestamped rows newer than the hook signal minus this window, and checkpoints to the current end of file. Historical import should be run explicitly instead of relying on live capture. Default `30000`.
-- `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES`: deprecated; foreground hooks no longer parse transcript tails.
+- `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_TAIL_BYTES`: maximum sequential transcript bytes read by one legacy foreground Hook pass. Default `128000`.
+- `MEMORY_HOOK_FOREGROUND_TRANSCRIPT_SCAN_BYTES`: backlog threshold above which a legacy foreground Hook stays on sequential catch-up instead of tail scanning. Default `4000000`.
 - `MEMORY_HOOK_TRIGGER_TRANSCRIPT_CATCHUP`: when `true`, foreground hooks start a detached local transcript catch-up process. Default `true`.
 - `MEMORY_TRANSCRIPT_CATCHUP_API_REQUEST_TIMEOUT_MS`: API request timeout used by detached transcript catch-up. This stays longer than the foreground hook timeout so recovery can complete durable raw ingestion after the hook process has returned. Default `60000`.
 - `MEMORY_TRANSCRIPT_CATCHUP_PASS_DEADLINE_MS`: soft deadline for one background transcript catch-up API pass. Default `60000`.
@@ -551,11 +582,15 @@ These values are copied into the AI Client configuration and are not consumed au
 - `MEMORY_SESSION_TITLE_BACKGROUND_BATCH_LIMIT`: maximum pending captured-session titles processed in one local memory processing batch.
 - `MEMORY_SESSION_TITLE_MIN_USER_EVENTS`: minimum user events before a captured session is eligible for local generated title processing. Default `3`.
 
-Configure Codex to run the Supported Capture Hook for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop`. The subagent hooks let Koed preserve child conversation identity and parent linkage for thread-spawned Codex subagents.
+`koed-server` supervises `@koed/mcp-server watch-codex-transcripts` after its startup readiness check and local API Token resolution, and stops it before the API. If the API is still recovering, bounded watcher rescans keep retrying. Configure Codex to run the Supported Capture Hook for `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and `SubagentStop`. The Hook supplies low-latency content-free wake hints and completion evidence; missing or repeated signals do not affect watcher correctness. Subagent hooks let Koed preserve child conversation identity and parent linkage for thread-spawned Codex subagents.
 
 Koed relies on the connected AI Client for Synthesis; backend LLM provider configuration and server-side synthesis are unsupported in this build.
 The MCP-local memory processing service is enabled by default in this build. It generates captured-session titles and LCM summaries through local Codex app-server mode. Failures are reported as diagnostics and pending summaries remain searchable as degraded evidence.
 MCP Memory Answer and LCM Summary model, reasoning, timeout, and attempt settings can be edited in the Explorer Settings panel. The API stores those user settings and the local MCP/bridge reads them at execution time. `.env` values are bootstrap defaults only; precedence is API user setting, then `.env`, then code default.
+
+LCM summary prompt-version changes are forward-only. Existing completed
+summaries are not automatically regenerated; new prompts apply to new or
+naturally invalidated LCM nodes.
 
 Manual Memory Question settings selected in the Explorer composer are stored on the question row so retry and background catch-up use the same model, reasoning effort, timeout, and attempts. If Codex app-server cannot be started, local Synthesis fails visibly instead of falling back to a backend LLM path.
 
@@ -569,6 +604,45 @@ Events, embeddings, and LCM sources. The seeded defaults keep UI projection and
 embedding selection matched for every transcript type in the current build, but
 the fields are independent so future policy rows can support display-only or
 recall-only transcript types without a schema change.
+
+## Historical Import Scheduling
+
+Work classes have fixed priorities across Postgres `local_work_queue` and
+BullMQ: interactive Recall/Memory Questions (`1`), live Capture Projection
+(`5`), normal embedding/LCM (`10`), and historical import/backfill (`20`).
+Lower number runs first. Queue payloads contain identifiers and class only;
+they never contain source content or local paths. Historical backlog is shown
+only as redacted diagnostic counters in authenticated `/ops/status`; it is not
+part of `/ready` and does not make Koed unavailable.
+
+FIFO is currently only the within-class tie-breaker. These fixed classes and
+bounded historical admission do not yet provide aging, token-cost fairness,
+per-User/tenant shares, reserved interactive capacity, or dynamic dispatch
+priority; KOE-355 owns that scheduler work.
+
+A coordinator registers each existing source with immutable fingerprint,
+source-session identity, complete-record frontier offset, and bounded prefix sentinel hash.
+Pre-frontier rows receive the historical class. Post-frontier rows, including
+downtime catch-up, receive the live class. A source created after registration
+has a zero frontier and is live from its first complete record. Never label
+history from FIFO position, timestamp age, source path, or arbitrary metadata.
+
+Historical import control/status routes are enabled only when
+`KOED_DEPLOYMENT_PROFILE` resolves to `developer` or `local_personal`. They
+accept owning User browser sessions or Personal API Tokens and grant no Team
+authority. No separate configuration enables these routes on private VPS, Team
+Self-Hosted, or Koed-managed cloud profiles.
+
+Import coordinators persist source path through local-only source registration.
+Status and batch responses expose a redacted basename label and stable SHA-256
+fingerprint, never raw path or path-like detected Project fields. Coordinators
+must send transcript records through reusable `codex-transcript-v1` adapter and
+must maintain the returned historical checkpoint/imported ranges separately
+from the live-tail/recovery cursor. Neither stream may derive from or update the
+other. Source growth is allowed; truncation, rotation/sentinel-covered prefix mutation,
+and stale checkpoints fail explicitly. Exact retries return a read-only replay. Effective
+Capture Policy and Capture Pause are rechecked under the same
+owner-scoped transaction lock as each batch write.
 
 ## Data At Rest
 

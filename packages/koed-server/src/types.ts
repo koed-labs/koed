@@ -26,6 +26,7 @@ export interface KoedServerStatus {
   apiToken: KoedServerComponentStatus & { configured: boolean };
   mcpServer: KoedServerComponentStatus;
   captureHook: KoedServerComponentStatus;
+  codexTranscriptWatcher: KoedServerComponentStatus;
   codex: KoedServerComponentStatus & { configured: boolean };
   lcmSummaryService: KoedServerComponentStatus;
   deviceIdentity: KoedServerComponentStatus & {
@@ -68,6 +69,7 @@ export interface KoedServerRuntimeState {
   startedAt: string;
   runtimeMode?: "local-personal" | "external" | "developer";
   dependencyMode?: "bundled-local" | "external";
+  codexTranscriptWatcherEnabled?: boolean;
   repoRoot: string;
   apiUrl: string;
   explorerUrl: string;

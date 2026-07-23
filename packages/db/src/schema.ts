@@ -55,6 +55,16 @@ export const captureState = pgEnum("capture_state", [
   "disabled",
   "ask"
 ]);
+export const historicalImportState = pgEnum("historical_import_state", [
+  "discovered",
+  "eligible",
+  "queued",
+  "importing",
+  "paused",
+  "skipped",
+  "completed",
+  "failed"
+]);
 export const memoryQuestionStatus = pgEnum("memory_question_status", [
   "pending",
   "answered",
@@ -510,6 +520,12 @@ export const sessions = pgTable(
     ),
     sourceKind: text("source_kind"),
     sourceAdapterVersion: text("source_adapter_version"),
+    sourceFingerprint: text("source_fingerprint"),
+    capturedProject: jsonb("captured_project")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    importObservedAt: timestamp("import_observed_at", { withTimezone: true }),
     externalThreadId: text("external_thread_id"),
     forkedFromExternalThreadId: text("forked_from_external_thread_id"),
     parentSessionId: uuid("parent_session_id").references(
@@ -853,6 +869,7 @@ export const memoryNodes = pgTable(
     visibility: visibilityScope("visibility").notNull(),
     kind: text("kind").notNull(),
     depth: integer("depth").notNull().default(0),
+    workClass: text("work_class").notNull().default("normal_embedding_lcm"),
     title: text("title"),
     summaryText: text("summary_text").notNull(),
     bodyText: text("body_text"),
@@ -928,6 +945,10 @@ export const memoryNodes = pgTable(
       ),
     check("memory_nodes_kind_check", sql`${table.kind} in ('leaf', 'rollup')`),
     check("memory_nodes_depth_check", sql`${table.depth} >= 0`),
+    check(
+      "memory_nodes_work_class_check",
+      sql`${table.workClass} in ('live_capture_projection', 'normal_embedding_lcm', 'historical_import_backfill')`
+    ),
     check(
       "memory_nodes_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
@@ -1891,6 +1912,182 @@ export const capturePolicies = pgTable(
   ]
 );
 
+export const historicalImportRuns = pgTable(
+  "historical_import_runs",
+  {
+    id: id(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    state: historicalImportState("state").notNull().default("discovered"),
+    sourceCount: integer("source_count").notNull().default(0),
+    completedSourceCount: integer("completed_source_count")
+      .notNull()
+      .default(0),
+    failedSourceCount: integer("failed_source_count").notNull().default(0),
+    skippedSourceCount: integer("skipped_source_count").notNull().default(0),
+    discoveredRecordCount: integer("discovered_record_count")
+      .notNull()
+      .default(0),
+    importedRecordCount: integer("imported_record_count").notNull().default(0),
+    skippedRecordCount: integer("skipped_record_count").notNull().default(0),
+    scannedByteCount: bigint("scanned_byte_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    retryCount: integer("retry_count").notNull().default(0),
+    failureReason: text("failure_reason"),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    eligibleAt: timestamp("eligible_at", { withTimezone: true }),
+    queuedAt: timestamp("queued_at", { withTimezone: true }),
+    importStartedAt: timestamp("import_started_at", { withTimezone: true }),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    skippedAt: timestamp("skipped_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    index("historical_import_runs_owner_updated_idx").on(
+      table.ownerUserId,
+      table.updatedAt.desc()
+    ),
+    unique("historical_import_runs_id_owner_unique").on(
+      table.id,
+      table.ownerUserId
+    ),
+    check(
+      "historical_import_runs_counters_check",
+      sql`${table.sourceCount} >= 0 and ${table.completedSourceCount} >= 0 and ${table.failedSourceCount} >= 0 and ${table.skippedSourceCount} >= 0 and ${table.discoveredRecordCount} >= 0 and ${table.importedRecordCount} >= 0 and ${table.skippedRecordCount} >= 0 and ${table.scannedByteCount} >= 0 and ${table.retryCount} between 0 and 1000`
+    )
+  ]
+);
+
+export const historicalImportSources = pgTable(
+  "historical_import_sources",
+  {
+    id: id(),
+    runId: uuid("run_id").notNull(),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    state: historicalImportState("state").notNull().default("discovered"),
+    aiClient: text("ai_client").notNull(),
+    sourceKind: text("source_kind").notNull(),
+    sourceSessionId: text("source_session_id").notNull(),
+    sourceFingerprint: text("source_fingerprint").notNull(),
+    registrationFrontierOffset: bigint("registration_frontier_offset", {
+      mode: "number"
+    })
+      .notNull()
+      .default(0),
+    registrationPrefixHash: text("registration_prefix_hash").notNull(),
+    localSourcePath: text("local_source_path").notNull(),
+    redactedSourceLabel: text("redacted_source_label").notNull(),
+    checkpointOffset: bigint("checkpoint_offset", { mode: "number" })
+      .notNull()
+      .default(0),
+    checkpointLine: integer("checkpoint_line").notNull().default(0),
+    checkpointHash: text("checkpoint_hash"),
+    historicalImportedRanges: jsonb("historical_imported_ranges")
+      .$type<
+        Array<{ fromOffset: number; toOffset: number; checkpointHash: string }>
+      >()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    liveCursorOffset: bigint("live_cursor_offset", { mode: "number" })
+      .notNull()
+      .default(0),
+    liveCursorLine: integer("live_cursor_line").notNull().default(0),
+    liveCursorHash: text("live_cursor_hash"),
+    sourceSizeBytes: bigint("source_size_bytes", { mode: "number" }),
+    sourceModifiedAt: timestamp("source_modified_at", { withTimezone: true }),
+    sourceEventFrom: timestamp("source_event_from", { withTimezone: true }),
+    sourceEventTo: timestamp("source_event_to", { withTimezone: true }),
+    discoveredRecordCount: integer("discovered_record_count")
+      .notNull()
+      .default(0),
+    importedRecordCount: integer("imported_record_count").notNull().default(0),
+    skippedRecordCount: integer("skipped_record_count").notNull().default(0),
+    malformedRecordCount: integer("malformed_record_count")
+      .notNull()
+      .default(0),
+    rawIngestedRecordCount: integer("raw_ingested_record_count")
+      .notNull()
+      .default(0),
+    projectedRecordCount: integer("projected_record_count")
+      .notNull()
+      .default(0),
+    embeddingEligibleEventCount: integer("embedding_eligible_event_count")
+      .notNull()
+      .default(0),
+    embeddedEventCount: integer("embedded_event_count").notNull().default(0),
+    lcmEligibleEventCount: integer("lcm_eligible_event_count")
+      .notNull()
+      .default(0),
+    lcmCompletedEventCount: integer("lcm_completed_event_count")
+      .notNull()
+      .default(0),
+    retryCount: integer("retry_count").notNull().default(0),
+    failureReason: text("failure_reason"),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    detectedProject: jsonb("detected_project")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    eligibleAt: timestamp("eligible_at", { withTimezone: true }),
+    queuedAt: timestamp("queued_at", { withTimezone: true }),
+    importStartedAt: timestamp("import_started_at", { withTimezone: true }),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    skippedAt: timestamp("skipped_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: updatedNow()
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.runId, table.ownerUserId],
+      foreignColumns: [
+        historicalImportRuns.id,
+        historicalImportRuns.ownerUserId
+      ],
+      name: "historical_import_sources_run_owner_fk"
+    }).onDelete("cascade"),
+    uniqueIndex("historical_import_sources_identity_unique").on(
+      table.ownerUserId,
+      table.aiClient,
+      table.sourceKind,
+      table.sourceSessionId
+    ),
+    index("historical_import_sources_run_state_idx").on(
+      table.runId,
+      table.state,
+      table.updatedAt
+    ),
+    check(
+      "historical_import_sources_fingerprint_check",
+      sql`${table.sourceFingerprint} ~ '^[0-9a-f]{64}$' and ${table.registrationPrefixHash} ~ '^[0-9a-f]{64}$'`
+    ),
+    check(
+      "historical_import_sources_counters_check",
+      sql`${table.registrationFrontierOffset} >= 0 and ${table.checkpointOffset} >= 0 and ${table.checkpointOffset} <= ${table.registrationFrontierOffset} and ${table.liveCursorOffset} >= ${table.registrationFrontierOffset} and ${table.checkpointLine} >= 0 and ${table.liveCursorLine} >= 0 and (${table.checkpointHash} is null or ${table.checkpointHash} ~ '^[0-9a-f]{64}$') and (${table.liveCursorHash} is null or ${table.liveCursorHash} ~ '^[0-9a-f]{64}$') and (${table.sourceSizeBytes} is null or ${table.sourceSizeBytes} >= greatest(${table.registrationFrontierOffset}, ${table.liveCursorOffset})) and ${table.discoveredRecordCount} >= 0 and ${table.importedRecordCount} >= 0 and ${table.skippedRecordCount} >= 0 and ${table.malformedRecordCount} >= 0 and ${table.rawIngestedRecordCount} >= 0 and ${table.projectedRecordCount} >= 0 and ${table.embeddingEligibleEventCount} >= 0 and ${table.embeddedEventCount} between 0 and ${table.embeddingEligibleEventCount} and ${table.lcmEligibleEventCount} >= 0 and ${table.lcmCompletedEventCount} between 0 and ${table.lcmEligibleEventCount} and ${table.retryCount} between 0 and 1000`
+    ),
+    check(
+      "historical_import_sources_event_range_check",
+      sql`${table.sourceEventFrom} is null or ${table.sourceEventTo} is null or ${table.sourceEventFrom} <= ${table.sourceEventTo}`
+    )
+  ]
+);
+
 export const conversationItems = pgTable(
   "conversation_items",
   {
@@ -1921,6 +2118,12 @@ export const conversationItems = pgTable(
     observedAt: timestamp("observed_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    importObservedAt: timestamp("import_observed_at", { withTimezone: true }),
+    sourceFingerprint: text("source_fingerprint"),
+    capturedProject: jsonb("captured_project")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     rawJson: jsonb("raw_json").$type<unknown>().notNull(),
     rawText: text("raw_text"),
     sourceHash: text("source_hash").notNull(),
@@ -1930,6 +2133,9 @@ export const conversationItems = pgTable(
       .notNull()
       .default(0),
     projectionStatus: text("projection_status").notNull().default("pending"),
+    projectionWorkClass: text("projection_work_class")
+      .notNull()
+      .default("live_capture_projection"),
     projectionVersion: text("projection_version"),
     projectionPolicyRevision: bigint("projection_policy_revision", {
       mode: "number"
@@ -2003,6 +2209,7 @@ export const conversationItems = pgTable(
       .where(sql`${table.canonicalStableItemId} is not null`),
     index("conversation_items_projection_idx").on(
       table.projectionStatus,
+      table.projectionWorkClass,
       table.projectedAt,
       table.observedAt,
       table.id
@@ -2018,6 +2225,10 @@ export const conversationItems = pgTable(
     check(
       "conversation_items_personal_owner_check",
       sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "conversation_items_projection_work_class_check",
+      sql`${table.projectionWorkClass} in ('live_capture_projection', 'historical_import_backfill')`
     ),
     check(
       "conversation_items_source_line_number_check",
@@ -3257,6 +3468,38 @@ export const workflowTokenUsageSourceReferences = pgTable(
   ]
 );
 
+export const conversationProjectionProcessingOutbox = pgTable(
+  "conversation_projection_processing_outbox",
+  {
+    eventId: uuid("event_id")
+      .primaryKey()
+      .references(() => memoryEvents.id, { onDelete: "cascade" }),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    visibility: visibilityScope("visibility").notNull(),
+    workClass: text("work_class").notNull(),
+    includeInEmbedding: boolean("include_in_embedding").notNull(),
+    includeInLcm: boolean("include_in_lcm").notNull(),
+    sourceEventTime: timestamp("source_event_time", { withTimezone: true }),
+    createdAt: now(),
+    dispatchedAt: timestamp("dispatched_at", { withTimezone: true })
+  },
+  (table) => [
+    index("conversation_projection_processing_outbox_pending_idx")
+      .on(table.workClass, table.createdAt, table.eventId)
+      .where(sql`${table.dispatchedAt} is null`),
+    check(
+      "conversation_projection_processing_outbox_owner_check",
+      sql`${table.visibility} = 'personal' and ${table.ownerUserId} is not null`
+    ),
+    check(
+      "conversation_projection_processing_outbox_work_class_check",
+      sql`${table.workClass} in ('live_capture_projection', 'normal_embedding_lcm', 'historical_import_backfill')`
+    )
+  ]
+);
+
 export const localWorkQueue = pgTable(
   "local_work_queue",
   {
@@ -3267,6 +3510,7 @@ export const localWorkQueue = pgTable(
     data: jsonb("data")
       .notNull()
       .default(sql`'{}'::jsonb`),
+    priority: integer("priority").notNull().default(10),
     status: text("status").notNull().default("pending"),
     attemptCount: integer("attempt_count").notNull().default(0),
     maxAttempts: integer("max_attempts").notNull().default(1),
@@ -3288,7 +3532,7 @@ export const localWorkQueue = pgTable(
       .on(table.queueName, table.jobKey)
       .where(sql`${table.jobKey} is not null`),
     index("local_work_queue_claim_idx")
-      .on(table.queueName, table.availableAt, table.id)
+      .on(table.queueName, table.priority, table.availableAt, table.id)
       .where(sql`${table.status} = 'pending'`),
     index("local_work_queue_active_lease_idx")
       .on(table.lockedUntil)
@@ -3297,6 +3541,7 @@ export const localWorkQueue = pgTable(
       "local_work_queue_status_check",
       sql`${table.status} in ('pending', 'active', 'completed', 'failed')`
     ),
+    check("local_work_queue_priority_check", sql`${table.priority} >= 0`),
     check(
       "local_work_queue_max_attempts_check",
       sql`${table.maxAttempts} >= 1`

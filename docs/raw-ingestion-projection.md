@@ -38,9 +38,13 @@ only when all chunks are required to reconstruct one oversized canonical item;
 the reconstructed item still has one canonical identity and one downstream
 source link.
 
-Source adapters submit canonical candidates and immutable observations; the
-server owns `projection_status` and ignores client attempts to set canonical
-priority or Projection state. Canonical identity is based on
+Source adapters submit canonical candidates and immutable observations. The
+normal live-ingestion route owns `projection_status` and ignores client attempts
+to set canonical priority or Projection state. The local historical-import
+route instead accepts the complete output of the same trusted transcript
+builder, including canonical identity, observation-only records, and explicit
+`raw_only` classification, then enforces Personal Memory ownership and policy
+inside the repository transaction. Canonical identity is based on
 provider thread, turn, item, and component identifiers; content hashes validate
 observations but never establish identity. Koed writes the canonical row and its
 observation in one transaction under an advisory identity lock. A replay of the
@@ -78,15 +82,53 @@ derivations and reprojects retained canonical items under the new policy.
 
 ## Current Codex Adapters
 
-Codex transcript hooks use `sourceAdapterVersion=codex-transcript-v1` and
-`sourceTransport=hook` or `transcript`. Each exact transcript observation
-creates or augments its canonical item before selected records are projected
-into `memory_events`. Hooks do not write semantic `memory_events` directly; the
-raw Projection endpoint is the only hook-backed path that derives chat memory. Hook
-payloads are capture signals, not semantic content sources; transcript JSONL
-timestamps define source chronology. If an otherwise readable transcript row is
-missing a timestamp, catch-up holds it at the current checkpoint until a later
-timestamped row allows deterministic interpolation.
+The Codex Transcript Watcher, transcript hooks, managed transcript
+reconciliation, and historical import share
+`sourceAdapterVersion=codex-transcript-v1`. Watcher and managed reconciliation
+observations use `sourceTransport=transcript`, Hook observations set `hook`, and
+historical observations set `historical_import`. Each exact transcript observation creates
+or augments a canonical raw item before selected records are projected into
+`memory_events`. None writes semantic `memory_events` directly. Hook payloads
+are capture signals, not semantic content sources; transcript JSONL timestamps
+define source chronology. If an otherwise readable row lacks a timestamp,
+catch-up holds it at the checkpoint until a later timestamped row permits
+deterministic interpolation.
+
+Detached hook/import identity is transport- and path-independent. Personal-row
+uniqueness combines owning User with AI Client/source kind, source session ID,
+transcript byte position or sequence, item discriminator, and raw record hash.
+Managed app-server/JSONL overlap uses exact provider thread, turn, stable item,
+and component identity instead. Raw local paths never participate. Hook/import
+overlap therefore reconciles one raw row; a later live observation promotes its
+durable Projection work class to live priority. Metadata retains whether hook
+and historical import both observed row. During migration from the earlier
+path-bound transcript identity, adapters submit the old identity as a bounded
+compatibility alias. Koed may reuse an existing canonical row through that
+alias, but never uses the alias as the identity for a new row.
+
+Transcript Watcher, Hook capture, reconciliation, and historical import converge
+on the same active Personal Captured Session when owning User and source session
+ID match. Session creation is serialized for that owner/source pair, so
+watcher-first, import-first, Hook-first, and concurrent observations do not split
+later raw items across duplicate sessions. A later live observation promotes
+historical work to live Projection priority without creating another canonical
+item or Memory Event.
+
+The Transcript Watcher is the correctness owner for externally managed transcript
+growth. Filesystem notifications and content-free Hook wake files are hints;
+bounded rescans recover missed notifications and discover new Conversations.
+The first successful bounded full discovery cycle establishes activation; files present in
+that baseline retain their complete-record boundary as an immutable historical
+frontier. Files created after activation use
+a zero frontier and are live from their first complete record. Post-frontier
+ranges, including restart recovery, advance a durable live cursor independent
+of historical imported ranges and checkpoints. Before each page, Koed compares
+cursor offset with bounded SHA-256 first/last prefix sentinels. Partial trailing
+JSONL holds the cursor; malformed complete records, truncation, and
+sentinel-covered prefix mutation fail visibly without advancement. Mutations
+outside sentinel windows are intentionally not detected by this bounded check. Capture Policy and Capture Pause are checked before session
+creation and every raw batch. Watcher writes are Personal Memory only and grant
+no Team or Workspace authority.
 
 The experimental Koed-managed conversation adapter uses
 `sourceAdapterVersion=codex-app-server-conversation-v1` and
@@ -157,7 +199,7 @@ memory without relying on client-supplied Projection state.
 
 Capture Policy is enforced again at canonical raw persistence, including an
 active Capture Pause after a Captured Session was created. This is the common
-defence for hook, managed, and internal-workflow transports; API metadata cannot
+defence for watcher, hook, managed, and internal-workflow transports; API metadata cannot
 bypass it.
 
 ## Derived Memory Events
@@ -221,19 +263,134 @@ The worker runs a raw-projection catch-up loop so pending or previously failed
 raw rows are eventually projected after restart, outage, or hook deadline
 pressure. `MEMORY_RAW_PROJECTION_INTERVAL_MS`,
 `MEMORY_RAW_PROJECTION_BATCH_LIMIT`, and `MEMORY_RAW_PROJECTION_ACTOR_LIMIT`
-bound that background work. Local app-server answer and LCM workers also ask
+bound normal background work. Local app-server answer and LCM workers also ask
 the API to project the exact raw rows they just persisted before they write the
 derived answer or summary.
 
 The same worker pass reconciles downstream queue admission from PostgreSQL. It
 lists every eligible source still missing an embedding and every personal LCM
-scope with eligible Memory Events not yet covered by a leaf, then submits
-deterministic jobs. PostgreSQL remains the retry source after Redis/BullMQ or the
-local queue rejects admission, exhausts retries, or restarts. A complete
-embedding response replaces all chunks for that source atomically; a partial or
-failed response cannot hide the source from reconciliation. LCM dispatch is
+scope with eligible Memory Events not yet covered by a leaf, retaining each
+source's durable work class and the same deterministic job identity used by
+initial Projection dispatch. PostgreSQL remains the retry source after
+Redis/BullMQ or the local queue rejects admission, exhausts retries, or
+restarts, without admitting the same source under a second normal-priority job.
+A complete
+embedding response replaces all chunks for that source atomically. Reconciliation
+and historical semantic-readiness counters require current model, dimensions,
+version, source hash, active vector rows, and one complete contiguous chunk set.
+A partial, stale, deleted, or vectorless response cannot hide the source from
+reconciliation. LCM dispatch is
 bounded by `MEMORY_LCM_COMPACTION_MAX_EVENTS` (default `1000`, maximum `10000`),
 and invalidating an old leaf creates a new dispatch generation.
+
+## Work Classes And Historical Backpressure
+
+Koed assigns work to four ordered classes: interactive Recall/Memory Questions,
+live Capture Projection, normal embedding/LCM work, and historical
+import/backfill. Lower numeric priority wins. FIFO is only the current
+within-class tie-breaker for both queue backends, not a final semantic ordering
+guarantee. A registered source classifies complete records before its immutable
+registration frontier as `historical_import_backfill`; records after the
+frontier, including recovery after downtime, are `live_capture_projection`. A
+source first discovered after registration has a zero frontier and is live from
+its first complete record. The coordinator persists that explicit
+classification on each raw row. Projection selection never infers it from
+source event time, insertion order, source path, or metadata.
+
+This fixed-class and bounded-admission foundation does not implement aging,
+token-cost fairness, per-User or tenant shares, reserved interactive serving
+capacity, or dynamic dispatch priority. KOE-355 owns those guarantees.
+
+The API's direct Projection endpoint is live-only, even when callers provide
+explicit row ids. Historical rows remain pending for Worker admission. The
+worker always drains a bounded live Projection pass before considering one
+historical batch. It admits that batch only when live raw-Projection rows and
+pending interactive Memory Questions are at or below configured thresholds, the
+configured API `/ready` endpoint is healthy, queue probing succeeds, and the
+Embedding Service is healthy.
+
+Historical batches meter every physical raw row and all raw JSON, text, and
+transport-chunk bytes before admission. Completed-turn segments remain atomic.
+No atomic segment is admitted when it would exceed the configured row or byte
+cap; the raw rows remain pending until the Operator raises the cap. Runtime is
+an atomic-segment boundary rather than a strict wall-clock cancellation: Koed
+finishes an admitted segment, then yields before starting another segment after
+the deadline. Admission backlog counts exclude rows attached to invalidated or
+deleted Captured Sessions.
+Concurrency is one database-leased Worker slot across processes; a crashed
+Worker releases its session-scoped lease when Postgres closes the connection.
+
+Projection writes durable processing-outbox rows before marking raw rows
+projected. Policy-eligible embedding and compaction jobs use deterministic ids
+and acknowledge that outbox only after every required job is admitted. Worker startup and each catch-up
+pass replay unacknowledged rows, so a queue failure or process restart cannot
+strand a projected Memory Event. Graceful Worker shutdown stops new catch-up
+passes and waits for the active pass before closing queues or Postgres. A stopped
+worker leaves unprojected historical rows pending; its next pass reevaluates
+pressure and resumes safely. Historical Projection propagates its work class to
+embedding and LCM queue jobs. Compaction selection is also class-scoped: a live
+job can consume only live-lineage Memory Events, while a historical job can
+consume only historical events. LCM Placeholder nodes persist that explicit
+lineage, rollups combine only same-class children, and derived node embeddings
+reuse the triggering class across queue retries and process restarts. Normal
+LCM compaction retains its fresh-event tail until leaf thresholds are reached.
+After a historical source reaches its immutable registration frontier and all
+raw, Projection, and embedding work is complete, Worker submits one
+source-scoped deterministic finalization job. It flushes only residual,
+same-class events for that source session, including spans below normal tail or
+leaf thresholds; live-tail behavior remains unchanged.
+
+Historical admission and progress telemetry contains only class names, row and
+byte counts, durations, and pause reasons. It must not contain transcript
+content, source paths, queries, credentials, or raw payloads.
+
+Durable `historical_import_runs` and `historical_import_sources` records own
+state transitions, bounded counters, retry/failure data, source ranges, and
+lifecycle timestamps. Registration immutably records source fingerprint,
+source-session identity, complete-record frontier offset, and bounded prefix
+sentinel hash. New
+source registration is serialized with run transitions and is accepted only
+while the run is `discovered`, `eligible`, `queued`, `importing`, or `paused`.
+Terminal `completed`, `failed`, and `skipped` runs cannot gain stranded sources;
+an immutable source may be observed at a moved path after its failed run is
+explicitly retried into `queued`. Historical imported ranges/checkpoint and
+Transcript Watcher live cursor are separate
+transactional streams; neither can advance, rewind, or overwrite the other.
+Source growth is accepted, while truncation, rotation, sentinel-covered prefix
+mutation, and stale submissions fail visibly without changing either stream. Source records
+keep raw source paths and path-like detected Project fields only inside local
+Postgres state. Status and canonical raw/Captured Session provenance use only a
+basename-style redacted label, stable fingerprint, and path-free detected
+Project fields. Routes, including the separate owner-scoped `live-cursor`
+advancement route, are available only in `developer` and `local_personal`
+profiles and require owning User authentication.
+
+Import evaluates effective Capture Policy and Capture Pause before eligibility
+or queueing and again before every raw write batch. `disabled`, `ask`, active
+pause, or non-personal visibility fails closed. Capture Policy mutation and
+batch persistence share an owner-scoped transaction lock, preventing a policy
+change from interleaving between evaluation and writes. Raw persistence,
+run/source counters, and checkpoint advancement commit in one transaction.
+Retries compare offset and checkpoint-prefix hash; exact raw-ingestion retries
+are read-only replays, while stale, mutated, or truncated checkpoints fail.
+Source event time
+(`event_time`), API observation (`observed_at`), historical observation
+(`import_observed_at`), Projection (`projected_at`), and embedding timestamps
+remain separate.
+
+Raw-ingested, projected, embedding-eligible, embedded, semantic-ready, and
+LCM-complete counters/stages are persisted and exposed separately. The terminal
+`completed` import state requires semantic and LCM completion; reaching the
+historical frontier alone reports raw ingestion only. Historical ingestion and
+Projection remain chronological. The processing outbox persists source event
+time and recovers eligible historical Memory Event embedding work newest-first.
+KOE-354 owns throughput calibration and semantic-readiness ETA; KOE-355 owns the
+full cost-aware dynamic scheduler and aging/fairness policy.
+
+Detected Project data is immutable capture provenance on import source, raw row,
+and Captured Session records. It is not mutable Personal Project assignment,
+Team Workspace resolution, or authorization. Import creates Personal Memory
+only and cannot create Workspace Access or Share Grants.
 
 When a display item is deleted, Koed excludes the underlying raw source item
 from semantic memory immediately and invalidates affected Memory Events and

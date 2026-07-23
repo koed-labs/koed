@@ -1,3 +1,7 @@
+import {
+  parseStructuredLcmSummary,
+  type StructuredLcmSummary
+} from "@koed/core";
 import { z } from "zod";
 
 const memoryStatusSchema = z.enum([
@@ -20,23 +24,6 @@ const memoryAnswerSchema = z
   })
   .passthrough();
 
-const lcmSummarySchema = z
-  .object({
-    schema_version: z.literal("lcm-structured-summary-v1"),
-    summary_text: z.string(),
-    user_requests: z.array(z.string()).default([]),
-    decisions: z.array(z.string()).default([]),
-    facts: z.array(z.string()).default([]),
-    files: z.array(z.string()).default([]),
-    commands: z.array(z.string()).default([]),
-    model_names: z.array(z.string()).default([]),
-    tool_outcomes: z.array(z.string()).default([]),
-    errors: z.array(z.string()).default([]),
-    unresolved_questions: z.array(z.string()).default([]),
-    provenance_hints: z.array(z.string()).default([])
-  })
-  .passthrough();
-
 export type WorkerKind = "memory_answer" | "lcm_summary";
 
 export interface WorkerJsonCase {
@@ -48,8 +35,6 @@ export interface WorkerJsonCase {
     relevantMemoryFound?: boolean;
     requiredSubstrings?: string[];
     minEvidenceItems?: number;
-    requiredArrayKeys?: string[];
-    minNonEmptyStructuredArrays?: number;
   };
   notes?: string;
 }
@@ -115,15 +100,6 @@ const scoreSubstring = (
     reason: ok ? "present" : "missing"
   };
 };
-
-const structuredArrays = (record: Record<string, unknown>): string[] =>
-  Object.entries(record)
-    .filter(
-      ([, value]) =>
-        Array.isArray(value) &&
-        value.some((item) => typeof item === "string" && item.trim())
-    )
-    .map(([key]) => key);
 
 export const scoreWorkerJsonRun = (
   benchmarkCase: WorkerJsonCase,
@@ -228,8 +204,10 @@ export const scoreWorkerJsonRun = (
       details.push(scoreSubstring(answer.answer_markdown, substring));
     }
   } else {
-    const parsedSummary = lcmSummarySchema.safeParse(parsed);
-    if (!parsedSummary.success) {
+    let summary: StructuredLcmSummary;
+    try {
+      summary = parseStructuredLcmSummary(JSON.stringify(parsed));
+    } catch (error) {
       return {
         caseId: run.caseId,
         runIndex: run.runIndex,
@@ -242,12 +220,11 @@ export const scoreWorkerJsonRun = (
             name: "schema",
             score: 0,
             maxScore: 1,
-            reason: parsedSummary.error.message
+            reason: error instanceof Error ? error.message : String(error)
           }
         ]
       };
     }
-    const summary = parsedSummary.data;
     details.push({
       name: "schema",
       score: 3,
@@ -256,31 +233,6 @@ export const scoreWorkerJsonRun = (
     });
     for (const substring of benchmarkCase.expected.requiredSubstrings ?? []) {
       details.push(scoreSubstring(summary.summary_text, substring));
-    }
-    for (const key of benchmarkCase.expected.requiredArrayKeys ?? []) {
-      const value = summary[key as keyof typeof summary];
-      const ok =
-        Array.isArray(value) &&
-        value.some((item) => typeof item === "string" && item.trim());
-      details.push({
-        name: `array:${key}`,
-        score: ok ? 2 : 0,
-        maxScore: 2,
-        reason: ok ? "non-empty" : "missing or empty",
-        actual: value
-      });
-    }
-    const minArrays = benchmarkCase.expected.minNonEmptyStructuredArrays;
-    if (minArrays !== undefined) {
-      const arrays = structuredArrays(summary);
-      const ok = arrays.length >= minArrays;
-      details.push({
-        name: "structured_array_count",
-        score: ok ? 2 : 0,
-        maxScore: 2,
-        reason: ok ? "enough structured fields" : "too few structured fields",
-        actual: arrays
-      });
     }
   }
 

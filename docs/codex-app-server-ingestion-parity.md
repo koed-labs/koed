@@ -1,8 +1,10 @@
 # Codex App-Server Ingestion Parity
 
 This document defines the local parity target for Koed-managed Codex threads.
-It does not change the Supported Capture Hook path for threads started outside
-Koed and does not imply production rollout.
+Threads started outside Koed use the Transcript Watcher for transcript-growth
+correctness and the Supported Capture Hook for low-latency wake signals and
+completion evidence. This managed-thread experiment does not imply production
+rollout.
 
 ## Boundary
 
@@ -167,8 +169,11 @@ is running. Foreground work has a bounded scan budget; a larger backlog advances
 one exact sequential page and leaves the remainder to detached catch-up. A
 page-ending assistant event is held until the next provider record determines
 whether the persisted assistant representation is an event or response item.
-`Stop` remains a signal: its control is not admitted until the catch-up cursor
-has reached that signal's captured byte boundary.
+`Stop` remains completion evidence: its control is not admitted until catch-up
+reaches that signal's captured byte boundary. Independently, the Transcript
+Watcher owns growth correctness through bounded rescans and a durable live
+cursor, so Hook absence, duplication, delay, or reordering cannot gap or
+duplicate canonical rows.
 
 App-server `thread/started` events for subagents create linked child Captured
 Sessions. Child lifecycle items and child rollout JSONL reconcile through the
@@ -249,6 +254,7 @@ observation rows before applying the migration to a populated deployment.
 
 The managed coordinator is a local backend module with no Desktop or Explorer
 entry point. It does not attach to an independently running Codex process.
-Externally managed threads continue using the Supported Capture Hook and JSONL
-catch-up. Product integration and any migration away from that path require a
-separate decision after local evidence is accepted.
+Externally managed threads use the supervised Transcript Watcher and canonical
+JSONL ingestion; the Supported Capture Hook adds low-latency wakeups and
+completion evidence without owning correctness. Both paths converge on the same
+Personal Captured Session, raw records, and Projection pipeline.

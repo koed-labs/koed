@@ -92,6 +92,55 @@
       "when": 1784009784592,
       "tag": "0012_cuddly_luke_cage",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784014985601,
+      "tag": "0013_brave_black_widow",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784015838830,
+      "tag": "0014_warm_doorman",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1784016203469,
+      "tag": "0015_curly_the_order",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784016763538,
+      "tag": "0016_wandering_gauntlet",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784273756990,
+      "tag": "0017_slippery_the_fury",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784283868820,
+      "tag": "0018_rainy_santa_claus",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784300000000,
+      "tag": "0019_tidy_rhino",
+      "breakpoints": true
     }
   ]
 }

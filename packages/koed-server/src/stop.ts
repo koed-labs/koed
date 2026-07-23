@@ -8,8 +8,11 @@ import {
   spawnSync as nodeSpawnSync,
   type SpawnSyncReturns
 } from "node:child_process";
+import { resolve } from "node:path";
 import { stopLocalPostgresRuntime } from "./local-postgres-runtime.js";
 import { resolveKoedServerPaths } from "./paths.js";
+import { readSupervisorLock } from "./supervisor-lock.js";
+import { requestSupervisorExit } from "./supervisor-exit-request.js";
 import type { KoedServerRuntimeState } from "./types.js";
 
 type SpawnSyncLike = (
@@ -41,9 +44,18 @@ export interface KoedServerStopOptions {
   waitForExitMs?: number;
   pollIntervalMs?: number;
   sleepSync?: (ms: number) => void;
+  readSupervisorLock?: typeof readSupervisorLock;
 }
 
-const APP_PROCESS_ORDER = ["explorer", "worker", "api"] as const;
+const APP_PROCESS_ORDER = [
+  {
+    processName: "codexTranscriptWatcher",
+    serviceName: "codex-transcript-watcher"
+  },
+  { processName: "explorer", serviceName: "explorer" },
+  { processName: "worker", serviceName: "worker" },
+  { processName: "api", serviceName: "api" }
+] as const;
 const readRuntimeState = (
   path: string,
   deps: Pick<Required<KoedServerStopOptions>, "existsSync" | "readFileSync">
@@ -162,7 +174,8 @@ export const stopKoedServer = ({
   checkPid = defaultCheckPid,
   waitForExitMs = 5_000,
   pollIntervalMs = 100,
-  sleepSync = defaultSleepSync
+  sleepSync = defaultSleepSync,
+  readSupervisorLock: readLock = readSupervisorLock
 }: KoedServerStopOptions = {}): KoedServerStopResult => {
   const paths = resolveKoedServerPaths(environment);
   const runtime = readRuntimeState(paths.runtimeStatePath, {
@@ -189,13 +202,15 @@ export const stopKoedServer = ({
   const missingServices: string[] = [];
   const errors: Array<{ target: string; error: string }> = [];
 
-  for (const name of APP_PROCESS_ORDER) {
-    const pid = runtime.processes?.[name];
+  for (const { processName, serviceName } of APP_PROCESS_ORDER) {
+    const pid = runtime.processes?.[processName];
     if (!pid || pid <= 0) {
-      missingServices.push(name);
+      if (runtime.services.includes(serviceName)) {
+        missingServices.push(serviceName);
+      }
       continue;
     }
-    const stopped = stopPid(name, pid, {
+    const stopped = stopPid(serviceName, pid, {
       kill,
       checkPid,
       waitForExitMs,
@@ -205,9 +220,9 @@ export const stopKoedServer = ({
     stoppedPids.push(...stopped.stoppedPids);
     missingPids.push(...stopped.missingPids);
     if (stopped.missingPids.length > 0) {
-      missingServices.push(name);
+      missingServices.push(serviceName);
     } else if (stopped.stoppedPids.length > 0) {
-      stoppedServices.push(name);
+      stoppedServices.push(serviceName);
     }
     errors.push(...stopped.errors);
   }
@@ -252,8 +267,54 @@ export const stopKoedServer = ({
     }
   }
 
+  if (runtime.pid > 0 && runtime.pid !== process.pid && checkPid(runtime.pid)) {
+    const lock = readLock(resolve(paths.runDir, "koed-server.lock"));
+    if (lock?.pid !== runtime.pid) {
+      errors.push({
+        target: `supervisor (${runtime.pid})`,
+        error: "Runtime state does not match the active supervisor lock"
+      });
+    } else {
+      requestSupervisorExit(paths, {
+        pid: runtime.pid,
+        startedAt: runtime.startedAt
+      });
+      if (
+        waitForPidExit(runtime.pid, {
+          checkPid,
+          waitForExitMs,
+          pollIntervalMs,
+          sleepSync
+        })
+      ) {
+        stoppedPids.push(runtime.pid);
+        stoppedServices.push("supervisor");
+      } else {
+        errors.push({
+          target: `supervisor (${runtime.pid})`,
+          error: "Timed out waiting for the supervisor to exit naturally"
+        });
+      }
+    }
+  }
+
   if (errors.length === 0) {
-    remove(paths.runtimeStatePath as PathLike, { force: true });
+    const currentRuntime = readRuntimeState(paths.runtimeStatePath, {
+      existsSync: pathExists,
+      readFileSync: readFile
+    });
+    if (
+      currentRuntime &&
+      (currentRuntime.pid !== runtime.pid ||
+        currentRuntime.startedAt !== runtime.startedAt)
+    ) {
+      errors.push({
+        target: "runtime-state",
+        error: "Runtime state changed while stop was in progress"
+      });
+    } else {
+      remove(paths.runtimeStatePath as PathLike, { force: true });
+    }
   }
 
   return {

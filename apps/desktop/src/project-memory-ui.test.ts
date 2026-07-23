@@ -8,6 +8,7 @@ import {
   projectLatestAt,
   reconcileSelectedProjectId,
   relativeTime,
+  sessionPreview,
   sessionSelectionId,
   type DesktopProjectGroup,
   type DesktopProjectMetadata
@@ -108,6 +109,27 @@ describe("project memory UI view model", () => {
     expect(sessionSelectionId(thread)).toBe("session-1");
     expect(projectIdForSession([project], "session-1")).toBe("graph-koed");
     expect(projectIdForSession([project], "missing-session")).toBeNull();
+  });
+
+  it("keeps tool payloads out of Captured Session previews", () => {
+    expect(
+      sessionPreview({
+        name: "Open a focused PR",
+        sample: "Tool call: exec Status: completed Input: { cmd: 'git push' }"
+      })
+    ).toBe("Open the Conversation to review this Captured Session.");
+    expect(
+      sessionPreview({
+        name: "Open a focused PR",
+        sample: "Tool output: exec\n\nsecret-looking tool payload"
+      })
+    ).toBe("Open the Conversation to review this Captured Session.");
+    expect(
+      sessionPreview({
+        name: "Refine Desktop",
+        sample: "  The Desktop layout now keeps Project context visible.  "
+      })
+    ).toBe("The Desktop layout now keeps Project context visible.");
   });
 
   it("excludes Unassigned from manual move targets", () => {
