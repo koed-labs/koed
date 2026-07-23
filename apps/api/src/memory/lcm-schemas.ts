@@ -1,3 +1,7 @@
+import {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  structuredLcmSummarySchema
+} from "@koed/core";
 import { z } from "zod";
 
 export const lcmPendingSummariesQuerySchema = z.object({
@@ -23,23 +27,21 @@ export const submitSessionTitleSchema = z.object({
 
 export const submitLcmSummarySchema = z
   .object({
-    summaryText: z.string().min(1),
+    summaryText: z.string().trim().min(1),
     summaryModel: z.string().min(1),
     summaryPromptVersion: z.string().min(1),
     summaryTokenEstimate: z.coerce.number().int().nonnegative(),
-    summaryStructuredJson: z.record(z.string(), z.unknown()).optional(),
-    summaryStructuredSchemaVersion: z.string().min(1).optional()
+    summaryStructuredJson: structuredLcmSummarySchema,
+    summaryStructuredSchemaVersion: z.literal(
+      LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION
+    )
   })
   .superRefine((value, context) => {
-    if (
-      Boolean(value.summaryStructuredJson) !==
-      Boolean(value.summaryStructuredSchemaVersion)
-    ) {
+    if (value.summaryText !== value.summaryStructuredJson.summary_text) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message:
-          "summaryStructuredJson and summaryStructuredSchemaVersion must be submitted together",
-        path: ["summaryStructuredJson"]
+        message: "summaryText must match summaryStructuredJson.summary_text",
+        path: ["summaryText"]
       });
     }
   });

@@ -44,6 +44,7 @@ import {
 import { generatePendingSessionTitles } from "./session-title-worker.js";
 import { startCuratedMemoryReviewService } from "./curated-memory-review-service.js";
 import { resolveCuratedMemoryReviewConfig } from "./curated-memory-review-worker.js";
+import { startCodexTranscriptWatcher } from "./codex-transcript-watcher.js";
 import {
   answerMarkdownFromAnswer,
   citationsFromAnswer,
@@ -55,10 +56,7 @@ import {
   toolAnswerResponse
 } from "./memory-question-answer-persistence.js";
 import { logger } from "./logger.js";
-import {
-  resolveProjectTeamWorkspaceLink,
-  teamWorkspaceAutoResolutionEnabled
-} from "./project-team-workspace-links.js";
+import { resolveProjectTeamWorkspaceRoute } from "./project-team-workspace-links.js";
 
 const parseArgs = (
   args: string[]
@@ -282,6 +280,18 @@ if (command === "doctor") {
   }
 }
 
+if (command === "watch-codex-transcripts") {
+  const watcher = startCodexTranscriptWatcher(client);
+  const stop = async () => {
+    await watcher.stop();
+    process.exit(0);
+  };
+  process.once("SIGINT", () => void stop());
+  process.once("SIGTERM", () => void stop());
+  logger.info("Codex Transcript Watcher started");
+  await new Promise(() => undefined);
+}
+
 if (command === "process-local-memory") {
   const delayMs = positiveIntOption("delay-ms");
   if (delayMs) {
@@ -494,18 +504,13 @@ server.registerTool(
       input.search_domain === "project"
         ? normalizeToolWorkspaceId(input.workspace_id)
         : input.workspace_id;
-    const projectTeamWorkspaceLink =
-      !input.team_workspace_id &&
-      input.search_domain === "project" &&
-      workspace_id &&
-      teamWorkspaceAutoResolutionEnabled(process.env)
-        ? resolveProjectTeamWorkspaceLink(workspace_id, process.env)
-        : undefined;
-    const mappedTeamWorkspaceId = projectTeamWorkspaceLink?.teamWorkspaceId;
-    const team_workspace_id = input.team_workspace_id ?? mappedTeamWorkspaceId;
-    const upstream_backend_id =
-      projectTeamWorkspaceLink?.backendId ??
-      process.env.KOED_TEAM_UPSTREAM_BACKEND_ID?.trim();
+    const teamWorkspaceRoute = resolveProjectTeamWorkspaceRoute({
+      projectRoot: input.search_domain === "project" ? workspace_id : undefined,
+      requestedTeamWorkspaceId: input.team_workspace_id,
+      env: process.env
+    });
+    const team_workspace_id = teamWorkspaceRoute.teamWorkspaceId;
+    const upstream_backend_id = teamWorkspaceRoute.backendId;
     if (team_workspace_id && !upstream_backend_id) {
       return jsonResponse({
         markdown:

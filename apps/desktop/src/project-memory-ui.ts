@@ -181,6 +181,27 @@ export const relativeTime = (
   return `${Math.round(hours / 24)}d ago`;
 };
 
+const technicalSessionPreviewPatterns = [
+  /^tool\s*(call|output)\s*:/i,
+  /^status\s*:\s*(completed|failed|running)/i,
+  /^input\s*:/i,
+  /^\{\s*["']?(cmd|command|path|query)["']?\s*:/i,
+  /^<tool/i
+];
+
+export const sessionPreview = (
+  session: Pick<DesktopThreadGroup, "name" | "sample">
+): string => {
+  const sample = session.sample.trim().replace(/\s+/g, " ");
+  if (
+    !sample ||
+    technicalSessionPreviewPatterns.some((pattern) => pattern.test(sample))
+  ) {
+    return "Open the Conversation to review this Captured Session.";
+  }
+  return sample;
+};
+
 export { sessionSelectionId } from "@koed/memory-ui";
 
 export const projectIdForSession = (

@@ -125,6 +125,8 @@ export interface SanitizedCapabilitiesPayload {
   capabilities?: Record<string, CapabilityDescriptor>;
 }
 
+const supportedCapabilitySchemaVersions = new Set([2, 3, 4]);
+
 export interface UpstreamRegistryDeps {
   existsSync?: typeof existsSync;
   readFileSync?: typeof readFileSync;
@@ -596,7 +598,7 @@ const sanitizeCapabilitiesPayload = (
   ) {
     throw new Error("Capability response is not a Koed v1 capability payload.");
   }
-  if (![2, 3].includes(payload.capabilitySchemaVersion)) {
+  if (!supportedCapabilitySchemaVersions.has(payload.capabilitySchemaVersion)) {
     throw new Error(
       `Unsupported capability schema version ${payload.capabilitySchemaVersion}.`
     );

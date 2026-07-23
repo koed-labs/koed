@@ -1,3 +1,4 @@
+import type { KoedWorkClass } from "@koed/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ApiRouteContext } from "../server/context.js";
 import {
@@ -46,6 +47,14 @@ export const registerRawConversationRoutes = (
       const repo = requireRepository();
       const user = await authenticateApiToken(request);
       const input = createConversationItemsSchema.parse(request.body);
+      const localProfile = ["developer", "local_personal"].includes(
+        context.config.deploymentProfile
+      );
+      if (!localProfile && input.items.some((item) => item.sourcePath)) {
+        throw Object.assign(new Error("Raw source paths are local-only"), {
+          statusCode: 400
+        });
+      }
 
       const items = await repo.createConversationItems(
         { userId: user.id },
@@ -155,6 +164,7 @@ export const registerRawConversationRoutes = (
           visibility: "personal";
           includeInEmbedding: boolean;
           includeInLcm: boolean;
+          workClass: KoedWorkClass;
         }>
       };
       for (
@@ -211,7 +221,11 @@ export const registerRawConversationRoutes = (
       const input = projectConversationItemsSchema.parse(request.body);
       const projection = await repo.projectPendingConversationItems(
         { userId: user.id },
-        { ...input, visibility: "personal" }
+        {
+          ...input,
+          visibility: "personal",
+          workClass: "live_capture_projection"
+        }
       );
       const processing = await scheduleProjectedMemoryEventProcessing(
         repo,

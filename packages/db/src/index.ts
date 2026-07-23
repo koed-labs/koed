@@ -53,6 +53,11 @@ export {
   type StoredEncryptedFieldRecord
 } from "./encrypted-payload-repository.js";
 export { createExternalAuthRepository } from "./external-auth-repository.js";
+export {
+  createHistoricalImportRepository,
+  validateHistoricalImportTransition,
+  type HistoricalImportRepository
+} from "./historical-import-repository.js";
 export { createLocalEmbeddingStatusRepository } from "./local-embedding-status-repository.js";
 export {
   createLocalWorkQueueRepository,

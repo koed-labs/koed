@@ -9,14 +9,16 @@ MCP-side workers.
 ## Services In Scope
 
 - **AI Client**: Codex is the supported AI Client in this build.
-- **Capture Hook**: the TypeScript hook that sends conversation activity to Koed.
+- **Transcript Watcher**: the local background service that owns correctness for externally managed Codex transcript growth.
+- **Capture Hook**: the TypeScript hook that provides low-latency wake signals and completion evidence.
 - **MCP Server**: the local process that exposes `memory_answer`, runs local
   memory-answer work, and runs the LCM Summary Service.
 - **API**: the Fastify backend that authenticates API Tokens, persists raw
   records, runs Projection, and serves recall endpoints.
-- **Worker**: the background process that consumes BullMQ or Postgres-backed
-  local queue jobs, performs catch-up Projection, embedding work, and LCM node
-  embedding.
+- **Worker**: background process that consumes priority-ordered BullMQ or
+  Postgres-backed local queue jobs, performs catch-up Projection, embedding
+  work, and LCM node embedding. It admits historical batches only after live
+  and interactive pressure clears.
 - **Embedding Service**: Operator-managed service in external dependency mode, or native Koed-owned runtime in bundled-local mode, that turns memory text into retrieval vectors.
 - **Database**: Postgres storage for raw conversation items, projected semantic
   rows, Memory Events, Memory Nodes, embeddings, questions, token usage,
@@ -90,8 +92,9 @@ MCP-side workers.
    `koed-server` and connect to those configured dependency URLs. API/Worker
    job queues use `WORK_QUEUE_BACKEND=bullmq` for Redis/BullMQ or
    `WORK_QUEUE_BACKEND=local` for the Postgres-backed `local_work_queue`
-   table.
-7. `koed-server start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `koed-server stop --json` stops supervised processes in dependency-safe order: Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. It treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
+   table. After the API is healthy and a local API Token exists, the supervisor
+   starts `@koed/mcp-server` command `watch-codex-transcripts` when enabled.
+7. `koed-server start --daemon --json` starts a detached `koed-server start` supervisor and returns machine-readable startup intent for Desktop and scripts. `koed-server stop --json` stops supervised processes in dependency-safe order: Transcript Watcher, Explorer, Worker, API, native Embedding Service, then native Postgres through `pg_ctl stop`. Stopping the watcher before the API lets its active scan finish or terminate without losing the API dependency. Stop treats stale process IDs as an idempotent no-op and does not stop Docker Compose or Operator-managed dependencies. `koed-server restart --json` runs the same stop lifecycle, starts a detached `koed-server start` supervisor, and returns machine-readable JSON without streaming startup logs.
 8. `koed-server status --json` and `koed-server doctor --json` poll the API
    readiness endpoint, dependency readiness as reported by the API, local
    Worker process state, local API Token configuration, MCP Server doctor
@@ -101,7 +104,9 @@ MCP-side workers.
    Hook config so stale ports or credentials show as explicit integration
    mismatches. Readiness gates include Postgres reachability and version,
    current migrations, pgvector, local or BullMQ queue backend availability,
-   and Embedding Service model/dimension compatibility.
+   and Embedding Service model/dimension compatibility. Historical-import
+   backlog and aggregate Transcript Watcher process/status data are diagnostic
+   only, never readiness gates.
 9. `koed-server setup codex --json` wraps the existing guided bootstrap path so
    Codex MCP Server, Supported Capture Hook, local API Token, app-provisioned
    Explorer credential, verification, and doctor setup can be invoked through
@@ -499,36 +504,40 @@ remains a later integration on top of this durable seat lifecycle state.
 
 ## Ingestion
 
-1. Codex emits supported hook events such as `SessionStart`,
-   `UserPromptSubmit`, `PostToolUse`, `Stop`, `SubagentStart`, and
-   `SubagentStop`.
-2. The TypeScript Capture Hook treats the hook event as a trigger signal. It
-   starts a detached transcript catch-up process for the transcript path and
-   returns without waiting for API writes, Projection, embeddings, or LCM work.
-3. The detached catch-up process holds a per-transcript lock so multiple hooks
-   coalesce into one active ingestion pass. It drains transcript rows from the
-   last checkpoint up to the latest complete JSONL line. If live capture sees
-   an existing transcript with no checkpoint, it baselines to the current end of
-   file after ingesting only timestamped rows in the first-contact grace window;
-   older transcript history requires an explicit historical import. Rows without
-   source timestamps are held at the checkpoint until a later timestamped row
-   lets Koed interpolate their source time without reordering transcript
-   chronology.
-4. Catch-up converts Codex transcript records into canonical
-   `conversation_items` plus immutable `conversation_item_observations` with
-   source adapter metadata, source identity, hashes, and chronology. `Stop` and
-   `SubagentStop` hook signals may also be stored as stripped control records so
-   Projection can seal an agent turn, but content-bearing hook fields are
-   omitted before storage. Transcript JSONL records are the source of truth for
-   display and semantic content.
-5. The API authenticates the API Token and persists canonical items and source
-   observations atomically as
-   `personal` memory through `POST /v1/memory/conversation-items`.
-6. During persistence, exact provider identity controls canonicalization.
-   Replayed observations are idempotent, conflicting observation bytes fail,
-   and Capture Policy/Pause is enforced again at this common boundary. Hook
-   control records do not become messages, tool events, Memory Event content,
-   LCM sources, or embeddings.
+1. The supervised Transcript Watcher combines recursive filesystem notification
+   hints with bounded periodic rescans of explicit Codex transcript roots. The
+   default root is `CODEX_HOME/sessions`; path-delimited
+   `MEMORY_CODEX_TRANSCRIPT_ROOTS` replaces it. Notifications only reduce
+   latency: missed notifications still converge through rescans.
+2. The first successful bounded full discovery cycle establishes activation. Files in that
+   baseline register an immutable complete-record frontier and leave their
+   prefix to historical import. A file created after
+   activation registers frontier zero and is live from its first complete
+   record. Restart resumes post-frontier growth from the durable live cursor,
+   never from the independent historical checkpoint.
+3. Before reading a page, the watcher validates file size and compares bounded
+   SHA-256 first/last cursor-prefix sentinels. It reads only complete JSONL
+   records within bounded file, entry, and byte limits. Partial trailing records
+   hold the cursor; malformed complete records, truncation, and sentinel-covered
+   prefix mutation fail visibly without advancing it. Mutations outside sentinel
+   windows are intentionally not detected by this bounded check.
+4. Codex may also emit `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`,
+   `SubagentStart`, and `SubagentStop`. The Supported Capture Hook writes a
+   content-free local wake hint and may provide stripped completion evidence.
+   Missing, duplicate, delayed, or reordered signals cannot create a capture
+   gap or duplicate. Transcript JSONL remains the content source of truth.
+5. The watcher checks Capture Policy and Capture Pause before session creation
+   and before every batch, then converts records with `codex-transcript-v1` into
+   canonical `conversation_items` plus immutable
+   `conversation_item_observations`. The API authenticates the Personal API
+   Token and persists each raw batch as Personal Memory. No Team Workspace,
+   Share Grant, remote authority, or backend synthesis is introduced.
+6. Exact provider identity controls canonicalization across watcher, Hook,
+   managed reconciliation, and historical import. Replayed observations are
+   idempotent, conflicting bytes fail, and a later live observation promotes
+   work to live Projection priority without another canonical item or Memory
+   Event. Cursor advancement occurs only after raw persistence and direct live
+   Projection succeed.
 7. Projection reads `projection_policy_rules` to decide which Codex transcript
    item types become UI rows, tool events, Memory Events, embeddings, and LCM
    sources. The seeded policy projects user, agent, subagent, tool call/result,
@@ -550,21 +559,78 @@ remains a later integration on top of this durable seat lifecycle state.
    and repository read paths hydrate authorized graph, embedding, retrieval,
    LCM source content, and Memory Question payloads from encrypted companions
    after access checks.
-9. The Worker runs catch-up over pending or failed canonical rows, then derives
-   missing embedding jobs and pending LCM compaction scopes from PostgreSQL.
-   Deterministic queue identities make that reconciliation idempotent, so queue
-   admission failure or exhausted retries cannot permanently strand work.
-   Embedding reconciliation recognizes only complete active chunk sets for the
-   current source version, and LCM dispatch is bounded per owner.
-10. The Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`,
-    embeds Memory Events by calling the Embedding Service, and atomically
-    replaces the source's complete embedding chunk set.
-11. The Worker schedules compaction, creating or updating LCM Placeholder Memory
+9. Projection persists an identifier-only processing outbox before raw rows are
+   marked projected. API and Worker queue producers use deterministic job ids
+   and acknowledge each outbox row only after its policy-eligible embedding and
+   compaction jobs are admitted. Worker catch-up replays unacknowledged rows
+   after queue failures or restart. Queue payloads hold only identifiers plus
+   one work class: interactive Recall/Memory Questions, live Capture Projection,
+   normal embedding/LCM, or historical import/backfill.
+10. Direct API Projection selects only live rows. The Worker also selects live
+    rows first. Historical rows have the durable
+    `historical_import_backfill` Projection class and are selected only as one
+    bounded batch when API readiness, queue, and Embedding Service probes are
+    healthy and configured live/interactive pressure thresholds are clear.
+    Physical row/payload-byte limits and runtime checks apply at completed-turn
+    segment boundaries. A Postgres advisory lease permits one historical batch
+    across Worker processes. It yields after each batch and reevaluates after
+    restart.
+11. The Worker independently derives missing embedding jobs and pending LCM
+    compaction scopes from PostgreSQL. Deterministic queue identities make this
+    reconciliation idempotent, so outbox admission failure, exhausted retries,
+    or restart cannot permanently strand work or promote historical work into
+    the normal class. Embedding reconciliation accepts only complete active
+    chunk sets for current source version. LCM dispatch is bounded per owner and
+    work class; compaction selects only Memory Events with the requested durable
+    lineage. Created leaves and rollups persist that lineage, and derived node
+    embeddings retain it.
+12. Local historical import state uses authenticated
+    `/v1/historical-imports` and `/v1/historical-import-sources` routes. A
+    strict local-only lookup resolves one owner-scoped source from its AI
+    Client, source kind, and source session ID so capture can resume after
+    restart without exposing raw paths or path-like Project provenance. These
+    routes exist only on
+    developer/local-personal edges. Durable run/source
+    records validate transitions and retain an immutable complete-record
+    registration frontier (offset/bounded prefix sentinel hash plus fingerprint/session ID),
+    separate historical imported ranges/checkpoint and live recovery cursor,
+    stage counters, retry/failure timestamps, immutable
+    detected Project provenance, and local-only raw source path. Responses and
+    canonical raw/Captured Session provenance remove raw path and path-like
+    Project fields. New sources can be registered only while a run is active or
+    paused; completed, failed, and skipped runs reject registration
+    transactionally. The owner-scoped `live-cursor` route is part of the same
+    local-only route identity and OpenAPI inventory.
+13. Before source eligibility/queueing and every import batch, API resolves
+    owning User's effective Capture Policy and Capture Pause. Disabled, ask,
+    paused, or non-personal results fail closed. Policy mutation is serialized
+    against batch persistence. Batch writes use the same
+    `codex-transcript-v1` adapter and `conversation_items` path as Hook capture.
+    The boundary accepts canonical response-item identity, immutable observation
+    fields, observation-only records, and raw-only classifications without
+    rewriting them; raw persistence, counters, and checkpoint advancement
+    commit atomically. Offset/prefix-hash
+    retries distinguish exact replay from sentinel-covered mutation, rotation, or truncation.
+    Pre-frontier records are historical; post-frontier/downtime-recovery records
+    are live. No Team,
+    Workspace Access, or Share Grant mutation occurs.
+14. Worker consumes queued jobs from Redis/BullMQ or `local_work_queue`.
+    Both backends use lower-number-first priority and FIFO as the current
+    within-class tie-breaker, so
+    live capture runs ahead of queued historical embedding/LCM work. Schema
+    upgrades assign existing local jobs normal priority. Before BullMQ workers
+    start, Koed assigns same normal priority to legacy waiting, paused, and
+    delayed jobs that have no stored priority. Aging, token-cost fairness,
+    per-User/tenant shares, reserved interactive capacity, and dynamic dispatch
+    priority are deferred to KOE-355.
+15. Worker embeds Memory Events by calling Embedding Service and atomically
+    replaces source's complete embedding chunk set.
+16. Worker schedules compaction, creating or updating LCM Placeholder Memory
     Nodes from Memory Events and child nodes, then queues Memory Node embedding.
     In paid Koed-managed cloud, placeholder summaries, body text, source item
     JSON, completed LCM summaries, and structured LCM summary JSON are stored as
     redacted Memory Node fields with encrypted companions.
-12. Pending LCM placeholders remain available as degraded evidence until local
+17. Pending LCM placeholders remain available as degraded evidence until local
     LCM summaries are submitted.
 
 ### Experimental Koed-managed Codex threads
@@ -601,9 +667,9 @@ Captured Session and reconciles that child's rollout independently. Parent and
 child turns use the same terminal-evidence requirement and remain distinct
 through Projection and downstream memory.
 
-This path currently has no frontend and does not replace the Supported Capture
-Hook. Threads started outside Koed continue using hook-triggered detached JSONL
-catch-up.
+This path currently has no frontend and does not replace the Transcript Watcher.
+Threads started outside Koed are captured from transcript growth; Supported
+Capture Hook signals provide low-latency wakeups and completion evidence.
 
 Commercial/private VPS/Team deployments can run encrypted-field backfill over
 existing human-readable Memory and evidence columns. Backfill is whitelist-based
@@ -625,18 +691,23 @@ responses, logs, or diagnostics.
 ```mermaid
 sequenceDiagram
   participant Client as AI Client
+  participant Transcript as Codex Transcript JSONL
+  participant Watcher as Transcript Watcher
   participant Hook as Capture Hook
   participant API as API
   participant DB as Database
   participant Worker as Worker
   participant Embed as Embedding Service
 
-  Client->>Hook: Supported hook event and transcript path
-  Hook-->>Hook: Start detached transcript catch-up
-  Hook-->>Client: Return without waiting for capture work
-  Hook->>DB: Update local catch-up status breadcrumbs
-  Hook->>API: Background access check and raw conversation_items
+  Client->>Transcript: Append transcript records
+  Hook-->>Watcher: Content-free wake hint / completion evidence
+  Watcher->>API: Read durable frontier and live cursor
+  API->>DB: Resolve owner-scoped source state
+  Watcher->>Transcript: Compare prefix sentinels and parse bounded complete records
+  Watcher->>API: Capture Policy/Pause check and raw conversation_items
   API->>DB: Persist or reconcile transcript rows idempotently
+  Watcher->>API: Advance independent durable live cursor
+  API->>DB: Compare-and-swap live cursor
   Worker->>DB: Catch up pending raw rows
   Worker->>DB: Read projection_policy_rules
   Worker->>DB: Project sessions, turns, messages, Memory Events
@@ -729,22 +800,37 @@ sequenceDiagram
 5. The local LCM worker builds token-bounded prompts from exact source items or
    child summaries. The prompt requires secret-like literal redaction and, when
    ordered source items or child summaries conflict, prefers later items while
-   preserving older conflicts only as superseded context. It also asks the AI
-   Client to keep active decisions, stable facts, unresolved questions, and tool
-   outcomes in their matching structured fields while compressing repetitive
-   logs and lifecycle noise into durable findings.
+   preserving older conflicts only as superseded context. `@koed/core` owns the
+   `lcm-semantic-summary-v1` schema and parser shared by the DB, MCP Server, and
+   evaluation suites. LCM summaries use a minimal JSON envelope containing a
+   title and one canonical `summary_text`.
+   That text contains every parent-relevant semantic fact: leaves describe each
+   distinct topic briefly, while rollups compress complete child summary
+   envelopes into broader themes. Detailed commands, logs, filenames,
+   identifiers, provenance, and intermediate steps remain in child summaries
+   and source Memory Events for drill-down unless a detail is needed to
+   understand, distinguish, or retrieve the topic. Stored child payloads that
+   do not match the current semantic-summary contract contribute only their
+   authoritative `summary_text`; unsupported structured JSON is not forwarded.
+   Unsupported worker output fails at the worker boundary.
 6. The LCM worker runs Codex app-server mode locally under the user's Codex
    subscription and parses the returned structured LCM Summary.
 7. App-server workflow telemetry is persisted as raw-only conversation items,
    and provider token usage is recorded for attribution.
 8. The LCM worker submits the completed LCM Summary to
-   `POST /v1/memory/lcm/summaries/{nodeId}`.
+   `POST /v1/memory/lcm/summaries/{nodeId}`. The API requires the shared
+   semantic-summary schema, matching schema-version metadata, and canonical
+   `summaryText` consistent with structured `summary_text`.
 9. The API updates the Memory Node summary fields and enqueues Memory Node
    embedding. In paid Koed-managed cloud, the stored summary/body/structured
    JSON fields remain redacted and the submitted LCM Summary is written to
    encrypted companions.
 10. The Worker embeds the updated Memory Node so retrieval can use the
     completed summary.
+
+LCM prompt versions are forward-only. A new prompt version applies to newly
+created placeholders and nodes that are naturally invalidated and rebuilt; it
+does not automatically regenerate already completed summaries.
 
 ```mermaid
 sequenceDiagram

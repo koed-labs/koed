@@ -142,6 +142,28 @@ describe("prompt loader", () => {
     ).toThrow(/declares id memory-answer-worker/);
   });
 
+  it("fails if an LCM override omits its required output schema", async () => {
+    const directory = await tempPromptDir();
+    await writeFile(
+      path.join(directory, "lcm-summary-leaf.md"),
+      [
+        "---",
+        "id: lcm-summary-leaf",
+        "version: stale-lcm-override",
+        "---",
+        "Return the previous structured summary contract."
+      ].join("\n")
+    );
+
+    expect(() =>
+      loadPrompt("lcm-summary-leaf", {
+        env: { [PROMPT_OVERRIDE_DIR_ENV]: directory }
+      })
+    ).toThrow(
+      /output_schema <missing>.*lcm-semantic-summary-v1.*Update or remove the incompatible KOED_PROMPT_DIR override/
+    );
+  });
+
   it("fails if an override removes code-owned structural placeholders", async () => {
     const directory = await tempPromptDir();
     await writeFile(

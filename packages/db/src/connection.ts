@@ -17,7 +17,8 @@ export const createDbPool = (config: DbConfig = {}): pg.Pool =>
     connectionString: config.connectionString ?? env("DATABASE_URL")
   });
 
-export const createDb = (pool: pg.Pool): KoedDb => drizzle(pool, { schema });
+export const createDb = (client: pg.Pool | pg.PoolClient): KoedDb =>
+  drizzle(client, { schema });
 
 export const checkDatabase = async (pool: pg.Pool): Promise<boolean> => {
   const result = await pool.query<{ ok: number }>("select 1 as ok");

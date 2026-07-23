@@ -21,10 +21,13 @@ const createScheduler = () => {
       {
         ownerUserId: "user-1",
         visibility: "personal",
+        workClass: "live_capture_projection",
         pendingMemoryEventIds: ["event-1"],
-        dispatchKey: "lcm-dispatch-user-1"
+        dispatchKey: "lcm-dispatch-user-1",
+        jobId: "compact-user-1-personal-live"
       }
-    ])
+    ]),
+    markConversationProjectionProcessingDispatched: vi.fn().mockResolvedValue(1)
   };
   return { scheduler, embeddingQueue, compactionQueue, repository };
 };
@@ -48,16 +51,26 @@ describe("memory job scheduler", () => {
 
     expect(embeddingQueue.add).toHaveBeenCalledWith(
       "embed-source",
-      { sourceType: "memory_event", sourceId: "event-1" },
+      {
+        sourceType: "memory_event",
+        sourceId: "event-1",
+        workClass: "live_capture_projection"
+      },
       expect.objectContaining({
+        priority: 5,
         jobId: "embed-qwen3-0-6b-1024-memory_event-event-1"
       })
     );
     expect(compactionQueue.add).toHaveBeenCalledWith(
       "compact-scope",
-      { userId: "user-1", visibility: "personal" },
+      {
+        userId: "user-1",
+        visibility: "personal",
+        workClass: "live_capture_projection"
+      },
       expect.objectContaining({
-        jobId: "compact-user-1-personal-lcm-dispatch-user-1"
+        priority: 5,
+        jobId: "compact-user-1-personal-live"
       })
     );
     const queuedPayloads = JSON.stringify([
@@ -77,8 +90,10 @@ describe("memory job scheduler", () => {
       {
         ownerUserId: "user-2",
         visibility: "personal",
+        workClass: "live_capture_projection",
         pendingMemoryEventIds: ["event-2"],
-        dispatchKey: "lcm-dispatch-user-2"
+        dispatchKey: "lcm-dispatch-user-2",
+        jobId: "compact-user-2-personal-live"
       }
     ]);
 
@@ -91,13 +106,15 @@ describe("memory job scheduler", () => {
             eventId: "event-2",
             visibility: "personal",
             includeInEmbedding: true,
-            includeInLcm: true
+            includeInLcm: true,
+            workClass: "live_capture_projection"
           },
           {
             eventId: "event-3",
             visibility: "personal",
             includeInEmbedding: true,
-            includeInLcm: false
+            includeInLcm: false,
+            workClass: "historical_import_backfill"
           }
         ]
       )
@@ -116,5 +133,38 @@ describe("memory job scheduler", () => {
     expect(queuedPayloads).not.toContain("payload");
     expect(queuedPayloads).not.toContain("query");
     expect(queuedPayloads).not.toContain("answer");
+    expect(embeddingQueue.add.mock.calls.map((call) => call[2]?.jobId)).toEqual(
+      ["projection-embed-event-2", "projection-embed-event-3"]
+    );
+    expect(
+      compactionQueue.add.mock.calls.map((call) => call[2]?.jobId)
+    ).toEqual(["compact-user-2-personal-live"]);
+    expect(
+      repository.markConversationProjectionProcessingDispatched
+    ).toHaveBeenCalledWith(["event-2", "event-3"]);
+  });
+
+  it("leaves projected processing pending when queue admission fails", async () => {
+    const { scheduler, compactionQueue, repository } = createScheduler();
+    compactionQueue.add.mockRejectedValueOnce(new Error("queue degraded"));
+
+    const result = await scheduler.scheduleProjectedMemoryEventProcessing(
+      repository as never,
+      { userId: "user-3" },
+      [
+        {
+          eventId: "event-4",
+          visibility: "personal",
+          includeInEmbedding: true,
+          includeInLcm: true,
+          workClass: "historical_import_backfill"
+        }
+      ]
+    );
+
+    expect(result.compactions[0]).toMatchObject({ queued: false });
+    expect(
+      repository.markConversationProjectionProcessingDispatched
+    ).not.toHaveBeenCalled();
   });
 });

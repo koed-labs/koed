@@ -4,27 +4,32 @@ Koed CI can produce unsigned macOS Desktop DMG/ZIP artifacts for internal instal
 
 ## Build in CI
 
-Run the `CI` workflow manually with `build_native_runtime_macos_arm64=true`.
+Every pull request runs the combined macOS arm64 native-runtime and packaged Desktop native-smoke job. To build the same artifacts from another ref, run the `CI` workflow manually with `build_native_runtime_macos_arm64=true`.
 
 The workflow:
 
-1. builds and validates `koed-native-runtime-macos-arm64`;
-2. extracts it for Desktop packaging;
-3. sets `KOED_NATIVE_RUNTIME_SOURCE_DIR`;
-4. builds unsigned `dmg` and `zip` Desktop artifacts;
-5. runs packaged Desktop native smoke against the built app;
-6. uploads `koed-desktop-macos-arm64-unsigned`.
+1. builds `koed-native-runtime-macos-arm64`;
+2. extracts and validates the completed tarball at the consumer boundary;
+3. uploads the validated runtime artifact before Desktop packaging;
+4. sets `KOED_NATIVE_RUNTIME_SOURCE_DIR` to the validated extraction;
+5. builds unsigned `dmg` and `zip` Desktop artifacts;
+6. runs packaged Desktop native smoke against the built app;
+7. uploads `koed-desktop-macos-arm64-unsigned`.
 
 The uploaded Desktop artifact contains `Koed-<version>-arm64.dmg` and `Koed-<version>-arm64.zip` from `apps/desktop/release/`.
 
 ## GitHub Release assets
 
-When the `Release` workflow creates a new GitHub Release, it also runs a macOS job that:
+When the `Release` workflow creates a new GitHub Release, it first creates it as a draft. It then runs a macOS job that:
 
 1. builds and validates the macOS arm64 native runtime;
 2. packages unsigned Desktop DMG/ZIP artifacts;
 3. runs packaged Desktop native smoke;
 4. uploads the unsigned DMG, ZIP, and `koed-desktop-macos-arm64-unsigned.sha256` checksum file to the GitHub Release.
+
+The workflow verifies the Desktop, standalone server, checksum, and release metadata assets before publishing the draft. A failed build therefore leaves a draft instead of a visible partial release. If only the Desktop asset job needs to be rebuilt, run `Recover Desktop release assets` with the existing draft release name. Draft releases do not necessarily have a Git tag, so the workflow resolves the draft's `targetCommitish` to an immutable commit SHA before checkout. It then confirms that source contains both the pinned hermetic OpenSSL builder and the safe Desktop symlink/sealing behavior, repeats native-runtime validation and packaged smoke, replaces the Desktop assets, and publishes the release only when every required asset is present. The recovery workflow deliberately rejects published releases and source such as `v0.4.3` that predates the safe packaging boundary; repair those through a patch release instead of mixing current build tooling into historical source.
+
+Packaged Desktop smoke writes detached supervisor output to `KOED_HOME/logs/supervisor.log`. The live log is capped at 8 MiB. If the supervisor exits before readiness, the smoke fails immediately, prints the supervisor, Postgres, runtime-state, and final-status diagnostics, and creates a uniquely named, smoke-owned child under the configured diagnostics directory for the short-lived workflow artifact. The caller-provided parent is never removed or replaced, copied service logs contain only their final 64 KiB, and secret-bearing configuration files are excluded.
 
 These GitHub Release assets are still unsigned and not notarized until the signing/notarization follow-up is complete.
 

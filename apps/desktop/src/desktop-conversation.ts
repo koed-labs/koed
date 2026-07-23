@@ -20,6 +20,20 @@ export type ConversationCursor = Pick<
   "id" | "sourceSequence" | "timestamp"
 >;
 
+export type DesktopConversationTimelineItem =
+  | {
+      kind: "event";
+      id: string;
+      timestamp: string;
+      event: DesktopConversationEvent;
+    }
+  | {
+      kind: "tool-group";
+      id: string;
+      timestamp: string;
+      events: DesktopConversationEvent[];
+    };
+
 export function conversationEventText(event: DesktopConversationEvent): string {
   return (
     event.contentFull ??
@@ -57,6 +71,50 @@ export function mergeConversationEvents(
   const byId = new Map(current.map((event) => [event.id, event]));
   for (const event of incoming) byId.set(event.id, event);
   return [...byId.values()].sort(compareConversationEvents);
+}
+
+export function groupConversationEvents(
+  events: DesktopConversationEvent[]
+): DesktopConversationTimelineItem[] {
+  const items: DesktopConversationTimelineItem[] = [];
+  let toolEvents: DesktopConversationEvent[] = [];
+  const flushTools = () => {
+    if (toolEvents.length === 1) {
+      const event = toolEvents[0]!;
+      items.push({
+        kind: "event",
+        id: event.id,
+        timestamp: event.timestamp,
+        event
+      });
+    } else if (toolEvents.length > 1) {
+      const first = toolEvents[0]!;
+      const last = toolEvents.at(-1)!;
+      items.push({
+        kind: "tool-group",
+        id: `tool-group:${first.id}:${last.id}`,
+        timestamp: first.timestamp,
+        events: toolEvents
+      });
+    }
+    toolEvents = [];
+  };
+
+  for (const event of events) {
+    if (event.actor === "tool") {
+      toolEvents.push(event);
+      continue;
+    }
+    flushTools();
+    items.push({
+      kind: "event",
+      id: event.id,
+      timestamp: event.timestamp,
+      event
+    });
+  }
+  flushTools();
+  return items;
 }
 
 export function conversationEventsUrl({

@@ -1,5 +1,63 @@
 # @koed/koed
 
+## 0.4.4
+
+### Patch Changes
+
+- 2a8db88: Fix macOS Desktop release artifacts with bundled native runtime files so they retain valid code signatures and can be verified before publication.
+- 93d8924: Accept current upstream capability metadata, route explicit Team Workspace recall through matching Project links, and recover supervisor locks safely after process reuse.
+
+## 0.4.3
+
+### Patch Changes
+
+- d84b818: Fix unsigned macOS Desktop artifacts so their app bundles have a valid sealed code signature instead of being reported as damaged by macOS.
+
+## 0.4.2
+
+### Patch Changes
+
+- c1cba29: Make packaged Desktop stop/reopen wait for the previous supervisor to exit and preserve actionable smoke diagnostics when startup fails.
+
+## 0.4.1
+
+### Patch Changes
+
+- 2ee0b35: Make macOS native runtime builds independent of Homebrew OpenSSL and publish releases only after required artifacts pass validation.
+
+## 0.4.0
+
+### Minor Changes
+
+- ede1237: Add a Project-first Koed Desktop experience that combines local Project identity metadata with captured memory activity, progressively opens Projects, sessions, and raw conversations, and condenses local Personal Memory settings.
+- 3bf29ac: Add production Cross-Identity Sync for explicitly selected Captured Sessions with encrypted resumable transfer, target-side processing, lifecycle controls, and operational diagnostics.
+- 639f3a7: Add personal Curated Memory intake with source-linked proposals, asynchronous local-agent review, normal recall integration, and semantic benchmark coverage.
+- 3dd600f: Redesign Koed Desktop Project inspection as a responsive master-detail workspace, increase Project and Captured Session information density, move technical metadata into secondary disclosures, and keep the UI focused on shipped local memory flows.
+- ede1237: Automatically organize Captured Sessions by detected Personal Project while allowing persistent User moves, reset to automatic placement, and explicit Unassigned organization.
+- 37f50f8: Add browser-based local-edge device enrollment approval UI and session-auth challenge approval APIs so Team Backend device enrollment can be approved without exposing reusable credential material.
+- a6b54f9: Add a Koed-managed Codex app-server ingestion path that reconciles persisted transcript evidence into canonical conversation items before Projection, embedding, and LCM processing.
+- 962efa7: Replace the embedded Explorer session view with a native Koed Desktop Conversation surface, share long-Conversation virtualization with Explorer, and refine the Project, Captured Session, Settings, and responsive Desktop layouts.
+- bba555e: Remove the Embedding Service Python virtualenv and Python runtime files from bundled-local packaged native runtime procurement, staging, validation, and Desktop packaging.
+- b4b5e72: Retire the legacy Python Embedding Service source, development tooling, and CI checks now that bundled-local supervision uses the TypeScript Embedding Service.
+- 409c50d: Switch bundled-local Embedding Service supervision to the TypeScript implementation while preserving the existing HTTP contract and keeping Python runtime assets in place until the follow-up removal.
+- 6a21dbe: Improve Desktop first-run reliability for bundled-local setup by enabling automatic local ports for source Desktop, repairing Codex setup to use active runtime URLs, avoiding blocking health on missing setup verification, and clarifying the README quickstart.
+- 0397ffb: Add standalone `koed-server` app-runtime package build, install, Desktop first-run resolution, release publishing, and provenance verification support.
+- 6d67a25: Add Team SaaS foundation hardening for koed-server Docker builds, upstream trust-boundary resets, local-edge credential isolation, restore-smoke target safety, and encrypted source redaction during backfill.
+- 0a52f4a: Add Project-to-Team Workspace mapping, Captured Session sharing, and opt-in Team Workspace recall from the MCP Server.
+- 37f50f8: Add local `koed-server` upstream enrollment orchestration commands for starting, checking, canceling, and disconnecting Team Backend device enrollment with fail-closed capability and route-policy checks.
+- 9d904d2: Add Team Backend enrollment from Desktop through local koed-server, encrypted local upstream credentials, and project-linked Team Workspace recall through MCP memory_answer.
+
+### Patch Changes
+
+- 7c02ed7: Add a TypeScript Embedding Service implementation that preserves the existing local embedding and reranking HTTP contract ahead of the bundled-local runtime switch.
+- 379ee7f: Use the active bundled-local Postgres connection when setting up the supported AI Client, even when the checkout `.env` has a different database port.
+- 5bac071: Ship editable Koed prompt files with packaged MCP runtimes and preserve prompt override configuration and LCM prompt-version provenance.
+- 962efa7: Prevent concurrent local supervisors from reallocating ports or stopping another daemon's Postgres, recover stale Desktop API Tokens, keep Codex verification state aligned, redact setup token output, and distinguish Project loading failures from empty Personal Memory.
+- 6d55ffd: Fix packaged macOS DMG startup when the mounted volume path contains spaces.
+- cb87540: Isolate Team launch validation from deployment configuration and run destructive repository gates in a separate disposable database.
+- 4a0f018: Make LCM leaves and rollups compact semantic indexes while retaining detailed source evidence for drill-down.
+- 7327d65: Fix remote Team Backend enrollment approval URLs, preserve local Desktop API routing, automatically reconcile approved device credentials, and show the approval URL when system browser opening is delayed or unavailable.
+
 ## 0.3.1
 
 ### Patch Changes

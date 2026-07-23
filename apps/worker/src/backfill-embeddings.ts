@@ -1,4 +1,4 @@
-import { memoryEmbedQueueName } from "@koed/shared";
+import { memoryEmbedQueueName, workClassPriority } from "@koed/shared";
 import { createDbPool, createMemorySourceRepository } from "@koed/db";
 import { loadWorkerEnv, resolveWorkerEnv } from "./env-config.js";
 import type { EmbeddingQueueJobData } from "./job-workflows.js";
@@ -33,8 +33,13 @@ try {
   for (const source of sources) {
     await queue.add(
       "embed-source",
-      { sourceType: source.sourceType, sourceId: source.sourceId },
       {
+        sourceType: source.sourceType,
+        sourceId: source.sourceId,
+        workClass: "historical_import_backfill"
+      },
+      {
+        priority: workClassPriority("historical_import_backfill"),
         jobId: `embed-${embeddingVersion}-${source.sourceType}-${source.sourceId}`,
         attempts: 5,
         backoff: { type: "exponential", delay: 10_000 },

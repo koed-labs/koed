@@ -6,6 +6,7 @@ import {
   type LocalWorkQueueRepository
 } from "@koed/db";
 import {
+  defaultKoedQueuePriority,
   workerQueueNames,
   type KoedJobQueue,
   type KoedQueueBackend,
@@ -87,6 +88,7 @@ export const createWorkerQueueProducer = <TJobData>(
           jobName,
           data,
           jobKey: jobOptions?.jobId,
+          priority: jobOptions?.priority ?? defaultKoedQueuePriority,
           maxAttempts: jobOptions?.attempts,
           backoffMs: jobOptions?.backoff?.delay
         }),
@@ -100,7 +102,10 @@ export const createWorkerQueueProducer = <TJobData>(
   });
   return {
     add: async (jobName, data, jobOptions) => {
-      const job = await queue.add(jobName, data, jobOptions);
+      const job = await queue.add(jobName, data, {
+        ...jobOptions,
+        priority: jobOptions?.priority ?? defaultKoedQueuePriority
+      });
       return { id: job.id };
     },
     getJobCounts: (...statuses) =>
@@ -225,7 +230,83 @@ const createLocalQueueWorker = ({
   };
 };
 
-export const createWorkerQueueRuntime = ({
+const bullmqPriorityMigrationBatchSize = 500;
+
+const setNormalPriority = async (
+  jobs: Awaited<ReturnType<Queue["getJobs"]>>
+): Promise<number> => {
+  const legacyJobs = jobs.filter(
+    (job) => job.opts.priority === undefined || job.opts.priority === 0
+  );
+  await Promise.all(
+    legacyJobs.map((job) =>
+      job.changePriority({ priority: defaultKoedQueuePriority })
+    )
+  );
+  return legacyJobs.length;
+};
+
+const reconcileBullmqQueuePriorities = async (
+  queue: Queue
+): Promise<number> => {
+  let reconciled = 0;
+  let start = 0;
+  while (true) {
+    const jobs = await queue.getJobs(
+      ["wait", "paused"],
+      start,
+      start + bullmqPriorityMigrationBatchSize - 1,
+      true
+    );
+    const migrated = await setNormalPriority(jobs);
+    reconciled += migrated;
+    if (migrated === 0) start += jobs.length;
+    if (jobs.length < bullmqPriorityMigrationBatchSize) break;
+  }
+
+  start = 0;
+  while (true) {
+    const jobs = await queue.getJobs(
+      "delayed",
+      start,
+      start + bullmqPriorityMigrationBatchSize - 1,
+      true
+    );
+    reconciled += await setNormalPriority(jobs);
+    start += jobs.length;
+    if (jobs.length < bullmqPriorityMigrationBatchSize) break;
+  }
+  return reconciled;
+};
+
+const reconcileBullmqLegacyPriorities = async (
+  queueNames: readonly string[],
+  connection: ReturnType<typeof createBullmqConnection>,
+  logger: WorkerQueueLogger
+): Promise<void> => {
+  for (const queueName of queueNames) {
+    const queue = new Queue(queueName, { connection });
+    try {
+      const reconciledCount = await reconcileBullmqQueuePriorities(queue);
+      if (reconciledCount === 0) continue;
+      logger.info(
+        {
+          event: {
+            name: "worker.queue.priority_reconciled",
+            category: "job"
+          },
+          queue: { name: queueName },
+          jobs: { reconciled: reconciledCount }
+        },
+        "legacy queue priorities reconciled"
+      );
+    } finally {
+      await queue.close();
+    }
+  }
+};
+
+export const createWorkerQueueRuntime = async ({
   backend,
   redisUrl,
   pool,
@@ -236,7 +317,7 @@ export const createWorkerQueueRuntime = ({
   isTransientError,
   pollIntervalMs = 1_000,
   leaseMs = 10 * 60 * 1000
-}: WorkerQueueRuntimeOptions): WorkerQueueRuntime => {
+}: WorkerQueueRuntimeOptions): Promise<WorkerQueueRuntime> => {
   if (backend === "local") {
     const repository =
       localQueueRepository ??
@@ -266,6 +347,7 @@ export const createWorkerQueueRuntime = ({
   }
 
   const connection = createBullmqConnection(redisUrl);
+  await reconcileBullmqLegacyPriorities(workerQueueNames, connection, logger);
 
   const workers = workerQueueNames.map((queueName) => {
     const worker = new Worker<unknown>(

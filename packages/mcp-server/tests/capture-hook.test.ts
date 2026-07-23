@@ -283,6 +283,7 @@ describe("Codex capture hook transcript parsing", () => {
   it("signals detached transcript ingestion from foreground hooks", async () => {
     await withHookStateFile(async () => {
       const triggerCatchup = vi.fn();
+      const signalWatcher = vi.fn();
       const transcriptPath = path.join(
         os.tmpdir(),
         `koed-transcript-${process.pid}-${Date.now()}.jsonl`
@@ -297,9 +298,11 @@ describe("Codex capture hook transcript parsing", () => {
           tool_name: "Read",
           transcript_path: transcriptPath
         },
-        triggerCatchup
+        triggerCatchup,
+        signalWatcher
       });
 
+      expect(signalWatcher).toHaveBeenCalledWith(undefined);
       expect(triggerCatchup).toHaveBeenCalledWith(undefined, {
         hook_event_name: "PostToolUse",
         session_id: "session-open",

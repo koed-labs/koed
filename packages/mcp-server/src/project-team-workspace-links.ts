@@ -10,6 +10,11 @@ export interface ProjectTeamWorkspaceLink {
   projectDisplayName: string | null;
 }
 
+export interface ProjectTeamWorkspaceRoute {
+  teamWorkspaceId: string | undefined;
+  backendId: string | undefined;
+}
+
 interface ProjectMetadataRecord {
   localProjectId: string;
   path: {
@@ -136,4 +141,35 @@ export const resolveProjectTeamWorkspaceLink = (
     (candidate) => candidate.localProjectId === project.localProjectId
   );
   return localMatches.length === 1 ? localMatches[0]! : null;
+};
+
+export const resolveProjectTeamWorkspaceRoute = (input: {
+  projectRoot?: string;
+  requestedTeamWorkspaceId?: string;
+  env?: NodeJS.ProcessEnv;
+}): ProjectTeamWorkspaceRoute => {
+  const env = input.env ?? process.env;
+  const configuredBackendId = env.KOED_TEAM_UPSTREAM_BACKEND_ID?.trim();
+  const link = input.projectRoot
+    ? resolveProjectTeamWorkspaceLink(input.projectRoot, env)
+    : null;
+
+  if (input.requestedTeamWorkspaceId) {
+    return {
+      teamWorkspaceId: input.requestedTeamWorkspaceId,
+      backendId:
+        link?.teamWorkspaceId === input.requestedTeamWorkspaceId
+          ? (link.backendId ?? configuredBackendId)
+          : configuredBackendId
+    };
+  }
+
+  if (!link || !teamWorkspaceAutoResolutionEnabled(env)) {
+    return { teamWorkspaceId: undefined, backendId: configuredBackendId };
+  }
+
+  return {
+    teamWorkspaceId: link.teamWorkspaceId,
+    backendId: link.backendId ?? configuredBackendId
+  };
 };

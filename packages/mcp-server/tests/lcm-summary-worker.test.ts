@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   buildLcmSummaryPrompt,
+  parseStructuredLcmSummary,
   resolveLcmSummaryWorkerConfig,
   summarizePendingLcmNodes,
   type LcmSummaryNode
@@ -30,17 +31,7 @@ const summaryJson = (summary_text: string) =>
   JSON.stringify({
     schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
     title: "Structured LCM Details",
-    summary_text,
-    user_requests: [],
-    decisions: [],
-    facts: [summary_text],
-    files: [],
-    commands: [],
-    model_names: [],
-    tool_outcomes: [],
-    errors: [],
-    unresolved_questions: [],
-    provenance_hints: []
+    summary_text
   });
 
 it("persists the loaded LCM prompt version for operator overrides", async () => {
@@ -52,11 +43,11 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
       "---",
       "id: lcm-summary-leaf",
       "version: operator-leaf-v9",
+      `output_schema: ${LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION}`,
       "---",
       "Summarize this leaf using the required JSON schema."
     ].join("\n")
   );
-  vi.stubEnv("KOED_PROMPT_DIR", directory);
 
   const node: LcmSummaryNode = {
     id: "00000000-0000-4000-8000-000000000051",
@@ -93,6 +84,7 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
     limit: 1,
     config: resolveLcmSummaryWorkerConfig(
       {
+        KOED_PROMPT_DIR: directory,
         MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
       },
       {
@@ -120,6 +112,47 @@ it("persists the loaded LCM prompt version for operator overrides", async () => 
   ]);
 });
 
+it("fails before listing work when an LCM override omits its output schema", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "koed-lcm-prompts-"));
+  tempDirs.push(directory);
+  await writeFile(
+    path.join(directory, "lcm-summary-leaf.md"),
+    [
+      "---",
+      "id: lcm-summary-leaf",
+      "version: lcm-codex-summary-json-v2",
+      "---",
+      "Summarize this captured memory span using structured detail arrays."
+    ].join("\n")
+  );
+
+  const listPendingLcmSummaries = vi.fn();
+  const runner = vi.fn();
+
+  await expect(
+    summarizePendingLcmNodes(
+      { listPendingLcmSummaries } as unknown as Parameters<
+        typeof summarizePendingLcmNodes
+      >[0],
+      {
+        limit: 1,
+        config: resolveLcmSummaryWorkerConfig(
+          {
+            KOED_PROMPT_DIR: directory,
+            MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+          },
+          { maxAttempts: 1, retryDelayMs: 0, timeoutMs: 1_000 }
+        ),
+        runner
+      }
+    )
+  ).rejects.toThrow(
+    /output_schema <missing>.*Update or remove the incompatible KOED_PROMPT_DIR override/
+  );
+  expect(listPendingLcmSummaries).not.toHaveBeenCalled();
+  expect(runner).not.toHaveBeenCalled();
+});
+
 describe("LCM summary worker", () => {
   it("uses the structured summary contract for leaf, rollup, partial, and reduce prompts", () => {
     const node: LcmSummaryNode = {
@@ -144,18 +177,26 @@ describe("LCM summary worker", () => {
       expect(prompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
       expect(prompt).toContain('"title"');
       expect(prompt).toContain('"summary_text"');
-      expect(prompt).toContain('"user_requests"');
-      expect(prompt).toContain('"decisions"');
-      expect(prompt).toContain('"provenance_hints"');
+      expect(prompt).not.toContain('"decisions"');
+      expect(prompt).not.toContain('"provenance_hints"');
       expect(prompt).toContain("Do not reproduce API tokens");
       expect(prompt).toContain(
-        "redaction rule overrides the instruction to preserve exact identifiers"
+        "redaction rule overrides every preservation requirement"
+      );
+      expect(prompt).toContain("authoritative drill-down evidence");
+      expect(prompt).toContain(
+        "semantic coverage and clear retrieval cues over exhaustive detail"
+      );
+      expect(prompt).toContain(
+        "title is only a label and must not carry unique information"
       );
       expect(prompt).toContain("Return only one JSON object");
     }
 
     const rollupPrompt = buildLcmSummaryPrompt({ ...node, kind: "rollup" });
-    expect(rollupPrompt).toContain("Roll up these child LCM summaries");
+    expect(rollupPrompt).toContain(
+      "Roll up these child LCM summaries into a compact higher-level semantic index"
+    );
     expect(rollupPrompt).toContain(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION);
     expect(rollupPrompt).toContain("Do not reproduce API tokens");
     expect(rollupPrompt).toContain(
@@ -163,6 +204,12 @@ describe("LCM summary worker", () => {
     );
     expect(rollupPrompt).toContain(
       "older conflicting items only as superseded context"
+    );
+    expect(rollupPrompt).toContain(
+      "compress more aggressively than a leaf summary"
+    );
+    expect(rollupPrompt).toContain(
+      "Do not concatenate children or repeat detailed commands"
     );
 
     const reducePrompt = buildLcmSummaryPrompt(node, "reduce");
@@ -357,8 +404,7 @@ describe("LCM summary worker", () => {
       (submitted[0] as { summaryStructuredJson?: unknown })
         .summaryStructuredJson
     ).toMatchObject({
-      summary_text: "rollup summarized",
-      facts: ["rollup summarized"]
+      summary_text: "rollup summarized"
     });
     expect(rawItemRequests).toEqual([
       {
@@ -623,6 +669,85 @@ describe("LCM summary worker", () => {
     });
   });
 
+  it("passes complete compact shard summaries into large-leaf reduction", async () => {
+    const node: LcmSummaryNode = {
+      id: "00000000-0000-4000-8000-000000000081",
+      visibility: "personal",
+      kind: "leaf",
+      depth: 0,
+      summaryText: "placeholder",
+      sourceTokenEstimate: 4_000,
+      sourceItems: [
+        {
+          kind: "memory_event",
+          sourceId: "00000000-0000-4000-8000-000000000082",
+          text: `DECISION_MARKER ${"decision context ".repeat(900)}`
+        },
+        {
+          kind: "memory_event",
+          sourceId: "00000000-0000-4000-8000-000000000083",
+          text: `UNRESOLVED_MARKER ${"open question context ".repeat(900)}`
+        }
+      ]
+    };
+    const submissions: Record<string, unknown>[] = [];
+    const client = {
+      async listPendingLcmSummaries() {
+        return submissions.length === 0 ? { nodes: [node] } : { nodes: [] };
+      },
+      async submitLcmSummary(_nodeId: string, input: Record<string, unknown>) {
+        submissions.push(input);
+        return { ok: true };
+      }
+    };
+    let reduceCalls = 0;
+
+    const result = await summarizePendingLcmNodes(client as never, {
+      limit: 1,
+      config: resolveLcmSummaryWorkerConfig(
+        {
+          MEMORY_LCM_SUMMARY_LOCK_PATH: await tempLockPath()
+        },
+        {
+          maxPromptTokens: 2_000,
+          maxAttempts: 1
+        }
+      ),
+      runner: async (prompt) => {
+        if (prompt.includes("Combine these shard summaries")) {
+          reduceCalls += 1;
+          expect(prompt).toContain('"schema_version"');
+          expect(prompt).toContain('"title"');
+          expect(prompt).toContain('"summary_text"');
+          expect(prompt).toContain("Use scoped device credentials");
+          expect(prompt).toContain("Determine the revocation TTL");
+          return {
+            text: summaryJson(
+              "Use scoped device credentials; determine the revocation TTL."
+            ),
+            model: "codex-app-server:test"
+          };
+        }
+        const summary = prompt.includes("DECISION_MARKER")
+          ? "Use scoped device credentials."
+          : prompt.includes("UNRESOLVED_MARKER")
+            ? "Determine the revocation TTL."
+            : "Supporting context only.";
+        return {
+          text: summaryJson(summary),
+          model: "codex-app-server:test"
+        };
+      }
+    });
+
+    expect(reduceCalls).toBeGreaterThan(0);
+    expect(result.submittedCount).toBe(1);
+    expect(submissions[0]).toMatchObject({
+      summaryText:
+        "Use scoped device credentials; determine the revocation TTL."
+    });
+  });
+
   it("does not submit invalid structured summary output", async () => {
     const node: LcmSummaryNode = {
       id: "00000000-0000-4000-8000-000000000021",
@@ -672,5 +797,13 @@ describe("LCM summary worker", () => {
     expect(result.failedCount).toBe(1);
     expect(result.results[0]?.error).toContain("Unexpected token");
     expect(submitted).toHaveLength(0);
+  });
+
+  it("rejects legacy detail arrays in the minimal summary contract", async () => {
+    const legacy = summaryJson("Canonical semantic summary.").replace(
+      '"summary_text":"Canonical semantic summary."',
+      '"summary_text":"Canonical semantic summary.","decisions":["Duplicate detail"]'
+    );
+    expect(() => parseStructuredLcmSummary(legacy)).toThrow(/decisions/);
   });
 });

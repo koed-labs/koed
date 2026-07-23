@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +21,7 @@ const scriptPath = path.join(
 
 test("codex configure writes hook timeout config and command timeouts", async () => {
   const dir = path.join(
-    tmpdir(),
+    realpathSync(tmpdir()),
     `koed-configure-codex-${process.pid}-${Date.now()}`
   );
   const hookConfigPath = path.join(dir, ".koed", "config.json");

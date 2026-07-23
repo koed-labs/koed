@@ -2,8 +2,13 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chunkTextForModel, countTokensForModel } from "@koed/core";
-import { z } from "zod";
+import {
+  chunkTextForModel,
+  countTokensForModel,
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  parseStructuredLcmSummary,
+  type StructuredLcmSummary
+} from "@koed/core";
 import {
   CodexAppServerTurnError,
   koedAppServerWorkerDeveloperInstructions,
@@ -17,13 +22,20 @@ import {
   persistRawConversationItems,
   projectRawConversationItems
 } from "./raw-conversation-items.js";
-import { loadPrompt, type PromptId } from "./prompt-loader.js";
+import {
+  lcmSummaryPromptIds,
+  loadPrompt,
+  type PromptId
+} from "./prompt-loader.js";
 
 const CODEX_SUMMARY_PROVIDER = "codex";
 const DEFAULT_SUMMARY_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_PROMPT_TOKENS = 48_000;
-export const LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION =
-  "lcm-structured-summary-v1";
+export {
+  LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
+  parseStructuredLcmSummary,
+  type StructuredLcmSummary
+} from "@koed/core";
 
 export interface LcmSummaryWorkerConfig {
   provider: string;
@@ -97,26 +109,6 @@ interface BuiltLcmSummaryPrompt {
   text: string;
   version: string;
 }
-
-const structuredLcmSummarySchema = z
-  .object({
-    schema_version: z.literal(LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION),
-    title: z.string().min(1).max(120),
-    summary_text: z.string().min(1),
-    user_requests: z.array(z.string()).default([]),
-    decisions: z.array(z.string()).default([]),
-    facts: z.array(z.string()).default([]),
-    files: z.array(z.string()).default([]),
-    commands: z.array(z.string()).default([]),
-    model_names: z.array(z.string()).default([]),
-    tool_outcomes: z.array(z.string()).default([]),
-    errors: z.array(z.string()).default([]),
-    unresolved_questions: z.array(z.string()).default([]),
-    provenance_hints: z.array(z.string()).default([])
-  })
-  .passthrough();
-
-export type StructuredLcmSummary = z.infer<typeof structuredLcmSummarySchema>;
 
 export type CodexLcmSummaryRunner = (
   prompt: string,
@@ -304,22 +296,14 @@ const itemText = (item: LcmSourceItem): string => {
 const lcmSummaryJsonShape = () => ({
   schema_version: LCM_STRUCTURED_SUMMARY_SCHEMA_VERSION,
   title: "Short human-readable conversation title.",
-  summary_text: "Compact information-dense summary for retrieval.",
-  user_requests: ["durable user request or preference"],
-  decisions: ["decision and rationale when present"],
-  facts: ["stable fact captured from the sources"],
-  files: ["file path, package, service, or component when present"],
-  commands: ["command or tool action when semantically important"],
-  model_names: ["model name when present"],
-  tool_outcomes: ["important tool result or observed outcome"],
-  errors: ["error, failure, or regression when present"],
-  unresolved_questions: ["open issue, blocker, or pending decision"],
-  provenance_hints: ["node/source/turn/chunk ids that help trace claims"]
+  summary_text:
+    "Complete compact semantic summary for retrieval, parent summaries, and drill-down."
 });
 
 const buildVersionedLcmSummaryPrompt = (
   node: LcmSummaryNode,
-  mode: "summary" | "partial" | "reduce" = "summary"
+  mode: "summary" | "partial" | "reduce" = "summary",
+  env: NodeJS.ProcessEnv = process.env
 ): BuiltLcmSummaryPrompt => {
   const isRollup =
     node.kind === "rollup" ||
@@ -342,7 +326,7 @@ const buildVersionedLcmSummaryPrompt = (
           ""
         ];
 
-  const loadedPrompt = loadPrompt(promptId);
+  const loadedPrompt = loadPrompt(promptId, { env });
   return {
     version: loadedPrompt.version,
     text: [
@@ -366,25 +350,12 @@ const buildVersionedLcmSummaryPrompt = (
 
 export const buildLcmSummaryPrompt = (
   node: LcmSummaryNode,
-  mode: "summary" | "partial" | "reduce" = "summary"
-): string => buildVersionedLcmSummaryPrompt(node, mode).text;
+  mode: "summary" | "partial" | "reduce" = "summary",
+  env: NodeJS.ProcessEnv = process.env
+): string => buildVersionedLcmSummaryPrompt(node, mode, env).text;
 
 const promptTokens = (prompt: string, config: LcmSummaryWorkerConfig): number =>
   countTokensForModel(prompt, { model: config.model }).tokens;
-
-const stripJsonFence = (text: string): string => {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  const unfenced = fenced ? (fenced[1] ?? "").trim() : trimmed;
-  const firstBrace = unfenced.indexOf("{");
-  const lastBrace = unfenced.lastIndexOf("}");
-  return firstBrace >= 0 && lastBrace > firstBrace
-    ? unfenced.slice(firstBrace, lastBrace + 1)
-    : unfenced;
-};
-
-export const parseStructuredLcmSummary = (text: string): StructuredLcmSummary =>
-  structuredLcmSummarySchema.parse(JSON.parse(stripJsonFence(text)));
 
 const objectPayload = (payload: unknown): Record<string, unknown> =>
   payload && typeof payload === "object" && !Array.isArray(payload)
@@ -442,7 +413,8 @@ const buildTokenBoundedPrompts = (
       const candidateItems = [...currentItems, item];
       const candidatePrompt = buildVersionedLcmSummaryPrompt(
         nodeWithItems(node, candidateItems),
-        mode
+        mode,
+        config.env
       );
       if (promptTokens(candidatePrompt.text, config) <= maxPromptTokens) {
         currentItems = candidateItems;
@@ -453,13 +425,15 @@ const buildTokenBoundedPrompts = (
         prompts.push(
           buildVersionedLcmSummaryPrompt(
             nodeWithItems(node, currentItems),
-            mode
+            mode,
+            config.env
           )
         );
         currentItems = [item];
         const singlePrompt = buildVersionedLcmSummaryPrompt(
           nodeWithItems(node, currentItems),
-          mode
+          mode,
+          config.env
         );
         if (promptTokens(singlePrompt.text, config) > maxPromptTokens) {
           oversizedSinglePrompt = true;
@@ -477,7 +451,8 @@ const buildTokenBoundedPrompts = (
         prompts.push(
           buildVersionedLcmSummaryPrompt(
             nodeWithItems(node, currentItems),
-            mode
+            mode,
+            config.env
           )
         );
       }
@@ -507,7 +482,7 @@ const buildSummaryPrompts = (
   promptVersion: string;
   mode: "summary" | "partial" | "reduce";
 }> => {
-  const prompt = buildVersionedLcmSummaryPrompt(node);
+  const prompt = buildVersionedLcmSummaryPrompt(node, "summary", config.env);
   if (promptTokens(prompt.text, config) <= config.maxPromptTokens) {
     return [
       {
@@ -538,7 +513,9 @@ export const runCodexAppServerLcmSummary: CodexLcmSummaryRunner = (
       cwd: config.cwd,
       env: config.env,
       clientName: "koed-lcm-summary-worker",
-      baseInstructions: loadPrompt("app-server-lcm-summary-base").body,
+      baseInstructions: loadPrompt("app-server-lcm-summary-base", {
+        env: config.env
+      }).body,
       developerInstructions: koedAppServerWorkerDeveloperInstructions
     },
     timeoutMs
@@ -752,7 +729,7 @@ const reduceShardSummaries = async (
       kind: "lcm_child",
       nodeId: `${node.id}:shard-${index}`,
       visibility: node.visibility,
-      text: summary.text,
+      text: JSON.stringify(summary.structuredSummary),
       payload: {
         shardIndex: index,
         shardCount: shardSummaries.length,
@@ -925,6 +902,9 @@ export const summarizePendingLcmNodes = async (
   const config = options.config ?? resolveLcmSummaryWorkerConfig();
   const runner = options.runner ?? runCodexAppServerLcmSummary;
   const requestedLimit = options.limit ?? 10;
+  for (const promptId of lcmSummaryPromptIds) {
+    loadPrompt(promptId, { env: config.env });
+  }
   const releaseLock = acquireLocalSummaryLock(
     config.env,
     Math.max(config.timeoutMs * config.maxAttempts * requestedLimit, 1_800_000)

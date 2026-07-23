@@ -1,4 +1,34 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const bullQueue = vi.hoisted(() => ({
+  add: vi.fn(),
+  close: vi.fn(),
+  getJobCounts: vi.fn(),
+  getJobs: vi.fn()
+}));
+
+vi.mock("bullmq", () => ({
+  Queue: class {
+    name: string;
+    add = bullQueue.add;
+    close = bullQueue.close;
+    getJobCounts = bullQueue.getJobCounts;
+    getJobs = bullQueue.getJobs;
+
+    constructor(name: string) {
+      this.name = name;
+    }
+
+    toKey(type: string) {
+      return `bull:${this.name}:${type}`;
+    }
+  },
+  Worker: class {
+    close = vi.fn();
+    on = vi.fn();
+  }
+}));
+
 import {
   createWorkerQueueProducer,
   createWorkerQueueRuntime
@@ -19,6 +49,13 @@ const logger = {
 };
 
 describe("createWorkerQueueProducer", () => {
+  beforeEach(() => {
+    bullQueue.add.mockReset();
+    bullQueue.close.mockReset();
+    bullQueue.getJobCounts.mockReset();
+    bullQueue.getJobs.mockReset().mockResolvedValue([]);
+  });
+
   it("creates local durable queue producer when repository exists", async () => {
     const repository = createRepository();
     const queue = createWorkerQueueProducer<{ sourceId: string }>(
@@ -38,9 +75,31 @@ describe("createWorkerQueueProducer", () => {
       jobName: "embed-source",
       data: { sourceId: "event-1" },
       jobKey: "job-1",
+      priority: 10,
       maxAttempts: undefined,
       backoffMs: undefined
     });
+  });
+
+  it("passes live priority ahead of historical priority to BullMQ", async () => {
+    bullQueue.add
+      .mockResolvedValueOnce({ id: "historical" })
+      .mockResolvedValueOnce({ id: "live" });
+    const queue = createWorkerQueueProducer<{ sourceId: string }>(
+      "memory-embed",
+      { backend: "bullmq", redisUrl: "redis://operator:6379" }
+    );
+
+    await queue.add(
+      "embed-source",
+      { sourceId: "historical" },
+      { priority: 20 }
+    );
+    await queue.add("embed-source", { sourceId: "live" }, { priority: 5 });
+
+    expect(bullQueue.add.mock.calls.map((call) => call[2]?.priority)).toEqual([
+      20, 5
+    ]);
   });
 
   it("fails fast for local queue backend without database", () => {
@@ -63,10 +122,11 @@ describe("createWorkerQueueRuntime", () => {
       data: { sourceId: "event-1" },
       attemptCount: 1,
       maxAttempts: 5,
+      priority: 5,
       lockToken: "lock-1"
     });
     const handleJob = vi.fn().mockResolvedValue({ ok: true });
-    const runtime = createWorkerQueueRuntime({
+    const runtime = await createWorkerQueueRuntime({
       backend: "local",
       redisUrl: "redis://localhost:6379",
       localQueueRepository: repository,
@@ -88,5 +148,42 @@ describe("createWorkerQueueRuntime", () => {
       id: 1,
       lockToken: "lock-1"
     });
+  });
+
+  it("reconciles unprioritized BullMQ jobs before starting workers", async () => {
+    const legacyJob = {
+      opts: {},
+      changePriority: vi.fn().mockResolvedValue(undefined)
+    };
+    const prioritizedJob = {
+      opts: { priority: 5 },
+      changePriority: vi.fn()
+    };
+    const delayedLegacyJob = {
+      id: "delayed-1",
+      opts: { priority: 0 },
+      changePriority: vi.fn()
+    };
+    bullQueue.getJobs
+      .mockResolvedValueOnce([legacyJob, prioritizedJob])
+      .mockResolvedValueOnce([delayedLegacyJob])
+      .mockResolvedValue([]);
+
+    const runtime = await createWorkerQueueRuntime({
+      backend: "bullmq",
+      redisUrl: "redis://localhost:6379",
+      logger,
+      lcmEmbedQueue: { add: vi.fn(), getJobCounts: vi.fn(), close: vi.fn() },
+      handleJob: vi.fn(),
+      isTransientError: () => false
+    });
+    await runtime.close();
+
+    expect(legacyJob.changePriority).toHaveBeenCalledWith({ priority: 10 });
+    expect(prioritizedJob.changePriority).not.toHaveBeenCalled();
+    expect(delayedLegacyJob.changePriority).toHaveBeenCalledWith({
+      priority: 10
+    });
+    expect(bullQueue.getJobs).toHaveBeenCalledTimes(6);
   });
 });
