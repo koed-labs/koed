@@ -47,7 +47,10 @@ type Fixture = {
       };
     };
   };
-  signedRecords: Record<string, SignedRecord>;
+  signedRecords: Record<string, SignedRecord> & {
+    groupStatement: SignedRecord;
+    keyBundle: SignedRecord;
+  };
   hkdfRfc5869Case1: {
     ikmHex: string;
     saltHex: string;
